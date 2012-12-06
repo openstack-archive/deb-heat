@@ -1,0 +1,44 @@
+#!/usr/bin/make -f
+
+#export DH_VERBOSE=1
+
+include /usr/share/openstack-pkg-tools/pkgos.make
+
+%:
+	dh $@  --with python2
+
+ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
+override_dh_auto_test:
+	./run_tests.sh -N -P || true
+endif
+
+override_dh_clean:
+	dh_clean
+	rm -rf heat.egg-info
+	find . -iname '*.pyc' -delete
+	rm -f \
+		debian/heat-api-cfn.config \
+		debian/heat-api-cfn.postinst \
+		debian/heat-api-cloudwatch.config \
+		debian/heat-api-cloudwatch.postinst \
+		debian/heat-api.config \
+		debian/heat-api.postinst \
+		debian/heat-common.postinst \
+		debian/heat-engine.config \
+		debian/heat-engine.postinst
+
+#override_dh_install:
+#	dh_install
+
+override_dh_auto_build:
+	dh_auto_build
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-common.postinst
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-api-cfn.config
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-api-cfn.postinst
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-api-cloudwatch.config
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-api-cloudwatch.postinst
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-api.config
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-api.postinst
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-common.postinst
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-engine.config
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-engine.postinst

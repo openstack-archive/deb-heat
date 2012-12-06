@@ -1,0 +1,20 @@
+#!/bin/sh
+
+set -e
+
+CONF=/etc/heat/heat-engine.conf
+
+#PKGOS-INCLUDE#
+
+if [ "$1" = "configure" ] ; then
+	. /usr/share/debconf/confmodule
+	. /usr/share/dbconfig-common/dpkg/postinst
+
+	pkgos_var_user_group heat
+	pkgos_write_new_conf heat heat-engine.conf
+	pkgos_dbc_postinst ${CONF} heat DEFAULT sql_connection $@
+fi
+
+#DEBHELPER#
+
+exit 0

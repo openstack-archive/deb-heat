@@ -1,0 +1,5 @@
+heat (0.0.7-1) experimental; urgency=low
+
+  * Initial release (Closes: #695302).
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 14 Nov 2012 14:41:52 +0000

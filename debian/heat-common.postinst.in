@@ -1,0 +1,16 @@
+#!/bin/sh
+
+set -e
+
+ETC=/etc/heat
+
+#PKGOS-INCLUDE#
+
+if [ "$1" = "configure" ] ; then
+	pkgos_var_user_group heat
+	chown -R heat:adm /var/log/heat
+	chmod 0750 /var/log/heat
+	chown heat:heat -R /var/lib/heat /etc/heat
+fi
+
+#DEBHELPER#

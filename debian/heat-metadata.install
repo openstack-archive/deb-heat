@@ -1,0 +1,3 @@
+etc/heat/heat-metadata.conf
+etc/heat/heat-metadata-paste.ini
+usr/bin/heat-metadata

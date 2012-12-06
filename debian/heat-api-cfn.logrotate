@@ -1,0 +1,4 @@
+/var/log/heat/api-cfn.log {
+    daily
+    missingok
+}

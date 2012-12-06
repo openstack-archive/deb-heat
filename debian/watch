@@ -1,0 +1,2 @@
+version=3
+https://github.com/openstack/heat/tags .*/(\d[\d\.]+)\.tar\.gz

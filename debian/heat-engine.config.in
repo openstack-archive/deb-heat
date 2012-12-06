@@ -1,0 +1,14 @@
+#!/bin/sh
+
+set -e
+
+. /usr/share/debconf/confmodule
+
+CONF=/etc/heat/heat-engine.conf
+
+#PKGOS-INCLUDE#
+
+pkgos_var_user_group heat
+pkgos_dbc_read_conf ${CONF} heat DEFAULT sql_connection $@
+
+exit 0

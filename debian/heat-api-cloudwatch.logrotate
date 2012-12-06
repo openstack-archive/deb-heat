@@ -1,0 +1,4 @@
+/var/log/heat/api-cloudwatch.log {
+    daily
+    missingok
+}

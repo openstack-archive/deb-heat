@@ -1,0 +1,20 @@
+Template: heat-api-cfn/auth-host
+Type: string
+Default: 127.0.0.1
+_Description: Auth server hostname:
+ Please specify the URL of your authentication server. Typically this is also
+ the URL of your OpenStack Identity Service (Keystone).
+
+Template: heat-api-cfn/admin-tenant-name
+Type: string
+Default: admin
+_Description: Auth server tenant name:
+
+Template: heat-api-cfn/admin-user
+Type: string
+Default: admin
+_Description: Auth server username:
+
+Template: heat-api-cfn/admin-password
+Type: password
+_Description: Auth server password:
