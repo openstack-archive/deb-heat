@@ -1,4 +1,4 @@
-Template: heat-engine/configure_db
+Template: heat/configure_db
 Type: boolean 
 Default: true
 _Description: Set up a database for heat-engine?

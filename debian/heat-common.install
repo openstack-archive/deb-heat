@@ -1,5 +1,3 @@
 /usr/bin/heat
 /usr/bin/heat-boto
-/usr/bin/heat-db-setup
-/usr/bin/heat-keystone-setup
 /usr/bin/heat-watch

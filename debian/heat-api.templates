@@ -1,20 +1,61 @@
-Template: heat-api/auth-host
+Template: heat/auth-host
 Type: string
 Default: 127.0.0.1
 _Description: Auth server hostname:
  Please specify the URL of your authentication server. Typically this is also
  the URL of your OpenStack Identity Service (Keystone).
 
-Template: heat-api/admin-tenant-name
+Template: heat/admin-tenant-name
 Type: string
 Default: admin
 _Description: Auth server tenant name:
 
-Template: heat-api/admin-user
+Template: heat/admin-user
 Type: string
 Default: admin
 _Description: Auth server username:
 
-Template: heat-api/admin-password
+Template: heat/admin-password
 Type: password
 _Description: Auth server password:
+
+Template: heat/register-endpoint
+Type: boolean
+Default: false
+_Description: Register Heat in the keystone endpoint catalog?
+ Each Openstack services (each API) should be registered in order to be
+ accessible. This is done using "keystone service-create" and "keystone
+ endpoint-create". Select if you want to run these commands now.
+ .
+ Note that you will need to have an up and running keystone server on which to
+ connect using the Keystone auth token.
+
+Template: heat/keystone-ip
+Type: string
+_Description: Keystone IP address:
+ Enter the IP address of your keystone server, so that heat-api can
+ contact Keystone to do the Heat service and endpoint creation.
+
+Template: heat/keystone-auth-token
+Type: password
+_Description: Keystone Auth Token:
+ To configure its endpoint in Keystone, heat-api needs the Keystone auth
+ token.
+
+Template: heat/endpoint-ip
+Type: string
+_Description: Heat endpoint IP address:
+ Enter the IP address that will be used to contact Heat (eg: the Heat
+ endpoint IP address).
+ .
+ This IP address should be accessible from the clients that will use this
+ service, so if you are installing a public cloud, this should be a public
+ IP address.
+
+Template: heat/region-name
+Type: string
+Default: regionOne
+_Description: Name of the region to register:
+ Openstack can be used using availability zones, with each region representing
+ a location. Please enter the zone that you wish to use when registering the
+ endpoint.

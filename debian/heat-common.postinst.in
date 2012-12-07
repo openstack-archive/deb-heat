@@ -10,6 +10,8 @@ if [ "$1" = "configure" ] ; then
 	pkgos_var_user_group heat
 	chown -R heat:adm /var/log/heat
 	chmod 0750 /var/log/heat
+	mkdir -p /etc/heat
+	mkdir -p /var/lib/heat
 	chown heat:heat -R /var/lib/heat /etc/heat
 fi
 
