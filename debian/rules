@@ -9,7 +9,7 @@ include /usr/share/openstack-pkg-tools/pkgos.make
 
 ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 override_dh_auto_test:
-	./run_tests.sh -N -P || true
+	./run_tests.sh -u
 endif
 
 override_dh_clean:
