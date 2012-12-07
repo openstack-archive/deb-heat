@@ -14,6 +14,8 @@ if [ "$1" = "configure" ] ; then
 	pkgos_write_new_conf heat heat-engine.conf
 	pkgos_dbc_postinst ${CONF} heat DEFAULT sql_connection $@
 
+	#python -m heat.db.sqlalchemy.manage version_control
+	#python -m heat.db.sqlalchemy.manage upgrade
 fi
 
 #DEBHELPER#
