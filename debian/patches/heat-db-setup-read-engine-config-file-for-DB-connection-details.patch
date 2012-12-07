@@ -1,0 +1,41 @@
+Description: heat-db-setup read engine config file for DB connection details
+ Currently heat-db-setup, or rather the underlying python -m heat.db.sqlalchemy.manage
+ has a hard-coded database connection URL, so DB setup will fail if a non-default
+ configuration exists in /etc/heat/heat-engine.conf.
+ .
+ This attempts to read the sql_connection from the DEFAULT section of heat-engine.conf
+ falling back to the old default string on failure.
+bug/1087741
+Author: Steven Hardy <shardy@redhat.com>
+Origin: upstream, https://review.openstack.org/gitweb?p=openstack%2Fheat.git;a=commitdiff;h=14d8a7a19f89bbafe9a5017dbb581051708ce58a
+Bug-Ubuntu: https://launchpad.net/bugs/1087741
+
+--- heat-0.0.7.orig/heat/db/sqlalchemy/manage.py
++++ heat-0.0.7/heat/db/sqlalchemy/manage.py
+@@ -1,14 +1,24 @@
+ #!/usr/bin/env python
+ from migrate.versioning.shell import main
+ import migrate.exceptions
++import ConfigParser
+ 
+ if __name__ == '__main__':
+     import os.path
+     migrate_repo_path = os.path.join(os.path.dirname(__file__),
+                                      'migrate_repo')
+ 
++    # Try to get the config-file value for sql_connection
++    # Note we can't use openstack.common.cfg because this also insists
++    # on parsing the CLI, which we don't want here
++    config = ConfigParser.SafeConfigParser()
+     try:
+-        main(url='mysql://heat:heat@localhost/heat', debug='False',
+-             repository=migrate_repo_path)
++        config = ConfigParser.SafeConfigParser()
++        config.readfp(open('/etc/heat/heat-engine.conf'))
++        sql_connection = config.get('DEFAULT', 'sql_connection')
++    except Exception:
++        sql_connection = 'mysql://heat:heat@localhost/heat'
++    try:
++        main(url=sql_connection, debug='False', repository=migrate_repo_path)
+     except migrate.exceptions.DatabaseAlreadyControlledError:
+         print 'Database already version controlled.'
