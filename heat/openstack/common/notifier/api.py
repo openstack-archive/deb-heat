@@ -137,10 +137,11 @@ def notify(context, publisher_id, event_type, priority, payload):
     for driver in _get_drivers():
         try:
             driver.notify(context, msg)
-        except Exception, e:
+        except Exception as e:
             LOG.exception(_("Problem '%(e)s' attempting to "
-              "send to notification system. Payload=%(payload)s") %
-                            locals())
+                            "send to notification system. "
+                            "Payload=%(payload)s")
+                          % dict(e=e, payload=payload))
 
 
 _drivers = None
@@ -166,10 +167,10 @@ def add_driver(notification_driver):
         try:
             driver = importutils.import_module(notification_driver)
             _drivers[notification_driver] = driver
-        except ImportError as e:
+        except ImportError:
             LOG.exception(_("Failed to load notifier %s. "
                             "These notifications will not be sent.") %
-                            notification_driver)
+                          notification_driver)
     else:
         # Driver is already loaded; just add the object.
         _drivers[notification_driver] = notification_driver

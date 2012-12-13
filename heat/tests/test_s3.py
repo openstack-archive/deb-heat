@@ -24,7 +24,9 @@ import json
 
 from nose.plugins.attrib import attr
 
-from heat.engine import s3
+from heat.common import context
+from heat.common import template_format
+from heat.engine.resources import s3
 from heat.engine import parser
 from utils import skip_if
 
@@ -57,18 +59,17 @@ class s3Test(unittest.TestCase):
         self.path = os.path.dirname(os.path.realpath(__file__)).\
             replace('heat/tests', 'templates')
         f = open("%s/S3_Single_Instance.template" % self.path)
-        t = json.loads(f.read())
+        t = template_format.parse(f.read())
         f.close()
         return t
 
     def parse_stack(self, t):
-        class DummyContext():
-            tenant = 'test_tenant'
-            username = 'test_username'
-            password = 'password'
-            auth_url = 'http://localhost:5000/v2.0'
-        stack = parser.Stack(DummyContext(), 'test_stack', parser.Template(t),
-                             stack_id=-1)
+        ctx = context.RequestContext.from_dict({
+            'tenant': 'test_tenant',
+            'username': 'test_username',
+            'password': 'password',
+            'auth_url': 'http://localhost:5000/v2.0'})
+        stack = parser.Stack(ctx, 'test_stack', parser.Template(t))
 
         return stack
 

@@ -23,8 +23,10 @@ import json
 
 from nose.plugins.attrib import attr
 
-from heat.engine import autoscaling as asc
-from heat.engine import loadbalancer
+from heat.common import context
+from heat.common import template_format
+from heat.engine.resources import autoscaling as asc
+from heat.engine.resources import loadbalancer
 from heat.engine import parser
 
 
@@ -43,19 +45,19 @@ class AutoScalingTest(unittest.TestCase):
         self.path = os.path.dirname(os.path.realpath(__file__)).\
             replace('heat/tests', 'templates')
         f = open("%s/AutoScalingMultiAZSample.template" % self.path)
-        t = json.loads(f.read())
+        t = template_format.parse(f.read())
         f.close()
         return t
 
     def parse_stack(self, t):
-        class DummyContext():
-            tenant = 'test_tenant'
-            username = 'test_username'
-            password = 'password'
-            auth_url = 'http://localhost:5000/v2.0'
-        t['Parameters']['KeyName']['Value'] = 'test'
-        stack = parser.Stack(DummyContext(), 'test_stack', parser.Template(t),
-                             stack_id=-1)
+        ctx = context.RequestContext.from_dict({
+            'tenant': 'test_tenant',
+            'username': 'test_username',
+            'password': 'password',
+            'auth_url': 'http://localhost:5000/v2.0'})
+        template = parser.Template(t)
+        params = parser.Parameters('test_stack', template, {'KeyName': 'test'})
+        stack = parser.Stack(ctx, 'test_stack', template, params)
 
         return stack
 
@@ -87,7 +89,7 @@ class AutoScalingTest(unittest.TestCase):
         resource = self.create_scaling_group(t, stack, 'WebServerGroup')
 
         self.assertEqual('WebServerGroup', resource.FnGetRefId())
-        self.assertEqual('WebServerGroup-0', resource.instance_id)
+        self.assertEqual('WebServerGroup-0', resource.resource_id)
         self.assertEqual(asc.AutoScalingGroup.UPDATE_REPLACE,
                   resource.handle_update())
 
@@ -98,46 +100,46 @@ class AutoScalingTest(unittest.TestCase):
         properties['DesiredCapacity'] = '3'
         resource = self.create_scaling_group(t, stack, 'WebServerGroup')
         self.assertEqual('WebServerGroup-0,WebServerGroup-1,WebServerGroup-2',
-                         resource.instance_id)
+                         resource.resource_id)
 
         # reduce to 1
         resource.adjust(-2)
-        self.assertEqual('WebServerGroup-0', resource.instance_id)
+        self.assertEqual('WebServerGroup-0', resource.resource_id)
 
         # raise to 3
         resource.adjust(2)
         self.assertEqual('WebServerGroup-0,WebServerGroup-1,WebServerGroup-2',
-                         resource.instance_id)
+                         resource.resource_id)
 
         # set to 2
         resource.adjust(2, 'ExactCapacity')
         self.assertEqual('WebServerGroup-0,WebServerGroup-1',
-                         resource.instance_id)
+                         resource.resource_id)
 
         # raise above the max
         resource.adjust(2)
         self.assertEqual('WebServerGroup-0,WebServerGroup-1',
-                         resource.instance_id)
+                         resource.resource_id)
 
         # lower below the min
         resource.adjust(-2)
         self.assertEqual('WebServerGroup-0,WebServerGroup-1',
-                         resource.instance_id)
+                         resource.resource_id)
 
         # no change
         resource.adjust(0)
         self.assertEqual('WebServerGroup-0,WebServerGroup-1',
-                         resource.instance_id)
+                         resource.resource_id)
 
         # reduce by 50%
         resource.adjust(-50, 'PercentChangeInCapacity')
         self.assertEqual('WebServerGroup-0',
-                 resource.instance_id)
+                 resource.resource_id)
 
         # raise by 200%
         resource.adjust(200, 'PercentChangeInCapacity')
         self.assertEqual('WebServerGroup-0,WebServerGroup-1,WebServerGroup-2',
-                 resource.instance_id)
+                 resource.resource_id)
 
         resource.delete()
 
@@ -149,19 +151,19 @@ class AutoScalingTest(unittest.TestCase):
         resource = self.create_scaling_group(t, stack, 'WebServerGroup')
         stack.resources['WebServerGroup'] = resource
 
-        self.assertEqual('WebServerGroup-0', resource.instance_id)
+        self.assertEqual('WebServerGroup-0', resource.resource_id)
 
         up_policy = self.create_scaling_policy(t, stack,
                                                'WebServerScaleUpPolicy')
         up_policy.alarm()
         self.assertEqual('WebServerGroup-0,WebServerGroup-1',
-                 resource.instance_id)
+                 resource.resource_id)
 
         down_policy = self.create_scaling_policy(t, stack,
                                                  'WebServerScaleDownPolicy')
         down_policy.alarm()
         self.assertEqual('WebServerGroup-0',
-                 resource.instance_id)
+                 resource.resource_id)
 
         resource.delete()
 

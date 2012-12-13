@@ -13,21 +13,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import json
-import urlparse
-import httplib
 import routes
 import gettext
 
 gettext.install('heat', unicode=1)
 
 from heat.api.openstack.v1 import stacks
+from heat.api.openstack.v1 import resources
+from heat.api.openstack.v1 import events
 from heat.common import wsgi
-
-from webob import Request
-import webob
-from heat import utils
-from heat.common import context
 
 from heat.openstack.common import log as logging
 
@@ -46,36 +40,95 @@ class API(wsgi.Router):
 
         stacks_resource = stacks.create_resource(conf)
 
-        # Stack collection
-        mapper.connect("stack", "/{tenant_id}/stacks",
-                       controller=stacks_resource, action="index",
-                       conditions={'method': 'GET'})
-        mapper.connect("stack", "/{tenant_id}/stacks",
-                       controller=stacks_resource, action="create",
-                       conditions={'method': 'POST'})
+        with mapper.submapper(controller=stacks_resource,
+                              path_prefix="/{tenant_id}") as stack_mapper:
+            # Template handling
+            stack_mapper.connect("template_validate",
+                                 "/validate",
+                                 action="validate_template",
+                                 conditions={'method': 'POST'})
 
-        # Stack data
-        mapper.connect("stack", "/{tenant_id}/stacks/{stack_name}",
-                       controller=stacks_resource, action="lookup")
-        mapper.connect("stack", "/{tenant_id}/stacks/{stack_name}/{stack_id}",
-                       controller=stacks_resource, action="show",
-                       conditions={'method': 'GET'})
-        mapper.connect("stack",
-                       "/{tenant_id}/stacks/{stack_name}/{stack_id}/template",
-                       controller=stacks_resource, action="template",
-                       conditions={'method': 'GET'})
+            # Stack collection
+            stack_mapper.connect("stack_index",
+                                 "/stacks",
+                                 action="index",
+                                 conditions={'method': 'GET'})
+            stack_mapper.connect("stack_create",
+                                 "/stacks",
+                                 action="create",
+                                 conditions={'method': 'POST'})
 
-        # Stack update/delete
-        mapper.connect("stack", "/{tenant_id}/stacks/{stack_name}/{stack_id}",
-                       controller=stacks_resource, action="update",
-                       conditions={'method': 'PUT'})
-        mapper.connect("stack", "/{tenant_id}/stacks/{stack_name}/{stack_id}",
-                       controller=stacks_resource, action="delete",
-                       conditions={'method': 'DELETE'})
+            # Stack data
+            stack_mapper.connect("stack_lookup",
+                                 "/stacks/{stack_name}",
+                                 action="lookup")
+            subpaths = ['resources', 'events']
+            path = "{path:%s}" % '|'.join(subpaths)
+            stack_mapper.connect("stack_lookup_subpath",
+                                 "/stacks/{stack_name}/" + path,
+                                 action="lookup",
+                                 conditions={'method': 'GET'})
+            stack_mapper.connect("stack_show",
+                                 "/stacks/{stack_name}/{stack_id}",
+                                 action="show",
+                                 conditions={'method': 'GET'})
+            stack_mapper.connect("stack_template",
+                                 "/stacks/{stack_name}/{stack_id}/template",
+                                 action="template",
+                                 conditions={'method': 'GET'})
 
-        # Template handling
-        mapper.connect("stack", "/{tenant_id}/validate",
-                       controller=stacks_resource, action="validate_template",
-                       conditions={'method': 'POST'})
+            # Stack update/delete
+            stack_mapper.connect("stack_update",
+                                 "/stacks/{stack_name}/{stack_id}",
+                                 action="update",
+                                 conditions={'method': 'PUT'})
+            stack_mapper.connect("stack_delete",
+                                 "/stacks/{stack_name}/{stack_id}",
+                                 action="delete",
+                                 conditions={'method': 'DELETE'})
+
+        # Resources
+        resources_resource = resources.create_resource(conf)
+        stack_path = "/{tenant_id}/stacks/{stack_name}/{stack_id}"
+        with mapper.submapper(controller=resources_resource,
+                              path_prefix=stack_path) as res_mapper:
+
+            # Resource collection
+            res_mapper.connect("resource_index",
+                               "/resources",
+                               action="index",
+                               conditions={'method': 'GET'})
+
+            # Resource data
+            res_mapper.connect("resource_show",
+                               "/resources/{resource_name}",
+                               action="show",
+                               conditions={'method': 'GET'})
+            res_mapper.connect("resource_metadata_show",
+                               "/resources/{resource_name}/metadata",
+                               action="metadata",
+                               conditions={'method': 'GET'})
+
+        # Events
+        events_resource = events.create_resource(conf)
+        with mapper.submapper(controller=events_resource,
+                              path_prefix=stack_path) as ev_mapper:
+
+            # Stack event collection
+            ev_mapper.connect("event_index_stack",
+                              "/events",
+                              action="index",
+                              conditions={'method': 'GET'})
+            # Resource event collection
+            ev_mapper.connect("event_index_resource",
+                              "/resources/{resource_name}/events",
+                              action="index",
+                              conditions={'method': 'GET'})
+
+            # Event data
+            ev_mapper.connect("event_show",
+                              "/resources/{resource_name}/events/{event_id}",
+                              action="show",
+                              conditions={'method': 'GET'})
 
         super(API, self).__init__(mapper)

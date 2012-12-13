@@ -18,12 +18,12 @@ from heat.common import exception
 from heat.common import wsgi
 from heat.openstack.common import cfg
 from heat.openstack.common import importutils
-from heat.common import utils as heat_utils
-import json
+from heat.openstack.common import uuidutils
+from heat.db import api as db_api
 
 
 def generate_request_id():
-    return 'req-' + str(heat_utils.gen_uuid())
+    return 'req-' + uuidutils.generate_uuid()
 
 
 class RequestContext(object):
@@ -65,9 +65,16 @@ class RequestContext(object):
         self.owner_is_tenant = owner_is_tenant
         if overwrite or not hasattr(local.store, 'context'):
             self.update_store()
+        self._session = None
 
     def update_store(self):
         local.store.context = self
+
+    @property
+    def session(self):
+        if self._session is None:
+            self._session = db_api.get_session()
+        return self._session
 
     def to_dict(self):
         return {'auth_token': self.auth_token,
@@ -166,14 +173,12 @@ class ContextMiddleware(wsgi.Middleware):
             aws_creds = None
             aws_auth_uri = None
 
-            if headers.get('X-Auth-EC2-Creds') is not None:
+            if headers.get('X-Auth-User') is not None:
+                username = headers.get('X-Auth-User')
+                password = headers.get('X-Auth-Key')
+            elif headers.get('X-Auth-EC2-Creds') is not None:
                 aws_creds = headers.get('X-Auth-EC2-Creds')
                 aws_auth_uri = headers.get('X-Auth-EC2-Url')
-            else:
-                if 'KeyStoneCreds' in req.params:
-                    creds = json.loads(req.params['KeyStoneCreds'])
-                    username = creds['username']
-                    password = creds['password']
 
             token = headers.get('X-Auth-Token')
             service_user = headers.get('X-Admin-User')
@@ -183,7 +188,7 @@ class ContextMiddleware(wsgi.Middleware):
             tenant_id = headers.get('X-Tenant-Id')
             auth_url = headers.get('X-Auth-Url')
             roles = headers.get('X-Roles')
-        except:
+        except Exception:
             raise exception.NotAuthenticated()
 
         req.context = self.make_context(auth_token=token,

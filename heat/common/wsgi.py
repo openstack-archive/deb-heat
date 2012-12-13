@@ -28,9 +28,7 @@ import os
 import signal
 import sys
 import time
-import re
 from lxml import etree
-
 
 import eventlet
 import eventlet.greenio
@@ -45,7 +43,6 @@ import webob.exc
 from heat.common import exception
 from heat.openstack.common import cfg
 from heat.openstack.common import importutils
-from heat.openstack.common import utils
 
 
 URL_LENGTH_LIMIT = 50000
@@ -485,7 +482,7 @@ class XMLResponseSerializer(object):
                         # otherwise quotes get mangled and json.loads breaks
                         try:
                             subelement.text = json.dumps(value)
-                        except:
+                        except TypeError:
                             subelement.text = str(value)
                 else:
                     self.object_to_element(value, subelement)
@@ -496,7 +493,6 @@ class XMLResponseSerializer(object):
         # Assumption : root node is dict with single key
         root = data.keys()[0]
         eltree = etree.Element(root)
-        doc = etree.ElementTree(eltree)
         self.object_to_element(data.get(root), eltree)
         response = etree.tostring(eltree)
         logging.debug("XML response : %s" % response)
@@ -587,7 +583,7 @@ class Resource(object):
                 try:
                     err_body = action_result.get_unserialized_body()
                     serializer.default(action_result, err_body)
-                except:
+                except Exception:
                     logging.warning("Unable to serialize exception response")
 
             return action_result

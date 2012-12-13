@@ -25,12 +25,24 @@ import json
 from nose.plugins.attrib import attr
 
 from heat.common import exception
-from heat.engine import instance
-from heat.engine import loadbalancer as lb
+from heat.common import context
+from heat.common import template_format
 from heat.engine import parser
-from heat.engine import resources
-from heat.engine import stack
+from heat.engine.resources import instance
+from heat.engine.resources import loadbalancer as lb
+from heat.engine.resource import Metadata
+from heat.engine.resources import stack
 from heat.tests.v1_1 import fakes
+
+
+def create_context(mocks, user='lb_test_user',
+                   tenant='test_admin', ctx=None):
+    ctx = ctx or context.get_admin_context()
+    mocks.StubOutWithMock(ctx, 'username')
+    mocks.StubOutWithMock(ctx, 'tenant_id')
+    ctx.username = user
+    ctx.tenant_id = tenant
+    return ctx
 
 
 @attr(tag=['unit', 'resource'])
@@ -39,11 +51,10 @@ class LoadBalancerTest(unittest.TestCase):
     def setUp(self):
         self.m = mox.Mox()
         self.fc = fakes.FakeClient()
-        self.m.StubOutWithMock(parser.Stack, 'store')
         self.m.StubOutWithMock(lb.LoadBalancer, 'nova')
         self.m.StubOutWithMock(instance.Instance, 'nova')
         self.m.StubOutWithMock(self.fc.servers, 'create')
-        self.m.StubOutWithMock(resources.Metadata, '__set__')
+        self.m.StubOutWithMock(Metadata, '__set__')
 
     def tearDown(self):
         self.m.UnsetStubs()
@@ -53,22 +64,16 @@ class LoadBalancerTest(unittest.TestCase):
         self.path = os.path.dirname(os.path.realpath(__file__)).\
             replace('heat/tests', 'templates')
         f = open("%s/WordPress_With_LB.template" % self.path)
-        t = json.loads(f.read())
+        t = template_format.parse(f.read())
         f.close()
         return t
 
     def parse_stack(self, t):
-        class DummyContext():
-            tenant = 'test_tenant'
-            tenant_id = '1234abcd'
-            username = 'test_username'
-            password = 'password'
-            auth_url = 'http://localhost:5000/v2.0'
-        t['Parameters']['KeyName']['Value'] = 'test'
-        t['Parameters']['KeyName']['Value'] = 'test'
-
-        stack = parser.Stack(DummyContext(), 'test_stack', parser.Template(t),
-                             stack_id=-1)
+        template = parser.Template(t)
+        params = parser.Parameters('test_stack', template, {'KeyName': 'test'})
+        stack = parser.Stack(create_context(self.m), 'test_stack', template,
+                             params, stack_id=None)
+        stack.store()
 
         return stack
 
@@ -83,15 +88,15 @@ class LoadBalancerTest(unittest.TestCase):
 
     def test_loadbalancer(self):
         lb.LoadBalancer.nova().AndReturn(self.fc)
-        parser.Stack.store(mox.IgnoreArg()).AndReturn('5678')
+#        parser.Stack.store(mox.IgnoreArg()).AndReturn('5678')
         instance.Instance.nova().MultipleTimes().AndReturn(self.fc)
         self.fc.servers.create(flavor=2, image=745, key_name='test',
                    meta=None, name=u'test_stack.LoadBalancer.LB_instance',
                    scheduler_hints=None, userdata=mox.IgnoreArg(),
                    security_groups=None).AndReturn(self.fc.servers.list()[1])
         #stack.Stack.create_with_template(mox.IgnoreArg()).AndReturn(None)
-        resources.Metadata.__set__(mox.IgnoreArg(),
-                                   mox.IgnoreArg()).AndReturn(None)
+        Metadata.__set__(mox.IgnoreArg(),
+                         mox.IgnoreArg()).AndReturn(None)
 
         lb.LoadBalancer.nova().MultipleTimes().AndReturn(self.fc)
         self.m.ReplayAll()
@@ -106,7 +111,7 @@ class LoadBalancerTest(unittest.TestCase):
             'UnhealthyThreshold': '5',
             'Interval': '30',
             'Timeout': '5'}
-        resource.properties['HealthCheck'] = hc
+        resource.t['Properties']['HealthCheck'] = hc
         self.assertEqual(None, resource.validate())
 
         hc['Timeout'] = 35
@@ -117,8 +122,9 @@ class LoadBalancerTest(unittest.TestCase):
 
         self.assertEqual('LoadBalancer', resource.FnGetRefId())
 
-        templ = json.loads(lb.lb_template)
-        ha_cfg = resource._haproxy_config(templ)
+        templ = template_format.parse(lb.lb_template)
+        ha_cfg = resource._haproxy_config(templ,
+                                          resource.properties['Instances'])
         self.assertRegexpMatches(ha_cfg, 'bind \*:80')
         self.assertRegexpMatches(ha_cfg, 'server server1 1\.2\.3\.4:80 '
                                  'check inter 30s fall 5 rise 3')

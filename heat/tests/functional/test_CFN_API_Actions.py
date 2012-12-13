@@ -21,6 +21,8 @@ from nose.plugins.attrib import attr
 import unittest
 import json
 
+from heat.common import template_format
+
 
 @attr(speed='slow')
 @attr(tag=['func', 'wordpress', 'api', 'cfn', 'F17'])
@@ -72,8 +74,6 @@ class CfnApiFunctionalTest(unittest.TestCase):
             cls.logical_resource_status = "CREATE_COMPLETE"
 
             # Save some compiled regexes and strings for response validation
-            cls.stack_id_re = re.compile("^arn:openstack:heat::admin:stacks/"
-                                          + cls.stack.stackname)
             cls.time_re = re.compile(
                 "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
             cls.description_re = re.compile(
@@ -116,7 +116,7 @@ class CfnApiFunctionalTest(unittest.TestCase):
         prefix = '/ListStacksResponse/ListStacksResult/StackSummaries/member'
 
         stack_id = self.stack.response_xml_item(response, prefix, "StackId")
-        self.assertTrue(self.stack_id_re.match(stack_id) != None)
+        self.stack.check_stackid(stack_id)
 
         update_time = self.stack.response_xml_item(response, prefix,
                                                    "LastUpdatedTime")
@@ -151,7 +151,7 @@ class CfnApiFunctionalTest(unittest.TestCase):
         prefix = '/DescribeStacksResponse/DescribeStacksResult/Stacks/member'
 
         stack_id = self.stack.response_xml_item(response, prefix, "StackId")
-        self.assertTrue(self.stack_id_re.match(stack_id) != None)
+        self.stack.check_stackid(stack_id)
 
         update_time = self.stack.response_xml_item(response, prefix,
                                                    "LastUpdatedTime")
@@ -229,7 +229,7 @@ class CfnApiFunctionalTest(unittest.TestCase):
                 self.logical_resource_status + '"]'
 
         stack_id = self.stack.response_xml_item(response, prefix, "StackId")
-        self.assertTrue(self.stack_id_re.match(stack_id) != None)
+        self.stack.check_stackid(stack_id)
 
         event_id = self.stack.response_xml_item(response, prefix, "EventId")
         self.assertTrue(re.match("[0-9]*$", event_id) != None)
@@ -282,7 +282,7 @@ class CfnApiFunctionalTest(unittest.TestCase):
         # Extract the JSON TemplateBody and prove it parses
         template = self.stack.response_xml_item(response, prefix,
                                                 "TemplateBody")
-        json_load = json.loads(template)
+        json_load = template_format.parse(template)
         self.assertTrue(json_load != None)
 
         # Then sanity check content - I guess we could diff
@@ -301,7 +301,7 @@ class CfnApiFunctionalTest(unittest.TestCase):
                + '/StackResourceDetail'
 
         stack_id = self.stack.response_xml_item(response, prefix, "StackId")
-        self.assertTrue(self.stack_id_re.match(stack_id) != None)
+        self.stack.check_stackid(stack_id)
 
         resource_status = self.stack.response_xml_item(response, prefix,
                                                         "ResourceStatus")
@@ -317,7 +317,7 @@ class CfnApiFunctionalTest(unittest.TestCase):
 
         status_reason = self.stack.response_xml_item(response, prefix,
                                                       "ResourceStatusReason")
-        self.assertEqual(status_reason, "None")
+        self.assertEqual(status_reason, "state changed")
 
         stack_name = self.stack.response_xml_item(response, prefix,
                                                   "StackName")
@@ -346,7 +346,7 @@ class CfnApiFunctionalTest(unittest.TestCase):
                 'DescribeStackResourcesResult/StackResources/member'
 
         stack_id = self.stack.response_xml_item(response, prefix, "StackId")
-        self.assertTrue(self.stack_id_re.match(stack_id) != None)
+        self.stack.check_stackid(stack_id)
 
         resource_status = self.stack.response_xml_item(response, prefix,
                                                         "ResourceStatus")
@@ -362,7 +362,7 @@ class CfnApiFunctionalTest(unittest.TestCase):
 
         status_reason = self.stack.response_xml_item(response, prefix,
                                                       "ResourceStatusReason")
-        self.assertEqual(status_reason, "None")
+        self.assertEqual(status_reason, "state changed")
 
         stack_name = self.stack.response_xml_item(response, prefix,
                                                   "StackName")
@@ -391,7 +391,7 @@ class CfnApiFunctionalTest(unittest.TestCase):
 
         status_reason = self.stack.response_xml_item(response, prefix,
                                                       "ResourceStatusReason")
-        self.assertEqual(status_reason, "None")
+        self.assertEqual(status_reason, "state changed")
 
         update_time = self.stack.response_xml_item(response, prefix,
                                                    "LastUpdatedTimestamp")

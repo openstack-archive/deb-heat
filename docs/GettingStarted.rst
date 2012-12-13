@@ -19,20 +19,24 @@ Getting Started With Heat
 Get Heat
 --------
 
-Clone the heat repository_ from GitHub at ``git://github.com/heat-api/heat.git``. Note that OpenStack must be installed before heat.
+Clone the heat repository_ from GitHub at ``git://github.com/openstack/heat.git``. Note that OpenStack must be installed before heat.
 Optionally, one may wish to install Heat via RPM. Creation instructions are in the readme in the heat-rpms_ repository at ``git://github.com/heat-api/heat-rpms.git``.
 
-.. _repository: https://github.com/heat-api/heat
+.. _repository: https://github.com/openstack/heat
 .. _heat-rpms: https://github.com/heat-api/heat-rpms
 
 Install OpenStack
 -----------------
 
-Installing OpenStack on Fedora 16 and 17
+Installing OpenStack on Fedora 16/17/18
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Note: on Fedora 16 you have to enable the `Preview Repository`_ to install the required OpenStack Essex release.
-A script called "``openstack``" in the tools directory of the repository will install and start OpenStack for you on Fedora 16/17::
+Note:
+    - On Fedora 16 you have to enable the `Preview Repository`_ to install the required OpenStack Essex release.
+    - On Fedora 17 you can use the included OpenStack Essex release, or optionally enable the `Preview Repository`_ to install the newer OpenStack Folsom release.
+    - On Fedora 18 you can use the included OpenStack Folsom release
+
+A script called "``openstack``" in the tools directory of the repository will install and start OpenStack for you on Fedora::
 
     ./tools/openstack install -y -r ${MYSQL_ROOT_PASSWORD}
 
@@ -90,6 +94,13 @@ In the heat directory, run the install script::
 
     sudo ./install.sh
 
+Install heat pip dependency
+---------------------------
+
+Heat requires the extras module, which is not currently packaged for Fedora, so it is necessary to manually install it::
+
+    sudo pip-python install extras
+
 Download Fedora 17 DVD and copy it to libvirt images location
 -------------------------------------------------------------
 
@@ -111,7 +122,7 @@ Allocate Floating IP Addresses to OpenStack
 
 If you want to use templates that depend on ``AWS::EC2::EIP`` or ``AWS::EC2::EIPAssociation`` (multi-instance stacks often do, single-instance less often but it's still possible), see the wiki page on `Configuring Floating IPs`_.
 
-.. _Configuring Floating IPs: https://github.com/heat-api/heat/wiki/Configuring-Floating-IPs
+.. _Configuring Floating IPs: http://wiki.openstack.org/Heat/Configuring-Floating-IPs
 
 Setup the MySQL database for Heat
 ---------------------------------
@@ -183,6 +194,20 @@ Check that there is a ``F17-x86_64-cfntools`` JEOS in glance:
     )
     $GLANCE_INDEX | grep -q "F17-x86_64-cfntools"
 
+Update heat engine configuration file
+-------------------------------------
+
+The heat engine configuration file should be updated with the address of the bridge device (demonetbr0), however this device is not created by nova-network until the first instance is launched, so we assume that $BRIDGE_IP is 10.0.0.1 if $SUBNET is 10.0.0.0/24 as in the instructions above:
+
+..
+    BRIDGE_IP=`echo $SUBNET | awk -F'[./]' '{printf "%d.%d.%d.%d", $1, $2, $3, or($4, 1)}'`
+
+::
+
+    sudo sed -i -e "/heat_metadata_server_url/ s/127\.0\.0\.1/${BRIDGE_IP}/" /etc/heat/heat-engine.conf
+    sudo sed -i -e "/heat_waitcondition_server_url/ s/127\.0\.0\.1/${BRIDGE_IP}/" /etc/heat/heat-engine.conf
+    sudo sed -i -e "/heat_watch_server_url/ s/127\.0\.0\.1/${BRIDGE_IP}/" /etc/heat/heat-engine.conf
+
 Launch the Heat services
 ------------------------
 
@@ -198,21 +223,21 @@ Launch a Wordpress instance
 
 ::
 
-    heat create wordpress --template-file=templates/WordPress_Single_Instance.template --parameters="InstanceType=m1.xlarge;DBUsername=${USER};DBPassword=verybadpass;KeyName=${USER}_key"
+    heat-cfn create wordpress --template-file=templates/WordPress_Single_Instance.template --parameters="InstanceType=m1.xlarge;DBUsername=${USER};DBPassword=verybadpass;KeyName=${USER}_key"
 
 List stacks
 -----------
 
 ::
 
-    heat list
+    heat-cfn list
 
 List stack events
 -----------------
 
 ::
 
-    heat event-list wordpress
+    heat-cfn event-list wordpress
 
 Describe the ``wordpress`` stack
 --------------------------------
@@ -222,7 +247,7 @@ Describe the ``wordpress`` stack
 
 ::
 
-    heat describe wordpress
+    heat-cfn describe wordpress
 
 ..
     EOF
@@ -282,7 +307,7 @@ Because the software takes some time to install from the repository, it may be a
     echo "Pausing to wait for application startup..." >&2
     sleep 60
 
-Point a web browser at the location given by the ``WebsiteURL`` Output as shown by ``heat describe``::
+Point a web browser at the location given by the ``WebsiteURL`` Output as shown by ``heat-cfn describe``::
 
     wget ${WebsiteURL}
 
@@ -291,8 +316,8 @@ Delete the instance when done
 
 ::
 
-    heat delete wordpress
-    heat list
+    heat-cfn delete wordpress
+    heat-cfn list
 
 Note: This operation will show no running stack.
 
@@ -300,47 +325,38 @@ Other Templates
 ===============
 Check out the ``Wordpress_2_Instances_with_EBS_EIP.template``.  This uses a few different APIs in OpenStack nova, such as the Volume API, the Floating IP API and the Security Groups API, as well as the general nova launching and monitoring APIs.
 
-Configure the Metadata server
------------------------------
+IPtables rules
+--------------
 
-Some templates require the ``heat-metadata`` server also. The metadata server must be configured to bind to the IP address of the host machine on the Nova network created above (``demonetbr0``). This allows the launched instances to access the metadata server. However, the bridge interface is not actually created until an instance is launched in Nova. If you have completed the preceding steps the bridge will now have been created, so you can proceed to edit the file ``/etc/heat/heat-metadata.conf`` to change the ``bind_host`` value from the default ``0.0.0.0`` to the correct IP address and launch the metadata server::
+Some templates require the instances to be able to connect to the heat CFN API (for metadata update via cfn-hup and waitcondition notification via cfn-signal):
 
-    BIND_IP=`ifconfig demonetbr0 | sed -e 's/ *inet \(addr:\)\?\([0-9.]\+\).*/\2/' -e t -e d`
-    sudo sed -i -e "/^bind_host *=/ s/0\.0\.0\.0/${BIND_IP:?}/" /etc/heat/heat-metadata.conf
-    
-    sudo -E bash -c 'heat-metadata &'
+Open up port 8000 so that the guests can communicate with the heat-api-cfn server::
 
-Open up port 8002 so that the guests can communicate with the heat-metadata server:
+    sudo iptables -I INPUT -p tcp --dport 8000 -j ACCEPT -i demonetbr0
 
-::
-    sudo iptables -I INPUT -p tcp --dport 8002 -j ACCEPT -i demonetbr0
+Open up port 8003 so that the guests can communicate with the heat-api-cloudwatch server::
 
-Note the above rule will not persist across reboot, so you may wish to add it to /etc/sysconfig/iptables
+    sudo iptables -I INPUT -p tcp --dport 8003 -j ACCEPT -i demonetbr0
 
-Configure Heat Cloudwatch server
+Note the above rules will not persist across reboot, so you may wish to add them to /etc/sysconfig/iptables
+
+Start the Heat Cloudwatch server
 --------------------------------
 
 If you wish to try any of the HA or autoscaling templates (which collect stats from instances via the CloudWatch API), it is neccessary to start the heat-api-cloudwatch server::
 
     sudo -E bash -c 'heat-api-cloudwatch &'
 
-Open up port 8003 so that the guests can communicate with the heat-api-cloudwatch server:
-
-::
-    sudo iptables -I INPUT -p tcp --dport 8003 -j ACCEPT -i demonetbr0
-
-Note the above rule will not persist across reboot, so you may wish to add it to /etc/sysconfig/iptables
-
 Further information on using the heat cloudwatch features is available in the Using-Cloudwatch_ wiki page
 
-.. _Using-Cloudwatch: https://github.com/heat-api/heat/wiki/Using-CloudWatch
+.. _Using-Cloudwatch: http://wiki.openstack.org/Heat/Using-CloudWatch
 
 Troubleshooting
 ===============
 
 If you encounter issues running heat, see if the solution to the issue is documented on the Troubleshooting_ wiki page. If not, let us know about the problem in the #heat IRC channel on freenode.
 
-.. _Troubleshooting: https://github.com/heat-api/heat/wiki/Troubleshooting
+.. _Troubleshooting: http://wiki.openstack.org/Heat/TroubleShooting
 
 ..
     echo; echo 'Success!'

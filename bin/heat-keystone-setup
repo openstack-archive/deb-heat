@@ -44,10 +44,21 @@ get_id () {
     get_data 1 id 2 "$@"
 }
 
+get_column_num() {
+    local name=$1
+    shift
+    $@ | awk -F'|' "NR == 2 { for (i=2; i<NF; i++) if (\$i ~ \"^ *${name} *\$\") print (i - 1) }"
+}
+
 get_user() {
     local username=$1
 
-    local user_id=$(get_data 4 $username 1 keystone user-list)
+    # Outut format of keystone user-list changed between essex and
+    # folsom - the columns have been re-ordered (!?), so detect what
+    # column to pass to get_data via get_column_num
+    namecol=$(get_column_num name keystone user-list)
+
+    local user_id=$(get_data $namecol $username 1 keystone user-list)
 
     if [ -n "$user_id" ]; then
         echo "Found existing $username user" >&2
@@ -61,23 +72,49 @@ get_user() {
     fi
 }
 
-ver=`nova-manage version list | cut -d . -f1`
-if [ $ver -lt 2013 ]; then
-    user_arg=user
-    role_arg=role
-else
-    user_arg=user_id
-    role_arg=role_id
-fi
-
 add_role() {
     local user_id=$1
     local tenant=$2
     local role_id=$3
+    local username=$4
 
-    keystone user-role-add --tenant_id $tenant \
-                           --$user_arg $user_id \
-                           --$role_arg $role_id
+    # The keystone argument format changed between essex and folsom
+    # so we use the fact that the folsom keystone version has a new
+    # option "user-role-list" to detect we're on that newer version
+    # This also allows us to detect when the user already has the
+    # requested role_id, preventing an error on folsom
+    user_roles=$(keystone user-role-list \
+                          --user_id $user_id\
+                          --tenant_id $tenant 2>/dev/null)
+    if [ $? == 0 ]; then
+        # Folsom
+        existing_role=$(get_data 1 $role_id 1 echo "$user_roles")
+        if [ -n "$existing_role" ]
+        then
+            echo "User $username already has role $role_id" >&2
+            return
+        fi
+        keystone user-role-add --tenant_id $tenant \
+                           --user_id $user_id \
+                           --role_id $role_id
+    else
+        # Essex
+        keystone user-role-add --tenant_id $tenant \
+                               --user $user_id \
+                               --role $role_id
+    fi
+}
+
+create_role() {
+    local role_name=$1
+
+    role_id=$(get_data 2 $role_name 1 keystone role-list)
+    if [ -n "$role_id" ]
+    then
+        echo "Role $role_name already exists : $role_id" >&2
+    else
+        keystone role-create --name $role_name
+    fi
 }
 
 get_endpoint() {
@@ -165,9 +202,17 @@ echo SERVICE_TENANT $SERVICE_TENANT
 echo SERVICE_PASSWORD $SERVICE_PASSWORD
 echo SERVICE_TOKEN $SERVICE_TOKEN
 
-HEAT_USER=$(get_user heat)
-echo HEAT_USER $HEAT_USER
-add_role $HEAT_USER $SERVICE_TENANT $ADMIN_ROLE
+HEAT_USERNAME="heat"
+HEAT_USERID=$(get_user $HEAT_USERNAME)
+echo HEAT_USERID $HEAT_USERID
+add_role $HEAT_USERID $SERVICE_TENANT $ADMIN_ROLE $HEAT_USERNAME
+
+# Create a special role which template-defined "stack users" are
+# assigned to in the engine when they are created, this allows them
+# to be more easily differentiated from other users (e.g so we can
+# lock down these implicitly untrusted users via RBAC policy)
+STACK_USER_ROLE="heat_stack_user"
+create_role $STACK_USER_ROLE
 
 HEAT_CFN_SERVICE=$(get_service heat-cfn cloudformation \
                    "Heat CloudFormation API")

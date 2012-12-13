@@ -25,7 +25,6 @@ import httplib
 import json
 import urlparse
 
-from heat.common import config
 from heat.common import context
 from heat.openstack.common import cfg
 from heat.openstack.common import rpc
@@ -33,7 +32,7 @@ import heat.openstack.common.rpc.common as rpc_common
 from heat.common.wsgi import Request
 from heat.api.aws import exception
 import heat.api.cloudwatch.watch as watches
-import heat.engine.api as engine_api
+from heat.rpc import api as engine_api
 
 
 @attr(tag=['unit', 'api-cloudwatch', 'WatchController'])
@@ -61,10 +60,11 @@ class WatchControllerTest(unittest.TestCase):
     # The tests
     def test_reformat_dimensions(self):
 
-        dims = [{'StackName': u'wordpress_ha5',
-               'Foo': 'bar'}]
+        dims = [{'StackId': u'21617058-781e-4262-97ab-5f9df371ee52',
+                 'Foo': 'bar'}]
         response = self.controller._reformat_dimensions(dims)
-        expected = [{'Name': 'StackName', 'Value': u'wordpress_ha5'},
+        expected = [{'Name': 'StackId',
+                     'Value': u'21617058-781e-4262-97ab-5f9df371ee52'},
                     {'Name': 'Foo', 'Value': 'bar'}]
         self.assert_(response == expected)
 
@@ -91,7 +91,7 @@ class WatchControllerTest(unittest.TestCase):
 
         # Stub out the RPC call to the engine with a pre-canned response
         engine_resp = [{u'state_updated_time': u'2012-08-30T14:13:21Z',
-                        u'stack_name': u'wordpress_ha5',
+                        u'stack_id': u'21617058-781e-4262-97ab-5f9df371ee52',
                         u'period': u'300',
                         u'actions': [u'WebServerRestartPolicy'],
                         u'topic': None,
@@ -149,8 +149,9 @@ class WatchControllerTest(unittest.TestCase):
                         'MetricName': u'ServiceFailure',
                         'ActionsEnabled': None,
                         'Dimensions': [
-                          {'Name': 'StackName',
-                          'Value': u'wordpress_ha5'}]}]}}}
+                          {'Name': 'StackId',
+                          'Value': u'21617058-781e-4262-97ab-5f9df371ee52'}
+                                      ]}]}}}
 
         self.assert_(response == expected)
 
@@ -461,7 +462,6 @@ class WatchControllerTest(unittest.TestCase):
         self.maxDiff = None
         self.m = mox.Mox()
 
-        config.register_engine_opts()
         cfg.CONF.set_default('engine_topic', 'engine')
         cfg.CONF.set_default('host', 'host')
         self.topic = '%s.%s' % (cfg.CONF.engine_topic, cfg.CONF.host)

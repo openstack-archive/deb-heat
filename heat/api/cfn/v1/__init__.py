@@ -13,20 +13,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import json
-import urlparse
-import httplib
 import routes
 
-from heat.api.cfn.v1 import stacks
-from heat.common import wsgi
-
 from webob import Request
-import webob
-from heat import utils
-from heat.common import context
-from heat.api.aws import exception
 
+from heat.api.cfn.v1 import stacks
+from heat.api.cfn.v1 import waitcondition
+from heat.common import wsgi
 from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
@@ -77,5 +70,14 @@ class API(wsgi.Router):
                 conditions=conditions(action))
 
         mapper.connect("/", controller=stacks_resource, action="index")
+
+        # Add controller which handles waitcondition notifications
+        # This is not part of the main CFN API spec, hence handle it
+        # separately via a different path
+        waitcondition_controller = waitcondition.create_resource(conf)
+        mapper.connect('/waitcondition/{arn:.*}',
+                       controller=waitcondition_controller,
+                       action='update_waitcondition',
+                       conditions=dict(method=['PUT']))
 
         super(API, self).__init__(mapper)

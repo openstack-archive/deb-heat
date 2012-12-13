@@ -14,217 +14,24 @@
 #    under the License.
 
 import eventlet
-import json
 import functools
-import copy
 
 from heat.common import exception
-from heat.engine import checkeddict
 from heat.engine import dependencies
-from heat.engine import identifier
-from heat.engine import resources
+from heat.common import identifier
+from heat.engine import resource
+from heat.engine import template
+from heat.engine import timestamp
+from heat.engine.parameters import Parameters
+from heat.engine.template import Template
+from heat.engine.clients import Clients
 from heat.db import api as db_api
 
 from heat.openstack.common import log as logging
 
-logger = logging.getLogger('heat.engine.parser')
-
-SECTIONS = (VERSION, DESCRIPTION, MAPPINGS,
-            PARAMETERS, RESOURCES, OUTPUTS) = \
-           ('AWSTemplateFormatVersion', 'Description', 'Mappings',
-            'Parameters', 'Resources', 'Outputs')
+logger = logging.getLogger(__name__)
 
 (PARAM_STACK_NAME, PARAM_REGION) = ('AWS::StackName', 'AWS::Region')
-
-
-class Parameters(checkeddict.CheckedDict):
-    '''
-    The parameters of a stack, with type checking, defaults &c. specified by
-    the stack's template.
-    '''
-
-    def __init__(self, stack_name, template, user_params={}):
-        '''
-        Create the parameter container for a stack from the stack name and
-        template, optionally setting the initial set of parameters.
-        '''
-        checkeddict.CheckedDict.__init__(self, PARAMETERS)
-        self._init_schemata(template[PARAMETERS])
-
-        self[PARAM_STACK_NAME] = stack_name
-        self.update(user_params)
-
-    def _init_schemata(self, schemata):
-        '''
-        Initialise the parameter schemata with the pseudo-parameters and the
-        list of schemata obtained from the template.
-        '''
-        self.addschema(PARAM_STACK_NAME, {"Description": "AWS StackName",
-                                          "Type": "String"})
-        self.addschema(PARAM_REGION, {
-            "Description": "AWS Regions",
-            "Default": "ap-southeast-1",
-            "Type": "String",
-            "AllowedValues": ["us-east-1", "us-west-1", "us-west-2",
-                              "sa-east-1", "eu-west-1", "ap-southeast-1",
-                              "ap-northeast-1"],
-            "ConstraintDescription": "must be a valid EC2 instance type.",
-        })
-
-        for param, schema in schemata.items():
-            self.addschema(param, copy.deepcopy(schema))
-
-    def user_parameters(self):
-        '''
-        Return a dictionary of all the parameters passed in by the user
-        '''
-        return dict((k, v['Value']) for k, v in self.data.iteritems()
-                                    if 'Value' in v)
-
-
-class Template(object):
-    '''A stack template.'''
-
-    def __init__(self, template, template_id=None):
-        '''
-        Initialise the template with a JSON object and a set of Parameters
-        '''
-        self.id = template_id
-        self.t = template
-        self.maps = self[MAPPINGS]
-
-    @classmethod
-    def load(cls, context, template_id):
-        '''Retrieve a Template with the given ID from the database'''
-        t = db_api.raw_template_get(context, template_id)
-        return cls(t.template, template_id)
-
-    def store(self, context=None):
-        '''Store the Template in the database and return its ID'''
-        if self.id is None:
-            rt = {'template': self.t}
-            new_rt = db_api.raw_template_create(context, rt)
-            self.id = new_rt.id
-        return self.id
-
-    def __getitem__(self, section):
-        '''Get the relevant section in the template'''
-        if section not in SECTIONS:
-            raise KeyError('"%s" is not a valid template section' % section)
-        if section == VERSION:
-            return self.t[section]
-
-        if section == DESCRIPTION:
-            default = 'No description'
-        else:
-            default = {}
-
-        return self.t.get(section, default)
-
-    def resolve_find_in_map(self, s):
-        '''
-        Resolve constructs of the form { "Fn::FindInMap" : [ "mapping",
-                                                             "key",
-                                                             "value" ] }
-        '''
-        def handle_find_in_map(args):
-            try:
-                name, key, value = args
-                return self.maps[name][key][value]
-            except (ValueError, TypeError) as ex:
-                raise KeyError(str(ex))
-
-        return _resolve(lambda k, v: k == 'Fn::FindInMap',
-                        handle_find_in_map, s)
-
-    @staticmethod
-    def resolve_availability_zones(s):
-        '''
-            looking for { "Fn::GetAZs" : "str" }
-        '''
-        def match_get_az(key, value):
-            return (key == 'Fn::GetAZs' and
-                    isinstance(value, basestring))
-
-        def handle_get_az(ref):
-            return ['nova']
-
-        return _resolve(match_get_az, handle_get_az, s)
-
-    @staticmethod
-    def resolve_param_refs(s, parameters):
-        '''
-        Resolve constructs of the form { "Ref" : "string" }
-        '''
-        def match_param_ref(key, value):
-            return (key == 'Ref' and
-                    isinstance(value, basestring) and
-                    value in parameters)
-
-        def handle_param_ref(ref):
-            try:
-                return parameters[ref]
-            except (KeyError, ValueError):
-                raise exception.UserParameterMissing(key=ref)
-
-        return _resolve(match_param_ref, handle_param_ref, s)
-
-    @staticmethod
-    def resolve_resource_refs(s, resources):
-        '''
-        Resolve constructs of the form { "Ref" : "resource" }
-        '''
-        def match_resource_ref(key, value):
-            return key == 'Ref' and value in resources
-
-        def handle_resource_ref(arg):
-            return resources[arg].FnGetRefId()
-
-        return _resolve(match_resource_ref, handle_resource_ref, s)
-
-    @staticmethod
-    def resolve_attributes(s, resources):
-        '''
-        Resolve constructs of the form { "Fn::GetAtt" : [ "WebServer",
-                                                          "PublicIp" ] }
-        '''
-        def handle_getatt(args):
-            resource, att = args
-            try:
-                return resources[resource].FnGetAtt(att)
-            except KeyError:
-                raise exception.InvalidTemplateAttribute(resource=resource,
-                                                         key=att)
-
-        return _resolve(lambda k, v: k == 'Fn::GetAtt', handle_getatt, s)
-
-    @staticmethod
-    def resolve_joins(s):
-        '''
-        Resolve constructs of the form { "Fn::Join" : [ "delim", [ "str1",
-                                                                   "str2" ] }
-        '''
-        def handle_join(args):
-            if not isinstance(args, (list, tuple)):
-                raise TypeError('Arguments to "Fn::Join" must be a list')
-            delim, strings = args
-            if not isinstance(strings, (list, tuple)):
-                raise TypeError('Arguments to "Fn::Join" not fully resolved')
-            return delim.join(strings)
-
-        return _resolve(lambda k, v: k == 'Fn::Join', handle_join, s)
-
-    @staticmethod
-    def resolve_base64(s):
-        '''
-        Resolve constructs of the form { "Fn::Base64" : "string" }
-        '''
-        def handle_base64(string):
-            if not isinstance(string, basestring):
-                raise TypeError('Arguments to "Fn::Base64" not fully resolved')
-            return string
-
-        return _resolve(lambda k, v: k == 'Fn::Base64', handle_base64, s)
 
 
 class Stack(object):
@@ -240,34 +47,43 @@ class Stack(object):
     UPDATE_COMPLETE = 'UPDATE_COMPLETE'
     UPDATE_FAILED = 'UPDATE_FAILED'
 
-    created_time = resources.Timestamp(db_api.stack_get, 'created_at')
-    updated_time = resources.Timestamp(db_api.stack_get, 'updated_at')
+    created_time = timestamp.Timestamp(db_api.stack_get, 'created_at')
+    updated_time = timestamp.Timestamp(db_api.stack_get, 'updated_at')
 
-    def __init__(self, context, stack_name, template, parameters=None,
+    def __init__(self, context, stack_name, tmpl, parameters=None,
                  stack_id=None, state=None, state_description='',
-                 timeout_mins=60):
+                 timeout_mins=60, resolve_data=True):
         '''
         Initialise from a context, name, Template object and (optionally)
         Parameters object. The database ID may also be initialised, if the
         stack is already in the database.
         '''
+
+        if '/' in stack_name:
+            raise ValueError(_('Stack name may not contain "/"'))
+
         self.id = stack_id
         self.context = context
-        self.t = template
+        self.clients = Clients(context)
+        self.t = tmpl
         self.name = stack_name
         self.state = state
         self.state_description = state_description
         self.timeout_mins = timeout_mins
 
         if parameters is None:
-            parameters = Parameters(stack_name, template)
+            parameters = Parameters(self.name, self.t)
         self.parameters = parameters
 
-        self.outputs = self.resolve_static_data(self.t[OUTPUTS])
+        if resolve_data:
+            self.outputs = self.resolve_static_data(self.t[template.OUTPUTS])
+        else:
+            self.outputs = {}
 
+        template_resources = self.t[template.RESOURCES]
         self.resources = dict((name,
-                               resources.Resource(name, data, self))
-                              for (name, data) in self.t[RESOURCES].items())
+                               resource.Resource(name, data, self))
+                              for (name, data) in template_resources.items())
 
         self.dependencies = self._get_dependencies(self.resources.itervalues())
 
@@ -281,17 +97,19 @@ class Stack(object):
         return deps
 
     @classmethod
-    def load(cls, context, stack_id):
+    def load(cls, context, stack_id=None, stack=None, resolve_data=True):
         '''Retrieve a Stack from the database'''
-        s = db_api.stack_get(context, stack_id)
-        if s is None:
+        if stack is None:
+            stack = db_api.stack_get(context, stack_id)
+        if stack is None:
             message = 'No stack exists with id "%s"' % str(stack_id)
             raise exception.NotFound(message)
 
-        template = Template.load(context, s.raw_template_id)
-        params = Parameters(s.name, template, s.parameters)
-        stack = cls(context, s.name, template, params,
-                    stack_id, s.status, s.status_reason, s.timeout)
+        template = Template.load(context, stack.raw_template_id)
+        params = Parameters(stack.name, template, stack.parameters)
+        stack = cls(context, stack.name, template, params,
+                    stack.id, stack.status, stack.status_reason, stack.timeout,
+                    resolve_data)
 
         return stack
 
@@ -300,11 +118,11 @@ class Stack(object):
         Store the stack in the database and return its ID
         If self.id is set, we update the existing stack
         '''
-        new_creds = db_api.user_creds_create(self.context.to_dict())
+        new_creds = db_api.user_creds_create(self.context)
 
         s = {
             'name': self.name,
-            'raw_template_id': self.t.store(),
+            'raw_template_id': self.t.store(self.context),
             'parameters': self.parameters.user_parameters(),
             'owner_id': owner and owner.id,
             'user_creds_id': new_creds.id,
@@ -382,21 +200,7 @@ class Stack(object):
                 result = str(ex)
 
             if result:
-                err_str = 'Malformed Query Response %s' % result
-                response = {'Description': err_str,
-                            'Parameters': []}
-                return response
-
-        def format_param(p):
-            return {'NoEcho': 'false',
-                    'ParameterKey': p,
-                    'Description': self.parameters.get_attr(p, 'Description'),
-                    'DefaultValue': self.parameters.get_attr(p, 'Default')}
-
-        response = {'Description': 'Successfully validated',
-                    'Parameters': [format_param(p) for p in self.parameters]}
-
-        return response
+                return 'Malformed Query Response %s' % result
 
     def state_set(self, new_status, reason):
         '''Update the stack state in the database'''
@@ -469,9 +273,6 @@ class Stack(object):
         failures = []
         with eventlet.Timeout(self.timeout_mins * 60) as tmo:
             try:
-                for res in self:
-                    res.calculate_properties()
-
                 # First delete any resources which are not in newstack
                 for res in reversed(self):
                     if not res.name in newstack.keys():
@@ -512,7 +313,9 @@ class Stack(object):
                 # Currently all resource have a default handle_update method
                 # which returns "requires replacement" (res.UPDATE_REPLACE)
                 for res in newstack:
-                    if self[res.name] != res:
+                    if self.resolve_runtime_data(
+                        self[res.name].t) != self.resolve_runtime_data(res.t):
+
                         # Can fail if underlying resource class does not
                         # implement update logic or update requires replacement
                         retval = self[res.name].update(res.parsed_template())
@@ -543,7 +346,8 @@ class Stack(object):
                     # flip the template & parameters to the newstack values
                     self.t = newstack.t
                     self.parameters = newstack.parameters
-                    self.outputs = self.resolve_static_data(self.t[OUTPUTS])
+                    template_outputs = self.t[template.OUTPUTS]
+                    self.outputs = self.resolve_static_data(template_outputs)
                     self.dependencies = self._get_dependencies(
                         self.resources.itervalues())
                     self.store()
@@ -569,9 +373,6 @@ class Stack(object):
         Delete all of the resources, and then the stack itself.
         '''
         self.state_set(self.DELETE_IN_PROGRESS, 'Stack deletion started')
-
-        for res in self:
-            res.calculate_properties()
 
         failures = []
         for res in reversed(self):
@@ -602,9 +403,6 @@ class Stack(object):
         '''
         deps = self.dependencies[self[resource_name]]
         failed = False
-
-        for res in self:
-            res.calculate_properties()
 
         for res in reversed(deps):
             try:
@@ -638,7 +436,7 @@ def resolve_static_data(template, parameters, snippet):
 
     Example:
 
-    >>> template = Template(json.load(template_path))
+    >>> template = Template(template_format.parse(template_path))
     >>> parameters = Parameters('stack', template, {'KeyName': 'my_key'})
     >>> resolve_static_data(template, parameters, {'Ref': 'KeyName'})
     'my_key'
@@ -647,7 +445,8 @@ def resolve_static_data(template, parameters, snippet):
                      [functools.partial(template.resolve_param_refs,
                                         parameters=parameters),
                       template.resolve_availability_zones,
-                      template.resolve_find_in_map])
+                      template.resolve_find_in_map,
+                      template.reduce_joins])
 
 
 def resolve_runtime_data(template, resources, snippet):
@@ -668,25 +467,3 @@ def transform(data, transformations):
     for t in transformations:
         data = t(data)
     return data
-
-
-def _resolve(match, handle, snippet):
-    '''
-    Resolve constructs in a snippet of a template. The supplied match function
-    should return True if a particular key-value pair should be substituted,
-    and the handle function should return the correct substitution when passed
-    the argument list as parameters.
-
-    Returns a copy of the original snippet with the substitutions performed.
-    '''
-    recurse = lambda s: _resolve(match, handle, s)
-
-    if isinstance(snippet, dict):
-        if len(snippet) == 1:
-            k, v = snippet.items()[0]
-            if match(k, v):
-                return handle(recurse(v))
-        return dict((k, recurse(v)) for k, v in snippet.items())
-    elif isinstance(snippet, list):
-        return [recurse(v) for v in snippet]
-    return snippet

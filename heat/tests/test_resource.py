@@ -21,7 +21,8 @@ import mox
 import json
 from heat.common import context
 from heat.engine import parser
-from heat.engine import resources
+from heat.engine import resource
+from heat.openstack.common import uuidutils
 
 
 @attr(tag=['unit', 'resource'])
@@ -29,36 +30,41 @@ from heat.engine import resources
 class ResourceTest(unittest.TestCase):
     def setUp(self):
         self.stack = parser.Stack(None, 'test_stack', parser.Template({}),
-                                  stack_id=-1)
+                                  stack_id=uuidutils.generate_uuid())
 
     def test_state_defaults(self):
         tmpl = {'Type': 'Foo'}
-        res = resources.GenericResource('test_res_def', tmpl, self.stack)
+        res = resource.GenericResource('test_res_def', tmpl, self.stack)
         self.assertEqual(res.state, None)
         self.assertEqual(res.state_description, '')
 
     def test_state(self):
         tmpl = {'Type': 'Foo'}
-        res = resources.GenericResource('test_resource', tmpl, self.stack)
+        res = resource.GenericResource('test_resource', tmpl, self.stack)
         res.state_set('bar')
         self.assertEqual(res.state, 'bar')
 
     def test_state_description(self):
         tmpl = {'Type': 'Foo'}
-        res = resources.GenericResource('test_resource', tmpl, self.stack)
+        res = resource.GenericResource('test_resource', tmpl, self.stack)
         res.state_set('blarg', 'wibble')
         self.assertEqual(res.state_description, 'wibble')
 
+    def test_type(self):
+        tmpl = {'Type': 'Foo'}
+        res = resource.GenericResource('test_resource', tmpl, self.stack)
+        self.assertEqual(res.type(), 'Foo')
+
     def test_created_time(self):
         tmpl = {'Type': 'Foo'}
-        res = resources.GenericResource('test_res_new', tmpl, self.stack)
+        res = resource.GenericResource('test_res_new', tmpl, self.stack)
         self.assertEqual(res.created_time, None)
         res._store()
         self.assertNotEqual(res.created_time, None)
 
     def test_updated_time(self):
         tmpl = {'Type': 'Foo'}
-        res = resources.GenericResource('test_res_upd', tmpl, self.stack)
+        res = resource.GenericResource('test_res_upd', tmpl, self.stack)
         res._store()
         stored_time = res.updated_time
         res.state_set(res.CREATE_IN_PROGRESS, 'testing')
@@ -70,7 +76,7 @@ class ResourceTest(unittest.TestCase):
             'Type': 'Foo',
             'foo': {'Fn::Join': [' ', ['bar', 'baz', 'quux']]}
         }
-        res = resources.GenericResource('test_resource', tmpl, self.stack)
+        res = resource.GenericResource('test_resource', tmpl, self.stack)
 
         parsed_tmpl = res.parsed_template()
         self.assertEqual(parsed_tmpl['Type'], 'Foo')
@@ -81,14 +87,35 @@ class ResourceTest(unittest.TestCase):
 
     def test_parsed_template_default(self):
         tmpl = {'Type': 'Foo'}
-        res = resources.GenericResource('test_resource', tmpl, self.stack)
+        res = resource.GenericResource('test_resource', tmpl, self.stack)
         self.assertEqual(res.parsed_template('foo'), {})
         self.assertEqual(res.parsed_template('foo', 'bar'), 'bar')
 
     def test_metadata_default(self):
         tmpl = {'Type': 'Foo'}
-        res = resources.GenericResource('test_resource', tmpl, self.stack)
+        res = resource.GenericResource('test_resource', tmpl, self.stack)
         self.assertEqual(res.metadata, {})
+
+    def test_equals_different_stacks(self):
+        tmpl1 = {'Type': 'Foo'}
+        tmpl2 = {'Type': 'Foo'}
+        tmpl3 = {'Type': 'Bar'}
+        stack2 = parser.Stack(None, 'test_stack', parser.Template({}),
+                                  stack_id=-1)
+        res1 = resource.GenericResource('test_resource', tmpl1, self.stack)
+        res2 = resource.GenericResource('test_resource', tmpl2, stack2)
+        res3 = resource.GenericResource('test_resource2', tmpl3, stack2)
+
+        self.assertEqual(res1, res2)
+        self.assertNotEqual(res1, res3)
+
+    def test_equals_names(self):
+        tmpl1 = {'Type': 'Foo'}
+        tmpl2 = {'Type': 'Foo'}
+        res1 = resource.GenericResource('test_resource1', tmpl1, self.stack)
+        res2 = resource.GenericResource('test_resource2', tmpl2, self.stack)
+
+        self.assertNotEqual(res1, res2)
 
 
 @attr(tag=['unit', 'resource'])
@@ -105,7 +132,7 @@ class MetadataTest(unittest.TestCase):
         ctx.username = 'metadata_test_user'
         self.stack = parser.Stack(ctx, 'test_stack', parser.Template({}))
         self.stack.store()
-        self.res = resources.GenericResource('metadata_resource',
+        self.res = resource.GenericResource('metadata_resource',
                                              tmpl, self.stack)
         self.res.create()
 

@@ -17,28 +17,24 @@
 Stack endpoint for Heat CloudFormation v1 API.
 """
 
-import httplib
 import json
-import os
 import socket
-import sys
-import urlparse
-import webob
+
 from heat.api.aws import exception
 from heat.api.aws import utils as api_utils
 from heat.common import wsgi
-from heat.common import config
-from heat.common import context
-from heat import utils
-from heat.engine import rpcapi as engine_rpcapi
-import heat.engine.api as engine_api
-from heat.engine import identifier
+from heat.rpc import client as rpc_client
+from heat.common import template_format
+from heat.rpc import api as engine_api
+from heat.common import identifier
+from heat.common import urlfetch
 
-from heat.openstack.common import rpc
 import heat.openstack.common.rpc.common as rpc_common
-from heat.openstack.common import log as logging
 
-logger = logging.getLogger('heat.api.cfn.v1.stacks')
+from heat.openstack.common import log as logging
+from heat.openstack.common.gettextutils import _
+
+logger = logging.getLogger(__name__)
 
 
 class StackController(object):
@@ -50,16 +46,20 @@ class StackController(object):
 
     def __init__(self, options):
         self.options = options
-        self.engine_rpcapi = engine_rpcapi.EngineAPI()
+        self.engine_rpcapi = rpc_client.EngineClient()
 
-    def _stackid_format(self, resp):
+    @staticmethod
+    def _id_format(resp):
         """
-        Add a host:port:stack prefix, this formats the StackId in the response
-        more like the AWS spec
+        Format the StackId field in the response as an ARN, and process other
+        IDs into the correct format.
         """
         if 'StackId' in resp:
             identity = identifier.HeatIdentifier(**resp['StackId'])
             resp['StackId'] = identity.arn()
+        if 'EventId' in resp:
+            identity = identifier.EventIdentifier(**resp['EventId'])
+            resp['EventId'] = identity.event_id
         return resp
 
     @staticmethod
@@ -119,15 +119,11 @@ class StackController(object):
             if engine_api.STACK_DELETION_TIME in s:
                 result['DeletionTime'] = s[engine_api.STACK_DELETION_TIME]
 
-            return self._stackid_format(result)
+            return self._id_format(result)
 
         con = req.context
-        parms = dict(req.params)
-
         try:
-            # Note show_stack returns details for all stacks when called with
-            # no stack_name, we only use a subset of the result here though
-            stack_list = self.engine_rpcapi.show_stack(con, None)
+            stack_list = self.engine_rpcapi.list_stacks(con)
         except rpc_common.RemoteError as ex:
             return exception.map_remote_error(ex)
 
@@ -148,7 +144,22 @@ class StackController(object):
                 engine_api.OUTPUT_VALUE: 'OutputValue',
             }
 
-            return api_utils.reformat_dict_keys(keymap, o)
+            def replacecolon(d):
+                return dict(map(lambda (k, v):
+                    (k.replace(':', '.'), v), d.items()))
+
+            def transform(attrs):
+                """
+                Recursively replace all : with . in dict keys
+                so that they are not interpreted as xml namespaces.
+                """
+                new = replacecolon(attrs)
+                for key, value in new.items():
+                    if isinstance(value, dict):
+                        new[key] = transform(value)
+                return new
+
+            return api_utils.reformat_dict_keys(keymap, transform(o))
 
         def format_stack(s):
             """
@@ -186,11 +197,9 @@ class StackController(object):
                 'ParameterValue':v}
                 for (k, v) in result['Parameters'].items()]
 
-            return self._stackid_format(result)
+            return self._id_format(result)
 
         con = req.context
-        parms = dict(req.params)
-
         # If no StackName parameter is passed, we pass None into the engine
         # this returns results for all stacks (visible to this user), which
         # is the behavior described in the AWS DescribeStacks API docs
@@ -214,24 +223,16 @@ class StackController(object):
         Get template file contents, either from local file or URL
         """
         if 'TemplateBody' in req.params:
-            logger.info('TemplateBody ...')
+            logger.debug('TemplateBody ...')
             return req.params['TemplateBody']
         elif 'TemplateUrl' in req.params:
-            logger.info('TemplateUrl %s' % req.params['TemplateUrl'])
-            url = urlparse.urlparse(req.params['TemplateUrl'])
-            if url.scheme == 'https':
-                conn = httplib.HTTPSConnection(url.netloc)
-            else:
-                conn = httplib.HTTPConnection(url.netloc)
-            conn.request("GET", url.path)
-            r1 = conn.getresponse()
-            logger.info('status %d' % r1.status)
-            if r1.status == 200:
-                data = r1.read()
-                conn.close()
-            else:
-                data = None
-            return data
+            url = req.params['TemplateUrl']
+            logger.debug('TemplateUrl %s' % url)
+            try:
+                return urlfetch.get(url)
+            except IOError as exc:
+                msg = _('Failed to fetch template: %s') % str(exc)
+                raise exception.HeatInvalidParameterValueError(detail=msg)
 
         return None
 
@@ -294,7 +295,7 @@ class StackController(object):
             return exception.HeatMissingParameterError(detail=msg)
 
         try:
-            stack = json.loads(templ)
+            stack = template_format.parse(templ)
         except ValueError:
             msg = _("The Template must be a JSON document.")
             return exception.HeatInvalidParameterValueError(detail=msg)
@@ -329,9 +330,6 @@ class StackController(object):
         """
 
         con = req.context
-        parms = dict(req.params)
-
-        logger.info('get_template')
         try:
             identity = self._get_identity(con, req.params['StackName'])
             templ = self.engine_rpcapi.get_template(con, identity)
@@ -360,8 +358,6 @@ class StackController(object):
         """
 
         con = req.context
-        parms = dict(req.params)
-
         try:
             templ = self._get_template(req)
         except socket.gaierror:
@@ -390,8 +386,6 @@ class StackController(object):
         Deletes the specified stack
         """
         con = req.context
-        parms = dict(req.params)
-
         try:
             identity = self._get_identity(con, req.params['StackName'])
             res = self.engine_rpcapi.delete_stack(con, identity, cast=False)
@@ -430,11 +424,9 @@ class StackController(object):
             result['ResourceProperties'] = json.dumps(
                                            result['ResourceProperties'])
 
-            return self._stackid_format(result)
+            return self._id_format(result)
 
         con = req.context
-        parms = dict(req.params)
-
         stack_name = req.params.get('StackName', None)
         try:
             identity = stack_name and self._get_identity(con, stack_name)
@@ -474,7 +466,7 @@ class StackController(object):
 
             result = api_utils.reformat_dict_keys(keymap, r)
 
-            return self._stackid_format(result)
+            return self._id_format(result)
 
         con = req.context
 
@@ -527,7 +519,7 @@ class StackController(object):
 
             result = api_utils.reformat_dict_keys(keymap, r)
 
-            return self._stackid_format(result)
+            return self._id_format(result)
 
         con = req.context
         stack_name = req.params.get('StackName')

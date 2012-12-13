@@ -3,10 +3,12 @@
 build
 dist
 heat.egg-info
-heat/vcsversion.py
+heat/versioninfo
 tags
 *.log
 heat-test.db
 .venv
 AUTHORS
 ChangeLog
+templates/cloudformation-examples
+

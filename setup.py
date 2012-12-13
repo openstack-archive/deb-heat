@@ -20,13 +20,13 @@ import subprocess
 import setuptools
 
 from heat.openstack.common import setup
+from heat.version import version_info as version
 
-from heat import version
-version.write_git_sha()
+requires = setup.parse_requirements()
 
 setuptools.setup(
     name='heat',
-    version=version.HEAT_VERSION,
+    version=version.canonical_version_string(always=True),
     description='The heat project provides services for provisioning '
                 'virtual machines',
     license='Apache License (2.0)',
@@ -36,6 +36,7 @@ setuptools.setup(
     cmdclass=setup.get_cmdclass(),
     packages=setuptools.find_packages(exclude=['bin']),
     include_package_data=True,
+    install_requires=requires,
     classifiers=[
         'Development Status :: 4 - Beta',
         'License :: OSI Approved :: Apache Software License',
@@ -43,12 +44,11 @@ setuptools.setup(
         'Programming Language :: Python :: 2.6',
         'Environment :: No Input/Output (Daemon)',
     ],
-    scripts=['bin/heat',
+    scripts=['bin/heat-cfn',
              'bin/heat-api',
              'bin/heat-api-cfn',
              'bin/heat-api-cloudwatch',
              'bin/heat-boto',
-             'bin/heat-metadata',
              'bin/heat-engine',
              'bin/heat-watch',
              'bin/heat-db-setup',

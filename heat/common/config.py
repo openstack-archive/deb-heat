@@ -22,14 +22,12 @@ import logging
 import logging.config
 import logging.handlers
 import os
-import socket
-# TODO ^ eventlet.socket ?
 import sys
 
-from heat import version
+from eventlet.green import socket
+
 from heat.common import wsgi
 from heat.openstack.common import cfg
-from heat.openstack.common import rpc
 
 DEFAULT_PORT = 8000
 
@@ -62,15 +60,6 @@ cfg.StrOpt('osapi_compute_listen',
 cfg.IntOpt('osapi_compute_listen_port',
            default=8774,
            help='list port for osapi compute'),
-cfg.StrOpt('metadata_manager',
-           default='nova.api.manager.MetadataManager',
-           help='OpenStack metadata service manager'),
-cfg.StrOpt('metadata_listen',
-           default="0.0.0.0",
-           help='IP address for metadata api to listen'),
-cfg.IntOpt('metadata_listen_port',
-           default=8775,
-           help='port for metadata api to listen'),
 cfg.StrOpt('osapi_volume_listen',
            default="0.0.0.0",
            help='IP address for OpenStack Volume API to listen'),
@@ -80,6 +69,15 @@ cfg.IntOpt('osapi_volume_listen_port',
 cfg.StrOpt('heat_metadata_server_url',
            default="",
            help='URL of the Heat metadata server'),
+cfg.StrOpt('heat_waitcondition_server_url',
+           default="",
+           help='URL of the Heat waitcondition server'),
+cfg.StrOpt('heat_watch_server_url',
+           default="",
+           help='URL of the Heat cloudwatch server'),
+cfg.StrOpt('heat_stack_user_role',
+           default="heat_stack_user",
+           help='Keystone role for heat template-defined users'),
 ]
 db_opts = [
 cfg.StrOpt('sql_connection',
@@ -93,23 +91,23 @@ cfg.IntOpt('sql_idle_timeout',
 engine_opts = [
 cfg.StrOpt('instance_driver',
            default='heat.engine.nova',
-           help='Driver to use for controlling instances')
+           help='Driver to use for controlling instances'),
+cfg.ListOpt('plugin_dirs',
+            default=['/usr/lib64/heat', '/usr/lib/heat'],
+            help='List of directories to search for Plugins'),
 ]
 rpc_opts = [
 cfg.StrOpt('host',
            default=socket.gethostname(),
            help='Name of the engine node.  This can be an opaque identifier.'
                 'It is not necessarily a hostname, FQDN, or IP address.'),
+cfg.StrOpt('control_exchange',
+           default='heat',
+           help='AMQP exchange to connect to if using RabbitMQ or Qpid'),
 cfg.StrOpt('engine_topic',
            default='engine',
            help='the topic engine nodes listen on')
 ]
-
-
-def register_metadata_opts():
-    cfg.CONF.register_opts(service_opts)
-    cfg.CONF.register_opts(bind_opts)
-    cfg.CONF.register_opts(rpc_opts)
 
 
 def register_api_opts():

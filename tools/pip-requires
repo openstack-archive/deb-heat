@@ -10,21 +10,24 @@
 # libxml2-dev(el) and libxslt-dev(el) packages.
 
 PyCrypto
-eventlet
-greenlet
+boto>=2.4.0
+eventlet>=0.9.17
+extras
+greenlet>=0.3.1
 httplib2
-iso8601
-kombu
-lxml
-sqlalchemy-migrate
+iso8601>=0.1.4
+kombu==1.0.4
+argparse
+lxml>=2.3,<=2.3.5
+sqlalchemy-migrate>=0.7.2
 python-novaclient
-Paste
-Routes
+PasteDeploy==1.5.0
+routes==1.12.3
 pysendfile
-SQLAlchemy
-WebOb
+SQLAlchemy>=0.7.8,<=0.7.9
+WebOb==1.0.8
 python-keystoneclient
-glance
 python-memcached
 python-swiftclient
-
+python-quantumclient
+PyYAML>=3.1.0

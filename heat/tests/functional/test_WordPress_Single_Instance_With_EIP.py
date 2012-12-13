@@ -14,11 +14,8 @@
 
 import util
 import verify
-import nose
 from nose.plugins.attrib import attr
 
-from heat.common import context
-from heat.engine import manager
 import unittest
 import os
 
@@ -60,7 +57,7 @@ class WordPressEIPFunctionalTest(unittest.TestCase):
             found = 0
             mylist = self.stack.novaclient.floating_ips.list()
             for item in mylist:
-                if item.instance_id == self.stack.instance_phys_ids()[0]:
+                if item.resource_id == self.stack.instance_phys_ids()[0]:
                     print 'floating IP found', item.ip
                     found = 1
                     break

@@ -22,11 +22,18 @@ import os
 import json
 from heat.common import client as base_client
 from heat.common import exception
-from heat.cloudformation import *
 
 from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
+
+
+SUPPORTED_PARAMS = ('StackName', 'TemplateBody', 'TemplateUrl',
+                    'NotificationARNs', 'Parameters', 'Version',
+                    'SignatureVersion', 'Timestamp', 'AWSAccessKeyId',
+                    'Signature', 'TimeoutInMinutes',
+                    'LogicalResourceId', 'PhysicalResourceId', 'NextToken',
+)
 
 
 class V1Client(base_client.BaseClient):
@@ -39,14 +46,15 @@ class V1Client(base_client.BaseClient):
         params['Version'] = '2010-05-15'
         params['SignatureVersion'] = '2'
         params['SignatureMethod'] = 'HmacSHA256'
-        params['KeyStoneCreds'] = json.dumps(self.creds)
 
     def stack_request(self, action, method, **kwargs):
         params = self._extract_params(kwargs, SUPPORTED_PARAMS)
         self._insert_common_parameters(params)
         params['Action'] = action
+        headers = {'X-Auth-User': self.creds['username'],
+                   'X-Auth-Key': self.creds['password']}
 
-        res = self.do_request(method, "/", params=params)
+        res = self.do_request(method, "/", params=params, headers=headers)
         doc = etree.fromstring(res.read())
         return etree.tostring(doc, pretty_print=True)
 
@@ -80,7 +88,7 @@ class V1Client(base_client.BaseClient):
             try:
                 result = self.stack_request("DescribeStackResources", "GET",
                                         **parameters)
-            except:
+            except Exception:
                 logger.debug("Failed to lookup resource details with key %s:%s"
                              % (lookup_key, lookup_value))
             else:

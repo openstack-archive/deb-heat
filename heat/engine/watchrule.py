@@ -17,62 +17,70 @@
 import datetime
 from heat.openstack.common import log as logging
 from heat.openstack.common import timeutils
-from heat.engine import resources
+from heat.engine import timestamp
 from heat.db import api as db_api
 from heat.engine import parser
+from heat.rpc import api as rpc_api
 from heat.common import context as ctxtlib
 import eventlet
 
-logger = logging.getLogger('heat.engine.watchrule')
+logger = logging.getLogger(__name__)
 greenpool = eventlet.GreenPool()
 
 
 class WatchRule(object):
-    WATCH_STATES = (ALARM, NORMAL, NODATA
-    ) = ('ALARM', 'NORMAL', 'NODATA')
-
+    WATCH_STATES = (
+        ALARM,
+        NORMAL,
+        NODATA
+    ) = (
+        rpc_api.WATCH_STATE_ALARM,
+        rpc_api.WATCH_STATE_OK,
+        rpc_api.WATCH_STATE_NODATA
+    )
     ACTION_MAP = {ALARM: 'AlarmActions',
                   NORMAL: 'OKActions',
                   NODATA: 'InsufficientDataActions'}
 
-    created_at = resources.Timestamp(db_api.watch_rule_get, 'created_at')
-    updated_at = resources.Timestamp(db_api.watch_rule_get, 'updated_at')
+    created_at = timestamp.Timestamp(db_api.watch_rule_get, 'created_at')
+    updated_at = timestamp.Timestamp(db_api.watch_rule_get, 'updated_at')
 
-    def __init__(self, context, watch_name, rule, stack_name, state=NORMAL,
-                 wid=None, watch_data=[], last_evaluated=timeutils.utcnow()):
+    def __init__(self, context, watch_name, rule, stack_id=None,
+                 state=NORMAL, wid=None, watch_data=[],
+                 last_evaluated=timeutils.utcnow()):
         self.context = context
         self.now = timeutils.utcnow()
         self.name = watch_name
         self.state = state
         self.rule = rule
-        self.stack_name = stack_name
+        self.stack_id = stack_id
         self.timeperiod = datetime.timedelta(seconds=int(rule['Period']))
         self.id = wid
         self.watch_data = watch_data
         self.last_evaluated = last_evaluated
 
     @classmethod
-    def load(cls, context, watch_name):
+    def load(cls, context, watch_name=None, watch=None):
         '''
-        Load the watchrule from the DB by name
+        Load the watchrule object, either by name or via an existing DB object
         '''
-        dbwr = None
-        try:
-            dbwr = db_api.watch_rule_get_by_name(context, watch_name)
-        except Exception as ex:
-            logger.warn('show_watch (%s) db error %s' %
-                        (watch_name, str(ex)))
-        if not dbwr:
+        if watch == None:
+            try:
+                watch = db_api.watch_rule_get_by_name(context, watch_name)
+            except Exception as ex:
+                logger.warn('WatchRule.load (%s) db error %s' %
+                            (watch_name, str(ex)))
+        if watch == None:
             raise AttributeError('Unknown watch name %s' % watch_name)
         else:
             return cls(context=context,
-                       watch_name=dbwr.name,
-                       rule=dbwr.rule,
-                       stack_name=dbwr.stack_name,
-                       state=dbwr.state,
-                       wid=dbwr.id,
-                       watch_data=dbwr.watch_data,
-                       last_evaluated=dbwr.last_evaluated)
+                       watch_name=watch.name,
+                       rule=watch.rule,
+                       stack_id=watch.stack_id,
+                       state=watch.state,
+                       wid=watch.id,
+                       watch_data=watch.watch_data,
+                       last_evaluated=watch.last_evaluated)
 
     def store(self):
         '''
@@ -84,7 +92,7 @@ class WatchRule(object):
             'name': self.name,
             'rule': self.rule,
             'state': self.state,
-            'stack_name': self.stack_name
+            'stack_id': self.stack_id
         }
 
         if not self.id:
@@ -220,7 +228,7 @@ class WatchRule(object):
 
     def rule_action(self, new_state):
         logger.warn('WATCH: stack:%s, watch_name:%s %s',
-                    self.stack_name, self.name, new_state)
+                    self.stack_id, self.name, new_state)
 
         actioned = False
         if not self.ACTION_MAP[new_state] in self.rule:
@@ -228,12 +236,10 @@ class WatchRule(object):
                         new_state)
             actioned = True
         else:
-            s = db_api.stack_get_by_name(None, self.stack_name)
+            s = db_api.stack_get(self.context, self.stack_id)
             if s and s.status in (parser.Stack.CREATE_COMPLETE,
-                                  parser.Stack.UPDATE_COMPLETE):
-                user_creds = db_api.user_creds_get(s.user_creds_id)
-                ctxt = ctxtlib.RequestContext.from_dict(user_creds)
-                stack = parser.Stack.load(ctxt, s.id)
+                                          parser.Stack.UPDATE_COMPLETE):
+                stack = parser.Stack.load(self.context, stack=s)
                 for a in self.rule[self.ACTION_MAP[new_state]]:
                     greenpool.spawn_n(stack[a].alarm)
                 actioned = True

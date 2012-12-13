@@ -25,9 +25,8 @@ import httplib
 import json
 import urlparse
 
-from heat.common import config
 from heat.common import context
-from heat.engine import identifier
+from heat.common import identifier
 from heat.openstack.common import cfg
 from heat.openstack.common import rpc
 import heat.openstack.common.rpc.common as rpc_common
@@ -64,7 +63,7 @@ class StackControllerTest(unittest.TestCase):
     def test_stackid_addprefix(self):
         self.m.ReplayAll()
 
-        response = self.controller._stackid_format({
+        response = self.controller._id_format({
             'StackName': 'Foo',
             'StackId': {
                 u'tenant': u't',
@@ -95,8 +94,8 @@ class StackControllerTest(unittest.TestCase):
                         u'stack_name': u'wordpress',
                         u'stack_status': u'CREATE_COMPLETE'}]}
         self.m.StubOutWithMock(rpc, 'call')
-        rpc.call(dummy_req.context, self.topic, {'method': 'show_stack',
-                                    'args': {'stack_identity': None},
+        rpc.call(dummy_req.context, self.topic, {'method': 'list_stacks',
+                                    'args': {},
                                     'version': self.api_version}, None
                 ).AndReturn(engine_resp)
 
@@ -121,8 +120,8 @@ class StackControllerTest(unittest.TestCase):
         # Insert an engine RPC error and ensure we map correctly to the
         # heat exception type
         self.m.StubOutWithMock(rpc, 'call')
-        rpc.call(dummy_req.context, self.topic, {'method': 'show_stack',
-                                    'args': {'stack_identity': None},
+        rpc.call(dummy_req.context, self.topic, {'method': 'list_stacks',
+                                    'args': {},
                                     'version': self.api_version}, None
                 ).AndRaise(rpc_common.RemoteError("AttributeError"))
 
@@ -140,8 +139,8 @@ class StackControllerTest(unittest.TestCase):
         # Insert an engine RPC error and ensure we map correctly to the
         # heat exception type
         self.m.StubOutWithMock(rpc, 'call')
-        rpc.call(dummy_req.context, self.topic, {'method': 'show_stack',
-                                    'args': {'stack_identity': None},
+        rpc.call(dummy_req.context, self.topic, {'method': 'list_stacks',
+                                    'args': {},
                                     'version': self.api_version}, None
                 ).AndRaise(rpc_common.RemoteError("Exception"))
 
@@ -779,7 +778,12 @@ class StackControllerTest(unittest.TestCase):
                                             u'path': u''},
                         u'logical_resource_id': u'WikiDatabase',
                         u'resource_status_reason': u'state changed',
-                        u'event_id': 42,
+                        u'event_identity': {
+                            u'tenant': u't',
+                            u'stack_name': u'wordpress',
+                            u'stack_id': u'6',
+                            u'path': u'/resources/WikiDatabase/events/42'
+                        },
                         u'resource_status': u'IN_PROGRESS',
                         u'physical_resource_id': None,
                         u'resource_properties':
@@ -802,7 +806,7 @@ class StackControllerTest(unittest.TestCase):
         expected = {'DescribeStackEventsResponse':
             {'DescribeStackEventsResult':
             {'StackEvents':
-                [{'EventId': 42,
+                [{'EventId': u'42',
                 'StackId': u'arn:openstack:heat::t:stacks/wordpress/6',
                 'ResourceStatus': u'IN_PROGRESS',
                 'ResourceType': u'AWS::EC2::Instance',
@@ -869,6 +873,12 @@ class StackControllerTest(unittest.TestCase):
 
         # Stub out the RPC call to the engine with a pre-canned response
         engine_resp = {u'description': u'',
+                       u'resource_identity': {
+                           u'tenant': u't',
+                           u'stack_name': u'wordpress',
+                           u'stack_id': u'6',
+                           u'path': u'resources/WikiDatabase'
+                       },
                        u'stack_name': u'wordpress',
                        u'logical_resource_id': u'WikiDatabase',
                        u'resource_status_reason': None,
@@ -928,6 +938,12 @@ class StackControllerTest(unittest.TestCase):
 
         # Stub out the RPC call to the engine with a pre-canned response
         engine_resp = [{u'description': u'',
+                        u'resource_identity': {
+                            u'tenant': u't',
+                            u'stack_name': u'wordpress',
+                            u'stack_id': u'6',
+                            u'path': u'resources/WikiDatabase'
+                        },
                         u'stack_name': u'wordpress',
                         u'logical_resource_id': u'WikiDatabase',
                         u'resource_status_reason': None,
@@ -1019,7 +1035,12 @@ class StackControllerTest(unittest.TestCase):
         dummy_req = self._dummy_GET_request(params)
 
         # Stub out the RPC call to the engine with a pre-canned response
-        engine_resp = [{u'description': u'',
+        engine_resp = [{u'resource_identity': {
+                            u'tenant': u't',
+                            u'stack_name': u'wordpress',
+                            u'stack_id': u'6',
+                            u'path': u'/resources/WikiDatabase'
+                        },
                         u'stack_name': u'wordpress',
                         u'logical_resource_id': u'WikiDatabase',
                         u'resource_status_reason': None,
@@ -1031,8 +1052,7 @@ class StackControllerTest(unittest.TestCase):
                         u'resource_status': u'CREATE_COMPLETE',
                         u'physical_resource_id':
                             u'a3455d8c-9f88-404d-a85b-5315293e67de',
-                        u'resource_type': u'AWS::EC2::Instance',
-                        u'metadata': {}}]
+                        u'resource_type': u'AWS::EC2::Instance'}]
 
         self.m.StubOutWithMock(rpc, 'call')
         rpc.call(dummy_req.context, self.topic, {'method': 'identify_stack',
@@ -1083,7 +1103,6 @@ class StackControllerTest(unittest.TestCase):
         self.maxDiff = None
         self.m = mox.Mox()
 
-        config.register_engine_opts()
         cfg.CONF.set_default('engine_topic', 'engine')
         cfg.CONF.set_default('host', 'host')
         self.topic = '%s.%s' % (cfg.CONF.engine_topic, cfg.CONF.host)

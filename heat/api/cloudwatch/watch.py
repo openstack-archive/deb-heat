@@ -16,24 +16,16 @@
 """
 endpoint for heat AWS-compatible CloudWatch API
 """
-import os
-import sys
-import re
-import webob
 from heat.api.aws import exception
 from heat.api.aws import utils as api_utils
 from heat.common import wsgi
-from heat.common import config
-from heat.common import context
-from heat import utils
-from heat.engine import rpcapi as engine_rpcapi
-import heat.engine.api as engine_api
+from heat.rpc import client as rpc_client
+from heat.rpc import api as engine_api
 
-from heat.openstack.common import rpc
 import heat.openstack.common.rpc.common as rpc_common
 from heat.openstack.common import log as logging
 
-logger = logging.getLogger('heat.api.cloudwatch.controller')
+logger = logging.getLogger(__name__)
 
 
 class WatchController(object):
@@ -45,7 +37,7 @@ class WatchController(object):
 
     def __init__(self, options):
         self.options = options
-        self.engine_rpcapi = engine_rpcapi.EngineAPI()
+        self.engine_rpcapi = rpc_client.EngineClient()
 
     @staticmethod
     def _reformat_dimensions(dims):
@@ -104,10 +96,10 @@ class WatchController(object):
             engine_api.WATCH_THRESHOLD: 'Threshold',
             engine_api.WATCH_UNIT: 'Unit'}
 
-            # AWS doesn't return StackName in the main MetricAlarm
-            # structure, so we add StackName as a dimension to all responses
-            a[engine_api.WATCH_DIMENSIONS].append({'StackName':
-                                           a[engine_api.WATCH_STACK_NAME]})
+            # AWS doesn't return StackId in the main MetricAlarm
+            # structure, so we add StackId as a dimension to all responses
+            a[engine_api.WATCH_DIMENSIONS].append({'StackId':
+                                           a[engine_api.WATCH_STACK_ID]})
 
             # Reformat dimensions list into AWS API format
             a[engine_api.WATCH_DIMENSIONS] = self._reformat_dimensions(
@@ -278,7 +270,7 @@ class WatchController(object):
                     'Dimensions': dimensions}}
 
         try:
-            res = self.engine_rpcapi.create_watch_data(con, watch_name, data)
+            self.engine_rpcapi.create_watch_data(con, watch_name, data)
         except rpc_common.RemoteError as ex:
             return exception.map_remote_error(ex)
 
@@ -318,8 +310,8 @@ class WatchController(object):
 
         logger.debug("setting %s to %s" % (name, state_map[state]))
         try:
-            ret = self.engine_rpcapi.set_watch_state(con, watch_name=name,
-                                                       state=state_map[state])
+            self.engine_rpcapi.set_watch_state(con, watch_name=name,
+                                               state=state_map[state])
         except rpc_common.RemoteError as ex:
             return exception.map_remote_error(ex)
 

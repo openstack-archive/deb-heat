@@ -19,18 +19,18 @@ from sqlalchemy.orm.session import Session
 from heat.common.exception import NotFound
 from heat.db.sqlalchemy import models
 from heat.db.sqlalchemy.session import get_session
-from heat.engine import auth
+from heat.common import crypt
 
 
-def model_query(context, *args, **kwargs):
-    """
-    :param session: if present, the session to use
-    """
-    session = kwargs.get('session') or get_session()
-
+def model_query(context, *args):
+    session = _session(context)
     query = session.query(*args)
 
     return query
+
+
+def _session(context):
+    return (context and context.session) or get_session()
 
 
 def raw_template_get(context, template_id):
@@ -54,7 +54,7 @@ def raw_template_get_all(context):
 def raw_template_create(context, values):
     raw_template_ref = models.RawTemplate()
     raw_template_ref.update(values)
-    raw_template_ref.save()
+    raw_template_ref.save(_session(context))
     return raw_template_ref
 
 
@@ -97,7 +97,7 @@ def resource_get_all(context):
 def resource_create(context, values):
     resource_ref = models.Resource()
     resource_ref.update(values)
-    resource_ref.save()
+    resource_ref.save(_session(context))
     return resource_ref
 
 
@@ -112,21 +112,21 @@ def resource_get_all_by_stack(context, stack_id):
 
 
 def stack_get_by_name(context, stack_name, owner_id=None):
-    if owner_id:
-        result = model_query(context, models.Stack).\
-                            filter_by(owner_id=owner_id).\
-                            filter_by(name=stack_name).first()
-    else:
-        result = model_query(context, models.Stack).\
-                            filter_by(name=stack_name).first()
-    if (result is not None and context is not None and
-        result.tenant != context.tenant_id):
-        return None
-    return result
+    query = model_query(context, models.Stack).\
+                        filter_by(tenant=context.tenant_id).\
+                        filter_by(name=stack_name).\
+                        filter_by(owner_id=owner_id)
+
+    return query.first()
 
 
-def stack_get(context, stack_id):
+def stack_get(context, stack_id, admin=False):
     result = model_query(context, models.Stack).get(stack_id)
+
+    # If the admin flag is True, we allow retrieval of a specific
+    # stack without the tenant scoping
+    if admin:
+        return result
 
     if (result is not None and context is not None and
         result.tenant != context.tenant_id):
@@ -141,7 +141,7 @@ def stack_get_all(context):
     return results
 
 
-def stack_get_by_tenant(context):
+def stack_get_all_by_tenant(context):
     results = model_query(context, models.Stack).\
                          filter_by(owner_id=None).\
                          filter_by(tenant=context.tenant_id).all()
@@ -151,7 +151,7 @@ def stack_get_by_tenant(context):
 def stack_create(context, values):
     stack_ref = models.Stack()
     stack_ref.update(values)
-    stack_ref.save()
+    stack_ref.save(_session(context))
     return stack_ref
 
 
@@ -165,7 +165,7 @@ def stack_update(context, stack_id, values):
     old_template_id = stack.raw_template_id
 
     stack.update(values)
-    stack.save()
+    stack.save(_session(context))
 
     # When the raw_template ID changes, we delete the old template
     # after storing the new template ID
@@ -200,13 +200,14 @@ def stack_delete(context, stack_id):
     session.flush()
 
 
-def user_creds_create(values):
+def user_creds_create(context):
+    values = context.to_dict()
     user_creds_ref = models.UserCreds()
     user_creds_ref.update(values)
-    user_creds_ref.password = auth.encrypt(values['password'])
-    user_creds_ref.service_password = auth.encrypt(values['service_password'])
-    user_creds_ref.aws_creds = auth.encrypt(values['aws_creds'])
-    user_creds_ref.save()
+    user_creds_ref.password = crypt.encrypt(values['password'])
+    user_creds_ref.service_password = crypt.encrypt(values['service_password'])
+    user_creds_ref.aws_creds = crypt.encrypt(values['aws_creds'])
+    user_creds_ref.save(_session(context))
     return user_creds_ref
 
 
@@ -215,9 +216,9 @@ def user_creds_get(user_creds_id):
     # Return a dict copy of db results, do not decrypt details into db_result
     # or it can be committed back to the DB in decrypted form
     result = dict(db_result)
-    result['password'] = auth.decrypt(result['password'])
-    result['service_password'] = auth.decrypt(result['service_password'])
-    result['aws_creds'] = auth.decrypt(result['aws_creds'])
+    result['password'] = crypt.decrypt(result['password'])
+    result['service_password'] = crypt.decrypt(result['service_password'])
+    result['aws_creds'] = crypt.decrypt(result['aws_creds'])
     return result
 
 
@@ -254,7 +255,7 @@ def event_get_all_by_stack(context, stack_id):
 def event_create(context, values):
     event_ref = models.Event()
     event_ref.update(values)
-    event_ref.save()
+    event_ref.save(_session(context))
     return event_ref
 
 
@@ -275,10 +276,16 @@ def watch_rule_get_all(context):
     return results
 
 
+def watch_rule_get_all_by_stack(context, stack_id):
+    results = model_query(context, models.WatchRule).\
+                          filter_by(stack_id=stack_id).all()
+    return results
+
+
 def watch_rule_create(context, values):
     obj_ref = models.WatchRule()
     obj_ref.update(values)
-    obj_ref.save()
+    obj_ref.save(_session(context))
     return obj_ref
 
 
@@ -290,7 +297,7 @@ def watch_rule_update(context, watch_id, values):
                         (watch_id, 'that does not exist'))
 
     wr.update(values)
-    wr.save()
+    wr.save(_session(context))
 
 
 def watch_rule_delete(context, watch_name):
@@ -313,7 +320,7 @@ def watch_rule_delete(context, watch_name):
 def watch_data_create(context, values):
     obj_ref = models.WatchData()
     obj_ref.update(values)
-    obj_ref.save()
+    obj_ref.save(_session(context))
     return obj_ref
 
 

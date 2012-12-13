@@ -25,10 +25,9 @@ Usage:
 The underlying driver is loaded . SQLAlchemy is currently the only
 supported backend.
 '''
-import heat.utils
-from heat.openstack.common import utils
+from heat.db import utils
 from heat.openstack.common import cfg
-import heat.utils
+
 
 SQL_CONNECTION = 'sqlite://'
 SQL_IDLE_TIMEOUT = 3600
@@ -38,7 +37,7 @@ db_opts = [
                help='The backend to use for db'),
     ]
 
-IMPL = heat.utils.LazyPluggable('db_backend',
+IMPL = utils.LazyPluggable('db_backend',
                            sqlalchemy='heat.db.sqlalchemy.api')
 
 
@@ -47,6 +46,10 @@ def configure():
     global SQL_IDLE_TIMEOUT
     SQL_CONNECTION = cfg.CONF.sql_connection
     SQL_IDLE_TIMEOUT = cfg.CONF.sql_idle_timeout
+
+
+def get_session():
+    return IMPL.get_session()
 
 
 def raw_template_get(context, template_id):
@@ -87,8 +90,8 @@ def resource_get_by_physical_resource_id(context, physical_resource_id):
                                                      physical_resource_id)
 
 
-def stack_get(context, stack_id):
-    return IMPL.stack_get(context, stack_id)
+def stack_get(context, stack_id, admin=False):
+    return IMPL.stack_get(context, stack_id, admin)
 
 
 def stack_get_by_name(context, stack_name):
@@ -99,8 +102,8 @@ def stack_get_all(context):
     return IMPL.stack_get_all(context)
 
 
-def stack_get_by_tenant(context):
-    return IMPL.stack_get_by_tenant(context)
+def stack_get_all_by_tenant(context):
+    return IMPL.stack_get_all_by_tenant(context)
 
 
 def stack_create(context, values):
@@ -153,6 +156,10 @@ def watch_rule_get_by_name(context, watch_rule_name):
 
 def watch_rule_get_all(context):
     return IMPL.watch_rule_get_all(context)
+
+
+def watch_rule_get_all_by_stack(context, stack_id):
+    return IMPL.watch_rule_get_all_by_stack(context, stack_id)
 
 
 def watch_rule_create(context, values):

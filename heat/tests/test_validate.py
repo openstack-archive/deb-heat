@@ -11,27 +11,20 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-
-
 import sys
-import os
-
 import nose
 import unittest
 import mox
 import json
-import sqlalchemy
 
 from nose.plugins.attrib import attr
-from nose import with_setup
 
 from heat.tests.v1_1 import fakes
-from heat.engine import instance as instances
-from heat.engine import volume as volumes
-from heat.engine import manager as managers
+from heat.common import template_format
+from heat.engine.resources import instance as instances
+from heat.engine import service
 import heat.db as db_api
 from heat.engine import parser
-from heat.engine import auth
 
 test_template_volumeattach = '''
 {
@@ -227,7 +220,7 @@ class validateTest(unittest.TestCase):
         print "volumeTest teardown complete"
 
     def test_validate_volumeattach_valid(self):
-        t = json.loads(test_template_volumeattach % 'vdq')
+        t = template_format.parse(test_template_volumeattach % 'vdq')
         stack = parser.Stack(None, 'test_stack', parser.Template(t))
 
         self.m.StubOutWithMock(db_api, 'resource_get_by_name_and_stack')
@@ -239,7 +232,7 @@ class validateTest(unittest.TestCase):
         self.assertTrue(volumeattach.validate() is None)
 
     def test_validate_volumeattach_invalid(self):
-        t = json.loads(test_template_volumeattach % 'sda')
+        t = template_format.parse(test_template_volumeattach % 'sda')
         stack = parser.Stack(None, 'test_stack', parser.Template(t))
 
         self.m.StubOutWithMock(db_api, 'resource_get_by_name_and_stack')
@@ -251,59 +244,51 @@ class validateTest(unittest.TestCase):
         self.assertTrue(volumeattach.validate())
 
     def test_validate_ref_valid(self):
-        t = json.loads(test_template_ref % 'WikiDatabase')
-        t['Parameters']['KeyName']['Value'] = 'test'
-        params = {}
+        t = template_format.parse(test_template_ref % 'WikiDatabase')
 
         self.m.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().AndReturn(self.fc)
         self.m.ReplayAll()
 
-        manager = managers.EngineManager()
-        res = dict(manager.
+        engine = service.EngineService('a', 't')
+        res = dict(engine.
             validate_template(None, t))
         print 'res %s' % res
         self.assertEqual(res['Description'], 'test.')
 
     def test_validate_ref_invalid(self):
-        t = json.loads(test_template_ref % 'WikiDatabasez')
-        t['Parameters']['KeyName']['Value'] = 'test'
-        params = {}
+        t = template_format.parse(test_template_ref % 'WikiDatabasez')
 
         self.m.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().AndReturn(self.fc)
         self.m.ReplayAll()
 
-        manager = managers.EngineManager()
-        res = dict(manager.
+        engine = service.EngineService('a', 't')
+        res = dict(engine.
             validate_template(None, t))
         self.assertNotEqual(res['Description'], 'Successfully validated')
 
     def test_validate_findinmap_valid(self):
-        t = json.loads(test_template_findinmap_valid)
-        t['Parameters']['KeyName']['Value'] = 'test'
-        params = {}
+        t = template_format.parse(test_template_findinmap_valid)
 
         self.m.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().AndReturn(self.fc)
         self.m.ReplayAll()
 
-        manager = managers.EngineManager()
-        res = dict(manager.
+        engine = service.EngineService('a', 't')
+        res = dict(engine.
             validate_template(None, t))
         self.assertEqual(res['Description'], 'test.')
 
     def test_validate_findinmap_invalid(self):
-        t = json.loads(test_template_findinmap_invalid)
-        t['Parameters']['KeyName']['Value'] = 'test'
-        params = {}
+        t = template_format.parse(test_template_findinmap_invalid)
 
         self.m.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().AndReturn(self.fc)
         self.m.ReplayAll()
 
-        manager = managers.EngineManager()
-        res = dict(manager.
+        engine = service.EngineService('a', 't')
+        res = dict(engine.
             validate_template(None, t))
         self.assertNotEqual(res['Description'], 'Successfully validated')
 

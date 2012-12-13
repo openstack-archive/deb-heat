@@ -26,12 +26,14 @@ from nose.plugins.attrib import attr
 from nose import with_setup
 
 from heat.tests.v1_1 import fakes
-from heat.engine import instance as instances
+from heat.engine.resources import instance as instances
 import heat.db as db_api
+from heat.common import template_format
 from heat.engine import parser
+from heat.openstack.common import uuidutils
 
 
-@attr(tag=['unit', 'resource'])
+@attr(tag=['unit', 'resource', 'instance'])
 @attr(speed='fast')
 class instancesTest(unittest.TestCase):
     def setUp(self):
@@ -46,27 +48,23 @@ class instancesTest(unittest.TestCase):
 
     def test_instance_create(self):
         f = open("%s/WordPress_Single_Instance_gold.template" % self.path)
-        t = json.loads(f.read())
+        t = template_format.parse(f.read())
         f.close()
 
-        t['Parameters']['KeyName']['Value'] = 'test'
-        stack = parser.Stack(None, 'test_stack', parser.Template(t),
-                             stack_id=-1)
-
-        self.m.StubOutWithMock(db_api, 'resource_get_by_name_and_stack')
-        db_api.resource_get_by_name_and_stack(None, 'test_resource_name',
-                                              stack).AndReturn(None)
-
-        self.m.StubOutWithMock(instances.Instance, 'nova')
-        instances.Instance.nova().MultipleTimes().AndReturn(self.fc)
-
-        self.m.ReplayAll()
+        stack_name = 'instance_create_test_stack'
+        template = parser.Template(t)
+        params = parser.Parameters(stack_name, template, {'KeyName': 'test'})
+        stack = parser.Stack(None, stack_name, template, params,
+                             stack_id=uuidutils.generate_uuid())
 
         t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
         t['Resources']['WebServer']['Properties']['InstanceType'] = \
             '256 MB Server'
-        instance = instances.Instance('test_resource_name',
+        instance = instances.Instance('create_instance_name',
                                       t['Resources']['WebServer'], stack)
+
+        self.m.StubOutWithMock(instance, 'nova')
+        instance.nova().MultipleTimes().AndReturn(self.fc)
 
         instance.t = instance.stack.resolve_runtime_data(instance.t)
 
@@ -75,42 +73,37 @@ class instancesTest(unittest.TestCase):
                                 instance.t['Properties']['UserData'])
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(image=1, flavor=1, key_name='test',
-                name='test_stack.test_resource_name', security_groups=None,
+                name='%s.%s' % (stack_name, instance.name),
+                security_groups=None,
                 userdata=server_userdata, scheduler_hints=None,
                 meta=None).AndReturn(self.fc.servers.list()[1])
         self.m.ReplayAll()
 
-        instance.create()
+        self.assertEqual(instance.create(), None)
 
         # this makes sure the auto increment worked on instance creation
         self.assertTrue(instance.id > 0)
+        self.m.VerifyAll()
 
     def test_instance_create_delete(self):
         f = open("%s/WordPress_Single_Instance_gold.template" % self.path)
-        t = json.loads(f.read())
+        t = template_format.parse(f.read())
         f.close()
 
-        t['Parameters']['KeyName']['Value'] = 'test'
-        stack = parser.Stack(None, 'test_stack', parser.Template(t),
-                             stack_id=-1)
-
-        self.m.StubOutWithMock(db_api, 'resource_get_by_name_and_stack')
-        db_api.resource_get_by_name_and_stack(None, 'test_resource_name',
-                                              stack).AndReturn(None)
-
-        self.m.StubOutWithMock(instances.Instance, 'nova')
-        instances.Instance.nova().AndReturn(self.fc)
-        instances.Instance.nova().AndReturn(self.fc)
-        instances.Instance.nova().AndReturn(self.fc)
-        instances.Instance.nova().AndReturn(self.fc)
-
-        self.m.ReplayAll()
+        stack_name = 'instance_create_delete_test_stack'
+        template = parser.Template(t)
+        params = parser.Parameters(stack_name, template, {'KeyName': 'test'})
+        stack = parser.Stack(None, stack_name, template, params,
+                             stack_id=uuidutils.generate_uuid())
 
         t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
         t['Resources']['WebServer']['Properties']['InstanceType'] = \
             '256 MB Server'
-        instance = instances.Instance('test_resource_name',
+        instance = instances.Instance('create_delete_instance_name',
                                       t['Resources']['WebServer'], stack)
+
+        self.m.StubOutWithMock(instance, 'nova')
+        instance.nova().MultipleTimes().AndReturn(self.fc)
 
         instance.t = instance.stack.resolve_runtime_data(instance.t)
 
@@ -119,20 +112,22 @@ class instancesTest(unittest.TestCase):
                                 instance.t['Properties']['UserData'])
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(image=1, flavor=1, key_name='test',
-                name='test_resource_name', security_groups=None,
+                name='%s.%s' % (stack_name, instance.name),
+                security_groups=None,
                 userdata=server_userdata, scheduler_hints=None,
                 meta=None).AndReturn(self.fc.servers.list()[1])
         self.m.ReplayAll()
 
-        instance.instance_id = 1234
-        instance.create()
+        self.assertEqual(instance.create(), None)
+        instance.resource_id = 1234
 
         # this makes sure the auto increment worked on instance creation
         self.assertTrue(instance.id > 0)
 
         instance.delete()
-        self.assertTrue(instance.instance_id is None)
+        self.assertTrue(instance.resource_id is None)
         self.assertEqual(instance.state, instance.DELETE_COMPLETE)
+        self.m.VerifyAll()
 
     # allows testing of the test directly, shown below
     if __name__ == '__main__':

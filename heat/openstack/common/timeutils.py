@@ -62,14 +62,21 @@ def parse_strtime(timestr, fmt=PERFECT_TIME_FORMAT):
 
 
 def normalize_time(timestamp):
-    """Normalize time in arbitrary timezone to UTC"""
+    """Normalize time in arbitrary timezone to UTC naive object"""
     offset = timestamp.utcoffset()
-    return timestamp.replace(tzinfo=None) - offset if offset else timestamp
+    if offset is None:
+        return timestamp
+    return timestamp.replace(tzinfo=None) - offset
 
 
 def is_older_than(before, seconds):
     """Return True if before is older than seconds."""
     return utcnow() - before > datetime.timedelta(seconds=seconds)
+
+
+def is_newer_than(after, seconds):
+    """Return True if after is newer than seconds."""
+    return after - utcnow() > datetime.timedelta(seconds=seconds)
 
 
 def utcnow_ts():
@@ -80,7 +87,10 @@ def utcnow_ts():
 def utcnow():
     """Overridable version of utils.utcnow."""
     if utcnow.override_time:
-        return utcnow.override_time
+        try:
+            return utcnow.override_time.pop(0)
+        except AttributeError:
+            return utcnow.override_time
     return datetime.datetime.utcnow()
 
 
@@ -88,14 +98,21 @@ utcnow.override_time = None
 
 
 def set_time_override(override_time=datetime.datetime.utcnow()):
-    """Override utils.utcnow to return a constant time."""
+    """
+    Override utils.utcnow to return a constant time or a list thereof,
+    one at a time.
+    """
     utcnow.override_time = override_time
 
 
 def advance_time_delta(timedelta):
     """Advance overridden time using a datetime.timedelta."""
     assert(not utcnow.override_time is None)
-    utcnow.override_time += timedelta
+    try:
+        for dt in utcnow.override_time:
+            dt += timedelta
+    except TypeError:
+        utcnow.override_time += timedelta
 
 
 def advance_time_seconds(seconds):
@@ -121,6 +138,23 @@ def marshall_now(now=None):
 
 def unmarshall_time(tyme):
     """Unmarshall a datetime dict."""
-    return datetime.datetime(day=tyme['day'], month=tyme['month'],
-                 year=tyme['year'], hour=tyme['hour'], minute=tyme['minute'],
-                 second=tyme['second'], microsecond=tyme['microsecond'])
+    return datetime.datetime(day=tyme['day'],
+                             month=tyme['month'],
+                             year=tyme['year'],
+                             hour=tyme['hour'],
+                             minute=tyme['minute'],
+                             second=tyme['second'],
+                             microsecond=tyme['microsecond'])
+
+
+def delta_seconds(before, after):
+    """
+    Compute the difference in seconds between two date, time, or
+    datetime objects (as a float, to microsecond resolution).
+    """
+    delta = after - before
+    try:
+        return delta.total_seconds()
+    except AttributeError:
+        return ((delta.days * 24 * 3600) + delta.seconds +
+                float(delta.microseconds) / (10 ** 6))

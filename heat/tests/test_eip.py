@@ -23,7 +23,9 @@ import json
 
 from nose.plugins.attrib import attr
 
-from heat.engine import eip
+from heat.common import context
+from heat.common import template_format
+from heat.engine.resources import eip
 from heat.engine import parser
 from heat.tests.v1_1 import fakes
 
@@ -46,19 +48,19 @@ class EIPTest(unittest.TestCase):
         self.path = os.path.dirname(os.path.realpath(__file__)).\
             replace('heat/tests', 'templates')
         f = open("%s/WordPress_Single_Instance_With_EIP.template" % self.path)
-        t = json.loads(f.read())
+        t = template_format.parse(f.read())
         f.close()
         return t
 
     def parse_stack(self, t):
-        class DummyContext():
-            tenant = 'test_tenant'
-            username = 'test_username'
-            password = 'password'
-            auth_url = 'http://localhost:5000/v2.0'
-        t['Parameters']['KeyName']['Value'] = 'test'
-        stack = parser.Stack(DummyContext(), 'test_stack', parser.Template(t),
-                             stack_id=-1)
+        ctx = context.RequestContext.from_dict({
+            'tenant': 'test_tenant',
+            'username': 'test_username',
+            'password': 'password',
+            'auth_url': 'http://localhost:5000/v2.0'})
+        template = parser.Template(t)
+        params = parser.Parameters('test_stack', template, {'KeyName': 'test'})
+        stack = parser.Stack(ctx, 'test_stack', template, params)
 
         return stack
 

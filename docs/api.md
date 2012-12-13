@@ -86,6 +86,7 @@ GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/template
 
 Parameters:
 
+* `tenant_id` The unique identifier of the tenant or account
 * `stack_name` The name of the stack to look up
 * `stack_id` The unique identifier of the stack to look up
 
@@ -161,3 +162,127 @@ Parameters:
 * `template_url` The URL of the template to validate
 * `template` A JSON template to validate - this takes precendence over the `template_url` if both are supplied.
 * `keyn`, `valuen` User-defined parameters to pass to the Template
+
+List Stack Resources
+--------------------
+
+```
+GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/resources
+```
+
+Parameters:
+
+* `tenant_id` The unique identifier of the tenant or account
+* `stack_name` The name of the stack to look up
+* `stack_id` The unique identifier of the stack to look up
+
+Find Stack Resources by Name
+----------------------------
+
+```
+GET /v1/{tenant_id}/stacks/{stack_name}/resources
+```
+
+Parameters:
+
+* `stack_name` The name of the stack to look up
+
+Result:
+
+```
+HTTP/1.1 302 Found
+Location: http://heat.example.com:8004/v1/{tenant_id}/stacks/{stack_name}/{stack_id}/resources
+```
+
+This is a shortcut to go directly to the list of stack resources when only the stack name is known.
+
+Get Resource
+------------
+
+```
+GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/resources/{resource_name}
+```
+
+Parameters:
+
+* `tenant_id` The unique identifier of the tenant or account
+* `stack_name` The name of the stack to look up
+* `stack_id` The unique identifier of the stack to look up
+* `resource_name` The name of the resource in the template
+
+Get Resource Metadata
+---------------------
+
+```
+GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/resources/{resource_name}/metadata
+```
+
+Parameters:
+
+* `tenant_id` The unique identifier of the tenant or account
+* `stack_name` The name of the stack to look up
+* `stack_id` The unique identifier of the stack to look up
+* `resource_name` The name of the resource in the template
+
+List Stack Events
+-----------------
+
+```
+GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/events
+```
+
+Parameters:
+
+* `tenant_id` The unique identifier of the tenant or account
+* `stack_name` The name of the stack to look up
+* `stack_id` The unique identifier of the stack to look up
+
+Find Stack Events by Name
+-------------------------
+
+```
+GET /v1/{tenant_id}/stacks/{stack_name}/events
+```
+
+Parameters:
+
+* `stack_name` The name of the stack to look up
+
+Result:
+
+```
+HTTP/1.1 302 Found
+Location: http://heat.example.com:8004/v1/{tenant_id}/stacks/{stack_name}/{stack_id}/events
+```
+
+This is a shortcut to go directly to the list of stack events when only the stack name is known.
+
+
+List Resource Events
+--------------------
+
+```
+GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/resources/{resource_name}/events
+```
+
+Parameters:
+
+* `tenant_id` The unique identifier of the tenant or account
+* `stack_name` The name of the stack to look up
+* `stack_id` The unique identifier of the stack to look up
+* `resource_name` The name of the resource in the template
+
+Get Event
+---------
+
+```
+GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/resources/{resource_name}/events/{event_id}
+```
+
+Parameters:
+
+* `tenant_id` The unique identifier of the tenant or account
+* `stack_name` The name of the stack to look up
+* `stack_id` The unique identifier of the stack to look up
+* `resource_name` The name of the resource in the template
+* `event_id` The ID of the event

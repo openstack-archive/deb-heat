@@ -18,20 +18,19 @@ import unittest
 from nose.plugins.attrib import attr
 import mox
 import json
+import sys
 
 from heat.common import context
 from heat.common import exception
+from heat.common import template_format
 from heat.engine import parser
-from heat.engine import checkeddict
-from heat.engine.resources import Resource
+from heat.engine import parameters
+from heat.engine import template
+from heat.engine.resource import Resource
 
 
 def join(raw):
-    def handle_join(args):
-        delim, strs = args
-        return delim.join(strs)
-
-    return parser._resolve(lambda k, v: k == 'Fn::Join', handle_join, raw)
+    return parser.Template.resolve_joins(raw)
 
 
 @attr(tag=['unit', 'parser'])
@@ -97,7 +96,7 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(join(raw), 'foo bar\nbaz')
 
 
-mapping_template = json.loads('''{
+mapping_template = template_format.parse('''{
   "Mappings" : {
     "ValidMapping" : {
       "TestKey" : { "TestValue" : "wibble" }
@@ -124,16 +123,16 @@ class TemplateTest(unittest.TestCase):
     def test_defaults(self):
         empty = parser.Template({})
         try:
-            empty[parser.VERSION]
+            empty[template.VERSION]
         except KeyError:
             pass
         else:
             self.fail('Expected KeyError for version not present')
-        self.assertEqual(empty[parser.DESCRIPTION], 'No description')
-        self.assertEqual(empty[parser.MAPPINGS], {})
-        self.assertEqual(empty[parser.PARAMETERS], {})
-        self.assertEqual(empty[parser.RESOURCES], {})
-        self.assertEqual(empty[parser.OUTPUTS], {})
+        self.assertEqual(empty[template.DESCRIPTION], 'No description')
+        self.assertEqual(empty[template.MAPPINGS], {})
+        self.assertEqual(empty[template.PARAMETERS], {})
+        self.assertEqual(empty[template.RESOURCES], {})
+        self.assertEqual(empty[template.OUTPUTS], {})
 
     def test_invalid_section(self):
         tmpl = parser.Template({'Foo': ['Bar']})
@@ -182,8 +181,8 @@ class TemplateTest(unittest.TestCase):
                          r_snippet)
 
     def test_param_ref_missing(self):
-        params = checkeddict.CheckedDict("test")
-        params.addschema('foo', {"Required": True})
+        tmpl = {'Parameters': {'foo': {'Type': 'String', 'Required': True}}}
+        params = parameters.Parameters('test', tmpl)
         snippet = {"Ref": "foo"}
         self.assertRaises(exception.UserParameterMissing,
                           parser.Template.resolve_param_refs,
@@ -207,6 +206,23 @@ class TemplateTest(unittest.TestCase):
         self.assertEqual(parser.Template.resolve_resource_refs(p_snippet,
                                                                resources),
                          p_snippet)
+
+    def test_join_reduce(self):
+        join = {"Fn::Join": [" ", ["foo", "bar", "baz", {'Ref': 'baz'},
+            "bink", "bonk"]]}
+        self.assertEqual(parser.Template.reduce_joins(join),
+            {"Fn::Join": [" ", ["foo bar baz", {'Ref': 'baz'},
+            "bink bonk"]]})
+
+        join = {"Fn::Join": [" ", ["foo", {'Ref': 'baz'},
+            "bink"]]}
+        self.assertEqual(parser.Template.reduce_joins(join),
+            {"Fn::Join": [" ", ["foo", {'Ref': 'baz'},
+            "bink"]]})
+
+        join = {"Fn::Join": [" ", [{'Ref': 'baz'}]]}
+        self.assertEqual(parser.Template.reduce_joins(join),
+            {"Fn::Join": [" ", [{'Ref': 'baz'}]]})
 
     def test_join(self):
         join = {"Fn::Join": [" ", ["foo", "bar"]]}
@@ -270,50 +286,6 @@ class TemplateTest(unittest.TestCase):
         dict_snippet = {"Fn::Base64": {"foo": "bar"}}
         self.assertRaises(TypeError, parser.Template.resolve_base64,
                           dict_snippet)
-
-
-params_schema = json.loads('''{
-  "Parameters" : {
-    "User" : { "Type": "String" },
-    "Defaulted" : {
-      "Type": "String",
-      "Default": "foobar"
-    }
-  }
-}''')
-
-
-@attr(tag=['unit', 'parser', 'parameters'])
-@attr(speed='fast')
-class ParametersTest(unittest.TestCase):
-    def test_pseudo_params(self):
-        params = parser.Parameters('test_stack', {"Parameters": {}})
-
-        self.assertEqual(params['AWS::StackName'], 'test_stack')
-        self.assertTrue('AWS::Region' in params)
-
-    def test_user_param(self):
-        params = parser.Parameters('test', params_schema, {'User': 'wibble'})
-        user_params = params.user_parameters()
-        self.assertEqual(user_params['User'], 'wibble')
-
-    def test_user_param_default(self):
-        params = parser.Parameters('test', params_schema)
-        user_params = params.user_parameters()
-        self.assertTrue('Defaulted' not in user_params)
-
-    def test_user_param_nonexist(self):
-        params = parser.Parameters('test', params_schema)
-        user_params = params.user_parameters()
-        self.assertTrue('User' not in user_params)
-
-    def test_schema_invariance(self):
-        params1 = parser.Parameters('test', params_schema)
-        params1['Defaulted'] = "wibble"
-        self.assertEqual(params1['Defaulted'], 'wibble')
-
-        params2 = parser.Parameters('test', params_schema)
-        self.assertEqual(params2['Defaulted'], 'foobar')
 
 
 @attr(tag=['unit', 'parser', 'stack'])
