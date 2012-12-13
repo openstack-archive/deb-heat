@@ -1,4 +1,4 @@
-heat (0.0.7-1) experimental; urgency=low
+heat (0.0.8~0.1+772818102c-1) experimental; urgency=low
 
   * Initial release (Closes: #695302).
 
