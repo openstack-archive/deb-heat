@@ -138,15 +138,3 @@ Description: service to orchestrate multiple composite cloud applications (Cloud
  CloudFormation-compatible Query API.
  .
  This package contains the cloudwatch API.
-
-Package: heat-metadata
-Architecture: all    
-Pre-Depends: dpkg (>= 1.15.6~)
-Depends: ${ostack-lsb-base}, ${python:Depends}, ${misc:Depends}, heat-common (=${binary:Version}),
- adduser
-Description: service to orchestrate multiple composite cloud applications (metadata API)
- Heat is a service to orchestrate multiple composite cloud applications using
- templates, through both an OpenStack-native ReST API and a
- CloudFormation-compatible Query API.
- .
- This package contains the metadata API.

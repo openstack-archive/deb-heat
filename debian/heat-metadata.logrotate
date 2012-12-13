@@ -1,4 +1,0 @@
-/var/log/heat/metadata.log {
-    daily
-    missingok
-}
