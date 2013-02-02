@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: heat\n"
 "Report-Msgid-Bugs-To: heat@packages.debian.org\n"
-"POT-Creation-Date: 2012-12-07 07:50+0000\n"
+"POT-Creation-Date: 2013-02-02 17:40+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -92,4 +92,93 @@ msgstr ""
 #: ../heat-api-cfn.templates:4001 ../heat-api-cloudwatch.templates:4001
 #: ../heat-api.templates:4001
 msgid "Auth server password:"
+msgstr ""
+
+#. Type: boolean
+#. Description
+#: ../heat-api.templates:5001
+msgid "Register Heat in the keystone endpoint catalog?"
+msgstr ""
+
+#. Type: boolean
+#. Description
+#: ../heat-api.templates:5001
+msgid ""
+"Each Openstack services (each API) should be registered in order to be "
+"accessible. This is done using \"keystone service-create\" and \"keystone "
+"endpoint-create\". Select if you want to run these commands now."
+msgstr ""
+
+#. Type: boolean
+#. Description
+#: ../heat-api.templates:5001
+msgid ""
+"Note that you will need to have an up and running keystone server on which "
+"to connect using the Keystone auth token."
+msgstr ""
+
+#. Type: string
+#. Description
+#: ../heat-api.templates:6001
+msgid "Keystone IP address:"
+msgstr ""
+
+#. Type: string
+#. Description
+#: ../heat-api.templates:6001
+msgid ""
+"Enter the IP address of your keystone server, so that heat-api can contact "
+"Keystone to do the Heat service and endpoint creation."
+msgstr ""
+
+#. Type: password
+#. Description
+#: ../heat-api.templates:7001
+msgid "Keystone Auth Token:"
+msgstr ""
+
+#. Type: password
+#. Description
+#: ../heat-api.templates:7001
+msgid ""
+"To configure its endpoint in Keystone, heat-api needs the Keystone auth "
+"token."
+msgstr ""
+
+#. Type: string
+#. Description
+#: ../heat-api.templates:8001
+msgid "Heat endpoint IP address:"
+msgstr ""
+
+#. Type: string
+#. Description
+#: ../heat-api.templates:8001
+msgid ""
+"Enter the IP address that will be used to contact Heat (eg: the Heat "
+"endpoint IP address)."
+msgstr ""
+
+#. Type: string
+#. Description
+#: ../heat-api.templates:8001
+msgid ""
+"This IP address should be accessible from the clients that will use this "
+"service, so if you are installing a public cloud, this should be a public IP "
+"address."
+msgstr ""
+
+#. Type: string
+#. Description
+#: ../heat-api.templates:9001
+msgid "Name of the region to register:"
+msgstr ""
+
+#. Type: string
+#. Description
+#: ../heat-api.templates:9001
+msgid ""
+"Openstack can be used using availability zones, with each region "
+"representing a location. Please enter the zone that you wish to use when "
+"registering the endpoint."
 msgstr ""
