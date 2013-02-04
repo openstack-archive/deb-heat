@@ -13,16 +13,13 @@
 #    under the License.
 
 
-import sys
 import os
 import optparse
 import paramiko
 import subprocess
 import hashlib
 import email
-import json
 import time  # for sleep
-import nose
 import errno
 import tempfile
 import stat
@@ -30,20 +27,16 @@ import re
 from pkg_resources import resource_string
 from lxml import etree
 
-from nose.plugins.attrib import attr
-from nose import with_setup
 from nose.exc import SkipTest
 
-try:
-    from glanceclient import client as glance_client
-except ImportError:
-    from glance import client as glance_client
+from glanceclient import client as glance_client
+from keystoneclient.v2_0 import client as keystone_client
 from novaclient.v1_1 import client as nova_client
 import heat
 from heat.common import template_format
 from heat.engine import parser
-from heat import client as heat_client
-from heat import boto_client as heat_client_boto
+from heat.cfn_client import client as heat_client
+from heat.cfn_client import boto_client as heat_client_boto
 from keystoneclient.v2_0 import client
 
 DEFAULT_STACKNAME = 'teststack'
@@ -70,17 +63,20 @@ class Instance(object):
                                   'keystone authentication required')
 
         self.creds = dict(username=os.environ['OS_USERNAME'],
-                password=os.environ['OS_PASSWORD'],
-                tenant=os.environ['OS_TENANT_NAME'],
-                auth_url=os.environ['OS_AUTH_URL'],
-                strategy=os.environ['OS_AUTH_STRATEGY'])
+                          password=os.environ['OS_PASSWORD'],
+                          tenant=os.environ['OS_TENANT_NAME'],
+                          auth_url=os.environ['OS_AUTH_URL'],
+                          strategy=os.environ['OS_AUTH_STRATEGY'])
         dbusername = 'testuser'
 
         self.novaclient = nova_client.Client(self.creds['username'],
-            self.creds['password'], self.creds['tenant'],
-            self.creds['auth_url'], service_type='compute')
+                                             self.creds['password'],
+                                             self.creds['tenant'],
+                                             self.creds['auth_url'],
+                                             service_type='compute')
 
         self.ssh = paramiko.SSHClient()
+        self.sftp = None
 
         self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
@@ -99,7 +95,7 @@ class Instance(object):
                 self.testcase.assertTrue(tries < 150, 'Timed out')
                 time.sleep(10)
             print 'Instance (%s) ip (%s) status (%s)' % (self.name, self.ip,
-                 server.status)
+                                                         server.status)
 
         tries = 0
         while True:
@@ -113,7 +109,7 @@ class Instance(object):
                 time.sleep(10)
             else:
                 print 'Instance (%s) ip (%s) SSH detected.' % (self.name,
-                        self.ip)
+                                                               self.ip)
                 break
 
         tries = 0
@@ -121,8 +117,11 @@ class Instance(object):
             try:
                 tries += 1
                 self.testcase.assertTrue(tries < 50, 'Timed out')
-                self.ssh.connect(self.ip, username='ec2-user',
-                    allow_agent=True, look_for_keys=True, password='password')
+                self.ssh.connect(self.ip,
+                                 username='ec2-user',
+                                 allow_agent=True,
+                                 look_for_keys=True,
+                                 password='password')
             except paramiko.AuthenticationException:
                 print 'Authentication error'
                 time.sleep(2)
@@ -199,7 +198,7 @@ class Instance(object):
         files = stdout.readlines()
 
         cfn_tools_files = ['cfn-init', 'cfn-hup', 'cfn-signal',
-                'cfn-get-metadata', 'cfn_helper.py']
+                           'cfn-get-metadata', 'cfn_helper.py']
 
         cfntools = {}
         for file in cfn_tools_files:
@@ -271,7 +270,7 @@ class Instance(object):
         t_data_list = joined_t_data.split('\n')
         # must match user data injection
         t_data_list.insert(len(t_data_list) - 1,
-                u'touch /var/lib/cloud/instance/provision-finished')
+                           u'touch /var/lib/cloud/instance/provision-finished')
 
         self.testcase.assertEqual(t_data_list, remote_file_list_u)
 
@@ -298,16 +297,6 @@ class Instance(object):
                 with open(filepaths[file]) as f:
                     self.testcase.assertEqual(data, f.read())
 
-    def get_ssh_client(self):
-        if self.ssh.get_transport() != None:
-            return self.ssh
-        return None
-
-    def get_sftp_client(self):
-        if self.sftp != None:
-            return self.sftp
-        return None
-
     def close_ssh_client(self):
         self.ssh.close()
 
@@ -315,7 +304,7 @@ class Instance(object):
 class Stack(object):
 
     def __init__(self, testcase, template_file, distribution, arch, jeos_type,
-            stack_paramstr, stackname=DEFAULT_STACKNAME):
+                 stack_paramstr, stackname=DEFAULT_STACKNAME):
 
         self.testcase = testcase
         self.stackname = stackname
@@ -324,27 +313,50 @@ class Stack(object):
         self.stack_paramstr = stack_paramstr
 
         self.stack_id_re = re.compile("^arn:openstack:heat::[0-9a-z]{32}:" +
-                                      "stacks/" + self.stackname + "/[0-9]*$")
+                                      "stacks/" + self.stackname +
+                                      # Stack ID UUID in standard form
+                                      # as returned by uuid.uuid4()
+                                      "/[0-9a-f]{8}-" +
+                                      "[0-9a-f]{4}-" +
+                                      "[0-9a-f]{4}-" +
+                                      "[0-9a-f]{4}-" +
+                                      "[0-9a-f]{12}$")
 
         self.creds = dict(username=os.environ['OS_USERNAME'],
                           password=os.environ['OS_PASSWORD'],
                           tenant=os.environ['OS_TENANT_NAME'],
                           auth_url=os.environ['OS_AUTH_URL'],
                           strategy=os.environ['OS_AUTH_STRATEGY'])
+
         self.dbusername = 'testuser'
 
         self.testcase.assertEqual(os.environ['OS_AUTH_STRATEGY'],
                                   'keystone',
                                   'keystone authentication required')
 
-        self.glanceclient = glance_client.Client(host="0.0.0.0", port=9292,
-            use_ssl=False, auth_tok=None, creds=self.creds)
+        kc_creds = dict(username=os.environ['OS_USERNAME'],
+                        password=os.environ['OS_PASSWORD'],
+                        tenant_name=os.environ['OS_TENANT_NAME'],
+                        auth_url=os.environ['OS_AUTH_URL'])
+        kc = keystone_client.Client(**kc_creds)
+        glance_url = kc.service_catalog.url_for(service_type='image',
+                                                endpoint_type='publicURL')
+
+        version_string = '/v1'
+        if glance_url.endswith(version_string):
+            glance_url = glance_url[:-len(version_string)]
+
+        auth_token = kc.auth_token
+        self.glanceclient = glance_client.Client(1, glance_url,
+                                                 token=auth_token)
 
         self.prepare_jeos(distribution, arch, jeos_type)
 
         self.novaclient = nova_client.Client(self.creds['username'],
-            self.creds['password'], self.creds['tenant'],
-            self.creds['auth_url'], service_type='compute')
+                                             self.creds['password'],
+                                             self.creds['tenant'],
+                                             self.creds['auth_url'],
+                                             service_type='compute')
 
         self.heatclient = self._create_heat_client()
 
@@ -409,7 +421,7 @@ class Stack(object):
         self.testcase.assertTrue(create_list)
         self.testcase.assertEqual(len(create_list), 1)
         stack_id = create_list[0].findtext('StackId')
-        self.testcase.assertTrue(stack_id != None)
+        self.testcase.assertTrue(stack_id is not None)
         self.check_stackid(stack_id)
 
     def _check_update_result(self, result):
@@ -419,18 +431,21 @@ class Stack(object):
         self.testcase.assertTrue(update_list)
         self.testcase.assertEqual(len(update_list), 1)
         stack_id = update_list[0].findtext('StackId')
-        self.testcase.assertTrue(stack_id != None)
+        self.testcase.assertTrue(stack_id is not None)
         self.check_stackid(stack_id)
 
     def check_stackid(self, stack_id):
         print "Checking %s matches expected format" % (stack_id)
-        self.testcase.assertTrue(self.stack_id_re.match(stack_id) != None)
+        self.testcase.assertTrue(self.stack_id_re.match(stack_id) is not None)
 
     def _create_heat_client(self):
         return heat_client.get_client('0.0.0.0', 8000,
-            self.creds['username'], self.creds['password'],
-            self.creds['tenant'], self.creds['auth_url'],
-            self.creds['strategy'], None, None, False)
+                                      self.creds['username'],
+                                      self.creds['password'],
+                                      self.creds['tenant'],
+                                      self.creds['auth_url'],
+                                      self.creds['strategy'],
+                                      None, None, False)
 
     def get_state(self):
         stack_list = self.heatclient.list_stacks(StackName=self.stackname)
@@ -467,7 +482,7 @@ class Stack(object):
         imagename = p_os + '-' + arch + '-' + type
 
         # skip creating jeos if image already available
-        if not self.poll_glance(self.glanceclient, imagename, False):
+        if not self.poll_glance(imagename, False):
             self.testcase.assertEqual(os.geteuid(), 0,
                                       'No JEOS found - run as root to create')
 
@@ -478,24 +493,24 @@ class Stack(object):
             # asynchronous. So poll glance until image is registered.
             self.poll_glance(self.glanceclient, imagename, True)
 
-    def poll_glance(self, gclient, imagename, block):
-        imagelistname = None
+    def poll_glance(self, imagename, block):
+        image = None
         tries = 0
-        while imagelistname != imagename:
+        while image is None:
             tries += 1
             self.testcase.assertTrue(tries < 50, 'Timed out')
             if block:
                 time.sleep(15)
             print "Checking glance for image registration"
-            imageslist = gclient.get_images()
-            for x in imageslist:
-                imagelistname = x['name']
-                if imagelistname == imagename:
-                    print "Found image registration for %s" % imagename
-                    # technically not necessary, but glance registers image
-                    # before completely through with its operations
-                    time.sleep(10)
-                    return True
+            imageslist = self.glanceclient.images.list(
+                filters={'name': imagename})
+            image = next(imageslist, None)
+            if image:
+                print "Found image registration for %s" % imagename
+                # technically not necessary, but glance registers image
+                # before completely through with its operations
+                time.sleep(10)
+                return True
             if not block:
                 break
         return False
@@ -557,9 +572,9 @@ class StackBoto(Stack):
         # and extract the ec2-credentials, so we can pass them into the
         # boto client
         keystone = client.Client(username=self.creds['username'],
-                             password=self.creds['password'],
-                             tenant_name=self.creds['tenant'],
-                             auth_url=self.creds['auth_url'])
+                                 password=self.creds['password'],
+                                 tenant_name=self.creds['tenant'],
+                                 auth_url=self.creds['auth_url'])
         ksusers = keystone.users.list()
         ksuid = [u.id for u in ksusers if u.name == self.creds['username']]
         self.testcase.assertEqual(len(ksuid), 1)
@@ -574,11 +589,14 @@ class StackBoto(Stack):
         # compatibility with the non-boto client wrapper, and are
         # actually ignored, only the port and credentials are used
         return heat_client_boto.get_client('0.0.0.0', 8000,
-            self.creds['username'], self.creds['password'],
-            self.creds['tenant'], self.creds['auth_url'],
-            self.creds['strategy'], None, None, False,
-            aws_access_key=ec2creds[0].access,
-            aws_secret_key=ec2creds[0].secret)
+                                           self.creds['username'],
+                                           self.creds['password'],
+                                           self.creds['tenant'],
+                                           self.creds['auth_url'],
+                                           self.creds['strategy'],
+                                           None, None, False,
+                                           aws_access_key=ec2creds[0].access,
+                                           aws_secret_key=ec2creds[0].secret)
 
     def get_state(self):
         stack_list = self.heatclient.list_stacks()
@@ -625,8 +643,3 @@ def remove_host(ip, hostname):
             tmp.write(line)
         os.chmod(tmp.name, perms)
         os.rename(tmp.name, '/etc/hosts')
-
-
-if __name__ == '__main__':
-    sys.argv.append(__file__)
-    nose.main()

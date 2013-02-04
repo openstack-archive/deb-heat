@@ -13,14 +13,11 @@
 #    under the License.
 
 
-import sys
 import os
 import re
 
-import nose
 import unittest
 import mox
-import json
 
 from nose.plugins.attrib import attr
 
@@ -32,7 +29,7 @@ from utils import skip_if
 
 try:
     from swiftclient import client as swiftclient
-except:
+except ImportError:
     skip_test = True
 else:
     skip_test = False
@@ -75,8 +72,8 @@ class s3Test(unittest.TestCase):
 
     def create_resource(self, t, stack, resource_name):
         resource = s3.S3Bucket('test_resource',
-                                      t['Resources'][resource_name],
-                                      stack)
+                               t['Resources'][resource_name],
+                               stack)
         self.assertEqual(None, resource.create())
         self.assertEqual(s3.S3Bucket.CREATE_COMPLETE, resource.state)
         return resource
@@ -85,16 +82,18 @@ class s3Test(unittest.TestCase):
     def test_create_container_name(self):
         self.m.UnsetStubs()
         self.assertTrue(re.match(self.container_pattern,
-             s3.S3Bucket._create_container_name('test_stack.test_resource')))
+                        s3.S3Bucket._create_container_name(
+                        'test_stack.test_resource')))
 
     @skip_if(skip_test, 'unable to import swiftclient')
     def test_attributes(self):
         swiftclient.Connection.put_container(
             mox.Regex(self.container_pattern),
             {'X-Container-Write': 'test_tenant:test_username',
-            'X-Container-Read': 'test_tenant:test_username'}).AndReturn(None)
+             'X-Container-Read': 'test_tenant:test_username'}
+        ).AndReturn(None)
         swiftclient.Connection.get_auth().MultipleTimes().AndReturn(
-                                          ('http://localhost:8080/v_2', None))
+            ('http://localhost:8080/v_2', None))
         swiftclient.Connection.delete_container(
             mox.Regex(self.container_pattern)).AndReturn(None)
 
@@ -128,7 +127,7 @@ class s3Test(unittest.TestCase):
         swiftclient.Connection.put_container(
             mox.Regex(self.container_pattern),
             {'X-Container-Write': 'test_tenant:test_username',
-            'X-Container-Read': '.r:*'}).AndReturn(None)
+             'X-Container-Read': '.r:*'}).AndReturn(None)
         swiftclient.Connection.delete_container(
             mox.Regex(self.container_pattern)).AndReturn(None)
 
@@ -146,7 +145,7 @@ class s3Test(unittest.TestCase):
         swiftclient.Connection.put_container(
             mox.Regex(self.container_pattern),
             {'X-Container-Write': '.r:*',
-            'X-Container-Read': '.r:*'}).AndReturn(None)
+             'X-Container-Read': '.r:*'}).AndReturn(None)
         swiftclient.Connection.delete_container(
             mox.Regex(self.container_pattern)).AndReturn(None)
 
@@ -164,7 +163,7 @@ class s3Test(unittest.TestCase):
         swiftclient.Connection.put_container(
             mox.Regex(self.container_pattern),
             {'X-Container-Write': 'test_tenant:test_username',
-            'X-Container-Read': 'test_tenant'}).AndReturn(None)
+             'X-Container-Read': 'test_tenant'}).AndReturn(None)
         swiftclient.Connection.delete_container(
             mox.Regex(self.container_pattern)).AndReturn(None)
 
@@ -202,10 +201,10 @@ class s3Test(unittest.TestCase):
         swiftclient.Connection.put_container(
             mox.Regex(self.container_pattern),
             {'X-Container-Write': 'test_tenant:test_username',
-            'X-Container-Read': 'test_tenant:test_username'}).AndReturn(None)
+             'X-Container-Read': 'test_tenant:test_username'}).AndReturn(None)
         swiftclient.Connection.delete_container(
             mox.Regex(self.container_pattern)).AndRaise(
-                    swiftclient.ClientException('Test delete failure'))
+                swiftclient.ClientException('Test delete failure'))
 
         self.m.ReplayAll()
         t = self.load_template()
@@ -222,7 +221,7 @@ class s3Test(unittest.TestCase):
         swiftclient.Connection.put_container(
             mox.Regex(self.container_pattern),
             {'X-Container-Write': 'test_tenant:test_username',
-            'X-Container-Read': 'test_tenant:test_username'}).AndReturn(None)
+             'X-Container-Read': 'test_tenant:test_username'}).AndReturn(None)
         # This should not be called
         swiftclient.Connection.delete_container(
             mox.Regex(self.container_pattern)).AndReturn(None)
@@ -243,8 +242,3 @@ class s3Test(unittest.TestCase):
             return
 
         raise Exception('delete_container was called despite Retain policy')
-
-    # allows testing of the test directly, shown below
-    if __name__ == '__main__':
-        sys.argv.append(__file__)
-        nose.main()

@@ -62,7 +62,7 @@ class CfnApiFunctionalTest(unittest.TestCase):
 
         inst = CfnApiFunctions()
         cls.stack = util.Stack(inst, template, 'F17', 'x86_64', 'cfntools',
-            stack_paramstr)
+                               stack_paramstr)
         cls.WikiDatabase = util.Instance(inst, cls.logical_resource_name)
 
         try:
@@ -86,7 +86,8 @@ class CfnApiFunctionalTest(unittest.TestCase):
             # Match the expected format for an instance's physical resource ID
             cls.phys_res_id_re = re.compile(
                 "^[0-9a-z]*-[0-9a-z]*-[0-9a-z]*-[0-9a-z]*-[0-9a-z]*$")
-        except:
+        except Exception as ex:
+            print "setupAll failed : %s" % ex
             cls.stack.cleanup()
             raise
 
@@ -120,15 +121,15 @@ class CfnApiFunctionalTest(unittest.TestCase):
 
         update_time = self.stack.response_xml_item(response, prefix,
                                                    "LastUpdatedTime")
-        self.assertTrue(self.time_re.match(update_time) != None)
+        self.assertTrue(self.time_re.match(update_time) is not None)
 
         create_time = self.stack.response_xml_item(response, prefix,
                                                    "CreationTime")
-        self.assertTrue(self.time_re.match(create_time) != None)
+        self.assertTrue(self.time_re.match(create_time) is not None)
 
         description = self.stack.response_xml_item(response, prefix,
                                                    "TemplateDescription")
-        self.assertTrue(self.description_re.match(description) != None)
+        self.assertTrue(self.description_re.match(description) is not None)
 
         status_reason = self.stack.response_xml_item(response, prefix,
                                                      "StackStatusReason")
@@ -155,15 +156,15 @@ class CfnApiFunctionalTest(unittest.TestCase):
 
         update_time = self.stack.response_xml_item(response, prefix,
                                                    "LastUpdatedTime")
-        self.assertTrue(self.time_re.match(update_time) != None)
+        self.assertTrue(self.time_re.match(update_time) is not None)
 
         create_time = self.stack.response_xml_item(response, prefix,
                                                    "CreationTime")
-        self.assertTrue(self.time_re.match(create_time) != None)
+        self.assertTrue(self.time_re.match(create_time) is not None)
 
         description = self.stack.response_xml_item(response, prefix,
                                                    "Description")
-        self.assertTrue(self.description_re.match(description) != None)
+        self.assertTrue(self.description_re.match(description) is not None)
 
         status_reason = self.stack.response_xml_item(response, prefix,
                                                      "StackStatusReason")
@@ -182,18 +183,18 @@ class CfnApiFunctionalTest(unittest.TestCase):
         self.assertEqual(stack_timeout, self.stack_timeout)
 
         disable_rollback = self.stack.response_xml_item(response, prefix,
-                                                     "DisableRollback")
+                                                        "DisableRollback")
         self.assertEqual(disable_rollback, self.stack_disable_rollback)
 
         # Create a dict to lookup the expected template parameters
-        template_parameters = {'DBUsername': 'dbuser',
-                                    'LinuxDistribution': 'F17',
-                                    'InstanceType': 'm1.xlarge',
-                                    'DBRootPassword': 'admin',
-                                    'KeyName': self.stack.keyname,
-                                    'DBPassword':
-                                        os.environ['OS_PASSWORD'],
-                                    'DBName': 'wordpress'}
+        # NoEcho parameters are masked with 6 asterisks
+        template_parameters = {'DBUsername': '******',
+                               'LinuxDistribution': 'F17',
+                               'InstanceType': 'm1.xlarge',
+                               'DBRootPassword': '******',
+                               'KeyName': self.stack.keyname,
+                               'DBPassword': '******',
+                               'DBName': 'wordpress'}
 
         # We do a fully qualified xpath lookup to extract the paramter
         # value for each key, then check the extracted value
@@ -202,8 +203,8 @@ class CfnApiFunctionalTest(unittest.TestCase):
             lookup = '[ParameterKey="' + key + '" and ParameterValue="' +\
                      value + '"]'
             lookup_value = self.stack.response_xml_item(response,
-                                                   param_prefix + lookup,
-                                                   "ParameterValue")
+                                                        param_prefix + lookup,
+                                                        "ParameterValue")
             self.assertEqual(lookup_value, value)
 
         # Then to a similar lookup to verify the Outputs section
@@ -213,8 +214,8 @@ class CfnApiFunctionalTest(unittest.TestCase):
         lookup = '[OutputKey="WebsiteURL" and OutputValue="' + expected_url +\
                  '" and Description="URL for Wordpress wiki"]'
         lookup_value = self.stack.response_xml_item(response,
-                                                   outputs_prefix + lookup,
-                                                   "OutputValue")
+                                                    outputs_prefix + lookup,
+                                                    "OutputValue")
         self.assertEqual(lookup_value, expected_url)
 
         print "DescribeStacks : OK"
@@ -224,30 +225,30 @@ class CfnApiFunctionalTest(unittest.TestCase):
         parameters['StackName'] = self.stack.stackname
         response = self.stack.heatclient.list_stack_events(**parameters)
         prefix = '/DescribeStackEventsResponse/DescribeStackEventsResult/' +\
-               'StackEvents/member[LogicalResourceId="' +\
-                self.logical_resource_name + '" and ResourceStatus="' +\
-                self.logical_resource_status + '"]'
+                 'StackEvents/member[LogicalResourceId="' +\
+                 self.logical_resource_name + '" and ResourceStatus="' +\
+                 self.logical_resource_status + '"]'
 
         stack_id = self.stack.response_xml_item(response, prefix, "StackId")
         self.stack.check_stackid(stack_id)
 
         event_id = self.stack.response_xml_item(response, prefix, "EventId")
-        self.assertTrue(re.match("[0-9]*$", event_id) != None)
+        self.assertTrue(re.match("[0-9]*$", event_id) is not None)
 
         resource_status = self.stack.response_xml_item(response, prefix,
-                                                        "ResourceStatus")
+                                                       "ResourceStatus")
         self.assertEqual(resource_status, self.logical_resource_status)
 
         resource_type = self.stack.response_xml_item(response, prefix,
-                                                        "ResourceType")
+                                                     "ResourceType")
         self.assertEqual(resource_type, self.logical_resource_type)
 
         update_time = self.stack.response_xml_item(response, prefix,
                                                    "Timestamp")
-        self.assertTrue(self.time_re.match(update_time) != None)
+        self.assertTrue(self.time_re.match(update_time) is not None)
 
         status_data = self.stack.response_xml_item(response, prefix,
-                                                      "ResourceStatusReason")
+                                                   "ResourceStatusReason")
         self.assertEqual(status_data, "state changed")
 
         stack_name = self.stack.response_xml_item(response, prefix,
@@ -259,14 +260,14 @@ class CfnApiFunctionalTest(unittest.TestCase):
         self.assertEqual(log_res_id, self.logical_resource_name)
 
         phys_res_id = self.stack.response_xml_item(response, prefix,
-                                                  "PhysicalResourceId")
-        self.assertTrue(self.phys_res_id_re.match(phys_res_id) != None)
+                                                   "PhysicalResourceId")
+        self.assertTrue(self.phys_res_id_re.match(phys_res_id) is not None)
 
         # ResourceProperties format is defined as a string "blob" by AWS
         # we return JSON encoded properies, so decode and check one key
         prop_json = self.stack.response_xml_item(response, prefix,
-                                                  "ResourceProperties")
-        self.assertTrue(prop_json != None)
+                                                 "ResourceProperties")
+        self.assertTrue(prop_json is not None)
 
         prop = json.loads(prop_json)
         self.assertEqual(prop["InstanceType"], "m1.xlarge")
@@ -283,40 +284,40 @@ class CfnApiFunctionalTest(unittest.TestCase):
         template = self.stack.response_xml_item(response, prefix,
                                                 "TemplateBody")
         json_load = template_format.parse(template)
-        self.assertTrue(json_load != None)
+        self.assertTrue(json_load is not None)
 
         # Then sanity check content - I guess we could diff
         # with the template file but for now just check the
         # description looks sane..
         description = json_load['Description']
-        self.assertTrue(self.description_re.match(description) != None)
+        self.assertTrue(self.description_re.match(description) is not None)
 
         print "GetTemplate : OK"
 
     def testDescribeStackResource(self):
         parameters = {'StackName': self.stack.stackname,
-            'LogicalResourceId': self.logical_resource_name}
+                      'LogicalResourceId': self.logical_resource_name}
         response = self.stack.heatclient.describe_stack_resource(**parameters)
         prefix = '/DescribeStackResourceResponse/DescribeStackResourceResult'\
-               + '/StackResourceDetail'
+                 + '/StackResourceDetail'
 
         stack_id = self.stack.response_xml_item(response, prefix, "StackId")
         self.stack.check_stackid(stack_id)
 
         resource_status = self.stack.response_xml_item(response, prefix,
-                                                        "ResourceStatus")
+                                                       "ResourceStatus")
         self.assertEqual(resource_status, self.logical_resource_status)
 
         resource_type = self.stack.response_xml_item(response, prefix,
-                                                        "ResourceType")
+                                                     "ResourceType")
         self.assertEqual(resource_type, self.logical_resource_type)
 
         update_time = self.stack.response_xml_item(response, prefix,
                                                    "LastUpdatedTimestamp")
-        self.assertTrue(self.time_re.match(update_time) != None)
+        self.assertTrue(self.time_re.match(update_time) is not None)
 
         status_reason = self.stack.response_xml_item(response, prefix,
-                                                      "ResourceStatusReason")
+                                                     "ResourceStatusReason")
         self.assertEqual(status_reason, "state changed")
 
         stack_name = self.stack.response_xml_item(response, prefix,
@@ -328,40 +329,40 @@ class CfnApiFunctionalTest(unittest.TestCase):
         self.assertEqual(log_res_id, self.logical_resource_name)
 
         phys_res_id = self.stack.response_xml_item(response, prefix,
-                                                  "PhysicalResourceId")
-        self.assertTrue(self.phys_res_id_re.match(phys_res_id) != None)
+                                                   "PhysicalResourceId")
+        self.assertTrue(self.phys_res_id_re.match(phys_res_id) is not None)
 
         metadata = self.stack.response_xml_item(response, prefix, "Metadata")
         json_load = json.loads(metadata)
-        self.assertTrue(json_load != None)
+        self.assertTrue(json_load is not None)
         self.assertTrue("AWS::CloudFormation::Init" in json_load)
 
         print "DescribeStackResource : OK"
 
     def testDescribeStackResources(self):
         parameters = {'NameOrPid': self.stack.stackname,
-            'LogicalResourceId': self.logical_resource_name}
+                      'LogicalResourceId': self.logical_resource_name}
         response = self.stack.heatclient.describe_stack_resources(**parameters)
         prefix = '/DescribeStackResourcesResponse/' +\
-                'DescribeStackResourcesResult/StackResources/member'
+                 'DescribeStackResourcesResult/StackResources/member'
 
         stack_id = self.stack.response_xml_item(response, prefix, "StackId")
         self.stack.check_stackid(stack_id)
 
         resource_status = self.stack.response_xml_item(response, prefix,
-                                                        "ResourceStatus")
+                                                       "ResourceStatus")
         self.assertEqual(resource_status, self.logical_resource_status)
 
         resource_type = self.stack.response_xml_item(response, prefix,
-                                                        "ResourceType")
+                                                     "ResourceType")
         self.assertEqual(resource_type, self.logical_resource_type)
 
         update_time = self.stack.response_xml_item(response, prefix,
                                                    "Timestamp")
-        self.assertTrue(self.time_re.match(update_time) != None)
+        self.assertTrue(self.time_re.match(update_time) is not None)
 
         status_reason = self.stack.response_xml_item(response, prefix,
-                                                      "ResourceStatusReason")
+                                                     "ResourceStatusReason")
         self.assertEqual(status_reason, "state changed")
 
         stack_name = self.stack.response_xml_item(response, prefix,
@@ -373,8 +374,8 @@ class CfnApiFunctionalTest(unittest.TestCase):
         self.assertEqual(log_res_id, self.logical_resource_name)
 
         phys_res_id = self.stack.response_xml_item(response, prefix,
-                                                  "PhysicalResourceId")
-        self.assertTrue(self.phys_res_id_re.match(phys_res_id) != None)
+                                                   "PhysicalResourceId")
+        self.assertTrue(self.phys_res_id_re.match(phys_res_id) is not None)
 
         print "DescribeStackResources : OK"
 
@@ -383,22 +384,22 @@ class CfnApiFunctionalTest(unittest.TestCase):
         parameters['StackName'] = self.stack.stackname
         response = self.stack.heatclient.list_stack_resources(**parameters)
         prefix = '/ListStackResourcesResponse/ListStackResourcesResult' +\
-               '/StackResourceSummaries/member'
+                 '/StackResourceSummaries/member'
 
         resource_status = self.stack.response_xml_item(response, prefix,
-                                                        "ResourceStatus")
+                                                       "ResourceStatus")
         self.assertEqual(resource_status, self.logical_resource_status)
 
         status_reason = self.stack.response_xml_item(response, prefix,
-                                                      "ResourceStatusReason")
+                                                     "ResourceStatusReason")
         self.assertEqual(status_reason, "state changed")
 
         update_time = self.stack.response_xml_item(response, prefix,
                                                    "LastUpdatedTimestamp")
-        self.assertTrue(self.time_re.match(update_time) != None)
+        self.assertTrue(self.time_re.match(update_time) is not None)
 
         resource_type = self.stack.response_xml_item(response, prefix,
-                                                        "ResourceType")
+                                                     "ResourceType")
         self.assertEqual(resource_type, self.logical_resource_type)
 
         log_res_id = self.stack.response_xml_item(response, prefix,
@@ -406,8 +407,8 @@ class CfnApiFunctionalTest(unittest.TestCase):
         self.assertEqual(log_res_id, self.logical_resource_name)
 
         phys_res_id = self.stack.response_xml_item(response, prefix,
-                                                  "PhysicalResourceId")
-        self.assertTrue(self.phys_res_id_re.match(phys_res_id) != None)
+                                                   "PhysicalResourceId")
+        self.assertTrue(self.phys_res_id_re.match(phys_res_id) is not None)
 
         print "ListStackResources : OK"
 
@@ -425,6 +426,6 @@ class CfnApiFunctionalTest(unittest.TestCase):
         for param in templ_params:
             lookup = '[ParameterKey="' + param + '"]'
             val = self.stack.response_xml_item(response, prefix + lookup,
-                                                  'ParameterKey')
+                                               'ParameterKey')
             self.assertEqual(param, val)
         print "ValidateTemplate : OK"

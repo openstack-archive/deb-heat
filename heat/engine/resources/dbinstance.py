@@ -46,7 +46,8 @@ mysql_template = r'''
     },
 
     "DBSecurityGroups" : {
-      "Type": "List"
+      "Type": "CommaDelimitedList",
+      "Default": ""
     },
 
     "Port" : {
@@ -71,16 +72,6 @@ mysql_template = r'''
 
 
   "Resources": {
-    "DatabaseInstanceCfnUser" : {
-      "Type" : "AWS::IAM::User"
-    },
-    "DatabaseInstanceKeys" : {
-      "Type" : "AWS::IAM::AccessKey",
-      "Properties" : {
-        "UserName" : {"Ref": "DatabaseInstanceCfnUser"}
-      }
-    },
-
     "DatabaseInstance": {
       "Type": "AWS::EC2::Instance",
       "Metadata": {
@@ -118,9 +109,6 @@ mysql_template = r'''
 
           "/opt/aws/bin/cfn-init -s ", { "Ref" : "AWS::StackName" },
           " -r DatabaseInstance",
-          " --access-key ", { "Ref" : "DatabaseInstanceKeys" },
-          " --secret-key ",
-          {"Fn::GetAtt": ["DatabaseInstanceKeys", "SecretAccessKey"]},
           " --region ", { "Ref" : "AWS::Region" },
           " || error_exit 'Failed to run cfn-init'\n",
           "# Setup MySQL root password and create a user\n",
@@ -162,7 +150,7 @@ mysql_template = r'''
 '''
 
 
-class DBInstance(stack.Stack):
+class DBInstance(stack.NestedStack):
 
     properties_schema = {
         'DBSnapshotIdentifier': {'Type': 'String',
@@ -214,13 +202,19 @@ class DBInstance(stack.Stack):
         # Ignore the not implemented ones
         for key, value in self.properties_schema.items():
             if value.get('Implemented', True) and key != 'Engine':
-                params[key] = self.properties[key]
+                # There is a mismatch between the properties "List" format
+                # and the parameters "CommaDelimitedList" format, so we need
+                # to translate lists into the expected comma-delimited form
+                if isinstance(self.properties[key], list):
+                    params[key] = ','.join(self.properties[key])
+                else:
+                    params[key] = self.properties[key]
         p = self.stack.resolve_static_data(params)
         return p
 
     def handle_create(self):
         templ = template_format.parse(mysql_template)
-        self.create_with_template(templ)
+        self.create_with_template(templ, self._params())
 
     def FnGetAtt(self, key):
         '''

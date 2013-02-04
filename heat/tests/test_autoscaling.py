@@ -13,13 +13,10 @@
 #    under the License.
 
 
-import sys
 import os
 
-import nose
 import unittest
 import mox
-import json
 
 from nose.plugins.attrib import attr
 
@@ -63,8 +60,8 @@ class AutoScalingTest(unittest.TestCase):
 
     def create_scaling_group(self, t, stack, resource_name):
         resource = asc.AutoScalingGroup(resource_name,
-                                      t['Resources'][resource_name],
-                                      stack)
+                                        t['Resources'][resource_name],
+                                        stack)
         self.assertEqual(None, resource.validate())
         self.assertEqual(None, resource.create())
         self.assertEqual(asc.AutoScalingGroup.CREATE_COMPLETE, resource.state)
@@ -72,8 +69,8 @@ class AutoScalingTest(unittest.TestCase):
 
     def create_scaling_policy(self, t, stack, resource_name):
         resource = asc.ScalingPolicy(resource_name,
-                                      t['Resources'][resource_name],
-                                      stack)
+                                     t['Resources'][resource_name],
+                                     stack)
         self.assertEqual(None, resource.validate())
         self.assertEqual(None, resource.create())
         self.assertEqual(asc.ScalingPolicy.CREATE_COMPLETE,
@@ -91,7 +88,7 @@ class AutoScalingTest(unittest.TestCase):
         self.assertEqual('WebServerGroup', resource.FnGetRefId())
         self.assertEqual('WebServerGroup-0', resource.resource_id)
         self.assertEqual(asc.AutoScalingGroup.UPDATE_REPLACE,
-                  resource.handle_update())
+                         resource.handle_update())
 
         resource.delete()
 
@@ -134,12 +131,12 @@ class AutoScalingTest(unittest.TestCase):
         # reduce by 50%
         resource.adjust(-50, 'PercentChangeInCapacity')
         self.assertEqual('WebServerGroup-0',
-                 resource.resource_id)
+                         resource.resource_id)
 
         # raise by 200%
         resource.adjust(200, 'PercentChangeInCapacity')
         self.assertEqual('WebServerGroup-0,WebServerGroup-1,WebServerGroup-2',
-                 resource.resource_id)
+                         resource.resource_id)
 
         resource.delete()
 
@@ -157,17 +154,11 @@ class AutoScalingTest(unittest.TestCase):
                                                'WebServerScaleUpPolicy')
         up_policy.alarm()
         self.assertEqual('WebServerGroup-0,WebServerGroup-1',
-                 resource.resource_id)
+                         resource.resource_id)
 
         down_policy = self.create_scaling_policy(t, stack,
                                                  'WebServerScaleDownPolicy')
         down_policy.alarm()
-        self.assertEqual('WebServerGroup-0',
-                 resource.resource_id)
+        self.assertEqual('WebServerGroup-0', resource.resource_id)
 
         resource.delete()
-
-    # allows testing of the test directly, shown below
-    if __name__ == '__main__':
-        sys.argv.append(__file__)
-        nose.main()

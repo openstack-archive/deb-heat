@@ -15,7 +15,6 @@
 
 import unittest
 from nose.plugins.attrib import attr
-import mox
 
 from heat.engine import properties
 
@@ -237,10 +236,9 @@ class PropertyTest(unittest.TestCase):
         map_schema = {'valid': {'Type': 'Boolean'}}
         list_schema = {'Type': 'Map', 'Schema': map_schema}
         p = properties.Property({'Type': 'List', 'Schema': list_schema})
-        self.assertEqual(p.validate_data([{'valid': 'TRUE'},
-                                          {'valid': 'False'}]),
-                                         [{'valid': True},
-                                          {'valid': False}])
+        self.assertEqual(p.validate_data(
+            [{'valid': 'TRUE'}, {'valid': 'False'}]),
+            [{'valid': True}, {'valid': False}])
 
     def test_list_schema_bad_data(self):
         map_schema = {'valid': {'Type': 'Boolean'}}
@@ -339,9 +337,3 @@ class PropertiesValidationTest(unittest.TestCase):
         schema = {'foo': {'Type': 'String'}}
         props = properties.Properties(schema, {'foo': 42})
         self.assertNotEqual(props.validate(), None)
-
-
-# allows testing of the test directly, shown below
-if __name__ == '__main__':
-    sys.argv.append(__file__)
-    nose.main()

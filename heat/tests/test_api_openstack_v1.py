@@ -13,8 +13,6 @@
 #    under the License.
 
 
-import sys
-import nose
 import mox
 import json
 import unittest
@@ -83,12 +81,12 @@ class InstantiationDataTest(unittest.TestCase):
 blarg: wibble
 '''
         parsed = {u'HeatTemplateFormatVersion': u'2012-12-12',
-            u'Mappings': {},
-            u'Outputs': {},
-            u'Parameters': {},
-            u'Resources': {},
-            u'blarg': u'wibble',
-            u'foo': u'bar'}
+                  u'Mappings': {},
+                  u'Outputs': {},
+                  u'Parameters': {},
+                  u'Resources': {},
+                  u'blarg': u'wibble',
+                  u'foo': u'bar'}
 
         body = {'template': template}
         data = stacks.InstantiationData(body)
@@ -242,26 +240,24 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
 
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '1')
 
-        engine_resp = {
-            u'stacks': [
-                {
-                    u'stack_identity': dict(identity),
-                    u'updated_time': u'2012-07-09T09:13:11Z',
-                    u'template_description': u'blah',
-                    u'description': u'blah',
-                    u'stack_status_reason': u'Stack successfully created',
-                    u'creation_time': u'2012-07-09T09:12:45Z',
-                    u'stack_name': identity.stack_name,
-                    u'stack_status': u'CREATE_COMPLETE',
-                    u'parameters': {},
-                    u'outputs': [],
-                    u'notification_topics': [],
-                    u'capabilities': [],
-                    u'disable_rollback': True,
-                    u'timeout_mins': 60,
-                }
-            ]
-        }
+        engine_resp = [
+            {
+                u'stack_identity': dict(identity),
+                u'updated_time': u'2012-07-09T09:13:11Z',
+                u'template_description': u'blah',
+                u'description': u'blah',
+                u'stack_status_reason': u'Stack successfully created',
+                u'creation_time': u'2012-07-09T09:12:45Z',
+                u'stack_name': identity.stack_name,
+                u'stack_status': u'CREATE_COMPLETE',
+                u'parameters': {},
+                u'outputs': [],
+                u'notification_topics': [],
+                u'capabilities': [],
+                u'disable_rollback': True,
+                u'timeout_mins': 60,
+            }
+        ]
         self.m.StubOutWithMock(rpc, 'call')
         rpc.call(req.context, self.topic,
                  {'method': 'list_stacks',
@@ -471,8 +467,8 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
                                             stack_name=identity.stack_name,
                                             path='resources')
         except webob.exc.HTTPFound as found:
-            self.assertEqual(found.location, self._url(identity) +
-                                             '/resources')
+            self.assertEqual(found.location,
+                             self._url(identity) + '/resources')
         else:
             self.fail('No redirect generated')
         self.m.VerifyAll()
@@ -510,25 +506,23 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
                     u'description': u'URL for Wordpress wiki',
                     u'output_value': u'http://10.0.0.8/wordpress'}]
 
-        engine_resp = {
-            u'stacks': [
-                {
-                    u'stack_identity': dict(identity),
-                    u'updated_time': u'2012-07-09T09:13:11Z',
-                    u'parameters': parameters,
-                    u'outputs': outputs,
-                    u'stack_status_reason': u'Stack successfully created',
-                    u'creation_time': u'2012-07-09T09:12:45Z',
-                    u'stack_name': identity.stack_name,
-                    u'notification_topics': [],
-                    u'stack_status': u'CREATE_COMPLETE',
-                    u'description': u'blah',
-                    u'disable_rollback': True,
-                    u'timeout_mins':60,
-                    u'capabilities': [],
-                }
-            ]
-        }
+        engine_resp = [
+            {
+                u'stack_identity': dict(identity),
+                u'updated_time': u'2012-07-09T09:13:11Z',
+                u'parameters': parameters,
+                u'outputs': outputs,
+                u'stack_status_reason': u'Stack successfully created',
+                u'creation_time': u'2012-07-09T09:12:45Z',
+                u'stack_name': identity.stack_name,
+                u'notification_topics': [],
+                u'stack_status': u'CREATE_COMPLETE',
+                u'description': u'blah',
+                u'disable_rollback': True,
+                u'timeout_mins':60,
+                u'capabilities': [],
+            }
+        ]
         self.m.StubOutWithMock(rpc, 'call')
         rpc.call(req.context, self.topic,
                  {'method': 'show_stack',
@@ -795,6 +789,45 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
                           req, tenant_id=self.tenant, body=body)
         self.m.VerifyAll()
 
+    def test_list_resource_types(self):
+        req = self._get('/resource_types')
+
+        engine_response = ['AWS::EC2::Instance',
+                           'AWS::EC2::EIP',
+                           'AWS::EC2::EIPAssociation']
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(req.context, self.topic,
+                 {'method': 'list_resource_types',
+                  'args': {},
+                  'version': self.api_version},
+                 None).AndReturn(engine_response)
+        self.m.ReplayAll()
+        response = self.controller.list_resource_types(req,
+                                                       tenant_id=self.tenant)
+        self.assertEqual(response, {'resource_types': engine_response})
+        self.m.VerifyAll()
+
+    def test_list_resource_types_error(self):
+        req = self._get('/resource_types')
+
+        engine_response = ['AWS::EC2::Instance',
+                           'AWS::EC2::EIP',
+                           'AWS::EC2::EIPAssociation']
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(req.context, self.topic,
+                 {'method': 'list_resource_types',
+                  'args': {},
+                  'version': self.api_version},
+                 None).AndRaise(rpc_common.RemoteError("ValueError"))
+        self.m.ReplayAll()
+
+        self.assertRaises(webob.exc.HTTPInternalServerError,
+                          self.controller.list_resource_types,
+                          req, tenant_id=self.tenant)
+        self.m.VerifyAll()
+
 
 @attr(tag=['unit', 'api-openstack-v1', 'ResourceController'])
 @attr(speed='fast')
@@ -830,7 +863,7 @@ class ResourceControllerTest(ControllerTest, unittest.TestCase):
                 u'stack_identity': stack_identity,
                 u'resource_status': u'CREATE_COMPLETE',
                 u'physical_resource_id':
-                    u'a3455d8c-9f88-404d-a85b-5315293e67de',
+                u'a3455d8c-9f88-404d-a85b-5315293e67de',
                 u'resource_type': u'AWS::EC2::Instance',
             }
         ]
@@ -847,22 +880,17 @@ class ResourceControllerTest(ControllerTest, unittest.TestCase):
                                        stack_id=stack_identity.stack_id)
 
         expected = {
-            'resources': [
-                {
-                    'links': [
-                        {'href': self._url(res_identity), 'rel': 'self'},
-                        {'href': self._url(stack_identity), 'rel': 'stack'},
-                    ],
-                    u'logical_resource_id': res_name,
-                    u'resource_status_reason': None,
-                    u'updated_time': u'2012-07-23T13:06:00Z',
-                    u'resource_status': u'CREATE_COMPLETE',
-                    u'physical_resource_id':
-                        u'a3455d8c-9f88-404d-a85b-5315293e67de',
-                    u'resource_type': u'AWS::EC2::Instance',
-                }
-            ]
-        }
+            'resources': [{'links': [{'href': self._url(res_identity),
+                                      'rel': 'self'},
+                                     {'href': self._url(stack_identity),
+                                      'rel': 'stack'}],
+                           u'logical_resource_id': res_name,
+                           u'resource_status_reason': None,
+                           u'updated_time': u'2012-07-23T13:06:00Z',
+                           u'resource_status': u'CREATE_COMPLETE',
+                           u'physical_resource_id':
+                           u'a3455d8c-9f88-404d-a85b-5315293e67de',
+                           u'resource_type': u'AWS::EC2::Instance'}]}
 
         self.assertEqual(result, expected)
         self.m.VerifyAll()
@@ -907,7 +935,7 @@ class ResourceControllerTest(ControllerTest, unittest.TestCase):
             u'stack_identity': dict(stack_identity),
             u'resource_status': u'CREATE_COMPLETE',
             u'physical_resource_id':
-                u'a3455d8c-9f88-404d-a85b-5315293e67de',
+            u'a3455d8c-9f88-404d-a85b-5315293e67de',
             u'resource_type': u'AWS::EC2::Instance',
             u'metadata': {u'ensureRunning': u'true'}
         }
@@ -937,7 +965,7 @@ class ResourceControllerTest(ControllerTest, unittest.TestCase):
                 u'updated_time': u'2012-07-23T13:06:00Z',
                 u'resource_status': u'CREATE_COMPLETE',
                 u'physical_resource_id':
-                    u'a3455d8c-9f88-404d-a85b-5315293e67de',
+                u'a3455d8c-9f88-404d-a85b-5315293e67de',
                 u'resource_type': u'AWS::EC2::Instance',
             }
         }
@@ -990,7 +1018,7 @@ class ResourceControllerTest(ControllerTest, unittest.TestCase):
             u'stack_identity': dict(stack_identity),
             u'resource_status': u'CREATE_COMPLETE',
             u'physical_resource_id':
-                u'a3455d8c-9f88-404d-a85b-5315293e67de',
+            u'a3455d8c-9f88-404d-a85b-5315293e67de',
             u'resource_type': u'AWS::EC2::Instance',
             u'metadata': {u'ensureRunning': u'true'}
         }
@@ -1068,7 +1096,7 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
         req = self._get(stack_identity._tenant_path() +
                         '/resources/' + res_name + '/events')
 
-        engine_resp = {u'events': [
+        engine_resp = [
             {
                 u'stack_name': u'wordpress',
                 u'event_time': u'2012-07-23T13:05:39Z',
@@ -1093,7 +1121,7 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
                 u'resource_properties': {u'UserData': u'blah'},
                 u'resource_type': u'AWS::EC2::Instance',
             }
-        ]}
+        ]
         self.m.StubOutWithMock(rpc, 'call')
         rpc.call(req.context, self.topic,
                  {'method': 'list_events',
@@ -1140,7 +1168,7 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
 
         req = self._get(stack_identity._tenant_path() + '/events')
 
-        engine_resp = {u'events': [
+        engine_resp = [
             {
                 u'stack_name': u'wordpress',
                 u'event_time': u'2012-07-23T13:05:39Z',
@@ -1153,7 +1181,7 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
                 u'resource_properties': {u'UserData': u'blah'},
                 u'resource_type': u'AWS::EC2::Instance',
             }
-        ]}
+        ]
         self.m.StubOutWithMock(rpc, 'call')
         rpc.call(req.context, self.topic,
                  {'method': 'list_events',
@@ -1221,7 +1249,7 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
         req = self._get(stack_identity._tenant_path() +
                         '/resources/' + res_name + '/events')
 
-        engine_resp = {u'events': [
+        engine_resp = [
             {
                 u'stack_name': u'wordpress',
                 u'event_time': u'2012-07-23T13:05:39Z',
@@ -1234,7 +1262,7 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
                 u'resource_properties': {u'UserData': u'blah'},
                 u'resource_type': u'AWS::EC2::Instance',
             }
-        ]}
+        ]
         self.m.StubOutWithMock(rpc, 'call')
         rpc.call(req.context, self.topic,
                  {'method': 'list_events',
@@ -1266,7 +1294,7 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
         req = self._get(stack_identity._tenant_path() +
                         '/resources/' + res_name + '/events/' + event_id)
 
-        engine_resp = {u'events': [
+        engine_resp = [
             {
                 u'stack_name': u'wordpress',
                 u'event_time': u'2012-07-23T13:05:39Z',
@@ -1288,11 +1316,11 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
                 u'event_identity': dict(ev_identity),
                 u'resource_status': u'CREATE_COMPLETE',
                 u'physical_resource_id':
-                    u'a3455d8c-9f88-404d-a85b-5315293e67de',
+                u'a3455d8c-9f88-404d-a85b-5315293e67de',
                 u'resource_properties': {u'UserData': u'blah'},
                 u'resource_type': u'AWS::EC2::Instance',
             }
-        ]}
+        ]
         self.m.StubOutWithMock(rpc, 'call')
         rpc.call(req.context, self.topic,
                  {'method': 'list_events',
@@ -1320,7 +1348,7 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
                 u'event_time': u'2012-07-23T13:06:00Z',
                 u'resource_status': u'CREATE_COMPLETE',
                 u'physical_resource_id':
-                    u'a3455d8c-9f88-404d-a85b-5315293e67de',
+                u'a3455d8c-9f88-404d-a85b-5315293e67de',
                 u'resource_type': u'AWS::EC2::Instance',
                 u'resource_properties': {u'UserData': u'blah'},
             }
@@ -1337,12 +1365,12 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
         res_identity = identifier.ResourceIdentifier(resource_name=res_name,
                                                      **stack_identity)
         ev_identity = identifier.EventIdentifier(event_id='41',
-                                                  **res_identity)
+                                                 **res_identity)
 
         req = self._get(stack_identity._tenant_path() +
                         '/resources/' + res_name + '/events/' + event_id)
 
-        engine_resp = {u'events': [
+        engine_resp = [
             {
                 u'stack_name': u'wordpress',
                 u'event_time': u'2012-07-23T13:05:39Z',
@@ -1355,7 +1383,7 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
                 u'resource_properties': {u'UserData': u'blah'},
                 u'resource_type': u'AWS::EC2::Instance',
             }
-        ]}
+        ]
         self.m.StubOutWithMock(rpc, 'call')
         rpc.call(req.context, self.topic,
                  {'method': 'list_events',
@@ -1380,12 +1408,12 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
         res_identity = identifier.ResourceIdentifier(resource_name=res_name,
                                                      **stack_identity)
         ev_identity = identifier.EventIdentifier(event_id='41',
-                                                  **res_identity)
+                                                 **res_identity)
 
         req = self._get(stack_identity._tenant_path() +
                         '/resources/' + res_name + '/events/' + event_id)
 
-        engine_resp = {u'events': [
+        engine_resp = [
             {
                 u'stack_name': u'wordpress',
                 u'event_time': u'2012-07-23T13:05:39Z',
@@ -1398,7 +1426,7 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
                 u'resource_properties': {u'UserData': u'blah'},
                 u'resource_type': u'AWS::EC2::Instance',
             }
-        ]}
+        ]
         self.m.StubOutWithMock(rpc, 'call')
         rpc.call(req.context, self.topic,
                  {'method': 'list_events',
@@ -1439,8 +1467,3 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
                           stack_id=stack_identity.stack_id,
                           resource_name=res_name, event_id=event_id)
         self.m.VerifyAll()
-
-
-if __name__ == '__main__':
-    sys.argv.append(__file__)
-    nose.main()

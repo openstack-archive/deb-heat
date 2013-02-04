@@ -14,13 +14,10 @@
 
 
 import re
-import sys
 import os
 
-import nose
 import unittest
 import mox
-import json
 
 from nose.plugins.attrib import attr
 
@@ -79,8 +76,8 @@ class LoadBalancerTest(unittest.TestCase):
 
     def create_loadbalancer(self, t, stack, resource_name):
         resource = lb.LoadBalancer(resource_name,
-                                      t['Resources'][resource_name],
-                                      stack)
+                                   t['Resources'][resource_name],
+                                   stack)
         self.assertEqual(None, resource.validate())
         self.assertEqual(None, resource.create())
         self.assertEqual(lb.LoadBalancer.CREATE_COMPLETE, resource.state)
@@ -88,12 +85,12 @@ class LoadBalancerTest(unittest.TestCase):
 
     def test_loadbalancer(self):
         lb.LoadBalancer.nova().AndReturn(self.fc)
-#        parser.Stack.store(mox.IgnoreArg()).AndReturn('5678')
         instance.Instance.nova().MultipleTimes().AndReturn(self.fc)
-        self.fc.servers.create(flavor=2, image=745, key_name='test',
-                   meta=None, name=u'test_stack.LoadBalancer.LB_instance',
-                   scheduler_hints=None, userdata=mox.IgnoreArg(),
-                   security_groups=None).AndReturn(self.fc.servers.list()[1])
+        self.fc.servers.create(
+            flavor=2, image=745, key_name='test',
+            meta=None, name=u'test_stack.LoadBalancer.LB_instance',
+            scheduler_hints=None, userdata=mox.IgnoreArg(),
+            security_groups=None).AndReturn(self.fc.servers.list()[1])
         #stack.Stack.create_with_template(mox.IgnoreArg()).AndReturn(None)
         Metadata.__set__(mox.IgnoreArg(),
                          mox.IgnoreArg()).AndReturn(None)
@@ -115,9 +112,9 @@ class LoadBalancerTest(unittest.TestCase):
         self.assertEqual(None, resource.validate())
 
         hc['Timeout'] = 35
-        self.assertEqual({'Error':
-                          'Interval must be larger than Timeout'},
-                          resource.validate())
+        self.assertEqual(
+            {'Error': 'Interval must be larger than Timeout'},
+            resource.validate())
         hc['Timeout'] = 5
 
         self.assertEqual('LoadBalancer', resource.FnGetRefId())
@@ -164,8 +161,3 @@ class LoadBalancerTest(unittest.TestCase):
             msg = '%s: %r not found in %r' % (msg,
                                               expected_regexp.pattern, text)
             raise self.failureException(msg)
-
-    # allows testing of the test directly, shown below
-    if __name__ == '__main__':
-        sys.argv.append(__file__)
-        nose.main()

@@ -15,11 +15,8 @@
 import os
 import util
 import verify
-import re
-import nose
 from nose.plugins.attrib import attr
 import unittest
-import json
 
 
 @attr(speed='slow')
@@ -41,8 +38,9 @@ class CfnApiUpdateStackFunctionalTest(unittest.TestCase):
         cls.instance_type = 'm1.xlarge'
         cls.db_user = 'dbuser'
         cls.stack_paramstr = ';'.join(['InstanceType=%s' % cls.instance_type,
-                         'DBUsername=%s' % cls.db_user,
-                         'DBPassword=' + os.environ['OS_PASSWORD']])
+                                       'DBUsername=%s' % cls.db_user,
+                                       'DBPassword=' +
+                                       os.environ['OS_PASSWORD']])
 
         cls.logical_resource_name = 'WikiDatabase'
         cls.logical_resource_type = 'AWS::EC2::Instance'
@@ -55,7 +53,7 @@ class CfnApiUpdateStackFunctionalTest(unittest.TestCase):
 
         cls.inst = CfnApiFunctions()
         cls.stack = util.Stack(cls.inst, template, 'F17', 'x86_64', 'cfntools',
-            cls.stack_paramstr)
+                               cls.stack_paramstr)
         cls.WikiDatabase = util.Instance(cls.inst, cls.logical_resource_name)
 
         try:
@@ -65,7 +63,8 @@ class CfnApiUpdateStackFunctionalTest(unittest.TestCase):
             cls.WikiDatabase.wait_for_provisioning()
             cls.logical_resource_status = "CREATE_COMPLETE"
             cls.stack_status = "CREATE_COMPLETE"
-        except:
+        except Exception as ex:
+            print "setupAll failed : %s" % ex
             cls.stack.cleanup()
             raise
 
@@ -103,8 +102,9 @@ class CfnApiUpdateStackFunctionalTest(unittest.TestCase):
 
         self.db_user = 'anewuser'
         self.stack_paramstr = ';'.join(['InstanceType=%s' % self.instance_type,
-                         'DBUsername=%s' % self.db_user,
-                         'DBPassword=' + os.environ['OS_PASSWORD']])
+                                        'DBUsername=%s' % self.db_user,
+                                        'DBPassword=' +
+                                        os.environ['OS_PASSWORD']])
         self.stack.stack_paramstr = self.stack_paramstr
         self.stack.update()
         tries = 0

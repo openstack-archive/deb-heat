@@ -18,10 +18,10 @@ import os
 import json
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from novaclient.exceptions import NotFound
 import pkgutil
 from urlparse import urlparse
 
+from heat.engine import clients
 from heat.engine import resource
 from heat.common import exception
 
@@ -51,7 +51,7 @@ class Restarter(resource.Resource):
 
         if victim is None:
             logger.info('%s Alarm, can not find instance %s' %
-                    (self.name, self.properties['InstanceId']))
+                       (self.name, self.properties['InstanceId']))
             return
 
         logger.info('%s Alarm, restarting resource: %s' %
@@ -67,9 +67,9 @@ class Instance(resource.Resource):
                              'Required': True}}
 
     properties_schema = {'ImageId': {'Type': 'String',
-                                    'Required': True},
+                                     'Required': True},
                          'InstanceType': {'Type': 'String',
-                                    'Required': True},
+                                          'Required': True},
                          'KeyName': {'Type': 'String',
                                      'Required': True},
                          'AvailabilityZone': {'Type': 'String',
@@ -92,7 +92,7 @@ class Instance(resource.Resource):
                          'SourceDestCheck': {'Type': 'Boolean',
                                              'Implemented': False},
                          'SubnetId': {'Type': 'String',
-                                       'Implemented': False},
+                                      'Implemented': False},
                          'Tags': {'Type': 'List',
                                   'Schema': {'Type': 'Map',
                                              'Schema': tags_schema}},
@@ -129,7 +129,7 @@ class Instance(resource.Resource):
         if self.ipaddress is None:
             try:
                 server = self.nova().servers.get(self.resource_id)
-            except NotFound as ex:
+            except clients.novaclient.exceptions.NotFound as ex:
                 logger.warn('Instance IP address not found (%s)' % str(ex))
             else:
                 self._set_ipaddress(server.networks)
@@ -142,13 +142,15 @@ class Instance(resource.Resource):
             res = self.properties['AvailabilityZone']
         elif key == 'PublicIp':
             res = self._ipaddress()
+        elif key == 'PrivateIp':
+            res = self._ipaddress()
+        elif key == 'PublicDnsName':
+            res = self._ipaddress()
         elif key == 'PrivateDnsName':
             res = self._ipaddress()
         else:
             raise exception.InvalidTemplateAttribute(resource=self.name,
                                                      key=key)
-
-        # TODO(asalkeld) PrivateDnsName, PublicDnsName & PrivateIp
 
         logger.info('%s.GetAtt(%s) == %s' % (self.name, key, res))
         return unicode(res)
@@ -172,8 +174,8 @@ class Instance(resource.Resource):
                            (read_cloudinit_file('part-handler.py'),
                             'part-handler.py'),
                            (userdata, 'cfn-userdata', 'x-cfninitdata'),
-                           (read_cloudinit_file('loguserdata.sh'),
-                            'loguserdata.sh', 'x-shellscript')]
+                           (read_cloudinit_file('loguserdata.py'),
+                            'loguserdata.py', 'x-shellscript')]
 
             if 'Metadata' in self.t:
                 attachments.append((json.dumps(self.metadata),
@@ -208,14 +210,13 @@ class Instance(resource.Resource):
         return self.mime_string
 
     def handle_create(self):
-        if self.properties.get('SecurityGroups') == None:
+        if self.properties.get('SecurityGroups') is None:
             security_groups = None
         else:
-            security_groups = [self.physical_resource_name_find(sg) for sg in
-                    self.properties.get('SecurityGroups')]
+            security_groups = [self.physical_resource_name_find(sg)
+                               for sg in self.properties.get('SecurityGroups')]
 
-        userdata = self.properties['UserData']
-        userdata += '\ntouch /var/lib/cloud/instance/provision-finished\n'
+        userdata = self.properties['UserData'] or ''
         flavor = self.properties['InstanceType']
         key_name = self.properties['KeyName']
 
@@ -284,7 +285,7 @@ class Instance(resource.Resource):
         if res:
             return res
 
-        #check validity of key
+        # check validity of key
         try:
             key_name = self.properties['KeyName']
         except ValueError:
@@ -305,14 +306,14 @@ class Instance(resource.Resource):
             return
         try:
             server = self.nova().servers.get(self.resource_id)
-        except NotFound:
+        except clients.novaclient.exceptions.NotFound:
             pass
         else:
             server.delete()
             while server.status == 'ACTIVE':
                 try:
                     server.get()
-                except NotFound:
+                except clients.novaclient.exceptions.NotFound:
                     break
                 eventlet.sleep(0.2)
         self.resource_id = None

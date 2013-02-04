@@ -28,11 +28,11 @@ class WordPressEIPFunctionalTest(unittest.TestCase):
         template = 'WordPress_Single_Instance_With_EIP.template'
 
         stack_paramstr = ';'.join(['InstanceType=m1.xlarge',
-            'DBUsername=dbuser',
-            'DBPassword=' + os.environ['OS_PASSWORD']])
+                                   'DBUsername=dbuser',
+                                   'DBPassword=' + os.environ['OS_PASSWORD']])
 
         self.stack = util.Stack(self, template, 'F17', 'x86_64', 'cfntools',
-            stack_paramstr)
+                                stack_paramstr)
         self.WebServer = util.Instance(self, 'WebServer')
 
     def tearDown(self):
@@ -57,7 +57,7 @@ class WordPressEIPFunctionalTest(unittest.TestCase):
             found = 0
             mylist = self.stack.novaclient.floating_ips.list()
             for item in mylist:
-                if item.resource_id == self.stack.instance_phys_ids()[0]:
+                if item.instance_id == self.stack.instance_phys_ids()[0]:
                     print 'floating IP found', item.ip
                     found = 1
                     break

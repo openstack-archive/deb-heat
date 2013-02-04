@@ -18,8 +18,6 @@ Client classes for callers of a heat system
 """
 
 from lxml import etree
-import os
-import json
 from heat.common import client as base_client
 from heat.common import exception
 
@@ -33,7 +31,7 @@ SUPPORTED_PARAMS = ('StackName', 'TemplateBody', 'TemplateUrl',
                     'SignatureVersion', 'Timestamp', 'AWSAccessKeyId',
                     'Signature', 'TimeoutInMinutes',
                     'LogicalResourceId', 'PhysicalResourceId', 'NextToken',
-)
+                    )
 
 
 class V1Client(base_client.BaseClient):
@@ -87,7 +85,7 @@ class V1Client(base_client.BaseClient):
                 'LogicalResourceId': kwargs['LogicalResourceId']}
             try:
                 result = self.stack_request("DescribeStackResources", "GET",
-                                        **parameters)
+                                            **parameters)
             except Exception:
                 logger.debug("Failed to lookup resource details with key %s:%s"
                              % (lookup_key, lookup_value))
@@ -169,8 +167,7 @@ def get_client(host, port=None, username=None,
                  tenant=tenant,
                  auth_url=auth_url,
                  strategy=force_strategy or auth_strategy,
-                 region=region,
-    )
+                 region=region)
 
     if creds['strategy'] == 'keystone' and not creds['auth_url']:
         msg = ("--auth_url option or OS_AUTH_URL environment variable "
@@ -178,14 +175,14 @@ def get_client(host, port=None, username=None,
         raise exception.ClientConfigurationError(msg)
 
     use_ssl = (creds['auth_url'] is not None and
-        creds['auth_url'].find('https') != -1)
+               creds['auth_url'].find('https') != -1)
 
     client = HeatClient
 
     return client(host=host,
-                port=port,
-                use_ssl=use_ssl,
-                auth_tok=auth_token,
-                creds=creds,
-                insecure=insecure,
-                service_type='cloudformation')
+                  port=port,
+                  use_ssl=use_ssl,
+                  auth_tok=auth_token,
+                  creds=creds,
+                  insecure=insecure,
+                  service_type='cloudformation')

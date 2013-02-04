@@ -64,7 +64,7 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
 
         inst = CfnApiFunctions()
         cls.stack = util.StackBoto(inst, template, 'F17', 'x86_64', 'cfntools',
-            stack_paramstr)
+                                   stack_paramstr)
         cls.WikiDatabase = util.Instance(inst, cls.logical_resource_name)
 
         try:
@@ -88,7 +88,8 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
             # Match the expected format for an instance's physical resource ID
             cls.phys_res_id_re = re.compile(
                 "^[0-9a-z]*-[0-9a-z]*-[0-9a-z]*-[0-9a-z]*-[0-9a-z]*$")
-        except:
+        except Exception as ex:
+            print "setupAll failed : %s" % ex
             cls.stack.cleanup()
             raise
 
@@ -119,7 +120,7 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
 
         # Extract the StackSummary for this stack
         summary = [s for s in response
-                    if s.stack_name == self.stack.stackname]
+                   if s.stack_name == self.stack.stackname]
         self.assertEqual(len(summary), 1)
 
         # Note the boto StackSummary object does not contain every item
@@ -130,7 +131,7 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
         self.assertEqual(type(summary[0].creation_time), datetime.datetime)
 
         self.assertTrue(self.description_re.match(
-                                    summary[0].template_description) != None)
+            summary[0].template_description) is not None)
 
         self.assertEqual(summary[0].stack_name, self.stack.stackname)
 
@@ -145,7 +146,7 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
 
         # Extract the Stack object for this stack
         stacks = [s for s in response
-                    if s.stack_name == self.stack.stackname]
+                  if s.stack_name == self.stack.stackname]
         self.assertEqual(len(stacks), 1)
 
         self.assertEqual(type(stacks[0].creation_time), datetime.datetime)
@@ -153,7 +154,7 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
         self.stack.check_stackid(stacks[0].stack_id)
 
         self.assertTrue(self.description_re.match(stacks[0].description)
-                        != None)
+                        is not None)
 
         self.assertEqual(stacks[0].stack_status_reason,
                          self.stack_status_reason)
@@ -168,14 +169,14 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
                          self.stack_disable_rollback)
 
         # Create a dict to lookup the expected template parameters
-        template_parameters = {'DBUsername': 'dbuser',
-                                    'LinuxDistribution': 'F17',
-                                    'InstanceType': 'm1.xlarge',
-                                    'DBRootPassword': 'admin',
-                                    'KeyName': self.stack.keyname,
-                                    'DBPassword':
-                                        os.environ['OS_PASSWORD'],
-                                    'DBName': 'wordpress'}
+        # NoEcho parameters are masked with 6 asterisks
+        template_parameters = {'DBUsername': '******',
+                               'LinuxDistribution': 'F17',
+                               'InstanceType': 'm1.xlarge',
+                               'DBRootPassword': '******',
+                               'KeyName': self.stack.keyname,
+                               'DBPassword': '******',
+                               'DBName': 'wordpress'}
 
         for key, value in template_parameters.iteritems():
             # The parameters returned via the API include a couple
@@ -200,14 +201,14 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
         parameters['StackName'] = self.stack.stackname
         response = self.stack.heatclient.list_stack_events(**parameters)
         events = [e for e in response
-                       if e.logical_resource_id == self.logical_resource_name
-                       and e.resource_status == self.logical_resource_status]
+                  if e.logical_resource_id == self.logical_resource_name
+                  and e.resource_status == self.logical_resource_status]
 
         self.assertEqual(len(events), 1)
 
         self.stack.check_stackid(events[0].stack_id)
 
-        self.assertTrue(re.match("[0-9]*$", events[0].event_id) != None)
+        self.assertTrue(re.match("[0-9]*$", events[0].event_id) is not None)
 
         self.assertEqual(events[0].resource_status,
                          self.logical_resource_status)
@@ -224,7 +225,7 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
                          self.logical_resource_name)
 
         self.assertTrue(self.phys_res_id_re.match(
-                        events[0].physical_resource_id) != None)
+                        events[0].physical_resource_id) is not None)
 
         # Check ResourceProperties, skip pending resolution of #245
         properties = json.loads(events[0].resource_properties)
@@ -236,35 +237,35 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
         parameters = {}
         parameters['StackName'] = self.stack.stackname
         response = self.stack.heatclient.get_template(**parameters)
-        self.assertTrue(response != None)
+        self.assertTrue(response is not None)
 
         result = response['GetTemplateResponse']['GetTemplateResult']
-        self.assertTrue(result != None)
+        self.assertTrue(result is not None)
         template = result['TemplateBody']
-        self.assertTrue(template != None)
+        self.assertTrue(template is not None)
 
         # Then sanity check content - I guess we could diff
         # with the template file but for now just check the
         # description looks sane..
         description = template['Description']
-        self.assertTrue(self.description_re.match(description) != None)
+        self.assertTrue(self.description_re.match(description) is not None)
 
         print "GetTemplate : OK"
 
     def testDescribeStackResource(self):
         parameters = {'StackName': self.stack.stackname,
-            'LogicalResourceId': self.logical_resource_name}
+                      'LogicalResourceId': self.logical_resource_name}
         response = self.stack.heatclient.describe_stack_resource(**parameters)
 
         # Note boto_client response for this is a dict, if upstream
         # pull request ever gets merged, this will change, see note/
         # link in boto_client.py
         desc_resp = response['DescribeStackResourceResponse']
-        self.assertTrue(desc_resp != None)
+        self.assertTrue(desc_resp is not None)
         desc_result = desc_resp['DescribeStackResourceResult']
-        self.assertTrue(desc_result != None)
+        self.assertTrue(desc_result is not None)
         res = desc_result['StackResourceDetail']
-        self.assertTrue(res != None)
+        self.assertTrue(res is not None)
 
         self.stack.check_stackid(res['StackId'])
 
@@ -275,7 +276,7 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
         # Note due to issue mentioned above timestamp is a string in this case
         # not a datetime.datetime object
         self.assertTrue(self.time_re.match(res['LastUpdatedTimestamp'])
-                        != None)
+                        is not None)
 
         self.assertEqual(res['ResourceStatusReason'], 'state changed')
 
@@ -284,7 +285,7 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
         self.assertEqual(res['LogicalResourceId'], self.logical_resource_name)
 
         self.assertTrue(self.phys_res_id_re.match(res['PhysicalResourceId'])
-                        != None)
+                        is not None)
 
         self.assertTrue("AWS::CloudFormation::Init" in res['Metadata'])
 
@@ -292,12 +293,12 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
 
     def testDescribeStackResources(self):
         parameters = {'NameOrPid': self.stack.stackname,
-            'LogicalResourceId': self.logical_resource_name}
+                      'LogicalResourceId': self.logical_resource_name}
         response = self.stack.heatclient.describe_stack_resources(**parameters)
         self.assertEqual(len(response), 1)
 
         res = response[0]
-        self.assertTrue(res != None)
+        self.assertTrue(res is not None)
 
         self.stack.check_stackid(res.stack_id)
 
@@ -314,7 +315,7 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
         self.assertEqual(res.logical_resource_id, self.logical_resource_name)
 
         self.assertTrue(self.phys_res_id_re.match(res.physical_resource_id)
-                        != None)
+                        is not None)
 
         print "DescribeStackResources : OK"
 
@@ -325,7 +326,7 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
         self.assertEqual(len(response), 1)
 
         res = response[0]
-        self.assertTrue(res != None)
+        self.assertTrue(res is not None)
 
         self.assertEqual(res.resource_status, self.logical_resource_status)
 
@@ -338,7 +339,7 @@ class CfnApiBotoFunctionalTest(unittest.TestCase):
         self.assertEqual(res.logical_resource_id, self.logical_resource_name)
 
         self.assertTrue(self.phys_res_id_re.match(res.physical_resource_id)
-                        != None)
+                        is not None)
 
         print "ListStackResources : OK"
 

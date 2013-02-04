@@ -13,29 +13,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import json
-
-from webob.exc import Response
-
 from heat.common import wsgi
 from heat.common import context
 from heat.rpc import client as rpc_client
-from heat.openstack.common import rpc
 from heat.common import identifier
-
-
-def json_response(http_status, data):
-    """Create a JSON response with a specific HTTP code."""
-    response = Response(json.dumps(data))
-    response.status = http_status
-    response.content_type = 'application/json'
-    return response
-
-
-def json_error(http_status, message):
-    """Create a JSON error response."""
-    body = {'error': message}
-    return json_response(http_status, body)
+from heat.api.aws import exception
+import heat.openstack.common.rpc.common as rpc_common
 
 
 class WaitConditionController:
@@ -46,22 +29,16 @@ class WaitConditionController:
     def update_waitcondition(self, req, body, arn):
         con = req.context
         identity = identifier.ResourceIdentifier.from_arn(arn)
-        [error, metadata] = self.engine.metadata_update(con,
-                                 stack_id=identity.stack_id,
-                                 resource_name=identity.resource_name,
-                                 metadata=body)
-        if error:
-            if error == 'stack':
-                return json_error(404,
-                        'The stack "%s" does not exist.' % identity.stack_id)
-            else:
-                return json_error(404,
-                        'The resource "%s" does not exist.' %
-                        identity.resource_name)
-        return json_response(201, {
-            'resource': identity.resource_name,
-            'metadata': body,
-        })
+        try:
+            md = self.engine.metadata_update(
+                con,
+                stack_identity=dict(identity.stack()),
+                resource_name=identity.resource_name,
+                metadata=body)
+        except rpc_common.RemoteError as ex:
+            return exception.map_remote_error(ex)
+
+        return {'resource': identity.resource_name, 'metadata': md}
 
 
 def create_resource(options):
@@ -69,6 +46,4 @@ def create_resource(options):
     Stacks resource factory method.
     """
     deserializer = wsgi.JSONRequestDeserializer()
-    serializer = wsgi.JSONResponseSerializer()
-    return wsgi.Resource(WaitConditionController(options), deserializer,
-                         serializer)
+    return wsgi.Resource(WaitConditionController(options), deserializer)

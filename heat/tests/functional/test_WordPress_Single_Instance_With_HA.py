@@ -13,7 +13,6 @@
 #
 
 import util
-import nose
 from nose.plugins.attrib import attr
 import unittest
 import os
@@ -28,11 +27,11 @@ class HaFunctionalTest(unittest.TestCase):
         template = 'WordPress_Single_Instance_With_HA.template'
 
         stack_paramstr = ';'.join(['InstanceType=m1.xlarge',
-            'DBUsername=dbuser',
-            'DBPassword=' + os.environ['OS_PASSWORD']])
+                                   'DBUsername=dbuser',
+                                   'DBPassword=' + os.environ['OS_PASSWORD']])
 
         self.stack = util.Stack(self, template, 'F17', 'x86_64', 'cfntools',
-            stack_paramstr)
+                                stack_paramstr)
         self.WikiDatabase = util.Instance(self, 'WikiDatabase')
 
     def tearDown(self):

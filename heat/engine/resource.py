@@ -15,6 +15,7 @@
 
 import base64
 from datetime import datetime
+from eventlet.support import greenlets as greenlet
 
 from heat.engine import event
 from heat.common import exception
@@ -31,7 +32,13 @@ logger = logging.getLogger(__name__)
 _resource_classes = {}
 
 
+def get_types():
+    '''Return an iterator over the list of valid resource types'''
+    return iter(_resource_classes)
+
+
 def get_class(resource_type):
+    '''Return the Resource class for a given resource type'''
     return _resource_classes.get(resource_type)
 
 
@@ -39,7 +46,7 @@ def _register_class(resource_type, resource_class):
     logger.info(_('Registering resource type %s') % resource_type)
     if resource_type in _resource_classes:
         logger.warning(_('Replacing existing resource type %s') %
-                resource_type)
+                       resource_type)
 
     _resource_classes[resource_type] = resource_class
 
@@ -222,9 +229,15 @@ class Resource(object):
             if callable(getattr(self, 'handle_create', None)):
                 self.handle_create()
         except Exception as ex:
-            logger.exception('create %s', str(self))
-            self.state_set(self.CREATE_FAILED, str(ex))
-            return str(ex)
+            # If we get a GreenletExit exception, the create thread has
+            # been killed so we should raise allowing this thread to exit
+            if type(ex) is greenlet.GreenletExit:
+                logger.warning('GreenletExit during create, exiting')
+                raise
+            else:
+                logger.exception('create %s', str(self))
+                self.state_set(self.CREATE_FAILED, str(ex))
+                return str(ex)
         else:
             self.state_set(self.CREATE_COMPLETE)
 

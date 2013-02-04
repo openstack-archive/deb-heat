@@ -13,12 +13,9 @@
 #    under the License.
 
 
-import nose
 import unittest
 from nose.plugins.attrib import attr
 import mox
-import json
-import sys
 
 from heat.common import context
 from heat.common import exception
@@ -91,8 +88,8 @@ class ParserTest(unittest.TestCase):
         self.assertTrue(parsed is not raw)
 
     def test_join_recursive(self):
-        raw = {'Fn::Join': ['\n', [{'Fn::Join': [' ', ['foo', 'bar']]},
-                                  'baz']]}
+        raw = {'Fn::Join': ['\n', [{'Fn::Join':
+                                   [' ', ['foo', 'bar']]}, 'baz']]}
         self.assertEqual(join(raw), 'foo bar\nbaz')
 
 
@@ -209,19 +206,20 @@ class TemplateTest(unittest.TestCase):
 
     def test_join_reduce(self):
         join = {"Fn::Join": [" ", ["foo", "bar", "baz", {'Ref': 'baz'},
-            "bink", "bonk"]]}
-        self.assertEqual(parser.Template.reduce_joins(join),
-            {"Fn::Join": [" ", ["foo bar baz", {'Ref': 'baz'},
-            "bink bonk"]]})
+                "bink", "bonk"]]}
+        self.assertEqual(
+            parser.Template.reduce_joins(join),
+            {"Fn::Join": [" ", ["foo bar baz", {'Ref': 'baz'}, "bink bonk"]]})
 
         join = {"Fn::Join": [" ", ["foo", {'Ref': 'baz'},
-            "bink"]]}
-        self.assertEqual(parser.Template.reduce_joins(join),
-            {"Fn::Join": [" ", ["foo", {'Ref': 'baz'},
-            "bink"]]})
+                                   "bink"]]}
+        self.assertEqual(
+            parser.Template.reduce_joins(join),
+            {"Fn::Join": [" ", ["foo", {'Ref': 'baz'}, "bink"]]})
 
         join = {"Fn::Join": [" ", [{'Ref': 'baz'}]]}
-        self.assertEqual(parser.Template.reduce_joins(join),
+        self.assertEqual(
+            parser.Template.reduce_joins(join),
             {"Fn::Join": [" ", [{'Ref': 'baz'}]]})
 
     def test_join(self):
@@ -354,8 +352,3 @@ class StackTest(unittest.TestCase):
         stack.state_set(stack.CREATE_IN_PROGRESS, 'testing')
         self.assertNotEqual(stack.updated_time, None)
         self.assertNotEqual(stack.updated_time, stored_time)
-
-# allows testing of the test directly, shown below
-if __name__ == '__main__':
-    sys.argv.append(__file__)
-    nose.main()

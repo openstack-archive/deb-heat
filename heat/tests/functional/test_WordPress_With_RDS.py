@@ -15,7 +15,6 @@
 import os
 import util
 import verify
-import nose
 from nose.plugins.attrib import attr
 import unittest
 
@@ -27,11 +26,11 @@ class WordPressRDSFunctionalTest(unittest.TestCase):
     def setUp(self):
         template = 'WordPress_With_RDS.template'
         stack_paramstr = ';'.join(['InstanceType=m1.xlarge',
-            'DBUsername=dbuser',
-            'DBPassword=' + os.environ['OS_PASSWORD']])
+                                   'DBUsername=dbuser',
+                                   'DBPassword=' + os.environ['OS_PASSWORD']])
 
         self.stack = util.Stack(self, template, 'F17', 'x86_64', 'cfntools',
-            stack_paramstr)
+                                stack_paramstr)
         self.WebServer = util.Instance(self, 'WebServer')
 
     def tearDown(self):
@@ -64,8 +63,7 @@ class WordPressRDSFunctionalTest(unittest.TestCase):
         # IP into the /usr/share one, which seems to work but could be a
         # template bug..
         stdin, stdout, sterr =\
-            self.WebServer.get_ssh_client().exec_command('grep DB_HOST '
-                                                         + wp_file)
+            self.WebServer.ssh.exec_command('grep DB_HOST ' + wp_file)
         result = stdout.readlines().pop().rstrip().split('\'')
         print "Checking wordpress DB_HOST, got %s" % result[3]
         self.assertTrue("localhost" != result[3])

@@ -15,7 +15,6 @@
 
 import functools
 import webob
-import sqlalchemy.exc
 
 from heat.common import context
 from heat.db import api as db_api
@@ -24,6 +23,7 @@ from heat.engine.event import Event
 from heat.common import exception
 from heat.common import identifier
 from heat.engine import parser
+from heat.engine import resource
 from heat.engine import resources
 from heat.engine import watchrule
 
@@ -142,20 +142,20 @@ class EngineService(service.Service):
     @request_context
     def show_stack(self, context, stack_identity):
         """
-        The show_stack method returns the attributes of one stack.
+        Return detailed information about one or all stacks.
         arg1 -> RPC context.
-        arg2 -> Name of the stack you want to see
+        arg2 -> Name of the stack you want to show, or None to show all
         """
-        if stack_identity is None:
-            raise AttributeError('No stack_identity provided')
-
-        stacks = [self._get_stack(context, stack_identity)]
+        if stack_identity is not None:
+            stacks = [self._get_stack(context, stack_identity)]
+        else:
+            stacks = db_api.stack_get_all_by_tenant(context) or []
 
         def format_stack_detail(s):
             stack = parser.Stack.load(context, stack=s)
             return api.format_stack(stack)
 
-        return {'stacks': [format_stack_detail(s) for s in stacks]}
+        return [format_stack_detail(s) for s in stacks]
 
     @request_context
     def list_stacks(self, context):
@@ -168,7 +168,7 @@ class EngineService(service.Service):
             for s in stacks:
                 try:
                     stack = parser.Stack.load(context, stack=s,
-                        resolve_data=False)
+                                              resolve_data=False)
                 except exception.NotFound:
                     # The stack may have been deleted between listing
                     # and formatting
@@ -177,7 +177,7 @@ class EngineService(service.Service):
                     yield api.format_stack(stack)
 
         stacks = db_api.stack_get_all_by_tenant(context) or []
-        return {'stacks': list(format_stack_details(stacks))}
+        return list(format_stack_details(stacks))
 
     @request_context
     def create_stack(self, context, stack_name, template, params, args):
@@ -337,6 +337,13 @@ class EngineService(service.Service):
         self.tg.add_thread(stack.delete)
         return None
 
+    def list_resource_types(self, context):
+        """
+        Get a list of supported resource types.
+        arg1 -> RPC context.
+        """
+        return list(resource.get_types())
+
     @request_context
     def list_events(self, context, stack_identity):
         """
@@ -351,9 +358,7 @@ class EngineService(service.Service):
         else:
             events = db_api.event_get_all_by_tenant(context)
 
-        output = [api.format_event(Event.load(context, e.id)) for e in events]
-
-        return {'events': output}
+        return [api.format_event(Event.load(context, e.id)) for e in events]
 
     @request_context
     def describe_stack_resource(self, context, stack_identity, resource_name):
@@ -370,31 +375,38 @@ class EngineService(service.Service):
         return api.format_stack_resource(stack[resource_name])
 
     @request_context
-    def describe_stack_resources(self, context, stack_identity,
-                                 physical_resource_id, logical_resource_id):
-        if stack_identity is not None:
-            s = self._get_stack(context, stack_identity)
-        else:
-            rs = db_api.resource_get_by_physical_resource_id(context,
-                    physical_resource_id)
-            if not rs:
-                msg = "The specified PhysicalResourceId doesn't exist"
-                raise AttributeError(msg)
-            s = rs.stack
+    def find_physical_resource(self, context, physical_resource_id):
+        """
+        Return an identifier for the resource with the specified physical
+        resource ID.
+        arg1 -> RPC context.
+        arg2 -> The physical resource ID to look up.
+        """
+        rs = db_api.resource_get_by_physical_resource_id(context,
+                                                         physical_resource_id)
+        if not rs:
+            msg = "The specified PhysicalResourceId doesn't exist"
+            raise AttributeError(msg)
 
-        if not s:
-            raise AttributeError("The specified stack doesn't exist")
+        stack = parser.Stack.load(context, stack=rs.stack)
+        resource = stack[rs.name]
+
+        return dict(resource.identifier())
+
+    @request_context
+    def describe_stack_resources(self, context, stack_identity, resource_name):
+        s = self._get_stack(context, stack_identity)
 
         stack = parser.Stack.load(context, stack=s)
 
-        if logical_resource_id is not None:
-            name_match = lambda r: r.name == logical_resource_id
+        if resource_name is not None:
+            name_match = lambda r: r.name == resource_name
         else:
             name_match = lambda r: True
 
         return [api.format_stack_resource(resource)
-                for resource in stack if resource.id is not None and
-                                         name_match(resource)]
+                for resource in stack
+                if resource.id is not None and name_match(resource)]
 
     @request_context
     def list_stack_resources(self, context, stack_identity):
@@ -406,25 +418,21 @@ class EngineService(service.Service):
                 for resource in stack if resource.id is not None]
 
     @request_context
-    def metadata_update(self, context, stack_id, resource_name, metadata):
+    def metadata_update(self, context, stack_identity,
+                        resource_name, metadata):
         """
         Update the metadata for the given resource.
         """
-        s = db_api.stack_get(None, stack_id)
-        if s is None:
-            logger.warn("Stack %s not found" % stack_id)
-            return ['stack', None]
+        s = self._get_stack(context, stack_identity)
 
-        stack = parser.Stack.load(None, stack=s)
+        stack = parser.Stack.load(context, stack=s)
         if resource_name not in stack:
-            logger.warn("Resource not found %s:%s." % (stack_id,
-                                                       resource_name))
-            return ['resource', None]
+            raise AttributeError("Resource not found %s" % resource_name)
 
         resource = stack[resource_name]
         resource.metadata = metadata
 
-        return [None, resource.metadata]
+        return resource.metadata
 
     def _periodic_watcher_task(self, sid):
         """
@@ -440,7 +448,7 @@ class EngineService(service.Service):
         stack = db_api.stack_get(admin_context, sid, admin=True)
         if not stack:
             logger.error("Unable to retrieve stack %s for periodic task" %
-                        sid)
+                         sid)
             return
         user_creds = db_api.user_creds_get(stack.user_creds_id)
         stack_context = context.RequestContext.from_dict(user_creds)
@@ -499,7 +507,7 @@ class EngineService(service.Service):
         # DB API and schema does not yet allow us to easily query by
         # namespace/metric, but we will want this at some point
         # for now, the API can query all metric data and filter locally
-        if namespace != None or metric_name != None:
+        if namespace is not None or metric_name is not None:
             logger.error("Filtering by namespace/metric not yet supported")
             return
 

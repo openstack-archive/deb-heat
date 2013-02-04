@@ -13,21 +13,15 @@
 #    under the License.
 
 
-import sys
 import os
 
-import nose
 import unittest
 import mox
-import json
-import sqlalchemy
 
 from nose.plugins.attrib import attr
-from nose import with_setup
 
 from heat.tests.v1_1 import fakes
 from heat.engine.resources import instance as instances
-import heat.db as db_api
 from heat.common import template_format
 from heat.engine import parser
 from heat.openstack.common import uuidutils
@@ -70,13 +64,14 @@ class instancesTest(unittest.TestCase):
 
         # need to resolve the template functions
         server_userdata = instance._build_userdata(
-                                instance.t['Properties']['UserData'])
+            instance.t['Properties']['UserData'])
         self.m.StubOutWithMock(self.fc.servers, 'create')
-        self.fc.servers.create(image=1, flavor=1, key_name='test',
-                name='%s.%s' % (stack_name, instance.name),
-                security_groups=None,
-                userdata=server_userdata, scheduler_hints=None,
-                meta=None).AndReturn(self.fc.servers.list()[1])
+        self.fc.servers.create(
+            image=1, flavor=1, key_name='test',
+            name='%s.%s' % (stack_name, instance.name),
+            security_groups=None,
+            userdata=server_userdata, scheduler_hints=None,
+            meta=None).AndReturn(self.fc.servers.list()[1])
         self.m.ReplayAll()
 
         self.assertEqual(instance.create(), None)
@@ -109,13 +104,14 @@ class instancesTest(unittest.TestCase):
 
         # need to resolve the template functions
         server_userdata = instance._build_userdata(
-                                instance.t['Properties']['UserData'])
+            instance.t['Properties']['UserData'])
         self.m.StubOutWithMock(self.fc.servers, 'create')
-        self.fc.servers.create(image=1, flavor=1, key_name='test',
-                name='%s.%s' % (stack_name, instance.name),
-                security_groups=None,
-                userdata=server_userdata, scheduler_hints=None,
-                meta=None).AndReturn(self.fc.servers.list()[1])
+        self.fc.servers.create(
+            image=1, flavor=1, key_name='test',
+            name='%s.%s' % (stack_name, instance.name),
+            security_groups=None,
+            userdata=server_userdata, scheduler_hints=None,
+            meta=None).AndReturn(self.fc.servers.list()[1])
         self.m.ReplayAll()
 
         self.assertEqual(instance.create(), None)
@@ -129,7 +125,13 @@ class instancesTest(unittest.TestCase):
         self.assertEqual(instance.state, instance.DELETE_COMPLETE)
         self.m.VerifyAll()
 
-    # allows testing of the test directly, shown below
-    if __name__ == '__main__':
-        sys.argv.append(__file__)
-        nose.main()
+        AZ = instance.FnGetAtt('AvailabilityZone')
+        self.assertEqual(AZ, 'nova')
+        private_ip = instance.FnGetAtt('PublicIp')
+        self.assertEqual(private_ip, '4.5.6.7')
+        private_ip = instance.FnGetAtt('PrivateIp')
+        self.assertEqual(private_ip, '4.5.6.7')
+        private_ip = instance.FnGetAtt('PrivateDnsName')
+        self.assertEqual(private_ip, '4.5.6.7')
+        private_ip = instance.FnGetAtt('PrivateDnsName')
+        self.assertEqual(private_ip, '4.5.6.7')

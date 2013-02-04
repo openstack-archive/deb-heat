@@ -16,9 +16,9 @@
 import eventlet
 from heat.openstack.common import log as logging
 
+from heat.engine import clients
 from heat.common import exception
 from heat.engine import resource
-from novaclient.exceptions import NotFound
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +34,10 @@ class Volume(resource.Resource):
         super(Volume, self).__init__(name, json_snippet, stack)
 
     def handle_create(self):
-        vol = self.nova('volume').volumes.create(self.properties['Size'],
-                            display_name=self.physical_resource_name(),
-                            display_description=self.physical_resource_name())
+        vol = self.nova('volume').volumes.create(
+            self.properties['Size'],
+            display_name=self.physical_resource_name(),
+            display_description=self.physical_resource_name())
 
         while vol.status == 'creating':
             eventlet.sleep(1)
@@ -117,10 +118,9 @@ class VolumeAttachment(resource.Resource):
                 except Exception:
                     pass
                 vol.get()
-        except NotFound as e:
+        except clients.novaclient.exceptions.NotFound as e:
             logger.warning('Deleting VolumeAttachment %s %s - not found' %
-                    (server_id, volume_id))
-            return
+                          (server_id, volume_id))
 
 
 def resource_mapping():

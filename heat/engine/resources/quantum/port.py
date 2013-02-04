@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.engine import clients
 from heat.openstack.common import log as logging
 from heat.engine.resources.quantum import quantum
 
@@ -22,23 +23,22 @@ logger = logging.getLogger(__name__)
 class Port(quantum.QuantumResource):
 
     fixed_ip_schema = {'subnet_id': {'Type': 'String',
-                                  'Required': True},
-                        'ip_address': {'Type': 'String',
-                               'Required': True}}
+                                     'Required': True},
+                       'ip_address': {'Type': 'String',
+                                      'Required': True}}
 
     properties_schema = {'network_id': {'Type': 'String',
-                                    'Required': True},
-                        'name': {'Type': 'String'},
-                        'value_specs': {'Type': 'Map',
-                                       'Default': {}},
-                        'admin_state_up': {'Default': True,
-                                          'Type': 'Boolean'},
-                        'fixed_ips': {'Type': 'List',
-                                      'Schema': {'Type': 'Map',
-                                                 'Schema': fixed_ip_schema}},
-                        'mac_address': {'Type': 'String'},
-                        'device_id': {'Type': 'String'},
-    }
+                                        'Required': True},
+                         'name': {'Type': 'String'},
+                         'value_specs': {'Type': 'Map',
+                                         'Default': {}},
+                         'admin_state_up': {'Default': True,
+                                            'Type': 'Boolean'},
+                         'fixed_ips': {'Type': 'List',
+                                       'Schema': {'Type': 'Map',
+                                                  'Schema': fixed_ip_schema}},
+                         'mac_address': {'Type': 'String'},
+                         'device_id': {'Type': 'String'}}
 
     def __init__(self, name, json_snippet, stack):
         super(Port, self).__init__(name, json_snippet, stack)
@@ -59,6 +59,9 @@ class Port(quantum.QuantumResource):
 
 
 def resource_mapping():
+    if clients.quantumclient is None:
+        return {}
+
     return {
         'OS::Quantum::Port': Port,
     }

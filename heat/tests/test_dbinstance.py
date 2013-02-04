@@ -13,13 +13,10 @@
 #    under the License.
 
 
-import sys
 import os
 
-import nose
 import unittest
 import mox
-import json
 
 from nose.plugins.attrib import attr
 
@@ -66,8 +63,8 @@ class DBInstanceTest(unittest.TestCase):
 
     def create_dbinstance(self, t, stack, resource_name):
         resource = dbi.DBInstance(resource_name,
-                                      t['Resources'][resource_name],
-                                      stack)
+                                  t['Resources'][resource_name],
+                                  stack)
         self.assertEqual(None, resource.validate())
         self.assertEqual(None, resource.create())
         self.assertEqual(dbi.DBInstance.CREATE_COMPLETE, resource.state)
@@ -82,7 +79,19 @@ class DBInstanceTest(unittest.TestCase):
         class FakeNested:
             resources = {'DatabaseInstance': FakeDatabaseInstance()}
 
-        stack.Stack.create_with_template(mox.IgnoreArg()).AndReturn(None)
+        params = {
+            'AllocatedStorage': u'5',
+            'DBInstanceClass': u'db.m1.small',
+            'DBName': u'wordpress',
+            'DBSecurityGroups': '',
+            'KeyName': 'test',
+            'MasterUserPassword': u'admin',
+            'MasterUsername': u'admin',
+            'Port': '3306'
+        }
+
+        stack.Stack.create_with_template(mox.IgnoreArg(),
+                                         params).AndReturn(None)
 
         fn = FakeNested()
 
@@ -93,15 +102,6 @@ class DBInstanceTest(unittest.TestCase):
         t = self.load_template()
         s = self.parse_stack(t)
         resource = self.create_dbinstance(t, s, 'DatabaseServer')
-
-        self.assertEqual({'AllocatedStorage': u'5',
-            'DBInstanceClass': u'db.m1.small',
-            'DBName': u'wordpress',
-            'DBSecurityGroups': [],
-            'KeyName': 'test',
-            'MasterUserPassword': u'admin',
-            'MasterUsername': u'admin',
-            'Port': '3306'}, resource._params())
 
         self.assertEqual('0.0.0.0', resource.FnGetAtt('Endpoint.Address'))
         self.assertEqual('10.0.0.1', resource.FnGetAtt('Endpoint.Address'))
@@ -115,8 +115,3 @@ class DBInstanceTest(unittest.TestCase):
             raise Exception('Expected InvalidTemplateAttribute')
 
         self.m.VerifyAll()
-
-    # allows testing of the test directly, shown below
-    if __name__ == '__main__':
-        sys.argv.append(__file__)
-        nose.main()

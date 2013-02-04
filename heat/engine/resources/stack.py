@@ -13,9 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import urllib2
-import json
-
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import resource
@@ -33,18 +30,9 @@ logger = logging.getLogger(__name__)
 
 
 class Stack(resource.Resource):
-    properties_schema = {PROP_TEMPLATE_URL: {'Type': 'String',
-                                             'Required': True},
-                         PROP_TIMEOUT_MINS: {'Type': 'Number'},
-                         PROP_PARAMETERS: {'Type': 'Map'}}
-
     def __init__(self, name, json_snippet, stack):
         super(Stack, self).__init__(name, json_snippet, stack)
         self._nested = None
-
-    def _params(self):
-        p = self.stack.resolve_runtime_data(self.properties[PROP_PARAMETERS])
-        return p
 
     def nested(self):
         if self._nested is None and self.resource_id is not None:
@@ -56,13 +44,13 @@ class Stack(resource.Resource):
 
         return self._nested
 
-    def create_with_template(self, child_template):
+    def create_with_template(self, child_template, user_params):
         '''
         Handle the creation of the nested stack from a given JSON template.
         '''
         template = parser.Template(child_template)
         params = parser.Parameters(self.physical_resource_name(), template,
-                                   self._params())
+                                   user_params)
 
         self._nested = parser.Stack(self.context,
                                     self.physical_resource_name(),
@@ -75,11 +63,28 @@ class Stack(resource.Resource):
         if self._nested.state != self._nested.CREATE_COMPLETE:
             raise exception.Error(self._nested.state_description)
 
+    def get_output(self, op):
+        stack = self.nested()
+        if not stack:
+            return None
+        if op not in stack.outputs:
+            raise exception.InvalidTemplateAttribute(
+                resource=self.physical_resource_name(), key=key)
+
+        return stack.output(op)
+
+
+class NestedStack(Stack):
+    properties_schema = {PROP_TEMPLATE_URL: {'Type': 'String',
+                                             'Required': True},
+                         PROP_TIMEOUT_MINS: {'Type': 'Number'},
+                         PROP_PARAMETERS: {'Type': 'Map'}}
+
     def handle_create(self):
         template_data = urlfetch.get(self.properties[PROP_TEMPLATE_URL])
         template = template_format.parse(template_data)
 
-        self.create_with_template(template)
+        self.create_with_template(template, self.properties[PROP_PARAMETERS])
 
     def handle_update(self):
         return self.UPDATE_REPLACE
@@ -93,24 +98,19 @@ class Stack(resource.Resource):
             if stack is not None:
                 stack.delete()
 
+    def FnGetRefId(self):
+        return self.nested().identifier().arn()
+
     def FnGetAtt(self, key):
         if not key.startswith('Outputs.'):
             raise exception.InvalidTemplateAttribute(
-                        resource=self.physical_resource_name(), key=key)
+                resource=self.physical_resource_name(), key=key)
 
         prefix, dot, op = key.partition('.')
-        stack = self.nested()
-        if stack is None:
-            # This seems like a hack, to get past validation
-            return ''
-        if op not in stack.outputs:
-            raise exception.InvalidTemplateAttribute(
-                        resource=self.physical_resource_name(), key=key)
-
-        return stack.output(op)
+        return unicode(self.get_output(op))
 
 
 def resource_mapping():
     return {
-        'AWS::CloudFormation::Stack': Stack,
+        'AWS::CloudFormation::Stack': NestedStack,
     }

@@ -52,8 +52,8 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
 
     def __init__(self):
         super(EngineClient, self).__init__(
-                topic=FLAGS.engine_topic,
-                default_version=self.BASE_RPC_API_VERSION)
+            topic=FLAGS.engine_topic,
+            default_version=self.BASE_RPC_API_VERSION)
 
     def identify_stack(self, ctxt, stack_name):
         """
@@ -79,11 +79,10 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
 
     def show_stack(self, ctxt, stack_identity):
         """
-        The show_stack method returns the attributes of one stack.
-
+        Return detailed information about one or all stacks.
         :param ctxt: RPC context.
-        :param stack_identity: Name of the stack you want to see,
-                           or None to see all
+        :param stack_identity: Name of the stack you want to show, or None to
+                               show all
         """
         return self.call(ctxt, self.make_msg('show_stack',
                                              stack_identity=stack_identity),
@@ -161,9 +160,19 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
         :param params: Params passed from API.
         """
         rpc_method = self.cast if cast else self.call
-        return rpc_method(ctxt, self.make_msg('delete_stack',
-                                              stack_identity=stack_identity),
-                  topic=_engine_topic(self.topic, ctxt, None))
+        return rpc_method(ctxt,
+                          self.make_msg('delete_stack',
+                                        stack_identity=stack_identity),
+                          topic=_engine_topic(self.topic, ctxt, None))
+
+    def list_resource_types(self, ctxt):
+        """
+        Get a list of valid resource types.
+
+        :param ctxt: RPC context.
+        """
+        return self.call(ctxt, self.make_msg('list_resource_types'),
+                         topic=_engine_topic(self.topic, ctxt, None))
 
     def list_events(self, ctxt, stack_identity):
         """
@@ -183,12 +192,23 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
                                              resource_name=resource_name),
                          topic=_engine_topic(self.topic, ctxt, None))
 
-    def describe_stack_resources(self, ctxt, stack_identity,
-                                 physical_resource_id, logical_resource_id):
+    def find_physical_resource(self, ctxt, physical_resource_id):
+        """
+        Return an identifier for the resource with the specified physical
+        resource ID.
+        :param ctxt RPC context.
+        :param physcial_resource_id The physical resource ID to look up.
+        """
+        return self.call(ctxt,
+                         self.make_msg(
+                             'find_physical_resource',
+                             physical_resource_id=physical_resource_id),
+                         topic=_engine_topic(self.topic, ctxt, None))
+
+    def describe_stack_resources(self, ctxt, stack_identity, resource_name):
         return self.call(ctxt, self.make_msg('describe_stack_resources',
-                         stack_identity=stack_identity,
-                         physical_resource_id=physical_resource_id,
-                         logical_resource_id=logical_resource_id),
+                                             stack_identity=stack_identity,
+                                             resource_name=resource_name),
                          topic=_engine_topic(self.topic, ctxt, None))
 
     def list_stack_resources(self, ctxt, stack_identity):
@@ -196,12 +216,12 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
                                              stack_identity=stack_identity),
                          topic=_engine_topic(self.topic, ctxt, None))
 
-    def metadata_update(self, ctxt, stack_id, resource_name, metadata):
+    def metadata_update(self, ctxt, stack_identity, resource_name, metadata):
         """
         Update the metadata for the given resource.
         """
         return self.call(ctxt, self.make_msg('metadata_update',
-                         stack_id=stack_id,
+                         stack_identity=stack_identity,
                          resource_name=resource_name, metadata=metadata),
                          topic=_engine_topic(self.topic, ctxt, None))
 

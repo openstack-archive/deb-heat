@@ -151,7 +151,7 @@ class StackController(object):
         """
 
         try:
-            stack_list = self.engine.list_stacks(req.context)
+            stacks = self.engine.list_stacks(req.context)
         except rpc_common.RemoteError as ex:
             return util.remote_error(ex, True)
 
@@ -163,8 +163,6 @@ class StackController(object):
                         engine_api.STACK_CREATION_TIME,
                         engine_api.STACK_DELETION_TIME,
                         engine_api.STACK_UPDATED_TIME)
-
-        stacks = stack_list['stacks']
 
         return {'stacks': [format_stack(req, s, summary_keys) for s in stacks]}
 
@@ -220,10 +218,10 @@ class StackController(object):
         except rpc_common.RemoteError as ex:
             return util.remote_error(ex)
 
-        if not stack_list['stacks']:
+        if not stack_list:
             raise exc.HTTPInternalServerError()
 
-        stack = stack_list['stacks'][0]
+        stack = stack_list[0]
 
         return {'stack': format_stack(req, stack)}
 
@@ -304,6 +302,19 @@ class StackController(object):
             raise exc.HTTPBadRequest(explanation=result['Error'])
 
         return result
+
+    @util.tenant_local
+    def list_resource_types(self, req):
+        """
+        Returns a list of valid resource types that may be used in a template.
+        """
+
+        try:
+            types = self.engine.list_resource_types(req.context)
+        except rpc_common.RemoteError as ex:
+            raise exc.HTTPInternalServerError(explanation=str(ex))
+
+        return {'resource_types': types}
 
 
 def create_resource(options):

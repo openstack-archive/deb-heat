@@ -13,14 +13,10 @@
 #    under the License.
 
 
-import nose
 import unittest
 from nose.plugins.attrib import attr
-import mox
 import json
 
-from heat.common import context
-from heat.common import exception
 from heat.engine import parameters
 
 
@@ -295,7 +291,7 @@ class ParametersTest(unittest.TestCase):
 
     def test_schema_invariance(self):
         params1 = parameters.Parameters('test', params_schema,
-                                    {'Defaulted': 'wibble'})
+                                        {'Defaulted': 'wibble'})
         self.assertEqual(params1['Defaulted'], 'wibble')
 
         params2 = parameters.Parameters('test', params_schema)
@@ -323,9 +319,3 @@ class ParametersTest(unittest.TestCase):
                     'AWS::StackName': True}
 
         self.assertEqual(params.map(lambda p: p.has_default()), expected)
-
-
-# allows testing of the test directly, shown below
-if __name__ == '__main__':
-    sys.argv.append(__file__)
-    nose.main()

@@ -14,7 +14,6 @@
 
 import util
 import verify
-import nose
 from nose.plugins.attrib import attr
 import unittest
 import os
@@ -28,8 +27,8 @@ class WordPressBotoFunctionalTest(unittest.TestCase):
         template = 'WordPress_Single_Instance.template'
 
         stack_paramstr = ';'.join(['InstanceType=m1.xlarge',
-            'DBUsername=dbuser',
-            'DBPassword=' + os.environ['OS_PASSWORD']])
+                                   'DBUsername=dbuser',
+                                   'DBPassword=' + os.environ['OS_PASSWORD']])
 
         self.stack = util.StackBoto(self, template,
                                     'F17', 'x86_64', 'cfntools',

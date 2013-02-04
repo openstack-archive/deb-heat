@@ -13,10 +13,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.engine import clients
 from heat.common import exception
 from heat.common import template_format
 from heat.engine.resources import stack
-from novaclient.exceptions import NotFound
 
 from heat.openstack.common import log as logging
 
@@ -153,7 +153,7 @@ lb_template = '''
 # file at the moment this is because we will probably need to implement a
 # LoadBalancer based on keepalived as well (for for ssl support).
 #
-class LoadBalancer(stack.Stack):
+class LoadBalancer(stack.NestedStack):
 
     listeners_schema = {
         'InstancePort': {'Type': 'Number',
@@ -178,7 +178,7 @@ class LoadBalancer(stack.Stack):
         'Timeout': {'Type': 'Number',
                     'Required': True},
         'UnhealthyThreshold': {'Type': 'Number',
-                              'Required': True},
+                               'Required': True},
     }
 
     properties_schema = {
@@ -200,19 +200,13 @@ class LoadBalancer(stack.Stack):
                     'Implemented': False}
     }
 
-    def _params(self):
-        # total hack - probably need an admin key here.
-        params = {'KeyName': {'Ref': 'KeyName'}}
-        p = self.stack.resolve_static_data(params)
-        return p
-
     def _instance_to_ipaddress(self, inst):
         '''
         Return the server's IP address, fetching it from Nova
         '''
         try:
             server = self.nova().servers.get(inst)
-        except NotFound as ex:
+        except clients.novaclient.exceptions.NotFound as ex:
             logger.warn('Instance (%s) not found: %s' % (inst, str(ex)))
         else:
             for n in server.networks:
@@ -291,7 +285,10 @@ class LoadBalancer(stack.Stack):
             cfg = self._haproxy_config(templ, self.properties['Instances'])
             files['/etc/haproxy/haproxy.cfg']['content'] = cfg
 
-        self.create_with_template(templ)
+        # total hack - probably need an admin key here.
+        param = self.stack.resolve_static_data({'KeyName': {'Ref': 'KeyName'}})
+
+        self.create_with_template(templ, param)
 
     def validate(self):
         '''
@@ -343,7 +340,7 @@ class LoadBalancer(stack.Stack):
                                                      key=key)
 
         if key == 'DNSName':
-            return stack.Stack.FnGetAtt(self, 'Outputs.PublicIp')
+            return self.get_output('PublicIp')
         else:
             return ''
 

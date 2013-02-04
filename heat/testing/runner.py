@@ -66,8 +66,6 @@ reldir = os.path.join(os.path.dirname(__file__), '..', '..')
 absdir = os.path.abspath(reldir)
 sys.path.insert(0, absdir)
 
-from heat.openstack.common import cfg
-
 
 class _AnsiColorizer(object):
     """
@@ -124,19 +122,18 @@ class _Win32Colorizer(object):
     def __init__(self, stream):
         import win32console as win
         red, green, blue, bold = (win.FOREGROUND_RED, win.FOREGROUND_GREEN,
-                                 win.FOREGROUND_BLUE, win.FOREGROUND_INTENSITY)
+                                  win.FOREGROUND_BLUE, win.FOREGROUND_INTENSITY
+                                  )
         self.stream = stream
         self.screenBuffer = win.GetStdHandle(win.STD_OUT_HANDLE)
-        self._colors = {
-            'normal': red | green | blue,
-            'red': red | bold,
-            'green': green | bold,
-            'blue': blue | bold,
-            'yellow': red | green | bold,
-            'magenta': red | blue | bold,
-            'cyan': green | blue | bold,
-            'white': red | green | blue | bold
-            }
+        self._colors = {'normal': red | green | blue,
+                        'red': red | bold,
+                        'green': green | bold,
+                        'blue': blue | bold,
+                        'yellow': red | green | bold,
+                        'magenta': red | blue | bold,
+                        'cyan': green | blue | bold,
+                        'white': red | green | blue | bold}
 
     def supported(cls, stream=sys.stdout):
         try:

@@ -20,11 +20,7 @@ from urlparse import urlparse
 from heat.common import exception
 from heat.engine import resource
 from heat.openstack.common import log as logging
-try:
-    from swiftclient.client import ClientException
-    swiftclient_present = True
-except ImportError:
-    swiftclient_present = False
+from heat.engine import clients
 
 logger = logging.getLogger(__name__)
 
@@ -33,19 +29,18 @@ class S3Bucket(resource.Resource):
     website_schema = {'IndexDocument': {'Type': 'String'},
                       'ErrorDocument': {'Type': 'String'}}
     properties_schema = {'AccessControl': {
-                           'Type': 'String',
-                           'AllowedValues': ['Private',
-                                             'PublicRead',
-                                             'PublicReadWrite',
-                                             'AuthenticatedRead',
-                                             'BucketOwnerRead',
-                                             'BucketOwnerFullControl']},
-                        'DeletionPolicy': {
-                            'Type': 'String',
-                            'AllowedValues': ['Delete',
-                                              'Retain']},
-                        'WebsiteConfiguration': {'Type': 'Map',
-                                                 'Schema': website_schema}}
+                         'Type': 'String',
+                         'AllowedValues': ['Private',
+                                           'PublicRead',
+                                           'PublicReadWrite',
+                                           'AuthenticatedRead',
+                                           'BucketOwnerRead',
+                                           'BucketOwnerFullControl']},
+                         'DeletionPolicy': {
+                         'Type': 'String',
+                         'AllowedValues': ['Delete', 'Retain']},
+                         'WebsiteConfiguration': {'Type': 'Map',
+                                                  'Schema': website_schema}}
 
     def __init__(self, name, json_snippet, stack):
         super(S3Bucket, self).__init__(name, json_snippet, stack)
@@ -55,9 +50,9 @@ class S3Bucket(resource.Resource):
         Validate any of the provided params
         '''
         #check if swiftclient is installed
-        if swiftclient_present == False:
+        if clients.swiftclient is None:
             return {'Error':
-                    'S3 services unavaialble because of missing swiftclient.'}
+                    'S3 services unavailable because of missing swiftclient.'}
 
     @staticmethod
     def _create_container_name(resource_name):
@@ -67,7 +62,7 @@ class S3Bucket(resource.Resource):
     def handle_create(self):
         """Create a bucket."""
         container = S3Bucket._create_container_name(
-                            self.physical_resource_name())
+            self.physical_resource_name())
         headers = {}
         logger.debug('S3Bucket create container %s with headers %s' %
                      (container, headers))
@@ -107,7 +102,7 @@ class S3Bucket(resource.Resource):
         if self.resource_id is not None:
             try:
                 self.swift().delete_container(self.resource_id)
-            except ClientException as ex:
+            except clients.swiftclient.ClientException as ex:
                 logger.warn("Delete container failed: %s" % str(ex))
 
     def FnGetRefId(self):
@@ -120,13 +115,16 @@ class S3Bucket(resource.Resource):
             return parsed[1].split(':')[0]
         elif key == 'WebsiteURL':
             return '%s://%s%s/%s' % (parsed[0], parsed[1], parsed[2],
-                                      self.resource_id)
+                                     self.resource_id)
         else:
             raise exception.InvalidTemplateAttribute(resource=self.name,
                                                      key=key)
 
 
 def resource_mapping():
+    if clients.swiftclient is None:
+        return {}
+
     return {
         'AWS::S3::Bucket': S3Bucket,
     }

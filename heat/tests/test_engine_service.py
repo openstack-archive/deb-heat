@@ -13,19 +13,17 @@
 #    under the License.
 
 
-import sys
 import os
 
-import nose
 import unittest
 import mox
-import json
 from nose.plugins.attrib import attr
 
 from heat.common import context
 from heat.tests.v1_1 import fakes
 import heat.engine.api as engine_api
 import heat.db as db_api
+from heat.common import identifier
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import service
@@ -221,9 +219,9 @@ class stackServiceCreateUpdateDeleteTest(unittest.TestCase):
         stack_name = 'service_create/test_stack'
         stack = get_wordpress_stack('test_stack', self.ctx)
 
-        self.assertRaises(ValueError, self.man.create_stack,
-                                      self.ctx, stack_name,
-                                      stack.t, {}, {})
+        self.assertRaises(ValueError,
+                          self.man.create_stack,
+                          self.ctx, stack_name, stack.t, {}, {})
 
     def test_stack_create_invalid_resource_name(self):
         stack_name = 'service_create_test_stack_invalid_res'
@@ -232,9 +230,10 @@ class stackServiceCreateUpdateDeleteTest(unittest.TestCase):
         tmpl['Resources']['Web/Server'] = tmpl['Resources']['WebServer']
         del tmpl['Resources']['WebServer']
 
-        self.assertRaises(ValueError, self.man.create_stack,
-                                      self.ctx, stack_name,
-                                      stack.t, {}, {})
+        self.assertRaises(ValueError,
+                          self.man.create_stack,
+                          self.ctx, stack_name,
+                          stack.t, {}, {})
 
     def test_stack_delete(self):
         stack_name = 'service_delete_test_stack'
@@ -417,16 +416,14 @@ class stackServiceTest(unittest.TestCase):
 
     def test_stack_by_name_tenants(self):
         self.assertEqual(self.stack.id,
-            db_api.stack_get_by_name(self.ctx, self.stack_name).id)
+                         db_api.stack_get_by_name(self.ctx,
+                                                  self.stack_name).id)
         ctx2 = create_context(self.m, self.username,
-            'stack_service_test_tenant2')
+                              'stack_service_test_tenant2')
         self.assertEqual(None, db_api.stack_get_by_name(ctx2, self.stack_name))
 
     def test_stack_event_list(self):
-        el = self.man.list_events(self.ctx, self.stack_identity)
-
-        self.assertTrue('events' in el)
-        events = el['events']
+        events = self.man.list_events(self.ctx, self.stack_identity)
 
         self.assertEqual(len(events), 2)
         for ev in events:
@@ -451,7 +448,7 @@ class stackServiceTest(unittest.TestCase):
 
             self.assertTrue('resource_status' in ev)
             self.assertTrue(ev['resource_status'] in ('IN_PROGRESS',
-                                                     'CREATE_COMPLETE'))
+                                                      'CREATE_COMPLETE'))
 
             self.assertTrue('resource_status_reason' in ev)
             self.assertEqual(ev['resource_status_reason'], 'state changed')
@@ -466,22 +463,30 @@ class stackServiceTest(unittest.TestCase):
 
             self.assertTrue('event_time' in ev)
 
-    def test_stack_describe_all(self):
+    def test_stack_list_all(self):
         sl = self.man.list_stacks(self.ctx)
 
-        self.assertEqual(len(sl['stacks']), 1)
-        for s in sl['stacks']:
+        self.assertEqual(len(sl), 1)
+        for s in sl:
+            self.assertTrue('creation_time' in s)
+            self.assertTrue('updated_time' in s)
+            self.assertTrue('stack_identity' in s)
             self.assertNotEqual(s['stack_identity'], None)
+            self.assertTrue('stack_name' in s)
+            self.assertEqual(s['stack_name'], self.stack_name)
+            self.assertTrue('stack_status' in s)
+            self.assertTrue('stack_status_reason' in s)
+            self.assertTrue('description' in s)
             self.assertNotEqual(s['description'].find('WordPress'), -1)
 
-    def test_stack_describe_all_empty(self):
+    def test_stack_list_all_empty(self):
         self.tearDown()
-        self.tenant = 'stack_describe_all_empty_tenant'
+        self.tenant = 'stack_list_all_empty_tenant'
         self.setUp()
 
         sl = self.man.list_stacks(self.ctx)
 
-        self.assertEqual(len(sl['stacks']), 0)
+        self.assertEqual(len(sl), 0)
 
     def test_stack_describe_nonexistent(self):
         nonexist = dict(self.stack_identity)
@@ -493,9 +498,9 @@ class stackServiceTest(unittest.TestCase):
     def test_stack_describe(self):
         sl = self.man.show_stack(self.ctx, self.stack_identity)
 
-        self.assertEqual(len(sl['stacks']), 1)
+        self.assertEqual(len(sl), 1)
 
-        s = sl['stacks'][0]
+        s = sl[0]
         self.assertTrue('creation_time' in s)
         self.assertTrue('updated_time' in s)
         self.assertTrue('stack_identity' in s)
@@ -507,6 +512,38 @@ class stackServiceTest(unittest.TestCase):
         self.assertTrue('description' in s)
         self.assertNotEqual(s['description'].find('WordPress'), -1)
         self.assertTrue('parameters' in s)
+
+    def test_stack_describe_all(self):
+        sl = self.man.show_stack(self.ctx, None)
+
+        self.assertEqual(len(sl), 1)
+
+        s = sl[0]
+        self.assertTrue('creation_time' in s)
+        self.assertTrue('updated_time' in s)
+        self.assertTrue('stack_identity' in s)
+        self.assertNotEqual(s['stack_identity'], None)
+        self.assertTrue('stack_name' in s)
+        self.assertEqual(s['stack_name'], self.stack_name)
+        self.assertTrue('stack_status' in s)
+        self.assertTrue('stack_status_reason' in s)
+        self.assertTrue('description' in s)
+        self.assertNotEqual(s['description'].find('WordPress'), -1)
+        self.assertTrue('parameters' in s)
+
+    def test_stack_describe_all_empty(self):
+        self.tearDown()
+        self.tenant = 'stack_describe_all_empty_tenant'
+        self.setUp()
+
+        sl = self.man.show_stack(self.ctx, None)
+
+        self.assertEqual(len(sl), 0)
+
+    def test_list_resource_types(self):
+        resources = self.man.list_resource_types(self.ctx)
+        self.assertTrue(isinstance(resources, list))
+        self.assertTrue('AWS::EC2::Instance' in resources)
 
     def test_stack_resource_describe(self):
         r = self.man.describe_stack_resource(self.ctx, self.stack_identity,
@@ -542,7 +579,7 @@ class stackServiceTest(unittest.TestCase):
     def test_stack_resources_describe(self):
         resources = self.man.describe_stack_resources(self.ctx,
                                                       self.stack_identity,
-                                                      None, 'WebServer')
+                                                      'WebServer')
 
         self.assertEqual(len(resources), 1)
         r = resources[0]
@@ -562,8 +599,8 @@ class stackServiceTest(unittest.TestCase):
 
     def test_stack_resources_describe_no_filter(self):
         resources = self.man.describe_stack_resources(self.ctx,
-                                                 self.stack_identity,
-                                                 None, None)
+                                                      self.stack_identity,
+                                                      None)
 
         self.assertEqual(len(resources), 1)
         r = resources[0]
@@ -571,21 +608,33 @@ class stackServiceTest(unittest.TestCase):
         self.assertEqual(r['logical_resource_id'], 'WebServer')
 
     def test_stack_resources_describe_bad_lookup(self):
-        self.assertRaises(AttributeError,
+        self.assertRaises(TypeError,
                           self.man.describe_stack_resources,
-                          self.ctx, None, None, 'WebServer')
+                          self.ctx, None, 'WebServer')
 
     def test_stack_resources_describe_nonexist_stack(self):
         nonexist = dict(self.stack_identity)
         nonexist['stack_name'] = 'foo'
         self.assertRaises(AttributeError,
                           self.man.describe_stack_resources,
-                          self.ctx, nonexist, None, 'WebServer')
+                          self.ctx, nonexist, 'WebServer')
 
-    def test_stack_resources_describe_nonexist_physid(self):
+    def test_find_physical_resource(self):
+        resources = self.man.describe_stack_resources(self.ctx,
+                                                      self.stack_identity,
+                                                      None)
+        phys_id = resources[0]['physical_resource_id']
+
+        result = self.man.find_physical_resource(self.ctx, phys_id)
+        self.assertTrue(isinstance(result, dict))
+        resource_identity = identifier.ResourceIdentifier(**result)
+        self.assertEqual(resource_identity.stack(), self.stack_identity)
+        self.assertEqual(resource_identity.resource_name, 'WebServer')
+
+    def test_find_physical_resource_nonexist(self):
         self.assertRaises(AttributeError,
-                          self.man.describe_stack_resources,
-                          self.ctx, None, 'foo', 'WebServer')
+                          self.man.find_physical_resource,
+                          self.ctx, 'foo')
 
     def test_stack_resources_list(self):
         resources = self.man.list_stack_resources(self.ctx,
@@ -611,27 +660,41 @@ class stackServiceTest(unittest.TestCase):
 
     def test_metadata(self):
         test_metadata = {'foo': 'bar', 'baz': 'quux', 'blarg': 'wibble'}
-        err, result = self.man.metadata_update(None,
-                                               self.stack.id, 'WebServer',
-                                               test_metadata)
-        self.assertEqual(err, None)
+        result = self.man.metadata_update(self.ctx,
+                                          dict(self.stack_identity),
+                                          'WebServer', test_metadata)
         self.assertEqual(result, test_metadata)
+
+    def test_metadata_err_stack(self):
+        test_metadata = {'foo': 'bar', 'baz': 'quux', 'blarg': 'wibble'}
+        nonexist = dict(self.stack_identity)
+        nonexist['stack_name'] = 'foo'
+        self.assertRaises(AttributeError,
+                          self.man.metadata_update,
+                          self.ctx, nonexist,
+                          'WebServer', test_metadata)
+
+    def test_metadata_err_resource(self):
+        test_metadata = {'foo': 'bar', 'baz': 'quux', 'blarg': 'wibble'}
+        self.assertRaises(AttributeError,
+                          self.man.metadata_update,
+                          self.ctx, dict(self.stack_identity),
+                          'NooServer', test_metadata)
 
     def test_show_watch(self):
         # Insert two dummy watch rules into the DB
         values = {'stack_id': self.stack.id,
                   'state': 'NORMAL',
                   'name': u'HttpFailureAlarm',
-                   'rule': {
-                        u'EvaluationPeriods': u'1',
-                        u'AlarmActions': [u'WebServerRestartPolicy'],
-                        u'AlarmDescription': u'Restart the WikiDatabase',
-                        u'Namespace': u'system/linux',
-                        u'Period': u'300',
-                        u'ComparisonOperator': u'GreaterThanThreshold',
-                        u'Statistic': u'SampleCount',
-                        u'Threshold': u'2',
-                        u'MetricName': u'ServiceFailure'}}
+                  'rule': {u'EvaluationPeriods': u'1',
+                           u'AlarmActions': [u'WebServerRestartPolicy'],
+                           u'AlarmDescription': u'Restart the WikiDatabase',
+                           u'Namespace': u'system/linux',
+                           u'Period': u'300',
+                           u'ComparisonOperator': u'GreaterThanThreshold',
+                           u'Statistic': u'SampleCount',
+                           u'Threshold': u'2',
+                           u'MetricName': u'ServiceFailure'}}
         db_ret = db_api.watch_rule_create(self.ctx, values)
         self.assertNotEqual(db_ret, None)
         values['name'] = "AnotherWatch"
@@ -664,16 +727,15 @@ class stackServiceTest(unittest.TestCase):
         values = {'stack_id': self.stack.id,
                   'state': 'NORMAL',
                   'name': u'HttpFailureAlarm',
-                   'rule': {
-                        u'EvaluationPeriods': u'1',
-                        u'AlarmActions': [u'WebServerRestartPolicy'],
-                        u'AlarmDescription': u'Restart the WikiDatabase',
-                        u'Namespace': u'system/linux',
-                        u'Period': u'300',
-                        u'ComparisonOperator': u'GreaterThanThreshold',
-                        u'Statistic': u'SampleCount',
-                        u'Threshold': u'2',
-                        u'MetricName': u'ServiceFailure'}}
+                  'rule': {u'EvaluationPeriods': u'1',
+                           u'AlarmActions': [u'WebServerRestartPolicy'],
+                           u'AlarmDescription': u'Restart the WikiDatabase',
+                           u'Namespace': u'system/linux',
+                           u'Period': u'300',
+                           u'ComparisonOperator': u'GreaterThanThreshold',
+                           u'Statistic': u'SampleCount',
+                           u'Threshold': u'2',
+                           u'MetricName': u'ServiceFailure'}}
         db_ret = db_api.watch_rule_create(self.ctx, values)
         self.assertNotEqual(db_ret, None)
 
@@ -681,10 +743,9 @@ class stackServiceTest(unittest.TestCase):
         watch = db_api.watch_rule_get_by_name(self.ctx, "HttpFailureAlarm")
         self.assertNotEqual(watch, None)
         values = {'watch_rule_id': watch.id,
-                  'data': {
-                        u'Namespace': u'system/linux',
-                        u'ServiceFailure': {
-                            u'Units': u'Counter', u'Value': 1}}}
+                  'data': {u'Namespace': u'system/linux',
+                           u'ServiceFailure': {
+                           u'Units': u'Counter', u'Value': 1}}}
         watch = db_api.watch_data_create(self.ctx, values)
 
         # Check there is one result returned
@@ -710,16 +771,15 @@ class stackServiceTest(unittest.TestCase):
         values = {'stack_id': self.stack.id,
                   'state': 'NORMAL',
                   'name': u'OverrideAlarm',
-                   'rule': {
-                        u'EvaluationPeriods': u'1',
-                        u'AlarmActions': [u'WebServerRestartPolicy'],
-                        u'AlarmDescription': u'Restart the WikiDatabase',
-                        u'Namespace': u'system/linux',
-                        u'Period': u'300',
-                        u'ComparisonOperator': u'GreaterThanThreshold',
-                        u'Statistic': u'SampleCount',
-                        u'Threshold': u'2',
-                        u'MetricName': u'ServiceFailure'}}
+                  'rule': {u'EvaluationPeriods': u'1',
+                           u'AlarmActions': [u'WebServerRestartPolicy'],
+                           u'AlarmDescription': u'Restart the WikiDatabase',
+                           u'Namespace': u'system/linux',
+                           u'Period': u'300',
+                           u'ComparisonOperator': u'GreaterThanThreshold',
+                           u'Statistic': u'SampleCount',
+                           u'Threshold': u'2',
+                           u'MetricName': u'ServiceFailure'}}
         db_ret = db_api.watch_rule_create(self.ctx, values)
         self.assertNotEqual(db_ret, None)
 
@@ -750,16 +810,15 @@ class stackServiceTest(unittest.TestCase):
         values = {'stack_id': self.stack.id,
                   'state': 'NORMAL',
                   'name': u'OverrideAlarm2',
-                   'rule': {
-                        u'EvaluationPeriods': u'1',
-                        u'AlarmActions': [u'WebServerRestartPolicy'],
-                        u'AlarmDescription': u'Restart the WikiDatabase',
-                        u'Namespace': u'system/linux',
-                        u'Period': u'300',
-                        u'ComparisonOperator': u'GreaterThanThreshold',
-                        u'Statistic': u'SampleCount',
-                        u'Threshold': u'2',
-                        u'MetricName': u'ServiceFailure'}}
+                  'rule': {u'EvaluationPeriods': u'1',
+                           u'AlarmActions': [u'WebServerRestartPolicy'],
+                           u'AlarmDescription': u'Restart the WikiDatabase',
+                           u'Namespace': u'system/linux',
+                           u'Period': u'300',
+                           u'ComparisonOperator': u'GreaterThanThreshold',
+                           u'Statistic': u'SampleCount',
+                           u'Threshold': u'2',
+                           u'MetricName': u'ServiceFailure'}}
         db_ret = db_api.watch_rule_create(self.ctx, values)
         self.assertNotEqual(db_ret, None)
 
@@ -778,9 +837,3 @@ class stackServiceTest(unittest.TestCase):
         self.assertRaises(AttributeError,
                           self.man.set_watch_state,
                           self.ctx, watch_name="nonexistent", state=state)
-
-
-# allows testing of the test directly
-if __name__ == '__main__':
-    sys.argv.append(__file__)
-    nose.main()

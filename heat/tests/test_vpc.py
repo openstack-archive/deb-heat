@@ -13,9 +13,6 @@
 #    under the License.
 
 
-import sys
-
-import nose
 import unittest
 import mox
 
@@ -89,9 +86,7 @@ class QuantumTest(unittest.TestCase):
         return stack
 
     def create_vpc(self, t, stack, resource_name):
-        resource = vpc.VPC('the_vpc',
-                                      t['Resources'][resource_name],
-                                      stack)
+        resource = vpc.VPC('the_vpc', t['Resources'][resource_name], stack)
         self.assertEqual(None, resource.create())
         self.assertEqual(vpc.VPC.CREATE_COMPLETE, resource.state)
         return resource
@@ -114,8 +109,3 @@ class QuantumTest(unittest.TestCase):
 
         self.assertEqual(None, resource.delete())
         self.m.VerifyAll()
-
-    # allows testing of the test directly, shown below
-    if __name__ == '__main__':
-        sys.argv.append(__file__)
-        nose.main()
