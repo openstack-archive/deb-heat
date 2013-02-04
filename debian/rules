@@ -46,3 +46,7 @@ override_dh_auto_build:
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-common.postinst
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-engine.config
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-engine.postinst
+
+override_dh_installman:
+	make -C doc man
+	dh_installman

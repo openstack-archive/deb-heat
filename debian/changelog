@@ -1,6 +1,7 @@
 heat (2013.1~g2-1) experimental; urgency=low
 
   * New upstream release.
+  * Some updates for the new manpage build system from upstream.
 
  -- Thomas Goirand <zigo@debian.org>  Mon, 04 Feb 2013 21:56:59 +0800
 
