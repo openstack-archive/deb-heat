@@ -25,9 +25,10 @@ import os
 import sys
 
 from eventlet.green import socket
+from oslo.config import cfg
 
 from heat.common import wsgi
-from heat.openstack.common import cfg
+from heat.openstack.common import rpc
 
 DEFAULT_PORT = 8000
 
@@ -75,6 +76,12 @@ service_opts = [
     cfg.StrOpt('heat_watch_server_url',
                default="",
                help='URL of the Heat cloudwatch server'),
+    cfg.StrOpt('instance_connection_is_secure',
+               default="0",
+               help='Instance connection to cfn/cw API via https'),
+    cfg.StrOpt('instance_connection_https_validate_certificates',
+               default="1",
+               help='Instance connection to cfn/cw API validate certs if ssl'),
     cfg.StrOpt('heat_stack_user_role',
                default="heat_stack_user",
                help='Keystone role for heat template-defined users')]
@@ -102,9 +109,6 @@ rpc_opts = [
                help='Name of the engine node. '
                     'This can be an opaque identifier.'
                     'It is not necessarily a hostname, FQDN, or IP address.'),
-    cfg.StrOpt('control_exchange',
-               default='heat',
-               help='AMQP exchange to connect to if using RabbitMQ or Qpid'),
     cfg.StrOpt('engine_topic',
                default='engine',
                help='the topic engine nodes listen on')]
@@ -113,6 +117,7 @@ rpc_opts = [
 def register_api_opts():
     cfg.CONF.register_opts(bind_opts)
     cfg.CONF.register_opts(rpc_opts)
+    rpc.set_defaults(control_exchange='heat')
 
 
 def register_engine_opts():
@@ -120,6 +125,7 @@ def register_engine_opts():
     cfg.CONF.register_opts(db_opts)
     cfg.CONF.register_opts(service_opts)
     cfg.CONF.register_opts(rpc_opts)
+    rpc.set_defaults(control_exchange='heat')
 
 
 def setup_logging():

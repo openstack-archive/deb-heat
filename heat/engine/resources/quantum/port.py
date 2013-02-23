@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from quantumclient.common.exceptions import QuantumClientException
+
 from heat.engine import clients
 from heat.openstack.common import log as logging
 from heat.engine.resources.quantum import quantum
@@ -24,8 +26,7 @@ class Port(quantum.QuantumResource):
 
     fixed_ip_schema = {'subnet_id': {'Type': 'String',
                                      'Required': True},
-                       'ip_address': {'Type': 'String',
-                                      'Required': True}}
+                       'ip_address': {'Type': 'String'}}
 
     properties_schema = {'network_id': {'Type': 'String',
                                         'Required': True},
@@ -38,19 +39,26 @@ class Port(quantum.QuantumResource):
                                        'Schema': {'Type': 'Map',
                                                   'Schema': fixed_ip_schema}},
                          'mac_address': {'Type': 'String'},
-                         'device_id': {'Type': 'String'}}
+                         'device_id': {'Type': 'String'},
+                         'security_groups': {'Type': 'List'}}
 
     def __init__(self, name, json_snippet, stack):
         super(Port, self).__init__(name, json_snippet, stack)
 
     def handle_create(self):
-        props = self.prepare_properties(self.properties, self.name)
+        props = self.prepare_properties(
+            self.properties,
+            self.physical_resource_name())
         port = self.quantum().create_port({'port': props})['port']
         self.resource_id_set(port['id'])
 
     def handle_delete(self):
         client = self.quantum()
-        client.delete_port(self.resource_id)
+        try:
+            client.delete_port(self.resource_id)
+        except QuantumClientException as ex:
+            if ex.status_code != 404:
+                raise ex
 
     def FnGetAtt(self, key):
         attributes = self.quantum().show_port(

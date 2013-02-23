@@ -16,13 +16,15 @@
 import setuptools
 
 from heat.openstack.common import setup
-from heat.version import version_info as version
 
 requires = setup.parse_requirements()
+depend_links = setup.parse_dependency_links()
+project = 'heat'
+
 
 setuptools.setup(
-    name='heat',
-    version=version.canonical_version_string(always=True),
+    name=project,
+    version=setup.get_version(project, '2013.1'),
     description='The heat project provides services for provisioning '
                 'virtual machines',
     license='Apache License (2.0)',
@@ -33,6 +35,7 @@ setuptools.setup(
     packages=setuptools.find_packages(exclude=['bin']),
     include_package_data=True,
     install_requires=requires,
+    dependency_links=depend_links,
     classifiers=[
         'Development Status :: 4 - Beta',
         'License :: OSI Approved :: Apache Software License',
@@ -48,5 +51,6 @@ setuptools.setup(
              'bin/heat-engine',
              'bin/heat-watch',
              'bin/heat-db-setup',
+             'bin/cinder-keystone-setup',
              'bin/heat-keystone-setup'],
     py_modules=[])

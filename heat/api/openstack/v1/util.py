@@ -70,7 +70,7 @@ def make_url(req, identity):
         stack_identity = identifier.HeatIdentifier(**identity)
     except ValueError:
         err_reason = _('Invalid Stack address')
-        raise exc.HTTPInternalServerError(explanation=err_reason)
+        raise exc.HTTPInternalServerError(err_reason)
 
     return req.relative_url(stack_identity.url_path(), True)
 
@@ -80,16 +80,24 @@ def make_link(req, identity, relationship='self'):
     return {'href': make_url(req, identity), 'rel': relationship}
 
 
-def remote_error(ex, force_exists=False):
+def remote_error(ex):
     """
     Map rpc_common.RemoteError exceptions returned by the engine
     to webob exceptions which can be used to return
     properly formatted error responses.
     """
-    if ex.exc_type in ('AttributeError', 'ValueError'):
-        if force_exists:
-            raise exc.HTTPBadRequest(explanation=str(ex))
-        else:
-            raise exc.HTTPNotFound(explanation=str(ex))
 
-    raise exc.HTTPInternalServerError(explanation=str(ex))
+    error_map = {
+        'AttributeError': exc.HTTPBadRequest,
+        'ValueError': exc.HTTPBadRequest,
+        'StackNotFound': exc.HTTPNotFound,
+        'ResourceNotFound': exc.HTTPNotFound,
+        'ResourceNotAvailable': exc.HTTPNotFound,
+        'PhysicalResourceNotFound': exc.HTTPNotFound,
+        'InvalidTenant': exc.HTTPForbidden,
+        'StackExists': exc.HTTPConflict,
+    }
+
+    Exc = error_map.get(ex.exc_type, exc.HTTPInternalServerError)
+
+    raise Exc(str(ex))

@@ -12,17 +12,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
-import mox
 import json
 import unittest
-from nose.plugins.attrib import attr
 
+import mox
+from nose.plugins.attrib import attr
+from oslo.config import cfg
 import webob.exc
 
 from heat.common import context
 from heat.common import identifier
-from heat.openstack.common import cfg
 from heat.openstack.common import rpc
 import heat.openstack.common.rpc.common as rpc_common
 from heat.common.wsgi import Request
@@ -379,6 +378,34 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
                           req, tenant_id=self.tenant, body=body)
         self.m.VerifyAll()
 
+    def test_create_err_existing(self):
+        stack_name = "wordpress"
+        template = {u'Foo': u'bar'}
+        parameters = {u'InstanceType': u'm1.xlarge'}
+        json_template = json.dumps(template)
+        body = {'template': template,
+                'stack_name': stack_name,
+                'parameters': parameters,
+                'timeout_mins': 30}
+
+        req = self._post('/stacks', json.dumps(body))
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(req.context, self.topic,
+                 {'method': 'create_stack',
+                  'args': {'stack_name': stack_name,
+                           'template': template,
+                           'params': parameters,
+                           'args': {'timeout_mins': 30}},
+                  'version': self.api_version},
+                 None).AndRaise(rpc_common.RemoteError("StackExists"))
+        self.m.ReplayAll()
+
+        self.assertRaises(webob.exc.HTTPConflict,
+                          self.controller.create,
+                          req, tenant_id=self.tenant, body=body)
+        self.m.VerifyAll()
+
     def test_create_err_engine(self):
         stack_name = "wordpress"
         template = {u'Foo': u'bar'}
@@ -441,7 +468,7 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
                  {'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 None).AndRaise(rpc_common.RemoteError("StackNotFound"))
         self.m.ReplayAll()
 
         self.assertRaises(webob.exc.HTTPNotFound, self.controller.lookup,
@@ -483,7 +510,7 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
                  {'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 None).AndRaise(rpc_common.RemoteError("StackNotFound"))
         self.m.ReplayAll()
 
         self.assertRaises(webob.exc.HTTPNotFound, self.controller.lookup,
@@ -558,8 +585,8 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
         self.assertEqual(response, expected)
         self.m.VerifyAll()
 
-    def test_show_aterr(self):
-        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
+    def test_show_notfound(self):
+        identity = identifier.HeatIdentifier(self.tenant, 'wibble', '6')
 
         req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity)
 
@@ -568,10 +595,30 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
                  {'method': 'show_stack',
                   'args': {'stack_identity': dict(identity)},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 None).AndRaise(rpc_common.RemoteError("StackNotFound"))
         self.m.ReplayAll()
 
         self.assertRaises(webob.exc.HTTPNotFound,
+                          self.controller.show,
+                          req, tenant_id=identity.tenant,
+                          stack_name=identity.stack_name,
+                          stack_id=identity.stack_id)
+        self.m.VerifyAll()
+
+    def test_show_invalidtenant(self):
+        identity = identifier.HeatIdentifier('wibble', 'wordpress', '6')
+
+        req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity)
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(req.context, self.topic,
+                 {'method': 'show_stack',
+                  'args': {'stack_identity': dict(identity)},
+                  'version': self.api_version},
+                 None).AndRaise(rpc_common.RemoteError("InvalidTenant"))
+        self.m.ReplayAll()
+
+        self.assertRaises(webob.exc.HTTPForbidden,
                           self.controller.show,
                           req, tenant_id=identity.tenant,
                           stack_name=identity.stack_name,
@@ -598,7 +645,7 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
         self.assertEqual(response, template)
         self.m.VerifyAll()
 
-    def test_get_template_err_rpcerr(self):
+    def test_get_template_err_notfound(self):
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
         req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity)
         template = {u'Foo': u'bar'}
@@ -608,7 +655,7 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
                  {'method': 'get_template',
                   'args': {'stack_identity': dict(identity)},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 None).AndRaise(rpc_common.RemoteError("StackNotFound"))
 
         self.m.ReplayAll()
 
@@ -672,7 +719,7 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
                            'params': parameters,
                            'args': {'timeout_mins': 30}},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 None).AndRaise(rpc_common.RemoteError("StackNotFound"))
         self.m.ReplayAll()
 
         self.assertRaises(webob.exc.HTTPNotFound,
@@ -727,7 +774,7 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
                  {'method': 'delete_stack',
                   'args': {'stack_identity': dict(identity)},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 None).AndRaise(rpc_common.RemoteError("StackNotFound"))
         self.m.ReplayAll()
 
         self.assertRaises(webob.exc.HTTPNotFound,
@@ -906,7 +953,7 @@ class ResourceControllerTest(ControllerTest, unittest.TestCase):
                  {'method': 'list_stack_resources',
                   'args': {'stack_identity': stack_identity},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 None).AndRaise(rpc_common.RemoteError("StackNotFound"))
         self.m.ReplayAll()
 
         self.assertRaises(webob.exc.HTTPNotFound,
@@ -988,7 +1035,7 @@ class ResourceControllerTest(ControllerTest, unittest.TestCase):
                   'args': {'stack_identity': stack_identity,
                            'resource_name': res_name},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 None).AndRaise(rpc_common.RemoteError("StackNotFound"))
         self.m.ReplayAll()
 
         self.assertRaises(webob.exc.HTTPNotFound,
@@ -999,7 +1046,59 @@ class ResourceControllerTest(ControllerTest, unittest.TestCase):
                           resource_name=res_name)
         self.m.VerifyAll()
 
-    def test_show(self):
+    def test_show_nonexist_resource(self):
+        res_name = 'Wibble'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+        res_identity = identifier.ResourceIdentifier(resource_name=res_name,
+                                                     **stack_identity)
+
+        req = self._get(res_identity._tenant_path())
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(req.context, self.topic,
+                 {'method': 'describe_stack_resource',
+                  'args': {'stack_identity': stack_identity,
+                           'resource_name': res_name},
+                  'version': self.api_version},
+                 None).AndRaise(rpc_common.RemoteError("ResourceNotFound"))
+        self.m.ReplayAll()
+
+        self.assertRaises(webob.exc.HTTPNotFound,
+                          self.controller.show,
+                          req, tenant_id=self.tenant,
+                          stack_name=stack_identity.stack_name,
+                          stack_id=stack_identity.stack_id,
+                          resource_name=res_name)
+        self.m.VerifyAll()
+
+    def test_show_uncreated_resource(self):
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+        res_identity = identifier.ResourceIdentifier(resource_name=res_name,
+                                                     **stack_identity)
+
+        req = self._get(res_identity._tenant_path())
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(req.context, self.topic,
+                 {'method': 'describe_stack_resource',
+                  'args': {'stack_identity': stack_identity,
+                           'resource_name': res_name},
+                  'version': self.api_version},
+                 None).AndRaise(rpc_common.RemoteError("ResourceNotAvailable"))
+        self.m.ReplayAll()
+
+        self.assertRaises(webob.exc.HTTPNotFound,
+                          self.controller.show,
+                          req, tenant_id=self.tenant,
+                          stack_name=stack_identity.stack_name,
+                          stack_id=stack_identity.stack_id,
+                          resource_name=res_name)
+        self.m.VerifyAll()
+
+    def test_metadata_show(self):
         res_name = 'WikiDatabase'
         stack_identity = identifier.HeatIdentifier(self.tenant,
                                                    'wordpress', '6')
@@ -1056,7 +1155,33 @@ class ResourceControllerTest(ControllerTest, unittest.TestCase):
                   'args': {'stack_identity': stack_identity,
                            'resource_name': res_name},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 None).AndRaise(rpc_common.RemoteError("StackNotFound"))
+        self.m.ReplayAll()
+
+        self.assertRaises(webob.exc.HTTPNotFound,
+                          self.controller.metadata,
+                          req, tenant_id=self.tenant,
+                          stack_name=stack_identity.stack_name,
+                          stack_id=stack_identity.stack_id,
+                          resource_name=res_name)
+        self.m.VerifyAll()
+
+    def test_metadata_show_nonexist_resource(self):
+        res_name = 'wibble'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+        res_identity = identifier.ResourceIdentifier(resource_name=res_name,
+                                                     **stack_identity)
+
+        req = self._get(res_identity._tenant_path() + '/metadata')
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(req.context, self.topic,
+                 {'method': 'describe_stack_resource',
+                  'args': {'stack_identity': stack_identity,
+                           'resource_name': res_name},
+                  'version': self.api_version},
+                 None).AndRaise(rpc_common.RemoteError("ResourceNotFound"))
         self.m.ReplayAll()
 
         self.assertRaises(webob.exc.HTTPNotFound,
@@ -1226,7 +1351,7 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
                  {'method': 'list_events',
                   'args': {'stack_identity': stack_identity},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 None).AndRaise(rpc_common.RemoteError("StackNotFound"))
         self.m.ReplayAll()
 
         self.assertRaises(webob.exc.HTTPNotFound,
@@ -1457,7 +1582,7 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
                  {'method': 'list_events',
                   'args': {'stack_identity': stack_identity},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 None).AndRaise(rpc_common.RemoteError("StackNotFound"))
         self.m.ReplayAll()
 
         self.assertRaises(webob.exc.HTTPNotFound,

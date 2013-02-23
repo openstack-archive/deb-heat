@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from quantumclient.common.exceptions import QuantumClientException
+
 from heat.openstack.common import log as logging
 from heat.engine import resource
 
@@ -20,32 +22,58 @@ logger = logging.getLogger(__name__)
 
 
 class VPC(resource.Resource):
-    properties_schema = {'CidrBlock': {'Type': 'String'},
-                         'InstanceTenancy': {'Type': 'String',
-                                             'AllowedValues': ['default',
-                                                               'dedicated'],
-                                             'Default': 'default',
-                                             'Implemented': False}}
+    tags_schema = {'Key': {'Type': 'String',
+                           'Required': True},
+                   'Value': {'Type': 'String',
+                             'Required': True}}
+
+    properties_schema = {
+        'CidrBlock': {'Type': 'String'},
+        'InstanceTenancy': {
+            'Type': 'String',
+            'AllowedValues': ['default',
+                              'dedicated'],
+            'Default': 'default',
+            'Implemented': False},
+        'Tags': {'Type': 'List', 'Schema': {
+            'Type': 'Map',
+            'Implemented': False,
+            'Schema': tags_schema}}
+    }
 
     def __init__(self, name, json_snippet, stack):
         super(VPC, self).__init__(name, json_snippet, stack)
 
     def handle_create(self):
         client = self.quantum()
-        props = {'name': self.name}
+        props = {'name': self.physical_resource_name()}
         # Creates a network with an implicit router
         net = client.create_network({'network': props})['network']
         router = client.create_router({'router': props})['router']
-        id = '%s:%s' % (net['id'], router['id'])
-        self.resource_id_set(id)
+        md = {
+            'network_id': net['id'],
+            'router_id': router['id'],
+            'all_router_ids': [router['id']]
+        }
+        self.metadata = md
 
     def handle_delete(self):
         client = self.quantum()
-        (network_id, router_id) = self.resource_id.split(':')
-        client.delete_router(router_id)
-        client.delete_network(network_id)
+        network_id = self.metadata['network_id']
+        router_id = self.metadata['router_id']
+        try:
+            client.delete_router(router_id)
+        except QuantumClientException as ex:
+            if ex.status_code != 404:
+                raise ex
 
-    def handle_update(self):
+        try:
+            client.delete_network(network_id)
+        except QuantumClientException as ex:
+            if ex.status_code != 404:
+                raise ex
+
+    def handle_update(self, json_snippet):
         return self.UPDATE_REPLACE
 
 

@@ -13,10 +13,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo.config import cfg
+
 from heat.openstack.common import local
 from heat.common import exception
 from heat.common import wsgi
-from heat.openstack.common import cfg
 from heat.openstack.common import importutils
 from heat.openstack.common import uuidutils
 from heat.db import api as db_api
@@ -185,7 +186,7 @@ class ContextMiddleware(wsgi.Middleware):
             tenant = headers.get('X-Tenant-Name')
             tenant_id = headers.get('X-Tenant-Id')
             auth_url = headers.get('X-Auth-Url')
-            roles = headers.get('X-Roles')
+            roles = headers.get('X-Roles').split(',')
         except Exception:
             raise exception.NotAuthenticated()
 

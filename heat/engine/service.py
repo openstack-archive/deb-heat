@@ -14,11 +14,15 @@
 #    under the License.
 
 import functools
+import json
+
+from oslo.config import cfg
 import webob
 
 from heat.common import context
 from heat.db import api as db_api
 from heat.engine import api
+from heat.engine import clients
 from heat.engine.event import Event
 from heat.common import exception
 from heat.common import identifier
@@ -27,7 +31,6 @@ from heat.engine import resource
 from heat.engine import resources
 from heat.engine import watchrule
 
-from heat.openstack.common import cfg
 from heat.openstack.common import log as logging
 from heat.openstack.common import threadgroup
 from heat.openstack.common.gettextutils import _
@@ -62,20 +65,18 @@ class EngineService(service.Service):
         # stg == "Stack Thread Groups"
         self.stg = {}
 
-    def _start_in_thread(self, stack_id, stack_name, func, *args, **kwargs):
+    def _start_in_thread(self, stack_id, func, *args, **kwargs):
         if stack_id not in self.stg:
-            thr_name = '%s-%s' % (stack_name, stack_id)
-            self.stg[stack_id] = threadgroup.ThreadGroup(thr_name)
+            self.stg[stack_id] = threadgroup.ThreadGroup()
         self.stg[stack_id].add_thread(func, *args, **kwargs)
 
-    def _timer_in_thread(self, stack_id, stack_name, func, *args, **kwargs):
+    def _timer_in_thread(self, stack_id, func, *args, **kwargs):
         """
         Define a periodic task, to be run in a separate thread, in the stack
         threadgroups.  Periodicity is cfg.CONF.periodic_interval
         """
         if stack_id not in self.stg:
-            thr_name = '%s-%s' % (stack_name, stack_id)
-            self.stg[stack_id] = threadgroup.ThreadGroup(thr_name)
+            self.stg[stack_id] = threadgroup.ThreadGroup()
         self.stg[stack_id].add_timer(cfg.CONF.periodic_interval,
                                      func, *args, **kwargs)
 
@@ -101,9 +102,7 @@ class EngineService(service.Service):
         admin_context = context.get_admin_context()
         stacks = db_api.stack_get_all(admin_context)
         for s in stacks:
-            self._timer_in_thread(s.id, s.name,
-                                  self._periodic_watcher_task,
-                                  sid=s.id)
+            self._timer_in_thread(s.id, self._periodic_watcher_task, sid=s.id)
 
     @request_context
     def identify_stack(self, context, stack_name):
@@ -121,21 +120,22 @@ class EngineService(service.Service):
             stack = parser.Stack.load(context, stack=s)
             return dict(stack.identifier())
         else:
-            raise AttributeError('Unknown stack name')
+            raise exception.StackNotFound(stack_name=stack_name)
 
     def _get_stack(self, context, stack_identity):
         identity = identifier.HeatIdentifier(**stack_identity)
 
         if identity.tenant != context.tenant_id:
-            raise AttributeError('Invalid tenant')
+            raise exception.InvalidTenant(target=identity.tenant,
+                                          actual=context.tenant_id)
 
         s = db_api.stack_get(context, identity.stack_id)
 
         if s is None:
-            raise AttributeError('Stack not found')
+            raise exception.StackNotFound(stack_name=identity.stack_name)
 
         if identity.path or s.name != identity.stack_name:
-            raise AttributeError('Invalid stack ID')
+            raise exception.StackNotFound(stack_name=identity.stack_name)
 
         return s
 
@@ -194,8 +194,18 @@ class EngineService(service.Service):
         """
         logger.info('template is %s' % template)
 
+        def _stack_create(stack):
+            # Create the stack, and create the periodic task if successful
+            stack.create()
+            if stack.state == stack.CREATE_COMPLETE:
+                # Schedule a periodic watcher task for this stack
+                self._timer_in_thread(stack.id, self._periodic_watcher_task,
+                                      sid=stack.id)
+            else:
+                logger.warning("Stack create failed, state %s" % stack.state)
+
         if db_api.stack_get_by_name(context, stack_name):
-            raise AttributeError('Stack already exists with that name')
+            raise exception.StackExists(stack_name=stack_name)
 
         tmpl = parser.Template(template)
 
@@ -212,12 +222,7 @@ class EngineService(service.Service):
 
         stack_id = stack.store()
 
-        self._start_in_thread(stack_id, stack_name, stack.create)
-
-        # Schedule a periodic watcher task for this stack
-        self._timer_in_thread(stack_id, stack_name,
-                              self._periodic_watcher_task,
-                              sid=stack_id)
+        self._start_in_thread(stack_id, _stack_create, stack)
 
         return dict(stack.identifier())
 
@@ -255,9 +260,7 @@ class EngineService(service.Service):
         if response:
             return {'Description': response}
 
-        self._start_in_thread(db_stack.id, db_stack.name,
-                              current_stack.update,
-                              updated_stack)
+        self._start_in_thread(db_stack.id, current_stack.update, updated_stack)
 
         return dict(current_stack.identifier())
 
@@ -303,6 +306,14 @@ class EngineService(service.Service):
             'Parameters': params.values(),
         }
         return result
+
+    @request_context
+    def authenticated_to_backend(self, context):
+        """
+        Verify that the credentials in the RPC context are valid for the
+        current cloud backend.
+        """
+        return clients.Clients(context).authenticated()
 
     @request_context
     def get_template(self, context, stack_identity):
@@ -360,17 +371,58 @@ class EngineService(service.Service):
 
         return [api.format_event(Event.load(context, e.id)) for e in events]
 
+    def _authorize_stack_user(self, context, stack, resource_name):
+        '''
+        Filter access to describe_stack_resource for stack in-instance users
+        - The user must map to a User resource defined in the requested stack
+        - The user resource must validate OK against any Policy specified
+        '''
+        # We're expecting EC2 credentials because all in-instance credentials
+        # are deployed as ec2 keypairs
+        try:
+            ec2_creds = json.loads(context.aws_creds).get('ec2Credentials')
+        except TypeError, AttributeError:
+            ec2_creds = None
+
+        if ec2_creds:
+            access_key = ec2_creds.get('access')
+            # Then we look up the AccessKey resource and check the stack
+            try:
+                akey_rsrc = self.find_physical_resource(context, access_key)
+            except exception.PhysicalResourceNotFound:
+                logger.warning("access_key % not found!" % access_key)
+                return False
+
+            akey_rsrc_id = identifier.ResourceIdentifier(**akey_rsrc)
+            if stack.identifier() == akey_rsrc_id.stack():
+                # The stack matches, so check if access is allowed to this
+                # resource via the AccessKey resource access_allowed()
+                ak_akey_rsrc = stack[akey_rsrc_id.resource_name]
+                return ak_akey_rsrc.access_allowed(resource_name)
+            else:
+                logger.warning("Cannot access resource from wrong stack!")
+        else:
+            logger.warning("Cannot access resource, invalid credentials!")
+
+        return False
+
     @request_context
     def describe_stack_resource(self, context, stack_identity, resource_name):
         s = self._get_stack(context, stack_identity)
-
         stack = parser.Stack.load(context, stack=s)
+
+        if cfg.CONF.heat_stack_user_role in context.roles:
+            if not self._authorize_stack_user(context, stack, resource_name):
+                logger.warning("Access denied to resource %s" % resource_name)
+                raise exception.Forbidden()
+
         if resource_name not in stack:
-            raise AttributeError('Unknown resource name')
+            raise exception.ResourceNotFound(resource_name=resource_name,
+                                             stack_name=stack.name)
 
         resource = stack[resource_name]
         if resource.id is None:
-            raise AttributeError('Resource not created')
+            raise exception.ResourceNotAvailable(resource_name=resource_name)
 
         return api.format_stack_resource(stack[resource_name])
 
@@ -385,8 +437,8 @@ class EngineService(service.Service):
         rs = db_api.resource_get_by_physical_resource_id(context,
                                                          physical_resource_id)
         if not rs:
-            msg = "The specified PhysicalResourceId doesn't exist"
-            raise AttributeError(msg)
+            raise exception.PhysicalResourceNotFound(
+                resource_id=physical_resource_id)
 
         stack = parser.Stack.load(context, stack=rs.stack)
         resource = stack[rs.name]
@@ -427,10 +479,11 @@ class EngineService(service.Service):
 
         stack = parser.Stack.load(context, stack=s)
         if resource_name not in stack:
-            raise AttributeError("Resource not found %s" % resource_name)
+            raise exception.ResourceNotFound(resource_name=resource_name,
+                                             stack_name=stack.name)
 
         resource = stack[resource_name]
-        resource.metadata = metadata
+        resource.metadata_update(metadata)
 
         return resource.metadata
 
@@ -462,7 +515,9 @@ class EngineService(service.Service):
             return
         for wr in wrs:
             rule = watchrule.WatchRule.load(stack_context, watch=wr)
-            rule.evaluate()
+            actions = rule.evaluate()
+            for action in actions:
+                self._start_in_thread(sid, action)
 
     @request_context
     def create_watch_data(self, context, watch_name, stats_data):
@@ -529,7 +584,9 @@ class EngineService(service.Service):
         arg3 -> State (must be one defined in WatchRule class
         '''
         wr = watchrule.WatchRule.load(context, watch_name)
-        wr.set_watch_state(state)
+        actions = wr.set_watch_state(state)
+        for action in actions:
+            self._start_in_thread(wr.stack_id, action)
 
         # Return the watch with the state overriden to indicate success
         # We do not update the timestamps as we are not modifying the DB

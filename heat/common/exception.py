@@ -202,3 +202,41 @@ class UserKeyPairMissing(OpenstackException):
 
 class ImageNotFound(OpenstackException):
     message = _("The Image (%(image_name)s) could not be found.")
+
+
+class InvalidTenant(OpenstackException):
+    message = _("Searching Tenant %(target)s "
+                "from Tenant %(actual)s forbidden.")
+
+
+class StackNotFound(OpenstackException):
+    message = _("The Stack (%(stack_name)s) could not be found.")
+
+
+class StackExists(OpenstackException):
+    message = _("The Stack (%(stack_name)s) already exists.")
+
+
+class ResourceNotFound(OpenstackException):
+    message = _("The Resource (%(resource_name)s) could not be found "
+                "in Stack %(stack_name)s.")
+
+
+class ResourceNotAvailable(OpenstackException):
+    message = _("The Resource (%(resource_name)s) is not available.")
+
+
+class ResourceUpdateFailed(OpenstackException):
+    message = _("Resource (%(resource_name)s) update failed")
+
+
+class PhysicalResourceNotFound(OpenstackException):
+    message = _("The Resource (%(resource_id)s) could not be found.")
+
+
+class WatchRuleNotFound(OpenstackException):
+    message = _("The Watch Rule (%(watch_name)s) could not be found.")
+
+
+class NestedResourceFailure(OpenstackException):
+    message = _("%(message)s")

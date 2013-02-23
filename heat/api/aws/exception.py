@@ -243,10 +243,23 @@ def map_remote_error(ex):
         to HeatAPIException subclasses which can be used to return
         properly formatted AWS error responses
         """
-        if ex.exc_type in ('AttributeError', 'ValueError'):
-            # Attribute/Value error, bad user data, ex.value should tell us why
+        inval_param_errors = (
+            'AttributeError',
+            'ValueError',
+            'InvalidTenant',
+            'StackNotFound',
+            'ResourceNotFound',
+            'ResourceNotAvailable',
+            'PhysicalResourceNotFound',
+            'WatchRuleNotFound',
+            'StackExists',
+        )
+        denied_errors = ('Forbidden', 'NotAuthorized')
+
+        if ex.exc_type in inval_param_errors:
             return HeatInvalidParameterValueError(detail=ex.value)
+        elif ex.exc_type in denied_errors:
+            return HeatAccessDeniedError(detail=ex.value)
         else:
             # Map everything else to internal server error for now
-            # FIXME : further investigation into engine errors required
             return HeatInternalFailureError(detail=ex.value)

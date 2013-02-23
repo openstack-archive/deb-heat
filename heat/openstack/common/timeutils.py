@@ -71,11 +71,15 @@ def normalize_time(timestamp):
 
 def is_older_than(before, seconds):
     """Return True if before is older than seconds."""
+    if isinstance(before, basestring):
+        before = parse_strtime(before).replace(tzinfo=None)
     return utcnow() - before > datetime.timedelta(seconds=seconds)
 
 
 def is_newer_than(after, seconds):
     """Return True if after is newer than seconds."""
+    if isinstance(after, basestring):
+        after = parse_strtime(after).replace(tzinfo=None)
     return after - utcnow() > datetime.timedelta(seconds=seconds)
 
 
@@ -92,6 +96,11 @@ def utcnow():
         except AttributeError:
             return utcnow.override_time
     return datetime.datetime.utcnow()
+
+
+def iso8601_from_timestamp(timestamp):
+    """Returns a iso8601 formated date from timestamp"""
+    return isotime(datetime.datetime.utcfromtimestamp(timestamp))
 
 
 utcnow.override_time = None
@@ -158,3 +167,16 @@ def delta_seconds(before, after):
     except AttributeError:
         return ((delta.days * 24 * 3600) + delta.seconds +
                 float(delta.microseconds) / (10 ** 6))
+
+
+def is_soon(dt, window):
+    """
+    Determines if time is going to happen in the next window seconds.
+
+    :params dt: the time
+    :params window: minimum seconds to remain to consider the time not soon
+
+    :return: True if expiration is within the given duration
+    """
+    soon = (utcnow() + datetime.timedelta(seconds=window))
+    return normalize_time(dt) < soon

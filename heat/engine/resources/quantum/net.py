@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from quantumclient.common.exceptions import QuantumClientException
+
 from heat.engine import clients
 from heat.openstack.common import log as logging
 from heat.engine.resources.quantum import quantum
@@ -31,13 +33,19 @@ class Net(quantum.QuantumResource):
         super(Net, self).__init__(name, json_snippet, stack)
 
     def handle_create(self):
-        props = self.prepare_properties(self.properties, self.name)
+        props = self.prepare_properties(
+            self.properties,
+            self.physical_resource_name())
         net = self.quantum().create_network({'network': props})['network']
         self.resource_id_set(net['id'])
 
     def handle_delete(self):
         client = self.quantum()
-        client.delete_network(self.resource_id)
+        try:
+            client.delete_network(self.resource_id)
+        except QuantumClientException as ex:
+            if ex.status_code != 404:
+                raise ex
 
     def FnGetAtt(self, key):
         attributes = self.quantum().show_network(
