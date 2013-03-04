@@ -70,7 +70,7 @@ class Metadata(object):
     def __set__(self, resource, metadata):
         '''Update the metadata for the owning resource.'''
         if resource.id is None:
-            raise AttributeError("Resource has not yet been created")
+            raise exception.ResourceNotAvailable(resource_name=resource.name)
         rs = db_api.resource_get(resource.stack.context, resource.id)
         rs.update_and_save({'rsrc_metadata': metadata})
 
@@ -101,6 +101,14 @@ class Resource(object):
 
     metadata = Metadata()
 
+    # Resource implementation set this to the subset of template keys
+    # which are supported for handle_update, used by update_template_diff
+    update_allowed_keys = ()
+
+    # Resource implementation set this to the subset of resource properties
+    # supported for handle_update, used by update_template_diff_properties
+    update_allowed_properties = ()
+
     def __new__(cls, name, json, stack):
         '''Create a new Resource of the appropriate class for its type.'''
 
@@ -116,7 +124,6 @@ class Resource(object):
         if '/' in name:
             raise ValueError(_('Resource name may not contain "/"'))
 
-        self.references = []
         self.stack = stack
         self.context = stack.context
         self.name = name
@@ -138,10 +145,6 @@ class Resource(object):
             self.state = None
             self.state_description = ''
             self.id = None
-        self._nova = {}
-        self._keystone = None
-        self._swift = None
-        self._quantum = None
 
     def __eq__(self, other):
         '''Allow == comparison of two resources'''
@@ -179,6 +182,60 @@ class Resource(object):
             template = self.t.get(section, default)
         return self.stack.resolve_runtime_data(template)
 
+    def update_template_diff(self, json_snippet=None):
+        '''
+        Returns the difference between json_template and self.t
+        If something has been removed in json_snippet which exists
+        in self.t we set it to None.  If any keys have changed which
+        are not in update_allowed_keys, raises NotImplementedError
+        '''
+        update_allowed_set = set(self.update_allowed_keys)
+
+        # Create a set containing the keys in both current and update template
+        current_snippet = self.parsed_template()
+        template_keys = set(current_snippet.keys())
+        template_keys.update(set(json_snippet.keys()))
+
+        # Create a set of keys which differ (or are missing/added)
+        changed_keys_set = set([k for k in template_keys
+                               if current_snippet.get(k) !=
+                               json_snippet.get(k)])
+
+        if not changed_keys_set.issubset(update_allowed_set):
+            badkeys = changed_keys_set - update_allowed_set
+            raise NotImplementedError("Cannot update keys %s for %s" %
+                                      (badkeys, self.name))
+
+        return dict((k, json_snippet.get(k)) for k in changed_keys_set)
+
+    def update_template_diff_properties(self, json_snippet=None):
+        '''
+        Returns the changed Properties between json_template and self.t
+        If a property has been removed in json_snippet which exists
+        in self.t we set it to None.  If any properties have changed which
+        are not in update_allowed_properties, raises NotImplementedError
+        '''
+        update_allowed_set = set(self.update_allowed_properties)
+
+        # Create a set containing the keys in both current and update template
+        current_properties = self.parsed_template().get('Properties', {})
+        template_properties = set(current_properties.keys())
+        updated_properties = json_snippet.get('Properties', {})
+        template_properties.update(set(updated_properties.keys()))
+
+        # Create a set of keys which differ (or are missing/added)
+        changed_properties_set = set(k for k in template_properties
+                                     if current_properties.get(k) !=
+                                     updated_properties.get(k))
+
+        if not changed_properties_set.issubset(update_allowed_set):
+            badkeys = changed_properties_set - update_allowed_set
+            raise NotImplementedError("Cannot update properties %s for %s" %
+                                      (badkeys, self.name))
+
+        return dict((k, updated_properties.get(k))
+                    for k in changed_properties_set)
+
     def __str__(self):
         return '%s "%s"' % (self.__class__.__name__, self.name)
 
@@ -211,6 +268,9 @@ class Resource(object):
     def quantum(self):
         return self.stack.clients.quantum()
 
+    def cinder(self):
+        return self.stack.clients.cinder()
+
     def create(self):
         '''
         Create the resource. Subclasses should provide a handle_create() method
@@ -237,7 +297,7 @@ class Resource(object):
             else:
                 logger.exception('create %s', str(self))
                 self.state_set(self.CREATE_FAILED, str(ex))
-                return str(ex)
+                return str(ex) or "Error : %s" % type(ex)
         else:
             self.state_set(self.CREATE_COMPLETE)
 
@@ -257,20 +317,24 @@ class Resource(object):
         result = self.UPDATE_NOT_IMPLEMENTED
         try:
             self.state_set(self.UPDATE_IN_PROGRESS)
-            self.t = self.stack.resolve_static_data(json_snippet)
-            err = self.properties.validate()
+            properties = Properties(self.properties_schema,
+                                    json_snippet.get('Properties', {}),
+                                    self.stack.resolve_runtime_data,
+                                    self.name)
+            err = properties.validate()
             if err:
-                return err
+                raise ValueError(err)
             if callable(getattr(self, 'handle_update', None)):
-                result = self.handle_update()
+                result = self.handle_update(json_snippet)
         except Exception as ex:
             logger.exception('update %s : %s' % (str(self), str(ex)))
             self.state_set(self.UPDATE_FAILED, str(ex))
-            return str(ex)
+            return str(ex) or "Error : %s" % type(ex)
         else:
             # If resource was updated (with or without interruption),
             # then we set the resource to UPDATE_COMPLETE
             if not result == self.UPDATE_REPLACE:
+                self.t = self.stack.resolve_static_data(json_snippet)
                 self.state_set(self.UPDATE_COMPLETE)
             return result
 
@@ -308,7 +372,7 @@ class Resource(object):
         except Exception as ex:
             logger.exception('Delete %s', str(self))
             self.state_set(self.DELETE_FAILED, str(ex))
-            return str(ex)
+            return str(ex) or "Error : %s" % type(ex)
 
         self.state_set(self.DELETE_COMPLETE)
 
@@ -331,7 +395,7 @@ class Resource(object):
             pass
         except Exception as ex:
             logger.exception('Delete %s from DB' % str(self))
-            return str(ex)
+            return str(ex) or "Error : %s" % type(ex)
 
         self.id = None
 
@@ -425,9 +489,16 @@ class Resource(object):
         '''
         return base64.b64encode(data)
 
-    def handle_update(self):
+    def handle_update(self, json_snippet=None):
         raise NotImplementedError("Update not implemented for Resource %s"
                                   % type(self))
+
+    def metadata_update(self, metadata):
+        '''
+        No-op for resources which don't explicitly override this method
+        '''
+        logger.warning("Resource %s does not implement metadata update" %
+                       self.name)
 
 
 class GenericResource(Resource):
@@ -436,5 +507,5 @@ class GenericResource(Resource):
     def handle_create(self):
         logger.warning('Creating generic resource (Type "%s")' % self.type())
 
-    def handle_update(self):
+    def handle_update(self, json_snippet=None):
         logger.warning('Updating generic resource (Type "%s")' % self.type())

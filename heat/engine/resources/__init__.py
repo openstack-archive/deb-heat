@@ -12,6 +12,10 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+from heat.openstack.common import log as logging
+
+
+logger = logging.getLogger(__name__)
 
 
 def _register_resources(type_pairs):
@@ -44,7 +48,7 @@ def _initialise():
 
     _register_modules(plugin_loader.load_modules(sys.modules[__name__]))
 
-    from heat.openstack.common import cfg
+    from oslo.config import cfg
 
     plugin_pkg = plugin_loader.create_subpackage(cfg.CONF.plugin_dirs,
                                                  'heat.engine')

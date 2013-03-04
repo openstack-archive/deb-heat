@@ -25,6 +25,7 @@ from heat.common import context
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine.resources import volume as vol
+from heat.engine import clients
 from heat.tests.v1_1 import fakes
 
 
@@ -34,8 +35,8 @@ class VolumeTest(unittest.TestCase):
     def setUp(self):
         self.m = mox.Mox()
         self.fc = fakes.FakeClient()
-        self.m.StubOutWithMock(vol.Volume, 'nova')
-        self.m.StubOutWithMock(vol.VolumeAttachment, 'nova')
+        self.m.StubOutWithMock(clients.OpenStackClients, 'cinder')
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
         self.m.StubOutWithMock(self.fc.volumes, 'create')
         self.m.StubOutWithMock(self.fc.volumes, 'get')
         self.m.StubOutWithMock(self.fc.volumes, 'delete')
@@ -90,7 +91,7 @@ class VolumeTest(unittest.TestCase):
         stack_name = 'test_volume_stack'
 
         # create script
-        vol.Volume.nova('volume').MultipleTimes().AndReturn(self.fc)
+        clients.OpenStackClients.cinder().MultipleTimes().AndReturn(self.fc)
         self.fc.volumes.create(
             u'1', display_description='%s.DataVolume' % stack_name,
             display_name='%s.DataVolume' % stack_name).AndReturn(fv)
@@ -110,7 +111,7 @@ class VolumeTest(unittest.TestCase):
         resource = self.create_volume(t, stack, 'DataVolume')
         self.assertEqual(fv.status, 'available')
 
-        self.assertEqual(resource.handle_update(), vol.Volume.UPDATE_REPLACE)
+        self.assertEqual(resource.handle_update({}), vol.Volume.UPDATE_REPLACE)
 
         fv.status = 'in-use'
         self.assertEqual(resource.delete(), 'Volume in use')
@@ -124,7 +125,7 @@ class VolumeTest(unittest.TestCase):
         stack_name = 'test_volume_create_error_stack'
 
         # create script
-        vol.Volume.nova('volume').AndReturn(self.fc)
+        clients.OpenStackClients.cinder().AndReturn(self.fc)
         self.fc.volumes.create(
             u'1', display_description='%s.DataVolume' % stack_name,
             display_name='%s.DataVolume' % stack_name).AndReturn(fv)
@@ -149,14 +150,15 @@ class VolumeTest(unittest.TestCase):
         stack_name = 'test_volume_attach_error_stack'
 
         # volume create
-        vol.Volume.nova('volume').MultipleTimes().AndReturn(self.fc)
+        clients.OpenStackClients.cinder().MultipleTimes().AndReturn(self.fc)
         self.fc.volumes.create(
             u'1', display_description='%s.DataVolume' % stack_name,
             display_name='%s.DataVolume' % stack_name).AndReturn(fv)
 
         # create script
-        vol.VolumeAttachment.nova().MultipleTimes().AndReturn(self.fc)
-        vol.VolumeAttachment.nova('volume').MultipleTimes().AndReturn(self.fc)
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+#        clients.OpenStackClients.cinder().MultipleTimes().AndReturn(self.fc)
+
         eventlet.sleep(1).MultipleTimes().AndReturn(None)
         self.fc.volumes.create_server_volume(
             device=u'/dev/vdc',
@@ -185,14 +187,14 @@ class VolumeTest(unittest.TestCase):
         stack_name = 'test_volume_attach_stack'
 
         # volume create
-        vol.Volume.nova('volume').MultipleTimes().AndReturn(self.fc)
+        clients.OpenStackClients.cinder().MultipleTimes().AndReturn(self.fc)
         self.fc.volumes.create(
             u'1', display_description='%s.DataVolume' % stack_name,
             display_name='%s.DataVolume' % stack_name).AndReturn(fv)
 
         # create script
-        vol.VolumeAttachment.nova().MultipleTimes().AndReturn(self.fc)
-        vol.VolumeAttachment.nova('volume').MultipleTimes().AndReturn(self.fc)
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+        #clients.OpenStackClients.cinder().MultipleTimes().AndReturn(self.fc)
         eventlet.sleep(1).MultipleTimes().AndReturn(None)
         self.fc.volumes.create_server_volume(
             device=u'/dev/vdc',
@@ -216,7 +218,7 @@ class VolumeTest(unittest.TestCase):
         self.assertEqual(fv.status, 'available')
         resource = self.create_attachment(t, stack, 'MountPoint')
 
-        self.assertEqual(resource.handle_update(), vol.Volume.UPDATE_REPLACE)
+        self.assertEqual(resource.handle_update({}), vol.Volume.UPDATE_REPLACE)
 
         self.assertEqual(resource.delete(), None)
 

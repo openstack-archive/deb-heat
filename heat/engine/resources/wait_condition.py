@@ -13,18 +13,19 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import eventlet
 import time
 import urllib
 import urlparse
+import json
+
+import eventlet
+from oslo.config import cfg
 
 from heat.common import exception
 from heat.common import identifier
 from heat.engine import resource
 
 from heat.openstack.common import log as logging
-
-from heat.openstack.common import cfg
 
 # FIXME : we should remove the common.ec2signer fallback implementation
 # when the versions of keystoneclient we support all have the Ec2Signer
@@ -71,8 +72,9 @@ class WaitConditionHandle(resource.Resource):
                    'params': {'SignatureMethod': 'HmacSHA256',
                               'SignatureVersion': '2',
                               'AWSAccessKeyId': credentials.access,
-                              'Timestamp': time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                                                         time.gmtime())}}
+                              'Timestamp':
+                              self.created_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                              }}
         # Sign the request
         signer = Ec2Signer(credentials.secret)
         request['params']['Signature'] = signer.generate(request)
@@ -98,7 +100,7 @@ class WaitConditionHandle(resource.Resource):
             return
         self.keystone().delete_stack_user(self.resource_id)
 
-    def handle_update(self):
+    def handle_update(self, json_snippet):
         return self.UPDATE_REPLACE
 
     def FnGetRefId(self):
@@ -113,13 +115,65 @@ class WaitConditionHandle(resource.Resource):
         else:
             return unicode(self.name)
 
+    def _metadata_format_ok(self, metadata):
+        """
+        Check the format of the provided metadata is as expected.
+        metadata must use the following format:
+        {
+            "Status" : "Status (must be SUCCESS or FAILURE)"
+            "UniqueId" : "Some ID, should be unique for Count>1",
+            "Data" : "Arbitrary Data",
+            "Reason" : "Reason String"
+        }
+        """
+        expected_keys = ['Data', 'Reason', 'Status', 'UniqueId']
+        if sorted(metadata.keys()) == expected_keys:
+            return metadata['Status'] in (SUCCESS, FAILURE)
+
+    def metadata_update(self, metadata):
+        '''
+        Validate and update the resource metadata
+        '''
+        if self._metadata_format_ok(metadata):
+            rsrc_metadata = self.metadata
+            if metadata['UniqueId'] in rsrc_metadata:
+                logger.warning("Overwriting Metadata item for UniqueId %s!" %
+                               metadata['UniqueId'])
+            new_metadata = {}
+            for k in ('Data', 'Reason', 'Status'):
+                new_metadata[k] = metadata[k]
+            # Note we can't update self.metadata directly, as it
+            # is a Metadata descriptor object which only supports get/set
+            rsrc_metadata.update({metadata['UniqueId']: new_metadata})
+            self.metadata = rsrc_metadata
+        else:
+            logger.error("Metadata failed validation for %s" % self.name)
+            raise ValueError("Metadata format invalid")
+
+    def get_status(self):
+        '''
+        Return a list of the Status values for the handle signals
+        '''
+        return [self.metadata[s]['Status']
+                for s in self.metadata]
+
+    def get_status_reason(self, status):
+        '''
+        Return the reason associated with a particular status
+        If there is more than one handle signal matching the specified status
+        then return a semicolon delimited string containing all reasons
+        '''
+        return ';'.join([self.metadata[s]['Reason']
+                        for s in self.metadata
+                        if self.metadata[s]['Status'] == status])
+
 
 WAIT_STATUSES = (
-    WAITING,
+    FAILURE,
     TIMEDOUT,
     SUCCESS,
 ) = (
-    'WAITING',
+    'FAILURE',
     'TIMEDOUT',
     'SUCCESS',
 )
@@ -150,20 +204,39 @@ class WaitCondition(resource.Resource):
                               self.timeout / self.SLEEP_DIV),
                               self.MIN_SLEEP)
 
+    def _validate_handle_url(self):
+        handle_url = self.properties['Handle']
+        handle_id = identifier.ResourceIdentifier.from_arn_url(handle_url)
+        if handle_id.tenant != self.stack.context.tenant_id:
+            raise ValueError("WaitCondition invalid Handle tenant %s" %
+                             handle_id.tenant)
+        if handle_id.stack_name != self.stack.name:
+            raise ValueError("WaitCondition invalid Handle stack %s" %
+                             handle_id.stack_name)
+        if handle_id.stack_id != self.stack.id:
+            raise ValueError("WaitCondition invalid Handle stack %s" %
+                             handle_id.stack_id)
+        if handle_id.resource_name not in self.stack:
+            raise ValueError("WaitCondition invalid Handle %s" %
+                             handle_id.resource_name)
+        if not isinstance(self.stack[handle_id.resource_name],
+                          WaitConditionHandle):
+            raise ValueError("WaitCondition invalid Handle %s" %
+                             handle_id.resource_name)
+
     def _get_handle_resource_name(self):
         handle_url = self.properties['Handle']
         handle_id = identifier.ResourceIdentifier.from_arn_url(handle_url)
         return handle_id.resource_name
 
-    def _get_status_reason(self, handle):
-        return (handle.metadata.get('Status', WAITING),
-                handle.metadata.get('Reason', 'Reason not provided'))
-
     def _create_timeout(self):
         return eventlet.Timeout(self.timeout)
 
     def handle_create(self):
+        self._validate_handle_url()
         tmo = None
+        status = FAILURE
+        reason = "Unknown reason"
         try:
             # keep polling our Metadata to see if the cfn-signal has written
             # it yet. The execution here is limited by timeout.
@@ -172,15 +245,24 @@ class WaitCondition(resource.Resource):
                 handle = self.stack[handle_res_name]
                 self.resource_id_set(handle_res_name)
 
-                (status, reason) = (WAITING, '')
+                # Poll for WaitConditionHandle signals indicating
+                # SUCCESS/FAILURE.  We need self.count SUCCESS signals
+                # before we can declare the WaitCondition CREATE_COMPLETE
+                handle_status = handle.get_status()
+                while (FAILURE not in handle_status
+                       and len(handle_status) < self.count):
+                    logger.debug('Polling for WaitCondition completion,' +
+                                 ' sleeping for %s seconds, timeout %s' %
+                                 (self.sleep_time, self.timeout))
+                    eventlet.sleep(self.sleep_time)
+                    handle_status = handle.get_status()
 
-                while status == WAITING:
-                    (status, reason) = self._get_status_reason(handle)
-                    if status == WAITING:
-                        logger.debug('Polling for WaitCondition completion,' +
-                                     ' sleeping for %s seconds, timeout %s' %
-                                     (self.sleep_time, self.timeout))
-                        eventlet.sleep(self.sleep_time)
+                if FAILURE in handle_status:
+                    reason = handle.get_status_reason(FAILURE)
+                elif (len(handle_status) == self.count and
+                      handle_status == [SUCCESS] * self.count):
+                    logger.debug("WaitCondition %s SUCCESS" % self.name)
+                    status = SUCCESS
 
         except eventlet.Timeout as t:
             if t is not tmo:
@@ -192,7 +274,7 @@ class WaitCondition(resource.Resource):
         if status != SUCCESS:
             raise exception.Error(reason)
 
-    def handle_update(self):
+    def handle_update(self, json_snippet):
         return self.UPDATE_REPLACE
 
     def handle_delete(self):
@@ -203,21 +285,19 @@ class WaitCondition(resource.Resource):
         handle.metadata = {}
 
     def FnGetAtt(self, key):
-        res = None
+        res = {}
+        handle_res_name = self._get_handle_resource_name()
+        handle = self.stack[handle_res_name]
         if key == 'Data':
-            try:
-                meta = self.metadata
-                if meta and 'Data' in meta:
-                    res = meta['Data']
-            except Exception as ex:
-                pass
-
+            meta = handle.metadata
+            # Note, can't use a dict generator on python 2.6, hence:
+            res = dict([(k, meta[k]['Data']) for k in meta])
         else:
             raise exception.InvalidTemplateAttribute(resource=self.name,
                                                      key=key)
 
         logger.debug('%s.GetAtt(%s) == %s' % (self.name, key, res))
-        return unicode(res)
+        return unicode(json.dumps(res))
 
 
 def resource_mapping():

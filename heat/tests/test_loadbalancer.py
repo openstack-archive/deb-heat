@@ -69,7 +69,7 @@ class LoadBalancerTest(unittest.TestCase):
         template = parser.Template(t)
         params = parser.Parameters('test_stack', template, {'KeyName': 'test'})
         stack = parser.Stack(create_context(self.m), 'test_stack', template,
-                             params, stack_id=None)
+                             params, stack_id=None, disable_rollback=True)
         stack.store()
 
         return stack
@@ -88,9 +88,10 @@ class LoadBalancerTest(unittest.TestCase):
         instance.Instance.nova().MultipleTimes().AndReturn(self.fc)
         self.fc.servers.create(
             flavor=2, image=745, key_name='test',
-            meta=None, name=u'test_stack.LoadBalancer.LB_instance',
+            meta=None, nics=None, name=u'test_stack.LoadBalancer.LB_instance',
             scheduler_hints=None, userdata=mox.IgnoreArg(),
-            security_groups=None).AndReturn(self.fc.servers.list()[1])
+            security_groups=None, availability_zone=None).AndReturn(
+                self.fc.servers.list()[1])
         #stack.Stack.create_with_template(mox.IgnoreArg()).AndReturn(None)
         Metadata.__set__(mox.IgnoreArg(),
                          mox.IgnoreArg()).AndReturn(None)
@@ -148,7 +149,7 @@ class LoadBalancerTest(unittest.TestCase):
             pass
 
         self.assertEqual(lb.LoadBalancer.UPDATE_REPLACE,
-                         resource.handle_update())
+                         resource.handle_update({}))
 
         self.m.VerifyAll()
 

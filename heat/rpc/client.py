@@ -18,7 +18,8 @@
 Client side of the heat engine RPC API.
 """
 
-from heat.openstack.common import cfg
+from oslo.config import cfg
+
 from heat.openstack.common import rpc
 import heat.openstack.common.rpc.proxy
 
@@ -137,6 +138,16 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
         """
         return self.call(ctxt, self.make_msg('validate_template',
                                              template=template),
+                         topic=_engine_topic(self.topic, ctxt, None))
+
+    def authenticated_to_backend(self, ctxt):
+        """
+        Verify that the credentials in the RPC context are valid for the
+        current cloud backend.
+
+        :param ctxt: RPC context.
+        """
+        return self.call(ctxt, self.make_msg('authenticated_to_backend'),
                          topic=_engine_topic(self.topic, ctxt, None))
 
     def get_template(self, ctxt, stack_identity):

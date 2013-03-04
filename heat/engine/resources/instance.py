@@ -13,19 +13,19 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import eventlet
-import os
-import json
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import json
+import os
 import pkgutil
 from urlparse import urlparse
+
+import eventlet
+from oslo.config import cfg
 
 from heat.engine import clients
 from heat.engine import resource
 from heat.common import exception
-
-from heat.openstack.common import cfg
 
 from heat.openstack.common import log as logging
 
@@ -72,8 +72,7 @@ class Instance(resource.Resource):
                                           'Required': True},
                          'KeyName': {'Type': 'String',
                                      'Required': True},
-                         'AvailabilityZone': {'Type': 'String',
-                                              'Default': 'nova'},
+                         'AvailabilityZone': {'Type': 'String'},
                          'DisableApiTermination': {'Type': 'String',
                                                    'Implemented': False},
                          'KernelId': {'Type': 'String',
@@ -89,6 +88,7 @@ class Instance(resource.Resource):
                          'SecurityGroups': {'Type': 'List'},
                          'SecurityGroupIds': {'Type': 'List',
                                               'Implemented': False},
+                         'NetworkInterfaces': {'Type': 'List'},
                          'SourceDestCheck': {'Type': 'Boolean',
                                              'Implemented': False},
                          'SubnetId': {'Type': 'String',
@@ -105,8 +105,11 @@ class Instance(resource.Resource):
                                      'AllowedValues': ['dedicated', 'default'],
                                      'Implemented': False},
                          'UserData': {'Type': 'String'},
-                         'Volumes': {'Type': 'List',
-                                     'Implemented': False}}
+                         'Volumes': {'Type': 'List'}}
+
+    # template keys supported for handle_update, note trailing comma
+    # is required for a single item to get a tuple not a string
+    update_allowed_keys = ('Metadata',)
 
     def __init__(self, name, json_snippet, stack):
         super(Instance, self).__init__(name, json_snippet, stack)
@@ -191,8 +194,12 @@ class Instance(resource.Resource):
             # where the cfn and cw API's are to be accessed
             cfn_url = urlparse(cfg.CONF.heat_metadata_server_url)
             cw_url = urlparse(cfg.CONF.heat_watch_server_url)
+            is_secure = cfg.CONF.instance_connection_is_secure
+            vcerts = cfg.CONF.instance_connection_https_validate_certificates
             boto_cfg = "\n".join(["[Boto]",
                                   "debug = 0",
+                                  "is_secure = %s" % is_secure,
+                                  "https_validate_certificates = %s" % vcerts,
                                   "cfn_region_name = heat",
                                   "cfn_region_endpoint = %s" %
                                   cfn_url.hostname,
@@ -219,6 +226,7 @@ class Instance(resource.Resource):
         userdata = self.properties['UserData'] or ''
         flavor = self.properties['InstanceType']
         key_name = self.properties['KeyName']
+        availability_zone = self.properties['AvailabilityZone']
 
         keypairs = [k.name for k in self.nova().keypairs.list()]
         if key_name not in keypairs:
@@ -254,28 +262,78 @@ class Instance(resource.Resource):
         else:
             scheduler_hints = None
 
+        nics = []
+        if self.properties['NetworkInterfaces']:
+            for nic in self.properties['NetworkInterfaces']:
+                nics.append({'port-id': nic})
+        else:
+            nics = None
+
         server_userdata = self._build_userdata(userdata)
-        server = self.nova().servers.create(name=self.physical_resource_name(),
-                                            image=image_id,
-                                            flavor=flavor_id,
-                                            key_name=key_name,
-                                            security_groups=security_groups,
-                                            userdata=server_userdata,
-                                            meta=tags,
-                                            scheduler_hints=scheduler_hints)
+        server = None
+        try:
+            server = self.nova().servers.create(
+                name=self.physical_resource_name(),
+                image=image_id,
+                flavor=flavor_id,
+                key_name=key_name,
+                security_groups=security_groups,
+                userdata=server_userdata,
+                meta=tags,
+                scheduler_hints=scheduler_hints,
+                nics=nics,
+                availability_zone=availability_zone)
+        finally:
+            # Avoid a race condition where the thread could be cancelled
+            # before the ID is stored
+            if server is not None:
+                self.resource_id_set(server.id)
+
         while server.status == 'BUILD':
             server.get()
             eventlet.sleep(1)
         if server.status == 'ACTIVE':
-            self.resource_id_set(server.id)
             self._set_ipaddress(server.networks)
         else:
             raise exception.Error('%s instance[%s] status[%s]' %
                                   ('nova reported unexpected',
                                    self.name, server.status))
 
-    def handle_update(self):
-        return self.UPDATE_REPLACE
+        if self.properties['Volumes']:
+            self.attach_volumes()
+
+    def attach_volumes(self):
+        server_id = self.resource_id
+        for vol in self.properties['Volumes']:
+            if 'DeviceId' in vol:
+                dev = vol['DeviceId']
+            else:
+                dev = vol['Device']
+            self.stack.clients.attach_volume_to_instance(server_id,
+                                                         vol['VolumeId'],
+                                                         dev)
+
+    def detach_volumes(self):
+        server_id = self.resource_id
+        for vol in self.properties['Volumes']:
+            self.stack.clients.detach_volume_from_instance(server_id,
+                                                           vol['VolumeId'])
+
+    def handle_update(self, json_snippet):
+        status = self.UPDATE_REPLACE
+        try:
+            tmpl_diff = self.update_template_diff(json_snippet)
+        except NotImplementedError:
+            return self.UPDATE_REPLACE
+
+        for k in tmpl_diff:
+            if k == 'Metadata':
+                self.metadata = json_snippet.get('Metadata', {})
+                status = self.UPDATE_COMPLETE
+            else:
+                return self.UPDATE_REPLACE
+
+        return status
 
     def validate(self):
         '''
@@ -304,13 +362,17 @@ class Instance(resource.Resource):
         '''
         if self.resource_id is None:
             return
+
+        if self.properties['Volumes']:
+            self.detach_volumes()
+
         try:
             server = self.nova().servers.get(self.resource_id)
         except clients.novaclient.exceptions.NotFound:
             pass
         else:
             server.delete()
-            while server.status == 'ACTIVE':
+            while True:
                 try:
                     server.get()
                 except clients.novaclient.exceptions.NotFound:
@@ -322,5 +384,5 @@ class Instance(resource.Resource):
 def resource_mapping():
     return {
         'AWS::EC2::Instance': Instance,
-        'HEAT::HA::Restarter': Restarter,
+        'OS::Heat::HARestarter': Restarter,
     }

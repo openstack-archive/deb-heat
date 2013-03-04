@@ -23,9 +23,7 @@ import heat.db as db_api
 
 from heat.openstack.common import timeutils
 from heat.engine import watchrule
-
-
-logger = logging.getLogger('test_watch')
+from heat.engine import parser
 
 
 class WatchData:
@@ -33,6 +31,10 @@ class WatchData:
         self.created_at = created_at
         self.data = {'test_metric': {'Value': data,
                                      'Unit': 'Count'}}
+
+
+class DummyAction:
+    alarm = "DummyAction"
 
 
 @attr(tag=['unit', 'watchrule'])
@@ -44,7 +46,8 @@ class WatchRuleTest(unittest.TestCase):
         # Create a dummy stack in the DB as WatchRule instances
         # must be associated with a stack
         ctx = context.get_admin_context()
-        tmpl = db_api.raw_template_create(ctx, {'foo': 'bar'})
+        empty_tmpl = {"template": {}}
+        tmpl = db_api.raw_template_create(ctx, empty_tmpl)
         dummy_stack = {'id': '6754d843-bed2-40dc-a325-84882bb90a98',
                        'name': 'dummystack',
                        'raw_template_id': tmpl.id,
@@ -65,13 +68,26 @@ class WatchRuleTest(unittest.TestCase):
         self.m = mox.Mox()
 
         self.ctx = context.get_admin_context()
-        self.m.StubOutWithMock(self.ctx, 'username')
         self.ctx.username = self.username
+        self.ctx.tenant_id = u'123456'
 
         self.m.ReplayAll()
 
     def tearDown(self):
         self.m.UnsetStubs()
+
+    def _action_set_stubs(self, now, action_expected=True):
+        # Setup stubs for the action tests
+        self.m.StubOutWithMock(timeutils, 'utcnow')
+        timeutils.utcnow().MultipleTimes().AndReturn(now)
+
+        if action_expected:
+            dummy_action = DummyAction()
+            self.m.StubOutWithMock(parser.Stack, '__getitem__')
+            parser.Stack.__getitem__(mox.IgnoreArg()
+                                     ).MultipleTimes().AndReturn(dummy_action)
+
+        self.m.ReplayAll()
 
     def test_minimum(self):
         rule = {'EvaluationPeriods': '1',
@@ -94,7 +110,6 @@ class WatchRuleTest(unittest.TestCase):
                                       stack_id=self.stack_id,
                                       last_evaluated=last)
         new_state = watcher.get_alarm_state()
-        logger.info(new_state)
         self.assertEqual(new_state, 'NORMAL')
 
         data.append(WatchData(25, now - datetime.timedelta(seconds=250)))
@@ -105,7 +120,6 @@ class WatchRuleTest(unittest.TestCase):
                                       stack_id=self.stack_id,
                                       last_evaluated=last)
         new_state = watcher.get_alarm_state()
-        logger.info(new_state)
         self.assertEqual(new_state, 'ALARM')
 
     def test_maximum(self):
@@ -130,7 +144,6 @@ class WatchRuleTest(unittest.TestCase):
                                       last_evaluated=last)
         watcher.now = now
         new_state = watcher.get_alarm_state()
-        logger.info(new_state)
         self.assertEqual(new_state, 'NORMAL')
 
         data.append(WatchData(35, now - datetime.timedelta(seconds=150)))
@@ -142,7 +155,6 @@ class WatchRuleTest(unittest.TestCase):
                                       last_evaluated=last)
         watcher.now = now
         new_state = watcher.get_alarm_state()
-        logger.info(new_state)
         self.assertEqual(new_state, 'ALARM')
 
     def test_samplecount(self):
@@ -168,7 +180,6 @@ class WatchRuleTest(unittest.TestCase):
                                       last_evaluated=last)
         watcher.now = now
         new_state = watcher.get_alarm_state()
-        logger.info(new_state)
         self.assertEqual(new_state, 'NORMAL')
 
         # only 3 samples -> ALARM
@@ -181,7 +192,6 @@ class WatchRuleTest(unittest.TestCase):
                                       last_evaluated=last)
         watcher.now = now
         new_state = watcher.get_alarm_state()
-        logger.info(new_state)
         self.assertEqual(new_state, 'ALARM')
 
         # only 3 samples (one old) -> NORMAL
@@ -195,7 +205,6 @@ class WatchRuleTest(unittest.TestCase):
                                       last_evaluated=last)
         watcher.now = now
         new_state = watcher.get_alarm_state()
-        logger.info(new_state)
         self.assertEqual(new_state, 'NORMAL')
 
     def test_sum(self):
@@ -220,7 +229,6 @@ class WatchRuleTest(unittest.TestCase):
                                       last_evaluated=last)
         watcher.now = now
         new_state = watcher.get_alarm_state()
-        logger.info(new_state)
         self.assertEqual(new_state, 'NORMAL')
 
         # sum > 100 -> ALARM
@@ -233,7 +241,6 @@ class WatchRuleTest(unittest.TestCase):
                                       last_evaluated=last)
         watcher.now = now
         new_state = watcher.get_alarm_state()
-        logger.info(new_state)
         self.assertEqual(new_state, 'ALARM')
 
     def test_ave(self):
@@ -257,7 +264,6 @@ class WatchRuleTest(unittest.TestCase):
                                       last_evaluated=last)
         watcher.now = now
         new_state = watcher.get_alarm_state()
-        logger.info(new_state)
         self.assertEqual(new_state, 'NORMAL')
 
         data.append(WatchData(195, now - datetime.timedelta(seconds=250)))
@@ -269,7 +275,6 @@ class WatchRuleTest(unittest.TestCase):
                                       last_evaluated=last)
         watcher.now = now
         new_state = watcher.get_alarm_state()
-        logger.info(new_state)
         self.assertEqual(new_state, 'ALARM')
 
     def test_load(self):
@@ -324,8 +329,319 @@ class WatchRuleTest(unittest.TestCase):
         dbwr = db_api.watch_rule_get_by_name(self.ctx, 'storetest')
         self.assertNotEqual(dbwr, None)
         self.assertEqual(dbwr.name, 'storetest')
-        self.assertEqual(dbwr.state, watchrule.WatchRule.NORMAL)
+        self.assertEqual(dbwr.state, watchrule.WatchRule.NODATA)
         self.assertEqual(dbwr.rule, rule)
 
         # Cleanup
         db_api.watch_rule_delete(self.ctx, 'storetest')
+
+    def test_evaluate(self):
+        rule = {'EvaluationPeriods': '1',
+                'MetricName': 'test_metric',
+                'Period': '300',
+                'Statistic': 'Maximum',
+                'ComparisonOperator': 'GreaterThanOrEqualToThreshold',
+                'Threshold': '30'}
+
+        now = timeutils.utcnow()
+        self.m.StubOutWithMock(timeutils, 'utcnow')
+        timeutils.utcnow().MultipleTimes().AndReturn(now)
+        self.m.ReplayAll()
+
+        # It's not time to evaluate, so should stay NODATA
+        last = now - datetime.timedelta(seconds=299)
+        data = WatchData(25, now - datetime.timedelta(seconds=150))
+        watcher = watchrule.WatchRule(context=self.ctx,
+                                      watch_name="testwatch",
+                                      rule=rule,
+                                      watch_data=[data],
+                                      stack_id=self.stack_id,
+                                      last_evaluated=last)
+
+        actions = watcher.evaluate()
+        self.assertEqual(watcher.state, 'NODATA')
+        self.assertEqual(actions, [])
+
+        # now - last == Period, so should set NORMAL
+        last = now - datetime.timedelta(seconds=300)
+        data = WatchData(25, now - datetime.timedelta(seconds=150))
+        watcher = watchrule.WatchRule(context=self.ctx,
+                                      watch_name="testwatch",
+                                      rule=rule,
+                                      watch_data=[data],
+                                      stack_id=self.stack_id,
+                                      last_evaluated=last)
+
+        actions = watcher.evaluate()
+        self.assertEqual(watcher.state, 'NORMAL')
+        self.assertEqual(watcher.last_evaluated, now)
+        self.assertEqual(actions, [])
+
+        # Now data breaches Threshold, so should set ALARM
+        last = now - datetime.timedelta(seconds=300)
+        data = WatchData(35, now - datetime.timedelta(seconds=150))
+        watcher = watchrule.WatchRule(context=self.ctx,
+                                      watch_name="testwatch",
+                                      rule=rule,
+                                      watch_data=[data],
+                                      stack_id=self.stack_id,
+                                      last_evaluated=last)
+
+        actions = watcher.evaluate()
+        self.assertEqual(watcher.state, 'ALARM')
+        self.assertEqual(watcher.last_evaluated, now)
+        self.assertEqual(actions, [])
+
+    def test_rule_actions_alarm_normal(self):
+        rule = {'EvaluationPeriods': '1',
+                'MetricName': 'test_metric',
+                'AlarmActions': ['DummyAction'],
+                'Period': '300',
+                'Statistic': 'Maximum',
+                'ComparisonOperator': 'GreaterThanOrEqualToThreshold',
+                'Threshold': '30'}
+
+        now = timeutils.utcnow()
+        self._action_set_stubs(now, action_expected=False)
+
+        # Set data so rule evaluates to NORMAL state
+        last = now - datetime.timedelta(seconds=300)
+        data = WatchData(25, now - datetime.timedelta(seconds=150))
+        watcher = watchrule.WatchRule(context=self.ctx,
+                                      watch_name="testwatch",
+                                      rule=rule,
+                                      watch_data=[data],
+                                      stack_id=self.stack_id,
+                                      last_evaluated=last)
+
+        actions = watcher.evaluate()
+        self.assertEqual(watcher.state, 'NORMAL')
+        self.assertEqual(actions, [])
+        self.m.VerifyAll()
+
+    def test_rule_actions_alarm_alarm(self):
+        rule = {'EvaluationPeriods': '1',
+                'MetricName': 'test_metric',
+                'AlarmActions': ['DummyAction'],
+                'Period': '300',
+                'Statistic': 'Maximum',
+                'ComparisonOperator': 'GreaterThanOrEqualToThreshold',
+                'Threshold': '30'}
+
+        now = timeutils.utcnow()
+        self._action_set_stubs(now)
+
+        # Set data so rule evaluates to ALARM state
+        last = now - datetime.timedelta(seconds=300)
+        data = WatchData(35, now - datetime.timedelta(seconds=150))
+        watcher = watchrule.WatchRule(context=self.ctx,
+                                      watch_name="testwatch",
+                                      rule=rule,
+                                      watch_data=[data],
+                                      stack_id=self.stack_id,
+                                      last_evaluated=last)
+
+        actions = watcher.evaluate()
+        self.assertEqual(watcher.state, 'ALARM')
+        self.assertEqual(actions, ['DummyAction'])
+
+        # re-set last_evaluated so the rule will be evaluated again,
+        # but since we're already in ALARM state, we should not generate
+        # any additional actions
+        last = now - datetime.timedelta(seconds=300)
+        watcher.last_evaluated = last
+        actions = watcher.evaluate()
+        self.assertEqual(watcher.state, 'ALARM')
+        self.assertEqual(actions, [])
+        self.m.VerifyAll()
+
+    def test_rule_actions_alarm_two_actions(self):
+        rule = {'EvaluationPeriods': '1',
+                'MetricName': 'test_metric',
+                'AlarmActions': ['DummyAction', 'AnotherDummyAction'],
+                'Period': '300',
+                'Statistic': 'Maximum',
+                'ComparisonOperator': 'GreaterThanOrEqualToThreshold',
+                'Threshold': '30'}
+
+        now = timeutils.utcnow()
+        self._action_set_stubs(now)
+
+        # Set data so rule evaluates to ALARM state
+        last = now - datetime.timedelta(seconds=300)
+        data = WatchData(35, now - datetime.timedelta(seconds=150))
+        watcher = watchrule.WatchRule(context=self.ctx,
+                                      watch_name="testwatch",
+                                      rule=rule,
+                                      watch_data=[data],
+                                      stack_id=self.stack_id,
+                                      last_evaluated=last)
+
+        actions = watcher.evaluate()
+        self.assertEqual(watcher.state, 'ALARM')
+        self.assertEqual(actions, ['DummyAction', 'DummyAction'])
+        self.m.VerifyAll()
+
+    def test_rule_actions_ok_alarm(self):
+        rule = {'EvaluationPeriods': '1',
+                'MetricName': 'test_metric',
+                'OKActions': ['DummyAction'],
+                'Period': '300',
+                'Statistic': 'Maximum',
+                'ComparisonOperator': 'GreaterThanOrEqualToThreshold',
+                'Threshold': '30'}
+
+        now = timeutils.utcnow()
+        self._action_set_stubs(now, action_expected=False)
+
+        # On creation the rule evaluates to NODATA state
+        last = now - datetime.timedelta(seconds=300)
+        watcher = watchrule.WatchRule(context=self.ctx,
+                                      watch_name="testwatch",
+                                      rule=rule,
+                                      watch_data=[],
+                                      stack_id=self.stack_id,
+                                      last_evaluated=last)
+
+        actions = watcher.evaluate()
+        self.assertEqual(watcher.state, 'NODATA')
+        self.assertEqual(actions, [])
+
+        # Move time forward and add data below threshold so we transition from
+        # ALARM -> NORMAL, so evaluate() should output a 'DummyAction'
+        now = now + datetime.timedelta(seconds=300)
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
+        self._action_set_stubs(now)
+
+        data = WatchData(25, now - datetime.timedelta(seconds=150))
+        watcher.watch_data = [data]
+
+        actions = watcher.evaluate()
+        self.assertEqual(watcher.state, 'NORMAL')
+        self.assertEqual(actions, ['DummyAction'])
+        self.m.VerifyAll()
+
+    def test_rule_actions_nodata(self):
+        rule = {'EvaluationPeriods': '1',
+                'MetricName': 'test_metric',
+                'InsufficientDataActions': ['DummyAction'],
+                'Period': '300',
+                'Statistic': 'Maximum',
+                'ComparisonOperator': 'GreaterThanOrEqualToThreshold',
+                'Threshold': '30'}
+
+        now = timeutils.utcnow()
+        self._action_set_stubs(now, action_expected=False)
+
+        # Set data so rule evaluates to ALARM state
+        last = now - datetime.timedelta(seconds=300)
+        data = WatchData(35, now - datetime.timedelta(seconds=150))
+        watcher = watchrule.WatchRule(context=self.ctx,
+                                      watch_name="testwatch",
+                                      rule=rule,
+                                      watch_data=[data],
+                                      stack_id=self.stack_id,
+                                      last_evaluated=last)
+
+        actions = watcher.evaluate()
+        self.assertEqual(watcher.state, 'ALARM')
+        self.assertEqual(actions, [])
+
+        # Move time forward and don't add data so we transition from
+        # ALARM -> NODATA, so evaluate() should output a 'DummyAction'
+        now = now + datetime.timedelta(seconds=300)
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
+        self._action_set_stubs(now)
+
+        actions = watcher.evaluate()
+        self.assertEqual(watcher.state, 'NODATA')
+        self.assertEqual(actions, ['DummyAction'])
+        self.m.VerifyAll()
+
+    def test_create_watch_data(self):
+        rule = {u'EvaluationPeriods': u'1',
+                u'AlarmDescription': u'test alarm',
+                u'Period': u'300',
+                u'ComparisonOperator': u'GreaterThanThreshold',
+                u'Statistic': u'SampleCount',
+                u'Threshold': u'2',
+                u'MetricName': u'CreateDataMetric'}
+        wr = watchrule.WatchRule(context=self.ctx,
+                                 watch_name='create_data_test',
+                                 stack_id=self.stack_id, rule=rule)
+
+        wr.store()
+
+        data = {u'CreateDataMetric': {"Unit": "Counter",
+                                      "Value": "1",
+                                      "Dimensions": []}}
+        wr.create_watch_data(data)
+
+        dbwr = db_api.watch_rule_get_by_name(self.ctx, 'create_data_test')
+        self.assertEqual(dbwr.watch_data[0].data, data)
+
+        # Note, would be good to write another datapoint and check it
+        # but sqlite seems to not interpret the backreference correctly
+        # so dbwr.watch_data is always a list containing only the latest
+        # datapoint.  In non-test use on mysql this is not the case, we
+        # correctly get a list of all datapoints where watch_rule_id ==
+        # watch_rule.id, so leave it as a single-datapoint test for now.
+
+        # Cleanup
+        db_api.watch_rule_delete(self.ctx, 'create_data_test')
+
+    def test_set_watch_state(self):
+        rule = {'EvaluationPeriods': '1',
+                'MetricName': 'test_metric',
+                'AlarmActions': ['DummyAction'],
+                'Period': '300',
+                'Statistic': 'Maximum',
+                'ComparisonOperator': 'GreaterThanOrEqualToThreshold',
+                'Threshold': '30'}
+
+        now = timeutils.utcnow()
+        self._action_set_stubs(now)
+
+        # Set data so rule evaluates to ALARM state
+        last = now - datetime.timedelta(seconds=200)
+        watcher = watchrule.WatchRule(context=self.ctx,
+                                      watch_name="testwatch",
+                                      rule=rule,
+                                      watch_data=[],
+                                      stack_id=self.stack_id,
+                                      last_evaluated=last)
+
+        actions = watcher.set_watch_state(watchrule.WatchRule.NODATA)
+        self.assertEqual(actions, [])
+
+        actions = watcher.set_watch_state(watchrule.WatchRule.NORMAL)
+        self.assertEqual(actions, [])
+
+        actions = watcher.set_watch_state(watchrule.WatchRule.ALARM)
+        self.assertEqual(actions, ['DummyAction'])
+        self.m.VerifyAll()
+
+    def test_set_watch_state_invalid(self):
+        rule = {'EvaluationPeriods': '1',
+                'MetricName': 'test_metric',
+                'AlarmActions': ['DummyAction'],
+                'Period': '300',
+                'Statistic': 'Maximum',
+                'ComparisonOperator': 'GreaterThanOrEqualToThreshold',
+                'Threshold': '30'}
+
+        now = timeutils.utcnow()
+
+        last = now - datetime.timedelta(seconds=200)
+        watcher = watchrule.WatchRule(context=self.ctx,
+                                      watch_name="testwatch",
+                                      rule=rule,
+                                      watch_data=[],
+                                      stack_id=self.stack_id,
+                                      last_evaluated=last)
+
+        self.assertRaises(ValueError, watcher.set_watch_state, None)
+
+        self.assertRaises(ValueError, watcher.set_watch_state, "BADSTATE")

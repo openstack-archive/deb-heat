@@ -15,16 +15,15 @@
 
 
 import datetime
+from heat.common import exception
 from heat.openstack.common import log as logging
 from heat.openstack.common import timeutils
 from heat.engine import timestamp
 from heat.db import api as db_api
 from heat.engine import parser
 from heat.rpc import api as rpc_api
-import eventlet
 
 logger = logging.getLogger(__name__)
-greenpool = eventlet.GreenPool()
 
 
 class WatchRule(object):
@@ -45,7 +44,7 @@ class WatchRule(object):
     updated_at = timestamp.Timestamp(db_api.watch_rule_get, 'updated_at')
 
     def __init__(self, context, watch_name, rule, stack_id=None,
-                 state=NORMAL, wid=None, watch_data=[],
+                 state=NODATA, wid=None, watch_data=[],
                  last_evaluated=timeutils.utcnow()):
         self.context = context
         self.now = timeutils.utcnow()
@@ -70,7 +69,7 @@ class WatchRule(object):
                 logger.warn('WatchRule.load (%s) db error %s' %
                             (watch_name, str(ex)))
         if watch is None:
-            raise AttributeError('Unknown watch name %s' % watch_name)
+            raise exception.WatchRuleNotFound(watch_name=watch_name)
         else:
             return cls(context=context,
                        watch_name=watch.name,
@@ -212,47 +211,46 @@ class WatchRule(object):
         # has enough time progressed to run the rule
         self.now = timeutils.utcnow()
         if self.now < (self.last_evaluated + self.timeperiod):
-            return
-        self.run_rule()
+            return []
+        return self.run_rule()
 
     def run_rule(self):
         new_state = self.get_alarm_state()
 
+        actions = []
         if new_state != self.state:
-            if self.rule_action(new_state):
-                self.state = new_state
+            actions = self.rule_actions(new_state)
+            self.state = new_state
 
         self.last_evaluated = self.now
         self.store()
+        return actions
 
-    def rule_action(self, new_state):
-        logger.warn('WATCH: stack:%s, watch_name:%s %s',
+    def rule_actions(self, new_state):
+        logger.info('WATCH: stack:%s, watch_name:%s %s',
                     self.stack_id, self.name, new_state)
-
-        actioned = False
+        actions = []
         if not self.ACTION_MAP[new_state] in self.rule:
             logger.info('no action for new state %s',
                         new_state)
-            actioned = True
         else:
             s = db_api.stack_get(self.context, self.stack_id)
             if s and s.status in (parser.Stack.CREATE_COMPLETE,
                                   parser.Stack.UPDATE_COMPLETE):
                 stack = parser.Stack.load(self.context, stack=s)
                 for a in self.rule[self.ACTION_MAP[new_state]]:
-                    greenpool.spawn_n(stack[a].alarm)
-                actioned = True
+                    actions.append(stack[a].alarm)
             else:
                 logger.warning("Could not process watch state %s for stack" %
                                new_state)
-        return actioned
+        return actions
 
     def create_watch_data(self, data):
         if not self.rule['MetricName'] in data:
             logger.warn('new data has incorrect metric:%s' %
                         (self.rule['MetricName']))
-            raise AttributeError('MetricName %s missing' %
-                                 self.rule['MetricName'])
+            raise ValueError('MetricName %s missing' %
+                             self.rule['MetricName'])
 
         watch_data = {
             'data': data,
@@ -260,21 +258,23 @@ class WatchRule(object):
         }
         wd = db_api.watch_data_create(None, watch_data)
         logger.debug('new watch:%s data:%s' % (self.name, str(wd.data)))
-        if self.rule['Statistic'] == 'SampleCount':
-            self.run_rule()
 
     def set_watch_state(self, state):
         '''
-        Temporarily set the watch state
+        Temporarily set the watch state, returns list of functions to be
+        scheduled in the stack ThreadGroup for the specified state
         '''
 
         if state not in self.WATCH_STATES:
-            raise AttributeError('Unknown watch state %s' % state)
+            raise ValueError('Unknown watch state %s' % state)
 
+        actions = []
         if state != self.state:
-            if self.rule_action(state):
+            actions = self.rule_actions(state)
+            if actions:
                 logger.debug("Overriding state %s for watch %s with %s" %
                             (self.state, self.name, state))
             else:
                 logger.warning("Unable to override state %s for watch %s" %
                               (self.state, self.name))
+        return actions

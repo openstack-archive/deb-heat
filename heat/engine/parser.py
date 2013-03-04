@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 
 
 class Stack(object):
+
+    ACTIONS = (CREATE, DELETE, UPDATE, ROLLBACK
+               ) = ('CREATE', 'DELETE', 'UPDATE', 'ROLLBACK')
+
     CREATE_IN_PROGRESS = 'CREATE_IN_PROGRESS'
     CREATE_FAILED = 'CREATE_FAILED'
     CREATE_COMPLETE = 'CREATE_COMPLETE'
@@ -47,12 +51,16 @@ class Stack(object):
     UPDATE_COMPLETE = 'UPDATE_COMPLETE'
     UPDATE_FAILED = 'UPDATE_FAILED'
 
+    ROLLBACK_IN_PROGRESS = 'ROLLBACK_IN_PROGRESS'
+    ROLLBACK_COMPLETE = 'ROLLBACK_COMPLETE'
+    ROLLBACK_FAILED = 'ROLLBACK_FAILED'
+
     created_time = timestamp.Timestamp(db_api.stack_get, 'created_at')
     updated_time = timestamp.Timestamp(db_api.stack_get, 'updated_at')
 
     def __init__(self, context, stack_name, tmpl, parameters=None,
                  stack_id=None, state=None, state_description='',
-                 timeout_mins=60, resolve_data=True):
+                 timeout_mins=60, resolve_data=True, disable_rollback=False):
         '''
         Initialise from a context, name, Template object and (optionally)
         Parameters object. The database ID may also be initialised, if the
@@ -70,6 +78,7 @@ class Stack(object):
         self.state = state
         self.state_description = state_description
         self.timeout_mins = timeout_mins
+        self.disable_rollback = disable_rollback
 
         if parameters is None:
             parameters = Parameters(self.name, self.t)
@@ -109,7 +118,7 @@ class Stack(object):
         params = Parameters(stack.name, template, stack.parameters)
         stack = cls(context, stack.name, template, params,
                     stack.id, stack.status, stack.status_reason, stack.timeout,
-                    resolve_data)
+                    resolve_data, stack.disable_rollback)
 
         return stack
 
@@ -131,6 +140,7 @@ class Stack(object):
             'status': self.state,
             'status_reason': self.state_description,
             'timeout': self.timeout_mins,
+            'disable_rollback': self.disable_rollback,
         }
         if self.id:
             db_api.stack_update(self.context, self.id, s)
@@ -251,7 +261,10 @@ class Stack(object):
 
         self.state_set(stack_status, reason)
 
-    def update(self, newstack):
+        if stack_status == self.CREATE_FAILED and not self.disable_rollback:
+            self.delete(action=self.ROLLBACK)
+
+    def update(self, newstack, action=UPDATE):
         '''
         Compare the current stack with newstack,
         and where necessary create/update/delete the resources until
@@ -263,14 +276,31 @@ class Stack(object):
         Update will fail if it exceeds the specified timeout. The default is
         60 minutes, set in the constructor
         '''
-        if self.state not in (self.CREATE_COMPLETE, self.UPDATE_COMPLETE):
-            self.state_set(self.UPDATE_FAILED, 'State invalid for update')
+        if action not in (self.UPDATE, self.ROLLBACK):
+            logger.error("Unexpected action %s passed to update!" % action)
+            self.state_set(self.UPDATE_FAILED, "Invalid action %s" % action)
             return
-        else:
+
+        if self.state not in (self.CREATE_COMPLETE, self.UPDATE_COMPLETE,
+                              self.ROLLBACK_COMPLETE):
+            if (action == self.ROLLBACK and
+                    self.state == self.UPDATE_IN_PROGRESS):
+                logger.debug("Starting update rollback for %s" % self.name)
+            else:
+                if action == self.UPDATE:
+                    self.state_set(self.UPDATE_FAILED,
+                                   'State invalid for update')
+                else:
+                    self.state_set(self.ROLLBACK_FAILED,
+                                   'State invalid for rollback')
+                return
+
+        if action == self.UPDATE:
             self.state_set(self.UPDATE_IN_PROGRESS, 'Stack update started')
+        else:
+            self.state_set(self.ROLLBACK_IN_PROGRESS, 'Stack rollback started')
 
         # Now make the resources match the new stack definition
-        failures = []
         with eventlet.Timeout(self.timeout_mins * 60) as tmo:
             try:
                 # First delete any resources which are not in newstack
@@ -280,10 +310,14 @@ class Stack(object):
                                      % res.name + " definition, deleting")
                         result = res.destroy()
                         if result:
-                            failures.append('Resource %s delete failed'
-                                            % res.name)
+                            logger.error("Failed to remove %s : %s" %
+                                         (res.name, result))
+                            raise exception.ResourceUpdateFailed(
+                                resource_name=res.name)
                         else:
                             del self.resources[res.name]
+                            self.dependencies = self._get_dependencies(
+                                self.resources.itervalues())
 
                 # Then create any which are defined in newstack but not self
                 for res in newstack:
@@ -292,10 +326,14 @@ class Stack(object):
                                      % res.name + " definition, adding")
                         res.stack = self
                         self[res.name] = res
+                        self.dependencies = self._get_dependencies(
+                            self.resources.itervalues())
                         result = self[res.name].create()
                         if result:
-                            failures.append('Resource %s create failed'
-                                            % res.name)
+                            logger.error("Failed to add %s : %s" %
+                                         (res.name, result))
+                            raise exception.ResourceUpdateFailed(
+                                resource_name=res.name)
 
                 # Now (the hard part :) update existing resources
                 # The Resource base class allows equality-test of resources,
@@ -313,50 +351,60 @@ class Stack(object):
                 # Currently all resource have a default handle_update method
                 # which returns "requires replacement" (res.UPDATE_REPLACE)
                 for res in newstack:
-                    if self.resolve_runtime_data(self[res.name].t) !=\
-                            self.resolve_runtime_data(res.t):
+                    # Compare resolved pre/post update resource snippets,
+                    # note the new resource snippet is resolved in the context
+                    # of the existing stack (which is the stack being updated)
+                    old_snippet = self.resolve_runtime_data(self[res.name].t)
+                    new_snippet = self.resolve_runtime_data(res.t)
 
+                    if old_snippet != new_snippet:
                         # Can fail if underlying resource class does not
                         # implement update logic or update requires replacement
-                        retval = self[res.name].update(res.parsed_template())
-                        if retval == self[res.name].UPDATE_REPLACE:
+                        retval = self[res.name].update(new_snippet)
+                        if retval == self[res.name].UPDATE_COMPLETE:
+                            logger.info("Resource %s for stack %s updated" %
+                                        (res.name, self.name))
+                        elif retval == self[res.name].UPDATE_REPLACE:
                             logger.info("Resource %s for stack %s" %
                                         (res.name, self.name) +
                                         " update requires replacement")
                             # Resource requires replacement for update
                             result = self[res.name].destroy()
                             if result:
-                                failures.append('Resource %s delete failed'
-                                                % res.name)
+                                logger.error("Failed to delete %s : %s" %
+                                             (res.name, result))
+                                raise exception.ResourceUpdateFailed(
+                                    resource_name=res.name)
                             else:
                                 res.stack = self
                                 self[res.name] = res
+                                self.dependencies = self._get_dependencies(
+                                    self.resources.itervalues())
                                 result = self[res.name].create()
                                 if result:
-                                    failures.append('Resource %s create failed'
-                                                    % res.name)
+                                    logger.error("Failed to create %s : %s" %
+                                                 (res.name, result))
+                                    raise exception.ResourceUpdateFailed(
+                                        resource_name=res.name)
                         else:
-                            logger.warning("Cannot update resource %s," %
-                                           res.name + " reason %s" % retval)
-                            failures.append('Resource %s update failed'
-                                            % res.name)
+                            logger.error("Failed to %s %s" %
+                                         (action, res.name))
+                            raise exception.ResourceUpdateFailed(
+                                resource_name=res.name)
 
-                # Set stack status values
-                if not failures:
-                    # flip the template & parameters to the newstack values
-                    self.t = newstack.t
-                    self.parameters = newstack.parameters
-                    template_outputs = self.t[template.OUTPUTS]
-                    self.outputs = self.resolve_static_data(template_outputs)
-                    self.dependencies = self._get_dependencies(
-                        self.resources.itervalues())
-                    self.store()
+                # flip the template & parameters to the newstack values
+                self.t = newstack.t
+                self.parameters = newstack.parameters
+                template_outputs = self.t[template.OUTPUTS]
+                self.outputs = self.resolve_static_data(template_outputs)
+                self.store()
 
+                if action == self.UPDATE:
                     stack_status = self.UPDATE_COMPLETE
                     reason = 'Stack successfully updated'
                 else:
-                    stack_status = self.UPDATE_FAILED
-                    reason = ",".join(failures)
+                    stack_status = self.ROLLBACK_COMPLETE
+                    reason = 'Stack rollback completed'
 
             except eventlet.Timeout as t:
                 if t is tmo:
@@ -365,14 +413,44 @@ class Stack(object):
                 else:
                     # not my timeout
                     raise
+            except exception.ResourceUpdateFailed as e:
+                reason = str(e) or "Error : %s" % type(e)
 
-        self.state_set(stack_status, reason)
+                if action == self.UPDATE:
+                    stack_status = self.UPDATE_FAILED
+                    # If rollback is enabled, we do another update, with the
+                    # existing template, so we roll back to the original state
+                    # Note - ensure nothing after the "flip the template..."
+                    # section above can raise ResourceUpdateFailed or this
+                    # will not work ;)
+                    if self.disable_rollback:
+                        stack_status = self.UPDATE_FAILED
+                    else:
+                        oldstack = Stack(self.context, self.name, self.t,
+                                         self.parameters)
+                        self.update(oldstack, action=self.ROLLBACK)
+                        return
+                else:
+                    stack_status = self.ROLLBACK_FAILED
 
-    def delete(self):
+            self.state_set(stack_status, reason)
+
+    def delete(self, action=DELETE):
         '''
         Delete all of the resources, and then the stack itself.
+        The action parameter is used to differentiate between a user
+        initiated delete and an automatic stack rollback after a failed
+        create, which amount to the same thing, but the states are recorded
+        differently.
         '''
-        self.state_set(self.DELETE_IN_PROGRESS, 'Stack deletion started')
+        if action == self.DELETE:
+            self.state_set(self.DELETE_IN_PROGRESS, 'Stack deletion started')
+        elif action == self.ROLLBACK:
+            self.state_set(self.ROLLBACK_IN_PROGRESS, 'Stack rollback started')
+        else:
+            logger.error("Unexpected action %s passed to delete!" % action)
+            self.state_set(self.DELETE_FAILED, "Invalid action %s" % action)
+            return
 
         failures = []
         for res in reversed(self):
@@ -383,10 +461,17 @@ class Stack(object):
                 failures.append(str(res))
 
         if failures:
-            self.state_set(self.DELETE_FAILED,
-                           'Failed to delete ' + ', '.join(failures))
+            if action == self.DELETE:
+                self.state_set(self.DELETE_FAILED,
+                               'Failed to delete ' + ', '.join(failures))
+            elif action == self.ROLLBACK:
+                self.state_set(self.ROLLBACK_FAILED,
+                               'Failed to rollback ' + ', '.join(failures))
         else:
-            self.state_set(self.DELETE_COMPLETE, 'Deleted successfully')
+            if action == self.DELETE:
+                self.state_set(self.DELETE_COMPLETE, 'Deleted successfully')
+            elif action == self.ROLLBACK:
+                self.state_set(self.ROLLBACK_COMPLETE, 'Rollback completed')
             db_api.stack_delete(self.context, self.id)
 
     def output(self, key):

@@ -69,8 +69,39 @@ Installing OpenStack on other Distributions
 .. _installing OpenStack on Ubuntu: http://docs.openstack.org/bexar/openstack-compute/admin/content/ch03s02.html
 
 
-Install OZ
-----------
+Download or alternatvely generate a JEOS image
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+It is possible to use either heat-jeos to create an image or download a
+prebuilt image of a desired distribution.
+
+Note heat-jeos does not work in virt on virt situations.  In this case, it
+is recommended that the prebuilt images are used.
+
+Download a prebuilt image and copy to libvirt images location
+-------------------------------------------------------------
+Download a prebuilt image from ``http://fedorapeople.org/groups/heat/prebuilt-jeos-images/``.
+
+Note: This example assumes F17-x86_64-cfntools qcow2 was downloaded.
+
+::
+
+  sudo cp Downloads/F17-x86_64-cfntools.qcow2 /var/lib/libvirt/images
+
+Register with glance:
+
+::
+
+  glance image-create --name=F17-x86_64-cfntools --disk-format=qcow2 --container-format=bare < /var/lib/libvirt/images/F17-x86_64-cfntools.qcow2
+
+Alternatively Download Fedora 17 DVD and copy it to libvirt images location
+---------------------------------------------------------------------------
+
+::
+
+  sudo cp Downloads/Fedora-17-x86_64-DVD.iso /var/lib/libvirt/images
+
+Alternatively Install OZ
+------------------------
 
 It is recommended to install the latest upstream oz, as this supports Fedora 17 (and Ubuntu U10/U12) guests::
 
@@ -87,27 +118,41 @@ If you do not require F17/U10/U12 support, oz can be installed directly via yum:
 
   yum install oz
 
+Alternatively Download and install heat-jeos via git
+----------------------------------------------------
+Download heat-jeos via git
+
+::
+
+    git clone -q git://github.com/heat-api/heat-jeos.git
+    pushd heat-jeos
+    sudo python setup.py install
+    popd
+
+Alternatively Create a JEOS with heat_jeos tools
+------------------------------------------------
+::
+
+    sudo -E heat-jeos -y create F17-x86_64-cfntools --register-with-glance
+
+Note: The ``-E`` option to ``sudo`` preserves the environment, specifically the keystone credentials, when ``heat-jeos`` is run as root.
+
+Note: ``heat-jeos`` must be run as root in order to create the cfntools disk image.
+
+Note: If you want to enable debugging output from Oz, add '``-d``' (debugging) to the ``heat-jeos`` command.
+
+You can run ``heat-jeos list`` to pick a different JEOS image.
+
+
+Install and Configure Heat
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 Install heat from source
 ------------------------
 
 In the heat directory, run the install script::
 
     sudo ./install.sh
-
-Install heat pip dependency
----------------------------
-
-Heat requires the extras module, which is not currently packaged for Fedora, so it is necessary to manually install it::
-
-    sudo yum install -y python-pip
-    sudo pip-python install extras
-
-Download Fedora 17 DVD and copy it to libvirt images location
--------------------------------------------------------------
-
-::
-
-  sudo cp Downloads/Fedora-17-x86_64-DVD.iso /var/lib/libvirt/images
 
 Source the keystone credentials created with tools/openstack
 ------------------------------------------------------------
@@ -152,31 +197,6 @@ This is for Heat to associate with the virtual machines.
 
     nova keypair-add --pub_key ~/.ssh/id_rsa.pub ${USER}_key
 
-
-Download and install heat-jeos via git
---------------------------------------
-Download heat-jeos via git
-
-::
-
-    git clone -q git://github.com/heat-api/heat-jeos.git
-    pushd heat-jeos
-    sudo python setup.py install
-    popd
-
-Create a JEOS with heat_jeos tools
-----------------------------------
-::
-
-    sudo -E heat-jeos -y create F17-x86_64-cfntools --register-with-glance
-
-Note: The ``-E`` option to ``sudo`` preserves the environment, specifically the keystone credentials, when ``heat-jeos`` is run as root.
-
-Note: ``heat-jeos`` must be run as root in order to create the cfntools disk image.
-
-Note: If you want to enable debugging output from Oz, add '``-d``' (debugging) to the ``heat-jeos`` command.
-
-You can run ``heat-jeos list`` to pick a different JEOS image.
 
 Verify JEOS registration
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -351,6 +371,35 @@ If you wish to try any of the HA or autoscaling templates (which collect stats f
 Further information on using the heat cloudwatch features is available in the Using-Cloudwatch_ wiki page
 
 .. _Using-Cloudwatch: http://wiki.openstack.org/Heat/Using-CloudWatch
+
+Using the OpenStack Heat API
+============================
+
+CloudFormation (heat-api-cfn) and a native OpenStack Heat API (heat-api) are provided.  To use the recommended Heat API, a python client library is necessary.  To use this library, clone the python-heatclient repository_ from GitHub at ``git://github.com/openstack/python-heatclient.git``.
+
+Install python-heatclient from source
+-------------------------------------
+
+In the python-heatclient directory, run the install script::
+
+    sudo ./setup.py install
+
+Note that python-heatclient may be installed on a different server than heat itself.
+Note that pip can be used to install python-heatclient, but the instructions vary for each distribution.  Read your distribution documentation if you wish to install with pip.
+
+Start the OpenStack specific Heat API
+-------------------------------------
+
+When using heat-pythonclient, the OpenStack API service provided by heat must be started::
+
+    sudo bash -c 'heat-api &'
+
+List stacks
+-----------
+
+::
+
+    heat stack-list
 
 Troubleshooting
 ===============

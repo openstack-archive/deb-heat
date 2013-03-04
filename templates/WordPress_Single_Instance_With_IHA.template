@@ -97,14 +97,24 @@
   },
 
   "Resources" : {
+    "CfnUser" : {
+      "Type" : "AWS::IAM::User"
+    },
+    "WebServerKeys" : {
+      "Type" : "AWS::IAM::AccessKey",
+      "Properties" : {
+        "UserName" : {"Ref": "CfnUser"}
+      }
+    },
     "WebServerRestartPolicy" : {
-      "Type" : "HEAT::HA::Restarter",
+      "Type" : "OS::Heat::HARestarter",
       "Properties" : {
         "InstanceId" : { "Ref" : "WikiDatabase" }
       }
     },
     "HeartbeatFailureAlarm": {
      "Type": "AWS::CloudWatch::Alarm",
+     "DependsOn" : "WaitCondition",
      "Properties": {
         "AlarmDescription": "Restart the WikiDatabase if we miss a heartbeat",
         "MetricName": "Heartbeat",
@@ -123,12 +133,36 @@
         "AWS::CloudFormation::Init" : {
           "config" : {
             "files" : {
+              "/etc/cfn/cfn-credentials" : {
+                "content" : { "Fn::Join" : ["", [
+                  "AWSAccessKeyId=", { "Ref" : "WebServerKeys" }, "\n",
+                  "AWSSecretKey=", {"Fn::GetAtt": ["WebServerKeys",
+                                    "SecretAccessKey"]}, "\n"
+                ]]},
+                "mode"    : "000400",
+                "owner"   : "root",
+                "group"   : "root"
+              },
+              "/etc/cfn/cfn-hup.conf" : {
+                "content" : { "Fn::Join" : ["", [
+                  "[main]\n",
+                  "stack=", { "Ref" : "AWS::StackName" }, "\n",
+                  "credential-file=/etc/cfn/cfn-credentials\n",
+                  "region=", { "Ref" : "AWS::Region" }, "\n",
+                  "interval=", { "Ref" : "HupPollInterval" }, "\n"
+                ]]},
+                "mode"    : "000400",
+                "owner"   : "root",
+                "group"   : "root"
+              },
               "/tmp/cfn-hup-crontab.txt" : {
                 "content" : { "Fn::Join" : ["", [
                 "MAIL=\"\"\n",
                 "\n",
+                "* * * * * /opt/aws/bin/cfn-hup -f\n",
                 "* * * * * /opt/aws/bin/cfn-push-stats ",
-                " --watch HeartbeatFailureAlarm --heartbeat\n"
+                " --watch ", { "Ref" : "HeartbeatFailureAlarm" },
+                " --heartbeat\n"
                 ]]},
                 "mode"    : "000600",
                 "owner"   : "root",
@@ -194,10 +228,13 @@
           "mysql -u root --password='", { "Ref" : "DBRootPassword" },
           "' < /tmp/setup.mysql || error_exit 'Failed to create database.'\n",
 
+          "sed -i \"/Deny from All/d\" /etc/httpd/conf.d/wordpress.conf\n",
           "sed --in-place --e s/database_name_here/", { "Ref" : "DBName" },
           "/ --e s/username_here/", { "Ref" : "DBUsername" },
           "/ --e s/password_here/", { "Ref" : "DBPassword" },
           "/ /usr/share/wordpress/wp-config.php\n",
+
+          "systemctl restart httpd.service\n",
 
           "# install cfn-hup crontab\n",
           "crontab /tmp/cfn-hup-crontab.txt\n",

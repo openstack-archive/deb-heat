@@ -12,17 +12,17 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import json
+import os
+import unittest
 
 import mox
-import json
-import unittest
 from nose.plugins.attrib import attr
-
-import json
+from oslo.config import cfg
 
 from heat.common import context
 from heat.common import identifier
-from heat.openstack.common import cfg
+from heat.common import policy
 from heat.openstack.common import rpc
 import heat.openstack.common.rpc.common as rpc_common
 from heat.common.wsgi import Request
@@ -32,7 +32,7 @@ import heat.api.cfn.v1.stacks as stacks
 
 @attr(tag=['unit', 'api-cfn-v1-stacks', 'StackController'])
 @attr(speed='fast')
-class StackControllerTest(unittest.TestCase):
+class CfnStackControllerTest(unittest.TestCase):
     '''
     Tests the API class which acts as the WSGI controller,
     the endpoint processing API requests after they are routed
@@ -70,6 +70,43 @@ class StackControllerTest(unittest.TestCase):
         expected = {'StackName': 'Foo',
                     'StackId': 'arn:openstack:heat::t:stacks/Foo/123'}
         self.assertEqual(response, expected)
+        self.m.VerifyAll()
+
+    def test_enforce_default(self):
+        self.m.ReplayAll()
+        params = {'Action': 'ListStacks'}
+        dummy_req = self._dummy_GET_request(params)
+        self.controller.policy.policy_path = None
+        response = self.controller._enforce(dummy_req, 'ListStacks')
+        self.assertEqual(response, None)
+        self.m.VerifyAll()
+
+    def test_enforce_denied(self):
+        self.m.ReplayAll()
+        params = {'Action': 'ListStacks'}
+        dummy_req = self._dummy_GET_request(params)
+        dummy_req.context.roles = ['heat_stack_user']
+        self.controller.policy.policy_path = (self.policy_path +
+                                              'deny_stack_user.json')
+        self.assertRaises(exception.HeatAccessDeniedError,
+                          self.controller._enforce, dummy_req, 'ListStacks')
+        self.m.VerifyAll()
+
+    def test_enforce_ise(self):
+        params = {'Action': 'ListStacks'}
+        dummy_req = self._dummy_GET_request(params)
+        dummy_req.context.roles = ['heat_stack_user']
+
+        self.m.StubOutWithMock(policy.Enforcer, 'enforce')
+        policy.Enforcer.enforce(dummy_req.context, 'ListStacks', {}
+                                ).AndRaise(AttributeError)
+        self.m.ReplayAll()
+
+        self.controller.policy.policy_path = (self.policy_path +
+                                              'deny_stack_user.json')
+        self.assertRaises(exception.HeatInternalFailureError,
+                          self.controller._enforce, dummy_req, 'ListStacks')
+        self.m.VerifyAll()
 
     def test_list(self):
         # Format a dummy GET request to pass into the WSGI handler
@@ -108,6 +145,7 @@ class StackControllerTest(unittest.TestCase):
                       u'StackName': u'wordpress',
                       u'StackStatus': u'CREATE_COMPLETE'}]}}}
         self.assertEqual(result, expected)
+        self.m.VerifyAll()
 
     def test_list_rmt_aterr(self):
         params = {'Action': 'ListStacks'}
@@ -128,6 +166,7 @@ class StackControllerTest(unittest.TestCase):
         result = self.controller.list(dummy_req)
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_list_rmt_interr(self):
         params = {'Action': 'ListStacks'}
@@ -147,6 +186,7 @@ class StackControllerTest(unittest.TestCase):
         # Call the list controller function and compare the response
         result = self.controller.list(dummy_req)
         self.assertEqual(type(result), exception.HeatInternalFailureError)
+        self.m.VerifyAll()
 
     def test_describe(self):
         # Format a dummy GET request to pass into the WSGI handler
@@ -180,7 +220,7 @@ class StackControllerTest(unittest.TestCase):
                        u'notification_topics': [],
                        u'stack_status': u'CREATE_COMPLETE',
                        u'description': u'blah',
-                       u'disable_rollback': True,
+                       u'disable_rollback': 'true',
                        u'timeout_mins':60,
                        u'capabilities':[]}]
 
@@ -228,10 +268,11 @@ class StackControllerTest(unittest.TestCase):
                         'StackName': u'wordpress',
                         'NotificationARNs': [],
                         'StackStatus': u'CREATE_COMPLETE',
-                        'DisableRollback': True,
+                        'DisableRollback': 'true',
                         'LastUpdatedTime': u'2012-07-09T09:13:11Z'}]}}}
 
         self.assertEqual(response, expected)
+        self.m.VerifyAll()
 
     def test_describe_arn(self):
         # Format a dummy GET request to pass into the WSGI handler
@@ -266,7 +307,7 @@ class StackControllerTest(unittest.TestCase):
                         u'notification_topics': [],
                         u'stack_status': u'CREATE_COMPLETE',
                         u'description': u'blah',
-                        u'disable_rollback': True,
+                        u'disable_rollback': 'true',
                         u'timeout_mins':60,
                         u'capabilities':[]}]
 
@@ -310,10 +351,34 @@ class StackControllerTest(unittest.TestCase):
                         'StackName': u'wordpress',
                         'NotificationARNs': [],
                         'StackStatus': u'CREATE_COMPLETE',
-                        'DisableRollback': True,
+                        'DisableRollback': 'true',
                         'LastUpdatedTime': u'2012-07-09T09:13:11Z'}]}}}
 
         self.assertEqual(response, expected)
+        self.m.VerifyAll()
+
+    def test_describe_arn_invalidtenant(self):
+        # Format a dummy GET request to pass into the WSGI handler
+        stack_name = u"wordpress"
+        stack_identifier = identifier.HeatIdentifier('wibble', stack_name, '6')
+        identity = dict(stack_identifier)
+        params = {'Action': 'DescribeStacks',
+                  'StackName': stack_identifier.arn()}
+        dummy_req = self._dummy_GET_request(params)
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(dummy_req.context, self.topic,
+                 {'method': 'show_stack',
+                  'args': {'stack_identity': identity},
+                  'version': self.api_version},
+                 None).AndRaise(rpc_common.RemoteError("InvalidTenant"))
+
+        self.m.ReplayAll()
+
+        result = self.controller.describe(dummy_req)
+        self.assertEqual(type(result),
+                         exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_describe_aterr(self):
         stack_name = "wordpress"
@@ -339,6 +404,7 @@ class StackControllerTest(unittest.TestCase):
         result = self.controller.describe(dummy_req)
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_describe_bad_name(self):
         stack_name = "wibble"
@@ -352,13 +418,14 @@ class StackControllerTest(unittest.TestCase):
                  {'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 ).AndRaise(rpc_common.RemoteError("StackNotFound"))
 
         self.m.ReplayAll()
 
         result = self.controller.describe(dummy_req)
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_get_template_int_body(self):
         ''' Test the internal _get_template function '''
@@ -378,10 +445,11 @@ class StackControllerTest(unittest.TestCase):
         params = {'Action': 'CreateStack', 'StackName': stack_name,
                   'TemplateBody': '%s' % json_template,
                   'TimeoutInMinutes': 30,
+                  'DisableRollback': 'true',
                   'Parameters.member.1.ParameterKey': 'InstanceType',
                   'Parameters.member.1.ParameterValue': 'm1.xlarge'}
         engine_parms = {u'InstanceType': u'm1.xlarge'}
-        engine_args = {'timeout_mins': u'30'}
+        engine_args = {'timeout_mins': u'30', 'disable_rollback': 'true'}
         dummy_req = self._dummy_GET_request(params)
 
         # Stub out the RPC call to the engine with a pre-canned response
@@ -412,6 +480,7 @@ class StackControllerTest(unittest.TestCase):
         }
 
         self.assertEqual(response, expected)
+        self.m.VerifyAll()
 
     def test_create_err_no_template(self):
         # Format a dummy request with a missing template field
@@ -467,6 +536,42 @@ class StackControllerTest(unittest.TestCase):
 
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
+
+    def test_create_err_exists(self):
+        # Format a dummy request
+        stack_name = "wordpress"
+        template = {u'Foo': u'bar'}
+        json_template = json.dumps(template)
+        params = {'Action': 'CreateStack', 'StackName': stack_name,
+                  'TemplateBody': '%s' % json_template,
+                  'TimeoutInMinutes': 30,
+                  'Parameters.member.1.ParameterKey': 'InstanceType',
+                  'Parameters.member.1.ParameterValue': 'm1.xlarge'}
+        engine_parms = {u'InstanceType': u'm1.xlarge'}
+        engine_args = {'timeout_mins': u'30'}
+        dummy_req = self._dummy_GET_request(params)
+
+        # Insert an engine RPC error and ensure we map correctly to the
+        # heat exception type
+        self.m.StubOutWithMock(rpc, 'call')
+
+        rpc.call(dummy_req.context, self.topic,
+                 {'method': 'create_stack',
+                  'args': {'stack_name': stack_name,
+                           'template': template,
+                           'params': engine_parms,
+                           'args': engine_args},
+                  'version': self.api_version}, None
+                 ).AndRaise(rpc_common.RemoteError("StackExists"))
+
+        self.m.ReplayAll()
+
+        result = self.controller.create(dummy_req)
+
+        self.assertEqual(type(result),
+                         exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_create_err_engine(self):
         # Format a dummy request
@@ -501,6 +606,7 @@ class StackControllerTest(unittest.TestCase):
         expected = {'CreateStackResponse': {'CreateStackResult': engine_err}}
 
         self.assertEqual(result, expected)
+        self.m.VerifyAll()
 
     def test_update(self):
         # Format a dummy request
@@ -546,6 +652,7 @@ class StackControllerTest(unittest.TestCase):
         }
 
         self.assertEqual(response, expected)
+        self.m.VerifyAll()
 
     def test_update_bad_name(self):
         stack_name = "wibble"
@@ -564,13 +671,14 @@ class StackControllerTest(unittest.TestCase):
                  {'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 ).AndRaise(rpc_common.RemoteError("StackNotFound"))
 
         self.m.ReplayAll()
 
         result = self.controller.update(dummy_req)
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_create_or_update_err(self):
         result = self.controller.create_or_update(req={}, action="dsdgfdf")
@@ -606,6 +714,7 @@ class StackControllerTest(unittest.TestCase):
                      {'TemplateBody': template}}}
 
         self.assertEqual(response, expected)
+        self.m.VerifyAll()
 
     def test_get_template_err_rpcerr(self):
         stack_name = "wordpress"
@@ -633,6 +742,7 @@ class StackControllerTest(unittest.TestCase):
 
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_get_template_bad_name(self):
         stack_name = "wibble"
@@ -646,13 +756,14 @@ class StackControllerTest(unittest.TestCase):
                  {'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 ).AndRaise(rpc_common.RemoteError("StackNotFound"))
 
         self.m.ReplayAll()
 
         result = self.controller.get_template(dummy_req)
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_get_template_err_none(self):
         stack_name = "wordpress"
@@ -681,6 +792,7 @@ class StackControllerTest(unittest.TestCase):
 
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_validate_err_no_template(self):
         # Format a dummy request with a missing template field
@@ -728,6 +840,7 @@ class StackControllerTest(unittest.TestCase):
         expected = {'DeleteStackResponse': {'DeleteStackResult': ''}}
 
         self.assertEqual(response, expected)
+        self.m.VerifyAll()
 
     def test_delete_err_rpcerr(self):
         stack_name = "wordpress"
@@ -756,6 +869,7 @@ class StackControllerTest(unittest.TestCase):
 
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_delete_bad_name(self):
         stack_name = "wibble"
@@ -769,13 +883,14 @@ class StackControllerTest(unittest.TestCase):
                  {'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 ).AndRaise(rpc_common.RemoteError("StackNotFound"))
 
         self.m.ReplayAll()
 
         result = self.controller.delete(dummy_req)
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_events_list(self):
         # Format a dummy request
@@ -833,6 +948,7 @@ class StackControllerTest(unittest.TestCase):
                         'LogicalResourceId': u'WikiDatabase'}]}}}
 
         self.assertEqual(response, expected)
+        self.m.VerifyAll()
 
     def test_events_list_err_rpcerr(self):
         stack_name = "wordpress"
@@ -858,6 +974,7 @@ class StackControllerTest(unittest.TestCase):
         result = self.controller.events_list(dummy_req)
 
         self.assertEqual(type(result), exception.HeatInternalFailureError)
+        self.m.VerifyAll()
 
     def test_events_list_bad_name(self):
         stack_name = "wibble"
@@ -871,13 +988,14 @@ class StackControllerTest(unittest.TestCase):
                  {'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 ).AndRaise(rpc_common.RemoteError("StackNotFound"))
 
         self.m.ReplayAll()
 
         result = self.controller.events_list(dummy_req)
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_describe_stack_resource(self):
         # Format a dummy request
@@ -944,6 +1062,63 @@ class StackControllerTest(unittest.TestCase):
                     'LogicalResourceId': u'WikiDatabase'}}}}
 
         self.assertEqual(response, expected)
+        self.m.VerifyAll()
+
+    def test_describe_stack_resource_nonexistent_stack(self):
+        # Format a dummy request
+        stack_name = "wibble"
+        identity = dict(identifier.HeatIdentifier('t', stack_name, '6'))
+        params = {'Action': 'DescribeStackResource',
+                  'StackName': stack_name,
+                  'LogicalResourceId': "WikiDatabase"}
+        dummy_req = self._dummy_GET_request(params)
+
+        # Stub out the RPC call to the engine with a pre-canned response
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(dummy_req.context, self.topic,
+                 {'method': 'identify_stack',
+                  'args': {'stack_name': stack_name},
+                  'version': self.api_version},
+                 None).AndRaise(rpc_common.RemoteError("StackNotFound"))
+
+        self.m.ReplayAll()
+
+        result = self.controller.describe_stack_resource(dummy_req)
+        self.assertEqual(type(result),
+                         exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
+
+    def test_describe_stack_resource_nonexistent(self):
+        # Format a dummy request
+        stack_name = "wordpress"
+        identity = dict(identifier.HeatIdentifier('t', stack_name, '6'))
+        params = {'Action': 'DescribeStackResource',
+                  'StackName': stack_name,
+                  'LogicalResourceId': "wibble"}
+        dummy_req = self._dummy_GET_request(params)
+
+        # Stub out the RPC call to the engine with a pre-canned response
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(dummy_req.context, self.topic,
+                 {'method': 'identify_stack',
+                  'args': {'stack_name': stack_name},
+                  'version': self.api_version}, None).AndReturn(identity)
+        args = {
+            'stack_identity': identity,
+            'resource_name': dummy_req.params.get('LogicalResourceId'),
+        }
+        rpc.call(dummy_req.context, self.topic,
+                 {'method': 'describe_stack_resource',
+                  'args': args,
+                  'version': self.api_version},
+                 None).AndRaise(rpc_common.RemoteError("ResourceNotFound"))
+
+        self.m.ReplayAll()
+
+        result = self.controller.describe_stack_resource(dummy_req)
+        self.assertEqual(type(result),
+                         exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_describe_stack_resources(self):
         # Format a dummy request
@@ -1009,6 +1184,7 @@ class StackControllerTest(unittest.TestCase):
                        'LogicalResourceId': u'WikiDatabase'}]}}}
 
         self.assertEqual(response, expected)
+        self.m.VerifyAll()
 
     def test_describe_stack_resources_bad_name(self):
         stack_name = "wibble"
@@ -1024,13 +1200,14 @@ class StackControllerTest(unittest.TestCase):
                  {'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 ).AndRaise(rpc_common.RemoteError("StackNotFound"))
 
         self.m.ReplayAll()
 
         result = self.controller.describe_stack_resources(dummy_req)
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_describe_stack_resources_physical(self):
         # Format a dummy request
@@ -1097,6 +1274,34 @@ class StackControllerTest(unittest.TestCase):
                        'LogicalResourceId': u'WikiDatabase'}]}}}
 
         self.assertEqual(response, expected)
+        self.m.VerifyAll()
+
+    def test_describe_stack_resources_physical_not_found(self):
+        # Format a dummy request
+        stack_name = "wordpress"
+        identity = dict(identifier.HeatIdentifier('t', stack_name, '6'))
+        params = {'Action': 'DescribeStackResources',
+                  'LogicalResourceId': "WikiDatabase",
+                  'PhysicalResourceId': 'aaaaaaaa-9f88-404d-cccc-ffffffffffff'}
+        dummy_req = self._dummy_GET_request(params)
+
+        # Stub out the RPC call to the engine with a pre-canned response
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(dummy_req.context, self.topic,
+                 {'method': 'find_physical_resource',
+                  'args': {'physical_resource_id':
+                           'aaaaaaaa-9f88-404d-cccc-ffffffffffff'},
+                  'version': self.api_version},
+                 None).AndRaise(
+                     rpc_common.RemoteError("PhysicalResourceNotFound"))
+
+        self.m.ReplayAll()
+
+        response = self.controller.describe_stack_resources(dummy_req)
+
+        self.assertEqual(type(response),
+                         exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def test_describe_stack_resources_err_inval(self):
         # Format a dummy request containing both StackName and
@@ -1110,6 +1315,7 @@ class StackControllerTest(unittest.TestCase):
         ret = self.controller.describe_stack_resources(dummy_req)
         self.assertEqual(type(ret),
                          exception.HeatInvalidParameterCombinationError)
+        self.m.VerifyAll()
 
     def test_list_stack_resources(self):
         # Format a dummy request
@@ -1163,6 +1369,7 @@ class StackControllerTest(unittest.TestCase):
                        'LogicalResourceId': u'WikiDatabase'}]}}}
 
         self.assertEqual(response, expected)
+        self.m.VerifyAll()
 
     def test_list_stack_resources_bad_name(self):
         stack_name = "wibble"
@@ -1177,18 +1384,27 @@ class StackControllerTest(unittest.TestCase):
                  {'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 ).AndRaise(rpc_common.RemoteError("StackNotFound"))
 
         self.m.ReplayAll()
 
         result = self.controller.list_stack_resources(dummy_req)
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
+        self.m.VerifyAll()
 
     def setUp(self):
         self.maxDiff = None
         self.m = mox.Mox()
 
+        self.path = os.path.dirname(os.path.realpath(__file__))
+        self.policy_path = self.path + "/policy/"
+        opts = [
+            cfg.StrOpt('config_dir', default=self.policy_path),
+            cfg.StrOpt('config_file', default='foo'),
+            cfg.StrOpt('project', default='heat'),
+        ]
+        cfg.CONF.register_opts(opts)
         cfg.CONF.set_default('engine_topic', 'engine')
         cfg.CONF.set_default('host', 'host')
         self.topic = '%s.%s' % (cfg.CONF.engine_topic, cfg.CONF.host)
@@ -1203,5 +1419,4 @@ class StackControllerTest(unittest.TestCase):
 
     def tearDown(self):
         self.m.UnsetStubs()
-        self.m.VerifyAll()
         print "teardown complete"
