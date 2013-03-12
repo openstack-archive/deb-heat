@@ -12,7 +12,7 @@ if [ "$1" = "configure" ] ; then
         pkgos_var_user_group heat
 
         pkgos_write_new_conf heat heat-api-paste.ini
-        pkgos_write_admin_creds /etc/heat/heat-api-paste.ini heat filter:authtoken
+        pkgos_write_admin_creds /etc/heat/heat-api-paste.ini filter:authtoken heat
 
 	pkgos_register_endpoint_postinst heat heat orchestration "Heat Orchestration API" 8004 /v1/'%(tenant_id)s'
 

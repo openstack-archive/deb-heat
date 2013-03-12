@@ -10,7 +10,7 @@ if [ "$1" = "configure" ] ; then
 	. /usr/share/debconf/confmodule
 	pkgos_var_user_group heat
 	pkgos_write_new_conf heat heat-api-cloudwatch-paste.ini
-	pkgos_write_admin_creds /etc/heat/heat-api-cloudwatch-paste.ini heat filter:authtoken
+	pkgos_write_admin_creds /etc/heat/heat-api-cloudwatch-paste.ini filter:authtoken heat
 	chown -R heat:adm /var/log/heat
 	chmod 0750 /var/log/heat
 fi

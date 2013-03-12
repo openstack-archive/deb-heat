@@ -9,6 +9,6 @@ CONF=/etc/heat/heat-engine.conf
 #PKGOS-INCLUDE#
 
 pkgos_var_user_group heat
-pkgos_dbc_read_conf -pkg heat-engine ${CONF} heat DEFAULT sql_connection $@
+pkgos_dbc_read_conf -pkg heat-engine ${CONF} DEFAULT sql_connection heat $@
 
 exit 0
