@@ -22,10 +22,14 @@ from heat.common import context
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import parser
-import heat.engine.resources
+import heat.engine.resources  # pyflakes_bypass review 23102
 
-from quantumclient.common.exceptions import QuantumClientException
-from quantumclient.v2_0 import client as quantumclient
+try:
+    from quantumclient.common.exceptions import QuantumClientException
+    from quantumclient.v2_0 import client as quantumclient
+except ImportError:
+    from nose.exc import SkipTest
+    raise SkipTest()
 
 
 class VPCTestBase(unittest.TestCase):
@@ -145,8 +149,7 @@ Resources:
 
         stack = self.create_stack(self.test_template)
         resource = stack['the_vpc']
-        self.assertResourceState(resource, 'the_vpc', {
-            'network_id': 'aaaa',
+        self.assertResourceState(resource, 'aaaa', {
             'router_id': 'bbbb',
             'all_router_ids': ['bbbb']})
         self.assertEqual(resource.UPDATE_REPLACE, resource.handle_update({}))
@@ -191,11 +194,9 @@ Resources:
         stack = self.create_stack(self.test_template)
 
         resource = stack['the_subnet']
-        self.assertResourceState(resource, 'the_subnet', {
-            'network_id': 'aaaa',
+        self.assertResourceState(resource, 'cccc', {
             'router_id': 'bbbb',
-            'default_router_id': 'bbbb',
-            'subnet_id': 'cccc'})
+            'default_router_id': 'bbbb'})
 
         self.assertEqual(resource.UPDATE_REPLACE, resource.handle_update({}))
         self.assertRaises(
@@ -279,8 +280,7 @@ Resources:
 
         stack = self.create_stack(self.test_template)
         resource = stack['the_nic']
-        self.assertResourceState(resource, 'the_nic', {
-            'port_id': 'dddd'})
+        self.assertResourceState(resource, 'dddd')
 
         self.assertEqual(resource.UPDATE_REPLACE, resource.handle_update({}))
 
@@ -299,8 +299,8 @@ Resources:
     Type: AWS::EC2::InternetGateway
   the_vpc:
     Type: AWS::EC2::VPC
+    DependsOn : the_gateway
     Properties:
-      DependsOn : the_gateway
       CidrBlock: '10.0.0.0/16'
   the_subnet:
     Type: AWS::EC2::Subnet
@@ -310,9 +310,9 @@ Resources:
       AvailabilityZone: moon
   the_attachment:
     Type: AWS::EC2::VPCGatewayAttachment
+    DependsOn : the_subnet
     Properties:
       VpcId: {Ref: the_vpc}
-      DependsOn : the_subnet
       InternetGatewayId: {Ref: the_gateway}
 '''
 
@@ -439,8 +439,7 @@ Resources:
         self.assertEqual(['bbbb', 'ffff'], vpc.metadata['all_router_ids'])
 
         route_table = stack['the_route_table']
-        self.assertResourceState(route_table, 'the_route_table', {
-            'router_id': 'ffff'})
+        self.assertResourceState(route_table, 'ffff', {})
         self.assertEqual(
             route_table.UPDATE_REPLACE,
             route_table.handle_update({}))

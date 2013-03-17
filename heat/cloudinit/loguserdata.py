@@ -1,14 +1,16 @@
 #!/usr/bin/env python
 
-import sys
-import os
-import subprocess
+import errno
 import datetime
 import pkg_resources
-from distutils.version import LooseVersion
-import errno
+import os
+import subprocess
+import sys
 
-path = '/var/lib/cloud/data'
+from distutils.version import LooseVersion
+
+
+VAR_PATH = '/var/lib/heat-cfntools'
 
 
 def chk_ci_version():
@@ -16,50 +18,56 @@ def chk_ci_version():
     return v >= LooseVersion('0.6.0')
 
 
-def create_log(path):
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0600)
+def create_log(log_path):
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT, 0600)
     return os.fdopen(fd, 'w')
 
 
-def call(args, log):
-    log.write('%s\n' % ' '.join(args))
-    log.flush()
-    p = subprocess.Popen(args, stdout=log, stderr=log)
-    p.wait()
+def call(args, logger):
+    logger.write('%s\n' % ' '.join(args))
+    logger.flush()
+    try:
+        p = subprocess.Popen(args, stdout=logger, stderr=logger)
+        p.wait()
+    except OSError as ex:
+        if ex.errno == errno.ENOEXEC:
+            logger.write('Userdata empty or not executable: %s\n' % str(ex))
+            return os.EX_OK
+        else:
+            logger.write('OS error running userdata: %s\n' % str(ex))
+            return os.EX_OSERR
+    except Exception as ex:
+        logger.write('Unknown error running userdata: %s\n' % str(ex))
+        return os.EX_SOFTWARE
     return p.returncode
 
 
-def main(log):
+def main(logger):
 
     if not chk_ci_version():
         # pre 0.6.0 - user data executed via cloudinit, not this helper
-        log.write('Unable to log provisioning, need a newer version of'
-                  ' cloud-init\n')
+        logger.write('Unable to log provisioning, need a newer version of'
+                     ' cloud-init\n')
         return -1
 
-    userdata_path = os.path.join(path, 'cfn-userdata')
+    userdata_path = os.path.join(VAR_PATH, 'cfn-userdata')
     os.chmod(userdata_path, 0700)
 
-    log.write('Provision began: %s\n' % datetime.datetime.now())
-    log.flush()
-    returncode = call([userdata_path], log)
-    log.write('Provision done: %s\n' % datetime.datetime.now())
+    logger.write('Provision began: %s\n' % datetime.datetime.now())
+    logger.flush()
+    returncode = call([userdata_path], logger)
+    logger.write('Provision done: %s\n' % datetime.datetime.now())
     if returncode:
         return returncode
-
-    try:
-        os.makedirs('/var/lib/heat', 0700)
-    except OSError as e:
-        if e.errno != errno.EEXIST:
-            raise
 
 
 if __name__ == '__main__':
     with create_log('/var/log/heat-provision.log') as log:
-        returncode = main(log)
-        if returncode:
+        code = main(log)
+        if code:
             log.write('Provision failed')
-            sys.exit(returncode)
+            sys.exit(code)
 
-    with create_log('/var/lib/heat/provision-finished') as log:
+    provision_log = os.path.join(VAR_PATH, 'provision-finished')
+    with create_log(provision_log) as log:
         log.write('%s\n' % datetime.datetime.now())

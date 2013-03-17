@@ -13,8 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from quantumclient.common.exceptions import QuantumClientException
-
 from heat.engine import clients
 from heat.openstack.common import log as logging
 from heat.engine.resources.quantum import quantum
@@ -36,8 +34,6 @@ class Subnet(quantum.QuantumResource):
                          'value_specs': {'Type': 'Map',
                                          'Default': {}},
                          'name': {'Type': 'String'},
-                         'admin_state_up': {'Default': True,
-                                            'Type': 'Boolean'},
                          'ip_version': {'Type': 'Integer',
                                         'AllowedValues': [4, 6],
                                         'Default': 4},
@@ -59,6 +55,8 @@ class Subnet(quantum.QuantumResource):
         self.resource_id_set(subnet['id'])
 
     def handle_delete(self):
+        from quantumclient.common.exceptions import QuantumClientException
+
         client = self.quantum()
         try:
             client.delete_subnet(self.resource_id)

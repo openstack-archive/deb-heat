@@ -18,7 +18,6 @@
 #   577548-https-httplib-client-connection-with-certificate-v/
 
 import collections
-import errno
 import functools
 import httplib
 import os
@@ -26,9 +25,9 @@ import urllib
 import urlparse
 
 try:
-    from eventlet.green import socket, socket, ssl
+    from eventlet.green import socket
+    from eventlet.green import ssl
 except ImportError:
-    import select
     import socket
     import ssl
 
@@ -172,7 +171,7 @@ class BaseClient(object):
         httplib.TEMPORARY_REDIRECT,
     )
 
-    def __init__(self, host, port=None, use_ssl=False, auth_tok=None,
+    def __init__(self, host=None, port=None, use_ssl=False, auth_tok=None,
                  creds=None, doc_root=None, key_file=None,
                  cert_file=None, ca_file=None, insecure=False,
                  configure_via_auth=True, service_type=None):
@@ -308,7 +307,8 @@ class BaseClient(object):
         """
         parsed = urlparse.urlparse(url)
         self.use_ssl = parsed.scheme == 'https'
-        self.host = parsed.hostname
+        if self.host is None:
+            self.host = parsed.hostname
         self.port = parsed.port or 80
         self.doc_root = parsed.path
 

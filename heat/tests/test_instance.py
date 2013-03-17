@@ -80,6 +80,12 @@ class instancesTest(unittest.TestCase):
 
         # this makes sure the auto increment worked on instance creation
         self.assertTrue(instance.id > 0)
+
+        self.assertEqual(instance.FnGetAtt('PublicIp'), '4.5.6.7')
+        self.assertEqual(instance.FnGetAtt('PrivateIp'), '4.5.6.7')
+        self.assertEqual(instance.FnGetAtt('PrivateDnsName'), '4.5.6.7')
+        self.assertEqual(instance.FnGetAtt('PrivateDnsName'), '4.5.6.7')
+
         self.m.VerifyAll()
 
     def test_instance_create_delete(self):
@@ -133,15 +139,6 @@ class instancesTest(unittest.TestCase):
         self.assertEqual(instance.state, instance.DELETE_COMPLETE)
         self.m.VerifyAll()
 
-        private_ip = instance.FnGetAtt('PublicIp')
-        self.assertEqual(private_ip, '4.5.6.7')
-        private_ip = instance.FnGetAtt('PrivateIp')
-        self.assertEqual(private_ip, '4.5.6.7')
-        private_ip = instance.FnGetAtt('PrivateDnsName')
-        self.assertEqual(private_ip, '4.5.6.7')
-        private_ip = instance.FnGetAtt('PrivateDnsName')
-        self.assertEqual(private_ip, '4.5.6.7')
-
     def test_instance_update_metadata(self):
         f = open("%s/WordPress_Single_Instance_gold.template" % self.path)
         t = template_format.parse(f.read())
@@ -184,3 +181,32 @@ class instancesTest(unittest.TestCase):
         self.assertEqual(instance.update(update_template),
                          instance.UPDATE_COMPLETE)
         self.assertEqual(instance.metadata, {'test': 123})
+
+    def test_build_nics(self):
+        self.assertEqual(None, instances.Instance._build_nics([]))
+        self.assertEqual(None, instances.Instance._build_nics(None))
+        self.assertEqual([
+            {'port-id': 'id3'}, {'port-id': 'id1'}, {'port-id': 'id2'}],
+            instances.Instance._build_nics([
+                'id3', 'id1', 'id2']))
+        self.assertEqual([
+            {'port-id': 'id1'},
+            {'port-id': 'id2'},
+            {'port-id': 'id3'}], instances.Instance._build_nics([
+                {'NetworkInterfaceId': 'id3', 'DeviceIndex': '3'},
+                {'NetworkInterfaceId': 'id1', 'DeviceIndex': '1'},
+                {'NetworkInterfaceId': 'id2', 'DeviceIndex': 2},
+            ]))
+        self.assertEqual([
+            {'port-id': 'id1'},
+            {'port-id': 'id2'},
+            {'port-id': 'id3'},
+            {'port-id': 'id4'},
+            {'port-id': 'id5'}
+        ], instances.Instance._build_nics([
+            {'NetworkInterfaceId': 'id3', 'DeviceIndex': '3'},
+            {'NetworkInterfaceId': 'id1', 'DeviceIndex': '1'},
+            {'NetworkInterfaceId': 'id2', 'DeviceIndex': 2},
+            'id4',
+            'id5'
+        ]))

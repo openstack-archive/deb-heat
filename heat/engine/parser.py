@@ -15,6 +15,7 @@
 
 import eventlet
 import functools
+import re
 
 from heat.common import exception
 from heat.engine import dependencies
@@ -28,6 +29,7 @@ from heat.engine.clients import Clients
 from heat.db import api as db_api
 
 from heat.openstack.common import log as logging
+from heat.common.exception import StackValidationFailed
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +62,17 @@ class Stack(object):
 
     def __init__(self, context, stack_name, tmpl, parameters=None,
                  stack_id=None, state=None, state_description='',
-                 timeout_mins=60, resolve_data=True, disable_rollback=False):
+                 timeout_mins=60, resolve_data=True, disable_rollback=True):
         '''
         Initialise from a context, name, Template object and (optionally)
         Parameters object. The database ID may also be initialised, if the
         stack is already in the database.
         '''
 
-        if '/' in stack_name:
-            raise ValueError(_('Stack name may not contain "/"'))
+        if re.match("[a-zA-Z][a-zA-Z0-9_.-]*$", stack_name) is None:
+            raise ValueError(_("Invalid stack name %s" % stack_name
+                               + ", must contain only alphanumeric or "
+                               + "\"_-.\" characters, must start with alpha"))
 
         self.id = stack_id
         self.context = context
@@ -84,6 +88,8 @@ class Stack(object):
             parameters = Parameters(self.name, self.t)
         self.parameters = parameters
 
+        self._set_param_stackid()
+
         if resolve_data:
             self.outputs = self.resolve_static_data(self.t[template.OUTPUTS])
         else:
@@ -95,6 +101,20 @@ class Stack(object):
                               for (name, data) in template_resources.items())
 
         self.dependencies = self._get_dependencies(self.resources.itervalues())
+
+    def _set_param_stackid(self):
+        '''
+        Update self.parameters with the current ARN which is then provided
+        via the Parameters class as the AWS::StackId pseudo parameter
+        '''
+        # This can fail if constructor called without a valid context,
+        # as it is in many tests
+        try:
+            stack_arn = self.identifier().arn()
+        except (AttributeError, ValueError, TypeError):
+            logger.warning("Unable to set parameters StackId identifier")
+        else:
+            self.parameters.set_stack_id(stack_arn)
 
     @staticmethod
     def _get_dependencies(resources):
@@ -148,6 +168,8 @@ class Stack(object):
             new_s = db_api.stack_create(self.context, s)
             self.id = new_s.id
 
+        self._set_param_stackid()
+
         return self.id
 
     def identifier(self):
@@ -195,6 +217,19 @@ class Stack(object):
         '''Return a human-readable string representation of the stack'''
         return 'Stack "%s"' % self.name
 
+    def resource_by_refid(self, refid):
+        '''
+        Return the resource in this stack with the specified
+        refid, or None if not found
+        '''
+        for r in self.resources.values():
+            if r.state in (
+                    r.CREATE_IN_PROGRESS,
+                    r.CREATE_COMPLETE,
+                    r.UPDATE_IN_PROGRESS,
+                    r.UPDATE_COMPLETE) and r.FnGetRefId() == refid:
+                return r
+
     def validate(self):
         '''
         http://docs.amazonwebservices.com/AWSCloudFormation/latest/\
@@ -206,11 +241,9 @@ class Stack(object):
             try:
                 result = res.validate()
             except Exception as ex:
-                logger.exception('validate')
-                result = str(ex)
-
+                raise StackValidationFailed(message=str(ex))
             if result:
-                return 'Malformed Query Response %s' % result
+                raise StackValidationFailed(message=result)
 
     def state_set(self, new_status, reason):
         '''Update the stack state in the database'''
@@ -300,6 +333,10 @@ class Stack(object):
         else:
             self.state_set(self.ROLLBACK_IN_PROGRESS, 'Stack rollback started')
 
+        # cache all the resources runtime data.
+        for r in self:
+            r.cache_template()
+
         # Now make the resources match the new stack definition
         with eventlet.Timeout(self.timeout_mins * 60) as tmo:
             try:
@@ -354,7 +391,7 @@ class Stack(object):
                     # Compare resolved pre/post update resource snippets,
                     # note the new resource snippet is resolved in the context
                     # of the existing stack (which is the stack being updated)
-                    old_snippet = self.resolve_runtime_data(self[res.name].t)
+                    old_snippet = self[res.name].parsed_template(cached=True)
                     new_snippet = self.resolve_runtime_data(res.t)
 
                     if old_snippet != new_snippet:
@@ -392,13 +429,6 @@ class Stack(object):
                             raise exception.ResourceUpdateFailed(
                                 resource_name=res.name)
 
-                # flip the template & parameters to the newstack values
-                self.t = newstack.t
-                self.parameters = newstack.parameters
-                template_outputs = self.t[template.OUTPUTS]
-                self.outputs = self.resolve_static_data(template_outputs)
-                self.store()
-
                 if action == self.UPDATE:
                     stack_status = self.UPDATE_COMPLETE
                     reason = 'Stack successfully updated'
@@ -434,6 +464,16 @@ class Stack(object):
                     stack_status = self.ROLLBACK_FAILED
 
             self.state_set(stack_status, reason)
+
+            # flip the template & parameters to the newstack values
+            # Note we do this on success and failure, so the current
+            # stack resources are stored, even if one is in a failed
+            # state (otherwise we won't remove them on delete)
+            self.t = newstack.t
+            self.parameters = newstack.parameters
+            template_outputs = self.t[template.OUTPUTS]
+            self.outputs = self.resolve_static_data(template_outputs)
+            self.store()
 
     def delete(self, action=DELETE):
         '''

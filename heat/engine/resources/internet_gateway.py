@@ -13,8 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from quantumclient.common.exceptions import QuantumClientException
-
+from heat.engine import clients
 from heat.common import exception
 from heat.openstack.common import log as logging
 from heat.engine import resource
@@ -81,7 +80,7 @@ class VPCGatewayAttachment(resource.Resource):
     def handle_create(self):
         client = self.quantum()
         gateway = self.stack[self.properties.get('InternetGatewayId')]
-        vpc = self.stack[self.properties.get('VpcId')]
+        vpc = self.stack.resource_by_refid(self.properties.get('VpcId'))
         external_network_id = gateway.metadata['external_network_id']
 
         for router_id in vpc.metadata['all_router_ids']:
@@ -89,8 +88,10 @@ class VPCGatewayAttachment(resource.Resource):
                 'network_id': external_network_id})
 
     def handle_delete(self):
+        from quantumclient.common.exceptions import QuantumClientException
+
         client = self.quantum()
-        vpc = self.stack[self.properties.get('VpcId')]
+        vpc = self.stack.resource_by_refid(self.properties.get('VpcId'))
         for router_id in vpc.metadata['all_router_ids']:
             try:
                 client.remove_gateway_router(router_id)
@@ -103,6 +104,9 @@ class VPCGatewayAttachment(resource.Resource):
 
 
 def resource_mapping():
+    if clients.quantumclient is None:
+        return {}
+
     return {
         'AWS::EC2::InternetGateway': InternetGateway,
         'AWS::EC2::VPCGatewayAttachment': VPCGatewayAttachment,

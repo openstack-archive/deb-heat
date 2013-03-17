@@ -1,7 +1,5 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright 2013 Red Hat, Inc.
-#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -14,4 +12,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo.config.cfg import *
+from heat.engine import resource
+
+from heat.openstack.common import log as logging
+
+logger = logging.getLogger(__name__)
+
+
+class GenericResource(resource.Resource):
+    '''
+    Dummy resource for use in tests
+    '''
+    properties_schema = {}
+
+    def handle_create(self):
+        logger.warning('Creating generic resource (Type "%s")' % self.type())
+
+    def handle_update(self, json_snippet=None):
+        logger.warning('Updating generic resource (Type "%s")' % self.type())

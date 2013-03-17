@@ -27,6 +27,7 @@ import heat.openstack.common.rpc.common as rpc_common
 from heat.common.wsgi import Request
 from heat.common import urlfetch
 
+import heat.api.openstack.v1 as api_v1
 import heat.api.openstack.v1.stacks as stacks
 import heat.api.openstack.v1.resources as resources
 import heat.api.openstack.v1.events as events
@@ -419,7 +420,6 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
         req = self._post('/stacks', json.dumps(body))
 
         self.m.StubOutWithMock(rpc, 'call')
-        engine_err = {'Description': 'Something went wrong'}
         rpc.call(req.context, self.topic,
                  {'method': 'create_stack',
                   'args': {'stack_name': stack_name,
@@ -427,7 +427,9 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
                            'params': parameters,
                            'args': {'timeout_mins': 30}},
                   'version': self.api_version},
-                 None).AndReturn(engine_err)
+                 None).AndRaise(rpc_common.RemoteError(
+                     'StackValidationFailed',
+                     'Something went wrong'))
         self.m.ReplayAll()
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -452,6 +454,22 @@ class StackControllerTest(ControllerTest, unittest.TestCase):
         try:
             result = self.controller.lookup(req, tenant_id=identity.tenant,
                                             stack_name=identity.stack_name)
+        except webob.exc.HTTPFound as found:
+            self.assertEqual(found.location, self._url(identity))
+        else:
+            self.fail('No redirect generated')
+        self.m.VerifyAll()
+
+    def test_lookup_arn(self):
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '1')
+
+        req = self._get('/stacks%s' % identity.arn_url_path())
+
+        self.m.ReplayAll()
+
+        try:
+            result = self.controller.lookup(req, tenant_id=identity.tenant,
+                                            stack_name=identity.arn())
         except webob.exc.HTTPFound as found:
             self.assertEqual(found.location, self._url(identity))
         else:
@@ -1592,3 +1610,228 @@ class EventControllerTest(ControllerTest, unittest.TestCase):
                           stack_id=stack_identity.stack_id,
                           resource_name=res_name, event_id=event_id)
         self.m.VerifyAll()
+
+
+class RoutesTest(unittest.TestCase):
+
+    def assertRoute(self, mapper, path, method, action, controller, params={}):
+        route = mapper.match(path, {'REQUEST_METHOD': method})
+        self.assertIsNotNone(route)
+        self.assertEqual(action, route['action'])
+        self.assertEqual(
+            controller, route['controller'].controller.__class__.__name__)
+        del(route['action'])
+        del(route['controller'])
+        self.assertEqual(params, route)
+
+    def setUp(self):
+        self.m = api_v1.API({}).map
+
+    def test_template_handling(self):
+        self.assertRoute(
+            self.m,
+            '/aaaa/resource_types',
+            'GET',
+            'list_resource_types',
+            'StackController',
+            {
+                'tenant_id': 'aaaa'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/validate',
+            'POST',
+            'validate_template',
+            'StackController',
+            {
+                'tenant_id': 'aaaa'
+            })
+
+    def test_stack_collection(self):
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks',
+            'GET',
+            'index',
+            'StackController',
+            {
+                'tenant_id': 'aaaa'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks',
+            'POST',
+            'create',
+            'StackController',
+            {
+                'tenant_id': 'aaaa'
+            })
+
+    def test_stack_data(self):
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack',
+            'GET',
+            'lookup',
+            'StackController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/arn:openstack:heat::6548ab64fbda49deb188851a3b7d8c8b'
+            ':stacks/stack-1411-06/1c5d9bb2-3464-45e2-a728-26dfa4e1d34a',
+            'GET',
+            'lookup',
+            'StackController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'arn:openstack:heat:'
+                ':6548ab64fbda49deb188851a3b7d8c8b:stacks/stack-1411-06/'
+                '1c5d9bb2-3464-45e2-a728-26dfa4e1d34a'
+            })
+
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/resources',
+            'GET',
+            'lookup',
+            'StackController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'path': 'resources'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/events',
+            'GET',
+            'lookup',
+            'StackController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'path': 'events'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/bbbb',
+            'GET',
+            'show',
+            'StackController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'stack_id': 'bbbb',
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/bbbb/template',
+            'GET',
+            'template',
+            'StackController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'stack_id': 'bbbb',
+            })
+
+    def test_stack_update_delete(self):
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/bbbb',
+            'PUT',
+            'update',
+            'StackController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'stack_id': 'bbbb',
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/bbbb',
+            'DELETE',
+            'delete',
+            'StackController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'stack_id': 'bbbb',
+            })
+
+    def test_resources(self):
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/bbbb/resources',
+            'GET',
+            'index',
+            'ResourceController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'stack_id': 'bbbb'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/bbbb/resources/cccc',
+            'GET',
+            'show',
+            'ResourceController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'stack_id': 'bbbb',
+                'resource_name': 'cccc'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/bbbb/resources/cccc/metadata',
+            'GET',
+            'metadata',
+            'ResourceController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'stack_id': 'bbbb',
+                'resource_name': 'cccc'
+            })
+
+    def test_events(self):
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/bbbb/events',
+            'GET',
+            'index',
+            'EventController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'stack_id': 'bbbb'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/bbbb/resources/cccc/events',
+            'GET',
+            'index',
+            'EventController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'stack_id': 'bbbb',
+                'resource_name': 'cccc'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/bbbb/resources/cccc/events/dddd',
+            'GET',
+            'show',
+            'EventController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'stack_id': 'bbbb',
+                'resource_name': 'cccc',
+                'event_id': 'dddd'
+            })

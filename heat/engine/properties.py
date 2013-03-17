@@ -1,5 +1,22 @@
+# vim: tabstop=4 shiftwidth=4 softtabstop=4
+
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
 import collections
 import re
+
+from heat.common import exception
 
 
 SCHEMA_KEYS = (
@@ -160,12 +177,18 @@ class Properties(collections.Mapping):
             try:
                 self[key]
             except ValueError as e:
-                return str(e)
+                msg = "Property error : %s" % str(e)
+                raise exception.StackValidationFailed(message=msg)
 
             # are there unimplemented Properties
             if not prop.implemented() and key in self.data:
-                return (self.error_prefix +
-                        '%s Property not implemented yet' % key)
+                msg = "Property %s not implemented yet" % key
+                raise exception.StackValidationFailed(message=msg)
+
+        for key in self.data:
+            if key not in self.props:
+                msg = "Unknown Property %s" % key
+                raise exception.StackValidationFailed(message=msg)
 
     def __getitem__(self, key):
         if key not in self:

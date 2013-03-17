@@ -19,17 +19,56 @@ import unittest
 import mox
 
 from nose.plugins.attrib import attr
+from nose.exc import SkipTest
 
 from heat.common import context
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import properties
 from heat.engine.resources.quantum import net
+from heat.engine.resources.quantum import floatingip
+from heat.engine.resources.quantum import port
 from heat.engine.resources.quantum.quantum import QuantumResource as qr
 from heat.engine import parser
 
 
 class FakeQuantum():
+
+    def create_floatingip(self, props):
+        return {'floatingip': {
+                "status": "ACTIVE",
+                "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+                }}
+
+    def delete_floatingip(self, id):
+        return None
+
+    def show_floatingip(self, id):
+        return {'floatingip': {
+                "status": "ACTIVE",
+                "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+                }}
+
+    def update_floatingip(self, id, props):
+        return {'floatingip': {
+                "status": "ACTIVE",
+                "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+                }}
+
+    def create_port(self, props):
+        return {'port': {
+                "status": "ACTIVE",
+                "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+                }}
+
+    def delete_port(self, id):
+        return None
+
+    def show_port(self, id):
+        return {'port': {
+                "status": "ACTIVE",
+                "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+                }}
 
     def create_network(self, name):
         return {"network": {
@@ -128,6 +167,9 @@ class QuantumTest(unittest.TestCase):
                           'admin_state_up': False}, props)
 
     def test_net(self):
+        if net.clients.quantumclient is None:
+            raise SkipTest
+
         fq = FakeQuantum()
         net.Net.quantum().MultipleTimes().AndReturn(fq)
 
@@ -154,4 +196,154 @@ class QuantumTest(unittest.TestCase):
         self.assertEqual(net.Net.UPDATE_REPLACE, resource.handle_update({}))
 
         resource.delete()
+        self.m.VerifyAll()
+
+
+@attr(tag=['unit', 'resource'])
+@attr(speed='fast')
+class QuantumFloatingIPTest(unittest.TestCase):
+    def setUp(self):
+        self.m = mox.Mox()
+        self.m.StubOutWithMock(floatingip.FloatingIP, 'quantum')
+        self.m.StubOutWithMock(floatingip.FloatingIPAssociation, 'quantum')
+        self.m.StubOutWithMock(port.Port, 'quantum')
+
+    def tearDown(self):
+        self.m.UnsetStubs()
+
+    def load_template(self, name='Quantum'):
+        self.path = os.path.dirname(os.path.realpath(__file__)).\
+            replace('heat/tests', 'templates')
+        f = open("%s/%s.template" % (self.path, name))
+        t = template_format.parse(f.read())
+        f.close()
+        return t
+
+    def parse_stack(self, t):
+        ctx = context.RequestContext.from_dict({
+            'tenant': 'test_tenant',
+            'username': 'test_username',
+            'password': 'password',
+            'auth_url': 'http://localhost:5000/v2.0'})
+        stack_name = 'test_stack'
+        tmpl = parser.Template(t)
+        params = parser.Parameters(stack_name, tmpl,
+                                   {'external_network': 'abcd1234',
+                                    'internal_network': 'xyz1234',
+                                    'internal_subnet': '12.12.12.0'})
+        stack = parser.Stack(ctx, stack_name, tmpl, params)
+
+        return stack
+
+    def test_floating_ip(self):
+        if net.clients.quantumclient is None:
+            raise SkipTest
+
+        fq = FakeQuantum()
+        floatingip.FloatingIP.quantum().MultipleTimes().AndReturn(fq)
+
+        self.m.ReplayAll()
+
+        t = self.load_template('Quantum_floating')
+        stack = self.parse_stack(t)
+
+        fip = stack['floating_ip']
+        self.assertEqual(None, fip.create())
+        self.assertEqual(floatingip.FloatingIP.CREATE_COMPLETE, fip.state)
+        fip.validate()
+
+        fip_id = fip.FnGetRefId()
+        self.assertEqual('fc68ea2c-b60b-4b4f-bd82-94ec81110766', fip_id)
+
+        self.assertEqual('ACTIVE', fip.FnGetAtt('status'))
+        try:
+            fip.FnGetAtt('Foo')
+            raise Exception('Expected InvalidTemplateAttribute')
+        except exception.InvalidTemplateAttribute:
+            pass
+
+        self.assertEqual('fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+                         fip.FnGetAtt('id'))
+        self.assertEqual(floatingip.FloatingIP.UPDATE_REPLACE,
+                         fip.handle_update({}))
+        self.assertEqual(fip.delete(), None)
+
+        self.m.VerifyAll()
+
+    def test_port(self):
+        if net.clients.quantumclient is None:
+            raise SkipTest
+
+        fq = FakeQuantum()
+        port.Port.quantum().MultipleTimes().AndReturn(fq)
+
+        self.m.ReplayAll()
+
+        t = self.load_template('Quantum_floating')
+        stack = self.parse_stack(t)
+
+        p = stack['port_floating']
+        self.assertEqual(None, p.create())
+        self.assertEqual(port.Port.CREATE_COMPLETE, p.state)
+        p.validate()
+
+        port_id = p.FnGetRefId()
+        self.assertEqual('fc68ea2c-b60b-4b4f-bd82-94ec81110766', port_id)
+
+        self.assertEqual('ACTIVE', p.FnGetAtt('status'))
+        try:
+            p.FnGetAtt('Foo')
+            raise Exception('Expected InvalidTemplateAttribute')
+        except exception.InvalidTemplateAttribute:
+            pass
+
+        self.assertEqual('fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+                         p.FnGetAtt('id'))
+
+        self.assertEqual(port.Port.UPDATE_REPLACE,
+                         p.handle_update({}))
+
+        self.m.VerifyAll()
+
+    def test_floatip_port(self):
+        if net.clients.quantumclient is None:
+            raise SkipTest
+
+        fq = FakeQuantum()
+        floatingip.FloatingIP.quantum().MultipleTimes().AndReturn(fq)
+        floatingip.FloatingIPAssociation.quantum().\
+            MultipleTimes().AndReturn(fq)
+        port.Port.quantum().MultipleTimes().AndReturn(fq)
+
+        self.m.ReplayAll()
+
+        t = self.load_template('Quantum_floating')
+        stack = self.parse_stack(t)
+
+        fip = stack['floating_ip']
+        self.assertEqual(None, fip.create())
+        self.assertEqual(floatingip.FloatingIP.CREATE_COMPLETE, fip.state)
+
+        p = stack['port_floating']
+        self.assertEqual(None, p.create())
+        self.assertEqual(port.Port.CREATE_COMPLETE, p.state)
+
+        fipa = stack['floating_ip_assoc']
+        self.assertEqual(None, fipa.create())
+        self.assertEqual(floatingip.FloatingIPAssociation.CREATE_COMPLETE,
+                         fipa.state)
+
+        fipa.validate()
+
+        fipa_id = fipa.FnGetRefId()
+        fip_id = fip.FnGetRefId()
+        port_id = p.FnGetRefId()
+        self.assertEqual('%s:%s' % (fip_id, port_id), fipa_id)
+        self.assertEqual(floatingip.FloatingIP.UPDATE_REPLACE,
+                         fipa.handle_update({}))
+
+        self.assertEqual(fipa.delete(), None)
+        self.assertEqual(p.delete(), None)
+        self.assertEqual(fip.delete(), None)
+
         self.m.VerifyAll()

@@ -13,7 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import json
 import os.path
 
 import mox
@@ -21,7 +20,8 @@ from nose.plugins.attrib import attr
 from oslo.config import cfg
 import unittest
 
-import heat.api
+import heat.api  # pyflakes_bypass  review 23102
+
 from heat.common import context
 from heat.common import policy
 from heat.common import exception

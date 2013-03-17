@@ -13,10 +13,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from quantumclient.common.exceptions import QuantumClientException
-
+from heat.engine import clients
 from heat.openstack.common import log as logging
 from heat.engine import resource
+
+if clients.quantumclient is not None:
+    from quantumclient.common.exceptions import QuantumClientException
 
 logger = logging.getLogger(__name__)
 
@@ -45,25 +47,20 @@ class RouteTable(resource.Resource):
         props = {'name': self.physical_resource_name()}
         router = client.create_router({'router': props})['router']
 
-        router_id = router['id']
-
         # add this router to the list of all routers in the VPC
-        vpc = self.stack[self.properties.get('VpcId')]
+        vpc = self.stack.resource_by_refid(self.properties.get('VpcId'))
         vpc_md = vpc.metadata
-        vpc_md['all_router_ids'].append(router_id)
+        vpc_md['all_router_ids'].append(router['id'])
         vpc.metadata = vpc_md
 
         # TODO sbaker all_router_ids has changed, any VPCGatewayAttachment
         # for this vpc needs to be notified
-        md = {
-            'router_id': router_id
-        }
-        self.metadata = md
+        self.resource_id_set(router['id'])
 
     def handle_delete(self):
         client = self.quantum()
 
-        router_id = self.metadata['router_id']
+        router_id = self.resource_id
         try:
             client.delete_router(router_id)
         except QuantumClientException as ex:
@@ -71,7 +68,7 @@ class RouteTable(resource.Resource):
                 raise ex
 
         # remove this router from the list of all routers in the VPC
-        vpc = self.stack[self.properties.get('VpcId')]
+        vpc = self.stack.resource_by_refid(self.properties.get('VpcId'))
         vpc_md = vpc.metadata
         vpc_md['all_router_ids'].remove(router_id)
         vpc.metadata = vpc_md
@@ -99,12 +96,11 @@ class SubnetRouteTableAssocation(resource.Resource):
 
     def handle_create(self):
         client = self.quantum()
-        subnet = self.stack[self.properties.get('SubnetId')]
-        subnet_id = subnet.metadata['subnet_id']
+        subnet = self.stack.resource_by_refid(self.properties.get('SubnetId'))
+        subnet_id = self.properties.get('SubnetId')
         previous_router_id = subnet.metadata['router_id']
 
-        route_table = self.stack[self.properties.get('RouteTableId')]
-        router_id = route_table.metadata['router_id']
+        router_id = self.properties.get('RouteTableId')
 
         #remove the default router association for this subnet.
         try:
@@ -120,12 +116,11 @@ class SubnetRouteTableAssocation(resource.Resource):
 
     def handle_delete(self):
         client = self.quantum()
-        subnet = self.stack[self.properties.get('SubnetId')]
-        subnet_id = subnet.metadata['subnet_id']
+        subnet = self.stack.resource_by_refid(self.properties.get('SubnetId'))
+        subnet_id = self.properties.get('SubnetId')
         default_router_id = subnet.metadata['default_router_id']
 
-        route_table = self.stack[self.properties.get('RouteTableId')]
-        router_id = route_table.metadata['router_id']
+        router_id = self.properties.get('RouteTableId')
 
         try:
             client.remove_interface_router(router_id, {
@@ -143,6 +138,9 @@ class SubnetRouteTableAssocation(resource.Resource):
 
 
 def resource_mapping():
+    if clients.quantumclient is None:
+        return {}
+
     return {
         'AWS::EC2::RouteTable': RouteTable,
         'AWS::EC2::SubnetRouteTableAssocation': SubnetRouteTableAssocation,

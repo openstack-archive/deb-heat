@@ -39,16 +39,31 @@ class BotoClient(CloudFormationConnection):
         return super(BotoClient, self).describe_stacks(stack_name)
 
     def create_stack(self, **kwargs):
+        args = {'disable_rollback': True}
+        if str(kwargs.get('DisableRollback', '')).lower() == 'false':
+            args['disable_rollback'] = False
+
+        if 'TimeoutInMinutes' in kwargs:
+            try:
+                timeout = int(kwargs['TimeoutInMinutes'])
+            except ValueError:
+                logger.error("Invalid timeout %s" % kwargs['TimeoutInMinutes'])
+                return
+            else:
+                args['timeout_in_minutes'] = timeout
+
         if 'TemplateUrl' in kwargs:
             return super(BotoClient, self).create_stack(
                 kwargs['StackName'],
                 template_url=kwargs['TemplateUrl'],
-                parameters=kwargs['Parameters'])
+                parameters=kwargs['Parameters'],
+                **args)
         elif 'TemplateBody' in kwargs:
             return super(BotoClient, self).create_stack(
                 kwargs['StackName'],
                 template_body=kwargs['TemplateBody'],
-                parameters=kwargs['Parameters'])
+                parameters=kwargs['Parameters'],
+                **args)
         else:
             logger.error("Must specify TemplateUrl or TemplateBody!")
 

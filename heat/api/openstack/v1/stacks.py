@@ -21,6 +21,7 @@ import itertools
 from webob import exc
 
 from heat.api.openstack.v1 import util
+from heat.common import identifier
 from heat.common import wsgi
 from heat.common import template_format
 from heat.rpc import api as engine_api
@@ -183,9 +184,6 @@ class StackController(object):
         except rpc_common.RemoteError as ex:
             return util.remote_error(ex)
 
-        if 'Description' in result:
-            raise exc.HTTPBadRequest(result['Description'])
-
         raise exc.HTTPCreated(location=util.make_url(req, result))
 
     @util.tenant_local
@@ -193,12 +191,14 @@ class StackController(object):
         """
         Redirect to the canonical URL for a stack
         """
-
         try:
-            identity = self.engine.identify_stack(req.context,
-                                                  stack_name)
-        except rpc_common.RemoteError as ex:
-            return util.remote_error(ex)
+            identity = dict(identifier.HeatIdentifier.from_arn(stack_name))
+        except ValueError:
+            try:
+                identity = self.engine.identify_stack(req.context,
+                                                      stack_name)
+            except rpc_common.RemoteError as ex:
+                return util.remote_error(ex)
 
         location = util.make_url(req, identity)
         if path:
@@ -258,9 +258,6 @@ class StackController(object):
                                            data.args())
         except rpc_common.RemoteError as ex:
             return util.remote_error(ex)
-
-        if 'Description' in res:
-            raise exc.HTTPBadRequest(res['Description'])
 
         raise exc.HTTPAccepted()
 

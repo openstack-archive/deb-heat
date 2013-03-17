@@ -18,16 +18,15 @@
 Routines for configuring Heat
 """
 
-import logging
-import logging.config
-import logging.handlers
+import logging as sys_logging
 import os
-import sys
 
 from eventlet.green import socket
 from oslo.config import cfg
 
 from heat.common import wsgi
+
+from heat.openstack.common import log as logging
 from heat.openstack.common import rpc
 
 DEFAULT_PORT = 8000
@@ -96,6 +95,9 @@ db_opts = [
                help='timeout before idle sql connections are reaped')]
 
 engine_opts = [
+    cfg.StrOpt('instance_user',
+               default='ec2-user',
+               help='The default user for new instances'),
     cfg.StrOpt('instance_driver',
                default='heat.engine.nova',
                help='Driver to use for controlling instances'),
@@ -120,61 +122,15 @@ def register_api_opts():
     rpc.set_defaults(control_exchange='heat')
 
 
+def register_db_opts():
+    cfg.CONF.register_opts(db_opts)
+
+
 def register_engine_opts():
     cfg.CONF.register_opts(engine_opts)
-    cfg.CONF.register_opts(db_opts)
     cfg.CONF.register_opts(service_opts)
     cfg.CONF.register_opts(rpc_opts)
     rpc.set_defaults(control_exchange='heat')
-
-
-def setup_logging():
-    """
-    Sets up the logging options for a log with supplied name
-    """
-
-    if cfg.CONF.log_config:
-        # Use a logging configuration file for all settings...
-        if os.path.exists(cfg.CONF.log_config):
-            logging.config.fileConfig(cfg.CONF.log_config)
-            return
-        else:
-            raise RuntimeError("Unable to locate specified logging "
-                               "config file: %s" % cfg.CONF.log_config)
-
-    root_logger = logging.root
-    if cfg.CONF.debug:
-        root_logger.setLevel(logging.DEBUG)
-    elif cfg.CONF.verbose:
-        root_logger.setLevel(logging.INFO)
-    else:
-        root_logger.setLevel(logging.WARNING)
-
-    # quiet down the qpid logging
-    root_logger.manager.getLogger('qpid.messaging').setLevel(logging.INFO)
-
-    formatter = logging.Formatter(cfg.CONF.log_format,
-                                  cfg.CONF.log_date_format)
-
-    if cfg.CONF.use_syslog:
-        try:
-            facility = getattr(logging.handlers.SysLogHandler,
-                               cfg.CONF.syslog_log_facility)
-        except AttributeError:
-            raise ValueError(_("Invalid syslog facility"))
-
-        handler = logging.handlers.SysLogHandler(address='/dev/log',
-                                                 facility=facility)
-    elif cfg.CONF.log_file:
-        logfile = cfg.CONF.log_file
-        if cfg.CONF.log_dir:
-            logfile = os.path.join(cfg.CONF.log_dir, logfile)
-        handler = logging.handlers.WatchedFileHandler(logfile)
-    else:
-        handler = logging.StreamHandler(sys.stdout)
-
-    handler.setFormatter(formatter)
-    root_logger.addHandler(handler)
 
 
 def _register_paste_deploy_opts():
@@ -242,7 +198,8 @@ def load_paste_app(app_name=None):
 
         # Log the options used when starting if we're in debug mode...
         if cfg.CONF.debug:
-            cfg.CONF.log_opt_values(logging.getLogger(app_name), logging.DEBUG)
+            cfg.CONF.log_opt_values(logging.getLogger(app_name),
+                                    sys_logging.DEBUG)
 
         return app
     except (LookupError, ImportError), e:

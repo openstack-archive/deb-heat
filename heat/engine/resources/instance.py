@@ -70,8 +70,7 @@ class Instance(resource.Resource):
                                      'Required': True},
                          'InstanceType': {'Type': 'String',
                                           'Required': True},
-                         'KeyName': {'Type': 'String',
-                                     'Required': True},
+                         'KeyName': {'Type': 'String'},
                          'AvailabilityZone': {'Type': 'String'},
                          'DisableApiTermination': {'Type': 'String',
                                                    'Implemented': False},
@@ -115,6 +114,7 @@ class Instance(resource.Resource):
         super(Instance, self).__init__(name, json_snippet, stack)
         self.ipaddress = None
         self.mime_string = None
+        self._server_status = None
 
     def _set_ipaddress(self, networks):
         '''
@@ -171,9 +171,14 @@ class Instance(resource.Resource):
                 return msg
 
             def read_cloudinit_file(fn):
-                return pkgutil.get_data('heat', 'cloudinit/%s' % fn)
+                data = pkgutil.get_data('heat', 'cloudinit/%s' % fn)
+                data = data.replace('@INSTANCE_USER@',
+                                    cfg.CONF.instance_user)
+                return data
 
             attachments = [(read_cloudinit_file('config'), 'cloud-config'),
+                           (read_cloudinit_file('boothook.sh'), 'boothook.sh',
+                            'cloud-boothook'),
                            (read_cloudinit_file('part-handler.py'),
                             'part-handler.py'),
                            (userdata, 'cfn-userdata', 'x-cfninitdata'),
@@ -216,6 +221,23 @@ class Instance(resource.Resource):
 
         return self.mime_string
 
+    @staticmethod
+    def _build_nics(network_interfaces):
+        if not network_interfaces:
+            return None
+
+        nics = []
+        for nic in network_interfaces:
+            if isinstance(nic, basestring):
+                nics.append({
+                    'NetworkInterfaceId': nic,
+                    'DeviceIndex': len(nics)})
+            else:
+                nics.append(nic)
+        sorted_nics = sorted(nics, key=lambda nic: int(nic['DeviceIndex']))
+
+        return [{'port-id': nic['NetworkInterfaceId']} for nic in sorted_nics]
+
     def handle_create(self):
         if self.properties.get('SecurityGroups') is None:
             security_groups = None
@@ -229,7 +251,7 @@ class Instance(resource.Resource):
         availability_zone = self.properties['AvailabilityZone']
 
         keypairs = [k.name for k in self.nova().keypairs.list()]
-        if key_name not in keypairs:
+        if key_name not in keypairs and key_name is not None:
             raise exception.UserKeyPairMissing(key_name=key_name)
 
         image_name = self.properties['ImageId']
@@ -238,15 +260,20 @@ class Instance(resource.Resource):
         for o in image_list:
             if o.name == image_name:
                 image_id = o.id
+                break
 
         if image_id is None:
             logger.info("Image %s was not found in glance" % image_name)
             raise exception.ImageNotFound(image_name=image_name)
 
+        flavor_id = None
         flavor_list = self.nova().flavors.list()
         for o in flavor_list:
             if o.name == flavor:
                 flavor_id = o.id
+                break
+        if flavor_id is None:
+            raise exception.FlavorMissing(flavor_id=flavor)
 
         tags = {}
         if self.properties['Tags']:
@@ -262,12 +289,7 @@ class Instance(resource.Resource):
         else:
             scheduler_hints = None
 
-        nics = []
-        if self.properties['NetworkInterfaces']:
-            for nic in self.properties['NetworkInterfaces']:
-                nics.append({'port-id': nic})
-        else:
-            nics = None
+        nics = self._build_nics(self.properties['NetworkInterfaces'])
 
         server_userdata = self._build_userdata(userdata)
         server = None
@@ -289,20 +311,28 @@ class Instance(resource.Resource):
             if server is not None:
                 self.resource_id_set(server.id)
 
-        while server.status == 'BUILD':
-            server.get()
-            eventlet.sleep(1)
+        self._server_status = server.status
+
+    def check_active(self):
+        if self._server_status == 'ACTIVE':
+            return True
+
+        server = self.nova().servers.get(self.resource_id)
+        self._server_status = server.status
+        if server.status == 'BUILD':
+            return False
         if server.status == 'ACTIVE':
             self._set_ipaddress(server.networks)
+            self.attach_volumes()
+            return True
         else:
             raise exception.Error('%s instance[%s] status[%s]' %
                                   ('nova reported unexpected',
                                    self.name, server.status))
 
-        if self.properties['Volumes']:
-            self.attach_volumes()
-
     def attach_volumes(self):
+        if not self.properties['Volumes']:
+            return
         server_id = self.resource_id
         for vol in self.properties['Volumes']:
             if 'DeviceId' in vol:
@@ -335,6 +365,13 @@ class Instance(resource.Resource):
 
         return status
 
+    def metadata_update(self, new_metadata=None):
+        '''
+        Refresh the metadata if new_metadata is None
+        '''
+        if new_metadata is None:
+            self.metadata = self.parsed_template('Metadata')
+
     def validate(self):
         '''
         Validate any of the provided params
@@ -346,6 +383,8 @@ class Instance(resource.Resource):
         # check validity of key
         try:
             key_name = self.properties['KeyName']
+            if key_name is None:
+                return
         except ValueError:
             return
         else:

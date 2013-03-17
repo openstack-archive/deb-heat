@@ -11,8 +11,8 @@
 
 PyCrypto>=2.1.0
 boto>=2.4.0
-eventlet>=0.9.17
-greenlet>=0.3.1
+eventlet>=0.12.0
+greenlet>=0.3.2
 httplib2
 iso8601>=0.1.4
 kombu>=1.0.4
@@ -22,12 +22,12 @@ sqlalchemy-migrate>=0.7.2
 python-novaclient
 PasteDeploy==1.5.0
 routes==1.12.3
-SQLAlchemy>=0.7.8,<=0.7.9
+SQLAlchemy>=0.7.8,<0.7.99
 WebOb==1.2.3
 python-keystoneclient
 python-memcached
 python-swiftclient
-python-quantumclient
+python-quantumclient>=2.2.0,<3.0.0
 python-cinderclient
 PyYAML>=3.1.0
-http://tarballs.openstack.org/oslo-config/oslo-config-2013.1b4.tar.gz#egg=oslo-config
+oslo.config>=1.1.0

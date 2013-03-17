@@ -12,7 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
+import errno
 import mox
 import os
 import pkg_resources
@@ -23,7 +23,7 @@ import StringIO
 
 from nose.plugins.attrib import attr
 
-import heat.cloudinit.loguserdata as loguserdata
+from heat.cloudinit import loguserdata
 
 
 class FakeCiVersion():
@@ -48,7 +48,6 @@ class LoguserdataTest(unittest.TestCase):
         self.m.StubOutWithMock(pkg_resources, 'get_distribution')
         self.m.StubOutWithMock(subprocess, 'Popen')
         self.m.StubOutWithMock(os, 'chmod')
-        self.m.StubOutWithMock(os, 'makedirs')
 
     def tearDown(self):
         self.m.UnsetStubs()
@@ -108,50 +107,84 @@ class LoguserdataTest(unittest.TestCase):
         log = StringIO.StringIO()
         pkg_resources.get_distribution('cloud-init').AndReturn(
             FakeCiVersion('0.7.0'))
-        os.chmod('/var/lib/cloud/data/cfn-userdata', 0700).AndReturn(None)
+
+        os.chmod('/var/lib/heat-cfntools/cfn-userdata', 0700).AndReturn(None)
         subprocess.Popen(
-            ['/var/lib/cloud/data/cfn-userdata'],
+            ['/var/lib/heat-cfntools/cfn-userdata'],
             stderr=log,
             stdout=log).AndReturn(FakePOpen(0))
-
-        os.makedirs('/var/lib/heat', 0700).AndReturn(None)
 
         self.m.ReplayAll()
         loguserdata.main(log)
         self.m.VerifyAll()
 
-    def test_main_fails(self):
+    def test_main_script_empty(self):
 
+        log = StringIO.StringIO()
+
+        pkg_resources.get_distribution('cloud-init').AndReturn(
+            FakeCiVersion('0.7.0'))
+
+        os.chmod('/var/lib/heat-cfntools/cfn-userdata', 0700).AndReturn(None)
+        subprocess.Popen(
+            ['/var/lib/heat-cfntools/cfn-userdata'],
+            stderr=log,
+            stdout=log).AndRaise(OSError(errno.ENOEXEC, "empty script"))
+
+        self.m.ReplayAll()
+        self.assertEqual(None, loguserdata.main(log))
+
+        self.m.VerifyAll()
+
+    def test_main_os_error(self):
+
+        log = StringIO.StringIO()
+
+        pkg_resources.get_distribution('cloud-init').AndReturn(
+            FakeCiVersion('0.7.0'))
+
+        os.chmod('/var/lib/heat-cfntools/cfn-userdata', 0700).AndReturn(None)
+        subprocess.Popen(
+            ['/var/lib/heat-cfntools/cfn-userdata'],
+            stderr=log,
+            stdout=log).AndRaise(OSError(errno.ENOENT, "no such file"))
+
+        self.m.ReplayAll()
+        self.assertEqual(os.EX_OSERR, loguserdata.main(log))
+
+        self.m.VerifyAll()
+
+    def test_main_error_other(self):
+        log = StringIO.StringIO()
+        pkg_resources.get_distribution('cloud-init').AndReturn(
+            FakeCiVersion('0.7.0'))
+        os.chmod('/var/lib/heat-cfntools/cfn-userdata', 0700).AndReturn(None)
+        subprocess.Popen(
+            ['/var/lib/heat-cfntools/cfn-userdata'],
+            stderr=log,
+            stdout=log).AndRaise(IOError("read failed"))
+
+        self.m.ReplayAll()
+        self.assertEqual(os.EX_SOFTWARE, loguserdata.main(log))
+        self.m.VerifyAll()
+
+    def test_main_fails(self):
         log = StringIO.StringIO()
 
         #fail on ci version
         pkg_resources.get_distribution('cloud-init').AndReturn(
             FakeCiVersion('0.5.0'))
-
         #fail on execute cfn-userdata
         pkg_resources.get_distribution('cloud-init').AndReturn(
             FakeCiVersion('0.7.0'))
 
-        os.chmod('/var/lib/cloud/data/cfn-userdata', 0700).AndReturn(None)
+        os.chmod('/var/lib/heat-cfntools/cfn-userdata', 0700).AndReturn(None)
         subprocess.Popen(
-            ['/var/lib/cloud/data/cfn-userdata'],
+            ['/var/lib/heat-cfntools/cfn-userdata'],
             stderr=log,
             stdout=log).AndReturn(FakePOpen(-2))
-
-        #fail on create directories
-        pkg_resources.get_distribution('cloud-init').AndReturn(
-            FakeCiVersion('0.7.0'))
-
-        os.chmod('/var/lib/cloud/data/cfn-userdata', 0700).AndReturn(None)
-        subprocess.Popen(
-            ['/var/lib/cloud/data/cfn-userdata'],
-            stderr=log,
-            stdout=log).AndReturn(FakePOpen(0))
-        os.makedirs('/var/lib/heat', 0700).AndRaise(OSError())
 
         self.m.ReplayAll()
         self.assertEqual(-1, loguserdata.main(log))
         self.assertEqual(-2, loguserdata.main(log))
-        self.assertRaises(OSError, loguserdata.main, log)
-
         self.m.VerifyAll()

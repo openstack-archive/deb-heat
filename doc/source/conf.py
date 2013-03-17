@@ -45,7 +45,7 @@ master_doc = 'index'
 
 # General information about the project.
 project = u'Heat'
-copyright = u'2012, Heat Developers'
+copyright = u'2012,2013 Heat Developers'
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
@@ -222,9 +222,6 @@ latex_documents = [
 # One entry per manual page. List of tuples
 # (source start file, name, description, authors, manual section).
 man_pages = [
-    ('man/heat-cfn', 'heat-cfn',
-    u'Command line utility to run heat actions over the CloudFormation API',
-    [u'Heat Developers'], 1),
     ('man/heat-api', 'heat-api',
     u'REST API service to the heat project.',
     [u'Heat Developers'], 1),
@@ -234,9 +231,21 @@ man_pages = [
     ('man/heat-api-cloudwatch', 'heat-api-cloudwatch',
     u'CloudWatch alike API service to the heat project',
     [u'Heat Developers'], 1),
+    ('man/heat-boto', 'heat-boto',
+    u'Command line utility to run heat actions over the CloudFormation API',
+    [u'Heat Developers'], 1),
+    ('man/heat-cfn', 'heat-cfn',
+    u'Command line utility to run heat actions over the CloudFormation API',
+    [u'Heat Developers'], 1),
+    ('man/heat-db-setup', 'heat-db-setup',
+    u'Command line utility to setup the Heat database',
+    [u'Heat Developers'], 1),
     ('man/heat-engine', 'heat-engine',
     u'Service which performs the actions from the API calls made by the user',
-    [u'Heat Developers'], 1)
+    [u'Heat Developers'], 1),
+    ('man/heat-watch', 'heat-watch',
+    u'Command line utility to run heat watch actions over the CloudWatch API',
+    [u'Heat Developers'], 1),
 ]
 
 # If true, show URL addresses after external links.

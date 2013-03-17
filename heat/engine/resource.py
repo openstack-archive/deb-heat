@@ -15,6 +15,7 @@
 
 import base64
 from datetime import datetime
+import eventlet
 from eventlet.support import greenlets as greenlet
 
 from heat.engine import event
@@ -39,7 +40,12 @@ def get_types():
 
 def get_class(resource_type):
     '''Return the Resource class for a given resource type'''
-    return _resource_classes.get(resource_type)
+    cls = _resource_classes.get(resource_type)
+    if cls is None:
+        msg = "Unknown resource Type : %s" % resource_type
+        raise exception.StackValidationFailed(message=msg)
+    else:
+        return cls
 
 
 def _register_class(resource_type, resource_class):
@@ -117,7 +123,7 @@ class Resource(object):
             return super(Resource, cls).__new__(cls)
 
         # Select the correct subclass to instantiate
-        ResourceClass = get_class(json['Type']) or GenericResource
+        ResourceClass = get_class(json['Type'])
         return ResourceClass(name, json, stack)
 
     def __init__(self, name, json_snippet, stack):
@@ -127,7 +133,9 @@ class Resource(object):
         self.stack = stack
         self.context = stack.context
         self.name = name
+        self.json_snippet = json_snippet
         self.t = stack.resolve_static_data(json_snippet)
+        self.cached_t = None
         self.properties = Properties(self.properties_schema,
                                      self.t.get('Properties', {}),
                                      self.stack.resolve_runtime_data,
@@ -170,17 +178,28 @@ class Resource(object):
         return identifier.ResourceIdentifier(resource_name=self.name,
                                              **self.stack.identifier())
 
-    def parsed_template(self, section=None, default={}):
+    def parsed_template(self, section=None, default={}, cached=False):
         '''
         Return the parsed template data for the resource. May be limited to
         only one section of the data, in which case a default value may also
         be supplied.
         '''
-        if section is None:
-            template = self.t
+        if cached and self.cached_t:
+            t = self.cached_t
         else:
-            template = self.t.get(section, default)
+            t = self.t
+        if section is None:
+            template = t
+        else:
+            template = t.get(section, default)
         return self.stack.resolve_runtime_data(template)
+
+    def cache_template(self):
+        '''
+        make a cache of the resource's parsed template
+        this can then be used via parsed_template(cached=True)
+        '''
+        self.cached_t = self.stack.resolve_runtime_data(self.t)
 
     def update_template_diff(self, json_snippet=None):
         '''
@@ -192,21 +211,23 @@ class Resource(object):
         update_allowed_set = set(self.update_allowed_keys)
 
         # Create a set containing the keys in both current and update template
-        current_snippet = self.parsed_template()
-        template_keys = set(current_snippet.keys())
-        template_keys.update(set(json_snippet.keys()))
+        current_template = self.parsed_template(cached=True)
+
+        template_keys = set(current_template.keys())
+        new_template = self.stack.resolve_runtime_data(json_snippet)
+        template_keys.update(set(new_template.keys()))
 
         # Create a set of keys which differ (or are missing/added)
         changed_keys_set = set([k for k in template_keys
-                               if current_snippet.get(k) !=
-                               json_snippet.get(k)])
+                               if current_template.get(k) !=
+                               new_template.get(k)])
 
         if not changed_keys_set.issubset(update_allowed_set):
             badkeys = changed_keys_set - update_allowed_set
             raise NotImplementedError("Cannot update keys %s for %s" %
                                       (badkeys, self.name))
 
-        return dict((k, json_snippet.get(k)) for k in changed_keys_set)
+        return dict((k, new_template.get(k)) for k in changed_keys_set)
 
     def update_template_diff_properties(self, json_snippet=None):
         '''
@@ -218,7 +239,9 @@ class Resource(object):
         update_allowed_set = set(self.update_allowed_properties)
 
         # Create a set containing the keys in both current and update template
-        current_properties = self.parsed_template().get('Properties', {})
+        tmpl = self.parsed_template(cached=True)
+        current_properties = tmpl.get('Properties', {})
+
         template_properties = set(current_properties.keys())
         updated_properties = json_snippet.get('Properties', {})
         template_properties.update(set(updated_properties.keys()))
@@ -281,25 +304,39 @@ class Resource(object):
 
         logger.info('creating %s' % str(self))
 
+        # Re-resolve the template, since if the resource Ref's
+        # the AWS::StackId pseudo parameter, it will change after
+        # the parser.Stack is stored (which is after the resources
+        # are __init__'d, but before they are create()'d)
+        self.t = self.stack.resolve_static_data(self.json_snippet)
+        self.properties = Properties(self.properties_schema,
+                                     self.t.get('Properties', {}),
+                                     self.stack.resolve_runtime_data,
+                                     self.name)
         try:
-            err = self.properties.validate()
-            if err:
-                return err
+            self.properties.validate()
             self.state_set(self.CREATE_IN_PROGRESS)
             if callable(getattr(self, 'handle_create', None)):
                 self.handle_create()
+            while not self.check_active():
+                eventlet.sleep(1)
+        except greenlet.GreenletExit:
+            raise
         except Exception as ex:
-            # If we get a GreenletExit exception, the create thread has
-            # been killed so we should raise allowing this thread to exit
-            if type(ex) is greenlet.GreenletExit:
-                logger.warning('GreenletExit during create, exiting')
-                raise
-            else:
-                logger.exception('create %s', str(self))
-                self.state_set(self.CREATE_FAILED, str(ex))
-                return str(ex) or "Error : %s" % type(ex)
+            logger.exception('create %s', str(self))
+            self.state_set(self.CREATE_FAILED, str(ex))
+            return str(ex) or "Error : %s" % type(ex)
         else:
             self.state_set(self.CREATE_COMPLETE)
+
+    def check_active(self):
+        '''
+        Check if the resource is active (ready to move to the CREATE_COMPLETE
+        state). By default this happens as soon as the handle_create() method
+        has completed successfully, but subclasses may customise this by
+        overriding this function.
+        '''
+        return True
 
     def update(self, json_snippet=None):
         '''
@@ -321,9 +358,7 @@ class Resource(object):
                                     json_snippet.get('Properties', {}),
                                     self.stack.resolve_runtime_data,
                                     self.name)
-            err = properties.validate()
-            if err:
-                raise ValueError(err)
+            properties.validate()
             if callable(getattr(self, 'handle_update', None)):
                 result = self.handle_update(json_snippet)
         except Exception as ex:
@@ -493,19 +528,10 @@ class Resource(object):
         raise NotImplementedError("Update not implemented for Resource %s"
                                   % type(self))
 
-    def metadata_update(self, metadata):
+    def metadata_update(self, new_metadata=None):
         '''
         No-op for resources which don't explicitly override this method
         '''
-        logger.warning("Resource %s does not implement metadata update" %
-                       self.name)
-
-
-class GenericResource(Resource):
-    properties_schema = {}
-
-    def handle_create(self):
-        logger.warning('Creating generic resource (Type "%s")' % self.type())
-
-    def handle_update(self, json_snippet=None):
-        logger.warning('Updating generic resource (Type "%s")' % self.type())
+        if new_metadata:
+            logger.warning("Resource %s does not implement metadata update" %
+                           self.name)
