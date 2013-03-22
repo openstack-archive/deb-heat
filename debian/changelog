@@ -1,4 +1,4 @@
-heat (2013.1~g3+9b6b6dfe56-1) experimental; urgency=low
+heat (2013.1~rc1-1) experimental; urgency=low
 
   * New upstream release.
   * Some updates for the new manpage build system from upstream.
