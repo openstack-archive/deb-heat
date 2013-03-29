@@ -57,7 +57,6 @@ Package: python-heat
 Architecture: all
 Pre-Depends: dpkg (>= 1.15.6~)
 Depends: ${python:Depends}, ${misc:Depends},
- pep8,
  python-argparse,
  python-boto,
  python-cinderclient,
