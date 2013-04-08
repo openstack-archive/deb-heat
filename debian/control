@@ -1,5 +1,5 @@
 Source: heat
-Section: python
+Section: web
 Priority: optional
 Maintainer: PKG OpenStack <openstack-devel@lists.alioth.debian.org>
 Uploaders: Loic Dachary (OuoU) <loic@debian.org>,
@@ -54,6 +54,7 @@ Vcs-Git: git://anonscm.debian.org/openstack/heat.git
 Homepage: http://wiki.openstack.org/Heat
 
 Package: python-heat
+Section: web
 Architecture: all
 Pre-Depends: dpkg (>= 1.15.6~)
 Depends: ${python:Depends}, ${misc:Depends},
