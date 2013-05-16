@@ -18,6 +18,7 @@ endif
 override_dh_clean:
 	dh_clean
 	rm -rf heat.egg-info
+	rm -rf doc/build
 	find . -iname '*.pyc' -delete
 	rm -f \
 		debian/heat-api-cfn.config \
