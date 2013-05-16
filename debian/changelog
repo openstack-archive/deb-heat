@@ -2,6 +2,7 @@ heat (2013.1-2) unstable; urgency=low
 
   * Uploading to unstable.
   * Removes the <=2.3.5 from python-lxml requirements.
+  * Fix package version detection when building docs.
 
  -- Thomas Goirand <zigo@debian.org>  Thu, 16 May 2013 13:15:54 +0000
 

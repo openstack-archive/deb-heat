@@ -1,0 +1,27 @@
+Description: Fixes version detection when building docs
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: no
+Last-Update: 2013-05-16
+
+Index: heat/heat/openstack/common/version.py
+===================================================================
+--- heat.orig/heat/openstack/common/version.py	2013-05-16 14:07:08.000000000 +0000
++++ heat/heat/openstack/common/version.py	2013-05-16 14:07:08.000000000 +0000
+@@ -19,6 +19,7 @@
+ """
+ 
+ import pkg_resources
++import os
+ 
+ 
+ class VersionInfo(object):
+@@ -54,6 +55,9 @@
+         if self.release is None:
+             self.release = self._get_version_from_pkg_resources()
+ 
++        if self.release is None:
++            self.release = os.environ.get("OSLO_PACKAGE_VERSION", None)
++
+         return self.release
+ 
+     def version_string(self):

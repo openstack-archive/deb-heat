@@ -1,1 +1,2 @@
 removes-lxml-version-limitation-from-pip-requires.patch
+fix-package-version-detection-when-building-doc.patch
