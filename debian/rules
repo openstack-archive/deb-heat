@@ -14,6 +14,7 @@ override_dh_auto_test:
 	./run_tests.sh -u
 endif
 
+
 override_dh_clean:
 	dh_clean
 	rm -rf heat.egg-info
@@ -50,5 +51,6 @@ override_dh_auto_build:
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-engine.postinst
 
 override_dh_installman:
+	python setup.py build
 	make -C doc man
 	dh_installman
