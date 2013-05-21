@@ -97,7 +97,7 @@ Description: OpenStack orchestration service - Python files
 Package: heat-common
 Architecture: all
 Pre-Depends: dpkg (>= 1.15.6~)
-Depends: ${python:Depends}, ${misc:Depends}, python-heat (=${binary:Version}),
+Depends: dbconfig-common, ${python:Depends}, ${misc:Depends}, python-heat (=${binary:Version}),
  adduser
 Description: OpenStack orchestration service - common files
  Heat is a service to orchestrate multiple composite cloud applications using
