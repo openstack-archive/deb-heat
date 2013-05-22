@@ -4,6 +4,7 @@ heat (2013.1-4) unstable; urgency=low
     postinst).
   * Fixed the prerm script of heat-engine that was calling dbc_go heat instead
     of dbc_go heat-engine.
+  * Added missing dependency: python-mysqldb.
 
  -- Thomas Goirand <zigo@debian.org>  Wed, 22 May 2013 23:57:49 +0800
 
