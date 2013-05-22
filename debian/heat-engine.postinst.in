@@ -15,8 +15,7 @@ if [ "$1" = "configure" ] ; then
 	pkgos_dbc_postinst ${CONF} DEFAULT sql_connection heat $@
 
 	# This is the equivalent of db-sync:
-	su heat -c "python -m heat.db.sqlalchemy.manage version_control"
-	su heat -c "python -m heat.db.sqlalchemy.manage upgrade"
+	su heat -c  "python -m heat.db.sync"
 fi
 
 #DEBHELPER#
