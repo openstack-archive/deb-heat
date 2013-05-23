@@ -1,2 +1,3 @@
 removes-lxml-version-limitation-from-pip-requires.patch
 fix-package-version-detection-when-building-doc.patch
+Subclass_keystone_middleware_to_set_headers.patch
