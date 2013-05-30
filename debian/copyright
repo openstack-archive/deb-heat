@@ -1,6 +1,6 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: heat
-Upstream-Contact: 
+Upstream-Contact:
 Source: https://github.com/openstack/heat
 
 Files: debian/*

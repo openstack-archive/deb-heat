@@ -1,3 +1,3 @@
-etc/heat/heat-api-cfn.conf
 etc/heat/heat-api-cfn-paste.ini	/usr/share/heat-api-cfn
+etc/heat/heat-api-cfn.conf
 usr/bin/heat-api-cfn

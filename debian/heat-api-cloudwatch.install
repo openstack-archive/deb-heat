@@ -1,3 +1,3 @@
-etc/heat/heat-api-cloudwatch.conf
-etc/heat/heat-api-cloudwatch-paste.ini	/usr/share/heat-api-cloudwatch
 /usr/bin/heat-api-cloudwatch
+etc/heat/heat-api-cloudwatch-paste.ini	/usr/share/heat-api-cloudwatch
+etc/heat/heat-api-cloudwatch.conf

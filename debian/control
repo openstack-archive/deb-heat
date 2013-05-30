@@ -8,46 +8,46 @@ Uploaders: Loic Dachary (OuoU) <loic@debian.org>,
            Ghe Rivero <ghe.rivero@stackops.com>,
            Mehdi Abaakouk <sileht@sileht.net>
 Build-Depends: debhelper (>= 9),
- po-debconf,
- python-all (>= 2.6.6-3~),
- openstack-pkg-tools (>= 4)
+               openstack-pkg-tools (>= 4),
+               po-debconf,
+               python-all (>= 2.6.6-3~)
 Build-Depends-Indep: pep8 (>= 1.3.3),
- python-argparse,
- python-babel,
- python-boto,
- python-cinderclient,
- python-coverage,
- python-crypto,
- python-eventlet (>= 0.9.16),
- python-extras,
- python-glanceclient,
- python-greenlet (>= 0.3.1),
- python-httplib2,
- python-iso8601,
- python-keystoneclient,
- python-kombu,
- python-lxml (>= 2.3),
- python-memcache,
- python-migrate,
- python-mox,
- python-nose,
- python-nosexcover,
- python-novaclient,
- python-oslo.config,
- python-paste,
- python-pastedeploy,
- python-paramiko,
- python-pycryptopp,
- python-qpid,
- python-quantumclient,
- python-routes,
- python-sendfile,
- python-setuptools,
- python-sphinx,
- python-sqlalchemy (>= 0.7.8),
- python-swiftclient,
- python-webob,
- python-yaml
+                     python-argparse,
+                     python-babel,
+                     python-boto,
+                     python-cinderclient,
+                     python-coverage,
+                     python-crypto,
+                     python-eventlet (>= 0.9.16),
+                     python-extras,
+                     python-glanceclient,
+                     python-greenlet (>= 0.3.1),
+                     python-httplib2,
+                     python-iso8601,
+                     python-keystoneclient,
+                     python-kombu,
+                     python-lxml (>= 2.3),
+                     python-memcache,
+                     python-migrate,
+                     python-mox,
+                     python-nose,
+                     python-nosexcover,
+                     python-novaclient,
+                     python-oslo.config,
+                     python-paramiko,
+                     python-paste,
+                     python-pastedeploy,
+                     python-pycryptopp,
+                     python-qpid,
+                     python-quantumclient,
+                     python-routes,
+                     python-sendfile,
+                     python-setuptools,
+                     python-sphinx,
+                     python-sqlalchemy (>= 0.7.8),
+                     python-swiftclient,
+                     python-webob,
+                     python-yaml
 Standards-Version: 3.9.3
 Vcs-Browser: http://anonscm.debian.org/gitweb/?p=openstack/heat.git;a=summary
 Vcs-Git: git://anonscm.debian.org/openstack/heat.git
@@ -57,37 +57,38 @@ Package: python-heat
 Section: python
 Architecture: all
 Pre-Depends: dpkg (>= 1.15.6~)
-Depends: ${python:Depends}, ${misc:Depends},
- python-argparse,
- python-boto,
- python-cinderclient,
- python-crypto,
- python-eventlet (>= 0.9.16),
- python-extras,
- python-glanceclient,
- python-greenlet (>= 0.3.1),
- python-httplib2,
- python-iso8601,
- python-keystoneclient,
- python-kombu,
- python-lxml (>= 2.3),
- python-memcache,
- python-migrate,
- python-mysqldb,
- python-novaclient,
- python-oslo.config,
- python-paste,
- python-pastedeploy,
- python-pycryptopp, 
- python-qpid,
- python-quantumclient,
- python-routes,  
- python-sendfile,  
- python-setuptools,
- python-sqlalchemy (>= 0.7.8),
- python-swiftclient,
- python-webob,
- python-yaml
+Depends: python-argparse,
+         python-boto,
+         python-cinderclient,
+         python-crypto,
+         python-eventlet (>= 0.9.16),
+         python-extras,
+         python-glanceclient,
+         python-greenlet (>= 0.3.1),
+         python-httplib2,
+         python-iso8601,
+         python-keystoneclient,
+         python-kombu,
+         python-lxml (>= 2.3),
+         python-memcache,
+         python-migrate,
+         python-mysqldb,
+         python-novaclient,
+         python-oslo.config,
+         python-paste,
+         python-pastedeploy,
+         python-pycryptopp,
+         python-qpid,
+         python-quantumclient,
+         python-routes,
+         python-sendfile,
+         python-setuptools,
+         python-sqlalchemy (>= 0.7.8),
+         python-swiftclient,
+         python-webob,
+         python-yaml,
+         ${misc:Depends},
+         ${python:Depends}
 Description: OpenStack orchestration service - Python files
  Heat is a service to orchestrate multiple composite cloud applications using
  templates, through both an OpenStack-native ReST API and a
@@ -98,8 +99,11 @@ Description: OpenStack orchestration service - Python files
 Package: heat-common
 Architecture: all
 Pre-Depends: dpkg (>= 1.15.6~)
-Depends: dbconfig-common, ${python:Depends}, ${misc:Depends}, python-heat (=${binary:Version}),
- adduser
+Depends: adduser,
+         dbconfig-common,
+         python-heat (=${binary:Version}),
+         ${misc:Depends},
+         ${python:Depends}
 Description: OpenStack orchestration service - common files
  Heat is a service to orchestrate multiple composite cloud applications using
  templates, through both an OpenStack-native ReST API and a
@@ -110,8 +114,11 @@ Description: OpenStack orchestration service - common files
 Package: heat-engine
 Architecture: all
 Pre-Depends: dpkg (>= 1.15.6~)
-Depends: ${ostack-lsb-base}, ${python:Depends}, ${misc:Depends}, heat-common (=${binary:Version}),
- adduser
+Depends: adduser,
+         heat-common (=${binary:Version}),
+         ${misc:Depends},
+         ${ostack-lsb-base},
+         ${python:Depends}
 Description: OpenStack orchestration service - engine
  Heat is a service to orchestrate multiple composite cloud applications using
  templates, through both an OpenStack-native ReST API and a
@@ -123,8 +130,11 @@ Description: OpenStack orchestration service - engine
 Package: heat-api
 Architecture: all
 Pre-Depends: dpkg (>= 1.15.6~)
-Depends: ${ostack-lsb-base}, ${python:Depends}, ${misc:Depends}, heat-common (=${binary:Version}),
- adduser
+Depends: adduser,
+         heat-common (=${binary:Version}),
+         ${misc:Depends},
+         ${ostack-lsb-base},
+         ${python:Depends}
 Description: OpenStack orchestration service - ReST API
  Heat is a service to orchestrate multiple composite cloud applications using
  templates, through both an OpenStack-native ReST API and a
@@ -133,10 +143,13 @@ Description: OpenStack orchestration service - ReST API
  This package contains the ReST API.
 
 Package: heat-api-cfn
-Architecture: all   
+Architecture: all
 Pre-Depends: dpkg (>= 1.15.6~)
-Depends: ${ostack-lsb-base}, ${python:Depends}, ${misc:Depends}, heat-common (=${binary:Version}),
- adduser
+Depends: adduser,
+         heat-common (=${binary:Version}),
+         ${misc:Depends},
+         ${ostack-lsb-base},
+         ${python:Depends}
 Description: OpenStack orchestration service - CFN API
  Heat is a service to orchestrate multiple composite cloud applications using
  templates, through both an OpenStack-native ReST API and a
@@ -145,10 +158,13 @@ Description: OpenStack orchestration service - CFN API
  This package contains the CloudFormation (CFN) API.
 
 Package: heat-api-cloudwatch
-Architecture: all    
+Architecture: all
 Pre-Depends: dpkg (>= 1.15.6~)
-Depends: ${ostack-lsb-base}, ${python:Depends}, ${misc:Depends}, heat-common (=${binary:Version}),
- adduser
+Depends: adduser,
+         heat-common (=${binary:Version}),
+         ${misc:Depends},
+         ${ostack-lsb-base},
+         ${python:Depends}
 Description: OpenStack orchestration service - CloudWatch API
  Heat is a service to orchestrate multiple composite cloud applications using
  templates, through both an OpenStack-native ReST API and a
