@@ -1,12 +1,8 @@
-heat (2013.1-6) UNRELEASED; urgency=low
-
-  * Ran wrap-and-sort.
-
- -- Thomas Goirand <zigo@debian.org>  Thu, 30 May 2013 11:22:37 +0800
-
 heat (2013.1-5) unstable; urgency=low
 
   * Added Subclass_keystone_middleware_to_set_headers.patch
+  * Ran wrap-and-sort.
+  * Also deletes /var/lib/heat on purge (Closes: #709875).
 
  -- Thomas Goirand <zigo@debian.org>  Thu, 23 May 2013 23:16:57 +0800
 
