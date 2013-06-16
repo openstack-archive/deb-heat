@@ -1,3 +1,4 @@
 /usr/bin/heat-boto
 /usr/bin/heat-cfn
 /usr/bin/heat-watch
+etc/heat/policy.json
