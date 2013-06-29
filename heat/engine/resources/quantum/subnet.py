@@ -17,6 +17,9 @@ from heat.engine import clients
 from heat.openstack.common import log as logging
 from heat.engine.resources.quantum import quantum
 
+if clients.quantumclient is not None:
+    from quantumclient.common.exceptions import QuantumClientException
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +40,7 @@ class Subnet(quantum.QuantumResource):
                          'ip_version': {'Type': 'Integer',
                                         'AllowedValues': [4, 6],
                                         'Default': 4},
+                         'dns_nameservers': {'Type': 'List'},
                          'gateway_ip': {'Type': 'String'},
                          'allocation_pools': {'Type': 'List',
                                               'Schema': {
@@ -55,8 +59,6 @@ class Subnet(quantum.QuantumResource):
         self.resource_id_set(subnet['id'])
 
     def handle_delete(self):
-        from quantumclient.common.exceptions import QuantumClientException
-
         client = self.quantum()
         try:
             client.delete_subnet(self.resource_id)
@@ -65,8 +67,12 @@ class Subnet(quantum.QuantumResource):
                 raise ex
 
     def FnGetAtt(self, key):
-        attributes = self.quantum().show_subnet(
-            self.resource_id)['subnet']
+        try:
+            attributes = self.quantum().show_subnet(
+                self.resource_id)['subnet']
+        except QuantumClientException as ex:
+            logger.warn("failed to fetch resource attributes: %s" % str(ex))
+            return None
         return self.handle_get_attributes(self.name, key, attributes)
 
 

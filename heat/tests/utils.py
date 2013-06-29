@@ -12,56 +12,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import sys
+import functools
 
-import nose.plugins.skip as skip
+from heat.common import context
+from heat.engine import parser
 
-
-class skip_test(object):
-    """Decorator that skips a test."""
-    def __init__(self, msg):
-        self.message = msg
-
-    def __call__(self, func):
-        def _skipper(*args, **kw):
-            """Wrapped skipper function."""
-            raise skip.SkipTest(self.message)
-        _skipper.__name__ = func.__name__
-        _skipper.__doc__ = func.__doc__
-        return _skipper
-
-
-class skip_if(object):
-    """Decorator that skips a test if condition is true."""
-    def __init__(self, condition, msg):
-        self.condition = condition
-        self.message = msg
-
-    def __call__(self, func):
-        def _skipper(*args, **kw):
-            """Wrapped skipper function."""
-            if self.condition:
-                raise skip.SkipTest(self.message)
-            func(*args, **kw)
-        _skipper.__name__ = func.__name__
-        _skipper.__doc__ = func.__doc__
-        return _skipper
-
-
-class skip_unless(object):
-    """Decorator that skips a test if condition is not true."""
-    def __init__(self, condition, msg):
-        self.condition = condition
-        self.message = msg
-
-    def __call__(self, func):
-        def _skipper(*args, **kw):
-            """Wrapped skipper function."""
-            if not self.condition:
-                raise skip.SkipTest(self.message)
-            func(*args, **kw)
-        _skipper.__name__ = func.__name__
-        _skipper.__doc__ = func.__doc__
-        return _skipper
+from heat.db.sqlalchemy.session import get_engine
+from heat.db import migration
 
 
 def stack_delete_after(test_fn):
@@ -69,14 +27,42 @@ def stack_delete_after(test_fn):
     Decorator which calls test class self.stack.delete()
     to ensure tests clean up their stacks regardless of test success/failure
     """
-    def wrapped_test(test_cls):
-        print "Running test", test_fn.__name__
+    @functools.wraps(test_fn)
+    def wrapped_test(test_case, *args, **kwargs):
+        def delete_stack():
+            stack = getattr(test_case, 'stack', None)
+            if stack is not None and stack.id is not None:
+                stack.delete()
+
         try:
-            test_fn(test_cls)
-        finally:
+            test_fn(test_case, *args, **kwargs)
+        except:
+            exc_class, exc_val, exc_tb = sys.exc_info()
             try:
-                test_cls.stack.delete()
-            except AttributeError:
-                print "Could not delete stack (already deleted?)"
-        print "Exited", test_fn.__name__
+                delete_stack()
+            finally:
+                raise exc_class, exc_val, exc_tb
+        else:
+            delete_stack()
+
     return wrapped_test
+
+
+def setup_dummy_db():
+    migration.db_sync()
+    engine = get_engine()
+    conn = engine.connect()
+
+
+def parse_stack(t, params={}, stack_name='test_stack', stack_id=None):
+    ctx = context.RequestContext.from_dict({'tenant_id': 'test_tenant',
+                                            'tenant': 'test_tenant',
+                                            'username': 'test_username',
+                                            'password': 'password',
+                                            'auth_url':
+                                            'http://localhost:5000/v2.0'})
+    template = parser.Template(t)
+    parameters = parser.Parameters(stack_name, template, params)
+    stack = parser.Stack(ctx, stack_name, template, parameters, stack_id)
+
+    return stack

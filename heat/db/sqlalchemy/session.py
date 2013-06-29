@@ -39,7 +39,7 @@ def get_session(autocommit=True, expire_on_commit=False):
 
 class SynchronousSwitchListener(sqlalchemy.interfaces.PoolListener):
 
-    """Switch sqlite connections to non-synchronous mode"""
+    """Switch sqlite connections to non-synchronous mode."""
 
     def connect(self, dbapi_con, con_record):
         dbapi_con.execute("PRAGMA synchronous = OFF")
@@ -58,7 +58,7 @@ class MySQLPingListener(object):
     def checkout(self, dbapi_con, con_record, con_proxy):
         try:
             dbapi_con.cursor().execute('select 1')
-        except dbapi_con.OperationalError, ex:
+        except dbapi_con.OperationalError as ex:
             if ex.args[0] in (2006, 2013, 2014, 2045, 2055):
                 logger.warn('Got mysql server has gone away: %s', ex)
                 raise DisconnectionError("Database server went away")

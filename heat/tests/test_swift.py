@@ -13,30 +13,53 @@
 #    under the License.
 
 
-import os
 import re
 
-import unittest
 import mox
 
-from nose.plugins.attrib import attr
+from testtools import skipIf
 
-from heat.common import context
 from heat.common import template_format
 from heat.openstack.common.importutils import try_import
 from heat.engine.resources import swift
-from heat.engine import parser
-from heat.tests.utils import skip_if
+from heat.engine import resource
+from heat.engine import scheduler
+from heat.tests.common import HeatTestCase
+from heat.tests.utils import setup_dummy_db
+from heat.tests.utils import parse_stack
 
 swiftclient = try_import('swiftclient.client')
 
+swift_template = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Template to test OS::Swift::Container resources",
+  "Resources" : {
+    "SwiftContainerWebsite" : {
+      "Type" : "OS::Swift::Container",
+      "DeletionPolicy" : "Delete",
+      "Properties" : {
+        "X-Container-Read" : ".r:*",
+        "X-Container-Meta" : {
+          "Web-Index" : "index.html",
+          "Web-Error" : "error.html"
+         }
+      }
+    },
+    "SwiftContainer" : {
+      "Type" : "OS::Swift::Container",
+      "Properties" : {
+      }
+    }
+  }
+}
+'''
 
-@attr(tag=['unit', 'resource'])
-@attr(speed='fast')
-class swiftTest(unittest.TestCase):
-    @skip_if(swiftclient is None, 'unable to import swiftclient')
+
+class swiftTest(HeatTestCase):
+    @skipIf(swiftclient is None, 'unable to import swiftclient')
     def setUp(self):
-        self.m = mox.Mox()
+        super(swiftTest, self).setUp()
         self.m.CreateMock(swiftclient.Connection)
         self.m.StubOutWithMock(swiftclient.Connection, 'put_container')
         self.m.StubOutWithMock(swiftclient.Connection, 'delete_container')
@@ -44,55 +67,32 @@ class swiftTest(unittest.TestCase):
         self.m.StubOutWithMock(swiftclient.Connection, 'get_auth')
 
         self.container_pattern = 'test_stack-test_resource-[0-9a-z]+'
-
-    def tearDown(self):
-        self.m.UnsetStubs()
-        print "swiftTest teardown complete"
-
-    def load_template(self):
-        self.path = os.path.dirname(os.path.realpath(__file__)).\
-            replace('heat/tests', 'templates')
-        f = open("%s/Swift.template" % self.path)
-        t = template_format.parse(f.read())
-        f.close()
-        return t
-
-    def parse_stack(self, t):
-        ctx = context.RequestContext.from_dict({
-            'tenant': 'test_tenant',
-            'username': 'test_username',
-            'password': 'password',
-            'auth_url': 'http://localhost:5000/v2.0'})
-        stack = parser.Stack(ctx, 'test_stack', parser.Template(t))
-
-        return stack
+        setup_dummy_db()
 
     def create_resource(self, t, stack, resource_name):
-        resource = swift.SwiftContainer(
+        rsrc = swift.SwiftContainer(
             'test_resource',
             t['Resources'][resource_name],
             stack)
-        self.assertEqual(None, resource.create())
-        self.assertEqual(swift.SwiftContainer.CREATE_COMPLETE, resource.state)
-        return resource
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual(swift.SwiftContainer.CREATE_COMPLETE, rsrc.state)
+        return rsrc
 
-    @skip_if(swiftclient is None, 'unable to import swiftclient')
     def test_create_container_name(self):
         self.m.ReplayAll()
-        t = self.load_template()
-        stack = self.parse_stack(t)
-        resource = swift.SwiftContainer(
+        t = template_format.parse(swift_template)
+        stack = parse_stack(t)
+        rsrc = swift.SwiftContainer(
             'test_resource',
             t['Resources']['SwiftContainer'],
             stack)
 
         self.assertTrue(re.match(self.container_pattern,
-                                 resource._create_container_name()))
+                                 rsrc._create_container_name()))
         self.assertEqual(
             'the_name',
-            resource._create_container_name('the_name'))
+            rsrc._create_container_name('the_name'))
 
-    @skip_if(swiftclient is None, 'unable to import swiftclient')
     def test_build_meta_headers(self):
         self.m.UnsetStubs()
         self.assertEqual({}, swift.SwiftContainer._build_meta_headers({}))
@@ -106,7 +106,6 @@ class swiftTest(unittest.TestCase):
             "Web-Error": "error.html"
         }))
 
-    @skip_if(swiftclient is None, 'unable to import swiftclient')
     def test_attributes(self):
         headers = {
             "content-length": "0",
@@ -133,35 +132,34 @@ class swiftTest(unittest.TestCase):
             mox.Regex(self.container_pattern)).AndReturn(None)
 
         self.m.ReplayAll()
-        t = self.load_template()
-        stack = self.parse_stack(t)
-        resource = self.create_resource(t, stack, 'SwiftContainer')
+        t = template_format.parse(swift_template)
+        stack = parse_stack(t)
+        rsrc = self.create_resource(t, stack, 'SwiftContainer')
 
-        ref_id = resource.FnGetRefId()
+        ref_id = rsrc.FnGetRefId()
         self.assertTrue(re.match(self.container_pattern,
                                  ref_id))
 
-        self.assertEqual('localhost', resource.FnGetAtt('DomainName'))
+        self.assertEqual('localhost', rsrc.FnGetAtt('DomainName'))
         url = 'http://localhost:8080/v_2/%s' % ref_id
 
-        self.assertEqual(url, resource.FnGetAtt('WebsiteURL'))
-        self.assertEqual('82', resource.FnGetAtt('ObjectCount'))
-        self.assertEqual('17680980', resource.FnGetAtt('BytesUsed'))
-        self.assertEqual(headers, resource.FnGetAtt('HeadContainer'))
+        self.assertEqual(url, rsrc.FnGetAtt('WebsiteURL'))
+        self.assertEqual('82', rsrc.FnGetAtt('ObjectCount'))
+        self.assertEqual('17680980', rsrc.FnGetAtt('BytesUsed'))
+        self.assertEqual(headers, rsrc.FnGetAtt('HeadContainer'))
 
         try:
-            resource.FnGetAtt('Foo')
+            rsrc.FnGetAtt('Foo')
             raise Exception('Expected InvalidTemplateAttribute')
         except swift.exception.InvalidTemplateAttribute:
             pass
 
-        self.assertEqual(swift.SwiftContainer.UPDATE_REPLACE,
-                         resource.handle_update({}))
+        self.assertRaises(resource.UpdateReplace,
+                          rsrc.handle_update, {}, {}, {})
 
-        resource.delete()
+        rsrc.delete()
         self.m.VerifyAll()
 
-    @skip_if(swiftclient is None, 'unable to import swiftclient')
     def test_public_read(self):
         swiftclient.Connection.put_container(
             mox.Regex(self.container_pattern),
@@ -171,15 +169,14 @@ class swiftTest(unittest.TestCase):
             mox.Regex(self.container_pattern)).AndReturn(None)
 
         self.m.ReplayAll()
-        t = self.load_template()
+        t = template_format.parse(swift_template)
         properties = t['Resources']['SwiftContainer']['Properties']
         properties['X-Container-Read'] = '.r:*'
-        stack = self.parse_stack(t)
-        resource = self.create_resource(t, stack, 'SwiftContainer')
-        resource.delete()
+        stack = parse_stack(t)
+        rsrc = self.create_resource(t, stack, 'SwiftContainer')
+        rsrc.delete()
         self.m.VerifyAll()
 
-    @skip_if(swiftclient is None, 'unable to import swiftclient')
     def test_public_read_write(self):
         swiftclient.Connection.put_container(
             mox.Regex(self.container_pattern),
@@ -189,16 +186,15 @@ class swiftTest(unittest.TestCase):
             mox.Regex(self.container_pattern)).AndReturn(None)
 
         self.m.ReplayAll()
-        t = self.load_template()
+        t = template_format.parse(swift_template)
         properties = t['Resources']['SwiftContainer']['Properties']
         properties['X-Container-Read'] = '.r:*'
         properties['X-Container-Write'] = '.r:*'
-        stack = self.parse_stack(t)
-        resource = self.create_resource(t, stack, 'SwiftContainer')
-        resource.delete()
+        stack = parse_stack(t)
+        rsrc = self.create_resource(t, stack, 'SwiftContainer')
+        rsrc.delete()
         self.m.VerifyAll()
 
-    @skip_if(swiftclient is None, 'unable to import swiftclient')
     def test_website(self):
 
         swiftclient.Connection.put_container(
@@ -211,13 +207,12 @@ class swiftTest(unittest.TestCase):
             mox.Regex(self.container_pattern)).AndReturn(None)
 
         self.m.ReplayAll()
-        t = self.load_template()
-        stack = self.parse_stack(t)
-        resource = self.create_resource(t, stack, 'SwiftContainerWebsite')
-        resource.delete()
+        t = template_format.parse(swift_template)
+        stack = parse_stack(t)
+        rsrc = self.create_resource(t, stack, 'SwiftContainerWebsite')
+        rsrc.delete()
         self.m.VerifyAll()
 
-    @skip_if(swiftclient is None, 'unable to import swiftclient')
     def test_delete_exception(self):
 
         swiftclient.Connection.put_container(
@@ -229,14 +224,13 @@ class swiftTest(unittest.TestCase):
                 swiftclient.ClientException('Test delete failure'))
 
         self.m.ReplayAll()
-        t = self.load_template()
-        stack = self.parse_stack(t)
-        resource = self.create_resource(t, stack, 'SwiftContainer')
-        resource.delete()
+        t = template_format.parse(swift_template)
+        stack = parse_stack(t)
+        rsrc = self.create_resource(t, stack, 'SwiftContainer')
+        rsrc.delete()
 
         self.m.VerifyAll()
 
-    @skip_if(swiftclient is None, 'unable to import swiftclient')
     def test_delete_retain(self):
 
         # first run, with retain policy
@@ -249,14 +243,15 @@ class swiftTest(unittest.TestCase):
             mox.Regex(self.container_pattern)).AndReturn(None)
 
         self.m.ReplayAll()
-        t = self.load_template()
+        t = template_format.parse(swift_template)
 
-        properties = t['Resources']['SwiftContainer']['Properties']
-        properties['DeletionPolicy'] = 'Retain'
-        stack = self.parse_stack(t)
-        resource = self.create_resource(t, stack, 'SwiftContainer')
+        container = t['Resources']['SwiftContainer']
+        container['DeletionPolicy'] = 'Retain'
+        stack = parse_stack(t)
+        rsrc = self.create_resource(t, stack, 'SwiftContainer')
         # if delete_container is called, mox verify will succeed
-        resource.delete()
+        rsrc.delete()
+        self.assertEqual(rsrc.DELETE_COMPLETE, rsrc.state)
 
         try:
             self.m.VerifyAll()

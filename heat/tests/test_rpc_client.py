@@ -19,26 +19,26 @@ Unit Tests for heat.rpc.client
 """
 
 
-from nose.plugins.attrib import attr
 from oslo.config import cfg
 import stubout
-import unittest
+import testtools
 
+from heat.common import config
 from heat.common import context
 from heat.common import identifier
+from heat.rpc import api as rpc_api
 from heat.rpc import client as rpc_client
 from heat.openstack.common import rpc
 
 
-@attr(tag=['unit', 'rpcapi'])
-class EngineRpcAPITestCase(unittest.TestCase):
+class EngineRpcAPITestCase(testtools.TestCase):
 
     def setUp(self):
+        config.register_engine_opts()
         self.context = context.get_admin_context()
         cfg.CONF.set_default('rpc_backend',
                              'heat.openstack.common.rpc.impl_fake')
         cfg.CONF.set_default('verbose', True)
-        cfg.CONF.set_default('engine_topic', 'engine')
         cfg.CONF.set_default('host', 'host')
 
         self.stubs = stubout.StubOutForTesting()
@@ -46,9 +46,6 @@ class EngineRpcAPITestCase(unittest.TestCase):
                                                        '6',
                                                        'wordpress'))
         super(EngineRpcAPITestCase, self).setUp()
-
-    def tearDown(self):
-        super(EngineRpcAPITestCase, self).tearDown()
 
     def _test_engine_api(self, method, rpc_method, **kwargs):
         ctxt = context.RequestContext('fake_user', 'fake_project')
@@ -64,7 +61,7 @@ class EngineRpcAPITestCase(unittest.TestCase):
         expected_msg = rpcapi.make_msg(method, **kwargs)
 
         expected_msg['version'] = expected_version
-        expected_topic = '%s.%s' % (cfg.CONF.engine_topic, cfg.CONF.host)
+        expected_topic = rpc_api.ENGINE_TOPIC
 
         cast_and_call = ['delete_stack']
         if rpc_method == 'call' and method in cast_and_call:
@@ -159,7 +156,7 @@ class EngineRpcAPITestCase(unittest.TestCase):
 
     def test_show_watch_metric(self):
         self._test_engine_api('show_watch_metric', 'call',
-                              namespace=None, metric_name=None)
+                              metric_namespace=None, metric_name=None)
 
     def test_set_watch_state(self):
         self._test_engine_api('set_watch_state', 'call',

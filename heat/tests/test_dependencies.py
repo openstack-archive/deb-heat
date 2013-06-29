@@ -13,16 +13,13 @@
 #    under the License.
 
 
-import unittest
-from nose.plugins.attrib import attr
+import testtools
 
 from heat.engine.dependencies import Dependencies
 from heat.engine.dependencies import CircularDependencyException
 
 
-@attr(tag=['unit', 'dependencies'])
-@attr(speed='fast')
-class dependenciesTest(unittest.TestCase):
+class dependenciesTest(testtools.TestCase):
 
     def _dep_test(self, func, checkorder, deps):
         nodes = set.union(*[set(e) for e in deps])
@@ -50,6 +47,11 @@ class dependenciesTest(unittest.TestCase):
             self.assertTrue(a > b,
                             '"%s" is not greater than "%s"' % (str(a), str(b)))
         self._dep_test(reversed, assertGreater, deps)
+
+    def test_repr(self):
+        dp = Dependencies([('1', None), ('2', '3'), ('2', '4')])
+        s = "Dependencies([('1', None), ('2', '3'), ('2', '4')])"
+        self.assertEqual(repr(dp), s)
 
     def test_single_node(self):
         d = Dependencies([('only', None)])

@@ -13,100 +13,94 @@
 #    under the License.
 
 
-import os
-
-import unittest
-import mox
-
-from nose.plugins.attrib import attr
-
-from heat.common import context
 from heat.common import template_format
 from heat.engine.resources import eip
-from heat.engine import parser
+from heat.engine import resource
+from heat.engine import scheduler
+from heat.tests.common import HeatTestCase
 from heat.tests.v1_1 import fakes
+from heat.tests.utils import setup_dummy_db
+from heat.tests.utils import parse_stack
 
 
-@attr(tag=['unit', 'resource'])
-@attr(speed='fast')
-class EIPTest(unittest.TestCase):
+eip_template = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "EIP Test",
+  "Parameters" : {},
+  "Resources" : {
+    "IPAddress" : {
+      "Type" : "AWS::EC2::EIP"
+    },
+    "IPAssoc" : {
+      "Type" : "AWS::EC2::EIPAssociation",
+      "Properties" : {
+        "InstanceId" : { "Ref" : "WebServer" },
+        "EIP" : { "Ref" : "IPAddress" }
+      }
+    },
+    "WebServer": {
+      "Type": "AWS::EC2::Instance",
+    }
+  }
+}
+'''
+
+
+class EIPTest(HeatTestCase):
     def setUp(self):
-        self.m = mox.Mox()
+        super(EIPTest, self).setUp()
         self.fc = fakes.FakeClient()
         self.m.StubOutWithMock(eip.ElasticIp, 'nova')
         self.m.StubOutWithMock(eip.ElasticIpAssociation, 'nova')
         self.m.StubOutWithMock(self.fc.servers, 'get')
-
-    def tearDown(self):
-        self.m.UnsetStubs()
-        print "EIPTest teardown complete"
-
-    def load_template(self):
-        self.path = os.path.dirname(os.path.realpath(__file__)).\
-            replace('heat/tests', 'templates')
-        f = open("%s/WordPress_Single_Instance_With_EIP.template" % self.path)
-        t = template_format.parse(f.read())
-        f.close()
-        return t
-
-    def parse_stack(self, t):
-        ctx = context.RequestContext.from_dict({
-            'tenant': 'test_tenant',
-            'username': 'test_username',
-            'password': 'password',
-            'auth_url': 'http://localhost:5000/v2.0'})
-        template = parser.Template(t)
-        params = parser.Parameters('test_stack', template, {'KeyName': 'test'})
-        stack = parser.Stack(ctx, 'test_stack', template, params)
-
-        return stack
+        setup_dummy_db()
 
     def create_eip(self, t, stack, resource_name):
-        resource = eip.ElasticIp(resource_name,
-                                 t['Resources'][resource_name],
-                                 stack)
-        self.assertEqual(None, resource.validate())
-        self.assertEqual(None, resource.create())
-        self.assertEqual(eip.ElasticIp.CREATE_COMPLETE, resource.state)
-        return resource
+        rsrc = eip.ElasticIp(resource_name,
+                             t['Resources'][resource_name],
+                             stack)
+        self.assertEqual(None, rsrc.validate())
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual(eip.ElasticIp.CREATE_COMPLETE, rsrc.state)
+        return rsrc
 
     def create_association(self, t, stack, resource_name):
-        resource = eip.ElasticIpAssociation(resource_name,
-                                            t['Resources'][resource_name],
-                                            stack)
-        self.assertEqual(None, resource.validate())
-        self.assertEqual(None, resource.create())
+        rsrc = eip.ElasticIpAssociation(resource_name,
+                                        t['Resources'][resource_name],
+                                        stack)
+        self.assertEqual(None, rsrc.validate())
+        scheduler.TaskRunner(rsrc.create)()
         self.assertEqual(eip.ElasticIpAssociation.CREATE_COMPLETE,
-                         resource.state)
-        return resource
+                         rsrc.state)
+        return rsrc
 
     def test_eip(self):
 
-        eip.ElasticIp.nova().AndReturn(self.fc)
-        eip.ElasticIp.nova().AndReturn(self.fc)
+        eip.ElasticIp.nova().MultipleTimes().AndReturn(self.fc)
 
         self.m.ReplayAll()
 
-        t = self.load_template()
-        stack = self.parse_stack(t)
-        resource = self.create_eip(t, stack, 'IPAddress')
+        t = template_format.parse(eip_template)
+        stack = parse_stack(t)
 
-        self.assertEqual('11.0.0.1', resource.FnGetRefId())
-        resource.ipaddress = None
-        self.assertEqual('11.0.0.1', resource.FnGetRefId())
-
-        self.assertEqual('1', resource.FnGetAtt('AllocationId'))
-
-        self.assertEqual(eip.ElasticIp.UPDATE_REPLACE,
-                         resource.handle_update({}))
+        rsrc = self.create_eip(t, stack, 'IPAddress')
 
         try:
-            resource.FnGetAtt('Foo')
-            raise Exception('Expected InvalidTemplateAttribute')
-        except eip.exception.InvalidTemplateAttribute:
-            pass
+            self.assertEqual('11.0.0.1', rsrc.FnGetRefId())
+            rsrc.ipaddress = None
+            self.assertEqual('11.0.0.1', rsrc.FnGetRefId())
 
-        resource.delete()
+            self.assertEqual('1', rsrc.FnGetAtt('AllocationId'))
+
+            self.assertRaises(resource.UpdateReplace,
+                              rsrc.handle_update, {}, {}, {})
+
+            self.assertRaises(eip.exception.InvalidTemplateAttribute,
+                              rsrc.FnGetAtt, 'Foo')
+
+        finally:
+            rsrc.destroy()
 
         self.m.VerifyAll()
 
@@ -120,16 +114,16 @@ class EIPTest(unittest.TestCase):
 
         self.m.ReplayAll()
 
-        t = self.load_template()
-        stack = self.parse_stack(t)
+        t = template_format.parse(eip_template)
+        stack = parse_stack(t)
 
-        resource = self.create_eip(t, stack, 'IPAddress')
+        rsrc = self.create_eip(t, stack, 'IPAddress')
         association = self.create_association(t, stack, 'IPAssoc')
 
-        # TODO sbaker, figure out why this is an empty string
+        # TODO(sbaker), figure out why this is an empty string
         #self.assertEqual('', association.FnGetRefId())
 
         association.delete()
-        resource.delete()
+        rsrc.delete()
 
         self.m.VerifyAll()

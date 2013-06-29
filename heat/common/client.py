@@ -32,7 +32,8 @@ except ImportError:
     import ssl
 
 from heat.common import auth
-from heat.common import exception, utils
+from heat.common import exception
+from heat.common import utils
 
 
 # common chunk size for get and put
@@ -145,7 +146,7 @@ class HTTPSClientAuthConnection(httplib.HTTPSConnection):
 
 class BaseClient(object):
 
-    """A base client class"""
+    """A base client class."""
 
     DEFAULT_PORT = 80
     DEFAULT_DOC_ROOT = None
@@ -501,7 +502,7 @@ class BaseClient(object):
             else:
                 raise Exception("Unknown error occurred! %s" % res.read())
 
-        except (socket.error, IOError), e:
+        except (socket.error, IOError) as e:
             raise exception.ClientConnectionError(e)
 
     def _iterable(self, body):

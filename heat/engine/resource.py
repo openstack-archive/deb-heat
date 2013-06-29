@@ -15,11 +15,11 @@
 
 import base64
 from datetime import datetime
-import eventlet
 from eventlet.support import greenlets as greenlet
 
 from heat.engine import event
 from heat.common import exception
+from heat.openstack.common import excutils
 from heat.db import api as db_api
 from heat.common import identifier
 from heat.engine import timestamp
@@ -34,12 +34,12 @@ _resource_classes = {}
 
 
 def get_types():
-    '''Return an iterator over the list of valid resource types'''
+    '''Return an iterator over the list of valid resource types.'''
     return iter(_resource_classes)
 
 
 def get_class(resource_type):
-    '''Return the Resource class for a given resource type'''
+    '''Return the Resource class for a given resource type.'''
     cls = _resource_classes.get(resource_type)
     if cls is None:
         msg = "Unknown resource Type : %s" % resource_type
@@ -55,6 +55,21 @@ def _register_class(resource_type, resource_class):
                        resource_type)
 
     _resource_classes[resource_type] = resource_class
+
+
+class UpdateReplace(Exception):
+    '''
+    Raised when resource update requires replacement
+    '''
+    _message = _("The Resource %s requires replacement.")
+
+    def __init__(self, resource_name='Unknown',
+                 message=_("The Resource %s requires replacement.")):
+        try:
+            msg = message % resource_name
+        except TypeError:
+            msg = message
+        super(Exception, self).__init__(msg)
 
 
 class Metadata(object):
@@ -92,12 +107,6 @@ class Resource(object):
     UPDATE_IN_PROGRESS = 'UPDATE_IN_PROGRESS'
     UPDATE_FAILED = 'UPDATE_FAILED'
     UPDATE_COMPLETE = 'UPDATE_COMPLETE'
-
-    # Status values, returned from subclasses to indicate update method
-    UPDATE_REPLACE = 'UPDATE_REPLACE'
-    UPDATE_INTERRUPTION = 'UPDATE_INTERRUPTION'
-    UPDATE_NO_INTERRUPTION = 'UPDATE_NO_INTERRUPTION'
-    UPDATE_NOT_IMPLEMENTED = 'UPDATE_NOT_IMPLEMENTED'
 
     # If True, this resource must be created before it can be referenced.
     strict_dependency = True
@@ -155,7 +164,7 @@ class Resource(object):
             self.id = None
 
     def __eq__(self, other):
-        '''Allow == comparison of two resources'''
+        '''Allow == comparison of two resources.'''
         # For the purposes of comparison, we declare two resource objects
         # equal if their names and parsed_templates are the same
         if isinstance(other, Resource):
@@ -164,7 +173,7 @@ class Resource(object):
         return NotImplemented
 
     def __ne__(self, other):
-        '''Allow != comparison of two resources'''
+        '''Allow != comparison of two resources.'''
         result = self.__eq__(other)
         if result is NotImplemented:
             return result
@@ -174,7 +183,7 @@ class Resource(object):
         return self.t['Type']
 
     def identifier(self):
-        '''Return an identifier for this resource'''
+        '''Return an identifier for this resource.'''
         return identifier.ResourceIdentifier(resource_name=self.name,
                                              **self.stack.identifier())
 
@@ -206,7 +215,8 @@ class Resource(object):
         Returns the difference between json_template and self.t
         If something has been removed in json_snippet which exists
         in self.t we set it to None.  If any keys have changed which
-        are not in update_allowed_keys, raises NotImplementedError
+        are not in update_allowed_keys, raises UpdateReplace if the
+        differing keys are not in update_allowed_keys
         '''
         update_allowed_set = set(self.update_allowed_keys)
 
@@ -224,8 +234,7 @@ class Resource(object):
 
         if not changed_keys_set.issubset(update_allowed_set):
             badkeys = changed_keys_set - update_allowed_set
-            raise NotImplementedError("Cannot update keys %s for %s" %
-                                      (badkeys, self.name))
+            raise UpdateReplace(self.name)
 
         return dict((k, new_template.get(k)) for k in changed_keys_set)
 
@@ -234,7 +243,8 @@ class Resource(object):
         Returns the changed Properties between json_template and self.t
         If a property has been removed in json_snippet which exists
         in self.t we set it to None.  If any properties have changed which
-        are not in update_allowed_properties, raises NotImplementedError
+        are not in update_allowed_properties, raises UpdateReplace if the
+        modified properties are not in the update_allowed_properties
         '''
         update_allowed_set = set(self.update_allowed_properties)
 
@@ -252,9 +262,7 @@ class Resource(object):
                                      updated_properties.get(k))
 
         if not changed_properties_set.issubset(update_allowed_set):
-            badkeys = changed_properties_set - update_allowed_set
-            raise NotImplementedError("Cannot update properties %s for %s" %
-                                      (badkeys, self.name))
+            raise UpdateReplace(self.name)
 
         return dict((k, updated_properties.get(k))
                     for k in changed_properties_set)
@@ -262,21 +270,26 @@ class Resource(object):
     def __str__(self):
         return '%s "%s"' % (self.__class__.__name__, self.name)
 
-    def _add_dependencies(self, deps, fragment):
+    def _add_dependencies(self, deps, head, fragment):
         if isinstance(fragment, dict):
             for key, value in fragment.items():
                 if key in ('DependsOn', 'Ref'):
-                    target = self.stack.resources[value]
+                    try:
+                        target = self.stack.resources[value]
+                    except KeyError:
+                        raise exception.InvalidTemplateReference(
+                            resource=value,
+                            key=head)
                     if key == 'DependsOn' or target.strict_dependency:
                         deps += (self, target)
                 elif key != 'Fn::GetAtt':
-                    self._add_dependencies(deps, value)
+                    self._add_dependencies(deps, key, value)
         elif isinstance(fragment, list):
             for item in fragment:
-                self._add_dependencies(deps, item)
+                self._add_dependencies(deps, head, item)
 
     def add_dependencies(self, deps):
-        self._add_dependencies(deps, self.t)
+        self._add_dependencies(deps, None, self.t)
         deps += (self, None)
 
     def keystone(self):
@@ -299,8 +312,7 @@ class Resource(object):
         Create the resource. Subclasses should provide a handle_create() method
         to customise creation.
         '''
-        if self.state in (self.CREATE_IN_PROGRESS, self.CREATE_COMPLETE):
-            return 'Resource creation already requested'
+        assert self.state is None, 'Resource create requested in invalid state'
 
         logger.info('creating %s' % str(self))
 
@@ -316,25 +328,41 @@ class Resource(object):
         try:
             self.properties.validate()
             self.state_set(self.CREATE_IN_PROGRESS)
+            create_data = None
             if callable(getattr(self, 'handle_create', None)):
-                self.handle_create()
-            while not self.check_active():
-                eventlet.sleep(1)
+                create_data = self.handle_create()
+                yield
+            while not self.check_create_complete(create_data):
+                yield
         except greenlet.GreenletExit:
-            raise
+            # Older versions of greenlet erroneously had GreenletExit inherit
+            # from Exception instead of BaseException
+            with excutils.save_and_reraise_exception():
+                try:
+                    self.state_set(self.CREATE_FAILED, 'Creation aborted')
+                except Exception:
+                    logger.exception('Error marking resource as failed')
         except Exception as ex:
             logger.exception('create %s', str(self))
-            self.state_set(self.CREATE_FAILED, str(ex))
-            return str(ex) or "Error : %s" % type(ex)
+            failure = exception.ResourceFailure(ex)
+            self.state_set(self.CREATE_FAILED, str(failure))
+            raise failure
+        except:
+            with excutils.save_and_reraise_exception():
+                try:
+                    self.state_set(self.CREATE_FAILED, 'Creation aborted')
+                except Exception:
+                    logger.exception('Error marking resource as failed')
         else:
             self.state_set(self.CREATE_COMPLETE)
 
-    def check_active(self):
+    def check_create_complete(self, create_data):
         '''
         Check if the resource is active (ready to move to the CREATE_COMPLETE
         state). By default this happens as soon as the handle_create() method
         has completed successfully, but subclasses may customise this by
-        overriding this function.
+        overriding this function. The return value of handle_create() is
+        passed in to this function each time it is called.
         '''
         return True
 
@@ -343,15 +371,14 @@ class Resource(object):
         update the resource. Subclasses should provide a handle_update() method
         to customise update, the base-class handle_update will fail by default.
         '''
-        if self.state in (self.CREATE_IN_PROGRESS, self.UPDATE_IN_PROGRESS):
-            return 'Resource update already requested'
+        assert json_snippet is not None, 'Must specify update json snippet'
 
-        if not json_snippet:
-            return 'Must specify json snippet for resource update!'
+        if self.state in (self.CREATE_IN_PROGRESS, self.UPDATE_IN_PROGRESS):
+            raise exception.ResourceFailure(Exception(
+                'Resource update already requested'))
 
         logger.info('updating %s' % str(self))
 
-        result = self.UPDATE_NOT_IMPLEMENTED
         try:
             self.state_set(self.UPDATE_IN_PROGRESS)
             properties = Properties(self.properties_schema,
@@ -359,33 +386,41 @@ class Resource(object):
                                     self.stack.resolve_runtime_data,
                                     self.name)
             properties.validate()
+            tmpl_diff = self.update_template_diff(json_snippet)
+            prop_diff = self.update_template_diff_properties(json_snippet)
             if callable(getattr(self, 'handle_update', None)):
-                result = self.handle_update(json_snippet)
+                result = self.handle_update(json_snippet, tmpl_diff, prop_diff)
+        except UpdateReplace:
+            logger.debug("Resource %s update requires replacement" % self.name)
+            raise
         except Exception as ex:
             logger.exception('update %s : %s' % (str(self), str(ex)))
-            self.state_set(self.UPDATE_FAILED, str(ex))
-            return str(ex) or "Error : %s" % type(ex)
+            failure = exception.ResourceFailure(ex)
+            self.state_set(self.UPDATE_FAILED, str(failure))
+            raise failure
         else:
-            # If resource was updated (with or without interruption),
-            # then we set the resource to UPDATE_COMPLETE
-            if not result == self.UPDATE_REPLACE:
-                self.t = self.stack.resolve_static_data(json_snippet)
-                self.state_set(self.UPDATE_COMPLETE)
-            return result
+            self.t = self.stack.resolve_static_data(json_snippet)
+            self.state_set(self.UPDATE_COMPLETE)
 
     def physical_resource_name(self):
         return '%s.%s' % (self.stack.name, self.name)
 
-    def physical_resource_name_find(self, resource_name):
-        if resource_name in self.stack:
-            return '%s.%s' % (self.stack.name, resource_name)
-        else:
-            raise IndexError('no such resource')
-
     def validate(self):
         logger.info('Validating %s' % str(self))
 
+        self.validate_deletion_policy(self.t)
         return self.properties.validate()
+
+    @classmethod
+    def validate_deletion_policy(cls, template):
+        deletion_policy = template.get('DeletionPolicy', 'Delete')
+        if deletion_policy not in ('Delete', 'Retain', 'Snapshot'):
+            msg = 'Invalid DeletionPolicy %s' % deletion_policy
+            raise exception.StackValidationFailed(message=msg)
+        elif deletion_policy == 'Snapshot':
+            if not callable(getattr(cls, 'handle_snapshot_delete', None)):
+                msg = 'Snapshot DeletionPolicy not supported'
+                raise exception.StackValidationFailed(message=msg)
 
     def delete(self):
         '''
@@ -395,36 +430,44 @@ class Resource(object):
         if self.state == self.DELETE_COMPLETE:
             return
         if self.state == self.DELETE_IN_PROGRESS:
-            return 'Resource deletion already in progress'
-        if self.state == self.CREATE_FAILED:
-            return
-        # Further resources will not be created in a CREATE_FAILED stack.
-        # The state of these resources is None.  Do not delete as an
-        # undeleteable stack will result
+            raise exception.Error('Resource deletion already in progress')
+        # No need to delete if the resource has never been created
         if self.state is None:
             return
 
-        logger.info('deleting %s (inst:%s db_id:%s)' %
-                    (str(self), self.resource_id, str(self.id)))
-        self.state_set(self.DELETE_IN_PROGRESS)
+        initial_state = self.state
+
+        logger.info('deleting %s' % str(self))
 
         try:
-            if callable(getattr(self, 'handle_delete', None)):
-                self.handle_delete()
+            self.state_set(self.DELETE_IN_PROGRESS)
+
+            deletion_policy = self.t.get('DeletionPolicy', 'Delete')
+            if deletion_policy == 'Delete':
+                if callable(getattr(self, 'handle_delete', None)):
+                    self.handle_delete()
+            elif deletion_policy == 'Snapshot':
+                if callable(getattr(self, 'handle_snapshot_delete', None)):
+                    self.handle_snapshot_delete(initial_state)
         except Exception as ex:
             logger.exception('Delete %s', str(self))
-            self.state_set(self.DELETE_FAILED, str(ex))
-            return str(ex) or "Error : %s" % type(ex)
-
-        self.state_set(self.DELETE_COMPLETE)
+            failure = exception.ResourceFailure(ex)
+            self.state_set(self.DELETE_FAILED, str(failure))
+            raise failure
+        except:
+            with excutils.save_and_reraise_exception():
+                try:
+                    self.state_set(self.DELETE_FAILED, 'Deletion aborted')
+                except Exception:
+                    logger.exception('Error marking resource deletion failed')
+        else:
+            self.state_set(self.DELETE_COMPLETE)
 
     def destroy(self):
         '''
         Delete the resource and remove it from the database.
         '''
-        result = self.delete()
-        if result:
-            return result
+        self.delete()
 
         if self.id is None:
             return
@@ -435,9 +478,6 @@ class Resource(object):
             # Don't fail on delete if the db entry has
             # not been created yet.
             pass
-        except Exception as ex:
-            logger.exception('Delete %s from DB' % str(self))
-            return str(ex) or "Error : %s" % type(ex)
 
         self.id = None
 
@@ -451,7 +491,7 @@ class Resource(object):
                 logger.warn('db error %s' % str(ex))
 
     def _store(self):
-        '''Create the resource in the database'''
+        '''Create the resource in the database.'''
         try:
             rs = {'state': self.state,
                   'stack_id': self.stack.id,
@@ -469,7 +509,7 @@ class Resource(object):
             logger.error('DB error %s' % str(ex))
 
     def _add_event(self, new_state, reason):
-        '''Add a state change event to the database'''
+        '''Add a state change event to the database.'''
         ev = event.Event(self.context, self.stack, self,
                          new_state, reason,
                          self.resource_id, self.properties)
@@ -531,9 +571,8 @@ class Resource(object):
         '''
         return base64.b64encode(data)
 
-    def handle_update(self, json_snippet=None):
-        raise NotImplementedError("Update not implemented for Resource %s"
-                                  % type(self))
+    def handle_update(self, json_snippet=None, tmpl_diff=None, prop_diff=None):
+        raise UpdateReplace(self.name)
 
     def metadata_update(self, new_metadata=None):
         '''

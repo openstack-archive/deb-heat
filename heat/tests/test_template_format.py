@@ -12,28 +12,27 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from nose.plugins.attrib import attr
-from nose.exc import SkipTest
+from testtools import skipIf
 import os
-import unittest
 
 from heat.engine import clients
-from heat.common import context
 from heat.common import template_format
-from heat.engine import parser
+from heat.tests.common import HeatTestCase
+from heat.tests.utils import setup_dummy_db
+from heat.tests.utils import parse_stack
 
 
-@attr(tag=['unit'])
-class JsonToYamlTest(unittest.TestCase):
+class JsonToYamlTest(HeatTestCase):
 
     def setUp(self):
-        self.expected_test_count = 10
+        super(JsonToYamlTest, self).setUp()
+        self.expected_test_count = 2
         self.longMessage = True
         self.maxDiff = None
 
     def test_convert_all_templates(self):
-        path = os.path.dirname(os.path.realpath(__file__)).\
-            replace('heat/tests', 'templates')
+        path = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                            'templates')
 
         template_test_count = 0
         for (json_str,
@@ -46,8 +45,8 @@ class JsonToYamlTest(unittest.TestCase):
                 break
 
         self.assertTrue(template_test_count >= self.expected_test_count,
-                        'Expected at least %d templates to be tested' %
-                        self.expected_test_count)
+                        'Expected at least %d templates to be tested, not %d' %
+                        (self.expected_test_count, template_test_count))
 
     def compare_json_vs_yaml(self, json_str, yml_str, file_name):
         yml = template_format.parse(yml_str)
@@ -77,8 +76,7 @@ class JsonToYamlTest(unittest.TestCase):
             yield (json_str, yml_str, f.name)
 
 
-@attr(tag=['unit'])
-class YamlMinimalTest(unittest.TestCase):
+class YamlMinimalTest(HeatTestCase):
 
     def test_minimal_yaml(self):
         yaml1 = ''
@@ -93,33 +91,21 @@ Outputs: {}
         self.assertEqual(tpl1, tpl2)
 
 
-@attr(tag=['unit'])
-class JsonYamlResolvedCompareTest(unittest.TestCase):
+class JsonYamlResolvedCompareTest(HeatTestCase):
 
     def setUp(self):
+        super(JsonYamlResolvedCompareTest, self).setUp()
         self.longMessage = True
         self.maxDiff = None
+        setup_dummy_db()
 
     def load_template(self, file_name):
-        self.path = os.path.dirname(os.path.realpath(__file__)).\
-            replace('heat/tests', 'templates')
-        f = open("%s/%s" % (self.path, file_name))
+        filepath = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                                'templates', file_name)
+        f = open(filepath)
         t = template_format.parse(f.read())
         f.close()
         return t
-
-    def parse_stack(self, t, parameters):
-        ctx = context.RequestContext.from_dict({
-            'tenant': 'test_tenant',
-            'username': 'test_username',
-            'password': 'password',
-            'auth_url': 'http://localhost:5000/v2.0'})
-        stack_name = 'test_stack'
-        template = parser.Template(t)
-        params = parser.Parameters(stack_name, template, parameters)
-        stack = parser.Stack(ctx, stack_name, parser.Template(t), params)
-
-        return stack
 
     def compare_stacks(self, json_file, yaml_file, parameters):
         t1 = self.load_template(json_file)
@@ -130,8 +116,8 @@ class JsonYamlResolvedCompareTest(unittest.TestCase):
         t2 = self.load_template(yaml_file)
         del(t2[u'HeatTemplateFormatVersion'])
 
-        stack1 = self.parse_stack(t1, parameters)
-        stack2 = self.parse_stack(t2, parameters)
+        stack1 = parse_stack(t1, parameters)
+        stack2 = parse_stack(t2, parameters)
 
         # compare resources separately so that resolved static data
         # is compared
@@ -147,9 +133,8 @@ class JsonYamlResolvedCompareTest(unittest.TestCase):
         for key in stack1.resources:
             self.assertEqual(stack1.resources[key].t, stack2.resources[key].t)
 
+    @skipIf(clients.quantumclient is None, 'quantumclient unavailable')
     def test_quantum_resolved(self):
-        if clients.quantumclient is None:
-            raise SkipTest
         self.compare_stacks('Quantum.template', 'Quantum.yaml', {})
 
     def test_wordpress_resolved(self):

@@ -13,59 +13,59 @@
 #    under the License.
 
 
-import os
-
-import unittest
 import mox
 
-from nose.plugins.attrib import attr
-
-from heat.common import context
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import parser
+from heat.engine import scheduler
 from heat.engine.resources import dbinstance as dbi
+from heat.tests.common import HeatTestCase
+from heat.tests.utils import setup_dummy_db
+from heat.tests.utils import parse_stack
 
 
-@attr(tag=['unit', 'resource'])
-@attr(speed='fast')
-class DBInstanceTest(unittest.TestCase):
+rds_template = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "RDS Test",
+  "Parameters" : {
+    "KeyName" : {
+      "Description" : "KeyName",
+      "Type" : "String",
+      "Default" : "test"
+    }
+   },
+  "Resources" : {
+    "DatabaseServer": {
+      "Type": "AWS::RDS::DBInstance",
+      "Properties": {
+        "DBName"            : "wordpress",
+        "Engine"            : "MySQL",
+        "MasterUsername"    : "admin",
+        "DBInstanceClass"   : "db.m1.small",
+        "DBSecurityGroups"  : [],
+        "AllocatedStorage"  : "5",
+        "MasterUserPassword": "admin"
+      }
+    }
+  }
+}
+'''
+
+
+class DBInstanceTest(HeatTestCase):
     def setUp(self):
-        self.m = mox.Mox()
+        super(DBInstanceTest, self).setUp()
+        setup_dummy_db()
         self.m.StubOutWithMock(dbi.DBInstance, 'create_with_template')
         self.m.StubOutWithMock(dbi.DBInstance, 'nested')
-
-    def tearDown(self):
-        self.m.UnsetStubs()
-        print "DBInstanceTest teardown complete"
-
-    def load_template(self):
-        self.path = os.path.dirname(os.path.realpath(__file__)).\
-            replace('heat/tests', 'templates')
-        f = open("%s/WordPress_With_RDS.template" % self.path)
-        t = template_format.parse(f.read())
-        f.close()
-        return t
-
-    def parse_stack(self, t):
-        ctx = context.RequestContext.from_dict({
-            'tenant': 'test_tenant',
-            'tenant_id': '1234abcd',
-            'username': 'test_username',
-            'password': 'password',
-            'auth_url': 'http://localhost:5000/v2.0'})
-        template = parser.Template(t)
-        params = parser.Parameters('test_stack', template, {'KeyName': 'test'})
-        stack = parser.Stack(ctx, 'test_stack', template, params)
-
-        return stack
 
     def create_dbinstance(self, t, stack, resource_name):
         resource = dbi.DBInstance(resource_name,
                                   t['Resources'][resource_name],
                                   stack)
         self.assertEqual(None, resource.validate())
-        self.assertEqual(None, resource.create())
+        scheduler.TaskRunner(resource.create)()
         self.assertEqual(dbi.DBInstance.CREATE_COMPLETE, resource.state)
         return resource
 
@@ -78,16 +78,14 @@ class DBInstanceTest(unittest.TestCase):
         class FakeNested:
             resources = {'DatabaseInstance': FakeDatabaseInstance()}
 
-        params = {
-            'AllocatedStorage': u'5',
-            'DBInstanceClass': u'db.m1.small',
-            'DBName': u'wordpress',
-            'DBSecurityGroups': '',
-            'KeyName': 'test',
-            'MasterUserPassword': u'admin',
-            'MasterUsername': u'admin',
-            'Port': '3306'
-        }
+        params = {'DBSecurityGroups': '',
+                  'MasterUsername': u'admin',
+                  'MasterUserPassword': u'admin',
+                  'DBName': u'wordpress',
+                  'KeyName': u'test',
+                  'AllocatedStorage': u'5',
+                  'DBInstanceClass': u'db.m1.small',
+                  'Port': '3306'}
 
         dbi.DBInstance.create_with_template(mox.IgnoreArg(),
                                             params).AndReturn(None)
@@ -98,8 +96,8 @@ class DBInstanceTest(unittest.TestCase):
         dbi.DBInstance.nested().MultipleTimes().AndReturn(fn)
         self.m.ReplayAll()
 
-        t = self.load_template()
-        s = self.parse_stack(t)
+        t = template_format.parse(rds_template)
+        s = parse_stack(t)
         resource = self.create_dbinstance(t, s, 'DatabaseServer')
 
         self.assertEqual('0.0.0.0', resource.FnGetAtt('Endpoint.Address'))

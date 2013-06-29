@@ -54,7 +54,7 @@ def wrap_exception(notifier=None, publisher_id=None, event_type=None,
         def wrapped(*args, **kw):
             try:
                 return f(*args, **kw)
-            except Exception, e:
+            except Exception as e:
                 # Save exception since it can be clobbered during processing
                 # below before we can re-raise
                 exc_info = sys.exc_info()
@@ -196,6 +196,11 @@ class InvalidTemplateAttribute(OpenstackException):
                 " is incorrect.")
 
 
+class InvalidTemplateReference(OpenstackException):
+    message = _("The specified reference (%(resource)s %(key)s)"
+                " is incorrect.")
+
+
 class UserKeyPairMissing(OpenstackException):
     message = _("The Key (%(key_name)s) could not be found.")
 
@@ -234,10 +239,6 @@ class ResourceNotAvailable(OpenstackException):
     message = _("The Resource (%(resource_name)s) is not available.")
 
 
-class ResourceUpdateFailed(OpenstackException):
-    message = _("Resource (%(resource_name)s) update failed")
-
-
 class PhysicalResourceNotFound(OpenstackException):
     message = _("The Resource (%(resource_id)s) could not be found.")
 
@@ -246,5 +247,13 @@ class WatchRuleNotFound(OpenstackException):
     message = _("The Watch Rule (%(watch_name)s) could not be found.")
 
 
-class NestedResourceFailure(OpenstackException):
-    message = _("%(message)s")
+class ResourceFailure(OpenstackException):
+    message = _("%(exc_type)s: %(message)s")
+
+    def __init__(self, exception):
+        if isinstance(exception, ResourceFailure):
+            exception = getattr(exception, 'exc', exception)
+        self.exc = exception
+        exc_type = type(exception).__name__
+        super(ResourceFailure, self).__init__(exc_type=exc_type,
+                                              message=str(exception))

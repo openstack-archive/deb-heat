@@ -15,21 +15,17 @@
 
 import os.path
 
-import mox
-from nose.plugins.attrib import attr
 from oslo.config import cfg
-import unittest
-
-import heat.api  # pyflakes_bypass  review 23102
 
 from heat.common import context
 from heat.common import policy
 from heat.common import exception
+from heat.tests.common import HeatTestCase
+
+policy_path = os.path.dirname(os.path.realpath(__file__)) + "/policy/"
 
 
-@attr(tag=['unit', 'common-policy', 'Enforcer'])
-@attr(speed='fast')
-class TestPolicyEnforcer(unittest.TestCase):
+class TestPolicyEnforcer(HeatTestCase):
     cfn_actions = ("ListStacks", "CreateStack", "DescribeStacks",
                    "DeleteStack", "UpdateStack", "DescribeStackEvents",
                    "ValidateTemplate", "GetTemplate",
@@ -42,19 +38,13 @@ class TestPolicyEnforcer(unittest.TestCase):
                   "PutMetricAlarm", "PutMetricData", "SetAlarmState")
 
     def setUp(self):
-        self.path = os.path.dirname(os.path.realpath(__file__)) + "/policy/"
-        self.m = mox.Mox()
+        super(TestPolicyEnforcer, self).setUp()
         opts = [
-            cfg.StrOpt('config_dir', default=self.path),
+            cfg.StrOpt('config_dir', default=policy_path),
             cfg.StrOpt('config_file', default='foo'),
             cfg.StrOpt('project', default='heat'),
         ]
         cfg.CONF.register_opts(opts)
-        print "setup complete"
-
-    def tearDown(self):
-        self.m.UnsetStubs()
-        print "teardown complete"
 
     def test_policy_cfn_default(self):
         enforcer = policy.Enforcer(scope='cloudformation')
@@ -65,7 +55,7 @@ class TestPolicyEnforcer(unittest.TestCase):
             enforcer.enforce(ctx, action, {})
 
     def test_policy_cfn_notallowed(self):
-        pf = self.path + 'notallowed.json'
+        pf = policy_path + 'notallowed.json'
         self.m.StubOutWithMock(policy.Enforcer, '_find_policy_file')
         policy.Enforcer._find_policy_file().MultipleTimes().AndReturn(pf)
         self.m.ReplayAll()
@@ -80,7 +70,7 @@ class TestPolicyEnforcer(unittest.TestCase):
         self.m.VerifyAll()
 
     def test_policy_cfn_deny_stack_user(self):
-        pf = self.path + 'deny_stack_user.json'
+        pf = policy_path + 'deny_stack_user.json'
         self.m.StubOutWithMock(policy.Enforcer, '_find_policy_file')
         policy.Enforcer._find_policy_file().MultipleTimes().AndReturn(pf)
         self.m.ReplayAll()
@@ -98,7 +88,7 @@ class TestPolicyEnforcer(unittest.TestCase):
         self.m.VerifyAll()
 
     def test_policy_cfn_allow_non_stack_user(self):
-        pf = self.path + 'deny_stack_user.json'
+        pf = policy_path + 'deny_stack_user.json'
         self.m.StubOutWithMock(policy.Enforcer, '_find_policy_file')
         policy.Enforcer._find_policy_file().MultipleTimes().AndReturn(pf)
         self.m.ReplayAll()
@@ -112,7 +102,7 @@ class TestPolicyEnforcer(unittest.TestCase):
         self.m.VerifyAll()
 
     def test_policy_cw_deny_stack_user(self):
-        pf = self.path + 'deny_stack_user.json'
+        pf = policy_path + 'deny_stack_user.json'
         self.m.StubOutWithMock(policy.Enforcer, '_find_policy_file')
         policy.Enforcer._find_policy_file().MultipleTimes().AndReturn(pf)
         self.m.ReplayAll()
@@ -130,7 +120,7 @@ class TestPolicyEnforcer(unittest.TestCase):
         self.m.VerifyAll()
 
     def test_policy_cw_allow_non_stack_user(self):
-        pf = self.path + 'deny_stack_user.json'
+        pf = policy_path + 'deny_stack_user.json'
         self.m.StubOutWithMock(policy.Enforcer, '_find_policy_file')
         policy.Enforcer._find_policy_file().MultipleTimes().AndReturn(pf)
         self.m.ReplayAll()

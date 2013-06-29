@@ -333,9 +333,6 @@ class LoadBalancer(stack_resource.StackResource):
 
         self.create_with_template(templ, param)
 
-    def handle_update(self, json_snippet):
-        return self.UPDATE_REPLACE
-
     def handle_delete(self):
         self.delete_nested()
 
@@ -381,7 +378,7 @@ class LoadBalancer(stack_resource.StackResource):
                  'SourceSecurityGroupName',
                  'SourceSecurityGroupOwnerAlias')
 
-        if not key in allow:
+        if key not in allow:
             raise exception.InvalidTemplateAttribute(resource=self.name,
                                                      key=key)
 

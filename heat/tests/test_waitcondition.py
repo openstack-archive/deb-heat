@@ -12,25 +12,28 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
 import mox
-import uuid
+
 import datetime
+import time
 import json
+import uuid
 
-import eventlet
-from nose.plugins.attrib import attr
 from oslo.config import cfg
-import unittest
 
+from heat.tests.common import HeatTestCase
 from heat.tests import fakes
 from heat.tests.utils import stack_delete_after
+from heat.tests.utils import setup_dummy_db
 
-import heat.db as db_api
+import heat.db.api as db_api
 from heat.common import template_format
 from heat.common import identifier
 from heat.engine import parser
+from heat.engine import resource
+from heat.engine import scheduler
 from heat.engine.resources import wait_condition as wc
+from heat.common import config
 from heat.common import context
 
 test_template_waitcondition = '''
@@ -75,24 +78,20 @@ test_template_wc_count = '''
 '''
 
 
-@attr(tag=['unit', 'resource', 'WaitCondition'])
-@attr(speed='slow')
-class WaitConditionTest(unittest.TestCase):
+class WaitConditionTest(HeatTestCase):
+
     def setUp(self):
-        self.m = mox.Mox()
+        super(WaitConditionTest, self).setUp()
+        config.register_engine_opts()
+        setup_dummy_db()
         self.m.StubOutWithMock(wc.WaitConditionHandle,
                                'get_status')
-        self.m.StubOutWithMock(wc.WaitCondition,
-                               '_create_timeout')
-        self.m.StubOutWithMock(eventlet, 'sleep')
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
 
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://127.0.0.1:8000/v1/waitcondition')
 
         self.fc = fakes.FakeKeystoneClient()
-
-    def tearDown(self):
-        self.m.UnsetStubs()
 
     # Note tests creating a stack should be decorated with @stack_delete_after
     # to ensure the stack is properly cleaned up
@@ -110,6 +109,8 @@ class WaitConditionTest(unittest.TestCase):
         self.stack_id = stack.store()
 
         if stub:
+            scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
+
             self.m.StubOutWithMock(wc.WaitConditionHandle, 'keystone')
             wc.WaitConditionHandle.keystone().MultipleTimes().AndReturn(
                 self.fc)
@@ -124,19 +125,18 @@ class WaitConditionTest(unittest.TestCase):
     @stack_delete_after
     def test_post_success_to_handle(self):
         self.stack = self.create_stack()
-        wc.WaitCondition._create_timeout().AndReturn(eventlet.Timeout(5))
         wc.WaitConditionHandle.get_status().AndReturn([])
-        eventlet.sleep(1).AndReturn(None)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn([])
-        eventlet.sleep(1).AndReturn(None)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS'])
 
         self.m.ReplayAll()
 
         self.stack.create()
 
-        resource = self.stack.resources['WaitForTheHandle']
-        self.assertEqual(resource.state,
+        rsrc = self.stack.resources['WaitForTheHandle']
+        self.assertEqual(rsrc.state,
                          'CREATE_COMPLETE')
 
         r = db_api.resource_get_by_name_and_stack(None, 'WaitHandle',
@@ -147,20 +147,20 @@ class WaitConditionTest(unittest.TestCase):
     @stack_delete_after
     def test_post_failure_to_handle(self):
         self.stack = self.create_stack()
-        wc.WaitCondition._create_timeout().AndReturn(eventlet.Timeout(5))
         wc.WaitConditionHandle.get_status().AndReturn([])
-        eventlet.sleep(1).AndReturn(None)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn([])
-        eventlet.sleep(1).AndReturn(None)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn(['FAILURE'])
 
         self.m.ReplayAll()
 
         self.stack.create()
 
-        resource = self.stack.resources['WaitForTheHandle']
-        self.assertEqual(resource.state,
-                         'CREATE_FAILED')
+        rsrc = self.stack.resources['WaitForTheHandle']
+        self.assertEqual(rsrc.state, rsrc.CREATE_FAILED)
+        reason = rsrc.state_description
+        self.assertTrue(reason.startswith('WaitConditionFailure:'))
 
         r = db_api.resource_get_by_name_and_stack(None, 'WaitHandle',
                                                   self.stack.id)
@@ -170,13 +170,12 @@ class WaitConditionTest(unittest.TestCase):
     @stack_delete_after
     def test_post_success_to_handle_count(self):
         self.stack = self.create_stack(template=test_template_wc_count)
-        wc.WaitCondition._create_timeout().AndReturn(eventlet.Timeout(5))
         wc.WaitConditionHandle.get_status().AndReturn([])
-        eventlet.sleep(1).AndReturn(None)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS'])
-        eventlet.sleep(1).AndReturn(None)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS', 'SUCCESS'])
-        eventlet.sleep(1).AndReturn(None)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS', 'SUCCESS',
                                                        'SUCCESS'])
 
@@ -184,8 +183,8 @@ class WaitConditionTest(unittest.TestCase):
 
         self.stack.create()
 
-        resource = self.stack.resources['WaitForTheHandle']
-        self.assertEqual(resource.state,
+        rsrc = self.stack.resources['WaitForTheHandle']
+        self.assertEqual(rsrc.state,
                          'CREATE_COMPLETE')
 
         r = db_api.resource_get_by_name_and_stack(None, 'WaitHandle',
@@ -196,20 +195,20 @@ class WaitConditionTest(unittest.TestCase):
     @stack_delete_after
     def test_post_failure_to_handle_count(self):
         self.stack = self.create_stack(template=test_template_wc_count)
-        wc.WaitCondition._create_timeout().AndReturn(eventlet.Timeout(5))
         wc.WaitConditionHandle.get_status().AndReturn([])
-        eventlet.sleep(1).AndReturn(None)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS'])
-        eventlet.sleep(1).AndReturn(None)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS', 'FAILURE'])
 
         self.m.ReplayAll()
 
         self.stack.create()
 
-        resource = self.stack.resources['WaitForTheHandle']
-        self.assertEqual(resource.state,
-                         'CREATE_FAILED')
+        rsrc = self.stack.resources['WaitForTheHandle']
+        self.assertEqual(rsrc.state, rsrc.CREATE_FAILED)
+        reason = rsrc.state_description
+        self.assertTrue(reason.startswith('WaitConditionFailure:'))
 
         r = db_api.resource_get_by_name_and_stack(None, 'WaitHandle',
                                                   self.stack.id)
@@ -218,39 +217,48 @@ class WaitConditionTest(unittest.TestCase):
 
     @stack_delete_after
     def test_timeout(self):
+        st = time.time()
+
         self.stack = self.create_stack()
-        tmo = eventlet.Timeout(6)
-        wc.WaitCondition._create_timeout().AndReturn(tmo)
+
+        self.m.StubOutWithMock(scheduler, 'wallclock')
+
+        scheduler.wallclock().AndReturn(st)
+        scheduler.wallclock().AndReturn(st + 0.001)
+        scheduler.wallclock().AndReturn(st + 0.1)
         wc.WaitConditionHandle.get_status().AndReturn([])
-        eventlet.sleep(1).AndReturn(None)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
+        scheduler.wallclock().AndReturn(st + 4.1)
         wc.WaitConditionHandle.get_status().AndReturn([])
-        eventlet.sleep(1).AndRaise(tmo)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
+        scheduler.wallclock().AndReturn(st + 5.1)
 
         self.m.ReplayAll()
 
         self.stack.create()
 
-        resource = self.stack.resources['WaitForTheHandle']
+        rsrc = self.stack.resources['WaitForTheHandle']
 
-        self.assertEqual(resource.state,
-                         'CREATE_FAILED')
-        self.assertEqual(wc.WaitCondition.UPDATE_REPLACE,
-                         resource.handle_update({}))
+        self.assertEqual(rsrc.state, rsrc.CREATE_FAILED)
+        reason = rsrc.state_description
+        self.assertTrue(reason.startswith('WaitConditionTimeout:'))
+
+        self.assertRaises(resource.UpdateReplace,
+                          rsrc.handle_update, {}, {}, {})
         self.m.VerifyAll()
 
     @stack_delete_after
     def test_FnGetAtt(self):
         self.stack = self.create_stack()
-        wc.WaitCondition._create_timeout().AndReturn(eventlet.Timeout(5))
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS'])
 
         self.m.ReplayAll()
         self.stack.create()
 
-        resource = self.stack.resources['WaitForTheHandle']
-        self.assertEqual(resource.state, 'CREATE_COMPLETE')
+        rsrc = self.stack.resources['WaitForTheHandle']
+        self.assertEqual(rsrc.state, 'CREATE_COMPLETE')
 
-        wc_att = resource.FnGetAtt('Data')
+        wc_att = rsrc.FnGetAtt('Data')
         self.assertEqual(wc_att, unicode({}))
 
         handle = self.stack.resources['WaitHandle']
@@ -259,13 +267,13 @@ class WaitConditionTest(unittest.TestCase):
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
         handle.metadata_update(new_metadata=test_metadata)
-        wc_att = resource.FnGetAtt('Data')
+        wc_att = rsrc.FnGetAtt('Data')
         self.assertEqual(wc_att, '{"123": "foo"}')
 
         test_metadata = {'Data': 'dog', 'Reason': 'cat',
                          'Status': 'SUCCESS', 'UniqueId': '456'}
         handle.metadata_update(new_metadata=test_metadata)
-        wc_att = resource.FnGetAtt('Data')
+        wc_att = rsrc.FnGetAtt('Data')
         self.assertEqual(wc_att, u'{"123": "foo", "456": "dog"}')
         self.m.VerifyAll()
 
@@ -287,8 +295,8 @@ class WaitConditionTest(unittest.TestCase):
         self.stack = self.create_stack(template=json.dumps(t), stub=False)
         self.m.ReplayAll()
 
-        resource = self.stack.resources['WaitForTheHandle']
-        self.assertRaises(ValueError, resource.handle_create)
+        rsrc = self.stack.resources['WaitForTheHandle']
+        self.assertRaises(ValueError, rsrc.handle_create)
 
         self.m.VerifyAll()
 
@@ -308,8 +316,8 @@ class WaitConditionTest(unittest.TestCase):
         t['Resources']['WaitForTheHandle']['Properties']['Handle'] = badhandle
         self.stack = self.create_stack(template=json.dumps(t), stub=False)
 
-        resource = self.stack.resources['WaitForTheHandle']
-        self.assertRaises(ValueError, resource.handle_create)
+        rsrc = self.stack.resources['WaitForTheHandle']
+        self.assertRaises(ValueError, rsrc.handle_create)
 
         self.m.VerifyAll()
 
@@ -329,8 +337,8 @@ class WaitConditionTest(unittest.TestCase):
         t['Resources']['WaitForTheHandle']['Properties']['Handle'] = badhandle
         self.stack = self.create_stack(template=json.dumps(t), stub=False)
 
-        resource = self.stack.resources['WaitForTheHandle']
-        self.assertRaises(ValueError, resource.handle_create)
+        rsrc = self.stack.resources['WaitForTheHandle']
+        self.assertRaises(ValueError, rsrc.handle_create)
 
         self.m.VerifyAll()
 
@@ -350,8 +358,8 @@ class WaitConditionTest(unittest.TestCase):
         t['Resources']['WaitForTheHandle']['Properties']['Handle'] = badhandle
         self.stack = self.create_stack(template=json.dumps(t), stub=False)
 
-        resource = self.stack.resources['WaitForTheHandle']
-        self.assertRaises(ValueError, resource.handle_create)
+        rsrc = self.stack.resources['WaitForTheHandle']
+        self.assertRaises(ValueError, rsrc.handle_create)
 
         self.m.VerifyAll()
 
@@ -371,25 +379,22 @@ class WaitConditionTest(unittest.TestCase):
         t['Resources']['WaitForTheHandle']['Properties']['Handle'] = badhandle
         self.stack = self.create_stack(template=json.dumps(t), stub=False)
 
-        resource = self.stack.resources['WaitForTheHandle']
-        self.assertRaises(ValueError, resource.handle_create)
+        rsrc = self.stack.resources['WaitForTheHandle']
+        self.assertRaises(ValueError, rsrc.handle_create)
 
         self.m.VerifyAll()
 
 
-@attr(tag=['unit', 'resource', 'WaitConditionHandle'])
-@attr(speed='fast')
-class WaitConditionHandleTest(unittest.TestCase):
+class WaitConditionHandleTest(HeatTestCase):
     def setUp(self):
-        self.m = mox.Mox()
+        super(WaitConditionHandleTest, self).setUp()
+        config.register_engine_opts()
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://127.0.0.1:8000/v1/waitcondition')
 
         self.fc = fakes.FakeKeystoneClient()
+        setup_dummy_db()
         self.stack = self.create_stack()
-
-    def tearDown(self):
-        self.m.UnsetStubs()
 
     def create_stack(self, stack_name='test_stack2', params={}):
         temp = template_format.parse(test_template_waitcondition)
@@ -405,11 +410,12 @@ class WaitConditionHandleTest(unittest.TestCase):
         self.m.ReplayAll()
         stack.store()
 
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
+
         # Stub waitcondition status so all goes CREATE_COMPLETE
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'get_status')
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS'])
-        self.m.StubOutWithMock(wc.WaitCondition, '_create_timeout')
-        wc.WaitCondition._create_timeout().AndReturn(eventlet.Timeout(5))
 
         # Stub keystone() with fake client
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'keystone')
@@ -429,9 +435,9 @@ class WaitConditionHandleTest(unittest.TestCase):
     def test_handle(self):
         created_time = datetime.datetime(2012, 11, 29, 13, 49, 37)
 
-        resource = self.stack.resources['WaitHandle']
-        resource.created_time = created_time
-        self.assertEqual(resource.state, 'CREATE_COMPLETE')
+        rsrc = self.stack.resources['WaitHandle']
+        rsrc.created_time = created_time
+        self.assertEqual(rsrc.state, 'CREATE_COMPLETE')
 
         expected_url = "".join([
             'http://127.0.0.1:8000/v1/waitcondition/',
@@ -445,88 +451,89 @@ class WaitConditionHandleTest(unittest.TestCase):
             'Signature=',
             'ePyTwmC%2F1kSigeo%2Fha7kP8Avvb45G9Y7WOQWe4F%2BnXM%3D'])
 
-        self.assertEqual(expected_url, resource.FnGetRefId())
+        self.assertEqual(expected_url, rsrc.FnGetRefId())
 
-        self.assertEqual(resource.UPDATE_REPLACE, resource.handle_update({}))
+        self.assertRaises(resource.UpdateReplace,
+                          rsrc.handle_update, {}, {}, {})
         self.m.VerifyAll()
 
     @stack_delete_after
     def test_metadata_update(self):
-        resource = self.stack.resources['WaitHandle']
-        self.assertEqual(resource.state, 'CREATE_COMPLETE')
+        rsrc = self.stack.resources['WaitHandle']
+        self.assertEqual(rsrc.state, 'CREATE_COMPLETE')
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
-        resource.metadata_update(new_metadata=test_metadata)
+        rsrc.metadata_update(new_metadata=test_metadata)
         handle_metadata = {u'123': {u'Data': u'foo',
                                     u'Reason': u'bar',
                                     u'Status': u'SUCCESS'}}
-        self.assertEqual(resource.metadata, handle_metadata)
+        self.assertEqual(rsrc.metadata, handle_metadata)
         self.m.VerifyAll()
 
     @stack_delete_after
     def test_metadata_update_invalid(self):
-        resource = self.stack.resources['WaitHandle']
-        self.assertEqual(resource.state, 'CREATE_COMPLETE')
+        rsrc = self.stack.resources['WaitHandle']
+        self.assertEqual(rsrc.state, 'CREATE_COMPLETE')
 
         # metadata_update should raise a ValueError if the metadata
         # is missing any of the expected keys
         err_metadata = {'Data': 'foo', 'Status': 'SUCCESS', 'UniqueId': '123'}
-        self.assertRaises(ValueError, resource.metadata_update,
+        self.assertRaises(ValueError, rsrc.metadata_update,
                           new_metadata=err_metadata)
 
         err_metadata = {'Data': 'foo', 'Reason': 'bar', 'UniqueId': '1234'}
-        self.assertRaises(ValueError, resource.metadata_update,
+        self.assertRaises(ValueError, rsrc.metadata_update,
                           new_metadata=err_metadata)
 
         err_metadata = {'Data': 'foo', 'Reason': 'bar', 'UniqueId': '1234'}
-        self.assertRaises(ValueError, resource.metadata_update,
+        self.assertRaises(ValueError, rsrc.metadata_update,
                           new_metadata=err_metadata)
 
         err_metadata = {'data': 'foo', 'reason': 'bar',
                         'status': 'SUCCESS', 'uniqueid': '1234'}
-        self.assertRaises(ValueError, resource.metadata_update,
+        self.assertRaises(ValueError, rsrc.metadata_update,
                           new_metadata=err_metadata)
 
         # Also any Status other than SUCCESS or FAILURE should be rejected
         err_metadata = {'Data': 'foo', 'Reason': 'bar',
                         'Status': 'UCCESS', 'UniqueId': '123'}
-        self.assertRaises(ValueError, resource.metadata_update,
+        self.assertRaises(ValueError, rsrc.metadata_update,
                           new_metadata=err_metadata)
         err_metadata = {'Data': 'foo', 'Reason': 'bar',
                         'Status': 'wibble', 'UniqueId': '123'}
-        self.assertRaises(ValueError, resource.metadata_update,
+        self.assertRaises(ValueError, rsrc.metadata_update,
                           new_metadata=err_metadata)
         err_metadata = {'Data': 'foo', 'Reason': 'bar',
                         'Status': 'success', 'UniqueId': '123'}
-        self.assertRaises(ValueError, resource.metadata_update,
+        self.assertRaises(ValueError, rsrc.metadata_update,
                           new_metadata=err_metadata)
         err_metadata = {'Data': 'foo', 'Reason': 'bar',
                         'Status': 'FAIL', 'UniqueId': '123'}
-        self.assertRaises(ValueError, resource.metadata_update,
+        self.assertRaises(ValueError, rsrc.metadata_update,
                           new_metadata=err_metadata)
         self.m.VerifyAll()
 
     @stack_delete_after
     def test_get_status(self):
-        resource = self.stack.resources['WaitHandle']
-        self.assertEqual(resource.state, 'CREATE_COMPLETE')
+        rsrc = self.stack.resources['WaitHandle']
+        self.assertEqual(rsrc.state, 'CREATE_COMPLETE')
 
         # UnsetStubs, don't want get_status stubbed anymore..
         self.m.VerifyAll()
         self.m.UnsetStubs()
 
-        self.assertEqual(resource.get_status(), [])
+        self.assertEqual(rsrc.get_status(), [])
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
-        resource.metadata_update(new_metadata=test_metadata)
-        self.assertEqual(resource.get_status(), ['SUCCESS'])
+        rsrc.metadata_update(new_metadata=test_metadata)
+        self.assertEqual(rsrc.get_status(), ['SUCCESS'])
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '456'}
-        resource.metadata_update(new_metadata=test_metadata)
-        self.assertEqual(resource.get_status(), ['SUCCESS', 'SUCCESS'])
+        rsrc.metadata_update(new_metadata=test_metadata)
+        self.assertEqual(rsrc.get_status(), ['SUCCESS', 'SUCCESS'])
 
         # re-stub keystone() with fake client or stack delete fails
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'keystone')
@@ -535,21 +542,21 @@ class WaitConditionHandleTest(unittest.TestCase):
 
     @stack_delete_after
     def test_get_status_reason(self):
-        resource = self.stack.resources['WaitHandle']
-        self.assertEqual(resource.state, 'CREATE_COMPLETE')
+        rsrc = self.stack.resources['WaitHandle']
+        self.assertEqual(rsrc.state, 'CREATE_COMPLETE')
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
-        resource.metadata_update(new_metadata=test_metadata)
-        self.assertEqual(resource.get_status_reason('SUCCESS'), 'bar')
+        rsrc.metadata_update(new_metadata=test_metadata)
+        self.assertEqual(rsrc.get_status_reason('SUCCESS'), 'bar')
 
         test_metadata = {'Data': 'dog', 'Reason': 'cat',
                          'Status': 'SUCCESS', 'UniqueId': '456'}
-        resource.metadata_update(new_metadata=test_metadata)
-        self.assertEqual(resource.get_status_reason('SUCCESS'), 'bar;cat')
+        rsrc.metadata_update(new_metadata=test_metadata)
+        self.assertEqual(rsrc.get_status_reason('SUCCESS'), 'bar;cat')
 
         test_metadata = {'Data': 'boo', 'Reason': 'hoo',
                          'Status': 'FAILURE', 'UniqueId': '789'}
-        resource.metadata_update(new_metadata=test_metadata)
-        self.assertEqual(resource.get_status_reason('FAILURE'), 'hoo')
+        rsrc.metadata_update(new_metadata=test_metadata)
+        self.assertEqual(rsrc.get_status_reason('FAILURE'), 'hoo')
         self.m.VerifyAll()

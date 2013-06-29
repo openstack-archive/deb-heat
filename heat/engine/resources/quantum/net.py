@@ -17,6 +17,9 @@ from heat.engine import clients
 from heat.openstack.common import log as logging
 from heat.engine.resources.quantum import quantum
 
+if clients.quantumclient is not None:
+    from quantumclient.common.exceptions import QuantumClientException
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,9 +40,15 @@ class Net(quantum.QuantumResource):
         net = self.quantum().create_network({'network': props})['network']
         self.resource_id_set(net['id'])
 
-    def handle_delete(self):
-        from quantumclient.common.exceptions import QuantumClientException
+    def _show_resource(self):
+        return self.quantum().show_network(
+            self.resource_id)['network']
 
+    def check_create_complete(self, *args):
+        attributes = self._show_resource()
+        return self.is_built(attributes)
+
+    def handle_delete(self):
         client = self.quantum()
         try:
             client.delete_network(self.resource_id)
@@ -48,8 +57,11 @@ class Net(quantum.QuantumResource):
                 raise ex
 
     def FnGetAtt(self, key):
-        attributes = self.quantum().show_network(
-            self.resource_id)['network']
+        try:
+            attributes = self._show_resource()
+        except QuantumClientException as ex:
+            logger.warn("failed to fetch resource attributes: %s" % str(ex))
+            return None
         return self.handle_get_attributes(self.name, key, attributes)
 
 

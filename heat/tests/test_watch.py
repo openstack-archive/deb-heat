@@ -15,14 +15,14 @@
 
 import datetime
 import mox
-from nose.plugins.attrib import attr
-import unittest
 from heat.common import context
-import heat.db as db_api
+import heat.db.api as db_api
 
 from heat.openstack.common import timeutils
 from heat.engine import watchrule
 from heat.engine import parser
+from heat.tests.common import HeatTestCase
+from heat.tests import utils
 
 
 class WatchData:
@@ -36,14 +36,16 @@ class DummyAction:
     alarm = "DummyAction"
 
 
-@attr(tag=['unit', 'watchrule'])
-@attr(speed='fast')
-class WatchRuleTest(unittest.TestCase):
+class WatchRuleTest(HeatTestCase):
+    stack_id = None
 
     @classmethod
-    def setUpClass(cls):
+    def setUpDatabase(cls):
+        if cls.stack_id is not None:
+            return
         # Create a dummy stack in the DB as WatchRule instances
         # must be associated with a stack
+        utils.setup_dummy_db()
         ctx = context.get_admin_context()
         ctx.username = 'dummyuser'
         ctx.tenant_id = '123456'
@@ -58,18 +60,15 @@ class WatchRuleTest(unittest.TestCase):
         cls.stack_id = dummy_stack.id
 
     def setUp(self):
+        super(WatchRuleTest, self).setUp()
+        self.setUpDatabase()
         self.username = 'watchrule_test_user'
-
-        self.m = mox.Mox()
 
         self.ctx = context.get_admin_context()
         self.ctx.username = self.username
         self.ctx.tenant_id = u'123456'
 
         self.m.ReplayAll()
-
-    def tearDown(self):
-        self.m.UnsetStubs()
 
     def _action_set_stubs(self, now, action_expected=True):
         # Setup stubs for the action tests

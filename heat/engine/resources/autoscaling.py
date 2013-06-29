@@ -13,10 +13,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import eventlet
-
 from heat.common import exception
 from heat.engine import resource
+from heat.engine import scheduler
 
 from heat.openstack.common import log as logging
 from heat.openstack.common import timeutils
@@ -77,36 +76,21 @@ class InstanceGroup(resource.Resource):
 
     def __init__(self, name, json_snippet, stack):
         super(InstanceGroup, self).__init__(name, json_snippet, stack)
-        self._activating = []
 
     def handle_create(self):
-        self.resize(int(self.properties['Size']), raise_on_error=True)
+        return self.resize(int(self.properties['Size']), raise_on_error=True)
 
-    def check_active(self):
-        active = all(i.check_active(override=False) for i in self._activating)
-        if active:
-            self._activating = []
-            # When all instances are active, reload the LB config
-            self._lb_reload()
-        return active
+    def check_create_complete(self, creator):
+        if creator is None:
+            return True
 
-    def _wait_for_activation(self):
-        while not self.check_active():
-            eventlet.sleep(1)
+        return creator.step()
 
-    def handle_update(self, json_snippet):
-        try:
-            tmpl_diff = self.update_template_diff(json_snippet)
-        except NotImplementedError:
-            logger.error("Could not update %s, invalid key" % self.name)
-            return self.UPDATE_REPLACE
+    def _wait_for_activation(self, creator):
+        if creator is not None:
+            creator.run_to_completion()
 
-        try:
-            prop_diff = self.update_template_diff_properties(json_snippet)
-        except NotImplementedError:
-            logger.error("Could not update %s, invalid Property" % self.name)
-            return self.UPDATE_REPLACE
-
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         # If Properties has changed, update self.properties, so we
         # get the new values during any subsequent adjustment
         if prop_diff:
@@ -123,11 +107,9 @@ class InstanceGroup(resource.Resource):
                     inst_list = sorted(self.resource_id.split(','))
 
                 if len(inst_list) != int(self.properties['Size']):
-                    self.resize(int(self.properties['Size']),
-                                raise_on_error=True)
-                    self._wait_for_activation()
-
-        return self.UPDATE_COMPLETE
+                    creator = self.resize(int(self.properties['Size']),
+                                          raise_on_error=True)
+                    self._wait_for_activation(creator)
 
     def _make_instance(self, name):
 
@@ -143,15 +125,6 @@ class InstanceGroup(resource.Resource):
             def state_set(self, new_state, reason="state changed"):
                 self._store_or_update(new_state, reason)
 
-            def check_active(self, override=True):
-                '''
-                By default, report that the instance is active so that we
-                won't wait for it in create().
-                '''
-                if override:
-                    return True
-                return super(GroupedInstance, self).check_active()
-
         conf = self.properties['LaunchConfigurationName']
         instance_definition = self.stack.t['Resources'][conf]
         return GroupedInstance(name, instance_definition, self.stack)
@@ -163,11 +136,16 @@ class InstanceGroup(resource.Resource):
             for victim in inst_list:
                 logger.debug('handle_delete %s' % victim)
                 inst = self._make_instance(victim)
-                error_str = inst.destroy()
-                if error_str is not None:
-                    # try suck out the grouped resouces failure reason
-                    # and re-raise
-                    raise exception.NestedResourceFailure(message=error_str)
+                inst.destroy()
+
+    @scheduler.wrappertask
+    def _scale(self, instance_task, indices):
+        group = scheduler.PollingTaskGroup.from_task_with_args(instance_task,
+                                                               indices)
+        yield group()
+
+        # When all instance tasks are complete, reload the LB config
+        self._lb_reload()
 
     def resize(self, new_capacity, raise_on_error=False):
         inst_list = []
@@ -181,20 +159,28 @@ class InstanceGroup(resource.Resource):
         logger.debug('adjusting capacity from %d to %d' % (capacity,
                                                            new_capacity))
 
+        @scheduler.wrappertask
+        def create_instance(index):
+            name = '%s-%d' % (self.name, index)
+            inst = self._make_instance(name)
+            inst_list.append(name)
+            self.resource_id_set(','.join(inst_list))
+
+            logger.debug('Creating %s instance %d' % (str(self), index))
+
+            try:
+                yield inst.create()
+            except exception.ResourceFailure as ex:
+                if raise_on_error:
+                    raise
+
         if new_capacity > capacity:
             # grow
-            for x in range(capacity, new_capacity):
-                name = '%s-%d' % (self.name, x)
-                inst = self._make_instance(name)
-                inst_list.append(name)
-                self._activating.append(inst)
-                self.resource_id_set(','.join(inst_list))
-                logger.info('creating inst')
-                error_str = inst.create()
-                if raise_on_error and error_str is not None:
-                    # try suck out the grouped resouces failure reason
-                    # and re-raise
-                    raise exception.NestedResourceFailure(message=error_str)
+            creator = scheduler.TaskRunner(self._scale,
+                                           create_instance,
+                                           xrange(capacity, new_capacity))
+            creator.start()
+            return creator
         else:
             # shrink (kill largest numbered first)
             del_list = inst_list[new_capacity:]
@@ -204,12 +190,16 @@ class InstanceGroup(resource.Resource):
                 inst_list.remove(victim)
                 self.resource_id_set(','.join(inst_list))
 
+            self._lb_reload()
+
     def _lb_reload(self):
-        # notify the LoadBalancer to reload it's config to include
-        # the changes in instances we have just made, this must be after
-        # activation (instance in ACTIVE state), or we may not get network
-        # details for the instance, resulting in incorrect 0.0.0.0 config
-        # being updated via the LoadBalancer resource
+        '''
+        Notify the LoadBalancer to reload it's config to include
+        the changes in instances we have just made.
+
+        This must be done after activation (instance in ACTIVE state),
+        otherwise the instances' IP addresses may not be available.
+        '''
         if self.properties['LoadBalancerNames']:
             inst_list = []
             if self.resource_id is not None:
@@ -285,21 +275,9 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
         else:
             num_to_create = int(self.properties['MinSize'])
 
-        self._adjust(num_to_create)
+        return self._adjust(num_to_create)
 
-    def handle_update(self, json_snippet):
-        try:
-            tmpl_diff = self.update_template_diff(json_snippet)
-        except NotImplementedError:
-            logger.error("Could not update %s, invalid key" % self.name)
-            return self.UPDATE_REPLACE
-
-        try:
-            prop_diff = self.update_template_diff_properties(json_snippet)
-        except NotImplementedError:
-            logger.error("Could not update %s, invalid Property" % self.name)
-            return self.UPDATE_REPLACE
-
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         # If Properties has changed, update self.properties, so we
         # get the new values during any subsequent adjustment
         if prop_diff:
@@ -329,14 +307,12 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
                         new_capacity = int(self.properties['DesiredCapacity'])
 
             if new_capacity is not None:
-                self._adjust(new_capacity)
-                self._wait_for_activation()
-
-        return self.UPDATE_COMPLETE
+                creator = self._adjust(new_capacity)
+                self._wait_for_activation(creator)
 
     def adjust(self, adjustment, adjustment_type='ChangeInCapacity'):
-        if self._adjust(adjustment, adjustment_type, False) is True:
-            self._wait_for_activation()
+        creator = self._adjust(adjustment, adjustment_type, False)
+        self._wait_for_activation(creator)
 
     def _adjust(self, adjustment, adjustment_type='ExactCapacity',
                 raise_on_error=True):
@@ -370,11 +346,11 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
             logger.debug('no change in capacity %d' % capacity)
             return False
 
-        self.resize(new_capacity, raise_on_error=raise_on_error)
+        result = self.resize(new_capacity, raise_on_error=raise_on_error)
 
         self._cooldown_timestamp("%s : %s" % (adjustment_type, adjustment))
 
-        return True
+        return result
 
     def FnGetRefId(self):
         return unicode(self.name)
@@ -392,7 +368,7 @@ class LaunchConfiguration(resource.Resource):
                          'Required': True},
         'KeyName': {'Type': 'String'},
         'UserData': {'Type': 'String'},
-        'SecurityGroups': {'Type': 'String'},
+        'SecurityGroups': {'Type': 'List'},
         'KernelId': {'Type': 'String',
                      'Implemented': False},
         'RamDiskId': {'Type': 'String',
@@ -422,8 +398,21 @@ class ScalingPolicy(resource.Resource, CooldownMixin):
         'Cooldown': {'Type': 'Number'},
     }
 
+    update_allowed_keys = ('Properties',)
+    update_allowed_properties = ('ScalingAdjustment', 'AdjustmentType',
+                                 'Cooldown',)
+
     def __init__(self, name, json_snippet, stack):
         super(ScalingPolicy, self).__init__(name, json_snippet, stack)
+
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
+        # If Properties has changed, update self.properties, so we
+        # get the new values during any subsequent adjustment
+        if prop_diff:
+            self.properties = Properties(self.properties_schema,
+                                         json_snippet.get('Properties', {}),
+                                         self.stack.resolve_runtime_data,
+                                         self.name)
 
     def alarm(self):
         if self._cooldown_inprogress():

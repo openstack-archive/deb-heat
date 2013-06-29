@@ -14,6 +14,7 @@
 #    under the License.
 
 from heat.common import exception
+from heat.engine import clients
 from heat.engine import resource
 
 from heat.openstack.common import log as logging
@@ -83,9 +84,6 @@ class User(resource.Resource):
                                                 passwd)
         self.resource_id_set(uid)
 
-    def handle_update(self, json_snippet):
-        return self.UPDATE_REPLACE
-
     def handle_delete(self):
         if self.resource_id is None:
             logger.error("Cannot delete User resource before user created!")
@@ -96,7 +94,7 @@ class User(resource.Resource):
         return unicode(self.physical_resource_name())
 
     def FnGetAtt(self, key):
-        #TODO Implement Arn attribute
+        #TODO(asalkeld) Implement Arn attribute
         raise exception.InvalidTemplateAttribute(
             resource=self.physical_resource_name(), key=key)
 
@@ -141,29 +139,36 @@ class AccessKey(resource.Resource):
         return self.stack.resource_by_refid(self.properties['UserName'])
 
     def handle_create(self):
-        try:
-            user_id = self._get_user().resource_id
-        except AttributeError:
+        user = self._get_user()
+        if user is None:
             raise exception.NotFound('could not find user %s' %
                                      self.properties['UserName'])
 
-        kp = self.keystone().get_ec2_keypair(user_id)
+        kp = self.keystone().get_ec2_keypair(user.resource_id)
         if not kp:
             raise exception.Error("Error creating ec2 keypair for user %s" %
-                                  user_id)
-        else:
-            self.resource_id_set(kp.access)
-            self._secret = kp.secret
+                                  user)
 
-    def handle_update(self, json_snippet):
-        return self.UPDATE_REPLACE
+        self.resource_id_set(kp.access)
+        self._secret = kp.secret
 
     def handle_delete(self):
-        self.resource_id_set(None)
         self._secret = None
-        user_id = self._get_user().resource_id
-        if user_id and self.resource_id:
-            self.keystone().delete_ec2_keypair(user_id, self.resource_id)
+        if self.resource_id is None:
+            return
+
+        user = self._get_user()
+        if user is None:
+            logger.warning('Error deleting %s - user not found' % str(self))
+            return
+        user_id = user.resource_id
+        if user_id:
+            try:
+                self.keystone().delete_ec2_keypair(user_id, self.resource_id)
+            except clients.hkc.kc.exceptions.NotFound:
+                pass
+
+        self.resource_id_set(None)
 
     def _secret_accesskey(self):
         '''
@@ -229,9 +234,6 @@ class AccessPolicy(resource.Resource):
                              resource)
                 raise exception.ResourceNotFound(resource_name=resource,
                                                  stack_name=self.stack.name)
-
-    def handle_update(self, json_snippet):
-        return self.UPDATE_REPLACE
 
     def access_allowed(self, resource_name):
         return resource_name in self.properties['AllowedResources']

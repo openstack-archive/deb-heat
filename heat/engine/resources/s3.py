@@ -35,9 +35,6 @@ class S3Bucket(resource.Resource):
                                            'AuthenticatedRead',
                                            'BucketOwnerRead',
                                            'BucketOwnerFullControl']},
-                         'DeletionPolicy': {
-                         'Type': 'String',
-                         'AllowedValues': ['Delete', 'Retain']},
                          'WebsiteConfiguration': {'Type': 'Map',
                                                   'Schema': website_schema}}
 
@@ -88,13 +85,8 @@ class S3Bucket(resource.Resource):
         self.swift().put_container(container, headers)
         self.resource_id_set(container)
 
-    def handle_update(self, json_snippet):
-        return self.UPDATE_REPLACE
-
     def handle_delete(self):
-        """Perform specified delete policy"""
-        if self.properties['DeletionPolicy'] == 'Retain':
-            return
+        """Perform specified delete policy."""
         logger.debug('S3Bucket delete container %s' % self.resource_id)
         if self.resource_id is not None:
             try:

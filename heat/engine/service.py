@@ -26,9 +26,11 @@ from heat.engine import clients
 from heat.engine.event import Event
 from heat.common import exception
 from heat.common import identifier
+from heat.engine import parameters
 from heat.engine import parser
+from heat.engine import properties
 from heat.engine import resource
-from heat.engine import resources  # pyflakes_bypass review 23102
+from heat.engine import resources
 from heat.engine import watchrule
 
 from heat.openstack.common import log as logging
@@ -64,6 +66,7 @@ class EngineService(service.Service):
         super(EngineService, self).__init__(host, topic)
         # stg == "Stack Thread Groups"
         self.stg = {}
+        resources.initialise()
 
     def _start_in_thread(self, stack_id, func, *args, **kwargs):
         if stack_id not in self.stg:
@@ -285,21 +288,23 @@ class EngineService(service.Service):
             if not res.get('Type'):
                 return {'Error':
                         'Every Resources object must contain a Type member.'}
+            ResourceClass = resource.get_class(res['Type'])
+            props = properties.Properties(ResourceClass.properties_schema,
+                                          res.get('Properties', {}))
+            try:
+                ResourceClass.validate_deletion_policy(res)
+                props.validate(with_value=False)
+            except Exception as ex:
+                return {'Error': str(ex)}
 
-        def describe_param(p):
-            description = {'NoEcho': p.no_echo() and 'true' or 'false',
-                           'ParameterKey': p.name,
-                           'Description': p.description()}
-            if p.has_default():
-                description['DefaultValue'] = p.default()
-
-            return description
-
-        params = parser.Parameters(None, tmpl).map(describe_param)
+        tmpl_params = parser.Parameters(None, tmpl)
+        format_validate_parameter = lambda p: dict(p.schema)
+        is_real_param = lambda p: p.name not in parameters.PSEUDO_PARAMETERS
+        params = tmpl_params.map(format_validate_parameter, is_real_param)
 
         result = {
             'Description': template.get('Description', ''),
-            'Parameters': params.values(),
+            'Parameters': params,
         }
         return result
 
@@ -572,7 +577,7 @@ class EngineService(service.Service):
         return result
 
     @request_context
-    def show_watch_metric(self, cnxt, namespace=None, metric_name=None):
+    def show_watch_metric(self, cnxt, metric_namespace=None, metric_name=None):
         '''
         The show_watch method returns the datapoints for a metric
         arg1 -> RPC context.
@@ -583,7 +588,7 @@ class EngineService(service.Service):
         # DB API and schema does not yet allow us to easily query by
         # namespace/metric, but we will want this at some point
         # for now, the API can query all metric data and filter locally
-        if namespace is not None or metric_name is not None:
+        if metric_namespace is not None or metric_name is not None:
             logger.error("Filtering by namespace/metric not yet supported")
             return
 

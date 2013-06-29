@@ -21,6 +21,8 @@ from heat.common import exception
 from heat.engine import dependencies
 from heat.common import identifier
 from heat.engine import resource
+from heat.engine import resources
+from heat.engine import scheduler
 from heat.engine import template
 from heat.engine import timestamp
 from heat.engine.parameters import Parameters
@@ -60,6 +62,8 @@ class Stack(object):
     created_time = timestamp.Timestamp(db_api.stack_get, 'created_at')
     updated_time = timestamp.Timestamp(db_api.stack_get, 'updated_at')
 
+    _zones = None
+
     def __init__(self, context, stack_name, tmpl, parameters=None,
                  stack_id=None, state=None, state_description='',
                  timeout_mins=60, resolve_data=True, disable_rollback=True):
@@ -83,6 +87,8 @@ class Stack(object):
         self.state_description = state_description
         self.timeout_mins = timeout_mins
         self.disable_rollback = disable_rollback
+
+        resources.initialise()
 
         if parameters is None:
             parameters = Parameters(self.name, self.t)
@@ -118,7 +124,7 @@ class Stack(object):
 
     @staticmethod
     def _get_dependencies(resources):
-        '''Return the dependency graph for a list of resources'''
+        '''Return the dependency graph for a list of resources.'''
         deps = dependencies.Dependencies()
         for resource in resources:
             resource.add_dependencies(deps)
@@ -127,7 +133,7 @@ class Stack(object):
 
     @classmethod
     def load(cls, context, stack_id=None, stack=None, resolve_data=True):
-        '''Retrieve a Stack from the database'''
+        '''Retrieve a Stack from the database.'''
         if stack is None:
             stack = db_api.stack_get(context, stack_id)
         if stack is None:
@@ -194,7 +200,7 @@ class Stack(object):
         return reversed(self.dependencies)
 
     def __len__(self):
-        '''Return the number of resources'''
+        '''Return the number of resources.'''
         return len(self.resources)
 
     def __getitem__(self, key):
@@ -202,19 +208,19 @@ class Stack(object):
         return self.resources[key]
 
     def __setitem__(self, key, value):
-        '''Set the resource with the specified name to a specific value'''
+        '''Set the resource with the specified name to a specific value.'''
         self.resources[key] = value
 
     def __contains__(self, key):
-        '''Determine whether the stack contains the specified resource'''
+        '''Determine whether the stack contains the specified resource.'''
         return key in self.resources
 
     def keys(self):
-        '''Return a list of resource keys for the stack'''
+        '''Return a list of resource keys for the stack.'''
         return self.resources.keys()
 
     def __str__(self):
-        '''Return a human-readable string representation of the stack'''
+        '''Return a human-readable string representation of the stack.'''
         return 'Stack "%s"' % self.name
 
     def resource_by_refid(self, refid):
@@ -241,12 +247,13 @@ class Stack(object):
             try:
                 result = res.validate()
             except Exception as ex:
+                logger.exception(ex)
                 raise StackValidationFailed(message=str(ex))
             if result:
                 raise StackValidationFailed(message=result)
 
     def state_set(self, new_status, reason):
-        '''Update the stack state in the database'''
+        '''Update the stack state in the database.'''
         self.state = new_status
         self.state_description = reason
 
@@ -270,27 +277,24 @@ class Stack(object):
         reason = 'Stack successfully created'
         res = None
 
+        def resource_create(r):
+            return r.create
+
+        create_task = scheduler.DependencyTaskGroup(self.dependencies,
+                                                    resource_create)
+        create = scheduler.TaskRunner(create_task)
+
         with eventlet.Timeout(self.timeout_mins * 60) as tmo:
             try:
-                for res in self:
-                    if stack_status != self.CREATE_FAILED:
-                        result = res.create()
-                        if result:
-                            stack_status = self.CREATE_FAILED
-                            reason = 'Resource %s failed with: %s' % (str(res),
-                                                                      result)
-
-                    else:
-                        res.state_set(res.CREATE_FAILED,
-                                      'Stack creation aborted')
-
+                create()
+            except exception.ResourceFailure as ex:
+                stack_status = self.CREATE_FAILED
+                reason = 'Resource failed: %s' % str(ex)
             except eventlet.Timeout as t:
-                if t is tmo:
-                    stack_status = self.CREATE_FAILED
-                    reason = 'Timed out waiting for %s' % str(res)
-                else:
-                    # not my timeout
+                if t is not tmo:  # not my timeout
                     raise
+                stack_status = self.CREATE_FAILED
+                reason = 'Timed out'
 
         self.state_set(stack_status, reason)
 
@@ -342,51 +346,37 @@ class Stack(object):
             try:
                 # First delete any resources which are not in newstack
                 for res in reversed(self):
-                    if not res.name in newstack.keys():
+                    if res.name not in newstack.keys():
                         logger.debug("resource %s not found in updated stack"
                                      % res.name + " definition, deleting")
-                        result = res.destroy()
-                        if result:
-                            logger.error("Failed to remove %s : %s" %
-                                         (res.name, result))
-                            raise exception.ResourceUpdateFailed(
-                                resource_name=res.name)
-                        else:
-                            del self.resources[res.name]
-                            self.dependencies = self._get_dependencies(
-                                self.resources.itervalues())
+                        # res.destroy raises exception.ResourceFailure on error
+                        res.destroy()
+                        del self.resources[res.name]
+                        self.dependencies = self._get_dependencies(
+                            self.resources.itervalues())
 
                 # Then create any which are defined in newstack but not self
                 for res in newstack:
-                    if not res.name in self.keys():
+                    if res.name not in self.keys():
                         logger.debug("resource %s not found in current stack"
                                      % res.name + " definition, adding")
                         res.stack = self
                         self[res.name] = res
                         self.dependencies = self._get_dependencies(
                             self.resources.itervalues())
-                        result = self[res.name].create()
-                        if result:
-                            logger.error("Failed to add %s : %s" %
-                                         (res.name, result))
-                            raise exception.ResourceUpdateFailed(
-                                resource_name=res.name)
+                        # res.create raises exception.ResourceFailure on error
+                        scheduler.TaskRunner(res.create)()
 
                 # Now (the hard part :) update existing resources
                 # The Resource base class allows equality-test of resources,
                 # based on the parsed template snippet for the resource.
                 # If this  test fails, we call the underlying resource.update
                 #
-                # FIXME : Implement proper update logic for the resources
-                # AWS define three update strategies, applied depending
-                # on the resource and what is being updated within a
-                # resource :
-                # - Update with no interruption
-                # - Update with some interruption
-                # - Update requires replacement
-                #
-                # Currently all resource have a default handle_update method
-                # which returns "requires replacement" (res.UPDATE_REPLACE)
+                # Currently many resources have a default handle_update method
+                # which raises exception.ResourceReplace
+                # optionally they may implement non-interruptive logic and
+                # return UPDATE_COMPLETE. If resources do not implement the
+                # handle_update method at all, update will fail.
                 for res in newstack:
                     # Compare resolved pre/post update resource snippets,
                     # note the new resource snippet is resolved in the context
@@ -395,39 +385,22 @@ class Stack(object):
                     new_snippet = self.resolve_runtime_data(res.t)
 
                     if old_snippet != new_snippet:
-                        # Can fail if underlying resource class does not
-                        # implement update logic or update requires replacement
-                        retval = self[res.name].update(new_snippet)
-                        if retval == self[res.name].UPDATE_COMPLETE:
+                        # res.update raises exception.ResourceFailure on error
+                        # or exception.ResourceReplace if update requires
+                        # replacement
+                        try:
+                            self[res.name].update(new_snippet)
+                        except resource.UpdateReplace:
+                            # Resource requires replacement for update
+                            self[res.name].destroy()
+                            res.stack = self
+                            self[res.name] = res
+                            self.dependencies = self._get_dependencies(
+                                self.resources.itervalues())
+                            scheduler.TaskRunner(res.create)()
+                        else:
                             logger.info("Resource %s for stack %s updated" %
                                         (res.name, self.name))
-                        elif retval == self[res.name].UPDATE_REPLACE:
-                            logger.info("Resource %s for stack %s" %
-                                        (res.name, self.name) +
-                                        " update requires replacement")
-                            # Resource requires replacement for update
-                            result = self[res.name].destroy()
-                            if result:
-                                logger.error("Failed to delete %s : %s" %
-                                             (res.name, result))
-                                raise exception.ResourceUpdateFailed(
-                                    resource_name=res.name)
-                            else:
-                                res.stack = self
-                                self[res.name] = res
-                                self.dependencies = self._get_dependencies(
-                                    self.resources.itervalues())
-                                result = self[res.name].create()
-                                if result:
-                                    logger.error("Failed to create %s : %s" %
-                                                 (res.name, result))
-                                    raise exception.ResourceUpdateFailed(
-                                        resource_name=res.name)
-                        else:
-                            logger.error("Failed to %s %s" %
-                                         (action, res.name))
-                            raise exception.ResourceUpdateFailed(
-                                resource_name=res.name)
 
                 if action == self.UPDATE:
                     stack_status = self.UPDATE_COMPLETE
@@ -443,16 +416,13 @@ class Stack(object):
                 else:
                     # not my timeout
                     raise
-            except exception.ResourceUpdateFailed as e:
+            except exception.ResourceFailure as e:
                 reason = str(e) or "Error : %s" % type(e)
 
                 if action == self.UPDATE:
                     stack_status = self.UPDATE_FAILED
                     # If rollback is enabled, we do another update, with the
                     # existing template, so we roll back to the original state
-                    # Note - ensure nothing after the "flip the template..."
-                    # section above can raise ResourceUpdateFailed or this
-                    # will not work ;)
                     if self.disable_rollback:
                         stack_status = self.UPDATE_FAILED
                     else:
@@ -494,10 +464,11 @@ class Stack(object):
 
         failures = []
         for res in reversed(self):
-            result = res.destroy()
-            if result:
+            try:
+                res.destroy()
+            except exception.ResourceFailure as ex:
                 logger.error('Failed to delete %s error: %s' % (str(res),
-                                                                result))
+                                                                str(ex)))
                 failures.append(str(res))
 
         if failures:
@@ -513,6 +484,7 @@ class Stack(object):
             elif action == self.ROLLBACK:
                 self.state_set(self.ROLLBACK_COMPLETE, 'Rollback completed')
             db_api.stack_delete(self.context, self.id)
+            self.id = None
 
     def output(self, key):
         '''
@@ -532,15 +504,15 @@ class Stack(object):
         for res in reversed(deps):
             try:
                 res.destroy()
-            except Exception as ex:
+            except exception.ResourceFailure as ex:
                 failed = True
                 logger.error('delete: %s' % str(ex))
 
         for res in deps:
             if not failed:
                 try:
-                    res.create()
-                except Exception as ex:
+                    scheduler.TaskRunner(res.create)()
+                except exception.ResourceFailure as ex:
                     logger.exception('create')
                     failed = True
             else:
@@ -548,28 +520,38 @@ class Stack(object):
         # TODO(asalkeld) if any of this fails we Should
         # restart the whole stack
 
+    def get_availability_zones(self):
+        if self._zones is None:
+            self._zones = [
+                zone.zoneName for zone in
+                self.clients.nova().availability_zones.list(detailed=False)]
+        return self._zones
+
     def resolve_static_data(self, snippet):
-        return resolve_static_data(self.t, self.parameters, snippet)
+        return resolve_static_data(self.t, self, self.parameters, snippet)
 
     def resolve_runtime_data(self, snippet):
         return resolve_runtime_data(self.t, self.resources, snippet)
 
 
-def resolve_static_data(template, parameters, snippet):
+def resolve_static_data(template, stack, parameters, snippet):
     '''
     Resolve static parameters, map lookups, etc. in a template.
 
     Example:
 
-    >>> template = Template(template_format.parse(template_path))
+    >>> from heat.common import template_format
+    >>> template_str = '# JSON or YAML encoded template'
+    >>> template = Template(template_format.parse(template_str))
     >>> parameters = Parameters('stack', template, {'KeyName': 'my_key'})
-    >>> resolve_static_data(template, parameters, {'Ref': 'KeyName'})
+    >>> resolve_static_data(template, None, parameters, {'Ref': 'KeyName'})
     'my_key'
     '''
     return transform(snippet,
                      [functools.partial(template.resolve_param_refs,
                                         parameters=parameters),
-                      template.resolve_availability_zones,
+                      functools.partial(template.resolve_availability_zones,
+                                        stack=stack),
                       template.resolve_find_in_map,
                       template.reduce_joins])
 

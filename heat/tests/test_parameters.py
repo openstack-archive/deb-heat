@@ -13,16 +13,13 @@
 #    under the License.
 
 
-import unittest
-from nose.plugins.attrib import attr
+import testtools
 import json
 
 from heat.engine import parameters
 
 
-@attr(tag=['unit', 'parameters'])
-@attr(speed='fast')
-class ParameterTest(unittest.TestCase):
+class ParameterTest(testtools.TestCase):
     def test_new_string(self):
         p = parameters.Parameter('p', {'Type': 'String'})
         self.assertTrue(isinstance(p, parameters.StringParam))
@@ -271,9 +268,7 @@ params_schema = json.loads('''{
 }''')
 
 
-@attr(tag=['unit', 'parameters'])
-@attr(speed='fast')
-class ParametersTest(unittest.TestCase):
+class ParametersTest(testtools.TestCase):
     def test_pseudo_params(self):
         params = parameters.Parameters('test_stack', {"Parameters": {}})
 

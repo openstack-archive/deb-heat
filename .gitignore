@@ -3,7 +3,6 @@
 build
 dist
 heat.egg-info
-heat/versioninfo
 tags
 *.log
 heat-test.db
@@ -12,3 +11,6 @@ AUTHORS
 ChangeLog
 templates/cloudformation-examples
 .tox
+.coverage
+cover
+.testrepository

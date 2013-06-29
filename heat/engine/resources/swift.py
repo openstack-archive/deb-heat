@@ -29,10 +29,7 @@ class SwiftContainer(resource.Resource):
         'name': {'Type': 'String'},
         'X-Container-Read': {'Type': 'String'},
         'X-Container-Write': {'Type': 'String'},
-        'X-Container-Meta': {'Type': 'Map', 'Default': {}},
-        'DeletionPolicy': {
-            'Type': 'String',
-            'AllowedValues': ['Delete', 'Retain']}}
+        'X-Container-Meta': {'Type': 'Map', 'Default': {}}}
 
     def __init__(self, name, json_snippet, stack):
         super(SwiftContainer, self).__init__(name, json_snippet, stack)
@@ -77,13 +74,8 @@ class SwiftContainer(resource.Resource):
         self.swift().put_container(container, headers)
         self.resource_id_set(container)
 
-    def handle_update(self, json_snippet):
-        return self.UPDATE_REPLACE
-
     def handle_delete(self):
-        """Perform specified delete policy"""
-        if self.properties['DeletionPolicy'] == 'Retain':
-            return
+        """Perform specified delete policy."""
         logger.debug('SwiftContainer delete container %s' % self.resource_id)
         if self.resource_id is not None:
             try:
@@ -96,8 +88,6 @@ class SwiftContainer(resource.Resource):
 
     def FnGetAtt(self, key):
         url, token_id = self.swift().get_auth()
-        if self.resource_id:
-            headers = self.swift().head_container(self.resource_id)
         parsed = list(urlparse(url))
         if key == 'DomainName':
             return parsed[1].split(':')[0]
@@ -106,12 +96,20 @@ class SwiftContainer(resource.Resource):
                                      self.resource_id)
         elif key == 'RootURL':
             return '%s://%s%s' % (parsed[0], parsed[1], parsed[2])
-        elif key == 'ObjectCount':
-            return headers['x-container-object-count']
-        elif key == 'BytesUsed':
-            return headers['x-container-bytes-used']
-        elif key == 'HeadContainer':
-            return headers
+        elif self.resource_id and key in (
+                'ObjectCount', 'BytesUsed', 'HeadContainer'):
+            try:
+                headers = self.swift().head_container(self.resource_id)
+            except clients.swiftclient.ClientException as ex:
+                logger.warn("Head container failed: %s" % str(ex))
+                return None
+            else:
+                if key == 'ObjectCount':
+                    return headers['x-container-object-count']
+                elif key == 'BytesUsed':
+                    return headers['x-container-bytes-used']
+                elif key == 'HeadContainer':
+                    return headers
         else:
             raise exception.InvalidTemplateAttribute(resource=self.name,
                                                      key=key)

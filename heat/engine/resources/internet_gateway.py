@@ -43,7 +43,7 @@ class InternetGateway(resource.Resource):
         ext_filter = {'router:external': True}
         ext_nets = client.list_networks(**ext_filter)['networks']
         if len(ext_nets) != 1:
-            # TODO sbaker if there is more than one external network
+            # TODO(sbaker) if there is more than one external network
             # add a heat configuration variable to set the ID of
             # the default one
             raise exception.Error(
@@ -57,9 +57,6 @@ class InternetGateway(resource.Resource):
 
     def handle_delete(self):
         pass
-
-    def handle_update(self, json_snippet):
-        return self.UPDATE_REPLACE
 
 
 class VPCGatewayAttachment(resource.Resource):
@@ -98,9 +95,6 @@ class VPCGatewayAttachment(resource.Resource):
             except QuantumClientException as ex:
                 if ex.status_code != 404:
                     raise ex
-
-    def handle_update(self, json_snippet):
-        return self.UPDATE_REPLACE
 
 
 def resource_mapping():

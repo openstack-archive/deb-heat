@@ -20,12 +20,15 @@ import os
 import pkgutil
 from urlparse import urlparse
 
-import eventlet
 from oslo.config import cfg
 
 from heat.engine import clients
 from heat.engine import resource
+from heat.engine import scheduler
+from heat.engine.resources import volume
+
 from heat.common import exception
+from heat.engine.resources.network_interface import NetworkInterface
 
 from heat.openstack.common import log as logging
 
@@ -85,13 +88,11 @@ class Instance(resource.Resource):
                          'RamDiskId': {'Type': 'String',
                                        'Implemented': False},
                          'SecurityGroups': {'Type': 'List'},
-                         'SecurityGroupIds': {'Type': 'List',
-                                              'Implemented': False},
+                         'SecurityGroupIds': {'Type': 'List'},
                          'NetworkInterfaces': {'Type': 'List'},
                          'SourceDestCheck': {'Type': 'Boolean',
                                              'Implemented': False},
-                         'SubnetId': {'Type': 'String',
-                                      'Implemented': False},
+                         'SubnetId': {'Type': 'String'},
                          'Tags': {'Type': 'List',
                                   'Schema': {'Type': 'Map',
                                              'Schema': tags_schema}},
@@ -110,11 +111,21 @@ class Instance(resource.Resource):
     # is required for a single item to get a tuple not a string
     update_allowed_keys = ('Metadata',)
 
+    _deferred_server_statuses = ['BUILD',
+                                 'HARD_REBOOT',
+                                 'PASSWORD',
+                                 'REBOOT',
+                                 'RESCUE',
+                                 'RESIZE',
+                                 'REVERT_RESIZE',
+                                 'SHUTOFF',
+                                 'SUSPENDED',
+                                 'VERIFY_RESIZE']
+
     def __init__(self, name, json_snippet, stack):
         super(Instance, self).__init__(name, json_snippet, stack)
         self.ipaddress = None
         self.mime_string = None
-        self._server_status = None
 
     def _set_ipaddress(self, networks):
         '''
@@ -221,29 +232,55 @@ class Instance(resource.Resource):
 
         return self.mime_string
 
-    @staticmethod
-    def _build_nics(network_interfaces):
-        if not network_interfaces:
-            return None
+    def _build_nics(self, network_interfaces, subnet_id=None):
 
-        nics = []
-        for nic in network_interfaces:
-            if isinstance(nic, basestring):
-                nics.append({
-                    'NetworkInterfaceId': nic,
-                    'DeviceIndex': len(nics)})
-            else:
-                nics.append(nic)
-        sorted_nics = sorted(nics, key=lambda nic: int(nic['DeviceIndex']))
+        nics = None
 
-        return [{'port-id': nic['NetworkInterfaceId']} for nic in sorted_nics]
+        if network_interfaces:
+            unsorted_nics = []
+            for entry in network_interfaces:
+                nic = (entry
+                       if not isinstance(entry, basestring)
+                       else {'NetworkInterfaceId': entry,
+                             'DeviceIndex': len(unsorted_nics)})
+                unsorted_nics.append(nic)
+            sorted_nics = sorted(unsorted_nics,
+                                 key=lambda nic: int(nic['DeviceIndex']))
+            nics = [{'port-id': nic['NetworkInterfaceId']}
+                    for nic in sorted_nics]
+        else:
+            # if SubnetId property in Instance, ensure subnet exists
+            if subnet_id:
+                quantumclient = self.quantum()
+                network_id = NetworkInterface.network_id_from_subnet_id(
+                    quantumclient, subnet_id)
+                # if subnet verified, create a port to use this subnet
+                # if port is not created explicitly, nova will choose
+                # the first subnet in the given network.
+                if network_id:
+                    fixed_ip = {'subnet_id': subnet_id}
+                    props = {
+                        'admin_state_up': True,
+                        'network_id': network_id,
+                        'fixed_ips': [fixed_ip]
+                    }
+                    port = quantumclient.create_port({'port': props})['port']
+                    nics = [{'port-id': port['id']}]
+
+        return nics
+
+    def _get_security_groups(self):
+        security_groups = []
+        for property in ('SecurityGroups', 'SecurityGroupIds'):
+            if self.properties.get(property) is not None:
+                for sg in self.properties.get(property):
+                    security_groups.append(sg)
+        if not security_groups:
+            security_groups = None
+        return security_groups
 
     def handle_create(self):
-        if self.properties.get('SecurityGroups') is None:
-            security_groups = None
-        else:
-            security_groups = [self.physical_resource_name_find(sg)
-                               for sg in self.properties.get('SecurityGroups')]
+        security_groups = self._get_security_groups()
 
         userdata = self.properties['UserData'] or ''
         flavor = self.properties['InstanceType']
@@ -289,7 +326,8 @@ class Instance(resource.Resource):
         else:
             scheduler_hints = None
 
-        nics = self._build_nics(self.properties['NetworkInterfaces'])
+        nics = self._build_nics(self.properties['NetworkInterfaces'],
+                                subnet_id=self.properties['SubnetId'])
 
         server_userdata = self._build_userdata(userdata)
         server = None
@@ -311,59 +349,49 @@ class Instance(resource.Resource):
             if server is not None:
                 self.resource_id_set(server.id)
 
-        self._server_status = server.status
+        attach_tasks = (volume.VolumeAttachTask(self.stack,
+                                                self.resource_id,
+                                                volume_id,
+                                                device)
+                        for volume_id, device in self.volumes())
+        attach_volumes_task = scheduler.PollingTaskGroup(attach_tasks)
 
-    def check_active(self):
-        if self._server_status == 'ACTIVE':
-            return True
+        return server, scheduler.TaskRunner(attach_volumes_task)
 
-        server = self.nova().servers.get(self.resource_id)
-        self._server_status = server.status
-        if server.status == 'BUILD':
-            return False
-        if server.status == 'ACTIVE':
-            self._set_ipaddress(server.networks)
-            self.attach_volumes()
-            return True
+    def check_create_complete(self, cookie):
+        server, volume_attach = cookie
+
+        if not volume_attach.started():
+            if server.status != 'ACTIVE':
+                server.get()
+
+            if server.status in self._deferred_server_statuses:
+                return False
+            elif server.status == 'ACTIVE':
+                self._set_ipaddress(server.networks)
+                volume_attach.start()
+                return volume_attach.done()
+            else:
+                raise exception.Error('%s instance[%s] status[%s]' %
+                                      ('nova reported unexpected',
+                                       self.name, server.status))
         else:
-            raise exception.Error('%s instance[%s] status[%s]' %
-                                  ('nova reported unexpected',
-                                   self.name, server.status))
+            return volume_attach.step()
 
-    def attach_volumes(self):
-        if not self.properties['Volumes']:
-            return
-        server_id = self.resource_id
-        for vol in self.properties['Volumes']:
-            if 'DeviceId' in vol:
-                dev = vol['DeviceId']
-            else:
-                dev = vol['Device']
-            self.stack.clients.attach_volume_to_instance(server_id,
-                                                         vol['VolumeId'],
-                                                         dev)
+    def volumes(self):
+        """
+        Return an iterator over (volume_id, device) tuples for all volumes
+        that should be attached to this instance.
+        """
+        volumes = self.properties['Volumes']
+        if volumes is None:
+            return []
 
-    def detach_volumes(self):
-        server_id = self.resource_id
-        for vol in self.properties['Volumes']:
-            self.stack.clients.detach_volume_from_instance(server_id,
-                                                           vol['VolumeId'])
+        return ((vol['VolumeId'], vol['Device']) for vol in volumes)
 
-    def handle_update(self, json_snippet):
-        status = self.UPDATE_REPLACE
-        try:
-            tmpl_diff = self.update_template_diff(json_snippet)
-        except NotImplementedError:
-            return self.UPDATE_REPLACE
-
-        for k in tmpl_diff:
-            if k == 'Metadata':
-                self.metadata = json_snippet.get('Metadata', {})
-                status = self.UPDATE_COMPLETE
-            else:
-                return self.UPDATE_REPLACE
-
-        return status
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
+        if 'Metadata' in tmpl_diff:
+            self.metadata = tmpl_diff.get('Metadata', {})
 
     def metadata_update(self, new_metadata=None):
         '''
@@ -381,19 +409,36 @@ class Instance(resource.Resource):
             return res
 
         # check validity of key
-        try:
-            key_name = self.properties['KeyName']
-            if key_name is None:
-                return
-        except ValueError:
-            return
-        else:
+        key_name = self.properties.get('KeyName', None)
+        if key_name:
             keypairs = self.nova().keypairs.list()
-            for k in keypairs:
-                if k.name == key_name:
-                    return
-        return {'Error':
-                'Provided KeyName is not registered with nova'}
+            if not any(k.name == key_name for k in keypairs):
+                return {'Error':
+                        'Provided KeyName is not registered with nova'}
+
+        # check validity of security groups vs. network interfaces
+        security_groups = self._get_security_groups()
+        if security_groups and self.properties.get('NetworkInterfaces'):
+            return {'Error':
+                    'Cannot define both SecurityGroups/SecurityGroupIds and '
+                    'NetworkInterfaces properties.'}
+
+        return
+
+    def _delete_server(self, server):
+        '''
+        Return a co-routine that deletes the server and waits for it to
+        disappear from Nova.
+        '''
+        server.delete()
+
+        while True:
+            yield
+
+            try:
+                server.get()
+            except clients.novaclient.exceptions.NotFound:
+                break
 
     def handle_delete(self):
         '''
@@ -402,21 +447,20 @@ class Instance(resource.Resource):
         if self.resource_id is None:
             return
 
-        if self.properties['Volumes']:
-            self.detach_volumes()
+        detach_tasks = (volume.VolumeDetachTask(self.stack,
+                                                self.resource_id,
+                                                volume_id)
+                        for volume_id, device in self.volumes())
+        scheduler.TaskRunner(scheduler.PollingTaskGroup(detach_tasks))()
 
         try:
             server = self.nova().servers.get(self.resource_id)
         except clients.novaclient.exceptions.NotFound:
             pass
         else:
-            server.delete()
-            while True:
-                try:
-                    server.get()
-                except clients.novaclient.exceptions.NotFound:
-                    break
-                eventlet.sleep(0.2)
+            delete = scheduler.TaskRunner(self._delete_server, server)
+            delete(wait_time=0.2)
+
         self.resource_id = None
 
 

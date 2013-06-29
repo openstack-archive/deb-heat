@@ -31,7 +31,8 @@ import time
 
 import eventlet
 import eventlet.greenio
-from eventlet.green import socket, ssl
+from eventlet.green import socket
+from eventlet.green import ssl
 import eventlet.wsgi
 from lxml import etree
 from oslo.config import cfg
@@ -79,7 +80,7 @@ class WritableLogger(object):
 def get_bind_addr(conf, default_port=None):
     """Return the host and port to bind to."""
     for opt in bind_opts:
-        if not opt.name in conf:
+        if opt.name not in conf:
             conf.register_opt(opt)
     return (conf.bind_host, conf.bind_port or default_port)
 
@@ -124,7 +125,7 @@ def get_socket(conf, default_port):
             if use_ssl:
                 sock = ssl.wrap_socket(sock, certfile=cert_file,
                                        keyfile=key_file)
-        except socket.error, err:
+        except socket.error as err:
             if err.args[0] != errno.EADDRINUSE:
                 raise
             eventlet.sleep(0.1)
@@ -199,7 +200,7 @@ class Server(object):
                     self.logger.error(_('Removing dead child %s') % pid)
                     self.children.remove(pid)
                     self.run_child()
-            except OSError, err:
+            except OSError as err:
                 if err.errno not in (errno.EINTR, errno.ECHILD):
                     raise
             except KeyboardInterrupt:
@@ -244,7 +245,7 @@ class Server(object):
                                  custom_pool=self.pool,
                                  url_length_limit=URL_LENGTH_LIMIT,
                                  log=WritableLogger(self.logger))
-        except socket.error, err:
+        except socket.error as err:
             if err[0] != errno.EINVAL:
                 raise
         self.pool.waitall()
@@ -414,7 +415,7 @@ class Request(webob.Request):
 
     def get_content_type(self, allowed_content_types):
         """Determine content type of the request body."""
-        if not "Content-Type" in self.headers:
+        if "Content-Type" not in self.headers:
             raise exception.InvalidContentType(content_type=None)
 
         content_type = self.content_type

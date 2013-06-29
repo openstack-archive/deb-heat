@@ -13,79 +13,80 @@
 #    under the License.
 
 import copy
-import os
 
-import eventlet
-import unittest
 import mox
 
-from nose.plugins.attrib import attr
-
-from heat.tests.v1_1 import fakes
-from heat.common import context
+from heat.common import exception
 from heat.common import template_format
 from heat.engine.resources import autoscaling as asc
 from heat.engine.resources import instance
-from heat.engine.resources import loadbalancer
-from heat.engine import parser
+from heat.engine import resource
+from heat.engine import scheduler
+from heat.tests.common import HeatTestCase
+from heat.tests.utils import setup_dummy_db
+from heat.tests.utils import parse_stack
+
+ig_template = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Template to create multiple instances.",
+  "Parameters" : {},
+  "Resources" : {
+    "JobServerGroup" : {
+      "Type" : "OS::Heat::InstanceGroup",
+      "Properties" : {
+        "LaunchConfigurationName" : { "Ref" : "JobServerConfig" },
+        "Size" : "1",
+        "AvailabilityZones" : ["nova"]
+      }
+    },
+
+    "JobServerConfig" : {
+      "Type" : "AWS::AutoScaling::LaunchConfiguration",
+      "Properties": {
+        "ImageId"           : "foo",
+        "InstanceType"      : "m1.large",
+        "KeyName"           : "test",
+        "SecurityGroups"    : [ "sg-1" ],
+        "UserData"          : "jsconfig data"
+      }
+    }
+  }
+}
+'''
 
 
-@attr(tag=['unit', 'resource'])
-@attr(speed='fast')
-class InstanceGroupTest(unittest.TestCase):
+class InstanceGroupTest(HeatTestCase):
     def setUp(self):
-        self.fc = fakes.FakeClient()
-        self.m = mox.Mox()
-        self.m.StubOutWithMock(loadbalancer.LoadBalancer, 'reload')
-
-    def tearDown(self):
-        self.m.UnsetStubs()
-        print "InstanceGroupTest teardown complete"
-
-    def load_template(self):
-        self.path = os.path.dirname(os.path.realpath(__file__)).\
-            replace('heat/tests', 'templates')
-        f = open("%s/InstanceGroup.template" % self.path)
-        t = template_format.parse(f.read())
-        f.close()
-        return t
-
-    def parse_stack(self, t):
-        ctx = context.RequestContext.from_dict({
-            'tenant': 'test_tenant',
-            'username': 'test_username',
-            'password': 'password',
-            'auth_url': 'http://localhost:5000/v2.0'})
-        template = parser.Template(t)
-        params = parser.Parameters('test_stack', template, {'KeyName': 'test'})
-        stack = parser.Stack(ctx, 'test_stack', template, params)
-
-        return stack
+        super(InstanceGroupTest, self).setUp()
+        setup_dummy_db()
 
     def _stub_create(self, num):
-        self.m.StubOutWithMock(eventlet, 'sleep')
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
 
-        self.m.StubOutWithMock(instance.Instance, 'create')
-        self.m.StubOutWithMock(instance.Instance, 'check_active')
+        self.m.StubOutWithMock(instance.Instance, 'handle_create')
+        self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
+        cookie = object()
         for x in range(num):
-            instance.Instance.create().AndReturn(None)
-        instance.Instance.check_active().AndReturn(False)
-        eventlet.sleep(mox.IsA(int)).AndReturn(None)
-        instance.Instance.check_active().MultipleTimes().AndReturn(True)
+            instance.Instance.handle_create().AndReturn(cookie)
+        instance.Instance.check_create_complete(cookie).AndReturn(False)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
+        instance.Instance.check_create_complete(
+            cookie).MultipleTimes().AndReturn(True)
 
     def create_instance_group(self, t, stack, resource_name):
-        resource = asc.InstanceGroup(resource_name,
-                                     t['Resources'][resource_name],
-                                     stack)
-        self.assertEqual(None, resource.validate())
-        self.assertEqual(None, resource.create())
-        self.assertEqual(asc.InstanceGroup.CREATE_COMPLETE, resource.state)
-        return resource
+        rsrc = asc.InstanceGroup(resource_name,
+                                 t['Resources'][resource_name],
+                                 stack)
+        self.assertEqual(None, rsrc.validate())
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual(asc.InstanceGroup.CREATE_COMPLETE, rsrc.state)
+        return rsrc
 
     def test_instance_group(self):
 
-        t = self.load_template()
-        stack = self.parse_stack(t)
+        t = template_format.parse(ig_template)
+        stack = parse_stack(t)
 
         # start with min then delete
         self._stub_create(1)
@@ -93,47 +94,47 @@ class InstanceGroupTest(unittest.TestCase):
         instance.Instance.FnGetAtt('PublicIp').AndReturn('1.2.3.4')
 
         self.m.ReplayAll()
-        resource = self.create_instance_group(t, stack, 'JobServerGroup')
+        rsrc = self.create_instance_group(t, stack, 'JobServerGroup')
 
-        self.assertEqual('JobServerGroup', resource.FnGetRefId())
-        self.assertEqual('1.2.3.4', resource.FnGetAtt('InstanceList'))
-        self.assertEqual('JobServerGroup-0', resource.resource_id)
-        self.assertEqual(asc.InstanceGroup.UPDATE_REPLACE,
-                         resource.handle_update({}))
+        self.assertEqual('JobServerGroup', rsrc.FnGetRefId())
+        self.assertEqual('1.2.3.4', rsrc.FnGetAtt('InstanceList'))
+        self.assertEqual('JobServerGroup-0', rsrc.resource_id)
 
-        resource.delete()
+        rsrc.delete()
         self.m.VerifyAll()
 
     def test_missing_image(self):
 
-        t = self.load_template()
-        stack = self.parse_stack(t)
+        t = template_format.parse(ig_template)
+        stack = parse_stack(t)
 
-        resource = asc.InstanceGroup('JobServerGroup',
-                                     t['Resources']['JobServerGroup'],
-                                     stack)
+        rsrc = asc.InstanceGroup('JobServerGroup',
+                                 t['Resources']['JobServerGroup'],
+                                 stack)
 
-        self.m.StubOutWithMock(instance.Instance, 'create')
-        instance.Instance.create().AndReturn('ImageNotFound: bla')
+        self.m.StubOutWithMock(instance.Instance, 'handle_create')
+        not_found = exception.ImageNotFound(image_name='bla')
+        instance.Instance.handle_create().AndRaise(not_found)
 
         self.m.ReplayAll()
 
-        self.assertEqual(resource.create(), 'ImageNotFound: bla')
-        self.assertEqual(asc.InstanceGroup.CREATE_FAILED, resource.state)
+        create = scheduler.TaskRunner(rsrc.create)
+        self.assertRaises(exception.ResourceFailure, create)
+        self.assertEqual(asc.InstanceGroup.CREATE_FAILED, rsrc.state)
 
         self.m.VerifyAll()
 
-    def test_update_size(self):
-        t = self.load_template()
+    def test_handle_update_size(self):
+        t = template_format.parse(ig_template)
         properties = t['Resources']['JobServerGroup']['Properties']
         properties['Size'] = '2'
-        stack = self.parse_stack(t)
+        stack = parse_stack(t)
 
         self._stub_create(2)
         self.m.ReplayAll()
-        resource = self.create_instance_group(t, stack, 'JobServerGroup')
+        rsrc = self.create_instance_group(t, stack, 'JobServerGroup')
         self.assertEqual('JobServerGroup-0,JobServerGroup-1',
-                         resource.resource_id)
+                         rsrc.resource_id)
 
         self.m.VerifyAll()
         self.m.UnsetStubs()
@@ -149,15 +150,61 @@ class InstanceGroupTest(unittest.TestCase):
 
         self.m.ReplayAll()
 
-        update_snippet = copy.deepcopy(resource.parsed_template())
+        update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['Size'] = '5'
-        self.assertEqual(asc.AutoScalingGroup.UPDATE_COMPLETE,
-                         resource.handle_update(update_snippet))
+        tmpl_diff = {'Properties': {'Size': '5'}}
+        prop_diff = {'Size': '5'}
+        self.assertEqual(None, rsrc.handle_update(update_snippet, tmpl_diff,
+                         prop_diff))
         assert_str = ','.join(['JobServerGroup-%s' % x for x in range(5)])
         self.assertEqual(assert_str,
-                         resource.resource_id)
+                         rsrc.resource_id)
         self.assertEqual('10.0.0.2,10.0.0.3,10.0.0.4,10.0.0.5,10.0.0.6',
-                         resource.FnGetAtt('InstanceList'))
+                         rsrc.FnGetAtt('InstanceList'))
 
-        resource.delete()
+        rsrc.delete()
+        self.m.VerifyAll()
+
+    def test_update_fail_badkey(self):
+        t = template_format.parse(ig_template)
+        properties = t['Resources']['JobServerGroup']['Properties']
+        properties['Size'] = '2'
+        stack = parse_stack(t)
+
+        self._stub_create(2)
+        self.m.ReplayAll()
+        rsrc = self.create_instance_group(t, stack, 'JobServerGroup')
+        self.assertEqual('JobServerGroup-0,JobServerGroup-1',
+                         rsrc.resource_id)
+
+        self.m.ReplayAll()
+
+        update_snippet = copy.deepcopy(rsrc.parsed_template())
+        update_snippet['Metadata'] = 'notallowedforupdate'
+        self.assertRaises(resource.UpdateReplace,
+                          rsrc.update, update_snippet)
+
+        rsrc.delete()
+        self.m.VerifyAll()
+
+    def test_update_fail_badprop(self):
+        t = template_format.parse(ig_template)
+        properties = t['Resources']['JobServerGroup']['Properties']
+        properties['Size'] = '2'
+        stack = parse_stack(t)
+
+        self._stub_create(2)
+        self.m.ReplayAll()
+        rsrc = self.create_instance_group(t, stack, 'JobServerGroup')
+        self.assertEqual('JobServerGroup-0,JobServerGroup-1',
+                         rsrc.resource_id)
+
+        self.m.ReplayAll()
+
+        update_snippet = copy.deepcopy(rsrc.parsed_template())
+        update_snippet['Properties']['LaunchConfigurationName'] = 'wibble'
+        self.assertRaises(resource.UpdateReplace,
+                          rsrc.update, update_snippet)
+
+        rsrc.delete()
         self.m.VerifyAll()

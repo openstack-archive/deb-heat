@@ -15,17 +15,16 @@
 
 import mox
 
-import eventlet
-import unittest
-from nose.plugins.attrib import attr
-
 from oslo.config import cfg
 from heat.tests import fakes
+from heat.tests.common import HeatTestCase
+from heat.tests.utils import setup_dummy_db
 from heat.tests.utils import stack_delete_after
 
 from heat.common import identifier
 from heat.common import template_format
 from heat.engine import parser
+from heat.engine import scheduler
 from heat.engine import service
 from heat.engine.resources import instance
 from heat.common import context
@@ -117,28 +116,22 @@ test_template_waitcondition = '''
 '''
 
 
-@attr(tag=['unit', 'resource', 'Metadata'])
-@attr(speed='slow')
-class MetadataRefreshTest(unittest.TestCase):
+class MetadataRefreshTest(HeatTestCase):
     '''
     The point of the test is to confirm that metadata gets updated
     when FnGetAtt() returns something different.
     gets called.
     '''
     def setUp(self):
-        self.m = mox.Mox()
-        self.m.StubOutWithMock(eventlet, 'sleep')
+        super(MetadataRefreshTest, self).setUp()
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
         self.fc = fakes.FakeKeystoneClient()
-
-    def tearDown(self):
-        self.m.UnsetStubs()
+        setup_dummy_db()
 
     # Note tests creating a stack should be decorated with @stack_delete_after
     # to ensure the stack is properly cleaned up
-    def create_stack(self, stack_name='test_stack',
-                     template=test_template_metadata, params={},
-                     stub=True):
-        temp = template_format.parse(template)
+    def create_stack(self, stack_name='test_stack', params={}):
+        temp = template_format.parse(test_template_metadata)
         template = parser.Template(temp)
         parameters = parser.Parameters(stack_name, template, params)
         ctx = context.get_admin_context()
@@ -148,12 +141,12 @@ class MetadataRefreshTest(unittest.TestCase):
 
         self.stack_id = stack.store()
 
-        if stub:
-            self.m.StubOutWithMock(instance.Instance, 'handle_create')
-            self.m.StubOutWithMock(instance.Instance, 'check_active')
-            instance.Instance.handle_create().AndReturn(None)
-            instance.Instance.check_active().AndReturn(True)
-            self.m.StubOutWithMock(instance.Instance, 'FnGetAtt')
+        self.m.StubOutWithMock(instance.Instance, 'handle_create')
+        self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
+        for cookie in (object(), object()):
+            instance.Instance.handle_create().AndReturn(cookie)
+            instance.Instance.check_create_complete(cookie).AndReturn(True)
+        self.m.StubOutWithMock(instance.Instance, 'FnGetAtt')
 
         return stack
 
@@ -168,6 +161,8 @@ class MetadataRefreshTest(unittest.TestCase):
 
         self.m.ReplayAll()
         self.stack.create()
+
+        self.assertEqual(self.stack.state, self.stack.CREATE_COMPLETE)
 
         s1 = self.stack.resources['S1']
         s2 = self.stack.resources['S2']
@@ -184,11 +179,10 @@ class MetadataRefreshTest(unittest.TestCase):
         self.m.VerifyAll()
 
 
-@attr(tag=['unit', 'resource', 'Metadata'])
-@attr(speed='slow')
-class WaitCondMetadataUpdateTest(unittest.TestCase):
+class WaitCondMetadataUpdateTest(HeatTestCase):
     def setUp(self):
-        self.m = mox.Mox()
+        super(WaitCondMetadataUpdateTest, self).setUp()
+        setup_dummy_db()
         self.ctx = context.get_admin_context()
         self.ctx.tenant_id = 'test_tenant'
         self.fc = fakes.FakeKeystoneClient()
@@ -196,14 +190,10 @@ class WaitCondMetadataUpdateTest(unittest.TestCase):
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://127.0.0.1:8000/v1/waitcondition')
 
-    def tearDown(self):
-        self.m.UnsetStubs()
-
     # Note tests creating a stack should be decorated with @stack_delete_after
     # to ensure the stack is properly cleaned up
-    def create_stack(self, stack_name='test_stack',
-                     template=test_template_metadata):
-        temp = template_format.parse(template)
+    def create_stack(self, stack_name='test_stack'):
+        temp = template_format.parse(test_template_waitcondition)
         template = parser.Template(temp)
         parameters = parser.Parameters(stack_name, template, {})
         stack = parser.Stack(self.ctx, stack_name, template, parameters,
@@ -212,9 +202,10 @@ class WaitCondMetadataUpdateTest(unittest.TestCase):
         self.stack_id = stack.store()
 
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
-        self.m.StubOutWithMock(instance.Instance, 'check_active')
-        instance.Instance.handle_create().MultipleTimes().AndReturn(None)
-        instance.Instance.check_active().AndReturn(True)
+        self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
+        cookie = object()
+        instance.Instance.handle_create().AndReturn(cookie)
+        instance.Instance.check_create_complete(cookie).AndReturn(True)
 
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'keystone')
         wc.WaitConditionHandle.keystone().MultipleTimes().AndReturn(self.fc)
@@ -224,7 +215,7 @@ class WaitCondMetadataUpdateTest(unittest.TestCase):
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'identifier')
         wc.WaitConditionHandle.identifier().MultipleTimes().AndReturn(id)
 
-        self.m.StubOutWithMock(eventlet, 'sleep')
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
 
         return stack
 
@@ -238,7 +229,7 @@ class WaitCondMetadataUpdateTest(unittest.TestCase):
         5 assert valid instance metadata
         '''
 
-        self.stack = self.create_stack(template=test_template_waitcondition)
+        self.stack = self.create_stack()
 
         watch = self.stack['WC']
         inst = self.stack['S1']
@@ -257,11 +248,13 @@ class WaitCondMetadataUpdateTest(unittest.TestCase):
         def post_success(sleep_time):
             update_metadata('123', 'foo', 'bar')
 
-        eventlet.sleep(mox.IsA(int)).WithSideEffects(check_empty)
-        eventlet.sleep(mox.IsA(int)).WithSideEffects(post_success)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).WithSideEffects(check_empty)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).WithSideEffects(post_success)
 
         self.m.ReplayAll()
         self.stack.create()
+
+        self.assertEqual(self.stack.state, self.stack.CREATE_COMPLETE)
 
         self.assertEqual(watch.FnGetAtt('Data'), '{"123": "foo"}')
         self.assertEqual(inst.metadata['test'], '{"123": "foo"}')

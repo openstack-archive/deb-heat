@@ -52,7 +52,7 @@ class StackController(object):
         self.policy = policy.Enforcer(scope='cloudformation')
 
     def _enforce(self, req, action):
-        """Authorize an action against the policy.json"""
+        """Authorize an action against the policy.json."""
         try:
             self.policy.enforce(req.context, action, {})
         except heat_exception.Forbidden:
@@ -133,7 +133,7 @@ class StackController(object):
             result = api_utils.reformat_dict_keys(keymap, s)
 
             # AWS docs indicate DeletionTime is ommitted for current stacks
-            # This is still TODO in the engine, we don't keep data for
+            # This is still TODO(unknown) in the engine, we don't keep data for
             # stacks after they are deleted
             if engine_api.STACK_DELETION_TIME in s:
                 result['DeletionTime'] = s[engine_api.STACK_DELETION_TIME]
@@ -279,7 +279,7 @@ class StackController(object):
             the engine API.  FIXME: we currently only support a subset of
             the AWS defined parameters (both here and in the engine)
             """
-            # TODO : Capabilities, NotificationARNs
+            # TODO(shardy) : Capabilities, NotificationARNs
             keymap = {'TimeoutInMinutes': engine_api.PARAM_TIMEOUT,
                       'DisableRollback': engine_api.PARAM_DISABLE_ROLLBACK}
 
@@ -403,8 +403,23 @@ class StackController(object):
             return exception.HeatInvalidParameterValueError(detail=msg)
 
         logger.info('validate_template')
+
+        def format_validate_parameter(key, value):
+            """
+            Reformat engine output into the AWS "ValidateTemplate" format
+            """
+
+            return {
+                'ParameterKey': key,
+                'DefaultValue': value.get(engine_api.PARAM_DEFAULT, ''),
+                'Description': value.get(engine_api.PARAM_DESCRIPTION, ''),
+                'NoEcho': value.get(engine_api.PARAM_NO_ECHO, 'false')
+            }
+
         try:
             res = self.engine_rpcapi.validate_template(con, template)
+            res['Parameters'] = [format_validate_parameter(k, v)
+                                 for k, v in res['Parameters'].items()]
             return api_utils.format_response('ValidateTemplate', res)
         except rpc_common.RemoteError as ex:
             return exception.map_remote_error(ex)

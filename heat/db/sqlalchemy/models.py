@@ -20,7 +20,8 @@ from sqlalchemy.orm import relationship, backref, object_mapper
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import types as types
-from json import dumps, loads
+from json import dumps
+from json import loads
 from heat.openstack.common import uuidutils
 from heat.openstack.common import timeutils
 from heat.db.sqlalchemy.session import get_session
@@ -55,7 +56,7 @@ class HeatBase(object):
         session.add(self)
         try:
             session.flush()
-        except IntegrityError, e:
+        except IntegrityError as e:
             if str(e).endswith('is not unique'):
                 raise exception.Duplicate(str(e))
             else:
@@ -106,7 +107,7 @@ class HeatBase(object):
         return n, getattr(self, n)
 
     def update(self, values):
-        """Make the model object behave like a dict"""
+        """Make the model object behave like a dict."""
         for k, v in values.iteritems():
             setattr(self, k, v)
 

@@ -12,19 +12,19 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
-import unittest
-import mox
-
-from nose.plugins.attrib import attr
+from testtools import skipIf
 
 from heat.tests.v1_1 import fakes
 from heat.common import exception
 from heat.common import template_format
+from heat.engine import resources
 from heat.engine.resources import instance as instances
 from heat.engine import service
-import heat.db as db_api
+from heat.openstack.common.importutils import try_import
+import heat.db.api as db_api
 from heat.engine import parser
+from heat.tests.common import HeatTestCase
+from heat.tests.utils import setup_dummy_db
 
 test_template_volumeattach = '''
 {
@@ -33,6 +33,7 @@ test_template_volumeattach = '''
   "Resources" : {
     "WikiDatabase": {
       "Type": "AWS::EC2::Instance",
+      "DeletionPolicy": "Delete",
       "Properties": {
         "ImageId": "image_name",
         "InstanceType": "m1.large",
@@ -207,17 +208,235 @@ test_template_findinmap_invalid = '''
 }
 '''
 
+test_template_invalid_property = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "test.",
+  "Parameters" : {
 
-@attr(tag=['unit', 'validate'])
-@attr(speed='fast')
-class validateTest(unittest.TestCase):
+    "KeyName" : {
+''' + \
+    '"Description" : "Name of an existing EC2' + \
+    'KeyPair to enable SSH access to the instances",' + \
+    '''
+          "Type" : "String"
+        }
+      },
+
+      "Resources" : {
+        "WikiDatabase": {
+          "Type": "AWS::EC2::Instance",
+          "Properties": {
+            "ImageId": "image_name",
+            "InstanceType": "m1.large",
+            "KeyName": { "Ref" : "KeyName" },
+            "UnknownProperty": "unknown"
+          }
+        }
+      }
+    }
+    '''
+
+test_template_unimplemented_property = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "test.",
+  "Parameters" : {
+
+    "KeyName" : {
+''' + \
+    '"Description" : "Name of an existing EC2' + \
+    'KeyPair to enable SSH access to the instances",' + \
+    '''
+          "Type" : "String"
+        }
+      },
+
+      "Resources" : {
+        "WikiDatabase": {
+          "Type": "AWS::EC2::Instance",
+          "Properties": {
+            "ImageId": "image_name",
+            "InstanceType": "m1.large",
+            "KeyName": { "Ref" : "KeyName" },
+            "SourceDestCheck": "false"
+          }
+        }
+      }
+    }
+    '''
+
+test_template_invalid_deletion_policy = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "test.",
+  "Parameters" : {
+
+    "KeyName" : {
+''' + \
+    '"Description" : "Name of an existing EC2' + \
+    'KeyPair to enable SSH access to the instances",' + \
+    '''
+          "Type" : "String"
+        }
+      },
+
+      "Resources" : {
+        "WikiDatabase": {
+          "Type": "AWS::EC2::Instance",
+          "DeletionPolicy": "Destroy",
+          "Properties": {
+            "ImageId": "image_name",
+            "InstanceType": "m1.large",
+            "KeyName": { "Ref" : "KeyName" }
+          }
+        }
+      }
+    }
+    '''
+
+test_template_snapshot_deletion_policy = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "test.",
+  "Parameters" : {
+
+    "KeyName" : {
+''' + \
+    '"Description" : "Name of an existing EC2' + \
+    'KeyPair to enable SSH access to the instances",' + \
+    '''
+          "Type" : "String"
+        }
+      },
+
+      "Resources" : {
+        "WikiDatabase": {
+          "Type": "AWS::EC2::Instance",
+          "DeletionPolicy": "Snapshot",
+          "Properties": {
+            "ImageId": "image_name",
+            "InstanceType": "m1.large",
+            "KeyName": { "Ref" : "KeyName" }
+          }
+        }
+      }
+    }
+    '''
+
+test_template_volume_snapshot = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "test.",
+  "Resources" : {
+    "DataVolume" : {
+      "Type" : "AWS::EC2::Volume",
+      "DeletionPolicy": "Snapshot",
+      "Properties" : {
+        "Size" : "6",
+        "AvailabilityZone" : "nova"
+      }
+    }
+  }
+}
+'''
+
+test_unregistered_key = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "test.",
+  "Parameters" : {
+
+    "KeyName" : {
+''' + \
+    '"Description" : "Name of an existing EC2' + \
+    'KeyPair to enable SSH access to the instances",' + \
+    '''
+          "Type" : "String"
+        }
+      },
+
+      "Resources" : {
+        "Instance": {
+          "Type": "AWS::EC2::Instance",
+          "Properties": {
+            "ImageId": "image_name",
+            "InstanceType": "m1.large",
+            "KeyName": { "Ref" : "KeyName" }
+          }
+        }
+      }
+    }
+    '''
+
+test_template_invalid_secgroups = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "test.",
+  "Parameters" : {
+
+    "KeyName" : {
+''' + \
+    '"Description" : "Name of an existing EC2' + \
+    'KeyPair to enable SSH access to the instances",' + \
+    '''
+          "Type" : "String"
+        }
+      },
+
+      "Resources" : {
+        "Instance": {
+          "Type": "AWS::EC2::Instance",
+          "Properties": {
+            "ImageId": "image_name",
+            "InstanceType": "m1.large",
+            "KeyName": { "Ref" : "KeyName" },
+            "SecurityGroups": [ "default" ],
+            "NetworkInterfaces": [ "mgmt", "data" ]
+          }
+        }
+      }
+    }
+    '''
+
+test_template_invalid_secgroupids = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "test.",
+  "Parameters" : {
+
+    "KeyName" : {
+''' + \
+    '"Description" : "Name of an existing EC2' + \
+    'KeyPair to enable SSH access to the instances",' + \
+    '''
+          "Type" : "String"
+        }
+      },
+
+      "Resources" : {
+        "Instance": {
+          "Type": "AWS::EC2::Instance",
+          "Properties": {
+            "ImageId": "image_name",
+            "InstanceType": "m1.large",
+            "KeyName": { "Ref" : "KeyName" },
+            "SecurityGroupIds": [ "default" ],
+            "NetworkInterfaces": [ "mgmt", "data" ]
+          }
+        }
+      }
+    }
+    '''
+
+
+class validateTest(HeatTestCase):
     def setUp(self):
-        self.m = mox.Mox()
+        super(validateTest, self).setUp()
+        resources.initialise()
         self.fc = fakes.FakeClient()
-
-    def tearDown(self):
-        self.m.UnsetStubs()
-        print "volumeTest teardown complete"
+        resources.initialise()
+        setup_dummy_db()
 
     def test_validate_volumeattach_valid(self):
         t = template_format.parse(test_template_volumeattach % 'vdq')
@@ -253,7 +472,6 @@ class validateTest(unittest.TestCase):
 
         engine = service.EngineService('a', 't')
         res = dict(engine.validate_template(None, t))
-        print 'res %s' % res
         self.assertEqual(res['Description'], 'test.')
 
     def test_validate_ref_invalid(self):
@@ -288,3 +506,113 @@ class validateTest(unittest.TestCase):
         engine = service.EngineService('a', 't')
         res = dict(engine.validate_template(None, t))
         self.assertNotEqual(res['Description'], 'Successfully validated')
+
+    def test_validate_parameters(self):
+        t = template_format.parse(test_template_ref % 'WikiDatabase')
+
+        self.m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        engine = service.EngineService('a', 't')
+        res = dict(engine.validate_template(None, t))
+        self.assertEqual(res['Parameters'], {'KeyName': {
+            'Type': 'String',
+            'Description': 'Name of an existing EC2KeyPair to enable SSH '
+                           'access to the instances'}})
+
+    def test_validate_properties(self):
+        t = template_format.parse(test_template_invalid_property)
+        self.m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        engine = service.EngineService('a', 't')
+        res = dict(engine.validate_template(None, t))
+        self.assertEqual(res, {'Error': 'Unknown Property UnknownProperty'})
+
+    def test_unimplemented_property(self):
+        t = template_format.parse(test_template_unimplemented_property)
+        self.m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        engine = service.EngineService('a', 't')
+        res = dict(engine.validate_template(None, t))
+        self.assertEqual(
+            res,
+            {'Error': 'Property SourceDestCheck not implemented yet'})
+
+    def test_invalid_deletion_policy(self):
+        t = template_format.parse(test_template_invalid_deletion_policy)
+        self.m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        engine = service.EngineService('a', 't')
+        res = dict(engine.validate_template(None, t))
+        self.assertEqual(res, {'Error': 'Invalid DeletionPolicy Destroy'})
+
+    def test_snapshot_deletion_policy(self):
+        t = template_format.parse(test_template_snapshot_deletion_policy)
+        self.m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        engine = service.EngineService('a', 't')
+        res = dict(engine.validate_template(None, t))
+        self.assertEqual(
+            res, {'Error': 'Snapshot DeletionPolicy not supported'})
+
+    @skipIf(try_import('cinderclient.v1.volume_backups') is None,
+            'unable to import volume_backups')
+    def test_volume_snapshot_deletion_policy(self):
+        t = template_format.parse(test_template_volume_snapshot)
+        self.m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        engine = service.EngineService('a', 't')
+        res = dict(engine.validate_template(None, t))
+        self.assertEqual(res, {'Description': u'test.', 'Parameters': {}})
+
+    def test_unregistered_key(self):
+        t = template_format.parse(test_unregistered_key)
+        template = parser.Template(t)
+        params = parser.Parameters(
+            'test_stack', template, {'KeyName': 'not_registered'})
+        stack = parser.Stack(None, 'test_stack', template, params)
+
+        self.m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().AndReturn(self.fc)
+        instances.Instance.nova().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        resource = stack.resources['Instance']
+        self.assertNotEqual(resource.validate(), None)
+
+    def test_invalid_security_groups_with_nics(self):
+        t = template_format.parse(test_template_invalid_secgroups)
+        template = parser.Template(t)
+        params = parser.Parameters('test_stack', template, {'KeyName': 'test'})
+        stack = parser.Stack(None, 'test_stack', template, params)
+
+        self.m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        resource = stack.resources['Instance']
+        self.assertNotEqual(resource.validate(), None)
+
+    def test_invalid_security_group_ids_with_nics(self):
+        t = template_format.parse(test_template_invalid_secgroupids)
+        template = parser.Template(t)
+        params = parser.Parameters('test_stack', template, {'KeyName': 'test'})
+        stack = parser.Stack(None, 'test_stack', template, params)
+
+        self.m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        resource = stack.resources['Instance']
+        self.assertNotEqual(resource.validate(), None)

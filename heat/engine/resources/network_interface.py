@@ -16,6 +16,7 @@
 from heat.engine import clients
 from heat.openstack.common import log as logging
 from heat.engine import resource
+from heat.common import exception
 
 logger = logging.getLogger(__name__)
 
@@ -45,15 +46,21 @@ class NetworkInterface(resource.Resource):
     def __init__(self, name, json_snippet, stack):
         super(NetworkInterface, self).__init__(name, json_snippet, stack)
 
+    @staticmethod
+    def network_id_from_subnet_id(quantumclient, subnet_id):
+        subnet_info = quantumclient.show_subnet(subnet_id)
+        return subnet_info['subnet']['network_id']
+
     def handle_create(self):
         client = self.quantum()
 
-        subnet = self.stack.resource_by_refid(self.properties['SubnetId'])
-        fixed_ip = {'subnet_id': self.properties['SubnetId']}
+        subnet_id = self.properties['SubnetId']
+        network_id = self.network_id_from_subnet_id(client, subnet_id)
+
+        fixed_ip = {'subnet_id': subnet_id}
         if self.properties['PrivateIpAddress']:
             fixed_ip['ip_address'] = self.properties['PrivateIpAddress']
 
-        network_id = subnet.properties.get('VpcId')
         props = {
             'name': self.physical_resource_name(),
             'admin_state_up': True,
@@ -62,7 +69,16 @@ class NetworkInterface(resource.Resource):
         }
 
         if self.properties['GroupSet']:
-            props['security_groups'] = self.properties['GroupSet']
+            props['security_groups'] = []
+
+            for sg in self.properties.get('GroupSet'):
+                resource = self.stack.resource_by_refid(sg)
+                if resource:
+                    props['security_groups'].append(resource.resource_id)
+                else:
+                    raise exception.InvalidTemplateAttribute(
+                        resource=self.name,
+                        key='GroupSet')
         port = client.create_port({'port': props})['port']
         self.resource_id_set(port['id'])
 
@@ -75,9 +91,6 @@ class NetworkInterface(resource.Resource):
         except QuantumClientException as ex:
             if ex.status_code != 404:
                 raise ex
-
-    def handle_update(self, json_snippet):
-        return self.UPDATE_REPLACE
 
 
 def resource_mapping():

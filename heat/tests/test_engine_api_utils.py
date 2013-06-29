@@ -13,15 +13,11 @@
 #    under the License.
 
 
-import unittest
-from nose.plugins.attrib import attr
-
+from heat.tests.common import HeatTestCase
 import heat.engine.api as api
 
 
-@attr(tag=['unit', 'engine-api'])
-@attr(speed='fast')
-class EngineApiTest(unittest.TestCase):
+class EngineApiTest(HeatTestCase):
     def test_timeout_extract(self):
         p = {'timeout_mins': '5'}
         args = api.extract_args(p)

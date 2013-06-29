@@ -17,6 +17,9 @@
 
 .. glossary::
 
+   OpenStack
+     Open source software for building private and public clouds.
+
    API server
      HTTP REST API service for heat.
 
