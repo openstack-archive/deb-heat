@@ -34,9 +34,9 @@ override_dh_clean:
 override_dh_install:
 	dh_install
 	sed -i 's/^[ \t]*rpc_backend[ \t]*=[ \t]*heat.openstack.common.rpc.impl_qpid/rpc_backend=heat.openstack.common.rpc.impl_kombu/' $(CURDIR)/debian/heat-engine/usr/share/heat-engine/heat-engine.conf
-	sed -i 's/^[ \t]*rpc_backend[ \t]*=[ \t]*heat.openstack.common.rpc.impl_qpid/rpc_backend=heat.openstack.common.rpc.impl_kombu/' $(CURDIR)/debian/heat-api-cloudwatch/etc/heat/heat-api-cloudwatch.conf
-	sed -i 's/^[ \t]*rpc_backend[ \t]*=[ \t]*heat.openstack.common.rpc.impl_qpid/rpc_backend=heat.openstack.common.rpc.impl_kombu/' $(CURDIR)/debian/heat-api-cfn/etc/heat/heat-api-cfn.conf
-	sed -i 's/^[ \t]*rpc_backend[ \t]*=[ \t]*heat.openstack.common.rpc.impl_qpid/rpc_backend=heat.openstack.common.rpc.impl_kombu/' $(CURDIR)/debian/heat-api/etc/heat/heat-api.conf
+	sed -i 's/^[ \t]*rpc_backend[ \t]*=[ \t]*heat.openstack.common.rpc.impl_qpid/rpc_backend=heat.openstack.common.rpc.impl_kombu/' $(CURDIR)/debian/heat-api-cloudwatch/usr/share/heat-api-cloudwatch/heat-api-cloudwatch.conf
+	sed -i 's/^[ \t]*rpc_backend[ \t]*=[ \t]*heat.openstack.common.rpc.impl_qpid/rpc_backend=heat.openstack.common.rpc.impl_kombu/' $(CURDIR)/debian/heat-api-cfn/usr/share/heat-api-cfn/heat-api-cfn.conf
+	sed -i 's/^[ \t]*rpc_backend[ \t]*=[ \t]*heat.openstack.common.rpc.impl_qpid/rpc_backend=heat.openstack.common.rpc.impl_kombu/' $(CURDIR)/debian/heat-api/usr/share/heat-api/heat-api.conf
 
 override_dh_auto_build:
 	dh_auto_build

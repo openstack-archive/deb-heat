@@ -1,3 +1,2 @@
-etc/heat/heat-api-paste.ini	/usr/share/heat-api
-etc/heat/heat-api.conf
+etc/heat/heat-api.conf	/usr/share/heat-api
 usr/bin/heat-api

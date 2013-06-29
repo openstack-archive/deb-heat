@@ -4,11 +4,11 @@ set -e
 
 . /usr/share/debconf/confmodule
 
-APIPASTE_CONF=/etc/heat/heat-api-cloudwatch-paste.ini
+API_CONF=/etc/heat/heat-api-cloudwatch.conf
 
 #PKGOS-INCLUDE#
 
 pkgos_var_user_group heat
-pkgos_read_admin_creds ${APIPASTE_CONF} filter:authtoken heat
+pkgos_read_admin_creds ${API_CONF} keystone_authtoken heat
 
 exit 0

@@ -9,8 +9,8 @@ ETC=/etc/heat
 if [ "$1" = "configure" ] ; then
 	. /usr/share/debconf/confmodule
 	pkgos_var_user_group heat
-	pkgos_write_new_conf heat heat-api-cfn-paste.ini
-	pkgos_write_admin_creds /etc/heat/heat-api-cfn-paste.ini filter:authtoken heat
+	pkgos_write_new_conf heat heat-api-cfn.conf
+	pkgos_write_admin_creds /etc/heat/heat-api-cfn.conf keystone_authtoken heat
 	chown -R heat:adm /var/log/heat
 	chmod 0750 /var/log/heat
 fi
