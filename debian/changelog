@@ -1,3 +1,9 @@
+heat (2013.2~b1-1) UNRELEASED; urgency=low
+
+  * New upstream release.
+
+ -- Thomas Goirand <zigo@debian.org>  Sat, 29 Jun 2013 18:08:30 +0800
+
 heat (2013.1.2-2) unstable; urgency=low
 
   * Added missing policy.json in heat-common.
