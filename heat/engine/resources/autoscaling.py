@@ -320,7 +320,7 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
         if self._cooldown_inprogress():
             logger.info("%s NOT performing scaling adjustment, cooldown %s" %
                         (self.name, self.properties['Cooldown']))
-            return False
+            return
 
         inst_list = []
         if self.resource_id is not None:
@@ -337,14 +337,14 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
 
         if new_capacity > int(self.properties['MaxSize']):
             logger.warn('can not exceed %s' % self.properties['MaxSize'])
-            return False
+            return
         if new_capacity < int(self.properties['MinSize']):
             logger.warn('can not be less than %s' % self.properties['MinSize'])
-            return False
+            return
 
         if new_capacity == capacity:
             logger.debug('no change in capacity %d' % capacity)
-            return False
+            return
 
         result = self.resize(new_capacity, raise_on_error=raise_on_error)
 
