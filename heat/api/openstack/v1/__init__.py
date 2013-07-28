@@ -14,13 +14,15 @@
 #    under the License.
 
 import routes
-import gettext
 
-gettext.install('heat', unicode=1)
+from heat.openstack.common import gettextutils
+
+gettextutils.install('heat')
 
 from heat.api.openstack.v1 import stacks
 from heat.api.openstack.v1 import resources
 from heat.api.openstack.v1 import events
+from heat.api.openstack.v1 import actions
 from heat.common import wsgi
 
 from heat.openstack.common import log as logging
@@ -61,6 +63,10 @@ class API(wsgi.Router):
                                  "/stacks",
                                  action="create",
                                  conditions={'method': 'POST'})
+            stack_mapper.connect("stack_detail",
+                                 "/stacks/detail",
+                                 action="detail",
+                                 conditions={'method': 'GET'})
 
             # Stack data
             stack_mapper.connect("stack_lookup",
@@ -71,12 +77,16 @@ class API(wsgi.Router):
             stack_mapper.connect("stack_lookup",
                                  r"/stacks/{stack_name:arn\x3A.*}",
                                  action="lookup")
-            subpaths = ['resources', 'events', 'template']
+            subpaths = ['resources', 'events', 'template', 'actions']
             path = "{path:%s}" % '|'.join(subpaths)
             stack_mapper.connect("stack_lookup_subpath",
                                  "/stacks/{stack_name}/" + path,
                                  action="lookup",
                                  conditions={'method': 'GET'})
+            stack_mapper.connect("stack_lookup_subpath_post",
+                                 "/stacks/{stack_name}/" + path,
+                                 action="lookup",
+                                 conditions={'method': 'POST'})
             stack_mapper.connect("stack_show",
                                  "/stacks/{stack_name}/{stack_id}",
                                  action="show",
@@ -139,5 +149,15 @@ class API(wsgi.Router):
                               "/resources/{resource_name}/events/{event_id}",
                               action="show",
                               conditions={'method': 'GET'})
+
+        # Actions
+        actions_resource = actions.create_resource(conf)
+        with mapper.submapper(controller=actions_resource,
+                              path_prefix=stack_path) as ac_mapper:
+
+            ac_mapper.connect("action_stack",
+                              "/actions",
+                              action="action",
+                              conditions={'method': 'POST'})
 
         super(API, self).__init__(mapper)

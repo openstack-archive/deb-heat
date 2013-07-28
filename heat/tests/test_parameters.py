@@ -16,21 +16,27 @@
 import testtools
 import json
 
+from heat.common import exception
 from heat.engine import parameters
 
 
 class ParameterTest(testtools.TestCase):
     def test_new_string(self):
-        p = parameters.Parameter('p', {'Type': 'String'})
+        p = parameters.Parameter('p', {'Type': 'String'}, validate_value=False)
         self.assertTrue(isinstance(p, parameters.StringParam))
 
     def test_new_number(self):
-        p = parameters.Parameter('p', {'Type': 'Number'})
+        p = parameters.Parameter('p', {'Type': 'Number'}, validate_value=False)
         self.assertTrue(isinstance(p, parameters.NumberParam))
 
     def test_new_list(self):
-        p = parameters.Parameter('p', {'Type': 'CommaDelimitedList'})
+        p = parameters.Parameter('p', {'Type': 'CommaDelimitedList'},
+                                 validate_value=False)
         self.assertTrue(isinstance(p, parameters.CommaDelimitedListParam))
+
+    def test_new_json(self):
+        p = parameters.Parameter('p', {'Type': 'Json'}, validate_value=False)
+        self.assertTrue(isinstance(p, parameters.JsonParam))
 
     def test_new_bad_type(self):
         self.assertRaises(ValueError, parameters.Parameter,
@@ -96,11 +102,12 @@ class ParameterTest(testtools.TestCase):
     def test_description(self):
         description = 'Description of the parameter'
         p = parameters.Parameter('p', {'Type': 'String',
-                                       'Description': description})
+                                       'Description': description},
+                                 validate_value=False)
         self.assertEqual(p.description(), description)
 
     def test_no_description(self):
-        p = parameters.Parameter('p', {'Type': 'String'})
+        p = parameters.Parameter('p', {'Type': 'String'}, validate_value=False)
         self.assertEqual(p.description(), '')
 
     def test_string_len_good(self):
@@ -256,6 +263,100 @@ class ParameterTest(testtools.TestCase):
         else:
             self.fail('ValueError not raised')
 
+    def test_map_value(self):
+        '''Happy path for value thats already a map.'''
+        schema = {'Type': 'Json'}
+        val = {"foo": "bar", "items": [1, 2, 3]}
+        val_s = json.dumps(val)
+        p = parameters.Parameter('p', schema, val)
+        self.assertEqual(val_s, p.value())
+        self.assertEqual(val, p.parsed)
+
+    def test_map_value_bad(self):
+        '''Map value is not JSON parsable.'''
+        schema = {'Type': 'Json',
+                  'ConstraintDescription': 'wibble'}
+        val = {"foo": "bar", "not_json": len}
+        try:
+            parameters.Parameter('p', schema, val)
+        except ValueError as verr:
+            self.assertIn('Value must be valid JSON', str(verr))
+        else:
+            self.fail("Value error not raised")
+
+    def test_map_value_parse(self):
+        '''Happy path for value that's a string.'''
+        schema = {'Type': 'Json'}
+        val = {"foo": "bar", "items": [1, 2, 3]}
+        val_s = json.dumps(val)
+        p = parameters.Parameter('p', schema, val_s)
+        self.assertEqual(val_s, p.value())
+        self.assertEqual(val, p.parsed)
+
+    def test_map_value_bad_parse(self):
+        '''Test value error for unparsable string value.'''
+        schema = {'Type': 'Json',
+                  'ConstraintDescription': 'wibble'}
+        val = "I am not a map"
+        try:
+            parameters.Parameter('p', schema, val)
+        except ValueError as verr:
+            self.assertIn('Value must be valid JSON', str(verr))
+        else:
+            self.fail("Value error not raised")
+
+    def test_map_values_good(self):
+        '''Happy path for map keys.'''
+        schema = {'Type': 'Json',
+                  'AllowedValues': ["foo", "bar", "baz"]}
+        val = {"foo": "bar", "baz": [1, 2, 3]}
+        val_s = json.dumps(val)
+        p = parameters.Parameter('p', schema, val_s)
+        self.assertEqual(val_s, p.value())
+        self.assertEqual(val, p.parsed)
+
+    def test_map_values_bad(self):
+        '''Test failure of invalid map keys.'''
+        schema = {'Type': 'Json',
+                  'AllowedValues': ["foo", "bar", "baz"]}
+        val = {"foo": "bar", "items": [1, 2, 3]}
+        try:
+            parameters.Parameter('p', schema, val)
+        except ValueError as verr:
+            self.assertIn("items", str(verr))
+        else:
+            self.fail("Value error not raised")
+
+    def test_map_underrun(self):
+        '''Test map length under MIN_LEN.'''
+        schema = {'Type': 'Json',
+                  'MinLength': 3}
+        val = {"foo": "bar", "items": [1, 2, 3]}
+        try:
+            parameters.Parameter('p', schema, val)
+        except ValueError as verr:
+            self.assertIn('underflows', str(verr))
+        else:
+            self.fail("Value error not raised")
+
+    def test_map_overrun(self):
+        '''Test map length over MAX_LEN.'''
+        schema = {'Type': 'Json',
+                  'MaxLength': 1}
+        val = {"foo": "bar", "items": [1, 2, 3]}
+        try:
+            parameters.Parameter('p', schema, val)
+        except ValueError as verr:
+            self.assertIn('overflows', str(verr))
+        else:
+            self.fail("Value error not raised")
+
+    def test_missing_param(self):
+        '''Test missing user parameter.'''
+        self.assertRaises(exception.UserParameterMissing,
+                          parameters.Parameter, 'p',
+                          {'Type': 'String'})
+
 
 params_schema = json.loads('''{
   "Parameters" : {
@@ -284,21 +385,14 @@ class ParametersTest(testtools.TestCase):
         params.set_stack_id('456::bar')
         self.assertEqual(params['AWS::StackId'], '456::bar')
 
-    def test_user_param(self):
-        user_params = {'User': 'wibble'}
-        params = parameters.Parameters('test', params_schema, user_params)
-        self.assertEqual(params.user_parameters(), user_params)
-
-    def test_user_param_nonexist(self):
-        params = parameters.Parameters('test', params_schema)
-        self.assertEqual(params.user_parameters(), {})
-
     def test_schema_invariance(self):
         params1 = parameters.Parameters('test', params_schema,
-                                        {'Defaulted': 'wibble'})
+                                        {'User': 'foo',
+                                         'Defaulted': 'wibble'})
         self.assertEqual(params1['Defaulted'], 'wibble')
 
-        params2 = parameters.Parameters('test', params_schema)
+        params2 = parameters.Parameters('test', params_schema,
+                                        {'User': 'foo'})
         self.assertEqual(params2['Defaulted'], 'foobar')
 
     def test_to_dict(self):
@@ -338,3 +432,19 @@ class ParametersTest(testtools.TestCase):
                     'AWS::StackName': 'test_params'}
 
         self.assertEqual(params.map(str), expected)
+
+    def test_unknown_params(self):
+        user_params = {'Foo': 'wibble'}
+        self.assertRaises(exception.UnknownUserParameter,
+                          parameters.Parameters,
+                          'test',
+                          params_schema,
+                          user_params)
+
+    def test_missing_params(self):
+        user_params = {}
+        self.assertRaises(exception.UserParameterMissing,
+                          parameters.Parameters,
+                          'test',
+                          params_schema,
+                          user_params)

@@ -16,6 +16,8 @@ import sys
 import functools
 
 from heat.common import context
+from heat.common import exception
+from heat.engine import environment
 from heat.engine import parser
 
 from heat.db.sqlalchemy.session import get_engine
@@ -48,6 +50,44 @@ def stack_delete_after(test_fn):
     return wrapped_test
 
 
+def wr_delete_after(test_fn):
+    """
+    Decorator which calls test class self.wr.destroy()
+    to ensure tests clean up their watchrule regardless of test success/failure
+    Used by tests which create watchrule objects directly to cleanup correctly
+    self.wr can be either a single watchrule, or a list of several watchrules
+    """
+    @functools.wraps(test_fn)
+    def wrapped_test(test_case, *args, **kwargs):
+
+        def delete_wrs():
+            wr = getattr(test_case, 'wr', None)
+            try:
+                for w in wr:
+                    delete_wr(w)
+            except TypeError:
+                delete_wr(wr)
+
+        def delete_wr(w):
+            if w.id is not None:
+                try:
+                    w.destroy()
+                except exception.NotFound:
+                    pass
+        try:
+            test_fn(test_case, *args, **kwargs)
+        except:
+            exc_class, exc_val, exc_tb = sys.exc_info()
+            try:
+                delete_wrs()
+            finally:
+                raise exc_class, exc_val, exc_tb
+        else:
+            delete_wrs()
+
+    return wrapped_test
+
+
 def setup_dummy_db():
     migration.db_sync()
     engine = get_engine()
@@ -62,7 +102,36 @@ def parse_stack(t, params={}, stack_name='test_stack', stack_id=None):
                                             'auth_url':
                                             'http://localhost:5000/v2.0'})
     template = parser.Template(t)
-    parameters = parser.Parameters(stack_name, template, params)
-    stack = parser.Stack(ctx, stack_name, template, parameters, stack_id)
+    stack = parser.Stack(ctx, stack_name, template,
+                         environment.Environment(params), stack_id)
+    stack.store()
 
     return stack
+
+
+class PhysName(object):
+    def __init__(self, stack_name, resource_name):
+        self.stack_name = stack_name
+        self.resource_name = resource_name
+
+    def __eq__(self, physical_name):
+        try:
+            stack, res, short_id = str(physical_name).rsplit('-', 2)
+        except ValueError:
+            return False
+
+        if self.stack_name != stack or self.resource_name != res:
+            return False
+
+        if len(short_id) != 12:
+            return False
+
+        return True
+
+    def __ne__(self, physical_name):
+        return not self.__eq__(physical_name)
+
+    def __repr__(self):
+        return '%s-%s-%s' % (self.stack_name,
+                             self.resource_name,
+                             'x' * 12)

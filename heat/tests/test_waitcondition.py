@@ -12,8 +12,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import mox
-
 import datetime
 import time
 import json
@@ -29,6 +27,7 @@ from heat.tests.utils import setup_dummy_db
 import heat.db.api as db_api
 from heat.common import template_format
 from heat.common import identifier
+from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
@@ -78,6 +77,19 @@ test_template_wc_count = '''
 '''
 
 
+class UUIDStub(object):
+    def __init__(self, value):
+        self.value = value
+
+    def __enter__(self):
+        self.uuid4 = uuid.uuid4
+        uuid_stub = lambda: self.value
+        uuid.uuid4 = uuid_stub
+
+    def __exit__(self, *exc_info):
+        uuid.uuid4 = self.uuid4
+
+
 class WaitConditionTest(HeatTestCase):
 
     def setUp(self):
@@ -86,11 +98,11 @@ class WaitConditionTest(HeatTestCase):
         setup_dummy_db()
         self.m.StubOutWithMock(wc.WaitConditionHandle,
                                'get_status')
-        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
 
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://127.0.0.1:8000/v1/waitcondition')
 
+        self.stack_id = 'STACKABCD1234'
         self.fc = fakes.FakeKeystoneClient()
 
     # Note tests creating a stack should be decorated with @stack_delete_after
@@ -100,17 +112,17 @@ class WaitConditionTest(HeatTestCase):
                      stub=True):
         temp = template_format.parse(template)
         template = parser.Template(temp)
-        parameters = parser.Parameters(stack_name, template, params)
         ctx = context.get_admin_context()
         ctx.tenant_id = 'test_tenant'
-        stack = parser.Stack(ctx, stack_name, template, parameters,
+        stack = parser.Stack(ctx, stack_name, template,
+                             environment.Environment(params),
                              disable_rollback=True)
 
-        self.stack_id = stack.store()
+        # Stub out the stack ID so we have a known value
+        with UUIDStub(self.stack_id):
+            stack.store()
 
         if stub:
-            scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
-
             self.m.StubOutWithMock(wc.WaitConditionHandle, 'keystone')
             wc.WaitConditionHandle.keystone().MultipleTimes().AndReturn(
                 self.fc)
@@ -126,9 +138,7 @@ class WaitConditionTest(HeatTestCase):
     def test_post_success_to_handle(self):
         self.stack = self.create_stack()
         wc.WaitConditionHandle.get_status().AndReturn([])
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn([])
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS'])
 
         self.m.ReplayAll()
@@ -137,7 +147,7 @@ class WaitConditionTest(HeatTestCase):
 
         rsrc = self.stack.resources['WaitForTheHandle']
         self.assertEqual(rsrc.state,
-                         'CREATE_COMPLETE')
+                         (rsrc.CREATE, rsrc.COMPLETE))
 
         r = db_api.resource_get_by_name_and_stack(None, 'WaitHandle',
                                                   self.stack.id)
@@ -148,9 +158,7 @@ class WaitConditionTest(HeatTestCase):
     def test_post_failure_to_handle(self):
         self.stack = self.create_stack()
         wc.WaitConditionHandle.get_status().AndReturn([])
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn([])
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn(['FAILURE'])
 
         self.m.ReplayAll()
@@ -158,8 +166,8 @@ class WaitConditionTest(HeatTestCase):
         self.stack.create()
 
         rsrc = self.stack.resources['WaitForTheHandle']
-        self.assertEqual(rsrc.state, rsrc.CREATE_FAILED)
-        reason = rsrc.state_description
+        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.FAILED))
+        reason = rsrc.status_reason
         self.assertTrue(reason.startswith('WaitConditionFailure:'))
 
         r = db_api.resource_get_by_name_and_stack(None, 'WaitHandle',
@@ -171,11 +179,8 @@ class WaitConditionTest(HeatTestCase):
     def test_post_success_to_handle_count(self):
         self.stack = self.create_stack(template=test_template_wc_count)
         wc.WaitConditionHandle.get_status().AndReturn([])
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS'])
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS', 'SUCCESS'])
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS', 'SUCCESS',
                                                        'SUCCESS'])
 
@@ -185,7 +190,7 @@ class WaitConditionTest(HeatTestCase):
 
         rsrc = self.stack.resources['WaitForTheHandle']
         self.assertEqual(rsrc.state,
-                         'CREATE_COMPLETE')
+                         (rsrc.CREATE, rsrc.COMPLETE))
 
         r = db_api.resource_get_by_name_and_stack(None, 'WaitHandle',
                                                   self.stack.id)
@@ -196,9 +201,7 @@ class WaitConditionTest(HeatTestCase):
     def test_post_failure_to_handle_count(self):
         self.stack = self.create_stack(template=test_template_wc_count)
         wc.WaitConditionHandle.get_status().AndReturn([])
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS'])
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS', 'FAILURE'])
 
         self.m.ReplayAll()
@@ -206,8 +209,8 @@ class WaitConditionTest(HeatTestCase):
         self.stack.create()
 
         rsrc = self.stack.resources['WaitForTheHandle']
-        self.assertEqual(rsrc.state, rsrc.CREATE_FAILED)
-        reason = rsrc.state_description
+        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.FAILED))
+        reason = rsrc.status_reason
         self.assertTrue(reason.startswith('WaitConditionFailure:'))
 
         r = db_api.resource_get_by_name_and_stack(None, 'WaitHandle',
@@ -221,16 +224,18 @@ class WaitConditionTest(HeatTestCase):
 
         self.stack = self.create_stack()
 
+        # Avoid the stack create exercising the timeout code at the same time
+        self.m.StubOutWithMock(self.stack, 'timeout_secs')
+        self.stack.timeout_secs().AndReturn(None)
+
         self.m.StubOutWithMock(scheduler, 'wallclock')
 
         scheduler.wallclock().AndReturn(st)
         scheduler.wallclock().AndReturn(st + 0.001)
         scheduler.wallclock().AndReturn(st + 0.1)
         wc.WaitConditionHandle.get_status().AndReturn([])
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         scheduler.wallclock().AndReturn(st + 4.1)
         wc.WaitConditionHandle.get_status().AndReturn([])
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         scheduler.wallclock().AndReturn(st + 5.1)
 
         self.m.ReplayAll()
@@ -239,8 +244,8 @@ class WaitConditionTest(HeatTestCase):
 
         rsrc = self.stack.resources['WaitForTheHandle']
 
-        self.assertEqual(rsrc.state, rsrc.CREATE_FAILED)
-        reason = rsrc.state_description
+        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.FAILED))
+        reason = rsrc.status_reason
         self.assertTrue(reason.startswith('WaitConditionTimeout:'))
 
         self.assertRaises(resource.UpdateReplace,
@@ -256,13 +261,13 @@ class WaitConditionTest(HeatTestCase):
         self.stack.create()
 
         rsrc = self.stack.resources['WaitForTheHandle']
-        self.assertEqual(rsrc.state, 'CREATE_COMPLETE')
+        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         wc_att = rsrc.FnGetAtt('Data')
         self.assertEqual(wc_att, unicode({}))
 
         handle = self.stack.resources['WaitHandle']
-        self.assertEqual(handle.state, 'CREATE_COMPLETE')
+        self.assertEqual(handle.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
@@ -279,10 +284,6 @@ class WaitConditionTest(HeatTestCase):
 
     @stack_delete_after
     def test_validate_handle_url_bad_stackid(self):
-        # Stub out the stack ID so we have a known value
-        stack_id = 'STACKABCD1234'
-        self.m.StubOutWithMock(uuid, 'uuid4')
-        uuid.uuid4().AndReturn(stack_id)
         self.m.ReplayAll()
 
         t = json.loads(test_template_waitcondition)
@@ -302,17 +303,13 @@ class WaitConditionTest(HeatTestCase):
 
     @stack_delete_after
     def test_validate_handle_url_bad_stackname(self):
-        # Stub out the stack ID so we have a known value
-        stack_id = 'STACKABCD1234'
-        self.m.StubOutWithMock(uuid, 'uuid4')
-        uuid.uuid4().AndReturn(stack_id)
         self.m.ReplayAll()
 
         t = json.loads(test_template_waitcondition)
         badhandle = ("http://127.0.0.1:8000/v1/waitcondition/" +
                      "arn%3Aopenstack%3Aheat%3A%3Atest_tenant" +
                      "%3Astacks%2FBAD_stack%2F" +
-                     stack_id + "%2Fresources%2FWaitHandle")
+                     self.stack_id + "%2Fresources%2FWaitHandle")
         t['Resources']['WaitForTheHandle']['Properties']['Handle'] = badhandle
         self.stack = self.create_stack(template=json.dumps(t), stub=False)
 
@@ -323,17 +320,13 @@ class WaitConditionTest(HeatTestCase):
 
     @stack_delete_after
     def test_validate_handle_url_bad_tenant(self):
-        # Stub out the stack ID so we have a known value
-        stack_id = 'STACKABCD1234'
-        self.m.StubOutWithMock(uuid, 'uuid4')
-        uuid.uuid4().AndReturn(stack_id)
         self.m.ReplayAll()
 
         t = json.loads(test_template_waitcondition)
         badhandle = ("http://127.0.0.1:8000/v1/waitcondition/" +
                      "arn%3Aopenstack%3Aheat%3A%3ABAD_tenant" +
                      "%3Astacks%2Ftest_stack%2F" +
-                     stack_id + "%2Fresources%2FWaitHandle")
+                     self.stack_id + "%2Fresources%2FWaitHandle")
         t['Resources']['WaitForTheHandle']['Properties']['Handle'] = badhandle
         self.stack = self.create_stack(template=json.dumps(t), stub=False)
 
@@ -344,17 +337,13 @@ class WaitConditionTest(HeatTestCase):
 
     @stack_delete_after
     def test_validate_handle_url_bad_resource(self):
-        # Stub out the stack ID so we have a known value
-        stack_id = 'STACKABCD1234'
-        self.m.StubOutWithMock(uuid, 'uuid4')
-        uuid.uuid4().AndReturn(stack_id)
         self.m.ReplayAll()
 
         t = json.loads(test_template_waitcondition)
         badhandle = ("http://127.0.0.1:8000/v1/waitcondition/" +
                      "arn%3Aopenstack%3Aheat%3A%3Atest_tenant" +
                      "%3Astacks%2Ftest_stack%2F" +
-                     stack_id + "%2Fresources%2FBADHandle")
+                     self.stack_id + "%2Fresources%2FBADHandle")
         t['Resources']['WaitForTheHandle']['Properties']['Handle'] = badhandle
         self.stack = self.create_stack(template=json.dumps(t), stub=False)
 
@@ -365,17 +354,13 @@ class WaitConditionTest(HeatTestCase):
 
     @stack_delete_after
     def test_validate_handle_url_bad_resource_type(self):
-        # Stub out the stack ID so we have a known value
-        stack_id = 'STACKABCD1234'
-        self.m.StubOutWithMock(uuid, 'uuid4')
-        uuid.uuid4().AndReturn(stack_id)
         self.m.ReplayAll()
 
         t = json.loads(test_template_waitcondition)
         badhandle = ("http://127.0.0.1:8000/v1/waitcondition/" +
                      "arn%3Aopenstack%3Aheat%3A%3Atest_tenant" +
                      "%3Astacks%2Ftest_stack%2F" +
-                     stack_id + "%2Fresources%2FWaitForTheHandle")
+                     self.stack_id + "%2Fresources%2FWaitForTheHandle")
         t['Resources']['WaitForTheHandle']['Properties']['Handle'] = badhandle
         self.stack = self.create_stack(template=json.dumps(t), stub=False)
 
@@ -399,19 +384,14 @@ class WaitConditionHandleTest(HeatTestCase):
     def create_stack(self, stack_name='test_stack2', params={}):
         temp = template_format.parse(test_template_waitcondition)
         template = parser.Template(temp)
-        parameters = parser.Parameters(stack_name, template, params)
         ctx = context.get_admin_context()
         ctx.tenant_id = 'test_tenant'
-        stack = parser.Stack(ctx, stack_name, template, parameters,
+        stack = parser.Stack(ctx, stack_name, template,
+                             environment.Environment(params),
                              disable_rollback=True)
         # Stub out the UUID for this test, so we can get an expected signature
-        self.m.StubOutWithMock(uuid, 'uuid4')
-        uuid.uuid4().AndReturn('STACKABCD1234')
-        self.m.ReplayAll()
-        stack.store()
-
-        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
+        with UUIDStub('STACKABCD1234'):
+            stack.store()
 
         # Stub waitcondition status so all goes CREATE_COMPLETE
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'get_status')
@@ -437,7 +417,7 @@ class WaitConditionHandleTest(HeatTestCase):
 
         rsrc = self.stack.resources['WaitHandle']
         rsrc.created_time = created_time
-        self.assertEqual(rsrc.state, 'CREATE_COMPLETE')
+        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         expected_url = "".join([
             'http://127.0.0.1:8000/v1/waitcondition/',
@@ -460,7 +440,7 @@ class WaitConditionHandleTest(HeatTestCase):
     @stack_delete_after
     def test_metadata_update(self):
         rsrc = self.stack.resources['WaitHandle']
-        self.assertEqual(rsrc.state, 'CREATE_COMPLETE')
+        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
@@ -474,7 +454,7 @@ class WaitConditionHandleTest(HeatTestCase):
     @stack_delete_after
     def test_metadata_update_invalid(self):
         rsrc = self.stack.resources['WaitHandle']
-        self.assertEqual(rsrc.state, 'CREATE_COMPLETE')
+        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         # metadata_update should raise a ValueError if the metadata
         # is missing any of the expected keys
@@ -517,7 +497,7 @@ class WaitConditionHandleTest(HeatTestCase):
     @stack_delete_after
     def test_get_status(self):
         rsrc = self.stack.resources['WaitHandle']
-        self.assertEqual(rsrc.state, 'CREATE_COMPLETE')
+        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         # UnsetStubs, don't want get_status stubbed anymore..
         self.m.VerifyAll()
@@ -543,7 +523,7 @@ class WaitConditionHandleTest(HeatTestCase):
     @stack_delete_after
     def test_get_status_reason(self):
         rsrc = self.stack.resources['WaitHandle']
-        self.assertEqual(rsrc.state, 'CREATE_COMPLETE')
+        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}

@@ -14,8 +14,10 @@
 #    under the License.
 
 import collections
+import json
 import re
 
+from heat.common import exception
 from heat.engine import template
 
 PARAMETER_KEYS = (
@@ -28,9 +30,9 @@ PARAMETER_KEYS = (
     'Description', 'ConstraintDescription'
 )
 PARAMETER_TYPES = (
-    STRING, NUMBER, COMMA_DELIMITED_LIST
+    STRING, NUMBER, COMMA_DELIMITED_LIST, JSON
 ) = (
-    'String', 'Number', 'CommaDelimitedList'
+    'String', 'Number', 'CommaDelimitedList', 'Json'
 )
 PSEUDO_PARAMETERS = (
     PARAM_STACK_ID, PARAM_STACK_NAME, PARAM_REGION
@@ -42,7 +44,7 @@ PSEUDO_PARAMETERS = (
 class Parameter(object):
     '''A template parameter.'''
 
-    def __new__(cls, name, schema, value=None):
+    def __new__(cls, name, schema, value=None, validate_value=True):
         '''Create a new Parameter of the appropriate type.'''
         if cls is not Parameter:
             return super(Parameter, cls).__new__(cls)
@@ -54,12 +56,14 @@ class Parameter(object):
             ParamClass = NumberParam
         elif param_type == COMMA_DELIMITED_LIST:
             ParamClass = CommaDelimitedListParam
+        elif param_type == JSON:
+            ParamClass = JsonParam
         else:
             raise ValueError('Invalid Parameter type "%s"' % param_type)
 
-        return ParamClass(name, schema, value)
+        return ParamClass(name, schema, value, validate_value)
 
-    def __init__(self, name, schema, value=None):
+    def __init__(self, name, schema, value=None, validate_value=True):
         '''
         Initialise the Parameter with a name, schema and optional user-supplied
         value.
@@ -72,8 +76,11 @@ class Parameter(object):
         if self.has_default():
             self._validate(self.default())
 
-        if self.user_value is not None:
-            self._validate(self.user_value)
+        if validate_value:
+            if self.user_value is not None:
+                self._validate(self.user_value)
+            elif not self.has_default():
+                raise exception.UserParameterMissing(key=self.name)
 
     def _error_msg(self, message):
         return '%s %s' % (self.name, self._constraint_error or message)
@@ -197,7 +204,7 @@ class CommaDelimitedListParam(Parameter, collections.Sequence):
     def _validate(self, value):
         '''Check that the supplied value is compatible with the constraints.'''
         try:
-            sp = value.split(',')
+            value.split(',')
         except AttributeError:
             raise ValueError('Value must be a comma-delimited list string')
 
@@ -213,12 +220,63 @@ class CommaDelimitedListParam(Parameter, collections.Sequence):
         return self.value().split(',')[index]
 
 
+class JsonParam(Parameter, collections.Mapping):
+    """A template parameter who's value is valid map."""
+
+    def _validate(self, value):
+        message = 'Value must be valid JSON'
+        if isinstance(value, collections.Mapping):
+            try:
+                self.user_value = json.dumps(value)
+            except (ValueError, TypeError) as err:
+                raise ValueError("%s: %s" % (message, str(err)))
+            self.parsed = value
+        else:
+            try:
+                self.parsed = json.loads(value)
+            except ValueError:
+                raise ValueError(message)
+
+        # check length
+        my_len = len(self.parsed)
+        if MAX_LENGTH in self.schema:
+            max_length = int(self.schema[MAX_LENGTH])
+            if my_len > max_length:
+                message = ('value length (%d) overflows %s %s'
+                           % (my_len, MAX_LENGTH, max_length))
+                raise ValueError(self._error_msg(message))
+        if MIN_LENGTH in self.schema:
+            min_length = int(self.schema[MIN_LENGTH])
+            if my_len < min_length:
+                message = ('value length (%d) underflows %s %s'
+                           % (my_len, MIN_LENGTH, min_length))
+                raise ValueError(self._error_msg(message))
+        # check valid keys
+        if VALUES in self.schema:
+            allowed = self.schema[VALUES]
+            bad_keys = [k for k in self.parsed if k not in allowed]
+            if bad_keys:
+                message = ('keys %s are not in %s %s'
+                           % (bad_keys, VALUES, allowed))
+                raise ValueError(self._error_msg(message))
+
+    def __getitem__(self, key):
+        return self.parsed[key]
+
+    def __iter__(self):
+        return iter(self.parsed)
+
+    def __len__(self):
+        return len(self.parsed)
+
+
 class Parameters(collections.Mapping):
     '''
     The parameters of a stack, with type checking, defaults &c. specified by
     the stack's template.
     '''
-    def __init__(self, stack_name, tmpl, user_params={}, stack_id=None):
+    def __init__(self, stack_name, tmpl, user_params={}, stack_id=None,
+                 validate_value=True):
         '''
         Create the parameter container for a stack from the stack name and
         template, optionally setting the user-supplied parameter values.
@@ -244,8 +302,11 @@ class Parameters(collections.Mapping):
                                           'ap-northeast-1']})
 
             for name, schema in tmpl[template.PARAMETERS].iteritems():
-                yield Parameter(name, schema, user_params.get(name))
+                yield Parameter(name, schema, user_params.get(name),
+                                validate_value)
 
+        self.tmpl = tmpl
+        self._validate(user_params)
         self.params = dict((p.name, p) for p in parameters())
 
     def __contains__(self, key):
@@ -272,15 +333,13 @@ class Parameters(collections.Mapping):
         return dict((n, func(p))
                     for n, p in self.params.iteritems() if filter_func(p))
 
-    def user_parameters(self):
-        '''
-        Return a dictionary of all the parameters passed in by the user
-        '''
-        return self.map(lambda p: p.user_value,
-                        lambda p: p.user_value is not None)
-
     def set_stack_id(self, stack_id):
         '''
         Set the AWS::StackId pseudo parameter value
         '''
         self.params[PARAM_STACK_ID].schema[DEFAULT] = stack_id
+
+    def _validate(self, user_params):
+        for param in user_params:
+            if param not in self.tmpl[template.PARAMETERS]:
+                raise exception.UnknownUserParameter(key=param)

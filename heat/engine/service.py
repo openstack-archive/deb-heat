@@ -22,8 +22,10 @@ import webob
 from heat.common import context
 from heat.db import api as db_api
 from heat.engine import api
+from heat.rpc import api as rpc_api
 from heat.engine import clients
 from heat.engine.event import Event
+from heat.engine import environment
 from heat.common import exception
 from heat.common import identifier
 from heat.engine import parameters
@@ -182,42 +184,51 @@ class EngineService(service.Service):
         stacks = db_api.stack_get_all_by_tenant(cnxt) or []
         return list(format_stack_details(stacks))
 
+    def _validate_mandatory_credentials(self, cnxt):
+        if cnxt.username is None:
+            raise exception.MissingCredentialError(required='X-Auth-User')
+        if cnxt.password is None:
+            raise exception.MissingCredentialError(required='X-Auth-Key')
+
     @request_context
-    def create_stack(self, cnxt, stack_name, template, params, args):
+    def create_stack(self, cnxt, stack_name, template, params, files, args):
         """
         The create_stack method creates a new stack using the template
         provided.
         Note that at this stage the template has already been fetched from the
         heat-api process if using a template-url.
-        arg1 -> RPC context.
-        arg2 -> Name of the stack you want to create.
-        arg3 -> Template of stack you want to create.
-        arg4 -> Stack Input Params
-        arg4 -> Request parameters/args passed from API
+        :param cnxt: RPC context.
+        :param stack_name: Name of the stack you want to create.
+        :param template: Template of stack you want to create.
+        :param params: Stack Input Params
+        :param files: Files referenced from the template
+                      (currently provider templates).
+        :param args: Request parameters/args passed from API
         """
         logger.info('template is %s' % template)
+
+        self._validate_mandatory_credentials(cnxt)
 
         def _stack_create(stack):
             # Create the stack, and create the periodic task if successful
             stack.create()
-            if stack.state == stack.CREATE_COMPLETE:
+            if stack.action == stack.CREATE and stack.status == stack.COMPLETE:
                 # Schedule a periodic watcher task for this stack
                 self._timer_in_thread(stack.id, self._periodic_watcher_task,
                                       sid=stack.id)
             else:
-                logger.warning("Stack create failed, state %s" % stack.state)
+                logger.warning("Stack create failed, status %s" % stack.status)
 
         if db_api.stack_get_by_name(cnxt, stack_name):
             raise exception.StackExists(stack_name=stack_name)
 
-        tmpl = parser.Template(template)
+        tmpl = parser.Template(template, files=files)
 
-        # Extract the template parameters, and any common query parameters
-        template_params = parser.Parameters(stack_name, tmpl, params)
+        # Extract the common query parameters
         common_params = api.extract_args(args)
-
-        stack = parser.Stack(cnxt, stack_name, tmpl, template_params,
-                             **common_params)
+        env = environment.Environment(params)
+        stack = parser.Stack(cnxt, stack_name, tmpl,
+                             env, **common_params)
 
         stack.validate()
 
@@ -228,7 +239,8 @@ class EngineService(service.Service):
         return dict(stack.identifier())
 
     @request_context
-    def update_stack(self, cnxt, stack_identity, template, params, args):
+    def update_stack(self, cnxt, stack_identity, template, params,
+                     files, args):
         """
         The update_stack method updates an existing stack based on the
         provided template and parameters.
@@ -242,6 +254,8 @@ class EngineService(service.Service):
         """
         logger.info('template is %s' % template)
 
+        self._validate_mandatory_credentials(cnxt)
+
         # Get the database representation of the existing stack
         db_stack = self._get_stack(cnxt, stack_identity)
 
@@ -249,13 +263,12 @@ class EngineService(service.Service):
 
         # Now parse the template and any parameters for the updated
         # stack definition.
-        tmpl = parser.Template(template)
+        tmpl = parser.Template(template, files=files)
         stack_name = current_stack.name
-        template_params = parser.Parameters(stack_name, tmpl, params)
         common_params = api.extract_args(args)
-
+        env = environment.Environment(params)
         updated_stack = parser.Stack(cnxt, stack_name, tmpl,
-                                     template_params, **common_params)
+                                     env, **common_params)
 
         updated_stack.validate()
 
@@ -297,7 +310,7 @@ class EngineService(service.Service):
             except Exception as ex:
                 return {'Error': str(ex)}
 
-        tmpl_params = parser.Parameters(None, tmpl)
+        tmpl_params = parser.Parameters(None, tmpl, validate_value=False)
         format_validate_parameter = lambda p: dict(p.schema)
         is_real_param = lambda p: p.name not in parameters.PSEUDO_PARAMETERS
         params = tmpl_params.map(format_validate_parameter, is_real_param)
@@ -363,6 +376,7 @@ class EngineService(service.Service):
         arg1 -> RPC context.
         arg2 -> Name of the stack you want to get events for.
         """
+
         if stack_identity is not None:
             st = self._get_stack(cnxt, stack_identity)
 
@@ -370,7 +384,17 @@ class EngineService(service.Service):
         else:
             events = db_api.event_get_all_by_tenant(cnxt)
 
-        return [api.format_event(Event.load(cnxt, e.id)) for e in events]
+        stacks = {}
+
+        def get_stack(stack_id):
+            if stack_id not in stacks:
+                stacks[stack_id] = parser.Stack.load(cnxt, stack_id)
+            return stacks[stack_id]
+
+        return [api.format_event(Event.load(cnxt,
+                                            e.id, e,
+                                            get_stack(e.stack_id)))
+                for e in events]
 
     def _authorize_stack_user(self, cnxt, stack, resource_name):
         '''
@@ -471,6 +495,34 @@ class EngineService(service.Service):
                 for resource in stack if resource.id is not None]
 
     @request_context
+    def stack_suspend(self, cnxt, stack_identity):
+        '''
+        Handle request to perform suspend action on a stack
+        '''
+        def _stack_suspend(stack):
+            logger.debug("suspending stack %s" % stack.name)
+            stack.suspend()
+
+        s = self._get_stack(cnxt, stack_identity)
+
+        stack = parser.Stack.load(cnxt, stack=s)
+        self._start_in_thread(stack.id, _stack_suspend, stack)
+
+    @request_context
+    def stack_resume(self, cnxt, stack_identity):
+        '''
+        Handle request to perform a resume action on a stack
+        '''
+        def _stack_resume(stack):
+            logger.debug("resuming stack %s" % stack.name)
+            stack.resume()
+
+        s = self._get_stack(cnxt, stack_identity)
+
+        stack = parser.Stack.load(cnxt, stack=s)
+        self._start_in_thread(stack.id, _stack_resume, stack)
+
+    @request_context
     def metadata_update(self, cnxt, stack_identity,
                         resource_name, metadata):
         """
@@ -499,7 +551,7 @@ class EngineService(service.Service):
         # resources may refer to WaitCondition Fn::GetAtt Data, which
         # is updated here.
         for res in refresh_stack:
-            if res.name != resource_name:
+            if res.name != resource_name and res.id is not None:
                 res.metadata_update()
 
         return resource.metadata
@@ -535,7 +587,7 @@ class EngineService(service.Service):
             for action in actions:
                 action()
 
-            stk = parser.Stack.load(admin_context, stack=stack)
+            stk = parser.Stack.load(stack_context, stack=stack)
             for res in stk:
                 res.metadata_update()
 
@@ -617,5 +669,5 @@ class EngineService(service.Service):
         # Return the watch with the state overriden to indicate success
         # We do not update the timestamps as we are not modifying the DB
         result = api.format_watch(wr)
-        result[api.WATCH_STATE_VALUE] = state
+        result[rpc_api.WATCH_STATE_VALUE] = state
         return result

@@ -18,7 +18,8 @@
 Client side of the heat engine RPC API.
 """
 
-from heat.engine import api
+from heat.rpc import api
+
 import heat.openstack.common.rpc.proxy
 
 
@@ -67,7 +68,7 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
         return self.call(ctxt, self.make_msg('show_stack',
                                              stack_identity=stack_identity))
 
-    def create_stack(self, ctxt, stack_name, template, params, args):
+    def create_stack(self, ctxt, stack_name, template, params, files, args):
         """
         The create_stack method creates a new stack using the template
         provided.
@@ -77,15 +78,17 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
         :param ctxt: RPC context.
         :param stack_name: Name of the stack you want to create.
         :param template: Template of stack you want to create.
-        :param params: Stack Input Params
+        :param params: Stack Input Params/Environment
+        :param files: files referenced from the environment.
         :param args: Request parameters/args passed from API
         """
         return self.call(ctxt,
                          self.make_msg('create_stack', stack_name=stack_name,
                                        template=template,
-                                       params=params, args=args))
+                                       params=params, files=files, args=args))
 
-    def update_stack(self, ctxt, stack_identity, template, params, args):
+    def update_stack(self, ctxt, stack_identity, template, params,
+                     files, args):
         """
         The update_stack method updates an existing stack based on the
         provided template and parameters.
@@ -95,13 +98,16 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
         :param ctxt: RPC context.
         :param stack_name: Name of the stack you want to create.
         :param template: Template of stack you want to create.
-        :param params: Stack Input Params
+        :param params: Stack Input Params/Environment
+        :param files: files referenced from the environment.
         :param args: Request parameters/args passed from API
         """
         return self.call(ctxt, self.make_msg('update_stack',
                                              stack_identity=stack_identity,
                                              template=template,
-                                             params=params, args=args))
+                                             params=params,
+                                             files=files,
+                                             args=args))
 
     def validate_template(self, ctxt, template):
         """
@@ -110,7 +116,6 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
 
         :param ctxt: RPC context.
         :param template: Template of stack you want to create.
-        :param params: Params passed from API.
         """
         return self.call(ctxt, self.make_msg('validate_template',
                                              template=template))
@@ -130,7 +135,6 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
 
         :param ctxt: RPC context.
         :param stack_name: Name of the stack you want to see.
-        :param params: Dict of http request parameters passed in from API side.
         """
         return self.call(ctxt, self.make_msg('get_template',
                                              stack_identity=stack_identity))
@@ -141,7 +145,7 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
 
         :param ctxt: RPC context.
         :param stack_identity: Name of the stack you want to delete.
-        :param params: Params passed from API.
+        :param cast: cast the message or use call (default: True)
         """
         rpc_method = self.cast if cast else self.call
         return rpc_method(ctxt,
@@ -162,12 +166,17 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
 
         :param ctxt: RPC context.
         :param stack_identity: Name of the stack you want to get events for.
-        :param params: Params passed from API.
         """
         return self.call(ctxt, self.make_msg('list_events',
                                              stack_identity=stack_identity))
 
     def describe_stack_resource(self, ctxt, stack_identity, resource_name):
+        """
+        Get detailed resource information about a particular resource.
+        :param ctxt: RPC context.
+        :param stack_identity: Name of the stack.
+        :param resource_name: the Resource.
+        """
         return self.call(ctxt, self.make_msg('describe_stack_resource',
                                              stack_identity=stack_identity,
                                              resource_name=resource_name))
@@ -185,12 +194,31 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
                              physical_resource_id=physical_resource_id))
 
     def describe_stack_resources(self, ctxt, stack_identity, resource_name):
+        """
+        Get detailed resource information about one or more resources.
+        :param ctxt: RPC context.
+        :param stack_identity: Name of the stack.
+        :param resource_name: the Resource.
+        """
         return self.call(ctxt, self.make_msg('describe_stack_resources',
                                              stack_identity=stack_identity,
                                              resource_name=resource_name))
 
     def list_stack_resources(self, ctxt, stack_identity):
+        """
+        List the resources belonging to a stack.
+        :param ctxt: RPC context.
+        :param stack_identity: Name of the stack.
+        """
         return self.call(ctxt, self.make_msg('list_stack_resources',
+                                             stack_identity=stack_identity))
+
+    def stack_suspend(self, ctxt, stack_identity):
+        return self.call(ctxt, self.make_msg('stack_suspend',
+                                             stack_identity=stack_identity))
+
+    def stack_resume(self, ctxt, stack_identity):
+        return self.call(ctxt, self.make_msg('stack_resume',
                                              stack_identity=stack_identity))
 
     def metadata_update(self, ctxt, stack_identity, resource_name, metadata):
@@ -206,6 +234,9 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
         '''
         This could be used by CloudWatch and WaitConditions
         and treat HA service events like any other CloudWatch.
+        :param ctxt: RPC context.
+        :param watch_name: Name of the watch/alarm
+        :param stats_data: The data to post.
         '''
         return self.call(ctxt, self.make_msg('create_watch_data',
                                              watch_name=watch_name,
@@ -241,9 +272,9 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
     def set_watch_state(self, ctxt, watch_name, state):
         '''
         Temporarily set the state of a given watch
-        arg1 -> RPC context.
-        arg2 -> Name of the watch
-        arg3 -> State (must be one defined in WatchRule class)
+        :param ctxt: RPC context.
+        :param watch_name: Name of the watch
+        :param state: State (must be one defined in WatchRule class)
         '''
         return self.call(ctxt, self.make_msg('set_watch_state',
                                              watch_name=watch_name,

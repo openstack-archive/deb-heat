@@ -28,8 +28,8 @@ from heat.tests import generic_resource as generic_rsrc
 tmpl = {
     'Resources': {
         'EventTestResource': {
-            'Type': 'GenericResourceType',
-            'Properties': {'foo': True}
+            'Type': 'ResourceWithRequiredProps',
+            'Properties': {'Foo': 'goo'}
         }
     }
 }
@@ -48,12 +48,8 @@ class EventTest(HeatTestCase):
 
         self.m.ReplayAll()
 
-        # patch in a dummy property schema for GenericResource
-        dummy_schema = {'foo': {'Type': 'Boolean', 'Required': True}}
-        generic_rsrc.GenericResource.properties_schema = dummy_schema
-
-        resource._register_class('GenericResourceType',
-                                 generic_rsrc.GenericResource)
+        resource._register_class('ResourceWithRequiredProps',
+                                 generic_rsrc.ResourceWithRequiredProps)
 
         self.stack = parser.Stack(self.ctx, 'event_load_test_stack',
                                   template.Template(tmpl))
@@ -67,7 +63,7 @@ class EventTest(HeatTestCase):
         self.resource.resource_id_set('resource_physical_id')
 
         e = event.Event(self.ctx, self.stack, self.resource,
-                        'TEST_IN_PROGRESS', 'Testing',
+                        'TEST', 'IN_PROGRESS', 'Testing',
                         'wibble', self.resource.properties)
 
         e.store()
@@ -75,18 +71,43 @@ class EventTest(HeatTestCase):
 
         loaded_e = event.Event.load(self.ctx, e.id)
 
-        self.assertEqual(loaded_e.stack.id, self.stack.id)
-        self.assertEqual(loaded_e.resource.name, self.resource.name)
-        self.assertEqual(loaded_e.resource.id, self.resource.id)
-        self.assertEqual(loaded_e.physical_resource_id, 'wibble')
-        self.assertEqual(loaded_e.new_state, 'TEST_IN_PROGRESS')
-        self.assertEqual(loaded_e.reason, 'Testing')
-        self.assertNotEqual(loaded_e.timestamp, None)
-        self.assertEqual(loaded_e.resource_properties, {'foo': True})
+        self.assertEqual(self.stack.id, loaded_e.stack.id)
+        self.assertEqual(self.resource.name, loaded_e.resource.name)
+        self.assertEqual(self.resource.id, loaded_e.resource.id)
+        self.assertEqual('wibble', loaded_e.physical_resource_id)
+        self.assertEqual('TEST', loaded_e.action)
+        self.assertEqual('IN_PROGRESS', loaded_e.status)
+        self.assertEqual('Testing', loaded_e.reason)
+        self.assertNotEqual(None, loaded_e.timestamp)
+        self.assertEqual({'Foo': 'goo'}, loaded_e.resource_properties)
+
+    def test_load_given_stack_event(self):
+        self.resource.resource_id_set('resource_physical_id')
+
+        e = event.Event(self.ctx, self.stack, self.resource,
+                        'TEST', 'IN_PROGRESS', 'Testing',
+                        'wibble', self.resource.properties)
+
+        e.store()
+        self.assertNotEqual(e.id, None)
+
+        ev = db_api.event_get(self.ctx, e.id)
+
+        loaded_e = event.Event.load(self.ctx, e.id, stack=self.stack, event=ev)
+
+        self.assertEqual(self.stack.id, loaded_e.stack.id)
+        self.assertEqual(self.resource.name, loaded_e.resource.name)
+        self.assertEqual(self.resource.id, loaded_e.resource.id)
+        self.assertEqual('wibble', loaded_e.physical_resource_id)
+        self.assertEqual('TEST', loaded_e.action)
+        self.assertEqual('IN_PROGRESS', loaded_e.status)
+        self.assertEqual('Testing', loaded_e.reason)
+        self.assertNotEqual(None, loaded_e.timestamp)
+        self.assertEqual({'Foo': 'goo'}, loaded_e.resource_properties)
 
     def test_identifier(self):
         e = event.Event(self.ctx, self.stack, self.resource,
-                        'TEST_IN_PROGRESS', 'Testing',
+                        'TEST', 'IN_PROGRESS', 'Testing',
                         'wibble', self.resource.properties)
 
         eid = e.store()
@@ -96,13 +117,14 @@ class EventTest(HeatTestCase):
             'tenant': self.ctx.tenant_id,
             'path': '/resources/EventTestResource/events/%s' % str(eid)
         }
-        self.assertEqual(e.identifier(), expected_identifier)
+        self.assertEqual(expected_identifier, e.identifier())
 
     def test_badprop(self):
-        tmpl = {'Type': 'GenericResourceType', 'Properties': {'foo': 'abc'}}
+        tmpl = {'Type': 'ResourceWithRequiredProps',
+                'Properties': {'Foo': False}}
         rname = 'bad_resource'
-        res = generic_rsrc.GenericResource(rname, tmpl, self.stack)
+        res = generic_rsrc.ResourceWithRequiredProps(rname, tmpl, self.stack)
         e = event.Event(self.ctx, self.stack, res,
-                        'TEST_IN_PROGRESS', 'Testing',
+                        'TEST', 'IN_PROGRESS', 'Testing',
                         'wibble', res.properties)
         self.assertTrue('Error' in e.resource_properties)

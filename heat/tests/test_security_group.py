@@ -1,6 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-#    Licensed under the Apache License, Version 2.0 (the 'License'); you may
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
 #
@@ -22,6 +22,7 @@ from heat.engine import resource
 from heat.tests.common import HeatTestCase
 from heat.tests.utils import setup_dummy_db
 from heat.tests.v1_1 import fakes
+from heat.tests import utils
 from heat.tests.utils import stack_delete_after
 
 from novaclient.v1_1 import security_groups as nova_sg
@@ -115,14 +116,13 @@ Resources:
             'auth_url': 'http://localhost:5000/v2.0'})
         stack_name = 'test_stack'
         tmpl = parser.Template(t)
-        params = parser.Parameters(stack_name, tmpl, {})
-        stack = parser.Stack(ctx, stack_name, tmpl, params)
+        stack = parser.Stack(ctx, stack_name, tmpl)
         stack.store()
         return stack
 
     def assertResourceState(self, rsrc, ref_id, metadata={}):
         self.assertEqual(None, rsrc.validate())
-        self.assertEqual(rsrc.CREATE_COMPLETE, rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         self.assertEqual(ref_id, rsrc.FnGetRefId())
         self.assertEqual(metadata, dict(rsrc.metadata))
 
@@ -137,11 +137,12 @@ Resources:
             rules=[],
         )])
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        sg_name = utils.PhysName('test_stack', 'the_sg')
         nova_sg.SecurityGroupManager.create(
-            'test_stack.the_sg',
+            sg_name,
             'HTTP and SSH access').AndReturn(NovaSG(
                 id=2,
-                name='test_stack.the_sg',
+                name=sg_name,
                 description='HTTP and SSH access',
                 rules=[]))
 
@@ -155,7 +156,7 @@ Resources:
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sg.SecurityGroupManager.get(2).AndReturn(NovaSG(
             id=2,
-            name='test_stack.the_sg',
+            name=sg_name,
             description='HTTP and SSH access',
             rules=[{
                 "from_port": 22,
@@ -192,7 +193,7 @@ Resources:
         sg = stack['the_sg']
         self.assertRaises(resource.UpdateReplace, sg.handle_update, {}, {}, {})
 
-        self.assertResourceState(sg, 'test_stack.the_sg')
+        self.assertResourceState(sg, utils.PhysName('test_stack', 'the_sg'))
 
         stack.delete()
         self.m.VerifyAll()
@@ -201,9 +202,10 @@ Resources:
     def test_security_group_nova_exception(self):
         #create script
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        sg_name = utils.PhysName('test_stack', 'the_sg')
         nova_sg.SecurityGroupManager.list().AndReturn([NovaSG(
             id=2,
-            name='test_stack.the_sg',
+            name=sg_name,
             description='HTTP and SSH access',
             rules=[],
         )])
@@ -222,7 +224,7 @@ Resources:
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sg.SecurityGroupManager.get(2).AndReturn(NovaSG(
             id=2,
-            name='test_stack.the_sg',
+            name=sg_name,
             description='HTTP and SSH access',
             rules=[{
                 "from_port": 22,
@@ -265,11 +267,11 @@ Resources:
         sg = stack['the_sg']
         self.assertRaises(resource.UpdateReplace, sg.handle_update, {}, {}, {})
 
-        self.assertResourceState(sg, 'test_stack.the_sg')
+        self.assertResourceState(sg, utils.PhysName('test_stack', 'the_sg'))
 
         self.assertEqual(None, sg.delete())
 
-        sg.state_set(sg.CREATE_COMPLETE, 'to delete again')
+        sg.state_set(sg.CREATE, sg.COMPLETE, 'to delete again')
         sg.resource_id = 2
         stack.delete()
 
@@ -278,15 +280,16 @@ Resources:
     @stack_delete_after
     def test_security_group_quantum(self):
         #create script
+        sg_name = utils.PhysName('test_stack', 'the_sg')
         quantumclient.Client.create_security_group({
             'security_group': {
-                'name': 'test_stack.the_sg',
+                'name': sg_name,
                 'description': 'HTTP and SSH access'
             }
         }).AndReturn({
             'security_group': {
                 'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
-                'name': 'test_stack.the_sg',
+                'name': sg_name,
                 'description': 'HTTP and SSH access',
                 'security_group_rules': [],
                 'id': 'aaaa'
@@ -417,15 +420,16 @@ Resources:
     @stack_delete_after
     def test_security_group_quantum_exception(self):
         #create script
+        sg_name = utils.PhysName('test_stack', 'the_sg')
         quantumclient.Client.create_security_group({
             'security_group': {
-                'name': 'test_stack.the_sg',
+                'name': sg_name,
                 'description': 'HTTP and SSH access'
             }
         }).AndReturn({
             'security_group': {
                 'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
-                'name': 'test_stack.the_sg',
+                'name': sg_name,
                 'description': 'HTTP and SSH access',
                 'security_group_rules': [],
                 'id': 'aaaa'
@@ -529,7 +533,7 @@ Resources:
 
         self.assertEqual(None, sg.delete())
 
-        sg.state_set(sg.CREATE_COMPLETE, 'to delete again')
+        sg.state_set(sg.CREATE, sg.COMPLETE, 'to delete again')
         sg.resource_id = 'aaaa'
         stack.delete()
 

@@ -14,6 +14,7 @@
 #    under the License.
 
 import collections
+import json
 
 from heat.db import api as db_api
 from heat.common import exception
@@ -28,12 +29,25 @@ SECTIONS = (VERSION, DESCRIPTION, MAPPINGS,
 class Template(collections.Mapping):
     '''A stack template.'''
 
-    def __init__(self, template, template_id=None):
+    def __new__(cls, template, *args, **kwargs):
+        '''Create a new Template of the appropriate class.'''
+
+        if cls == Template:
+            if 'heat_template_version' in template:
+                # deferred import of HOT module to avoid circular dependency
+                # at load time
+                from heat.engine import hot
+                return hot.HOTemplate(template, *args, **kwargs)
+
+        return super(Template, cls).__new__(cls)
+
+    def __init__(self, template, template_id=None, files=None):
         '''
         Initialise the template with a JSON object and a set of Parameters
         '''
         self.id = template_id
         self.t = template
+        self.files = files or {}
         self.maps = self[MAPPINGS]
 
     @classmethod
@@ -145,7 +159,13 @@ class Template(collections.Mapping):
         def handle_getatt(args):
             resource, att = args
             try:
-                return resources[resource].FnGetAtt(att)
+                r = resources[resource]
+                if r.state in (
+                        (r.CREATE, r.IN_PROGRESS),
+                        (r.CREATE, r.COMPLETE),
+                        (r.UPDATE, r.IN_PROGRESS),
+                        (r.UPDATE, r.COMPLETE)):
+                    return r.FnGetAtt(att)
             except KeyError:
                 raise exception.InvalidTemplateAttribute(resource=resource,
                                                          key=att)
@@ -190,6 +210,52 @@ class Template(collections.Mapping):
         return _resolve(lambda k, v: k == 'Fn::Join', handle_join, s)
 
     @staticmethod
+    def resolve_select(s):
+        '''
+        Resolve constructs of the form:
+        (for a list lookup)
+        { "Fn::Select" : [ "2", [ "apples", "grapes", "mangoes" ] ] }
+        returns "mangoes"
+
+        (for a dict lookup)
+        { "Fn::Select" : [ "red", {"red": "a", "flu": "b"} ] }
+        returns "a"
+
+        Note: can raise IndexError, KeyError, ValueError and TypeError
+        '''
+        def handle_select(args):
+            if not isinstance(args, (list, tuple)):
+                raise TypeError('Arguments to "Fn::Select" must be a list')
+
+            try:
+                lookup, strings = args
+            except ValueError as ex:
+                example = '"Fn::Select" : [ "4", [ "str1", "str2"]]'
+                raise ValueError('Incorrect arguments to "Fn::Select" %s: %s' %
+                                ('should be', example))
+
+            try:
+                index = int(lookup)
+            except ValueError as ex:
+                index = lookup
+
+            if isinstance(strings, basestring):
+                # might be serialized json.
+                # if not allow it to raise a ValueError
+                strings = json.loads(strings)
+
+            if isinstance(strings, (list, tuple)) and isinstance(index, int):
+                return strings[index]
+            if isinstance(strings, dict) and isinstance(index, basestring):
+                return strings[index]
+            if strings is None:
+                return ''
+
+            raise TypeError('Arguments to "Fn::Select" not fully resolved')
+
+        return _resolve(lambda k, v: k == 'Fn::Select', handle_select, s)
+
+    @staticmethod
     def resolve_joins(s):
         '''
         Resolve constructs of the form { "Fn::Join" : [ "delim", [ "str1",
@@ -208,9 +274,80 @@ class Template(collections.Mapping):
 
             if not isinstance(strings, (list, tuple)):
                 raise TypeError('Arguments to "Fn::Join" not fully resolved')
-            return delim.join(strings)
+
+            def empty_for_none(v):
+                if v is None:
+                    return ''
+                else:
+                    return v
+
+            return delim.join(empty_for_none(value) for value in strings)
 
         return _resolve(lambda k, v: k == 'Fn::Join', handle_join, s)
+
+    @staticmethod
+    def resolve_split(s):
+        '''
+        Split strings in Fn::Split to a list of sub strings
+        eg the following
+        { "Fn::Split" : [ ",", "str1,str2,str3,str4"]}
+        is reduced to
+        {["str1", "str2", "str3", "str4"]}
+        '''
+        def handle_split(args):
+            if not isinstance(args, (list, tuple)):
+                raise TypeError('Arguments to "Fn::Split" must be a list')
+
+            example = '"Fn::Split" : [ ",", "str1, str2"]]'
+            try:
+                delim, strings = args
+            except ValueError as ex:
+                raise ValueError('Incorrect arguments to "Fn::Split" %s: %s' %
+                                ('should be', example))
+            if not isinstance(strings, basestring):
+                raise TypeError('Incorrect arguments to "Fn::Split" %s: %s' %
+                                ('should be', example))
+            return strings.split(delim)
+        return _resolve(lambda k, v: k == 'Fn::Split', handle_split, s)
+
+    @staticmethod
+    def resolve_replace(s):
+        """
+        Resolve constructs of the form.
+        {"Fn::Replace": [
+          {'$var1': 'foo', '%var2%': 'bar'},
+          '$var1 is %var2%'
+        ]}
+        This is implemented using python str.replace on each key
+        """
+        def handle_replace(args):
+            if not isinstance(args, (list, tuple)):
+                raise TypeError('Arguments to "Fn::Replace" must be a list')
+
+            try:
+                mapping, string = args
+            except ValueError as ex:
+                example = ('{"Fn::Replace": '
+                           '[ {"$var1": "foo", "%var2%": "bar"}, '
+                           '"$var1 is %var2%"]}')
+                raise ValueError(
+                    'Incorrect arguments to "Fn::Replace" %s: %s' %
+                    ('should be', example))
+
+            if not isinstance(mapping, dict):
+                raise TypeError(
+                    'Arguments to "Fn::Replace" not fully resolved')
+            if not isinstance(string, basestring):
+                raise TypeError(
+                    'Arguments to "Fn::Replace" not fully resolved')
+
+            for k, v in mapping.items():
+                if v is None:
+                    v = ''
+                string = string.replace(k, v)
+            return string
+
+        return _resolve(lambda k, v: k == 'Fn::Replace', handle_replace, s)
 
     @staticmethod
     def resolve_base64(s):
@@ -223,6 +360,30 @@ class Template(collections.Mapping):
             return string
 
         return _resolve(lambda k, v: k == 'Fn::Base64', handle_base64, s)
+
+    @staticmethod
+    def resolve_resource_facade(s, stack):
+        '''
+        Resolve constructs of the form {'Fn::ResourceFacade': 'Metadata'}
+        '''
+        resource_attributes = ('Metadata', 'DeletionPolicy', 'UpdatePolicy')
+
+        def handle_resource_facade(arg):
+            if arg not in resource_attributes:
+                raise ValueError(
+                    'Incorrect arguments to "Fn::ResourceFacade" %s: %s' %
+                    ('should be one of', str(resource_attributes)))
+            try:
+                if arg == 'Metadata':
+                    return stack.parent_resource.metadata
+                return stack.parent_resource.t[arg]
+            except KeyError:
+                raise KeyError('"%s" is not specified in parent resource' %
+                               arg)
+
+        return _resolve(lambda k, v: k == 'Fn::ResourceFacade',
+                        handle_resource_facade,
+                        s)
 
 
 def _resolve(match, handle, snippet):
@@ -243,5 +404,5 @@ def _resolve(match, handle, snippet):
                 return handle(recurse(v))
         return dict((k, recurse(v)) for k, v in snippet.items())
     elif isinstance(snippet, list):
-        return [recurse(v) for v in snippet]
+        return [recurse(s) for s in snippet]
     return snippet

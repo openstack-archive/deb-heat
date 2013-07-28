@@ -21,7 +21,6 @@ from heat.common import exception
 from heat.common import config
 from heat.common import template_format
 from heat.engine import clients
-from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine.resources import instance
 from heat.engine.resources import user
@@ -29,6 +28,7 @@ from heat.engine.resources import loadbalancer as lb
 from heat.engine.resources import wait_condition as wc
 from heat.engine.resource import Metadata
 from heat.tests.common import HeatTestCase
+from heat.tests import utils
 from heat.tests.utils import setup_dummy_db
 from heat.tests.utils import parse_stack
 from heat.tests.v1_1 import fakes
@@ -72,6 +72,35 @@ lb_template = '''
 }
 '''
 
+lb_template_nokey = '''
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "LB Template",
+  "Resources": {
+    "WikiServerOne": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": "F17-x86_64-gold",
+        "InstanceType"   : "m1.large",
+        "UserData"       : "some data"
+      }
+    },
+    "LoadBalancer" : {
+      "Type" : "AWS::ElasticLoadBalancing::LoadBalancer",
+      "Properties" : {
+        "AvailabilityZones" : ["nova"],
+        "Instances" : [{"Ref": "WikiServerOne"}],
+        "Listeners" : [ {
+          "LoadBalancerPort" : "80",
+          "InstancePort" : "80",
+          "Protocol" : "HTTP"
+        }]
+      }
+    }
+  }
+}
+'''
+
 
 class LoadBalancerTest(HeatTestCase):
     def setUp(self):
@@ -94,12 +123,10 @@ class LoadBalancerTest(HeatTestCase):
                                stack)
         self.assertEqual(None, rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
-        self.assertEqual(lb.LoadBalancer.CREATE_COMPLETE, rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
 
-    def test_loadbalancer(self):
-        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
-        scheduler.TaskRunner._sleep(mox.IsA(int)).MultipleTimes()
+    def _create_stubs(self, key_name='test', stub_meta=True):
 
         self.m.StubOutWithMock(user.User, 'keystone')
         user.User.keystone().AndReturn(self.fkc)
@@ -109,19 +136,27 @@ class LoadBalancerTest(HeatTestCase):
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'keystone')
         wc.WaitConditionHandle.keystone().MultipleTimes().AndReturn(self.fkc)
 
+        server_name = utils.PhysName(utils.PhysName('test_stack',
+                                                    'LoadBalancer'),
+                                     'LB_instance')
         clients.OpenStackClients.nova(
             "compute").MultipleTimes().AndReturn(self.fc)
         self.fc.servers.create(
-            flavor=2, image=745, key_name='test',
-            meta=None, nics=None, name=u'test_stack.LoadBalancer.LB_instance',
+            flavor=2, image=745, key_name=key_name,
+            meta=None, nics=None, name=server_name,
             scheduler_hints=None, userdata=mox.IgnoreArg(),
             security_groups=None, availability_zone=None).AndReturn(
                 self.fc.servers.list()[1])
-        Metadata.__set__(mox.IgnoreArg(),
-                         mox.IgnoreArg()).AndReturn(None)
+        if stub_meta:
+            Metadata.__set__(mox.IgnoreArg(),
+                             mox.IgnoreArg()).AndReturn(None)
 
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'get_status')
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS'])
+
+    def test_loadbalancer(self):
+        self._create_stubs()
+
         self.m.ReplayAll()
 
         t = template_format.parse(lb_template)
@@ -161,10 +196,10 @@ class LoadBalancerTest(HeatTestCase):
                                      s)
             id_list.append(inst.FnGetRefId())
 
-        rsrc.reload(id_list)
+        rsrc.handle_update(rsrc.json_snippet, {}, {'Instances': id_list})
 
         self.assertEqual('4.5.6.7', rsrc.FnGetAtt('DNSName'))
-        self.assertEqual('', rsrc.FnGetAtt('SourceSecurityGroupName'))
+        self.assertEqual('', rsrc.FnGetAtt('SourceSecurityGroup.GroupName'))
 
         try:
             rsrc.FnGetAtt('Foo')
@@ -172,9 +207,19 @@ class LoadBalancerTest(HeatTestCase):
         except exception.InvalidTemplateAttribute:
             pass
 
-        self.assertRaises(resource.UpdateReplace,
-                          rsrc.handle_update, {}, {}, {})
+        self.assertEqual(None, rsrc.handle_update({}, {}, {}))
 
+        self.m.VerifyAll()
+
+    def test_loadbalancer_nokey(self):
+        self._create_stubs(key_name=None, stub_meta=False)
+        self.m.ReplayAll()
+
+        t = template_format.parse(lb_template_nokey)
+        s = parse_stack(t)
+        s.store()
+
+        rsrc = self.create_loadbalancer(t, s, 'LoadBalancer')
         self.m.VerifyAll()
 
     def assertRegexpMatches(self, text, expected_regexp, msg=None):

@@ -95,6 +95,37 @@ class PropertyTest(testtools.TestCase):
         p = properties.Property(schema)
         self.assertRaises(ValueError, p.validate_data, 'blarg')
 
+    def test_string_maxlength_good(self):
+        schema = {'Type': 'String',
+                  'MaxLength': '5'}
+        p = properties.Property(schema)
+        self.assertEqual(p.validate_data('abcd'), 'abcd')
+
+    def test_string_exceeded_maxlength(self):
+        schema = {'Type': 'String',
+                  'MaxLength': '5'}
+        p = properties.Property(schema)
+        self.assertRaises(ValueError, p.validate_data, 'abcdef')
+
+    def test_string_length_in_range(self):
+        schema = {'Type': 'String',
+                  'MinLength': '5',
+                  'MaxLength': '10'}
+        p = properties.Property(schema)
+        self.assertEqual(p.validate_data('abcdef'), 'abcdef')
+
+    def test_string_minlength_good(self):
+        schema = {'Type': 'String',
+                  'MinLength': '5'}
+        p = properties.Property(schema)
+        self.assertEqual(p.validate_data('abcde'), 'abcde')
+
+    def test_string_smaller_than_minlength(self):
+        schema = {'Type': 'String',
+                  'MinLength': '5'}
+        p = properties.Property(schema)
+        self.assertRaises(ValueError, p.validate_data, 'abcd')
+
     def test_int_good(self):
         schema = {'Type': 'Integer',
                   'MinValue': 3,
@@ -202,6 +233,37 @@ class PropertyTest(testtools.TestCase):
         p = properties.Property(schema)
         self.assertEqual(p.validate_data(['bar', 'foo']), ['bar', 'foo'])
 
+    def test_list_maxlength_good(self):
+        schema = {'Type': 'List',
+                  'MaxLength': '3'}
+        p = properties.Property(schema)
+        self.assertEqual(p.validate_data(['1', '2']), ['1', '2'])
+
+    def test_list_exceeded_maxlength(self):
+        schema = {'Type': 'List',
+                  'MaxLength': '2'}
+        p = properties.Property(schema)
+        self.assertRaises(ValueError, p.validate_data, ['1', '2', '3'])
+
+    def test_list_length_in_range(self):
+        schema = {'Type': 'List',
+                  'MinLength': '2',
+                  'MaxLength': '4'}
+        p = properties.Property(schema)
+        self.assertEqual(p.validate_data(['1', '2', '3']), ['1', '2', '3'])
+
+    def test_list_minlength_good(self):
+        schema = {'Type': 'List',
+                  'MinLength': '3'}
+        p = properties.Property(schema)
+        self.assertEqual(p.validate_data(['1', '2', '3']), ['1', '2', '3'])
+
+    def test_list_smaller_than_minlength(self):
+        schema = {'Type': 'List',
+                  'MinLength': '4'}
+        p = properties.Property(schema)
+        self.assertRaises(ValueError, p.validate_data, ['1', '2', '3'])
+
     def test_map_string(self):
         p = properties.Property({'Type': 'Map'})
         self.assertRaises(TypeError, p.validate_data, 'foo')
@@ -209,6 +271,44 @@ class PropertyTest(testtools.TestCase):
     def test_map_list(self):
         p = properties.Property({'Type': 'Map'})
         self.assertRaises(TypeError, p.validate_data, ['foo'])
+
+    def test_map_maxlength_good(self):
+        schema = {'Type': 'Map',
+                  'MaxLength': '4'}
+        p = properties.Property(schema)
+        self.assertEqual(
+            p.validate_data({'1': 'one', '2': 'two', '3': 'three'}),
+            {'1': 'one', '2': 'two', '3': 'three'})
+
+    def test_map_exceeded_maxlength(self):
+        schema = {'Type': 'Map',
+                  'MaxLength': '2'}
+        p = properties.Property(schema)
+        self.assertRaises(ValueError,
+                          p.validate_data,
+                          {'1': 'one', '2': 'two', '3': 'three'})
+
+    def test_map_length_in_range(self):
+        schema = {'Type': 'Map',
+                  'MinLength': '2',
+                  'MaxLength': '4'}
+        p = properties.Property(schema)
+        self.assertEqual(
+            p.validate_data({'1': 'one', '2': 'two', '3': 'three'}),
+            {'1': 'one', '2': 'two', '3': 'three'})
+
+    def test_map_minlength_good(self):
+        schema = {'Type': 'Map',
+                  'MinLength': '2'}
+        p = properties.Property(schema)
+        self.assertEqual(p.validate_data({'1': 'one', '2': 'two'}),
+                         {'1': 'one', '2': 'two'})
+
+    def test_map_smaller_than_minlength(self):
+        schema = {'Type': 'Map',
+                  'MinLength': '3'}
+        p = properties.Property(schema)
+        self.assertRaises(ValueError, p.validate_data, {'1': 'one'})
 
     def test_map_schema_good(self):
         map_schema = {'valid': {'Type': 'Boolean'}}
@@ -301,6 +401,82 @@ class PropertiesTest(testtools.TestCase):
     def test_bad_key(self):
         self.assertEqual(self.props.get('foo', 'wibble'), 'wibble')
 
+    def test_none_string(self):
+        schema = {'foo': {'Type': 'String'}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual('', props['foo'])
+
+    def test_none_integer(self):
+        schema = {'foo': {'Type': 'Integer'}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(0, props['foo'])
+
+    def test_none_number(self):
+        schema = {'foo': {'Type': 'Number'}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(0, props['foo'])
+
+    def test_none_boolean(self):
+        schema = {'foo': {'Type': 'Boolean'}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(False, props['foo'])
+
+    def test_none_map(self):
+        schema = {'foo': {'Type': 'Map'}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual({}, props['foo'])
+
+    def test_none_list(self):
+        schema = {'foo': {'Type': 'List'}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual([], props['foo'])
+
+    def test_none_default_string(self):
+        schema = {'foo': {'Type': 'String', 'Default': 'bar'}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual('bar', props['foo'])
+
+    def test_none_default_integer(self):
+        schema = {'foo': {'Type': 'Integer', 'Default': 42}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(42, props['foo'])
+
+        schema = {'foo': {'Type': 'Integer', 'Default': 0}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(0, props['foo'])
+
+        schema = {'foo': {'Type': 'Integer', 'Default': -273}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(-273, props['foo'])
+
+    def test_none_default_number(self):
+        schema = {'foo': {'Type': 'Number', 'Default': 42.0}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(42.0, props['foo'])
+
+        schema = {'foo': {'Type': 'Number', 'Default': 0.0}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(0.0, props['foo'])
+
+        schema = {'foo': {'Type': 'Number', 'Default': -273.15}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(-273.15, props['foo'])
+
+    def test_none_default_boolean(self):
+        schema = {'foo': {'Type': 'Boolean', 'Default': True}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(True, props['foo'])
+
+    def test_none_default_map(self):
+        schema = {'foo': {'Type': 'Map', 'Default': {'bar': 'baz'}}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual({'bar': 'baz'}, props['foo'])
+
+    def test_none_default_list(self):
+        schema = {'foo': {'Type': 'List', 'Default': ['one', 'two']}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(['one', 'two'], props['foo'])
+
 
 class PropertiesValidationTest(testtools.TestCase):
     def test_required(self):
@@ -337,3 +513,63 @@ class PropertiesValidationTest(testtools.TestCase):
         schema = {'foo': {'Type': 'String'}}
         props = properties.Properties(schema, {'food': 42})
         self.assertRaises(exception.StackValidationFailed, props.validate)
+
+    def test_none_string(self):
+        schema = {'foo': {'Type': 'String'}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(props.validate(), None)
+
+    def test_none_integer(self):
+        schema = {'foo': {'Type': 'Integer'}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(props.validate(), None)
+
+    def test_none_number(self):
+        schema = {'foo': {'Type': 'Number'}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(props.validate(), None)
+
+    def test_none_boolean(self):
+        schema = {'foo': {'Type': 'Boolean'}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(props.validate(), None)
+
+    def test_none_map(self):
+        schema = {'foo': {'Type': 'Map'}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(props.validate(), None)
+
+    def test_none_list(self):
+        schema = {'foo': {'Type': 'List'}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(props.validate(), None)
+
+    def test_none_default_string(self):
+        schema = {'foo': {'Type': 'String', 'Default': 'bar'}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(props.validate(), None)
+
+    def test_none_default_integer(self):
+        schema = {'foo': {'Type': 'Integer', 'Default': 42}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(props.validate(), None)
+
+    def test_none_default_number(self):
+        schema = {'foo': {'Type': 'Number', 'Default': 42.0}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(props.validate(), None)
+
+    def test_none_default_boolean(self):
+        schema = {'foo': {'Type': 'Boolean', 'Default': True}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(props.validate(), None)
+
+    def test_none_default_map(self):
+        schema = {'foo': {'Type': 'Map', 'Default': {'bar': 'baz'}}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(props.validate(), None)
+
+    def test_none_default_list(self):
+        schema = {'foo': {'Type': 'List', 'Default': ['one', 'two']}}
+        props = properties.Properties(schema, {'foo': None})
+        self.assertEqual(props.validate(), None)

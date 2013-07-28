@@ -15,11 +15,9 @@
 
 from urlparse import urlparse
 
-from heat.common import exception
-from heat.engine import resource
-from heat.common import short_id
-from heat.openstack.common import log as logging
 from heat.engine import clients
+from heat.engine import resource
+from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +35,10 @@ class S3Bucket(resource.Resource):
                                            'BucketOwnerFullControl']},
                          'WebsiteConfiguration': {'Type': 'Map',
                                                   'Schema': website_schema}}
-
-    def __init__(self, name, json_snippet, stack):
-        super(S3Bucket, self).__init__(name, json_snippet, stack)
+    attributes_schema = {
+        "DomainName": "The DNS name of the specified bucket.",
+        "WebsiteURL": "The website endpoint for the specified bucket."
+    }
 
     def validate(self):
         '''
@@ -50,13 +49,9 @@ class S3Bucket(resource.Resource):
             return {'Error':
                     'S3 services unavailable because of missing swiftclient.'}
 
-    def _create_container_name(self):
-        return '%s-%s-%s' % (self.stack.name, self.name,
-                             short_id.generate_id())
-
     def handle_create(self):
         """Create a bucket."""
-        container = self._create_container_name()
+        container = self.physical_resource_name()
         headers = {}
         logger.debug('S3Bucket create container %s with headers %s' %
                      (container, headers))
@@ -97,17 +92,14 @@ class S3Bucket(resource.Resource):
     def FnGetRefId(self):
         return unicode(self.resource_id)
 
-    def FnGetAtt(self, key):
-        url, token_id = self.swift().get_auth()
+    def _resolve_attribute(self, name):
+        url = self.swift().get_auth()[0]
         parsed = list(urlparse(url))
-        if key == 'DomainName':
+        if name == 'DomainName':
             return parsed[1].split(':')[0]
-        elif key == 'WebsiteURL':
+        elif name == 'WebsiteURL':
             return '%s://%s%s/%s' % (parsed[0], parsed[1], parsed[2],
                                      self.resource_id)
-        else:
-            raise exception.InvalidTemplateAttribute(resource=self.name,
-                                                     key=key)
 
 
 def resource_mapping():

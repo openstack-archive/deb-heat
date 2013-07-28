@@ -16,6 +16,7 @@
 from heat.engine import clients
 from heat.openstack.common import log as logging
 from heat.engine.resources.quantum import quantum
+from heat.engine import scheduler
 
 if clients.quantumclient is not None:
     from quantumclient.common.exceptions import QuantumClientException
@@ -42,9 +43,32 @@ class Port(quantum.QuantumResource):
                          'mac_address': {'Type': 'String'},
                          'device_id': {'Type': 'String'},
                          'security_groups': {'Type': 'List'}}
+    attributes_schema = {
+        "admin_state_up": "the administrative state of this port",
+        "device_id": "unique identifier for the device",
+        "device_owner": "name of the network owning the port",
+        "fixed_ips": "fixed ip addresses",
+        "id": "the unique identifier for the port",
+        "mac_address": "mac address of the port",
+        "name": "friendly name of the port",
+        "network_id": "unique identifier for the network owning the port",
+        "security_groups": "a list of security groups for the port",
+        "status": "the status of the port",
+        "tenant_id": "tenant owning the port"
+    }
 
-    def __init__(self, name, json_snippet, stack):
-        super(Port, self).__init__(name, json_snippet, stack)
+    def add_dependencies(self, deps):
+        super(Port, self).add_dependencies(deps)
+        # Depend on any Subnet in this template with the same
+        # network_id as this network_id.
+        # It is not known which subnet a port might be assigned
+        # to so all subnets in a network should be created before
+        # the ports in that network.
+        for resource in self.stack.resources.itervalues():
+            if (resource.type() == 'OS::Quantum::Subnet' and
+                resource.properties.get('network_id') ==
+                    self.properties.get('network_id')):
+                        deps += (self, resource)
 
     def handle_create(self):
         props = self.prepare_properties(
@@ -68,14 +92,8 @@ class Port(quantum.QuantumResource):
         except QuantumClientException as ex:
             if ex.status_code != 404:
                 raise ex
-
-    def FnGetAtt(self, key):
-        try:
-            attributes = self._show_resource()
-        except QuantumClientException as ex:
-            logger.warn("failed to fetch resource attributes: %s" % str(ex))
-            return None
-        return self.handle_get_attributes(self.name, key, attributes)
+        else:
+            return scheduler.TaskRunner(self._confirm_delete)()
 
 
 def resource_mapping():

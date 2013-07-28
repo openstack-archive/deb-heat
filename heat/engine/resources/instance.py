@@ -31,6 +31,7 @@ from heat.common import exception
 from heat.engine.resources.network_interface import NetworkInterface
 
 from heat.openstack.common import log as logging
+from heat.openstack.common import uuidutils
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,8 @@ class Restarter(resource.Resource):
 
 
 class Instance(resource.Resource):
-    # AWS does not require KeyName and InstanceType but we seem to
+    # AWS does not require InstanceType but Heat does because the nova
+    # create api call requires a flavor
     tags_schema = {'Key': {'Type': 'String',
                            'Required': True},
                    'Value': {'Type': 'String',
@@ -107,6 +109,18 @@ class Instance(resource.Resource):
                          'UserData': {'Type': 'String'},
                          'Volumes': {'Type': 'List'}}
 
+    attributes_schema = {'AvailabilityZone': ('The Availability Zone where the'
+                                              ' specified instance is '
+                                              'launched.'),
+                         'PrivateDnsName': ('Private DNS name of the specified'
+                                            ' instance.'),
+                         'PublicDnsName': ('Public DNS name of the specified '
+                                           'instance.'),
+                         'PrivateIp': ('Private IP address of the specified '
+                                       'instance.'),
+                         'PublicIp': ('Public IP address of the specified '
+                                      'instance.')}
+
     # template keys supported for handle_update, note trailing comma
     # is required for a single item to get a tuple not a string
     update_allowed_keys = ('Metadata',)
@@ -133,8 +147,9 @@ class Instance(resource.Resource):
         '''
         # Just record the first ipaddress
         for n in networks:
-            self.ipaddress = networks[n][0]
-            break
+            if len(networks[n]) > 0:
+                self.ipaddress = networks[n][0]
+                break
 
     def _ipaddress(self):
         '''
@@ -150,24 +165,16 @@ class Instance(resource.Resource):
 
         return self.ipaddress or '0.0.0.0'
 
-    def FnGetAtt(self, key):
+    def _resolve_attribute(self, name):
         res = None
-        if key == 'AvailabilityZone':
+        if name == 'AvailabilityZone':
             res = self.properties['AvailabilityZone']
-        elif key == 'PublicIp':
+        elif name in ['PublicIp', 'PrivateIp', 'PublicDnsName',
+                      'PrivateDnsName']:
             res = self._ipaddress()
-        elif key == 'PrivateIp':
-            res = self._ipaddress()
-        elif key == 'PublicDnsName':
-            res = self._ipaddress()
-        elif key == 'PrivateDnsName':
-            res = self._ipaddress()
-        else:
-            raise exception.InvalidTemplateAttribute(resource=self.name,
-                                                     key=key)
 
-        logger.info('%s.GetAtt(%s) == %s' % (self.name, key, res))
-        return unicode(res)
+        logger.info('%s._resolve_attribute(%s) == %s' % (self.name, name, res))
+        return unicode(res) if res else None
 
     def _build_userdata(self, userdata):
         if not self.mime_string:
@@ -190,7 +197,7 @@ class Instance(resource.Resource):
             attachments = [(read_cloudinit_file('config'), 'cloud-config'),
                            (read_cloudinit_file('boothook.sh'), 'boothook.sh',
                             'cloud-boothook'),
-                           (read_cloudinit_file('part-handler.py'),
+                           (read_cloudinit_file('part_handler.py'),
                             'part-handler.py'),
                            (userdata, 'cfn-userdata', 'x-cfninitdata'),
                            (read_cloudinit_file('loguserdata.py'),
@@ -292,16 +299,8 @@ class Instance(resource.Resource):
             raise exception.UserKeyPairMissing(key_name=key_name)
 
         image_name = self.properties['ImageId']
-        image_id = None
-        image_list = self.nova().images.list()
-        for o in image_list:
-            if o.name == image_name:
-                image_id = o.id
-                break
 
-        if image_id is None:
-            logger.info("Image %s was not found in glance" % image_name)
-            raise exception.ImageNotFound(image_name=image_name)
+        image_id = self._get_image_id(image_name)
 
         flavor_id = None
         flavor_list = self.nova().flavors.list()
@@ -349,23 +348,29 @@ class Instance(resource.Resource):
             if server is not None:
                 self.resource_id_set(server.id)
 
+        return server, scheduler.TaskRunner(self._attach_volumes_task())
+
+    def _attach_volumes_task(self):
         attach_tasks = (volume.VolumeAttachTask(self.stack,
                                                 self.resource_id,
                                                 volume_id,
                                                 device)
                         for volume_id, device in self.volumes())
-        attach_volumes_task = scheduler.PollingTaskGroup(attach_tasks)
-
-        return server, scheduler.TaskRunner(attach_volumes_task)
+        return scheduler.PollingTaskGroup(attach_tasks)
 
     def check_create_complete(self, cookie):
+        return self._check_active(cookie)
+
+    def _check_active(self, cookie):
         server, volume_attach = cookie
 
         if not volume_attach.started():
             if server.status != 'ACTIVE':
                 server.get()
 
-            if server.status in self._deferred_server_statuses:
+            # Some clouds append extra (STATUS) strings to the status
+            short_server_status = server.status.split('(')[0]
+            if short_server_status in self._deferred_server_statuses:
                 return False
             elif server.status == 'ACTIVE':
                 self._set_ipaddress(server.networks)
@@ -423,6 +428,17 @@ class Instance(resource.Resource):
                     'Cannot define both SecurityGroups/SecurityGroupIds and '
                     'NetworkInterfaces properties.'}
 
+        # make sure the image exists.
+        image_identifier = self.properties['ImageId']
+        try:
+            self._get_image_id(image_identifier)
+        except exception.ImageNotFound:
+            return {'Error': 'Image %s was not found in glance' %
+                    image_identifier}
+        except exception.NoUniqueImageFound:
+            return {'Error': 'Multiple images were found with name %s' %
+                    image_identifier}
+
         return
 
     def _delete_server(self, server):
@@ -440,6 +456,16 @@ class Instance(resource.Resource):
             except clients.novaclient.exceptions.NotFound:
                 break
 
+    def _detach_volumes_task(self):
+        '''
+        Detach volumes from the instance
+        '''
+        detach_tasks = (volume.VolumeDetachTask(self.stack,
+                                                self.resource_id,
+                                                volume_id)
+                        for volume_id, device in self.volumes())
+        return scheduler.PollingTaskGroup(detach_tasks)
+
     def handle_delete(self):
         '''
         Delete an instance, blocking until it is disposed by OpenStack
@@ -447,11 +473,7 @@ class Instance(resource.Resource):
         if self.resource_id is None:
             return
 
-        detach_tasks = (volume.VolumeDetachTask(self.stack,
-                                                self.resource_id,
-                                                volume_id)
-                        for volume_id, device in self.volumes())
-        scheduler.TaskRunner(scheduler.PollingTaskGroup(detach_tasks))()
+        scheduler.TaskRunner(self._detach_volumes_task())()
 
         try:
             server = self.nova().servers.get(self.resource_id)
@@ -462,6 +484,111 @@ class Instance(resource.Resource):
             delete(wait_time=0.2)
 
         self.resource_id = None
+
+    def _get_image_id(self, image_identifier):
+        image_id = None
+        if uuidutils.is_uuid_like(image_identifier):
+            try:
+                image_id = self.nova().images.get(image_identifier).id
+            except clients.novaclient.exceptions.NotFound:
+                logger.info("Image %s was not found in glance"
+                            % image_identifier)
+                raise exception.ImageNotFound(image_name=image_identifier)
+        else:
+            try:
+                image_list = self.nova().images.list()
+            except clients.novaclient.exceptions.ClientException as ex:
+                raise exception.ServerError(message=str(ex))
+            image_names = dict(
+                (o.id, o.name)
+                for o in image_list if o.name == image_identifier)
+            if len(image_names) == 0:
+                logger.info("Image %s was not found in glance" %
+                            image_identifier)
+                raise exception.ImageNotFound(image_name=image_identifier)
+            elif len(image_names) > 1:
+                logger.info("Mulitple images %s were found in glance with name"
+                            % image_identifier)
+                raise exception.NoUniqueImageFound(image_name=image_identifier)
+            image_id = image_names.popitem()[0]
+        return image_id
+
+    def handle_suspend(self):
+        '''
+        Suspend an instance - note we do not wait for the SUSPENDED state,
+        this is polled for by check_suspend_complete in a similar way to the
+        create logic so we can take advantage of coroutines
+        '''
+        if self.resource_id is None:
+            raise exception.Error(_('Cannot suspend %s, resource_id not set') %
+                                  self.name)
+
+        try:
+            server = self.nova().servers.get(self.resource_id)
+        except clients.novaclient.exceptions.NotFound:
+            raise exception.NotFound(_('Failed to find instance %s') %
+                                     self.resource_id)
+        else:
+            logger.debug("suspending instance %s" % self.resource_id)
+            # We want the server.suspend to happen after the volume
+            # detachement has finished, so pass both tasks and the server
+            suspend_runner = scheduler.TaskRunner(server.suspend)
+            volumes_runner = scheduler.TaskRunner(self._detach_volumes_task())
+            return server, suspend_runner, volumes_runner
+
+    def check_suspend_complete(self, cookie):
+        server, suspend_runner, volumes_runner = cookie
+
+        if not volumes_runner.started():
+            volumes_runner.start()
+
+        if volumes_runner.done():
+            if not suspend_runner.started():
+                suspend_runner.start()
+
+            if suspend_runner.done():
+                if server.status == 'SUSPENDED':
+                    return True
+
+                server.get()
+                logger.debug("%s check_suspend_complete status = %s" %
+                             (self.name, server.status))
+                if server.status in list(self._deferred_server_statuses +
+                                         ['ACTIVE']):
+                    return server.status == 'SUSPENDED'
+                else:
+                    raise exception.Error(_(' nova reported unexpected '
+                                            'instance[%(instance)s] '
+                                            'status[%(status)s]') %
+                                          {'instance': self.name,
+                                           'status': server.status})
+            else:
+                suspend_runner.step()
+        else:
+            return volumes_runner.step()
+
+    def handle_resume(self):
+        '''
+        Resume an instance - note we do not wait for the ACTIVE state,
+        this is polled for by check_resume_complete in a similar way to the
+        create logic so we can take advantage of coroutines
+        '''
+        if self.resource_id is None:
+            raise exception.Error(_('Cannot resume %s, resource_id not set') %
+                                  self.name)
+
+        try:
+            server = self.nova().servers.get(self.resource_id)
+        except clients.novaclient.exceptions.NotFound:
+            raise exception.NotFound(_('Failed to find instance %s') %
+                                     self.resource_id)
+        else:
+            logger.debug("resuming instance %s" % self.resource_id)
+            server.resume()
+            return server, scheduler.TaskRunner(self._attach_volumes_task())
+
+    def check_resume_complete(self, cookie):
+        return self._check_active(cookie)
 
 
 def resource_mapping():

@@ -66,6 +66,18 @@ def raw_template_create(context, values):
     return IMPL.raw_template_create(context, values)
 
 
+def resource_data_get(resource, key):
+    return IMPL.resource_data_get(resource, key)
+
+
+def resource_data_set(resource, key, value, redact=False):
+    return IMPL.resource_data_set(resource, key, value, redact=redact)
+
+
+def resource_data_get_by_key(context, resource_id, key):
+    return IMPL.resource_data_get_by_key(context, resource_id, key)
+
+
 def resource_get(context, resource_id):
     return IMPL.resource_get(context, resource_id)
 
@@ -172,8 +184,8 @@ def watch_rule_update(context, watch_id, values):
     return IMPL.watch_rule_update(context, watch_id, values)
 
 
-def watch_rule_delete(context, watch_rule_name):
-    return IMPL.watch_rule_delete(context, watch_rule_name)
+def watch_rule_delete(context, watch_id):
+    return IMPL.watch_rule_delete(context, watch_id)
 
 
 def watch_data_create(context, values):

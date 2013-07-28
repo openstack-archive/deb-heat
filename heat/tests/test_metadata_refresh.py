@@ -21,6 +21,7 @@ from heat.tests.common import HeatTestCase
 from heat.tests.utils import setup_dummy_db
 from heat.tests.utils import stack_delete_after
 
+from heat.engine import environment
 from heat.common import identifier
 from heat.common import template_format
 from heat.engine import parser
@@ -85,11 +86,11 @@ test_template_waitcondition = '''
     "KeyName" : {"Type" : "String", "Default": "mine" },
   },
   "Resources" : {
+    "WH" : {
+      "Type" : "AWS::CloudFormation::WaitConditionHandle"
+    },
     "S1": {
       "Type": "AWS::EC2::Instance",
-      "Metadata" : {
-        "test" : {"Fn::GetAtt": ["WC", "Data"]}
-      },
       "Properties": {
         "ImageId"      : "a",
         "InstanceType" : "m1.large",
@@ -100,15 +101,24 @@ test_template_waitcondition = '''
                                                 "\n" ] ] }
       }
     },
-    "WH" : {
-      "Type" : "AWS::CloudFormation::WaitConditionHandle"
-    },
     "WC" : {
       "Type" : "AWS::CloudFormation::WaitCondition",
       "DependsOn": "S1",
       "Properties" : {
         "Handle" : {"Ref" : "WH"},
         "Timeout" : "5"
+      }
+    },
+    "S2": {
+      "Type": "AWS::EC2::Instance",
+      "Metadata" : {
+        "test" : {"Fn::GetAtt": ["WC", "Data"]}
+      },
+      "Properties": {
+        "ImageId"      : "a",
+        "InstanceType" : "m1.large",
+        "KeyName"      : { "Ref" : "KeyName" },
+        "UserData"     : "#!/bin/bash -v\n"
       }
     }
   }
@@ -124,7 +134,6 @@ class MetadataRefreshTest(HeatTestCase):
     '''
     def setUp(self):
         super(MetadataRefreshTest, self).setUp()
-        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
         self.fc = fakes.FakeKeystoneClient()
         setup_dummy_db()
 
@@ -133,10 +142,10 @@ class MetadataRefreshTest(HeatTestCase):
     def create_stack(self, stack_name='test_stack', params={}):
         temp = template_format.parse(test_template_metadata)
         template = parser.Template(temp)
-        parameters = parser.Parameters(stack_name, template, params)
         ctx = context.get_admin_context()
         ctx.tenant_id = 'test_tenant'
-        stack = parser.Stack(ctx, stack_name, template, parameters,
+        stack = parser.Stack(ctx, stack_name, template,
+                             environment.Environment(params),
                              disable_rollback=True)
 
         self.stack_id = stack.store()
@@ -145,7 +154,8 @@ class MetadataRefreshTest(HeatTestCase):
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
         for cookie in (object(), object()):
             instance.Instance.handle_create().AndReturn(cookie)
-            instance.Instance.check_create_complete(cookie).AndReturn(True)
+            create_complete = instance.Instance.check_create_complete(cookie)
+            create_complete.InAnyOrder().AndReturn(True)
         self.m.StubOutWithMock(instance.Instance, 'FnGetAtt')
 
         return stack
@@ -162,12 +172,14 @@ class MetadataRefreshTest(HeatTestCase):
         self.m.ReplayAll()
         self.stack.create()
 
-        self.assertEqual(self.stack.state, self.stack.CREATE_COMPLETE)
+        self.assertEqual(self.stack.state,
+                         (self.stack.CREATE, self.stack.COMPLETE))
 
         s1 = self.stack.resources['S1']
         s2 = self.stack.resources['S2']
         files = s1.metadata['AWS::CloudFormation::Init']['config']['files']
         cont = files['/tmp/random_file']['content']
+        self.assertEqual((s2.CREATE, s2.COMPLETE), s2.state)
         self.assertEqual(cont, 's2-ip=1.2.3.5')
 
         s1.metadata_update()
@@ -195,17 +207,16 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
     def create_stack(self, stack_name='test_stack'):
         temp = template_format.parse(test_template_waitcondition)
         template = parser.Template(temp)
-        parameters = parser.Parameters(stack_name, template, {})
-        stack = parser.Stack(self.ctx, stack_name, template, parameters,
+        stack = parser.Stack(self.ctx, stack_name, template,
                              disable_rollback=True)
 
         self.stack_id = stack.store()
 
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
-        cookie = object()
-        instance.Instance.handle_create().AndReturn(cookie)
-        instance.Instance.check_create_complete(cookie).AndReturn(True)
+        for cookie in (object(), object()):
+            instance.Instance.handle_create().AndReturn(cookie)
+            instance.Instance.check_create_complete(cookie).AndReturn(True)
 
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'keystone')
         wc.WaitConditionHandle.keystone().MultipleTimes().AndReturn(self.fc)
@@ -232,11 +243,11 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
         self.stack = self.create_stack()
 
         watch = self.stack['WC']
-        inst = self.stack['S1']
+        inst = self.stack['S2']
 
         def check_empty(sleep_time):
             self.assertEqual(watch.FnGetAtt('Data'), '{}')
-            self.assertEqual(inst.metadata['test'], '{}')
+            self.assertEqual(inst.metadata['test'], None)
 
         def update_metadata(id, data, reason):
             self.man.metadata_update(self.ctx,
@@ -250,11 +261,13 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
 
         scheduler.TaskRunner._sleep(mox.IsA(int)).WithSideEffects(check_empty)
         scheduler.TaskRunner._sleep(mox.IsA(int)).WithSideEffects(post_success)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
 
         self.m.ReplayAll()
         self.stack.create()
 
-        self.assertEqual(self.stack.state, self.stack.CREATE_COMPLETE)
+        self.assertEqual(self.stack.state,
+                         (self.stack.CREATE, self.stack.COMPLETE))
 
         self.assertEqual(watch.FnGetAtt('Data'), '{"123": "foo"}')
         self.assertEqual(inst.metadata['test'], '{"123": "foo"}')

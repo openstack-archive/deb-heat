@@ -44,6 +44,7 @@ import webob.exc
 
 from heat.common import exception
 from heat.openstack.common import importutils
+from heat.openstack.common.gettextutils import _
 
 
 URL_LENGTH_LIMIT = 50000
@@ -130,8 +131,9 @@ def get_socket(conf, default_port):
                 raise
             eventlet.sleep(0.1)
     if not sock:
-        raise RuntimeError(_("Could not bind to %s:%s after trying for 30 "
-                             "seconds") % bind_addr)
+        raise RuntimeError(_("Could not bind to %(bind_addr)s"
+                             "after trying for 30 seconds")
+                           % {'bind_addr': bind_addr})
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     # in my experience, sockets can hang around forever without keepalive
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
@@ -317,13 +319,13 @@ class Debug(Middleware):
     def __call__(self, req):
         print ("*" * 40) + " REQUEST ENVIRON"
         for key, value in req.environ.items():
-            print key, "=", value
+            print(key, "=", value)
         print
         resp = req.get_response(self.application)
 
         print ("*" * 40) + " RESPONSE HEADERS"
         for (key, value) in resp.headers.iteritems():
-            print key, "=", value
+            print(key, "=", value)
         print
 
         resp.app_iter = self.print_generator(resp.app_iter)
@@ -426,6 +428,26 @@ class Request(webob.Request):
             return content_type
 
 
+def is_json_content_type(request):
+    if request.method == 'GET':
+        try:
+            aws_content_type = request.params.get("ContentType")
+        except Exception:
+            aws_content_type = None
+        #respect aws_content_type when both available
+        content_type = aws_content_type or request.content_type
+    else:
+        content_type = request.content_type
+    #bug #1887882
+    #for back compatible for null or plain content type
+    if not content_type or content_type.startswith('text/plain'):
+        content_type = 'application/json'
+    if content_type in ('JSON', 'application/json')\
+            and request.body.startswith('{'):
+        return True
+    return False
+
+
 class JSONRequestDeserializer(object):
     def has_body(self, request):
         """
@@ -433,9 +455,7 @@ class JSONRequestDeserializer(object):
 
         :param request:  Webob.Request object
         """
-        if 'transfer-encoding' in request.headers:
-            return True
-        elif request.content_length > 0:
+        if request.content_length > 0 and is_json_content_type(request):
             return True
 
         return False
@@ -560,8 +580,12 @@ class Resource(object):
                                              action, request)
         action_args.update(deserialized_request)
 
-        action_result = self.dispatch(self.controller, action,
-                                      request, **action_args)
+        try:
+            action_result = self.dispatch(self.controller, action,
+                                          request, **action_args)
+        except TypeError as err:
+            logging.error(_('Exception handling resource: %s') % str(err))
+            raise webob.exc.HTTPBadRequest()
 
         # Here we support either passing in a serializer or detecting it
         # based on the content type.

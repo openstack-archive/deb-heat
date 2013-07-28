@@ -16,6 +16,7 @@
 from heat.engine import clients
 from heat.openstack.common import log as logging
 from heat.engine.resources.quantum import quantum
+from heat.engine import scheduler
 
 if clients.quantumclient is not None:
     from quantumclient.common.exceptions import QuantumClientException
@@ -42,14 +43,26 @@ class Subnet(quantum.QuantumResource):
                                         'Default': 4},
                          'dns_nameservers': {'Type': 'List'},
                          'gateway_ip': {'Type': 'String'},
+                         'enable_dhcp': {'Type': 'Boolean'},
                          'allocation_pools': {'Type': 'List',
                                               'Schema': {
                                               'Type': 'Map',
                                               'Schema': allocation_schema
                                               }}}
-
-    def __init__(self, name, json_snippet, stack):
-        super(Subnet, self).__init__(name, json_snippet, stack)
+    attributes_schema = {
+        "name": "friendly name of the subnet",
+        "network_id": "parent network of the subnet",
+        "tenant_id": "tenant owning the subnet",
+        "allocation_pools": "ip allocation pools and their ranges",
+        "gateway_ip": "ip of the subnet's gateway",
+        "ip_version": "ip version for the subnet",
+        "cidr": "CIDR block notation for this subnet",
+        "id": "unique identifier for this subnet",
+        # dns_nameservers isn't in the api docs; is it right?
+        "dns_nameservers": "list of dns nameservers",
+        "enable_dhcp": ("'true' if DHCP is enabled for this subnet; 'false'"
+                        "otherwise")
+    }
 
     def handle_create(self):
         props = self.prepare_properties(
@@ -65,15 +78,11 @@ class Subnet(quantum.QuantumResource):
         except QuantumClientException as ex:
             if ex.status_code != 404:
                 raise ex
+        else:
+            return scheduler.TaskRunner(self._confirm_delete)()
 
-    def FnGetAtt(self, key):
-        try:
-            attributes = self.quantum().show_subnet(
-                self.resource_id)['subnet']
-        except QuantumClientException as ex:
-            logger.warn("failed to fetch resource attributes: %s" % str(ex))
-            return None
-        return self.handle_get_attributes(self.name, key, attributes)
+    def _show_resource(self):
+        return self.quantum().show_subnet(self.resource_id)['subnet']
 
 
 def resource_mapping():

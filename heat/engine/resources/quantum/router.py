@@ -15,6 +15,7 @@
 
 from heat.engine import clients
 from heat.engine.resources.quantum import quantum
+from heat.engine import scheduler
 
 if clients.quantumclient is not None:
     from quantumclient.common.exceptions import QuantumClientException
@@ -30,9 +31,14 @@ class Router(quantum.QuantumResource):
                                          'Default': {}},
                          'admin_state_up': {'Type': 'Boolean',
                                             'Default': True}}
-
-    def __init__(self, name, json_snippet, stack):
-        super(Router, self).__init__(name, json_snippet, stack)
+    attributes_schema = {
+        "status": "the status of the router",
+        "external_gateway_info": "gateway network for the router",
+        "name": "friendly name of the router",
+        "admin_state_up": "administrative state of the router",
+        "tenant_id": "tenant owning the router",
+        "id": "unique identifier for the router"
+    }
 
     def handle_create(self):
         props = self.prepare_properties(
@@ -56,14 +62,8 @@ class Router(quantum.QuantumResource):
         except QuantumClientException as ex:
             if ex.status_code != 404:
                 raise ex
-
-    def FnGetAtt(self, key):
-        try:
-            attributes = self._show_resource()
-        except QuantumClientException as ex:
-            logger.warn("failed to fetch resource attributes: %s" % str(ex))
-            return None
-        return self.handle_get_attributes(self.name, key, attributes)
+        else:
+            return scheduler.TaskRunner(self._confirm_delete)()
 
 
 class RouterInterface(quantum.QuantumResource):
@@ -71,9 +71,6 @@ class RouterInterface(quantum.QuantumResource):
                                        'Required': True},
                          'subnet_id': {'Type': 'String',
                                        'Required': True}}
-
-    def __init__(self, name, json_snippet, stack):
-        super(RouterInterface, self).__init__(name, json_snippet, stack)
 
     def handle_create(self):
         router_id = self.properties.get('router_id')
@@ -101,8 +98,22 @@ class RouterGateway(quantum.QuantumResource):
                          'network_id': {'Type': 'String',
                                         'Required': True}}
 
-    def __init__(self, name, json_snippet, stack):
-        super(RouterGateway, self).__init__(name, json_snippet, stack)
+    def add_dependencies(self, deps):
+        super(RouterGateway, self).add_dependencies(deps)
+        for resource in self.stack.resources.itervalues():
+            # depend on any RouterInterface in this template with the same
+            # router_id as this router_id
+            if (resource.type() == 'OS::Quantum::RouterInterface' and
+                resource.properties.get('router_id') ==
+                    self.properties.get('router_id')):
+                        deps += (self, resource)
+            # depend on any subnet in this template with the same network_id
+            # as this network_id, as the gateway implicitly creates a port
+            # on that subnet
+            elif (resource.type() == 'OS::Quantum::Subnet' and
+                  resource.properties.get('network_id') ==
+                    self.properties.get('network_id')):
+                        deps += (self, resource)
 
     def handle_create(self):
         router_id = self.properties.get('router_id')

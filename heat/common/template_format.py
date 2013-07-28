@@ -27,9 +27,17 @@ def _construct_yaml_str(self, node):
     return self.construct_scalar(node)
 yaml.Loader.add_constructor(u'tag:yaml.org,2002:str', _construct_yaml_str)
 yaml.SafeLoader.add_constructor(u'tag:yaml.org,2002:str', _construct_yaml_str)
+# Unquoted dates like 2013-05-23 in yaml files get loaded as objects of type
+# datetime.data which causes problems in API layer when being processed by
+# openstack.common.jsonutils. Therefore, make unicode string out of timestamps
+# until jsonutils can handle dates.
+yaml.Loader.add_constructor(u'tag:yaml.org,2002:timestamp',
+                            _construct_yaml_str)
+yaml.SafeLoader.add_constructor(u'tag:yaml.org,2002:timestamp',
+                                _construct_yaml_str)
 
 
-def parse(tmpl_str):
+def parse(tmpl_str, add_template_sections=True):
     '''
     Takes a string and returns a dict containing the parsed structure.
     This includes determination of whether the string is using the
@@ -40,13 +48,14 @@ def parse(tmpl_str):
     else:
         try:
             tpl = yaml.safe_load(tmpl_str)
-        except yaml.scanner.ScannerError as e:
+        except (yaml.scanner.ScannerError, yaml.parser.ParserError) as e:
             raise ValueError(e)
         else:
             if tpl is None:
                 tpl = {}
-            default_for_missing(tpl, u'HeatTemplateFormatVersion',
-                                HEAT_VERSIONS)
+            if add_template_sections and u'heat_template_version' not in tpl:
+                default_for_missing(tpl, u'HeatTemplateFormatVersion',
+                                    HEAT_VERSIONS)
     return tpl
 
 
@@ -68,7 +77,8 @@ def default_for_missing(tpl, version_param, versions):
 
 def convert_json_to_yaml(json_str):
     '''Convert a string containing the AWS JSON template format
-    to an equivalent string containing the Heat YAML format.'''
+    to an equivalent string containing the Heat YAML format.
+    '''
 
     global key_order
     # Replace AWS format version with Heat format version

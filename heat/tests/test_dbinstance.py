@@ -58,6 +58,7 @@ class DBInstanceTest(HeatTestCase):
         super(DBInstanceTest, self).setUp()
         setup_dummy_db()
         self.m.StubOutWithMock(dbi.DBInstance, 'create_with_template')
+        self.m.StubOutWithMock(dbi.DBInstance, 'check_create_complete')
         self.m.StubOutWithMock(dbi.DBInstance, 'nested')
 
     def create_dbinstance(self, t, stack, resource_name):
@@ -66,7 +67,7 @@ class DBInstanceTest(HeatTestCase):
                                   stack)
         self.assertEqual(None, resource.validate())
         scheduler.TaskRunner(resource.create)()
-        self.assertEqual(dbi.DBInstance.CREATE_COMPLETE, resource.state)
+        self.assertEqual((resource.CREATE, resource.COMPLETE), resource.state)
         return resource
 
     def test_dbinstance(self):
@@ -89,6 +90,7 @@ class DBInstanceTest(HeatTestCase):
 
         dbi.DBInstance.create_with_template(mox.IgnoreArg(),
                                             params).AndReturn(None)
+        dbi.DBInstance.check_create_complete(mox.IgnoreArg()).AndReturn(True)
 
         fn = FakeNested()
 

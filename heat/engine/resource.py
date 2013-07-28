@@ -15,22 +15,26 @@
 
 import base64
 from datetime import datetime
-from eventlet.support import greenlets as greenlet
 
 from heat.engine import event
 from heat.common import exception
 from heat.openstack.common import excutils
 from heat.db import api as db_api
 from heat.common import identifier
+from heat.common import short_id
 from heat.engine import timestamp
+# import class to avoid name collisions and ugly aliasing
+from heat.engine.attributes import Attributes
 from heat.engine.properties import Properties
 
 from heat.openstack.common import log as logging
+from heat.openstack.common.gettextutils import _
 
 logger = logging.getLogger(__name__)
 
 
 _resource_classes = {}
+_template_class = None
 
 
 def get_types():
@@ -38,9 +42,16 @@ def get_types():
     return iter(_resource_classes)
 
 
-def get_class(resource_type):
+def get_class(resource_type, resource_name=None, environment=None):
     '''Return the Resource class for a given resource type.'''
-    cls = _resource_classes.get(resource_type)
+    if environment:
+        resource_type = environment.get_resource_type(resource_type,
+                                                      resource_name)
+
+    if resource_type.endswith(('.yaml', '.template')):
+        cls = _template_class
+    else:
+        cls = _resource_classes.get(resource_type)
     if cls is None:
         msg = "Unknown resource Type : %s" % resource_type
         raise exception.StackValidationFailed(message=msg)
@@ -55,6 +66,12 @@ def _register_class(resource_type, resource_class):
                        resource_type)
 
     _resource_classes[resource_type] = resource_class
+
+
+def register_template_class(cls):
+    global _template_class
+    if _template_class is None:
+        _template_class = cls
 
 
 class UpdateReplace(Exception):
@@ -97,16 +114,12 @@ class Metadata(object):
 
 
 class Resource(object):
-    # Status strings
-    CREATE_IN_PROGRESS = 'IN_PROGRESS'
-    CREATE_FAILED = 'CREATE_FAILED'
-    CREATE_COMPLETE = 'CREATE_COMPLETE'
-    DELETE_IN_PROGRESS = 'DELETE_IN_PROGRESS'
-    DELETE_FAILED = 'DELETE_FAILED'
-    DELETE_COMPLETE = 'DELETE_COMPLETE'
-    UPDATE_IN_PROGRESS = 'UPDATE_IN_PROGRESS'
-    UPDATE_FAILED = 'UPDATE_FAILED'
-    UPDATE_COMPLETE = 'UPDATE_COMPLETE'
+    ACTIONS = (CREATE, DELETE, UPDATE, ROLLBACK, SUSPEND, RESUME
+               ) = ('CREATE', 'DELETE', 'UPDATE', 'ROLLBACK',
+                    'SUSPEND', 'RESUME')
+
+    STATUSES = (IN_PROGRESS, FAILED, COMPLETE
+                ) = ('IN_PROGRESS', 'FAILED', 'COMPLETE')
 
     # If True, this resource must be created before it can be referenced.
     strict_dependency = True
@@ -124,6 +137,10 @@ class Resource(object):
     # supported for handle_update, used by update_template_diff_properties
     update_allowed_properties = ()
 
+    # Resource implementations set this to the name: description dictionary
+    # that describes the appropriate resource attributes
+    attributes_schema = {}
+
     def __new__(cls, name, json, stack):
         '''Create a new Resource of the appropriate class for its type.'''
 
@@ -132,7 +149,9 @@ class Resource(object):
             return super(Resource, cls).__new__(cls)
 
         # Select the correct subclass to instantiate
-        ResourceClass = get_class(json['Type'])
+        ResourceClass = get_class(json['Type'],
+                                  resource_name=name,
+                                  environment=stack.env)
         return ResourceClass(name, json, stack)
 
     def __init__(self, name, json_snippet, stack):
@@ -144,24 +163,30 @@ class Resource(object):
         self.name = name
         self.json_snippet = json_snippet
         self.t = stack.resolve_static_data(json_snippet)
-        self.cached_t = None
         self.properties = Properties(self.properties_schema,
                                      self.t.get('Properties', {}),
                                      self.stack.resolve_runtime_data,
                                      self.name)
+        self.attributes = Attributes(self.name,
+                                     self.attributes_schema,
+                                     self._resolve_attribute)
 
         resource = db_api.resource_get_by_name_and_stack(self.context,
                                                          name, stack.id)
         if resource:
             self.resource_id = resource.nova_instance
-            self.state = resource.state
-            self.state_description = resource.state_description
+            self.action = resource.action
+            self.status = resource.status
+            self.status_reason = resource.status_reason
             self.id = resource.id
+            self.data = resource.data
         else:
             self.resource_id = None
-            self.state = None
-            self.state_description = ''
+            self.action = None
+            self.status = None
+            self.status_reason = ''
             self.id = None
+            self.data = []
 
     def __eq__(self, other):
         '''Allow == comparison of two resources.'''
@@ -187,73 +212,57 @@ class Resource(object):
         return identifier.ResourceIdentifier(resource_name=self.name,
                                              **self.stack.identifier())
 
-    def parsed_template(self, section=None, default={}, cached=False):
+    def parsed_template(self, section=None, default={}):
         '''
         Return the parsed template data for the resource. May be limited to
         only one section of the data, in which case a default value may also
         be supplied.
         '''
-        if cached and self.cached_t:
-            t = self.cached_t
-        else:
-            t = self.t
         if section is None:
-            template = t
+            template = self.t
         else:
-            template = t.get(section, default)
+            template = self.t.get(section, default)
         return self.stack.resolve_runtime_data(template)
 
-    def cache_template(self):
+    def update_template_diff(self, after, before):
         '''
-        make a cache of the resource's parsed template
-        this can then be used via parsed_template(cached=True)
-        '''
-        self.cached_t = self.stack.resolve_runtime_data(self.t)
-
-    def update_template_diff(self, json_snippet=None):
-        '''
-        Returns the difference between json_template and self.t
-        If something has been removed in json_snippet which exists
-        in self.t we set it to None.  If any keys have changed which
-        are not in update_allowed_keys, raises UpdateReplace if the
-        differing keys are not in update_allowed_keys
+        Returns the difference between the before and after json snippets. If
+        something has been removed in after which exists in before we set it to
+        None. If any keys have changed which are not in update_allowed_keys,
+        raises UpdateReplace if the differing keys are not in
+        update_allowed_keys
         '''
         update_allowed_set = set(self.update_allowed_keys)
 
         # Create a set containing the keys in both current and update template
-        current_template = self.parsed_template(cached=True)
-
-        template_keys = set(current_template.keys())
-        new_template = self.stack.resolve_runtime_data(json_snippet)
-        template_keys.update(set(new_template.keys()))
+        template_keys = set(before.keys())
+        template_keys.update(set(after.keys()))
 
         # Create a set of keys which differ (or are missing/added)
         changed_keys_set = set([k for k in template_keys
-                               if current_template.get(k) !=
-                               new_template.get(k)])
+                                if before.get(k) != after.get(k)])
 
         if not changed_keys_set.issubset(update_allowed_set):
             badkeys = changed_keys_set - update_allowed_set
             raise UpdateReplace(self.name)
 
-        return dict((k, new_template.get(k)) for k in changed_keys_set)
+        return dict((k, after.get(k)) for k in changed_keys_set)
 
-    def update_template_diff_properties(self, json_snippet=None):
+    def update_template_diff_properties(self, after, before):
         '''
-        Returns the changed Properties between json_template and self.t
-        If a property has been removed in json_snippet which exists
-        in self.t we set it to None.  If any properties have changed which
-        are not in update_allowed_properties, raises UpdateReplace if the
-        modified properties are not in the update_allowed_properties
+        Returns the changed Properties between the before and after json
+        snippets. If a property has been removed in after which exists in
+        before we set it to None. If any properties have changed which are not
+        in update_allowed_properties, raises UpdateReplace if the modified
+        properties are not in the update_allowed_properties
         '''
         update_allowed_set = set(self.update_allowed_properties)
 
         # Create a set containing the keys in both current and update template
-        tmpl = self.parsed_template(cached=True)
-        current_properties = tmpl.get('Properties', {})
+        current_properties = before.get('Properties', {})
 
         template_properties = set(current_properties.keys())
-        updated_properties = json_snippet.get('Properties', {})
+        updated_properties = after.get('Properties', {})
         template_properties.update(set(updated_properties.keys()))
 
         # Create a set of keys which differ (or are missing/added)
@@ -273,7 +282,10 @@ class Resource(object):
     def _add_dependencies(self, deps, head, fragment):
         if isinstance(fragment, dict):
             for key, value in fragment.items():
-                if key in ('DependsOn', 'Ref'):
+                if key in ('DependsOn', 'Ref', 'Fn::GetAtt'):
+                    if key == 'Fn::GetAtt':
+                        value, head = value
+
                     try:
                         target = self.stack.resources[value]
                     except KeyError:
@@ -282,7 +294,7 @@ class Resource(object):
                             key=head)
                     if key == 'DependsOn' or target.strict_dependency:
                         deps += (self, target)
-                elif key != 'Fn::GetAtt':
+                else:
                     self._add_dependencies(deps, key, value)
         elif isinstance(fragment, list):
             for item in fragment:
@@ -291,6 +303,14 @@ class Resource(object):
     def add_dependencies(self, deps):
         self._add_dependencies(deps, None, self.t)
         deps += (self, None)
+
+    def required_by(self):
+        '''
+        Returns a list of names of resources which directly require this
+        resource as a dependency.
+        '''
+        return list(
+            [r.name for r in self.stack.dependencies.required_by(self)])
 
     def keystone(self):
         return self.stack.clients.keystone()
@@ -307,12 +327,61 @@ class Resource(object):
     def cinder(self):
         return self.stack.clients.cinder()
 
+    def _do_action(self, action, pre_func=None):
+        '''
+        Perform a transition to a new state via a specified action
+        action should be e.g self.CREATE, self.UPDATE etc, we set
+        status based on this, the transistion is handled by calling the
+        corresponding handle_* and check_*_complete functions
+        Note pre_func is an optional function reference which will
+        be called before the handle_<action> function
+
+        If the resource does not declare a check_$action_complete function,
+        we declare COMPLETE status as soon as the handle_$action call has
+        finished, and if no handle_$action function is declared, then we do
+        nothing, useful e.g if the resource requires no action for a given
+        state transition
+        '''
+        assert action in self.ACTIONS, 'Invalid action %s' % action
+
+        try:
+            self.state_set(action, self.IN_PROGRESS)
+
+            action_l = action.lower()
+            handle = getattr(self, 'handle_%s' % action_l, None)
+            check = getattr(self, 'check_%s_complete' % action_l, None)
+
+            if callable(pre_func):
+                pre_func()
+
+            handle_data = None
+            if callable(handle):
+                handle_data = handle()
+                yield
+                if callable(check):
+                    while not check(handle_data):
+                        yield
+        except Exception as ex:
+            logger.exception('%s : %s' % (action, str(self)))
+            failure = exception.ResourceFailure(ex)
+            self.state_set(action, self.FAILED, str(failure))
+            raise failure
+        except:
+            with excutils.save_and_reraise_exception():
+                try:
+                    self.state_set(action, self.FAILED,
+                                   '%s aborted' % action)
+                except Exception:
+                    logger.exception('Error marking resource as failed')
+        else:
+            self.state_set(action, self.COMPLETE)
+
     def create(self):
         '''
         Create the resource. Subclasses should provide a handle_create() method
         to customise creation.
         '''
-        assert self.state is None, 'Resource create requested in invalid state'
+        assert None in (self.action, self.status), 'invalid state for create'
 
         logger.info('creating %s' % str(self))
 
@@ -325,85 +394,81 @@ class Resource(object):
                                      self.t.get('Properties', {}),
                                      self.stack.resolve_runtime_data,
                                      self.name)
-        try:
-            self.properties.validate()
-            self.state_set(self.CREATE_IN_PROGRESS)
-            create_data = None
-            if callable(getattr(self, 'handle_create', None)):
-                create_data = self.handle_create()
-                yield
-            while not self.check_create_complete(create_data):
-                yield
-        except greenlet.GreenletExit:
-            # Older versions of greenlet erroneously had GreenletExit inherit
-            # from Exception instead of BaseException
-            with excutils.save_and_reraise_exception():
-                try:
-                    self.state_set(self.CREATE_FAILED, 'Creation aborted')
-                except Exception:
-                    logger.exception('Error marking resource as failed')
-        except Exception as ex:
-            logger.exception('create %s', str(self))
-            failure = exception.ResourceFailure(ex)
-            self.state_set(self.CREATE_FAILED, str(failure))
-            raise failure
-        except:
-            with excutils.save_and_reraise_exception():
-                try:
-                    self.state_set(self.CREATE_FAILED, 'Creation aborted')
-                except Exception:
-                    logger.exception('Error marking resource as failed')
-        else:
-            self.state_set(self.CREATE_COMPLETE)
+        return self._do_action(self.CREATE, self.properties.validate)
 
-    def check_create_complete(self, create_data):
-        '''
-        Check if the resource is active (ready to move to the CREATE_COMPLETE
-        state). By default this happens as soon as the handle_create() method
-        has completed successfully, but subclasses may customise this by
-        overriding this function. The return value of handle_create() is
-        passed in to this function each time it is called.
-        '''
-        return True
-
-    def update(self, json_snippet=None):
+    def update(self, after, before=None):
         '''
         update the resource. Subclasses should provide a handle_update() method
         to customise update, the base-class handle_update will fail by default.
         '''
-        assert json_snippet is not None, 'Must specify update json snippet'
+        if before is None:
+            before = self.parsed_template()
 
-        if self.state in (self.CREATE_IN_PROGRESS, self.UPDATE_IN_PROGRESS):
+        if (self.action, self.status) in ((self.CREATE, self.IN_PROGRESS),
+                                         (self.UPDATE, self.IN_PROGRESS)):
             raise exception.ResourceFailure(Exception(
                 'Resource update already requested'))
 
         logger.info('updating %s' % str(self))
 
         try:
-            self.state_set(self.UPDATE_IN_PROGRESS)
+            self.state_set(self.UPDATE, self.IN_PROGRESS)
             properties = Properties(self.properties_schema,
-                                    json_snippet.get('Properties', {}),
+                                    after.get('Properties', {}),
                                     self.stack.resolve_runtime_data,
                                     self.name)
             properties.validate()
-            tmpl_diff = self.update_template_diff(json_snippet)
-            prop_diff = self.update_template_diff_properties(json_snippet)
+            tmpl_diff = self.update_template_diff(after, before)
+            prop_diff = self.update_template_diff_properties(after, before)
             if callable(getattr(self, 'handle_update', None)):
-                result = self.handle_update(json_snippet, tmpl_diff, prop_diff)
+                result = self.handle_update(after, tmpl_diff, prop_diff)
         except UpdateReplace:
             logger.debug("Resource %s update requires replacement" % self.name)
             raise
         except Exception as ex:
             logger.exception('update %s : %s' % (str(self), str(ex)))
             failure = exception.ResourceFailure(ex)
-            self.state_set(self.UPDATE_FAILED, str(failure))
+            self.state_set(self.UPDATE, self.FAILED, str(failure))
             raise failure
         else:
-            self.t = self.stack.resolve_static_data(json_snippet)
-            self.state_set(self.UPDATE_COMPLETE)
+            self.t = self.stack.resolve_static_data(after)
+            self.state_set(self.UPDATE, self.COMPLETE)
+
+    def suspend(self):
+        '''
+        Suspend the resource.  Subclasses should provide a handle_suspend()
+        method to implement suspend
+        '''
+        # Don't try to suspend the resource unless it's in a stable state
+        if (self.action == self.DELETE or self.status != self.COMPLETE):
+            exc = exception.Error('State %s invalid for suspend'
+                                  % str(self.state))
+            raise exception.ResourceFailure(exc)
+
+        logger.info('suspending %s' % str(self))
+        return self._do_action(self.SUSPEND)
+
+    def resume(self):
+        '''
+        Resume the resource.  Subclasses should provide a handle_resume()
+        method to implement resume
+        '''
+        # Can't resume a resource unless it's SUSPEND_COMPLETE
+        if self.state != (self.SUSPEND, self.COMPLETE):
+            exc = exception.Error('State %s invalid for resume'
+                                  % str(self.state))
+            raise exception.ResourceFailure(exc)
+
+        logger.info('resuming %s' % str(self))
+        return self._do_action(self.RESUME)
 
     def physical_resource_name(self):
-        return '%s.%s' % (self.stack.name, self.name)
+        if self.id is None:
+            return None
+
+        return '%s-%s-%s' % (self.stack.name,
+                             self.name,
+                             short_id.get_id(self.id))
 
     def validate(self):
         logger.info('Validating %s' % str(self))
@@ -427,12 +492,10 @@ class Resource(object):
         Delete the resource. Subclasses should provide a handle_delete() method
         to customise deletion.
         '''
-        if self.state == self.DELETE_COMPLETE:
+        if (self.action, self.status) == (self.DELETE, self.COMPLETE):
             return
-        if self.state == self.DELETE_IN_PROGRESS:
-            raise exception.Error('Resource deletion already in progress')
         # No need to delete if the resource has never been created
-        if self.state is None:
+        if self.action is None:
             return
 
         initial_state = self.state
@@ -440,7 +503,7 @@ class Resource(object):
         logger.info('deleting %s' % str(self))
 
         try:
-            self.state_set(self.DELETE_IN_PROGRESS)
+            self.state_set(self.DELETE, self.IN_PROGRESS)
 
             deletion_policy = self.t.get('DeletionPolicy', 'Delete')
             if deletion_policy == 'Delete':
@@ -452,16 +515,17 @@ class Resource(object):
         except Exception as ex:
             logger.exception('Delete %s', str(self))
             failure = exception.ResourceFailure(ex)
-            self.state_set(self.DELETE_FAILED, str(failure))
+            self.state_set(self.DELETE, self.FAILED, str(failure))
             raise failure
         except:
             with excutils.save_and_reraise_exception():
                 try:
-                    self.state_set(self.DELETE_FAILED, 'Deletion aborted')
+                    self.state_set(self.DELETE, self.FAILED,
+                                   'Deletion aborted')
                 except Exception:
                     logger.exception('Error marking resource deletion failed')
         else:
-            self.state_set(self.DELETE_COMPLETE)
+            self.state_set(self.DELETE, self.COMPLETE)
 
     def destroy(self):
         '''
@@ -493,7 +557,9 @@ class Resource(object):
     def _store(self):
         '''Create the resource in the database.'''
         try:
-            rs = {'state': self.state,
+            rs = {'action': self.action,
+                  'status': self.status,
+                  'status_reason': self.status_reason,
                   'stack_id': self.stack.id,
                   'nova_instance': self.resource_id,
                   'name': self.name,
@@ -508,10 +574,10 @@ class Resource(object):
         except Exception as ex:
             logger.error('DB error %s' % str(ex))
 
-    def _add_event(self, new_state, reason):
+    def _add_event(self, action, status, reason):
         '''Add a state change event to the database.'''
         ev = event.Event(self.context, self.stack, self,
-                         new_state, reason,
+                         action, status, reason,
                          self.resource_id, self.properties)
 
         try:
@@ -519,15 +585,17 @@ class Resource(object):
         except Exception as ex:
             logger.error('DB error %s' % str(ex))
 
-    def _store_or_update(self, new_state, reason):
-        self.state = new_state
-        self.state_description = reason
+    def _store_or_update(self, action, status, reason):
+        self.action = action
+        self.status = status
+        self.status_reason = reason
 
         if self.id is not None:
             try:
                 rs = db_api.resource_get(self.context, self.id)
-                rs.update_and_save({'state': self.state,
-                                    'state_description': reason,
+                rs.update_and_save({'action': self.action,
+                                    'status': self.status,
+                                    'status_reason': reason,
                                     'nova_instance': self.resource_id})
 
                 self.stack.updated_time = datetime.utcnow()
@@ -537,15 +605,38 @@ class Resource(object):
         # store resource in DB on transition to CREATE_IN_PROGRESS
         # all other transistions (other than to DELETE_COMPLETE)
         # should be handled by the update_and_save above..
-        elif new_state == self.CREATE_IN_PROGRESS:
+        elif (action, status) == (self.CREATE, self.IN_PROGRESS):
             self._store()
 
-    def state_set(self, new_state, reason="state changed"):
-        old_state = self.state
-        self._store_or_update(new_state, reason)
+    def _resolve_attribute(self, name):
+        """
+        Default implementation; should be overridden by resources that expose
+        attributes
+
+        :param name: The attribute to resolve
+        :returns: the resource attribute named key
+        """
+        # By default, no attributes resolve
+        pass
+
+    def state_set(self, action, status, reason="state changed"):
+        if action not in self.ACTIONS:
+            raise ValueError("Invalid action %s" % action)
+
+        if status not in self.STATUSES:
+            raise ValueError("Invalid status %s" % status)
+
+        old_state = (self.action, self.status)
+        new_state = (action, status)
+        self._store_or_update(action, status, reason)
 
         if new_state != old_state:
-            self._add_event(new_state, reason)
+            self._add_event(action, status, reason)
+
+    @property
+    def state(self):
+        '''Returns state, tuple of action, status.'''
+        return (self.action, self.status)
 
     def FnGetRefId(self):
         '''
@@ -562,7 +653,11 @@ class Resource(object):
         http://docs.amazonwebservices.com/AWSCloudFormation/latest/UserGuide/\
         intrinsic-function-reference-getatt.html
         '''
-        return unicode(self.name)
+        try:
+            return self.attributes[key]
+        except KeyError:
+            raise exception.InvalidTemplateAttribute(resource=self.name,
+                                                     key=key)
 
     def FnBase64(self, data):
         '''

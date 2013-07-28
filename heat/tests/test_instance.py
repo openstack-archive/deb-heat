@@ -12,19 +12,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
 import copy
 
 import mox
 
+from heat.engine import environment
 from heat.tests.v1_1 import fakes
 from heat.engine.resources import instance as instances
+from heat.common import exception
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
+from heat.tests import utils
 from heat.tests.utils import setup_dummy_db
 
 
@@ -54,21 +56,26 @@ wp_template = '''
 '''
 
 
-class instancesTest(HeatTestCase):
+class InstancesTest(HeatTestCase):
     def setUp(self):
-        super(instancesTest, self).setUp()
+        super(InstancesTest, self).setUp()
         self.fc = fakes.FakeClient()
         setup_dummy_db()
 
-    def _setup_test_instance(self, return_server, name):
-        stack_name = '%s_stack' % name
+    def _setup_test_stack(self, stack_name):
         t = template_format.parse(wp_template)
         template = parser.Template(t)
-        params = parser.Parameters(stack_name, template, {'KeyName': 'test'})
-        stack = parser.Stack(None, stack_name, template, params,
+        stack = parser.Stack(None, stack_name, template,
+                             environment.Environment({'KeyName': 'test'}),
                              stack_id=uuidutils.generate_uuid())
+        return (t, stack)
 
-        t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
+    def _setup_test_instance(self, return_server, name, image_id=None):
+        stack_name = '%s_stack' % name
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        t['Resources']['WebServer']['Properties']['ImageId'] = \
+            image_id or 'CentOS 5.2'
         t['Resources']['WebServer']['Properties']['InstanceType'] = \
             '256 MB Server'
         instance = instances.Instance('%s_name' % name,
@@ -85,7 +92,7 @@ class instancesTest(HeatTestCase):
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=1, flavor=1, key_name='test',
-            name='%s.%s' % (stack_name, instance.name),
+            name=utils.PhysName(stack_name, instance.name),
             security_groups=None,
             userdata=server_userdata, scheduler_hints=None,
             meta=None, nics=None, availability_zone=None).AndReturn(
@@ -114,6 +121,108 @@ class instancesTest(HeatTestCase):
 
         self.m.VerifyAll()
 
+    def test_instance_create_with_image_id(self):
+        return_server = self.fc.servers.list()[1]
+        instance = self._setup_test_instance(return_server,
+                                             'test_instance_create_image_id',
+                                             image_id='1')
+        self.m.StubOutWithMock(uuidutils, "is_uuid_like")
+        uuidutils.is_uuid_like('1').AndReturn(True)
+
+        self.m.ReplayAll()
+        scheduler.TaskRunner(instance.create)()
+
+        # this makes sure the auto increment worked on instance creation
+        self.assertTrue(instance.id > 0)
+
+        expected_ip = return_server.networks['public'][0]
+        self.assertEqual(instance.FnGetAtt('PublicIp'), expected_ip)
+        self.assertEqual(instance.FnGetAtt('PrivateIp'), expected_ip)
+        self.assertEqual(instance.FnGetAtt('PrivateDnsName'), expected_ip)
+        self.assertEqual(instance.FnGetAtt('PrivateDnsName'), expected_ip)
+
+        self.m.VerifyAll()
+
+    def test_instance_create_image_name_err(self):
+        stack_name = 'test_instance_create_image_name_err_stack'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        # create an instance with non exist image name
+        t['Resources']['WebServer']['Properties']['ImageId'] = 'Slackware'
+        instance = instances.Instance('instance_create_image_err',
+                                      t['Resources']['WebServer'], stack)
+
+        self.m.StubOutWithMock(instance, 'nova')
+        instance.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        self.assertRaises(exception.ImageNotFound, instance.handle_create)
+
+        self.m.VerifyAll()
+
+    def test_instance_create_duplicate_image_name_err(self):
+        stack_name = 'test_instance_create_image_name_err_stack'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        # create an instance with a non unique image name
+        t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
+        instance = instances.Instance('instance_create_image_err',
+                                      t['Resources']['WebServer'], stack)
+
+        self.m.StubOutWithMock(instance, 'nova')
+        instance.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(self.fc.client, "get_images_detail")
+        self.fc.client.get_images_detail().AndReturn((
+            200, {'images': [{'id': 1, 'name': 'CentOS 5.2'},
+                             {'id': 4, 'name': 'CentOS 5.2'}]}))
+        self.m.ReplayAll()
+
+        self.assertRaises(exception.NoUniqueImageFound, instance.handle_create)
+
+        self.m.VerifyAll()
+
+    def test_instance_create_image_id_err(self):
+        stack_name = 'test_instance_create_image_id_err_stack'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        # create an instance with non exist image Id
+        t['Resources']['WebServer']['Properties']['ImageId'] = '1'
+        instance = instances.Instance('instance_create_image_err',
+                                      t['Resources']['WebServer'], stack)
+
+        self.m.StubOutWithMock(instance, 'nova')
+        instance.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(uuidutils, "is_uuid_like")
+        uuidutils.is_uuid_like('1').AndReturn(True)
+        self.m.StubOutWithMock(self.fc.client, "get_images_1")
+        self.fc.client.get_images_1().AndRaise(
+            instances.clients.novaclient.exceptions.NotFound(404))
+        self.m.ReplayAll()
+
+        self.assertRaises(exception.ImageNotFound, instance.handle_create)
+
+        self.m.VerifyAll()
+
+    def test_instance_validate(self):
+        stack_name = 'test_instance_validate_stack'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        # create an instance with non exist image Id
+        t['Resources']['WebServer']['Properties']['ImageId'] = '1'
+        instance = instances.Instance('instance_create_image_err',
+                                      t['Resources']['WebServer'], stack)
+
+        self.m.StubOutWithMock(instance, 'nova')
+        instance.nova().MultipleTimes().AndReturn(self.fc)
+
+        self.m.StubOutWithMock(uuidutils, "is_uuid_like")
+        uuidutils.is_uuid_like('1').AndReturn(True)
+        self.m.ReplayAll()
+
+        self.assertEqual(instance.validate(), None)
+
+        self.m.VerifyAll()
+
     def test_instance_create_delete(self):
         return_server = self.fc.servers.list()[1]
         instance = self._create_test_instance(return_server,
@@ -130,7 +239,7 @@ class instancesTest(HeatTestCase):
 
         instance.delete()
         self.assertTrue(instance.resource_id is None)
-        self.assertEqual(instance.state, instance.DELETE_COMPLETE)
+        self.assertEqual(instance.state, (instance.DELETE, instance.COMPLETE))
         self.m.VerifyAll()
 
     def test_instance_update_metadata(self):
@@ -176,7 +285,168 @@ class instancesTest(HeatTestCase):
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.create)()
-        self.assertEqual(instance.state, instance.CREATE_COMPLETE)
+        self.assertEqual(instance.state, (instance.CREATE, instance.COMPLETE))
+
+    def test_instance_status_suspend_immediate(self):
+        return_server = self.fc.servers.list()[1]
+        instance = self._create_test_instance(return_server,
+                                              'test_instance_suspend')
+
+        instance.resource_id = 1234
+        self.m.ReplayAll()
+
+        # Override the get_servers_1234 handler status to SUSPENDED
+        d = {'server': self.fc.client.get_servers_detail()[1]['servers'][0]}
+        d['server']['status'] = 'SUSPENDED'
+        self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
+        get = self.fc.client.get_servers_1234
+        get().AndReturn((200, d))
+        mox.Replay(get)
+
+        scheduler.TaskRunner(instance.suspend)()
+        self.assertEqual(instance.state, (instance.SUSPEND, instance.COMPLETE))
+
+        self.m.VerifyAll()
+
+    def test_instance_status_resume_immediate(self):
+        return_server = self.fc.servers.list()[1]
+        instance = self._create_test_instance(return_server,
+                                              'test_instance_resume')
+
+        instance.resource_id = 1234
+        self.m.ReplayAll()
+
+        # Override the get_servers_1234 handler status to SUSPENDED
+        d = {'server': self.fc.client.get_servers_detail()[1]['servers'][0]}
+        d['server']['status'] = 'ACTIVE'
+        self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
+        get = self.fc.client.get_servers_1234
+        get().AndReturn((200, d))
+        mox.Replay(get)
+        instance.state_set(instance.SUSPEND, instance.COMPLETE)
+
+        scheduler.TaskRunner(instance.resume)()
+        self.assertEqual(instance.state, (instance.RESUME, instance.COMPLETE))
+
+        self.m.VerifyAll()
+
+    def test_instance_status_suspend_wait(self):
+        return_server = self.fc.servers.list()[1]
+        instance = self._create_test_instance(return_server,
+                                              'test_instance_suspend')
+
+        instance.resource_id = 1234
+        self.m.ReplayAll()
+
+        # Override the get_servers_1234 handler status to SUSPENDED, but
+        # return the ACTIVE state first (twice, so we sleep)
+        d1 = {'server': self.fc.client.get_servers_detail()[1]['servers'][0]}
+        d2 = copy.deepcopy(d1)
+        d1['server']['status'] = 'ACTIVE'
+        d2['server']['status'] = 'SUSPENDED'
+        self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
+        get = self.fc.client.get_servers_1234
+        get().AndReturn((200, d1))
+        get().AndReturn((200, d1))
+        get().AndReturn((200, d2))
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.suspend)()
+        self.assertEqual(instance.state, (instance.SUSPEND, instance.COMPLETE))
+
+        self.m.VerifyAll()
+
+    def test_instance_status_resume_wait(self):
+        return_server = self.fc.servers.list()[1]
+        instance = self._create_test_instance(return_server,
+                                              'test_instance_resume')
+
+        instance.resource_id = 1234
+        self.m.ReplayAll()
+
+        # Override the get_servers_1234 handler status to ACTIVE, but
+        # return the SUSPENDED state first (twice, so we sleep)
+        d1 = {'server': self.fc.client.get_servers_detail()[1]['servers'][0]}
+        d2 = copy.deepcopy(d1)
+        d1['server']['status'] = 'SUSPENDED'
+        d2['server']['status'] = 'ACTIVE'
+        self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
+        get = self.fc.client.get_servers_1234
+        get().AndReturn((200, d1))
+        get().AndReturn((200, d1))
+        get().AndReturn((200, d2))
+        self.m.ReplayAll()
+
+        instance.state_set(instance.SUSPEND, instance.COMPLETE)
+
+        scheduler.TaskRunner(instance.resume)()
+        self.assertEqual(instance.state, (instance.RESUME, instance.COMPLETE))
+
+        self.m.VerifyAll()
+
+    def test_instance_suspend_volumes_step(self):
+        return_server = self.fc.servers.list()[1]
+        instance = self._create_test_instance(return_server,
+                                              'test_instance_suspend')
+
+        instance.resource_id = 1234
+        self.m.ReplayAll()
+
+        # Override the get_servers_1234 handler status to SUSPENDED
+        d = {'server': self.fc.client.get_servers_detail()[1]['servers'][0]}
+        d['server']['status'] = 'SUSPENDED'
+
+        # Return a dummy PollingTaskGroup to make check_suspend_complete step
+        def dummy_detach():
+            yield
+        dummy_tg = scheduler.PollingTaskGroup([dummy_detach, dummy_detach])
+        self.m.StubOutWithMock(instance, '_detach_volumes_task')
+        instance._detach_volumes_task().AndReturn(dummy_tg)
+
+        self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
+        get = self.fc.client.get_servers_1234
+        get().AndReturn((200, d))
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.suspend)()
+        self.assertEqual(instance.state, (instance.SUSPEND, instance.COMPLETE))
+
+        self.m.VerifyAll()
+
+    def test_instance_resume_volumes_step(self):
+        return_server = self.fc.servers.list()[1]
+        instance = self._create_test_instance(return_server,
+                                              'test_instance_resume')
+
+        instance.resource_id = 1234
+        self.m.ReplayAll()
+
+        # Override the get_servers_1234 handler status to ACTIVE
+        d = {'server': self.fc.client.get_servers_detail()[1]['servers'][0]}
+        d['server']['status'] = 'ACTIVE'
+
+        # Return a dummy PollingTaskGroup to make check_resume_complete step
+        def dummy_attach():
+            yield
+        dummy_tg = scheduler.PollingTaskGroup([dummy_attach, dummy_attach])
+        self.m.StubOutWithMock(instance, '_attach_volumes_task')
+        instance._attach_volumes_task().AndReturn(dummy_tg)
+
+        self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
+        get = self.fc.client.get_servers_1234
+        get().AndReturn((200, d))
+
+        self.m.ReplayAll()
+
+        instance.state_set(instance.SUSPEND, instance.COMPLETE)
+
+        scheduler.TaskRunner(instance.resume)()
+        self.assertEqual(instance.state, (instance.RESUME, instance.COMPLETE))
+
+        self.m.VerifyAll()
+
+    def test_instance_status_build_spawning(self):
+        self._test_instance_status_not_build_active('BUILD(SPAWNING)')
 
     def test_instance_status_hard_reboot(self):
         self._test_instance_status_not_build_active('HARD_REBOOT')
@@ -222,13 +492,10 @@ class instancesTest(HeatTestCase):
             if server._test_check_iterations > 2:
                 server.status = 'ACTIVE'
         return_server.get = activate_status.__get__(return_server)
-        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.create)()
-        self.assertEqual(instance.state, instance.CREATE_COMPLETE)
+        self.assertEqual(instance.state, (instance.CREATE, instance.COMPLETE))
 
         self.m.VerifyAll()
 
@@ -264,3 +531,10 @@ class instancesTest(HeatTestCase):
             'id4',
             'id5'
         ]))
+
+    def test_instance_without_ip_address(self):
+        return_server = self.fc.servers.list()[3]
+        instance = self._create_test_instance(return_server,
+                                              'test_without_ip_address')
+
+        self.assertEqual(instance.FnGetAtt('PrivateIp'), '0.0.0.0')

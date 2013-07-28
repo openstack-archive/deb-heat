@@ -30,6 +30,7 @@ from heat.common import urlfetch
 
 import heat.openstack.common.rpc.common as rpc_common
 from heat.openstack.common import log as logging
+from heat.openstack.common.gettextutils import _
 
 logger = logging.getLogger(__name__)
 
@@ -44,11 +45,15 @@ class InstantiationData(object):
         PARAM_TEMPLATE,
         PARAM_TEMPLATE_URL,
         PARAM_USER_PARAMS,
+        PARAM_ENVIRONMENT,
+        PARAM_FILES,
     ) = (
         'stack_name',
         'template',
         'template_url',
         'parameters',
+        'environment',
+        'files',
     )
 
     def __init__(self, data):
@@ -56,14 +61,15 @@ class InstantiationData(object):
         self.data = data
 
     @staticmethod
-    def format_parse(data, data_type):
+    def format_parse(data, data_type, add_template_sections=True):
         """
         Parse the supplied data as JSON or YAML, raising the appropriate
         exception if it is in the wrong format.
         """
 
         try:
-            return template_format.parse(data)
+            return template_format.parse(data,
+                                         add_template_sections)
         except ValueError:
             err_reason = _("%s not in valid format") % data_type
             raise exc.HTTPBadRequest(err_reason)
@@ -98,11 +104,36 @@ class InstantiationData(object):
 
         return self.format_parse(template_data, 'Template')
 
-    def user_params(self):
+    def environment(self):
         """
-        Get the user-supplied parameters for the stack in JSON format.
+        Get the user-supplied environment for the stack in YAML format.
+        If the user supplied Parameters then merge these into the
+        environment global options.
         """
-        return self.data.get(self.PARAM_USER_PARAMS, {})
+        env = {}
+        if self.PARAM_ENVIRONMENT in self.data:
+            env_data = self.data[self.PARAM_ENVIRONMENT]
+            if isinstance(env_data, dict):
+                env = env_data
+            else:
+                env = self.format_parse(env_data,
+                                        'Environment',
+                                        add_template_sections=False)
+
+            for field in env:
+                if field not in ('parameters', 'resource_registry'):
+                    reason = _("%s not in valid in the environment") % field
+                    raise exc.HTTPBadRequest(reason)
+
+        if not env.get(self.PARAM_USER_PARAMS):
+            env[self.PARAM_USER_PARAMS] = {}
+
+        parameters = self.data.get(self.PARAM_USER_PARAMS, {})
+        env[self.PARAM_USER_PARAMS].update(parameters)
+        return env
+
+    def files(self):
+        return self.data.get(self.PARAM_FILES, {})
 
     def args(self):
         """
@@ -122,6 +153,14 @@ def format_stack(req, stack, keys=[]):
         if key == engine_api.STACK_ID:
             yield ('id', value['stack_id'])
             yield ('links', [util.make_link(req, value)])
+        elif key == engine_api.STACK_ACTION:
+            return
+        elif (key == engine_api.STACK_STATUS and
+              engine_api.STACK_ACTION in stack):
+            # To avoid breaking API compatibility, we join RES_ACTION
+            # and RES_STATUS, so the API format doesn't expose the
+            # internal split of state into action/status
+            yield (key, '_'.join((stack[engine_api.STACK_ACTION], value)))
         else:
             # TODO(zaneb): ensure parameters can be formatted for XML
             #elif key == engine_api.STACK_PARAMETERS:
@@ -168,6 +207,18 @@ class StackController(object):
         return {'stacks': [format_stack(req, s, summary_keys) for s in stacks]}
 
     @util.tenant_local
+    def detail(self, req):
+        """
+        Lists detailed information for all stacks
+        """
+        try:
+            stacks = self.engine.list_stacks(req.context)
+        except rpc_common.RemoteError as ex:
+            return util.remote_error(ex)
+
+        return {'stacks': [format_stack(req, s) for s in stacks]}
+
+    @util.tenant_local
     def create(self, req, body):
         """
         Create a new stack
@@ -179,12 +230,13 @@ class StackController(object):
             result = self.engine.create_stack(req.context,
                                               data.stack_name(),
                                               data.template(),
-                                              data.user_params(),
+                                              data.environment(),
+                                              data.files(),
                                               data.args())
         except rpc_common.RemoteError as ex:
             return util.remote_error(ex)
 
-        raise exc.HTTPCreated(location=util.make_url(req, result))
+        return {'stack': format_stack(req, {engine_api.STACK_ID: result})}
 
     @util.tenant_local
     def lookup(self, req, stack_name, path='', body=None):
@@ -254,7 +306,8 @@ class StackController(object):
             res = self.engine.update_stack(req.context,
                                            identity,
                                            data.template(),
-                                           data.user_params(),
+                                           data.environment(),
+                                           data.files(),
                                            data.args())
         except rpc_common.RemoteError as ex:
             return util.remote_error(ex)
@@ -314,11 +367,28 @@ class StackController(object):
         return {'resource_types': types}
 
 
+class StackSerializer(wsgi.JSONResponseSerializer):
+    """Handles serialization of specific controller method responses."""
+
+    def _populate_response_header(self, response, location, status):
+        response.status = status
+        response.headers['Location'] = location.encode('utf-8')
+        response.headers['Content-Type'] = 'application/json'
+        return response
+
+    def create(self, response, result):
+        self._populate_response_header(response,
+                                       result['stack']['links'][0]['href'],
+                                       201)
+        response.body = self.to_json(result)
+        return response
+
+
 def create_resource(options):
     """
     Stacks resource factory method.
     """
     # TODO(zaneb) handle XML based on Content-type/Accepts
     deserializer = wsgi.JSONRequestDeserializer()
-    serializer = wsgi.JSONResponseSerializer()
+    serializer = StackSerializer()
     return wsgi.Resource(StackController(options), deserializer, serializer)

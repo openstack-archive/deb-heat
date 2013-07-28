@@ -24,9 +24,29 @@ class GenericResource(resource.Resource):
     Dummy resource for use in tests
     '''
     properties_schema = {}
+    attributes_schema = {'foo': 'A generic attribute',
+                         'Foo': 'Another generic attribute'}
 
     def handle_create(self):
         logger.warning('Creating generic resource (Type "%s")' % self.type())
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         logger.warning('Updating generic resource (Type "%s")' % self.type())
+
+    def _resolve_attribute(self, name):
+        return self.name
+
+    def handle_suspend(self):
+        logger.warning('Suspending generic resource (Type "%s")' % self.type())
+
+    def handle_resume(self):
+        logger.warning('Resuming generic resource (Type "%s")' % self.type())
+
+
+class ResourceWithProps(GenericResource):
+        properties_schema = {'Foo': {'Type': 'String'}}
+
+
+class ResourceWithRequiredProps(GenericResource):
+        properties_schema = {'Foo': {'Type': 'String',
+                                     'Required': True}}

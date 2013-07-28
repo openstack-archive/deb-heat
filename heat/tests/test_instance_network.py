@@ -13,6 +13,7 @@
 #    under the License.
 
 
+from heat.engine import environment
 from heat.tests.v1_1 import fakes
 from heat.engine.resources import instance as instances
 from heat.engine.resources import network_interface as network_interfaces
@@ -21,6 +22,7 @@ from heat.engine import parser
 from heat.engine import scheduler
 from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
+from heat.tests import utils
 from heat.tests.utils import setup_dummy_db
 
 
@@ -155,8 +157,8 @@ class instancesTest(HeatTestCase):
         kwargs = {'KeyName': 'test',
                   'InstanceType': 'm1.large',
                   'SubnetId': '4156c7a5-e8c4-4aff-a6e1-8f3c7bc83861'}
-        params = parser.Parameters(stack_name, template, kwargs)
-        stack = parser.Stack(None, stack_name, template, params,
+        stack = parser.Stack(None, stack_name, template,
+                             environment.Environment(kwargs),
                              stack_id=uuidutils.generate_uuid())
 
         t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
@@ -178,7 +180,7 @@ class instancesTest(HeatTestCase):
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=1, flavor=3, key_name='test',
-            name='%s.%s' % (stack_name, instance.name),
+            name=utils.PhysName(stack_name, instance.name),
             security_groups=None,
             userdata=server_userdata, scheduler_hints=None, meta=None,
             nics=[{'port-id': '64d913c1-bcb1-42d2-8f0a-9593dbcaf251'}],
@@ -196,8 +198,8 @@ class instancesTest(HeatTestCase):
         kwargs = {'KeyName': 'test',
                   'InstanceType': 'm1.large',
                   'SubnetId': '4156c7a5-e8c4-4aff-a6e1-8f3c7bc83861'}
-        params = parser.Parameters(stack_name, template, kwargs)
-        stack = parser.Stack(None, stack_name, template, params,
+        stack = parser.Stack(None, stack_name, template,
+                             environment.Environment(kwargs),
                              stack_id=uuidutils.generate_uuid())
 
         t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
@@ -224,7 +226,7 @@ class instancesTest(HeatTestCase):
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=1, flavor=3, key_name='test',
-            name='%s.%s' % (stack_name, instance.name),
+            name=utils.PhysName(stack_name, instance.name),
             security_groups=None,
             userdata=server_userdata, scheduler_hints=None, meta=None,
             nics=[{'port-id': '64d913c1-bcb1-42d2-8f0a-9593dbcaf251'}],

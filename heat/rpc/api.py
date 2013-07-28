@@ -25,7 +25,7 @@ STACK_KEYS = (
     STACK_CREATION_TIME, STACK_UPDATED_TIME, STACK_DELETION_TIME,
     STACK_NOTIFICATION_TOPICS,
     STACK_DESCRIPTION, STACK_TMPL_DESCRIPTION,
-    STACK_PARAMETERS, STACK_OUTPUTS,
+    STACK_PARAMETERS, STACK_OUTPUTS, STACK_ACTION,
     STACK_STATUS, STACK_STATUS_DATA, STACK_CAPABILITIES,
     STACK_DISABLE_ROLLBACK, STACK_TIMEOUT,
 ) = (
@@ -33,7 +33,7 @@ STACK_KEYS = (
     'creation_time', 'updated_time', 'deletion_time',
     'notification_topics',
     'description', 'template_description',
-    'parameters', 'outputs',
+    'parameters', 'outputs', 'stack_action',
     'stack_status', 'stack_status_reason', 'capabilities',
     'disable_rollback', 'timeout_mins'
 )
@@ -48,28 +48,28 @@ STACK_OUTPUT_KEYS = (
 
 RES_KEYS = (
     RES_DESCRIPTION, RES_UPDATED_TIME,
-    RES_NAME, RES_PHYSICAL_ID, RES_METADATA,
+    RES_NAME, RES_PHYSICAL_ID, RES_METADATA, RES_ACTION,
     RES_STATUS, RES_STATUS_DATA, RES_TYPE,
-    RES_ID, RES_STACK_ID, RES_STACK_NAME,
+    RES_ID, RES_STACK_ID, RES_STACK_NAME, RES_REQUIRED_BY,
 ) = (
     'description', 'updated_time',
     'logical_resource_id', 'physical_resource_id', 'metadata',
-    'resource_status', 'resource_status_reason', 'resource_type',
-    'resource_identity', STACK_ID, STACK_NAME,
+    'resource_action', 'resource_status', 'resource_status_reason',
+    'resource_type', 'resource_identity', STACK_ID, STACK_NAME, 'required_by',
 )
 
 EVENT_KEYS = (
     EVENT_ID,
     EVENT_STACK_ID, EVENT_STACK_NAME,
     EVENT_TIMESTAMP,
-    EVENT_RES_NAME, EVENT_RES_PHYSICAL_ID,
+    EVENT_RES_NAME, EVENT_RES_PHYSICAL_ID, EVENT_RES_ACTION,
     EVENT_RES_STATUS, EVENT_RES_STATUS_DATA, EVENT_RES_TYPE,
     EVENT_RES_PROPERTIES,
 ) = (
     'event_identity',
     STACK_ID, STACK_NAME,
     "event_time",
-    RES_NAME, RES_PHYSICAL_ID,
+    RES_NAME, RES_PHYSICAL_ID, RES_ACTION,
     RES_STATUS, RES_STATUS_DATA, RES_TYPE,
     'resource_properties',
 )
@@ -117,9 +117,10 @@ WATCH_RULE_KEYS = (
     'Statistic', 'Threshold', 'Unit', 'StackName')
 
 WATCH_STATES = (
-    WATCH_STATE_OK, WATCH_STATE_ALARM, WATCH_STATE_NODATA
+    WATCH_STATE_OK, WATCH_STATE_ALARM, WATCH_STATE_NODATA,
+    WATCH_STATE_SUSPENDED
 ) = (
-    'NORMAL', 'ALARM', 'NODATA',
+    'NORMAL', 'ALARM', 'NODATA', 'SUSPENDED'
 )
 
 WATCH_DATA_KEYS = (

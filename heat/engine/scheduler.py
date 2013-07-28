@@ -22,8 +22,13 @@ from time import time as wallclock
 
 from heat.openstack.common import excutils
 from heat.openstack.common import log as logging
+from heat.openstack.common.gettextutils import _
 
 logger = logging.getLogger(__name__)
+
+
+# Whether TaskRunner._sleep actually does an eventlet sleep when called.
+ENABLE_SLEEP = True
 
 
 def task_description(task):
@@ -31,11 +36,14 @@ def task_description(task):
     Return a human-readable string description of a task suitable for logging
     the status of the task.
     """
+    name = getattr(task, '__name__', None)
     if isinstance(task, types.MethodType):
-        name = getattr(task, '__name__')
-        obj = getattr(task, '__self__')
+        obj = getattr(task, '__self__', None)
         if name is not None and obj is not None:
             return '%s from %s' % (name, obj)
+    elif isinstance(task, types.FunctionType):
+        if name is not None:
+            return str(name)
     return repr(task)
 
 
@@ -97,7 +105,7 @@ class TaskRunner(object):
 
     def _sleep(self, wait_time):
         """Sleep for the specified number of seconds."""
-        if wait_time is not None:
+        if ENABLE_SLEEP and wait_time is not None:
             logger.debug('%s sleeping' % str(self))
             eventlet.sleep(wait_time)
 
@@ -215,10 +223,18 @@ def wrappertask(task):
     def wrapper(*args, **kwargs):
         parent = task(*args, **kwargs)
 
-        for subtask in parent:
+        subtask = next(parent)
+
+        while True:
             try:
                 if subtask is not None:
-                    for step in subtask:
+                    subtask_running = True
+                    try:
+                        step = next(subtask)
+                    except StopIteration:
+                        subtask_running = False
+
+                    while subtask_running:
                         try:
                             yield step
                         except GeneratorExit as exit:
@@ -226,19 +242,23 @@ def wrappertask(task):
                             raise exit
                         except:
                             try:
-                                subtask.throw(*sys.exc_info())
+                                step = subtask.throw(*sys.exc_info())
                             except StopIteration:
-                                break
+                                subtask_running = False
+                        else:
+                            try:
+                                step = next(subtask)
+                            except StopIteration:
+                                subtask_running = False
                 else:
                     yield
             except GeneratorExit as exit:
                 parent.close()
                 raise exit
             except:
-                try:
-                    parent.throw(*sys.exc_info())
-                except StopIteration:
-                    break
+                subtask = parent.throw(*sys.exc_info())
+            else:
+                subtask = next(parent)
 
     return wrapper
 
@@ -248,19 +268,22 @@ class DependencyTaskGroup(object):
     A task which manages a group of subtasks that have ordering dependencies.
     """
 
-    def __init__(self, dependencies, make_task=lambda o: o,
+    def __init__(self, dependencies, task=lambda o: o(),
                  reverse=False, name=None):
         """
-        Initialise with the task dependencies and (optionally) a function for
-        creating a task from each dependency object.
+        Initialise with the task dependencies and (optionally) a task to run on
+        each.
+
+        If no task is supplied, it is assumed that the tasks are stored
+        directly in the dependency tree. If a task is supplied, the object
+        stored in the dependency tree is passed as an argument.
         """
-        self._runners = dict((o, TaskRunner(make_task(o)))
-                             for o in dependencies)
+        self._runners = dict((o, TaskRunner(task, o)) for o in dependencies)
         self._graph = dependencies.graph(reverse=reverse)
 
         if name is None:
-            name = '(%s) %s' % (getattr(make_task, '__name__',
-                                        task_description(make_task)),
+            name = '(%s) %s' % (getattr(task, '__name__',
+                                        task_description(task)),
                                 str(dependencies))
         self.name = name
 
@@ -301,8 +324,8 @@ class DependencyTaskGroup(object):
         Iterate over all subtasks that are currently running - i.e. they have
         been started but have not yet completed.
         """
-        return itertools.ifilter(lambda (k, r): r and r.started(),
-                                 self._runners.iteritems())
+        running = lambda (k, r): k in self._graph and r.started()
+        return itertools.ifilter(running, self._runners.iteritems())
 
 
 class PollingTaskGroup(object):

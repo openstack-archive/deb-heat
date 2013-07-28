@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from quantumclient.common.exceptions import QuantumClientException
+
 from heat.common import exception
 from heat.engine import resource
 
@@ -22,9 +24,6 @@ logger = logging.getLogger(__name__)
 
 
 class QuantumResource(resource.Resource):
-
-    def __init__(self, name, json_snippet, stack):
-        super(QuantumResource, self).__init__(name, json_snippet, stack)
 
     def validate(self):
         '''
@@ -94,6 +93,24 @@ class QuantumResource(resource.Resource):
             raise exception.Error('%s resource[%s] status[%s]' %
                                   ('quantum reported unexpected',
                                    attributes['name'], attributes['status']))
+
+    def _resolve_attribute(self, name):
+        try:
+            attributes = self._show_resource()
+        except QuantumClientException as ex:
+            logger.warn("failed to fetch resource attributes: %s" % str(ex))
+            return None
+        return self.handle_get_attributes(self.name, name, attributes)
+
+    def _confirm_delete(self):
+        while True:
+            try:
+                yield
+                self._show_resource()
+            except QuantumClientException as ex:
+                if ex.status_code != 404:
+                    raise ex
+                return
 
     def FnGetRefId(self):
         return unicode(self.resource_id)

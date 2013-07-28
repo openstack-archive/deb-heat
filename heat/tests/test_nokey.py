@@ -16,8 +16,8 @@ from heat.tests.v1_1 import fakes
 from heat.engine.resources import instance as instances
 from heat.common import template_format
 from heat.engine import scheduler
-from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
+from heat.tests import utils
 from heat.tests.utils import setup_dummy_db
 from heat.tests.utils import parse_stack
 
@@ -51,8 +51,7 @@ class nokeyTest(HeatTestCase):
 
         stack_name = 'instance_create_test_nokey_stack'
         t = template_format.parse(nokey_template)
-        stack = parse_stack(t, stack_name=stack_name,
-                            stack_id=uuidutils.generate_uuid())
+        stack = parse_stack(t, stack_name=stack_name)
 
         t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
         t['Resources']['WebServer']['Properties']['InstanceType'] = \
@@ -71,7 +70,7 @@ class nokeyTest(HeatTestCase):
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=1, flavor=1, key_name=None,
-            name='%s.%s' % (stack_name, instance.name),
+            name=utils.PhysName(stack_name, instance.name),
             security_groups=None,
             userdata=server_userdata, scheduler_hints=None,
             meta=None, nics=None, availability_zone=None).AndReturn(

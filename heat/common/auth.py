@@ -34,6 +34,8 @@ import urlparse
 
 from heat.common import exception
 
+from heat.openstack.common.gettextutils import _
+
 
 class BaseStrategy(object):
     def __init__(self):
@@ -117,7 +119,7 @@ class KeystoneStrategy(BaseStrategy):
 
         self.check_auth_params()
         auth_url = self.creds['auth_url']
-        for _ in range(self.MAX_REDIRECTS):
+        for x in range(self.MAX_REDIRECTS):
             try:
                 _authenticate(auth_url)
             except exception.AuthorizationRedirect as e:
@@ -176,7 +178,9 @@ class KeystoneStrategy(BaseStrategy):
         elif resp.status == 404:
             raise exception.AuthUrlNotFound(url=token_url)
         else:
-            raise Exception(_('Unexpected response: %s' % resp.status))
+            status = resp.status
+            raise Exception(_('Unexpected response: %(status)s')
+                            % {'status': resp.status})
 
     def _v2_auth(self, token_url):
         def get_endpoint(service_catalog):

@@ -13,7 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import exception
+from heat.openstack.common import exception
 
 import eventlet
 from keystoneclient.v2_0 import client as kc
@@ -61,6 +61,11 @@ class KeystoneClient(object):
         the heat_stack_user_role as defined in the config
         Returns the keystone ID of the resulting user
         """
+        if(len(username) > 64):
+            logger.warning("Truncating the username %s to the last 64 "
+                           "characters." % username)
+            #get the last 64 characters of the username
+            username = username[-64:]
         user = self.client.users.create(username,
                                         password,
                                         '%s@heat-api.org' %
@@ -138,3 +143,11 @@ class KeystoneClient(object):
         else:
             logger.error("Unexpected number of ec2 credentials %s for %s" %
                          (len(cred), user_id))
+
+    def disable_stack_user(self, user_id):
+        # FIXME : This won't work with the v3 keystone API
+        self.client.users.update_enabled(user_id, False)
+
+    def enable_stack_user(self, user_id):
+        # FIXME : This won't work with the v3 keystone API
+        self.client.users.update_enabled(user_id, True)

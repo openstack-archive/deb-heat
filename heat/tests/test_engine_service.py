@@ -18,13 +18,16 @@ import json
 import sys
 
 import mox
+from testtools import matchers
+
 from oslo.config import cfg
 
 from heat.common import config
 from heat.common import context
+from heat.engine import environment
 from heat.common import exception
 from heat.tests.v1_1 import fakes
-import heat.engine.api as engine_api
+import heat.rpc.api as engine_api
 import heat.db.api as db_api
 from heat.common import identifier
 from heat.common import template_format
@@ -35,6 +38,7 @@ from heat.engine.resources import instance as instances
 from heat.engine import watchrule
 from heat.openstack.common import threadgroup
 from heat.tests.common import HeatTestCase
+from heat.tests import utils
 from heat.tests.utils import setup_dummy_db
 
 
@@ -65,22 +69,22 @@ wp_template = '''
 
 
 def create_context(mocks, user='stacks_test_user',
-                   tenant='test_admin', ctx=None):
-    ctx = ctx or context.get_admin_context()
+                   tenant='test_admin', password='stacks_test_password'):
+    ctx = context.get_admin_context()
     mocks.StubOutWithMock(ctx, 'username')
     mocks.StubOutWithMock(ctx, 'tenant_id')
+    mocks.StubOutWithMock(ctx, 'password')
     ctx.username = user
     ctx.tenant_id = tenant
+    ctx.password = password
     return ctx
 
 
 def get_wordpress_stack(stack_name, ctx):
     t = template_format.parse(wp_template)
     template = parser.Template(t)
-    parameters = parser.Parameters(stack_name, template,
-                                   {'KeyName': 'test'})
-
-    stack = parser.Stack(ctx, stack_name, template, parameters)
+    stack = parser.Stack(ctx, stack_name, template,
+                         environment.Environment({'KeyName': 'test'}))
     return stack
 
 
@@ -93,7 +97,8 @@ def setup_mocks(mocks, stack):
     server_userdata = instance._build_userdata(instance.properties['UserData'])
     mocks.StubOutWithMock(fc.servers, 'create')
     fc.servers.create(image=744, flavor=3, key_name='test',
-                      name='%s.WebServer' % stack.name, security_groups=None,
+                      name=utils.PhysName(stack.name, 'WebServer'),
+                      security_groups=None,
                       userdata=server_userdata, scheduler_hints=None,
                       meta=None, nics=None,
                       availability_zone=None).AndReturn(
@@ -101,7 +106,7 @@ def setup_mocks(mocks, stack):
     return fc
 
 
-def setup_test_stack(stack_name, ctx, create_res=True):
+def setup_stack(stack_name, ctx, create_res=True):
     stack = get_wordpress_stack(stack_name, ctx)
     stack.store()
     if create_res:
@@ -138,7 +143,7 @@ def stack_context(stack_name, create_res=True):
             def create_stack():
                 ctx = getattr(test_case, 'ctx', None)
                 if ctx is not None:
-                    stack = setup_test_stack(stack_name, ctx, create_res)
+                    stack = setup_stack(stack_name, ctx, create_res)
                     setattr(test_case, 'stack', stack)
 
             def delete_stack():
@@ -217,9 +222,12 @@ class stackCreateTest(HeatTestCase):
         mox.Replay(get)
         stack.delete()
 
-        self.assertEqual(stack.resources['WebServer'].state, 'DELETE_COMPLETE')
-        self.assertEqual(db_api.stack_get(ctx, stack_id), None)
-        self.assertEqual(db_s.status, 'DELETE_COMPLETE')
+        rsrc = stack.resources['WebServer']
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
+        self.assertEqual((stack.DELETE, stack.COMPLETE), rsrc.state)
+        self.assertEqual(None, db_api.stack_get(ctx, stack_id))
+        self.assertEqual('DELETE', db_s.action)
+        self.assertEqual('COMPLETE', db_s.status, )
 
 
 class stackServiceCreateUpdateDeleteTest(HeatTestCase):
@@ -241,15 +249,13 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         stack = get_wordpress_stack(stack_name, self.ctx)
 
         self.m.StubOutWithMock(parser, 'Template')
-        self.m.StubOutWithMock(parser, 'Parameters')
+        self.m.StubOutWithMock(environment, 'Environment')
         self.m.StubOutWithMock(parser, 'Stack')
 
-        parser.Template(template).AndReturn(stack.t)
-        parser.Parameters(stack_name,
-                          stack.t,
-                          params).AndReturn(stack.parameters)
+        parser.Template(template, files=None).AndReturn(stack.t)
+        environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.parameters).AndReturn(stack)
+                     stack.t, stack.env).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -260,8 +266,8 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.m.ReplayAll()
 
         result = self.man.create_stack(self.ctx, stack_name,
-                                       template, params, {})
-        self.assertEqual(result, stack.identifier())
+                                       template, params, None, {})
+        self.assertEqual(stack.identifier(), result)
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(result['stack_id'])
         self.m.VerifyAll()
@@ -274,15 +280,14 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         stack = get_wordpress_stack(stack_name, self.ctx)
 
         self.m.StubOutWithMock(parser, 'Template')
-        self.m.StubOutWithMock(parser, 'Parameters')
+        self.m.StubOutWithMock(environment, 'Environment')
         self.m.StubOutWithMock(parser, 'Stack')
 
-        parser.Template(template).AndReturn(stack.t)
-        parser.Parameters(stack_name,
-                          stack.t,
-                          params).AndReturn(stack.parameters)
+        parser.Template(template, files=None).AndReturn(stack.t)
+        environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.parameters).AndReturn(stack)
+                     stack.t,
+                     stack.env).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndRaise(exception.StackValidationFailed(
@@ -294,7 +299,7 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
             exception.StackValidationFailed,
             self.man.create_stack,
             self.ctx, stack_name,
-            template, params, {})
+            template, params, None, {})
         self.m.VerifyAll()
 
     def test_stack_create_invalid_stack_name(self):
@@ -303,7 +308,7 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         self.assertRaises(ValueError,
                           self.man.create_stack,
-                          self.ctx, stack_name, stack.t, {}, {})
+                          self.ctx, stack_name, stack.t, {}, None, {})
 
     def test_stack_create_invalid_resource_name(self):
         stack_name = 'service_create_test_stack_invalid_res'
@@ -315,7 +320,22 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.assertRaises(ValueError,
                           self.man.create_stack,
                           self.ctx, stack_name,
-                          stack.t, {}, {})
+                          stack.t, {}, None, {})
+
+    def test_stack_create_no_credentials(self):
+        stack_name = 'service_create_test_stack'
+        params = {'foo': 'bar'}
+        template = '{ "Template": "data" }'
+
+        ctx = self.ctx = create_context(self.m, password=None)
+        self.assertRaises(exception.MissingCredentialError,
+                          self.man.create_stack, ctx, stack_name, template,
+                          params, None, {})
+
+        ctx = self.ctx = create_context(self.m, user=None)
+        self.assertRaises(exception.MissingCredentialError,
+                          self.man.create_stack, ctx, stack_name, template,
+                          params, None, {})
 
     def test_stack_validate(self):
         stack_name = 'service_create_test_validate'
@@ -331,7 +351,7 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         resource.properties = Properties(
             resource.properties_schema,
             {
-                'ImageId': 'foo',
+                'ImageId': 'CentOS 5.2',
                 'KeyName': 'test',
                 'InstanceType': 'm1.large'
             })
@@ -359,8 +379,8 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         self.m.ReplayAll()
 
-        self.assertEqual(self.man.delete_stack(self.ctx, stack.identifier()),
-                         None)
+        self.assertEqual(None,
+                         self.man.delete_stack(self.ctx, stack.identifier()))
         self.m.VerifyAll()
 
     def test_stack_delete_nonexist(self):
@@ -390,14 +410,12 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         parser.Stack.load(self.ctx, stack=s).AndReturn(old_stack)
 
         self.m.StubOutWithMock(parser, 'Template')
-        self.m.StubOutWithMock(parser, 'Parameters')
+        self.m.StubOutWithMock(environment, 'Environment')
 
-        parser.Template(template).AndReturn(stack.t)
-        parser.Parameters(stack_name,
-                          stack.t,
-                          params).AndReturn(stack.parameters)
+        parser.Template(template, files=None).AndReturn(stack.t)
+        environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.parameters).AndReturn(stack)
+                     stack.t, stack.env).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -408,8 +426,8 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.m.ReplayAll()
 
         result = self.man.update_stack(self.ctx, old_stack.identifier(),
-                                       template, params, {})
-        self.assertEqual(result, old_stack.identifier())
+                                       template, params, None, {})
+        self.assertEqual(old_stack.identifier(), result)
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(result['stack_id'])
         self.m.VerifyAll()
@@ -431,14 +449,12 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
         parser.Stack.load(self.ctx, stack=s).AndReturn(old_stack)
 
         self.m.StubOutWithMock(parser, 'Template')
-        self.m.StubOutWithMock(parser, 'Parameters')
+        self.m.StubOutWithMock(environment, 'Environment')
 
-        parser.Template(template).AndReturn(stack.t)
-        parser.Parameters(stack_name,
-                          stack.t,
-                          params).AndReturn(stack.parameters)
+        parser.Template(template, files=None).AndReturn(stack.t)
+        environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.parameters).AndReturn(stack)
+                     stack.t, stack.env).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndRaise(exception.StackValidationFailed(
@@ -450,7 +466,7 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
             exception.StackValidationFailed,
             self.man.update_stack,
             self.ctx, old_stack.identifier(),
-            template, params, {})
+            template, params, None, {})
         self.m.VerifyAll()
 
     def test_stack_update_nonexist(self):
@@ -463,7 +479,95 @@ class stackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         self.assertRaises(exception.StackNotFound,
                           self.man.update_stack,
-                          self.ctx, stack.identifier(), template, params, {})
+                          self.ctx, stack.identifier(), template, params,
+                          None, {})
+        self.m.VerifyAll()
+
+    def test_stack_update_no_credentials(self):
+        stack_name = 'service_update_nonexist_test_stack'
+        params = {'foo': 'bar'}
+        template = '{ "Template": "data" }'
+
+        stack = get_wordpress_stack(stack_name, self.ctx)
+
+        ctx = self.ctx = create_context(self.m, password=None)
+        self.assertRaises(exception.MissingCredentialError,
+                          self.man.update_stack,
+                          ctx, stack.identifier(), template, params,
+                          None, {})
+
+        ctx = self.ctx = create_context(self.m, user=None)
+        self.assertRaises(exception.MissingCredentialError,
+                          self.man.update_stack,
+                          ctx, stack.identifier(), template, params,
+                          None, {})
+
+
+class stackServiceSuspendResumeTest(HeatTestCase):
+
+    def setUp(self):
+        super(stackServiceSuspendResumeTest, self).setUp()
+        self.username = 'stack_service_suspend_test_user'
+        self.tenant = 'stack_service_suspend_test_tenant'
+        setup_dummy_db()
+        self.ctx = create_context(self.m, self.username, self.tenant)
+
+        self.man = service.EngineService('a-host', 'a-topic')
+
+    def test_stack_suspend(self):
+        stack_name = 'service_suspend_test_stack'
+        stack = get_wordpress_stack(stack_name, self.ctx)
+        sid = stack.store()
+        s = db_api.stack_get(self.ctx, sid)
+
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx, stack=s).AndReturn(stack)
+
+        self.m.StubOutWithMock(service.EngineService, '_start_in_thread')
+        service.EngineService._start_in_thread(sid,
+                                               mox.IgnoreArg(),
+                                               stack).AndReturn(None)
+        self.m.ReplayAll()
+
+        result = self.man.stack_suspend(self.ctx, stack.identifier())
+        self.assertEqual(None, result)
+
+        self.m.VerifyAll()
+
+    @stack_context('service_resume_test_stack', False)
+    def test_stack_resume(self):
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx,
+                          stack=mox.IgnoreArg()).AndReturn(self.stack)
+
+        self.m.StubOutWithMock(service.EngineService, '_start_in_thread')
+        service.EngineService._start_in_thread(self.stack.id,
+                                               mox.IgnoreArg(),
+                                               self.stack).AndReturn(None)
+        self.m.ReplayAll()
+
+        result = self.man.stack_resume(self.ctx, self.stack.identifier())
+        self.assertEqual(None, result)
+        self.m.VerifyAll()
+
+    def test_stack_suspend_nonexist(self):
+        stack_name = 'service_suspend_nonexist_test_stack'
+        stack = get_wordpress_stack(stack_name, self.ctx)
+
+        self.m.ReplayAll()
+
+        self.assertRaises(exception.StackNotFound,
+                          self.man.stack_suspend, self.ctx, stack.identifier())
+        self.m.VerifyAll()
+
+    def test_stack_resume_nonexist(self):
+        stack_name = 'service_resume_nonexist_test_stack'
+        stack = get_wordpress_stack(stack_name, self.ctx)
+
+        self.m.ReplayAll()
+
+        self.assertRaises(exception.StackNotFound,
+                          self.man.stack_resume, self.ctx, stack.identifier())
         self.m.VerifyAll()
 
 
@@ -490,7 +594,7 @@ class stackServiceTest(HeatTestCase):
 
         self.m.ReplayAll()
         identity = self.eng.identify_stack(self.ctx, self.stack.name)
-        self.assertEqual(identity, self.stack.identifier())
+        self.assertEqual(self.stack.identifier(), identity)
 
         self.m.VerifyAll()
 
@@ -502,7 +606,7 @@ class stackServiceTest(HeatTestCase):
 
         self.m.ReplayAll()
         identity = self.eng.identify_stack(self.ctx, self.stack.id)
-        self.assertEqual(identity, self.stack.identifier())
+        self.assertEqual(self.stack.identifier(), identity)
 
         self.m.VerifyAll()
 
@@ -513,7 +617,8 @@ class stackServiceTest(HeatTestCase):
     @stack_context('service_create_existing_test_stack', False)
     def test_stack_create_existing(self):
         self.assertRaises(exception.StackExists, self.eng.create_stack,
-                          self.ctx, self.stack.name, self.stack.t, {}, {})
+                          self.ctx, self.stack.name, self.stack.t, {},
+                          None, {})
 
     @stack_context('service_name_tenants_test_stack', False)
     def test_stack_by_name_tenants(self):
@@ -534,14 +639,14 @@ class stackServiceTest(HeatTestCase):
 
         events = self.eng.list_events(self.ctx, self.stack.identifier())
 
-        self.assertEqual(len(events), 2)
+        self.assertEqual(2, len(events))
         for ev in events:
             self.assertTrue('event_identity' in ev)
-            self.assertEqual(type(ev['event_identity']), dict)
+            self.assertEqual(dict, type(ev['event_identity']))
             self.assertTrue(ev['event_identity']['path'].rsplit('/', 1)[1])
 
             self.assertTrue('logical_resource_id' in ev)
-            self.assertEqual(ev['logical_resource_id'], 'WebServer')
+            self.assertEqual('WebServer', ev['logical_resource_id'])
 
             self.assertTrue('physical_resource_id' in ev)
 
@@ -550,27 +655,70 @@ class stackServiceTest(HeatTestCase):
             # a few times so this should work.
             user_data = ev['resource_properties']['UserData']
             self.assertNotEqual(user_data.find('wordpress'), -1)
-            self.assertEqual(ev['resource_properties']['ImageId'],
-                             'F17-x86_64-gold')
-            self.assertEqual(ev['resource_properties']['InstanceType'],
-                             'm1.large')
+            self.assertEqual('F17-x86_64-gold',
+                             ev['resource_properties']['ImageId'])
+            self.assertEqual('m1.large',
+                             ev['resource_properties']['InstanceType'])
 
-            self.assertTrue('resource_status' in ev)
+            self.assertEqual('CREATE', ev['resource_action'])
             self.assertTrue(ev['resource_status'] in ('IN_PROGRESS',
-                                                      'CREATE_COMPLETE'))
+                                                      'COMPLETE'))
 
             self.assertTrue('resource_status_reason' in ev)
-            self.assertEqual(ev['resource_status_reason'], 'state changed')
+            self.assertEqual('state changed', ev['resource_status_reason'])
 
             self.assertTrue('resource_type' in ev)
-            self.assertEqual(ev['resource_type'], 'AWS::EC2::Instance')
+            self.assertEqual('AWS::EC2::Instance', ev['resource_type'])
 
             self.assertTrue('stack_identity' in ev)
 
             self.assertTrue('stack_name' in ev)
-            self.assertEqual(ev['stack_name'], self.stack.name)
+            self.assertEqual(self.stack.name, ev['stack_name'])
 
             self.assertTrue('event_time' in ev)
+
+        self.m.VerifyAll()
+
+    @stack_context('service_event_list_test_stack')
+    def test_stack_event_list_by_tenant(self):
+        events = self.eng.list_events(self.ctx, None)
+
+        self.assertEqual(2, len(events))
+        for ev in events:
+            self.assertIn('event_identity', ev)
+            self.assertThat(ev['event_identity'], matchers.IsInstance(dict))
+            self.assertTrue(ev['event_identity']['path'].rsplit('/', 1)[1])
+
+            self.assertTrue('logical_resource_id' in ev)
+            self.assertEqual('WebServer', ev['logical_resource_id'])
+
+            self.assertTrue('physical_resource_id' in ev)
+
+            self.assertTrue('resource_properties' in ev)
+            # Big long user data field.. it mentions 'wordpress'
+            # a few times so this should work.
+            user_data = ev['resource_properties']['UserData']
+            self.assertIn('wordpress', user_data)
+            self.assertEqual('F17-x86_64-gold',
+                             ev['resource_properties']['ImageId'])
+            self.assertEqual('m1.large',
+                             ev['resource_properties']['InstanceType'])
+
+            self.assertEqual('CREATE', ev['resource_action'])
+            self.assertIn(ev['resource_status'], ('IN_PROGRESS', 'COMPLETE'))
+
+            self.assertIn('resource_status_reason', ev)
+            self.assertEqual('state changed', ev['resource_status_reason'])
+
+            self.assertIn('resource_type', ev)
+            self.assertEqual('AWS::EC2::Instance', ev['resource_type'])
+
+            self.assertIn('stack_identity', ev)
+
+            self.assertIn('stack_name', ev)
+            self.assertEqual(self.stack.name, ev['stack_name'])
+
+            self.assertIn('event_time', ev)
 
         self.m.VerifyAll()
 
@@ -583,14 +731,14 @@ class stackServiceTest(HeatTestCase):
         self.m.ReplayAll()
         sl = self.eng.list_stacks(self.ctx)
 
-        self.assertEqual(len(sl), 1)
+        self.assertEqual(1, len(sl))
         for s in sl:
             self.assertTrue('creation_time' in s)
             self.assertTrue('updated_time' in s)
             self.assertTrue('stack_identity' in s)
             self.assertNotEqual(s['stack_identity'], None)
             self.assertTrue('stack_name' in s)
-            self.assertEqual(s['stack_name'], self.stack.name)
+            self.assertEqual(self.stack.name, s['stack_name'])
             self.assertTrue('stack_status' in s)
             self.assertTrue('stack_status_reason' in s)
             self.assertTrue('description' in s)
@@ -639,7 +787,7 @@ class stackServiceTest(HeatTestCase):
 
         sl = self.eng.show_stack(self.ctx, self.stack.identifier())
 
-        self.assertEqual(len(sl), 1)
+        self.assertEqual(1, len(sl))
 
         s = sl[0]
         self.assertTrue('creation_time' in s)
@@ -647,7 +795,7 @@ class stackServiceTest(HeatTestCase):
         self.assertTrue('stack_identity' in s)
         self.assertNotEqual(s['stack_identity'], None)
         self.assertTrue('stack_name' in s)
-        self.assertEqual(s['stack_name'], self.stack.name)
+        self.assertEqual(self.stack.name, s['stack_name'])
         self.assertTrue('stack_status' in s)
         self.assertTrue('stack_status_reason' in s)
         self.assertTrue('description' in s)
@@ -660,7 +808,7 @@ class stackServiceTest(HeatTestCase):
     def test_stack_describe_all(self):
         sl = self.eng.show_stack(self.ctx, None)
 
-        self.assertEqual(len(sl), 1)
+        self.assertEqual(1, len(sl))
 
         s = sl[0]
         self.assertTrue('creation_time' in s)
@@ -668,7 +816,7 @@ class stackServiceTest(HeatTestCase):
         self.assertTrue('stack_identity' in s)
         self.assertNotEqual(s['stack_identity'], None)
         self.assertTrue('stack_name' in s)
-        self.assertEqual(s['stack_name'], self.stack.name)
+        self.assertEqual(self.stack.name, s['stack_name'])
         self.assertTrue('stack_status' in s)
         self.assertTrue('stack_status_reason' in s)
         self.assertTrue('description' in s)
@@ -697,14 +845,14 @@ class stackServiceTest(HeatTestCase):
         self.assertTrue('stack_identity' in r)
         self.assertNotEqual(r['stack_identity'], None)
         self.assertTrue('stack_name' in r)
-        self.assertEqual(r['stack_name'], self.stack.name)
+        self.assertEqual(self.stack.name, r['stack_name'])
         self.assertTrue('metadata' in r)
         self.assertTrue('resource_status' in r)
         self.assertTrue('resource_status_reason' in r)
         self.assertTrue('resource_type' in r)
         self.assertTrue('physical_resource_id' in r)
         self.assertTrue('logical_resource_id' in r)
-        self.assertEqual(r['logical_resource_id'], 'WebServer')
+        self.assertEqual('WebServer', r['logical_resource_id'])
 
         self.m.VerifyAll()
 
@@ -791,7 +939,7 @@ class stackServiceTest(HeatTestCase):
                                                       self.stack.identifier(),
                                                       'WebServer')
 
-        self.assertEqual(len(resources), 1)
+        self.assertEqual(1, len(resources))
         r = resources[0]
         self.assertTrue('resource_identity' in r)
         self.assertTrue('description' in r)
@@ -799,13 +947,13 @@ class stackServiceTest(HeatTestCase):
         self.assertTrue('stack_identity' in r)
         self.assertNotEqual(r['stack_identity'], None)
         self.assertTrue('stack_name' in r)
-        self.assertEqual(r['stack_name'], self.stack.name)
+        self.assertEqual(self.stack.name, r['stack_name'])
         self.assertTrue('resource_status' in r)
         self.assertTrue('resource_status_reason' in r)
         self.assertTrue('resource_type' in r)
         self.assertTrue('physical_resource_id' in r)
         self.assertTrue('logical_resource_id' in r)
-        self.assertEqual(r['logical_resource_id'], 'WebServer')
+        self.assertEqual('WebServer', r['logical_resource_id'])
 
         self.m.VerifyAll()
 
@@ -820,10 +968,10 @@ class stackServiceTest(HeatTestCase):
                                                       self.stack.identifier(),
                                                       None)
 
-        self.assertEqual(len(resources), 1)
+        self.assertEqual(1, len(resources))
         r = resources[0]
         self.assertTrue('logical_resource_id' in r)
-        self.assertEqual(r['logical_resource_id'], 'WebServer')
+        self.assertEqual('WebServer', r['logical_resource_id'])
 
         self.m.VerifyAll()
 
@@ -857,8 +1005,8 @@ class stackServiceTest(HeatTestCase):
         result = self.eng.find_physical_resource(self.ctx, phys_id)
         self.assertTrue(isinstance(result, dict))
         resource_identity = identifier.ResourceIdentifier(**result)
-        self.assertEqual(resource_identity.stack(), self.stack.identifier())
-        self.assertEqual(resource_identity.resource_name, 'WebServer')
+        self.assertEqual(self.stack.identifier(), resource_identity.stack())
+        self.assertEqual('WebServer', resource_identity.resource_name)
 
     def test_find_physical_resource_nonexist(self):
         self.assertRaises(exception.PhysicalResourceNotFound,
@@ -875,13 +1023,13 @@ class stackServiceTest(HeatTestCase):
         resources = self.eng.list_stack_resources(self.ctx,
                                                   self.stack.identifier())
 
-        self.assertEqual(len(resources), 1)
+        self.assertEqual(1, len(resources))
         r = resources[0]
         self.assertTrue('resource_identity' in r)
         self.assertTrue('updated_time' in r)
         self.assertTrue('physical_resource_id' in r)
         self.assertTrue('logical_resource_id' in r)
-        self.assertEqual(r['logical_resource_id'], 'WebServer')
+        self.assertEqual('WebServer', r['logical_resource_id'])
         self.assertTrue('resource_status' in r)
         self.assertTrue('resource_status_reason' in r)
         self.assertTrue('resource_type' in r)
@@ -922,7 +1070,7 @@ class stackServiceTest(HeatTestCase):
                                           'WebServer', test_metadata)
         # metadata_update is a no-op for all resources except
         # WaitConditionHandle so we don't expect this to have changed
-        self.assertEqual(result, pre_update_meta)
+        self.assertEqual(pre_update_meta, result)
 
         self.m.VerifyAll()
 
@@ -959,25 +1107,34 @@ class stackServiceTest(HeatTestCase):
         self.m.VerifyAll()
 
     @stack_context('service_show_watch_test_stack', False)
+    @utils.wr_delete_after
     def test_show_watch(self):
         # Insert two dummy watch rules into the DB
-        values = {'stack_id': self.stack.id,
-                  'state': 'NORMAL',
-                  'name': u'HttpFailureAlarm',
-                  'rule': {u'EvaluationPeriods': u'1',
-                           u'AlarmActions': [u'WebServerRestartPolicy'],
-                           u'AlarmDescription': u'Restart the WikiDatabase',
-                           u'Namespace': u'system/linux',
-                           u'Period': u'300',
-                           u'ComparisonOperator': u'GreaterThanThreshold',
-                           u'Statistic': u'SampleCount',
-                           u'Threshold': u'2',
-                           u'MetricName': u'ServiceFailure'}}
-        db_ret = db_api.watch_rule_create(self.ctx, values)
-        self.assertNotEqual(db_ret, None)
-        values['name'] = "AnotherWatch"
-        db_ret = db_api.watch_rule_create(self.ctx, values)
-        self.assertNotEqual(db_ret, None)
+        rule = {u'EvaluationPeriods': u'1',
+                u'AlarmActions': [u'WebServerRestartPolicy'],
+                u'AlarmDescription': u'Restart the WikiDatabase',
+                u'Namespace': u'system/linux',
+                u'Period': u'300',
+                u'ComparisonOperator': u'GreaterThanThreshold',
+                u'Statistic': u'SampleCount',
+                u'Threshold': u'2',
+                u'MetricName': u'ServiceFailure'}
+        self.wr = []
+        self.wr.append(watchrule.WatchRule(context=self.ctx,
+                                           watch_name='HttpFailureAlarm',
+                                           rule=rule,
+                                           watch_data=[],
+                                           stack_id=self.stack.id,
+                                           state='NORMAL'))
+        self.wr[0].store()
+
+        self.wr.append(watchrule.WatchRule(context=self.ctx,
+                                           watch_name='AnotherWatch',
+                                           rule=rule,
+                                           watch_data=[],
+                                           stack_id=self.stack.id,
+                                           state='NORMAL'))
+        self.wr[1].store()
 
         # watch_name=None should return both watches
         result = self.eng.show_watch(self.ctx, watch_name=None)
@@ -995,27 +1152,26 @@ class stackServiceTest(HeatTestCase):
         for key in engine_api.WATCH_KEYS:
             self.assertTrue(key in result[0])
 
-        # Cleanup, delete the dummy rules
-        db_api.watch_rule_delete(self.ctx, "HttpFailureAlarm")
-        db_api.watch_rule_delete(self.ctx, "AnotherWatch")
-
     @stack_context('service_show_watch_metric_test_stack', False)
+    @utils.wr_delete_after
     def test_show_watch_metric(self):
         # Insert dummy watch rule into the DB
-        values = {'stack_id': self.stack.id,
-                  'state': 'NORMAL',
-                  'name': u'HttpFailureAlarm',
-                  'rule': {u'EvaluationPeriods': u'1',
-                           u'AlarmActions': [u'WebServerRestartPolicy'],
-                           u'AlarmDescription': u'Restart the WikiDatabase',
-                           u'Namespace': u'system/linux',
-                           u'Period': u'300',
-                           u'ComparisonOperator': u'GreaterThanThreshold',
-                           u'Statistic': u'SampleCount',
-                           u'Threshold': u'2',
-                           u'MetricName': u'ServiceFailure'}}
-        db_ret = db_api.watch_rule_create(self.ctx, values)
-        self.assertNotEqual(db_ret, None)
+        rule = {u'EvaluationPeriods': u'1',
+                u'AlarmActions': [u'WebServerRestartPolicy'],
+                u'AlarmDescription': u'Restart the WikiDatabase',
+                u'Namespace': u'system/linux',
+                u'Period': u'300',
+                u'ComparisonOperator': u'GreaterThanThreshold',
+                u'Statistic': u'SampleCount',
+                u'Threshold': u'2',
+                u'MetricName': u'ServiceFailure'}
+        self.wr = watchrule.WatchRule(context=self.ctx,
+                                      watch_name='HttpFailureAlarm',
+                                      rule=rule,
+                                      watch_data=[],
+                                      stack_id=self.stack.id,
+                                      state='NORMAL')
+        self.wr.store()
 
         # And add a metric datapoint
         watch = db_api.watch_rule_get_by_name(self.ctx, "HttpFailureAlarm")
@@ -1039,30 +1195,30 @@ class stackServiceTest(HeatTestCase):
                                             metric_name=None)
         self.assertEqual(2, len(result))
 
-        # Cleanup, delete the dummy rule
-        db_api.watch_rule_delete(self.ctx, "HttpFailureAlarm")
-
         # Check the response has all keys defined in the engine API
         for key in engine_api.WATCH_DATA_KEYS:
             self.assertTrue(key in result[0])
 
     @stack_context('service_show_watch_state_test_stack')
+    @utils.wr_delete_after
     def test_set_watch_state(self):
         # Insert dummy watch rule into the DB
-        values = {'stack_id': self.stack.id,
-                  'state': 'NORMAL',
-                  'name': u'OverrideAlarm',
-                  'rule': {u'EvaluationPeriods': u'1',
-                           u'AlarmActions': [u'WebServerRestartPolicy'],
-                           u'AlarmDescription': u'Restart the WikiDatabase',
-                           u'Namespace': u'system/linux',
-                           u'Period': u'300',
-                           u'ComparisonOperator': u'GreaterThanThreshold',
-                           u'Statistic': u'SampleCount',
-                           u'Threshold': u'2',
-                           u'MetricName': u'ServiceFailure'}}
-        db_ret = db_api.watch_rule_create(self.ctx, values)
-        self.assertNotEqual(db_ret, None)
+        rule = {u'EvaluationPeriods': u'1',
+                u'AlarmActions': [u'WebServerRestartPolicy'],
+                u'AlarmDescription': u'Restart the WikiDatabase',
+                u'Namespace': u'system/linux',
+                u'Period': u'300',
+                u'ComparisonOperator': u'GreaterThanThreshold',
+                u'Statistic': u'SampleCount',
+                u'Threshold': u'2',
+                u'MetricName': u'ServiceFailure'}
+        self.wr = watchrule.WatchRule(context=self.ctx,
+                                      watch_name='OverrideAlarm',
+                                      rule=rule,
+                                      watch_data=[],
+                                      stack_id=self.stack.id,
+                                      state='NORMAL')
+        self.wr.store()
 
         class DummyAction:
             alarm = "dummyfoo"
@@ -1082,45 +1238,46 @@ class stackServiceTest(HeatTestCase):
         result = self.eng.set_watch_state(self.ctx,
                                           watch_name="OverrideAlarm",
                                           state=state)
-        self.assertEqual(result[engine_api.WATCH_STATE_VALUE], state)
-        self.assertEqual(self.eng.stg[self.stack.id].threads, [])
+        self.assertEqual(state, result[engine_api.WATCH_STATE_VALUE])
+        self.assertEqual([], self.eng.stg[self.stack.id].threads)
 
         state = watchrule.WatchRule.NORMAL
         result = self.eng.set_watch_state(self.ctx,
                                           watch_name="OverrideAlarm",
                                           state=state)
-        self.assertEqual(result[engine_api.WATCH_STATE_VALUE], state)
-        self.assertEqual(self.eng.stg[self.stack.id].threads, [])
+        self.assertEqual(state, result[engine_api.WATCH_STATE_VALUE])
+        self.assertEqual([], self.eng.stg[self.stack.id].threads)
 
         state = watchrule.WatchRule.ALARM
         result = self.eng.set_watch_state(self.ctx,
                                           watch_name="OverrideAlarm",
                                           state=state)
-        self.assertEqual(result[engine_api.WATCH_STATE_VALUE], state)
-        self.assertEqual(self.eng.stg[self.stack.id].threads,
-                         [DummyAction.alarm])
+        self.assertEqual(state, result[engine_api.WATCH_STATE_VALUE])
+        self.assertEqual([DummyAction.alarm],
+                         self.eng.stg[self.stack.id].threads)
 
         self.m.VerifyAll()
-        # Cleanup, delete the dummy rule
-        db_api.watch_rule_delete(self.ctx, "OverrideAlarm")
 
     @stack_context('service_show_watch_state_badstate_test_stack')
+    @utils.wr_delete_after
     def test_set_watch_state_badstate(self):
         # Insert dummy watch rule into the DB
-        values = {'stack_id': self.stack.id,
-                  'state': 'NORMAL',
-                  'name': u'OverrideAlarm2',
-                  'rule': {u'EvaluationPeriods': u'1',
-                           u'AlarmActions': [u'WebServerRestartPolicy'],
-                           u'AlarmDescription': u'Restart the WikiDatabase',
-                           u'Namespace': u'system/linux',
-                           u'Period': u'300',
-                           u'ComparisonOperator': u'GreaterThanThreshold',
-                           u'Statistic': u'SampleCount',
-                           u'Threshold': u'2',
-                           u'MetricName': u'ServiceFailure'}}
-        db_ret = db_api.watch_rule_create(self.ctx, values)
-        self.assertNotEqual(db_ret, None)
+        rule = {u'EvaluationPeriods': u'1',
+                u'AlarmActions': [u'WebServerRestartPolicy'],
+                u'AlarmDescription': u'Restart the WikiDatabase',
+                u'Namespace': u'system/linux',
+                u'Period': u'300',
+                u'ComparisonOperator': u'GreaterThanThreshold',
+                u'Statistic': u'SampleCount',
+                u'Threshold': u'2',
+                u'MetricName': u'ServiceFailure'}
+        self.wr = watchrule.WatchRule(context=self.ctx,
+                                      watch_name='OverrideAlarm2',
+                                      rule=rule,
+                                      watch_data=[],
+                                      stack_id=self.stack.id,
+                                      state='NORMAL')
+        self.wr.store()
 
         self.m.StubOutWithMock(watchrule.WatchRule, 'set_watch_state')
         for state in ["HGJHGJHG", "1234", "!\*(&%"]:
@@ -1135,9 +1292,6 @@ class stackServiceTest(HeatTestCase):
                               state=state)
 
         self.m.VerifyAll()
-
-        # Cleanup, delete the dummy rule
-        db_api.watch_rule_delete(self.ctx, "OverrideAlarm2")
 
     def test_set_watch_state_noexist(self):
         state = watchrule.WatchRule.ALARM   # State valid
@@ -1155,9 +1309,9 @@ class stackServiceTest(HeatTestCase):
     def test_stack_list_all_empty(self):
         sl = self.eng.list_stacks(self.ctx)
 
-        self.assertEqual(len(sl), 0)
+        self.assertEqual(0, len(sl))
 
     def test_stack_describe_all_empty(self):
         sl = self.eng.show_stack(self.ctx, None)
 
-        self.assertEqual(len(sl), 0)
+        self.assertEqual(0, len(sl))

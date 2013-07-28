@@ -13,9 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from heat.engine import clients
-from heat.common import exception
 from heat.common import template_format
+from heat.engine import clients
 from heat.engine import stack_resource
 
 from heat.openstack.common import log as logging
@@ -69,8 +68,7 @@ lb_template = r'''
             },
             "services": {
               "systemd": {
-                "crond"     : { "enabled" : "true", "ensureRunning" : "true" },
-                "haproxy"   : { "enabled": "true", "ensureRunning": "true" }
+                "crond"     : { "enabled" : "true", "ensureRunning" : "true" }
               }
             },
             "files": {
@@ -110,7 +108,7 @@ lb_template = r'''
                   "[reload]\n",
                   "triggers=post.update\n",
                   "path=Resources.LB_instance.Metadata\n",
-                  "action=systemctl reload haproxy.service\n",
+                  "action=systemctl reload-or-restart haproxy.service\n",
                   "runas=root\n"
                 ]]},
                 "mode"    : "000400",
@@ -230,9 +228,8 @@ class LoadBalancer(stack_resource.StackResource):
         'HealthCheck': {'Type': 'Map',
                         'Schema': healthcheck_schema},
         'Instances': {'Type': 'List'},
-        'Listeners': {'Type': 'List',
-                      'Schema': {'Type': 'Map',
-                                 'Schema': listeners_schema}},
+        'Listeners': {'Type': 'List', 'Required': True,
+                      'Schema': {'Type': 'Map', 'Schema': listeners_schema}},
         'AppCookieStickinessPolicy': {'Type': 'String',
                                       'Implemented': False},
         'LBCookieStickinessPolicy': {'Type': 'String',
@@ -242,6 +239,20 @@ class LoadBalancer(stack_resource.StackResource):
         'Subnets': {'Type': 'List',
                     'Implemented': False}
     }
+    attributes_schema = {
+        "CanonicalHostedZoneName": ("The name of the hosted zone that is "
+                                    "associated with the LoadBalancer."),
+        "CanonicalHostedZoneNameID": ("The ID of the hosted zone name that is "
+                                      "associated with the LoadBalancer."),
+        "DNSName": "The DNS name for the LoadBalancer.",
+        "SourceSecurityGroup.GroupName": ("The security group that you can use"
+                                          " as part of your inbound rules for "
+                                          "your LoadBalancer's back-end "
+                                          "instances."),
+        "SourceSecurityGroup.OwnerAlias": "Owner of the source security group."
+    }
+    update_allowed_keys = ('Properties',)
+    update_allowed_properties = ('Instances',)
 
     def _instance_to_ipaddress(self, inst):
         '''
@@ -253,7 +264,8 @@ class LoadBalancer(stack_resource.StackResource):
             logger.warn('Instance (%s) not found: %s' % (inst, str(ex)))
         else:
             for n in server.networks:
-                return server.networks[n][0]
+                if len(server.networks[n]) > 0:
+                    return server.networks[n][0]
 
         return '0.0.0.0'
 
@@ -328,10 +340,32 @@ class LoadBalancer(stack_resource.StackResource):
             cfg = self._haproxy_config(templ, self.properties['Instances'])
             files['/etc/haproxy/haproxy.cfg']['content'] = cfg
 
-        # total hack - probably need an admin key here.
-        param = self.stack.resolve_static_data({'KeyName': {'Ref': 'KeyName'}})
+        # If the owning stack defines KeyName, we use that key for the nested
+        # template, otherwise use no key
+        try:
+            param = {'KeyName': self.stack.parameters['KeyName']}
+        except KeyError:
+            del templ['Resources']['LB_instance']['Properties']['KeyName']
+            del templ['Parameters']['KeyName']
+            param = {}
 
-        self.create_with_template(templ, param)
+        return self.create_with_template(templ, param)
+
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
+        '''
+        re-generate the Metadata
+        save it to the db.
+        rely on the cfn-hup to reconfigure HAProxy
+        '''
+        if 'Instances' in prop_diff:
+            templ = template_format.parse(lb_template)
+            cfg = self._haproxy_config(templ, prop_diff['Instances'])
+
+            md = self.nested()['LB_instance'].metadata
+            files = md['AWS::CloudFormation::Init']['config']['files']
+            files['/etc/haproxy/haproxy.cfg']['content'] = cfg
+
+            self.nested()['LB_instance'].metadata = md
 
     def handle_delete(self):
         self.delete_nested()
@@ -350,41 +384,18 @@ class LoadBalancer(stack_resource.StackResource):
                 return {'Error':
                         'Interval must be larger than Timeout'}
 
-    def reload(self, inst_list):
-        '''
-        re-generate the Metadata
-        save it to the db.
-        rely on the cfn-hup to reconfigure HAProxy
-        '''
-        templ = template_format.parse(lb_template)
-        cfg = self._haproxy_config(templ, inst_list)
-
-        md = self.nested()['LB_instance'].metadata
-        files = md['AWS::CloudFormation::Init']['config']['files']
-        files['/etc/haproxy/haproxy.cfg']['content'] = cfg
-
-        self.nested()['LB_instance'].metadata = md
-
     def FnGetRefId(self):
         return unicode(self.name)
 
-    def FnGetAtt(self, key):
+    def _resolve_attribute(self, name):
         '''
         We don't really support any of these yet.
         '''
-        allow = ('CanonicalHostedZoneName',
-                 'CanonicalHostedZoneNameID',
-                 'DNSName',
-                 'SourceSecurityGroupName',
-                 'SourceSecurityGroupOwnerAlias')
-
-        if key not in allow:
-            raise exception.InvalidTemplateAttribute(resource=self.name,
-                                                     key=key)
-
-        if key == 'DNSName':
+        if name == 'DNSName':
             return self.get_output('PublicIp')
-        else:
+        elif name in self.attributes_schema:
+            # Not sure if we should return anything for the other attribs
+            # since they aren't really supported in any meaningful way
             return ''
 
 

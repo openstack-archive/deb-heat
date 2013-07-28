@@ -73,9 +73,10 @@ class InstanceGroup(resource.Resource):
     }
     update_allowed_keys = ('Properties',)
     update_allowed_properties = ('Size',)
-
-    def __init__(self, name, json_snippet, stack):
-        super(InstanceGroup, self).__init__(name, json_snippet, stack)
+    attributes_schema = {
+        "InstanceList": ("A comma-delimited list of server ip addresses. "
+                         "(Heat extension)")
+    }
 
     def handle_create(self):
         return self.resize(int(self.properties['Size']), raise_on_error=True)
@@ -112,31 +113,70 @@ class InstanceGroup(resource.Resource):
                     self._wait_for_activation(creator)
 
     def _make_instance(self, name):
-
-        Instance = resource.get_class('AWS::EC2::Instance')
+        # We look up and subclass the class for AWS::EC2::Instance instead of
+        # just importing Instance, so that if someone overrides that resource
+        # we'll use the custom one.
+        Instance = resource.get_class('AWS::EC2::Instance',
+                                      resource_name=name,
+                                      environment=self.stack.env)
 
         class GroupedInstance(Instance):
             '''
-            Subclass instance.Instance to supress event transitions, since the
+            Subclass Instance to suppress event transitions, since the
             scaling-group instances are not "real" resources, ie defined in the
             template, which causes problems for event handling since we can't
             look up the resources via parser.Stack
             '''
-            def state_set(self, new_state, reason="state changed"):
-                self._store_or_update(new_state, reason)
+            def state_set(self, action, status, reason="state changed"):
+                self._store_or_update(action, status, reason)
 
         conf = self.properties['LaunchConfigurationName']
         instance_definition = self.stack.t['Resources'][conf]
         return GroupedInstance(name, instance_definition, self.stack)
 
-    def handle_delete(self):
+    def _instances(self):
+        '''
+        Convert the stored instance list into a list of GroupedInstance objects
+        '''
+        gi_list = []
         if self.resource_id is not None:
             inst_list = self.resource_id.split(',')
-            logger.debug('handle_delete %s' % str(inst_list))
-            for victim in inst_list:
-                logger.debug('handle_delete %s' % victim)
-                inst = self._make_instance(victim)
-                inst.destroy()
+            for i in inst_list:
+                gi_list.append(self._make_instance(i))
+        return gi_list
+
+    def handle_delete(self):
+        for inst in self._instances():
+            logger.debug('handle_delete %s' % inst.name)
+            inst.destroy()
+
+    def handle_suspend(self):
+        cookie_list = []
+        for inst in self._instances():
+            logger.debug('handle_suspend %s' % inst.name)
+            inst_cookie = inst.handle_suspend()
+            cookie_list.append((inst, inst_cookie))
+        return cookie_list
+
+    def check_suspend_complete(self, cookie_list):
+        for inst, inst_cookie in cookie_list:
+            if not inst.check_suspend_complete(inst_cookie):
+                return False
+        return True
+
+    def handle_resume(self):
+        cookie_list = []
+        for inst in self._instances():
+            logger.debug('handle_resume %s' % inst.name)
+            inst_cookie = inst.handle_resume()
+            cookie_list.append((inst, inst_cookie))
+        return cookie_list
+
+    def check_resume_complete(self, cookie_list):
+        for inst, inst_cookie in cookie_list:
+            if not inst.check_resume_complete(inst_cookie):
+                return False
+        return True
 
     @scheduler.wrappertask
     def _scale(self, instance_task, indices):
@@ -163,8 +203,6 @@ class InstanceGroup(resource.Resource):
         def create_instance(index):
             name = '%s-%d' % (self.name, index)
             inst = self._make_instance(name)
-            inst_list.append(name)
-            self.resource_id_set(','.join(inst_list))
 
             logger.debug('Creating %s instance %d' % (str(self), index))
 
@@ -173,6 +211,15 @@ class InstanceGroup(resource.Resource):
             except exception.ResourceFailure as ex:
                 if raise_on_error:
                     raise
+                # Handle instance creation failure locally by destroying the
+                # failed instance to avoid orphaned instances costing user
+                # extra memory
+                logger.warn('Creating %s instance %d failed %s, destroying'
+                            % (str(self), index, str(ex)))
+                inst.destroy()
+            else:
+                inst_list.append(name)
+                self.resource_id_set(','.join(inst_list))
 
         if new_capacity > capacity:
             # grow
@@ -188,7 +235,8 @@ class InstanceGroup(resource.Resource):
                 inst = self._make_instance(victim)
                 inst.destroy()
                 inst_list.remove(victim)
-                self.resource_id_set(','.join(inst_list))
+                # If we shrink to zero, set resource_id back to None
+                self.resource_id_set(','.join(inst_list) or None)
 
             self._lb_reload()
 
@@ -211,19 +259,23 @@ class InstanceGroup(resource.Resource):
                 id_list.append(inst.FnGetRefId())
 
             for lb in self.properties['LoadBalancerNames']:
-                self.stack[lb].reload(id_list)
+                self.stack[lb].json_snippet['Properties']['Instances'] = \
+                    id_list
+                resolved_snippet = self.stack.resolve_static_data(
+                    self.stack[lb].json_snippet)
+                self.stack[lb].update(resolved_snippet)
 
     def FnGetRefId(self):
         return unicode(self.name)
 
-    def FnGetAtt(self, key):
+    def _resolve_attribute(self, name):
         '''
         heat extension: "InstanceList" returns comma delimited list of server
         ip addresses.
         '''
-        if key == 'InstanceList':
+        if name == 'InstanceList':
             if self.resource_id is None:
-                return ''
+                return None
             name_list = sorted(self.resource_id.split(','))
             inst_list = []
             for name in name_list:
@@ -263,10 +315,6 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
     update_allowed_keys = ('Properties',)
     update_allowed_properties = ('MaxSize', 'MinSize',
                                  'Cooldown', 'DesiredCapacity',)
-
-    def __init__(self, name, json_snippet, stack):
-        super(AutoScalingGroup, self).__init__(name, json_snippet, stack)
-        # resource_id is a list of resources
 
     def handle_create(self):
 
@@ -380,9 +428,6 @@ class LaunchConfiguration(resource.Resource):
                                           'Schema': tags_schema}},
     }
 
-    def __init__(self, name, json_snippet, stack):
-        super(LaunchConfiguration, self).__init__(name, json_snippet, stack)
-
 
 class ScalingPolicy(resource.Resource, CooldownMixin):
     properties_schema = {
@@ -401,9 +446,6 @@ class ScalingPolicy(resource.Resource, CooldownMixin):
     update_allowed_keys = ('Properties',)
     update_allowed_properties = ('ScalingAdjustment', 'AdjustmentType',
                                  'Cooldown',)
-
-    def __init__(self, name, json_snippet, stack):
-        super(ScalingPolicy, self).__init__(name, json_snippet, stack)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         # If Properties has changed, update self.properties, so we

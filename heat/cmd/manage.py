@@ -33,7 +33,7 @@ CONF = cfg.CONF
 
 def do_db_version():
     """Print database's current migration level."""
-    print migration.db_version()
+    print(migration.db_version())
 
 
 def do_db_sync():
@@ -63,8 +63,10 @@ command_opt = cfg.SubCommandOpt('command',
 def main():
     CONF.register_cli_opt(command_opt)
     try:
-        CONF(sys.argv[1:], project='heat', prog='heat-engine',
-             version=version.version_info.version_string())
+        default_config_files = cfg.find_config_files('heat', 'heat-engine')
+        CONF(sys.argv[1:], project='heat', prog='heat-manage',
+             version=version.version_info.version_string(),
+             default_config_files=default_config_files)
         log.setup("heat")
         db_api.configure()
     except RuntimeError as e:

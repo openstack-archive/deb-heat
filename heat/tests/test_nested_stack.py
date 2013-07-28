@@ -16,9 +16,13 @@
 from heat.common import context
 from heat.common import exception
 from heat.common import template_format
+from heat.common import urlfetch
+from heat.db import api as db_api
 from heat.engine import parser
 from heat.engine import resource
-from heat.common import urlfetch
+from heat.engine import scheduler
+from heat.tests import generic_resource as generic_rsrc
+from heat.tests import utils
 from heat.tests.common import HeatTestCase
 from heat.tests.utils import setup_dummy_db
 
@@ -37,6 +41,9 @@ Resources:
 
     nested_template = '''
 HeatTemplateFormatVersion: '2012-12-12'
+Parameters:
+  KeyName:
+    Type: String
 Outputs:
   Foo:
     Value: bar
@@ -50,7 +57,8 @@ Outputs:
     def create_stack(self, template):
         t = template_format.parse(template)
         stack = self.parse_stack(t)
-        self.assertEqual(None, stack.create())
+        stack.create()
+        self.assertEqual(stack.state, (stack.CREATE, stack.COMPLETE))
         return stack
 
     def parse_stack(self, t):
@@ -62,8 +70,7 @@ Outputs:
             'auth_url': 'http://localhost:5000/v2.0'})
         stack_name = 'test_stack'
         tmpl = parser.Template(t)
-        params = parser.Parameters(stack_name, tmpl, {})
-        stack = parser.Stack(ctx, stack_name, tmpl, params)
+        stack = parser.Stack(ctx, stack_name, tmpl)
         stack.store()
         return stack
 
@@ -74,8 +81,11 @@ Outputs:
 
         stack = self.create_stack(self.test_template)
         rsrc = stack['the_nested']
-        self.assertTrue(rsrc.FnGetRefId().startswith(
-            'arn:openstack:heat::aaaa:stacks/test_stack.the_nested/'))
+        nested_name = utils.PhysName(stack.name, 'the_nested')
+        self.assertEqual(nested_name, rsrc.physical_resource_name())
+        arn_prefix = ('arn:openstack:heat::aaaa:stacks/%s/' %
+                      rsrc.physical_resource_name())
+        self.assertTrue(rsrc.FnGetRefId().startswith(arn_prefix))
 
         self.assertRaises(resource.UpdateReplace,
                           rsrc.handle_update, {}, {}, {})
@@ -85,7 +95,59 @@ Outputs:
             exception.InvalidTemplateAttribute, rsrc.FnGetAtt, 'Foo')
 
         rsrc.delete()
-        self.assertTrue(rsrc.FnGetRefId().startswith(
-            'arn:openstack:heat::aaaa:stacks/test_stack.the_nested/'))
+        self.assertTrue(rsrc.FnGetRefId().startswith(arn_prefix))
 
         self.m.VerifyAll()
+
+    def test_nested_stack_suspend_resume(self):
+        urlfetch.get('https://localhost/the.template').AndReturn(
+            self.nested_template)
+        self.m.ReplayAll()
+
+        stack = self.create_stack(self.test_template)
+        rsrc = stack['the_nested']
+
+        scheduler.TaskRunner(rsrc.suspend)()
+        self.assertEqual(rsrc.state, (rsrc.SUSPEND, rsrc.COMPLETE))
+
+        scheduler.TaskRunner(rsrc.resume)()
+        self.assertEqual(rsrc.state, (rsrc.RESUME, rsrc.COMPLETE))
+
+        rsrc.delete()
+        self.m.VerifyAll()
+
+
+class ResDataResource(generic_rsrc.GenericResource):
+    def handle_create(self):
+        db_api.resource_data_set(self, "test", 'A secret value', True)
+
+
+class ResDataNestedStackTest(NestedStackTest):
+
+    nested_template = '''
+HeatTemplateFormatVersion: "2012-12-12"
+Parameters:
+  KeyName:
+    Type: String
+Resources:
+  nested_res:
+    Type: "res.data.resource"
+Outputs:
+  Foo:
+    Value: bar
+'''
+
+    def setUp(self):
+        resource._register_class("res.data.resource", ResDataResource)
+        super(ResDataNestedStackTest, self).setUp()
+
+    def test_res_data_delete(self):
+        urlfetch.get('https://localhost/the.template').AndReturn(
+            self.nested_template)
+        self.m.ReplayAll()
+        stack = self.create_stack(self.test_template)
+        res = stack['the_nested'].nested()['nested_res']
+        stack.delete()
+        self.assertEqual(stack.state, (stack.DELETE, stack.COMPLETE))
+        self.assertRaises(exception.NotFound, db_api.resource_data_get, res,
+                          'test')

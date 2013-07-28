@@ -14,11 +14,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import gettext
+from __future__ import print_function
 
 import sys
 
-gettext.install('heat', unicode=1)
+from heat.openstack.common import gettextutils
+
+gettextutils.install('heat')
 
 from oslo.config import cfg
 from heat.openstack.common import log as logging
@@ -29,9 +31,9 @@ LOG = logging.getLogger(__name__)
 
 
 if __name__ == '__main__':
-    print >>sys.stderr, '*******************************************'
-    print >>sys.stderr, 'Deprecated: use heat-manage db_sync instead'
-    print >>sys.stderr, '*******************************************'
+    print('*******************************************', file=sys.stderr)
+    print('Deprecated: use heat-manage db_sync instead', file=sys.stderr)
+    print('*******************************************', file=sys.stderr)
     cfg.CONF(project='heat', prog='heat-engine')
 
     api.configure()
@@ -39,5 +41,5 @@ if __name__ == '__main__':
     try:
         migration.db_sync()
     except Exception as exc:
-        print >>sys.stderr, str(exc)
+        print(str(exc), file=sys.stderr)
         sys.exit(1)

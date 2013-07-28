@@ -21,10 +21,11 @@ from heat.common import exception
 
 SCHEMA_KEYS = (
     REQUIRED, IMPLEMENTED, DEFAULT, TYPE, SCHEMA,
-    PATTERN, MIN_VALUE, MAX_VALUE, VALUES,
+    PATTERN, MIN_VALUE, MAX_VALUE, VALUES, MIN_LENGTH, MAX_LENGTH,
 ) = (
     'Required', 'Implemented', 'Default', 'Type', 'Schema',
     'AllowedPattern', 'MinValue', 'MaxValue', 'AllowedValues',
+    'MinLength', 'MaxLength',
 )
 
 SCHEMA_TYPES = (
@@ -78,7 +79,16 @@ class Property(object):
         except ValueError:
             return float(value)
 
+    def _validate_integer(self, value):
+        if value is None:
+            value = self.has_default() and self.default() or 0
+        if not isinstance(value, int):
+            raise TypeError('value is not an integer')
+        return self._validate_number(value)
+
     def _validate_number(self, value):
+        if value is None:
+            value = self.has_default() and self.default() or 0
         self._check_allowed(value)
 
         num = self.str_to_num(value)
@@ -92,6 +102,8 @@ class Property(object):
         return value
 
     def _validate_string(self, value):
+        if value is None:
+            value = self.has_default() and self.default() or ''
         if not isinstance(value, basestring):
             raise ValueError('Value must be a string')
 
@@ -104,9 +116,25 @@ class Property(object):
                 raise ValueError('"%s" does not match pattern "%s"' %
                                  (value, pattern))
 
+        self._validate_min_max_length(value, STRING)
         return value
 
+    def _validate_min_max_length(self, value, value_type):
+        if MIN_LENGTH in self.schema:
+            min_length = int(self.schema[MIN_LENGTH])
+            if len(value) < min_length:
+                raise ValueError('Minimum %s length is %d' %
+                                 (value_type, min_length))
+
+        if MAX_LENGTH in self.schema:
+            max_length = int(self.schema[MAX_LENGTH])
+            if len(value) > max_length:
+                raise ValueError('Maximum %s length is %d' %
+                                 (value_type, max_length))
+
     def _validate_map(self, value):
+        if value is None:
+            value = self.has_default() and self.default() or {}
         if not isinstance(value, collections.Mapping):
             raise TypeError('"%s" is not a map' % value)
 
@@ -116,9 +144,12 @@ class Property(object):
         else:
             children = value
 
+        self._validate_min_max_length(value, MAP)
         return children
 
     def _validate_list(self, value):
+        if value is None:
+            value = self.has_default() and self.default() or []
         if (not isinstance(value, collections.Sequence) or
                 isinstance(value, basestring)):
             raise TypeError('"%s" is not a list' % repr(value))
@@ -132,9 +163,12 @@ class Property(object):
         else:
             children = value
 
+        self._validate_min_max_length(value, LIST)
         return children
 
     def _validate_bool(self, value):
+        if value is None:
+            value = self.has_default() and self.default() or False
         if isinstance(value, bool):
             return value
         normalised = value.lower()
@@ -148,9 +182,7 @@ class Property(object):
         if t == STRING:
             return self._validate_string(value)
         elif t == INTEGER:
-            if not isinstance(value, int):
-                raise TypeError('value is not an integer')
-            return self._validate_number(value)
+            return self._validate_integer(value)
         elif t == NUMBER:
             return self._validate_number(value)
         elif t == MAP:

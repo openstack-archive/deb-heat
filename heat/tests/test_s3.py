@@ -13,18 +13,16 @@
 #    under the License.
 
 
-import re
-
-import mox
-
 from testtools import skipIf
 
+from heat.common import exception
 from heat.common import template_format
 from heat.openstack.common.importutils import try_import
 from heat.engine.resources import s3
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
+from heat.tests import utils
 from heat.tests.utils import setup_dummy_db
 from heat.tests.utils import parse_stack
 
@@ -66,7 +64,6 @@ class s3Test(HeatTestCase):
         self.m.StubOutWithMock(swiftclient.Connection, 'delete_container')
         self.m.StubOutWithMock(swiftclient.Connection, 'get_auth')
 
-        self.container_pattern = 'test_stack-test_resource-[0-9a-z]+'
         setup_dummy_db()
 
     def create_resource(self, t, stack, resource_name):
@@ -74,29 +71,19 @@ class s3Test(HeatTestCase):
                            t['Resources'][resource_name],
                            stack)
         scheduler.TaskRunner(rsrc.create)()
-        self.assertEqual(s3.S3Bucket.CREATE_COMPLETE, rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
 
-    def test_create_container_name(self):
-        self.m.ReplayAll()
-        t = template_format.parse(swift_template)
-        stack = parse_stack(t)
-        rsrc = s3.S3Bucket('test_resource',
-                           t['Resources']['S3Bucket'],
-                           stack)
-        self.assertTrue(re.match(self.container_pattern,
-                                 rsrc._create_container_name()))
-
     def test_attributes(self):
+        container_name = utils.PhysName('test_stack', 'test_resource')
         swiftclient.Connection.put_container(
-            mox.Regex(self.container_pattern),
+            container_name,
             {'X-Container-Write': 'test_tenant:test_username',
              'X-Container-Read': 'test_tenant:test_username'}
         ).AndReturn(None)
         swiftclient.Connection.get_auth().MultipleTimes().AndReturn(
             ('http://localhost:8080/v_2', None))
-        swiftclient.Connection.delete_container(
-            mox.Regex(self.container_pattern)).AndReturn(None)
+        swiftclient.Connection.delete_container(container_name).AndReturn(None)
 
         self.m.ReplayAll()
         t = template_format.parse(swift_template)
@@ -104,8 +91,7 @@ class s3Test(HeatTestCase):
         rsrc = self.create_resource(t, stack, 'S3Bucket')
 
         ref_id = rsrc.FnGetRefId()
-        self.assertTrue(re.match(self.container_pattern,
-                                 ref_id))
+        self.assertEqual(container_name, ref_id)
 
         self.assertEqual('localhost', rsrc.FnGetAtt('DomainName'))
         url = 'http://localhost:8080/v_2/%s' % ref_id
@@ -115,7 +101,7 @@ class s3Test(HeatTestCase):
         try:
             rsrc.FnGetAtt('Foo')
             raise Exception('Expected InvalidTemplateAttribute')
-        except s3.exception.InvalidTemplateAttribute:
+        except exception.InvalidTemplateAttribute:
             pass
 
         self.assertRaises(resource.UpdateReplace,
@@ -125,12 +111,13 @@ class s3Test(HeatTestCase):
         self.m.VerifyAll()
 
     def test_public_read(self):
+        container_name = utils.PhysName('test_stack', 'test_resource')
         swiftclient.Connection.put_container(
-            mox.Regex(self.container_pattern),
+            utils.PhysName('test_stack', 'test_resource'),
             {'X-Container-Write': 'test_tenant:test_username',
              'X-Container-Read': '.r:*'}).AndReturn(None)
         swiftclient.Connection.delete_container(
-            mox.Regex(self.container_pattern)).AndReturn(None)
+            container_name).AndReturn(None)
 
         self.m.ReplayAll()
         t = template_format.parse(swift_template)
@@ -142,12 +129,13 @@ class s3Test(HeatTestCase):
         self.m.VerifyAll()
 
     def test_public_read_write(self):
+        container_name = utils.PhysName('test_stack', 'test_resource')
         swiftclient.Connection.put_container(
-            mox.Regex(self.container_pattern),
+            container_name,
             {'X-Container-Write': '.r:*',
              'X-Container-Read': '.r:*'}).AndReturn(None)
         swiftclient.Connection.delete_container(
-            mox.Regex(self.container_pattern)).AndReturn(None)
+            container_name).AndReturn(None)
 
         self.m.ReplayAll()
         t = template_format.parse(swift_template)
@@ -159,12 +147,12 @@ class s3Test(HeatTestCase):
         self.m.VerifyAll()
 
     def test_authenticated_read(self):
+        container_name = utils.PhysName('test_stack', 'test_resource')
         swiftclient.Connection.put_container(
-            mox.Regex(self.container_pattern),
+            container_name,
             {'X-Container-Write': 'test_tenant:test_username',
              'X-Container-Read': 'test_tenant'}).AndReturn(None)
-        swiftclient.Connection.delete_container(
-            mox.Regex(self.container_pattern)).AndReturn(None)
+        swiftclient.Connection.delete_container(container_name).AndReturn(None)
 
         self.m.ReplayAll()
         t = template_format.parse(swift_template)
@@ -176,15 +164,14 @@ class s3Test(HeatTestCase):
         self.m.VerifyAll()
 
     def test_website(self):
-
+        container_name = utils.PhysName('test_stack', 'test_resource')
         swiftclient.Connection.put_container(
-            mox.Regex(self.container_pattern),
+            container_name,
             {'X-Container-Meta-Web-Error': 'error.html',
              'X-Container-Meta-Web-Index': 'index.html',
              'X-Container-Write': 'test_tenant:test_username',
              'X-Container-Read': '.r:*'}).AndReturn(None)
-        swiftclient.Connection.delete_container(
-            mox.Regex(self.container_pattern)).AndReturn(None)
+        swiftclient.Connection.delete_container(container_name).AndReturn(None)
 
         self.m.ReplayAll()
         t = template_format.parse(swift_template)
@@ -194,14 +181,13 @@ class s3Test(HeatTestCase):
         self.m.VerifyAll()
 
     def test_delete_exception(self):
-
+        container_name = utils.PhysName('test_stack', 'test_resource')
         swiftclient.Connection.put_container(
-            mox.Regex(self.container_pattern),
+            container_name,
             {'X-Container-Write': 'test_tenant:test_username',
              'X-Container-Read': 'test_tenant:test_username'}).AndReturn(None)
-        swiftclient.Connection.delete_container(
-            mox.Regex(self.container_pattern)).AndRaise(
-                swiftclient.ClientException('Test delete failure'))
+        swiftclient.Connection.delete_container(container_name).AndRaise(
+            swiftclient.ClientException('Test delete failure'))
 
         self.m.ReplayAll()
         t = template_format.parse(swift_template)
@@ -215,12 +201,9 @@ class s3Test(HeatTestCase):
 
         # first run, with retain policy
         swiftclient.Connection.put_container(
-            mox.Regex(self.container_pattern),
+            utils.PhysName('test_stack', 'test_resource'),
             {'X-Container-Write': 'test_tenant:test_username',
              'X-Container-Read': 'test_tenant:test_username'}).AndReturn(None)
-        # This should not be called
-        swiftclient.Connection.delete_container(
-            mox.Regex(self.container_pattern)).AndReturn(None)
 
         self.m.ReplayAll()
         t = template_format.parse(swift_template)
@@ -229,13 +212,7 @@ class s3Test(HeatTestCase):
         bucket['DeletionPolicy'] = 'Retain'
         stack = parse_stack(t)
         rsrc = self.create_resource(t, stack, 'S3Bucket')
-        # if delete_container is called, mox verify will succeed
         rsrc.delete()
-        self.assertEqual(rsrc.DELETE_COMPLETE, rsrc.state)
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
 
-        try:
-            self.m.VerifyAll()
-        except mox.ExpectedMethodCallsError:
-            return
-
-        raise Exception('delete_container was called despite Retain policy')
+        self.m.VerifyAll()

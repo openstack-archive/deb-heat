@@ -17,7 +17,6 @@ from urlparse import urlparse
 
 from heat.common import exception
 from heat.engine import resource
-from heat.common import short_id
 from heat.openstack.common import log as logging
 from heat.engine import clients
 
@@ -31,9 +30,6 @@ class SwiftContainer(resource.Resource):
         'X-Container-Write': {'Type': 'String'},
         'X-Container-Meta': {'Type': 'Map', 'Default': {}}}
 
-    def __init__(self, name, json_snippet, stack):
-        super(SwiftContainer, self).__init__(name, json_snippet, stack)
-
     def validate(self):
         '''
         Validate any of the provided params
@@ -43,10 +39,12 @@ class SwiftContainer(resource.Resource):
             return {'Error':
                     'SwiftContainer unavailable due to missing swiftclient.'}
 
-    def _create_container_name(self, name=None):
-        return name or '%s-%s-%s' % (self.stack.name,
-                                     self.name,
-                                     short_id.generate_id())
+    def physical_resource_name(self):
+        name = self.properties.get('name')
+        if name:
+            return name
+
+        return super(SwiftContainer, self).physical_resource_name()
 
     @staticmethod
     def _build_meta_headers(meta_props):
@@ -61,7 +59,7 @@ class SwiftContainer(resource.Resource):
 
     def handle_create(self):
         """Create a container."""
-        container = self._create_container_name(self.properties.get('name'))
+        container = self.physical_resource_name()
         headers = SwiftContainer._build_meta_headers(
             self.properties['X-Container-Meta'])
         if 'X-Container-Read' in self.properties.keys():

@@ -21,8 +21,13 @@ import functools
 import urlparse
 import sys
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import exception
 
-from heat.openstack.common.exception import *
+
+OpenstackException = exception.OpenstackException
+NotFound = exception.NotFound
+Error = exception.Error
+InvalidContentType = exception.InvalidContentType
 
 
 class RedirectException(Exception):
@@ -191,6 +196,10 @@ class UserParameterMissing(OpenstackException):
     message = _("The Parameter (%(key)s) was not provided.")
 
 
+class UnknownUserParameter(OpenstackException):
+    message = _("The Parameter (%(key)s) was not defined in template.")
+
+
 class InvalidTemplateAttribute(OpenstackException):
     message = _("The Referenced Attribute (%(resource)s %(key)s)"
                 " is incorrect.")
@@ -211,6 +220,10 @@ class FlavorMissing(OpenstackException):
 
 class ImageNotFound(OpenstackException):
     message = _("The Image (%(image_name)s) could not be found.")
+
+
+class NoUniqueImageFound(OpenstackException):
+    message = _("Multiple images were found with name (%(image_name)s).")
 
 
 class InvalidTenant(OpenstackException):

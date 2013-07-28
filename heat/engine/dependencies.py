@@ -18,6 +18,8 @@ import itertools
 
 from heat.common import exception
 
+from heat.openstack.common.gettextutils import _
+
 
 class CircularDependencyException(exception.OpenstackException):
     message = _("Circular Dependency Found: %(cycle)s")
@@ -167,6 +169,15 @@ class Dependencies(object):
             self._graph[requirer].requires(required)
 
         return self
+
+    def required_by(self, last):
+        '''
+        List the keys that require the specified node.
+        '''
+        if last not in self._graph:
+            raise KeyError
+
+        return self._graph[last].required_by()
 
     def __getitem__(self, last):
         '''

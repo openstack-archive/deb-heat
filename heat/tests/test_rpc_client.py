@@ -92,6 +92,7 @@ class EngineRpcAPITestCase(testtools.TestCase):
         self._test_engine_api('create_stack', 'call', stack_name='wordpress',
                               template={u'Foo': u'bar'},
                               params={u'InstanceType': u'm1.xlarge'},
+                              files={u'a_file': u'the contents'},
                               args={'timeout_mins': u'30'})
 
     def test_update_stack(self):
@@ -99,6 +100,7 @@ class EngineRpcAPITestCase(testtools.TestCase):
                               stack_identity=self.identity,
                               template={u'Foo': u'bar'},
                               params={u'InstanceType': u'm1.xlarge'},
+                              files={},
                               args={})
 
     def test_validate_template(self):
@@ -137,6 +139,14 @@ class EngineRpcAPITestCase(testtools.TestCase):
 
     def test_list_stack_resources(self):
         self._test_engine_api('list_stack_resources', 'call',
+                              stack_identity=self.identity)
+
+    def test_stack_suspend(self):
+        self._test_engine_api('stack_suspend', 'call',
+                              stack_identity=self.identity)
+
+    def test_stack_resume(self):
+        self._test_engine_api('stack_resume', 'call',
                               stack_identity=self.identity)
 
     def test_metadata_update(self):

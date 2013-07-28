@@ -55,7 +55,7 @@ class Volume(resource.Resource):
             if volume_backups is None:
                 raise exception.Error(
                     '%s not supported' % self._restore_property)
-            vol_id = cinder.restores.restore(backup_id)['volume_id']
+            vol_id = cinder.restores.restore(backup_id).volume_id
 
             vol = cinder.volumes.get(vol_id)
             vol.update(
@@ -76,6 +76,8 @@ class Volume(resource.Resource):
         if vol.status == 'available':
             return True
         elif vol.status == 'creating':
+            return False
+        elif vol.status == 'restoring-backup':
             return False
         else:
             raise exception.Error(vol.status)
@@ -107,8 +109,8 @@ class Volume(resource.Resource):
 
     if volume_backups is not None:
         def handle_snapshot_delete(self, state):
-            backup = state not in (self.CREATE_FAILED,
-                                   self.UPDATE_FAILED)
+            backup = state not in ((self.CREATE, self.FAILED),
+                                   (self.UPDATE, self.FAILED))
             return self._delete(backup=backup)
 
     def handle_delete(self):
@@ -166,7 +168,7 @@ class VolumeAttachTask(object):
 
 
 class VolumeDetachTask(object):
-    """A task for attaching a volume to a Nova server."""
+    """A task for detaching a volume from a Nova server."""
 
     def __init__(self, stack, server_id, volume_id):
         """
@@ -194,7 +196,7 @@ class VolumeDetachTask(object):
 
         try:
             vol = self.clients.cinder().volumes.get(self.volume_id)
-        except clients.cinder_exceptions.NotFound:
+        except clients.cinderclient.exceptions.NotFound:
             logger.warning('%s - volume not found' % str(self))
             return
 

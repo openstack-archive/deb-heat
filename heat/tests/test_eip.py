@@ -13,6 +13,7 @@
 #    under the License.
 
 
+from heat.common import exception
 from heat.common import template_format
 from heat.engine.resources import eip
 from heat.engine import resource
@@ -24,6 +25,25 @@ from heat.tests.utils import parse_stack
 
 
 eip_template = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "EIP Test",
+  "Parameters" : {},
+  "Resources" : {
+    "IPAddress" : {
+      "Type" : "AWS::EC2::EIP",
+      "Properties" : {
+        "InstanceId" : { "Ref" : "WebServer" }
+      }
+    },
+    "WebServer": {
+      "Type": "AWS::EC2::Instance",
+    }
+  }
+}
+'''
+
+eip_template_ipassoc = '''
 {
   "AWSTemplateFormatVersion" : "2010-09-09",
   "Description" : "EIP Test",
@@ -62,7 +82,7 @@ class EIPTest(HeatTestCase):
                              stack)
         self.assertEqual(None, rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
-        self.assertEqual(eip.ElasticIp.CREATE_COMPLETE, rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
 
     def create_association(self, t, stack, resource_name):
@@ -71,13 +91,14 @@ class EIPTest(HeatTestCase):
                                         stack)
         self.assertEqual(None, rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
-        self.assertEqual(eip.ElasticIpAssociation.CREATE_COMPLETE,
-                         rsrc.state)
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
 
     def test_eip(self):
 
         eip.ElasticIp.nova().MultipleTimes().AndReturn(self.fc)
+        self.fc.servers.get('WebServer').AndReturn(self.fc.servers.list()[0])
+        self.fc.servers.get('WebServer')
 
         self.m.ReplayAll()
 
@@ -96,7 +117,7 @@ class EIPTest(HeatTestCase):
             self.assertRaises(resource.UpdateReplace,
                               rsrc.handle_update, {}, {}, {})
 
-            self.assertRaises(eip.exception.InvalidTemplateAttribute,
+            self.assertRaises(exception.InvalidTemplateAttribute,
                               rsrc.FnGetAtt, 'Foo')
 
         finally:
@@ -114,7 +135,7 @@ class EIPTest(HeatTestCase):
 
         self.m.ReplayAll()
 
-        t = template_format.parse(eip_template)
+        t = template_format.parse(eip_template_ipassoc)
         stack = parse_stack(t)
 
         rsrc = self.create_eip(t, stack, 'IPAddress')
