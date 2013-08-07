@@ -1,3 +1,10 @@
+heat (2013.1.2-4) UNRELEASED; urgency=low
+
+  * Added patch so that Heat can work with SQLAlchemy 0.8. Thanks to Zhang Lei
+    for working on that (Closes: #718157, #717225).
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 07 Aug 2013 22:41:20 +0200
+
 heat (2013.1.2-3) unstable; urgency=low
 
   * Modified templates accoding to the review from the debian-l10n-english. A

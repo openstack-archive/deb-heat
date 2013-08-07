@@ -1,0 +1,79 @@
+Description: Handle heat with SQLAlchemy >= 0.8
+ Lots of unit tests failed with the new SQLAlchemy(0.8.2) which makes build
+ failed, this patch will fix all the related bug like no MutableType and
+ changed module name in SQLAlchemy(0.8.2)
+Author: Zhang Lei (Sneeze) <sneezezhang@cienet.com.cn>
+Bug-Debian: http://bugs.debian.org/717225
+Bug-Debian: http://bugs.debian.org/718157
+Origin: upstream, https://review.openstack.org/#/c/40330/
+Bug-Ubuntu: https://launchpad.net/bugs/1199435
+Last-Update: 2013-08-07
+
+--- heat-2013.1.2.orig/heat/db/sqlalchemy/models.py
++++ heat-2013.1.2/heat/db/sqlalchemy/models.py
+@@ -19,6 +19,7 @@ from sqlalchemy import *
+ from sqlalchemy.orm import relationship, backref, object_mapper
+ from sqlalchemy.exc import IntegrityError
+ from sqlalchemy.ext.declarative import declarative_base
++from sqlalchemy.ext.mutable import Mutable
+ from sqlalchemy import types as types
+ from json import dumps, loads
+ from heat.openstack.common import uuidutils
+@@ -29,7 +30,7 @@ from sqlalchemy.orm.session import Sessi
+ BASE = declarative_base()
+ 
+ 
+-class Json(types.TypeDecorator, types.MutableType):
++class Json(types.TypeDecorator):
+     impl = types.Text
+ 
+     def process_bind_param(self, value, dialect):
+@@ -39,6 +40,48 @@ class Json(types.TypeDecorator, types.Mu
+         return loads(value)
+ 
+ 
++#This class already in sqlalchemy 0.8 but not in 0.7
++#Add it here for integration
++class MutableDict(Mutable, dict):
++    """A dictionary type that implements :class:`.Mutable`.
++
++    .. versionadded in sqlalchemy:: 0.8
++
++    """
++
++    def __setitem__(self, key, value):
++        """Detect dictionary set events and emit change events."""
++        dict.__setitem__(self, key, value)
++        self.changed()
++
++    def __delitem__(self, key):
++        """Detect dictionary del events and emit change events."""
++        dict.__delitem__(self, key)
++        self.changed()
++
++    def clear(self):
++        dict.clear(self)
++        self.changed()
++
++    @classmethod
++    def coerce(cls, key, value):
++        """Convert plain dictionary to MutableDict."""
++        if not isinstance(value, MutableDict):
++            if isinstance(value, dict):
++                return MutableDict(value)
++            return Mutable.coerce(key, value)
++        else:
++            return value
++
++    def __getstate__(self):
++        return dict(self)
++
++    def __setstate__(self, state):
++        self.update(state)
++
++MutableDict.associate_with(Json)
++
++
+ class HeatBase(object):
+     """Base class for Heat Models."""
+     __table_args__ = {'mysql_engine': 'InnoDB'}
