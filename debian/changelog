@@ -1,3 +1,9 @@
+heat (2013.1.3-1) unstable; urgency=low
+
+  * New upstream point release.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 30 Aug 2013 13:04:59 +0800
+
 heat (2013.1.2-4) unstable; urgency=low
 
   * Added patch so that Heat can work with SQLAlchemy 0.8. Thanks to Zhang Lei
