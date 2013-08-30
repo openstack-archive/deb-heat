@@ -77,6 +77,10 @@ class ParserTest(unittest.TestCase):
         raw = {'Fn::Join': [' ', ['foo', 'bar', 'baz']]}
         self.assertEqual(join(raw), 'foo bar baz')
 
+    def test_join_none(self):
+        raw = {'Fn::Join': [' ', ['foo', None, 'baz']]}
+        self.assertEqual(join(raw), 'foo  baz')
+
     def test_join_list(self):
         raw = [{'Fn::Join': [' ', ['foo', 'bar', 'baz']]}, 'blarg', 'wibble']
         parsed = join(raw)
@@ -1124,3 +1128,41 @@ class StackTest(unittest.TestCase):
                           parser.Template({}))
         self.assertRaises(ValueError, parser.Stack, None, '#test',
                           parser.Template({}))
+
+    @stack_delete_after
+    def test_resource_state_get_att(self):
+        tmpl = {
+            'Resources': {'AResource': {'Type': 'GenericResourceType'}},
+            'Outputs': {'TestOutput': {'Value': {
+                'Fn::GetAtt': ['AResource', 'Foo']}}
+            }
+        }
+
+        self.stack = parser.Stack(self.ctx, 'resource_state_get_att',
+                                  template.Template(tmpl))
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual(self.stack.state, parser.Stack.CREATE_COMPLETE)
+        self.assertTrue('AResource' in self.stack)
+        rsrc = self.stack['AResource']
+        rsrc.resource_id_set('aaaa')
+        self.assertEqual('AResource', rsrc.FnGetAtt('foo'))
+
+        for state in (
+                rsrc.CREATE_IN_PROGRESS,
+                rsrc.CREATE_COMPLETE,
+                rsrc.UPDATE_IN_PROGRESS,
+                rsrc.UPDATE_COMPLETE):
+            rsrc.state = state
+            self.assertEqual('AResource', self.stack.output('TestOutput'))
+        for state in (
+                rsrc.CREATE_FAILED,
+                rsrc.DELETE_IN_PROGRESS,
+                rsrc.DELETE_FAILED,
+                rsrc.DELETE_COMPLETE,
+                rsrc.UPDATE_FAILED,
+                None):
+            rsrc.state = state
+            self.assertEqual(None, self.stack.output('TestOutput'))
+
+        rsrc.state = rsrc.CREATE_COMPLETE
