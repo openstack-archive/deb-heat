@@ -1,6 +1,10 @@
 heat (2013.1.3-1) unstable; urgency=low
 
   * New upstream point release.
+  * Added some Debconf templates translations:
+    - Danish, thanks to Joe Dalton (Closes: #720039).
+    - Japanese, thanks to victory (Closes: #720594).
+    - Czech, thanks to Michal Šimůnek (Closes: #721141).
 
  -- Thomas Goirand <zigo@debian.org>  Fri, 30 Aug 2013 13:04:59 +0800
 
