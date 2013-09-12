@@ -34,7 +34,6 @@ from heat.db import api as db_api
 from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
 
-from heat.common.exception import ServerError
 from heat.common.exception import StackValidationFailed
 
 logger = logging.getLogger(__name__)
@@ -51,28 +50,34 @@ class Stack(object):
     STATUSES = (IN_PROGRESS, FAILED, COMPLETE
                 ) = ('IN_PROGRESS', 'FAILED', 'COMPLETE')
 
-    created_time = timestamp.Timestamp(db_api.stack_get, 'created_at')
-    updated_time = timestamp.Timestamp(db_api.stack_get, 'updated_at')
+    created_time = timestamp.Timestamp(functools.partial(db_api.stack_get,
+                                                         show_deleted=True),
+                                       'created_at')
+    updated_time = timestamp.Timestamp(functools.partial(db_api.stack_get,
+                                                         show_deleted=True),
+                                       'updated_at')
 
     _zones = None
 
     def __init__(self, context, stack_name, tmpl, env=None,
                  stack_id=None, action=None, status=None,
                  status_reason='', timeout_mins=60, resolve_data=True,
-                 disable_rollback=True, parent_resource=None):
+                 disable_rollback=True, parent_resource=None, owner_id=None):
         '''
         Initialise from a context, name, Template object and (optionally)
         Environment object. The database ID may also be initialised, if the
         stack is already in the database.
         '''
 
-        if re.match("[a-zA-Z][a-zA-Z0-9_.-]*$", stack_name) is None:
-            raise ValueError(_('Invalid stack name %s'
-                               ' must contain only alphanumeric or '
-                               '\"_-.\" characters, must start with alpha'
-                               ) % stack_name)
+        if owner_id is None:
+            if re.match("[a-zA-Z][a-zA-Z0-9_.-]*$", stack_name) is None:
+                raise ValueError(_('Invalid stack name %s'
+                                   ' must contain only alphanumeric or '
+                                   '\"_-.\" characters, must start with alpha'
+                                   ) % stack_name)
 
         self.id = stack_id
+        self.owner_id = owner_id
         self.context = context
         self.clients = Clients(context)
         self.t = tmpl
@@ -129,10 +134,11 @@ class Stack(object):
 
     @classmethod
     def load(cls, context, stack_id=None, stack=None, resolve_data=True,
-             parent_resource=None):
+             parent_resource=None, show_deleted=True):
         '''Retrieve a Stack from the database.'''
         if stack is None:
-            stack = db_api.stack_get(context, stack_id)
+            stack = db_api.stack_get(context, stack_id,
+                                     show_deleted=show_deleted)
         if stack is None:
             message = 'No stack exists with id "%s"' % str(stack_id)
             raise exception.NotFound(message)
@@ -142,23 +148,21 @@ class Stack(object):
         stack = cls(context, stack.name, template, env,
                     stack.id, stack.action, stack.status, stack.status_reason,
                     stack.timeout, resolve_data, stack.disable_rollback,
-                    parent_resource)
+                    parent_resource, owner_id=stack.owner_id)
 
         return stack
 
-    def store(self, owner=None):
+    def store(self, backup=False):
         '''
         Store the stack in the database and return its ID
         If self.id is set, we update the existing stack
         '''
-        new_creds = db_api.user_creds_create(self.context)
 
         s = {
-            'name': self.name,
+            'name': self._backup_name() if backup else self.name,
             'raw_template_id': self.t.store(self.context),
             'parameters': self.env.user_env_as_dict(),
-            'owner_id': owner and owner.id,
-            'user_creds_id': new_creds.id,
+            'owner_id': self.owner_id,
             'username': self.context.username,
             'tenant': self.context.tenant_id,
             'action': self.action,
@@ -170,12 +174,17 @@ class Stack(object):
         if self.id:
             db_api.stack_update(self.context, self.id, s)
         else:
+            new_creds = db_api.user_creds_create(self.context)
+            s['user_creds_id'] = new_creds.id
             new_s = db_api.stack_create(self.context, s)
             self.id = new_s.id
 
         self._set_param_stackid()
 
         return self.id
+
+    def _backup_name(self):
+        return '%s*' % self.name
 
     def identifier(self):
         '''
@@ -253,7 +262,7 @@ class Stack(object):
         for res in self:
             try:
                 result = res.validate()
-            except ServerError as ex:
+            except exception.Error as ex:
                 logger.exception(ex)
                 raise ex
             except Exception as ex:
@@ -328,13 +337,9 @@ class Stack(object):
         def resource_action(r):
             # Find e.g resource.create and call it
             action_l = action.lower()
-            handle = getattr(r, '%s' % action_l, None)
-            if callable(handle):
-                return handle()
-            else:
-                raise exception.ResourceFailure(
-                    AttributeError(_('Resource action %s not found') %
-                                   action_l))
+            handle = getattr(r, '%s' % action_l)
+
+            return handle()
 
         action_task = scheduler.DependencyTaskGroup(self.dependencies,
                                                     resource_action,
@@ -354,7 +359,26 @@ class Stack(object):
         if callable(post_func):
             post_func()
 
-    def update(self, newstack, action=UPDATE):
+    def _backup_stack(self, create_if_missing=True):
+        '''
+        Get a Stack containing any in-progress resources from the previous
+        stack state prior to an update.
+        '''
+        s = db_api.stack_get_by_name(self.context, self._backup_name(),
+                                     owner_id=self.id)
+        if s is not None:
+            logger.debug('Loaded existing backup stack')
+            return self.load(self.context, stack=s)
+        elif create_if_missing:
+            prev = type(self)(self.context, self.name, self.t, self.env,
+                              owner_id=self.id)
+            prev.store(backup=True)
+            logger.debug('Created new backup stack')
+            return prev
+        else:
+            return None
+
+    def update(self, newstack):
         '''
         Compare the current stack with newstack,
         and where necessary create/update/delete the resources until
@@ -366,6 +390,11 @@ class Stack(object):
         Update will fail if it exceeds the specified timeout. The default is
         60 minutes, set in the constructor
         '''
+        updater = scheduler.TaskRunner(self.update_task, newstack)
+        updater()
+
+    @scheduler.wrappertask
+    def update_task(self, newstack, action=UPDATE):
         if action not in (self.UPDATE, self.ROLLBACK):
             logger.error("Unexpected action %s passed to update!" % action)
             self.state_set(self.UPDATE, self.FAILED,
@@ -381,18 +410,25 @@ class Stack(object):
                                'State invalid for %s' % action)
                 return
 
-        current_env = self.env
-        self.env = newstack.env
-        self.parameters = newstack.parameters
-
         self.state_set(self.UPDATE, self.IN_PROGRESS,
                        'Stack %s started' % action)
 
+        oldstack = Stack(self.context, self.name, self.t, self.env)
+        backup_stack = self._backup_stack()
+
         try:
-            update_task = update.StackUpdate(self, newstack)
+            update_task = update.StackUpdate(self, newstack, backup_stack,
+                                             rollback=action == self.ROLLBACK)
             updater = scheduler.TaskRunner(update_task)
+
+            self.env = newstack.env
+            self.parameters = newstack.parameters
+
             try:
-                updater(timeout=self.timeout_secs())
+                updater.start(timeout=self.timeout_secs())
+                yield
+                while not updater.step():
+                    yield
             finally:
                 cur_deps = self._get_dependencies(self.resources.itervalues())
                 self.dependencies = cur_deps
@@ -414,10 +450,11 @@ class Stack(object):
                 # If rollback is enabled, we do another update, with the
                 # existing template, so we roll back to the original state
                 if not self.disable_rollback:
-                    oldstack = Stack(self.context, self.name, self.t,
-                                     current_env)
-                    self.update(oldstack, action=self.ROLLBACK)
+                    yield self.update_task(oldstack, action=self.ROLLBACK)
                     return
+        else:
+            logger.debug('Deleting backup stack')
+            backup_stack.delete()
 
         self.state_set(action, stack_status, reason)
 
@@ -444,22 +481,34 @@ class Stack(object):
                            "Invalid action %s" % action)
             return
 
+        stack_status = self.COMPLETE
+        reason = 'Stack %s completed successfully' % action.lower()
         self.state_set(action, self.IN_PROGRESS, 'Stack %s started' % action)
 
-        failures = []
-        for res in reversed(self):
-            try:
-                res.destroy()
-            except exception.ResourceFailure as ex:
-                logger.error('Failed to delete %s error: %s' % (str(res),
-                                                                str(ex)))
-                failures.append(str(res))
+        backup_stack = self._backup_stack(False)
+        if backup_stack is not None:
+            backup_stack.delete()
+            if backup_stack.status != backup_stack.COMPLETE:
+                errs = backup_stack.status_reason
+                failure = 'Error deleting backup resources: %s' % errs
+                self.state_set(action, self.FAILED,
+                               'Failed to %s : %s' % (action, failure))
+                return
 
-        if failures:
-            self.state_set(action, self.FAILED,
-                           'Failed to %s : %s' % (action, ', '.join(failures)))
-        else:
-            self.state_set(action, self.COMPLETE, '%s completed' % action)
+        action_task = scheduler.DependencyTaskGroup(self.dependencies,
+                                                    resource.Resource.destroy,
+                                                    reverse=True)
+        try:
+            scheduler.TaskRunner(action_task)(timeout=self.timeout_secs())
+        except exception.ResourceFailure as ex:
+            stack_status = self.FAILED
+            reason = 'Resource %s failed: %s' % (action.lower(), str(ex))
+        except scheduler.Timeout:
+            stack_status = self.FAILED
+            reason = '%s timed out' % action.title()
+
+        self.state_set(action, stack_status, reason)
+        if stack_status != self.FAILED:
             db_api.stack_delete(self.context, self.id)
             self.id = None
 
@@ -508,7 +557,7 @@ class Stack(object):
 
         for res in reversed(deps):
             try:
-                res.destroy()
+                scheduler.TaskRunner(res.destroy)()
             except exception.ResourceFailure as ex:
                 failed = True
                 logger.error('delete: %s' % str(ex))
@@ -516,6 +565,7 @@ class Stack(object):
         for res in deps:
             if not failed:
                 try:
+                    res.state_reset()
                     scheduler.TaskRunner(res.create)()
                 except exception.ResourceFailure as ex:
                     logger.exception('create')
@@ -571,6 +621,7 @@ def resolve_runtime_data(template, resources, snippet):
                       functools.partial(template.resolve_attributes,
                                         resources=resources),
                       template.resolve_split,
+                      template.resolve_member_list_to_map,
                       template.resolve_select,
                       template.resolve_joins,
                       template.resolve_replace,

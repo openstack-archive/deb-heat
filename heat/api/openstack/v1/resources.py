@@ -20,7 +20,6 @@ from heat.common import wsgi
 from heat.rpc import api as engine_api
 from heat.common import identifier
 from heat.rpc import client as rpc_client
-import heat.openstack.common.rpc.common as rpc_common
 
 
 def format_resource(req, res, keys=[]):
@@ -45,6 +44,10 @@ def format_resource(req, res, keys=[]):
             # and RES_STATUS, so the API format doesn't expose the
             # internal split of state into action/status
             yield (key, '_'.join((res[engine_api.RES_ACTION], value)))
+        elif (key == engine_api.RES_NAME):
+            yield ('logical_resource_id', value)
+            yield (key, value)
+
         else:
             yield (key, value)
 
@@ -68,11 +71,8 @@ class ResourceController(object):
         Lists summary information for all resources
         """
 
-        try:
-            res_list = self.engine.list_stack_resources(req.context,
-                                                        identity)
-        except rpc_common.RemoteError as ex:
-            return util.remote_error(ex)
+        res_list = self.engine.list_stack_resources(req.context,
+                                                    identity)
 
         return {'resources': [format_resource(req, res) for res in res_list]}
 
@@ -82,12 +82,9 @@ class ResourceController(object):
         Gets detailed information for a stack
         """
 
-        try:
-            res = self.engine.describe_stack_resource(req.context,
-                                                      identity,
-                                                      resource_name)
-        except rpc_common.RemoteError as ex:
-            return util.remote_error(ex)
+        res = self.engine.describe_stack_resource(req.context,
+                                                  identity,
+                                                  resource_name)
 
         return {'resource': format_resource(req, res)}
 
@@ -97,12 +94,9 @@ class ResourceController(object):
         Gets detailed information for a stack
         """
 
-        try:
-            res = self.engine.describe_stack_resource(req.context,
-                                                      identity,
-                                                      resource_name)
-        except rpc_common.RemoteError as ex:
-            return util.remote_error(ex)
+        res = self.engine.describe_stack_resource(req.context,
+                                                  identity,
+                                                  resource_name)
 
         return {engine_api.RES_METADATA: res[engine_api.RES_METADATA]}
 

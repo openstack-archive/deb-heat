@@ -17,16 +17,16 @@ import os
 
 from oslo.config import cfg
 
-from heat.common import context
+from heat.common import exception as heat_exception
 from heat.common import identifier
 from heat.common import policy
 from heat.openstack.common import rpc
-import heat.openstack.common.rpc.common as rpc_common
 from heat.common.wsgi import Request
 from heat.rpc import api as rpc_api
 from heat.api.aws import exception
 import heat.api.cfn.v1.stacks as stacks
 from heat.tests.common import HeatTestCase
+from heat.tests import utils
 
 policy_path = os.path.dirname(os.path.realpath(__file__)) + "/policy/"
 
@@ -36,21 +36,13 @@ class CfnStackControllerTest(HeatTestCase):
     Tests the API class which acts as the WSGI controller,
     the endpoint processing API requests after they are routed
     '''
-    # Utility functions
-    def _create_context(self, user='api_test_user'):
-        ctx = context.get_admin_context()
-        self.m.StubOutWithMock(ctx, 'username')
-        ctx.username = user
-        self.m.StubOutWithMock(ctx, 'tenant_id')
-        ctx.tenant_id = 't'
-        return ctx
 
     def _dummy_GET_request(self, params={}):
         # Mangle the params dict into a query string
         qs = "&".join(["=".join([k, str(params[k])]) for k in params])
         environ = {'REQUEST_METHOD': 'GET', 'QUERY_STRING': qs}
         req = Request(environ)
-        req.context = self._create_context()
+        req.context = utils.dummy_context()
         return req
 
     # The tests
@@ -160,7 +152,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'list_stacks',
                   'args': {},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 None).AndRaise(AttributeError())
 
         self.m.ReplayAll()
 
@@ -182,7 +174,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'list_stacks',
                   'args': {},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("Exception"))
+                 None).AndRaise(Exception())
 
         self.m.ReplayAll()
 
@@ -380,7 +372,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'show_stack',
                   'args': {'stack_identity': identity},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("InvalidTenant"))
+                 None).AndRaise(heat_exception.InvalidTenant())
 
         self.m.ReplayAll()
 
@@ -408,7 +400,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'show_stack',
                   'args': {'stack_identity': identity},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 ).AndRaise(AttributeError())
 
         self.m.ReplayAll()
 
@@ -430,7 +422,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("StackNotFound"))
+                 ).AndRaise(heat_exception.StackNotFound())
 
         self.m.ReplayAll()
 
@@ -496,6 +488,213 @@ class CfnStackControllerTest(HeatTestCase):
         self.assertEqual(response, expected)
         self.m.VerifyAll()
 
+    def test_create_rollback(self):
+        # Format a dummy request
+        stack_name = "wordpress"
+        template = {u'Foo': u'bar'}
+        json_template = json.dumps(template)
+        params = {'Action': 'CreateStack', 'StackName': stack_name,
+                  'TemplateBody': '%s' % json_template,
+                  'TimeoutInMinutes': 30,
+                  'DisableRollback': 'false',
+                  'Parameters.member.1.ParameterKey': 'InstanceType',
+                  'Parameters.member.1.ParameterValue': 'm1.xlarge'}
+        engine_parms = {u'InstanceType': u'm1.xlarge'}
+        engine_args = {'timeout_mins': u'30', 'disable_rollback': 'false'}
+        dummy_req = self._dummy_GET_request(params)
+
+        # Stub out the RPC call to the engine with a pre-canned response
+        engine_resp = {u'tenant': u't',
+                       u'stack_name': u'wordpress',
+                       u'stack_id': u'1',
+                       u'path': u''}
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(dummy_req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'create_stack',
+                  'args': {'stack_name': stack_name,
+                           'template': template,
+                           'params': engine_parms,
+                           'files': {},
+                           'args': engine_args},
+                  'version': self.api_version}, None).AndReturn(engine_resp)
+
+        self.m.ReplayAll()
+
+        response = self.controller.create(dummy_req)
+
+        expected = {
+            'CreateStackResponse': {
+                'CreateStackResult': {
+                    u'StackId': u'arn:openstack:heat::t:stacks/wordpress/1'
+                }
+            }
+        }
+
+        self.assertEqual(response, expected)
+        self.m.VerifyAll()
+
+    def test_create_onfailure_true(self):
+        # Format a dummy request
+        stack_name = "wordpress"
+        template = {u'Foo': u'bar'}
+        json_template = json.dumps(template)
+        params = {'Action': 'CreateStack', 'StackName': stack_name,
+                  'TemplateBody': '%s' % json_template,
+                  'TimeoutInMinutes': 30,
+                  'OnFailure': 'DO_NOTHING',
+                  'Parameters.member.1.ParameterKey': 'InstanceType',
+                  'Parameters.member.1.ParameterValue': 'm1.xlarge'}
+        engine_parms = {u'InstanceType': u'm1.xlarge'}
+        engine_args = {'timeout_mins': u'30', 'disable_rollback': 'true'}
+        dummy_req = self._dummy_GET_request(params)
+
+        # Stub out the RPC call to the engine with a pre-canned response
+        engine_resp = {u'tenant': u't',
+                       u'stack_name': u'wordpress',
+                       u'stack_id': u'1',
+                       u'path': u''}
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(dummy_req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'create_stack',
+                  'args': {'stack_name': stack_name,
+                           'template': template,
+                           'params': engine_parms,
+                           'files': {},
+                           'args': engine_args},
+                  'version': self.api_version}, None).AndReturn(engine_resp)
+
+        self.m.ReplayAll()
+
+        response = self.controller.create(dummy_req)
+
+        expected = {
+            'CreateStackResponse': {
+                'CreateStackResult': {
+                    u'StackId': u'arn:openstack:heat::t:stacks/wordpress/1'
+                }
+            }
+        }
+
+        self.assertEqual(response, expected)
+        self.m.VerifyAll()
+
+    def test_create_onfailure_false_delete(self):
+        # Format a dummy request
+        stack_name = "wordpress"
+        template = {u'Foo': u'bar'}
+        json_template = json.dumps(template)
+        params = {'Action': 'CreateStack', 'StackName': stack_name,
+                  'TemplateBody': '%s' % json_template,
+                  'TimeoutInMinutes': 30,
+                  'OnFailure': 'DELETE',
+                  'Parameters.member.1.ParameterKey': 'InstanceType',
+                  'Parameters.member.1.ParameterValue': 'm1.xlarge'}
+        engine_parms = {u'InstanceType': u'm1.xlarge'}
+        engine_args = {'timeout_mins': u'30', 'disable_rollback': 'false'}
+        dummy_req = self._dummy_GET_request(params)
+
+        # Stub out the RPC call to the engine with a pre-canned response
+        engine_resp = {u'tenant': u't',
+                       u'stack_name': u'wordpress',
+                       u'stack_id': u'1',
+                       u'path': u''}
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(dummy_req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'create_stack',
+                  'args': {'stack_name': stack_name,
+                           'template': template,
+                           'params': engine_parms,
+                           'files': {},
+                           'args': engine_args},
+                  'version': self.api_version}, None).AndReturn(engine_resp)
+
+        self.m.ReplayAll()
+
+        response = self.controller.create(dummy_req)
+
+        expected = {
+            'CreateStackResponse': {
+                'CreateStackResult': {
+                    u'StackId': u'arn:openstack:heat::t:stacks/wordpress/1'
+                }
+            }
+        }
+
+        self.assertEqual(response, expected)
+        self.m.VerifyAll()
+
+    def test_create_onfailure_false_rollback(self):
+        # Format a dummy request
+        stack_name = "wordpress"
+        template = {u'Foo': u'bar'}
+        json_template = json.dumps(template)
+        params = {'Action': 'CreateStack', 'StackName': stack_name,
+                  'TemplateBody': '%s' % json_template,
+                  'TimeoutInMinutes': 30,
+                  'OnFailure': 'ROLLBACK',
+                  'Parameters.member.1.ParameterKey': 'InstanceType',
+                  'Parameters.member.1.ParameterValue': 'm1.xlarge'}
+        engine_parms = {u'InstanceType': u'm1.xlarge'}
+        engine_args = {'timeout_mins': u'30', 'disable_rollback': 'false'}
+        dummy_req = self._dummy_GET_request(params)
+
+        # Stub out the RPC call to the engine with a pre-canned response
+        engine_resp = {u'tenant': u't',
+                       u'stack_name': u'wordpress',
+                       u'stack_id': u'1',
+                       u'path': u''}
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(dummy_req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'create_stack',
+                  'args': {'stack_name': stack_name,
+                           'template': template,
+                           'params': engine_parms,
+                           'files': {},
+                           'args': engine_args},
+                  'version': self.api_version}, None).AndReturn(engine_resp)
+
+        self.m.ReplayAll()
+
+        response = self.controller.create(dummy_req)
+
+        expected = {
+            'CreateStackResponse': {
+                'CreateStackResult': {
+                    u'StackId': u'arn:openstack:heat::t:stacks/wordpress/1'
+                }
+            }
+        }
+
+        self.assertEqual(response, expected)
+        self.m.VerifyAll()
+
+    def test_create_onfailure_err(self):
+        # Format a dummy request
+        stack_name = "wordpress"
+        template = {u'Foo': u'bar'}
+        json_template = json.dumps(template)
+        params = {'Action': 'CreateStack', 'StackName': stack_name,
+                  'TemplateBody': '%s' % json_template,
+                  'TimeoutInMinutes': 30,
+                  'DisableRollback': 'true',
+                  'OnFailure': 'DO_NOTHING',
+                  'Parameters.member.1.ParameterKey': 'InstanceType',
+                  'Parameters.member.1.ParameterValue': 'm1.xlarge'}
+        engine_parms = {u'InstanceType': u'm1.xlarge'}
+        engine_args = {'timeout_mins': u'30', 'disable_rollback': 'false'}
+        dummy_req = self._dummy_GET_request(params)
+
+        self.assertRaises(exception.HeatInvalidParameterCombinationError,
+                          self.controller.create, dummy_req)
+
     def test_create_err_no_template(self):
         # Format a dummy request with a missing template field
         stack_name = "wordpress"
@@ -544,7 +743,7 @@ class CfnStackControllerTest(HeatTestCase):
                            'files': {},
                            'args': engine_args},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 ).AndRaise(AttributeError())
         rpc.call(dummy_req.context, self.topic,
                  {'namespace': None,
                   'method': 'create_stack',
@@ -554,7 +753,7 @@ class CfnStackControllerTest(HeatTestCase):
                            'files': {},
                            'args': engine_args},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("UnknownUserParameter"))
+                 ).AndRaise(heat_exception.UnknownUserParameter())
         rpc.call(dummy_req.context, self.topic,
                  {'namespace': None,
                   'method': 'create_stack',
@@ -564,7 +763,7 @@ class CfnStackControllerTest(HeatTestCase):
                            'files': {},
                            'args': engine_args},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("UserParameterMissing"))
+                 ).AndRaise(heat_exception.UserParameterMissing())
 
         self.m.ReplayAll()
 
@@ -612,7 +811,7 @@ class CfnStackControllerTest(HeatTestCase):
                            'files': {},
                            'args': engine_args},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("StackExists"))
+                 ).AndRaise(heat_exception.StackExists())
 
         self.m.ReplayAll()
 
@@ -648,9 +847,8 @@ class CfnStackControllerTest(HeatTestCase):
                   'files': {},
                   'args': engine_args},
                   'version': self.api_version}, None).AndRaise(
-                      rpc_common.RemoteError(
-                          'StackValidationFailed',
-                          'Something went wrong'))
+                      heat_exception.StackValidationFailed(
+                          message='Something went wrong'))
 
         self.m.ReplayAll()
 
@@ -727,7 +925,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("StackNotFound"))
+                 ).AndRaise(heat_exception.StackNotFound())
 
         self.m.ReplayAll()
 
@@ -794,7 +992,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'get_template',
                   'args': {'stack_identity': identity},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 ).AndRaise(AttributeError())
 
         self.m.ReplayAll()
 
@@ -817,7 +1015,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("StackNotFound"))
+                 ).AndRaise(heat_exception.StackNotFound())
 
         self.m.ReplayAll()
 
@@ -877,6 +1075,40 @@ class CfnStackControllerTest(HeatTestCase):
         self.assertEqual(type(result),
                          exception.HeatInvalidParameterValueError)
 
+    def test_bad_resources_in_template(self):
+        # Format a dummy request
+        json_template = {
+            'template': {
+                'AWSTemplateFormatVersion': '2010-09-09',
+                'Resources': {
+                    'Type': 'AWS: : EC2: : Instance',
+                },
+            }
+        }
+        params = {'Action': 'ValidateTemplate',
+                  'TemplateBody': '%s' % json.dumps(json_template)}
+        response = {'Error': 'Resources must contain Resource. '
+                    'Found a [string] instead'}
+        dummy_req = self._dummy_GET_request(params)
+
+        # Stub out the RPC call to the engine with a pre-canned response
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(dummy_req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'validate_template',
+                  'args': {'template': json_template},
+                  'version': self.api_version}, None).AndReturn(response)
+        self.m.ReplayAll()
+
+        response = self.controller.validate_template(dummy_req)
+
+        expected = {'ValidateTemplateResponse':
+                    {'ValidateTemplateResult':
+                     'Resources must contain Resource. '
+                     'Found a [string] instead'}}
+        self.assertEqual(expected, response)
+        self.m.VerifyAll()
+
     def test_delete(self):
         # Format a dummy request
         stack_name = "wordpress"
@@ -928,7 +1160,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'delete_stack',
                   'args': {'stack_identity': identity},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("AttributeError"))
+                 ).AndRaise(AttributeError())
 
         self.m.ReplayAll()
 
@@ -951,7 +1183,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("StackNotFound"))
+                 ).AndRaise(heat_exception.StackNotFound())
 
         self.m.ReplayAll()
 
@@ -974,7 +1206,7 @@ class CfnStackControllerTest(HeatTestCase):
                                             u'stack_name': u'wordpress',
                                             u'stack_id': u'6',
                                             u'path': u''},
-                        u'logical_resource_id': u'WikiDatabase',
+                        u'resource_name': u'WikiDatabase',
                         u'resource_status_reason': u'state changed',
                         u'event_identity':
                         {u'tenant': u't',
@@ -1040,7 +1272,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'list_events',
                   'args': {'stack_identity': identity},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("Exception"))
+                 ).AndRaise(Exception())
 
         self.m.ReplayAll()
 
@@ -1062,7 +1294,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("StackNotFound"))
+                 ).AndRaise(heat_exception.StackNotFound())
 
         self.m.ReplayAll()
 
@@ -1089,7 +1321,7 @@ class CfnStackControllerTest(HeatTestCase):
                            u'path': u'resources/WikiDatabase'
                        },
                        u'stack_name': u'wordpress',
-                       u'logical_resource_id': u'WikiDatabase',
+                       u'resource_name': u'WikiDatabase',
                        u'resource_status_reason': None,
                        u'updated_time': u'2012-07-23T13:06:00Z',
                        u'stack_identity': {u'tenant': u't',
@@ -1157,7 +1389,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("StackNotFound"))
+                 None).AndRaise(heat_exception.StackNotFound())
 
         self.m.ReplayAll()
 
@@ -1191,7 +1423,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'describe_stack_resource',
                   'args': args,
                   'version': self.api_version},
-                 None).AndRaise(rpc_common.RemoteError("ResourceNotFound"))
+                 None).AndRaise(heat_exception.ResourceNotFound())
 
         self.m.ReplayAll()
 
@@ -1218,7 +1450,7 @@ class CfnStackControllerTest(HeatTestCase):
                             u'path': u'resources/WikiDatabase'
                         },
                         u'stack_name': u'wordpress',
-                        u'logical_resource_id': u'WikiDatabase',
+                        u'resource_name': u'WikiDatabase',
                         u'resource_status_reason': None,
                         u'updated_time': u'2012-07-23T13:06:00Z',
                         u'stack_identity': {u'tenant': u't',
@@ -1284,7 +1516,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("StackNotFound"))
+                 ).AndRaise(heat_exception.StackNotFound())
 
         self.m.ReplayAll()
 
@@ -1311,7 +1543,7 @@ class CfnStackControllerTest(HeatTestCase):
                             u'path': u'resources/WikiDatabase'
                         },
                         u'stack_name': u'wordpress',
-                        u'logical_resource_id': u'WikiDatabase',
+                        u'resource_name': u'WikiDatabase',
                         u'resource_status_reason': None,
                         u'updated_time': u'2012-07-23T13:06:00Z',
                         u'stack_identity': {u'tenant': u't',
@@ -1381,7 +1613,7 @@ class CfnStackControllerTest(HeatTestCase):
                            'aaaaaaaa-9f88-404d-cccc-ffffffffffff'},
                   'version': self.api_version},
                  None).AndRaise(
-                     rpc_common.RemoteError("PhysicalResourceNotFound"))
+                     heat_exception.PhysicalResourceNotFound())
 
         self.m.ReplayAll()
 
@@ -1420,7 +1652,7 @@ class CfnStackControllerTest(HeatTestCase):
                          u'stack_id': u'6',
                          u'path': u'/resources/WikiDatabase'},
                         u'stack_name': u'wordpress',
-                        u'logical_resource_id': u'WikiDatabase',
+                        u'resource_name': u'WikiDatabase',
                         u'resource_status_reason': None,
                         u'updated_time': u'2012-07-23T13:06:00Z',
                         u'stack_identity': {u'tenant': u't',
@@ -1476,7 +1708,7 @@ class CfnStackControllerTest(HeatTestCase):
                   'method': 'identify_stack',
                   'args': {'stack_name': stack_name},
                   'version': self.api_version}, None
-                 ).AndRaise(rpc_common.RemoteError("StackNotFound"))
+                 ).AndRaise(heat_exception.StackNotFound())
 
         self.m.ReplayAll()
 
@@ -1503,3 +1735,5 @@ class CfnStackControllerTest(HeatTestCase):
             bind_port = 8000
         cfgopts = DummyConfig()
         self.controller = stacks.StackController(options=cfgopts)
+        self.controller.policy.enforcer.policy_path = (policy_path +
+                                                       'deny_stack_user.json')

@@ -23,21 +23,28 @@ logger = logging.getLogger(__name__)
 
 from heat.common import heat_keystoneclient as hkc
 from novaclient import client as novaclient
+from novaclient import shell as novashell
 try:
     from swiftclient import client as swiftclient
 except ImportError:
     swiftclient = None
     logger.info('swiftclient not available')
 try:
-    from quantumclient.v2_0 import client as quantumclient
+    from neutronclient.v2_0 import client as neutronclient
 except ImportError:
-    quantumclient = None
-    logger.info('quantumclient not available')
+    neutronclient = None
+    logger.info('neutronclient not available')
 try:
     from cinderclient import client as cinderclient
 except ImportError:
     cinderclient = None
     logger.info('cinderclient not available')
+
+try:
+    from ceilometerclient.v2 import client as ceilometerclient
+except ImportError:
+    ceilometerclient = None
+    logger.info('ceilometerclient not available')
 
 
 cloud_opts = [
@@ -58,8 +65,15 @@ class OpenStackClients(object):
         self._nova = {}
         self._keystone = None
         self._swift = None
-        self._quantum = None
+        self._neutron = None
         self._cinder = None
+        self._ceilometer = None
+
+    @property
+    def auth_token(self):
+        # if there is no auth token in the context
+        # attempt to get one using the context username and password
+        return self.context.auth_token or self.keystone().auth_token
 
     def keystone(self):
         if self._keystone:
@@ -69,35 +83,34 @@ class OpenStackClients(object):
         return self._keystone
 
     def url_for(self, **kwargs):
-        return self.keystone().client.service_catalog.url_for(**kwargs)
+        return self.keystone().url_for(**kwargs)
 
     def nova(self, service_type='compute'):
         if service_type in self._nova:
             return self._nova[service_type]
 
         con = self.context
+        if self.auth_token is None:
+            logger.error("Nova connection failed, no auth_token!")
+            return None
+
+        computeshell = novashell.OpenStackComputeShell()
+        extensions = computeshell._discover_extensions("1.1")
+
         args = {
             'project_id': con.tenant,
             'auth_url': con.auth_url,
             'service_type': service_type,
+            'username': None,
+            'api_key': None,
+            'extensions': extensions
         }
-
-        if con.password is not None:
-            args['username'] = con.username
-            args['api_key'] = con.password
-        elif con.auth_token is not None:
-            args['username'] = None
-            args['api_key'] = None
-        else:
-            logger.error("Nova connection failed, no password or auth_token!")
-            return None
 
         client = novaclient.Client(1.1, **args)
 
-        if con.password is None and con.auth_token is not None:
-            management_url = self.url_for(service_type=service_type)
-            client.client.auth_token = con.auth_token
-            client.client.management_url = management_url
+        management_url = self.url_for(service_type=service_type)
+        client.client.auth_token = self.auth_token
+        client.client.management_url = management_url
 
         self._nova[service_type] = client
         return client
@@ -109,56 +122,43 @@ class OpenStackClients(object):
             return self._swift
 
         con = self.context
+        if self.auth_token is None:
+            logger.error("Swift connection failed, no auth_token!")
+            return None
+
         args = {
             'auth_version': '2.0',
             'tenant_name': con.tenant,
-            'user': con.username
+            'user': con.username,
+            'key': None,
+            'authurl': None,
+            'preauthtoken': self.auth_token,
+            'preauthurl': self.url_for(service_type='object-store')
         }
-
-        if con.password is not None:
-            args['key'] = con.password
-            args['authurl'] = con.auth_url
-        elif con.auth_token is not None:
-            args['key'] = None
-            args['authurl'] = None
-            args['preauthtoken'] = con.auth_token
-            args['preauthurl'] = self.url_for(service_type='object-store')
-        else:
-            logger.error("Swift connection failed, no password or " +
-                         "auth_token!")
-            return None
         self._swift = swiftclient.Connection(**args)
         return self._swift
 
-    def quantum(self):
-        if quantumclient is None:
+    def neutron(self):
+        if neutronclient is None:
             return None
-        if self._quantum:
-            logger.debug('using existing _quantum')
-            return self._quantum
+        if self._neutron:
+            return self._neutron
 
         con = self.context
+        if self.auth_token is None:
+            logger.error("Neutron connection failed, no auth_token!")
+            return None
+
         args = {
             'auth_url': con.auth_url,
             'service_type': 'network',
+            'token': self.auth_token,
+            'endpoint_url': self.url_for(service_type='network')
         }
 
-        if con.password is not None:
-            args['username'] = con.username
-            args['password'] = con.password
-            args['tenant_name'] = con.tenant
-        elif con.auth_token is not None:
-            args['token'] = con.auth_token
-            args['endpoint_url'] = self.url_for(service_type='network')
-        else:
-            logger.error("Quantum connection failed, "
-                         "no password or auth_token!")
-            return None
-        logger.debug('quantum args %s', args)
+        self._neutron = neutronclient.Client(**args)
 
-        self._quantum = quantumclient.Client(**args)
-
-        return self._quantum
+        return self._neutron
 
     def cinder(self):
         if cinderclient is None:
@@ -167,31 +167,48 @@ class OpenStackClients(object):
             return self._cinder
 
         con = self.context
+        if self.auth_token is None:
+            logger.error("Cinder connection failed, no auth_token!")
+            return None
+
         args = {
             'service_type': 'volume',
             'auth_url': con.auth_url,
-            'project_id': con.tenant
+            'project_id': con.tenant,
+            'username': None,
+            'api_key': None
         }
 
-        if con.password is not None:
-            args['username'] = con.username
-            args['api_key'] = con.password
-        elif con.auth_token is not None:
-            args['username'] = None
-            args['api_key'] = None
-        else:
-            logger.error("Cinder connection failed, "
-                         "no password or auth_token!")
-            return None
-        logger.debug('cinder args %s', args)
-
         self._cinder = cinderclient.Client('1', **args)
-        if con.password is None and con.auth_token is not None:
-            management_url = self.url_for(service_type='volume')
-            self._cinder.client.auth_token = con.auth_token
-            self._cinder.client.management_url = management_url
+        management_url = self.url_for(service_type='volume')
+        self._cinder.client.auth_token = self.auth_token
+        self._cinder.client.management_url = management_url
 
         return self._cinder
+
+    def ceilometer(self):
+        if ceilometerclient is None:
+            return None
+        if self._ceilometer:
+            return self._ceilometer
+
+        if self.auth_token is None:
+            logger.error("Ceilometer connection failed, no auth_token!")
+            return None
+        con = self.context
+        args = {
+            'auth_url': con.auth_url,
+            'service_type': 'metering',
+            'project_id': con.tenant,
+            'token': lambda: self.auth_token,
+            'endpoint': self.url_for(service_type='metering'),
+        }
+
+        client = ceilometerclient.Client(**args)
+
+        self._ceilometer = client
+        return self._ceilometer
+
 
 if cfg.CONF.cloud_backend:
     cloud_backend_module = importutils.import_module(cfg.CONF.cloud_backend)

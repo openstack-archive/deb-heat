@@ -12,8 +12,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+
+import mox
+
 from heat.common import template_format
-from heat.common import context
 from heat.common import exception
 from heat.engine import environment
 from heat.engine import parser
@@ -24,18 +26,16 @@ from heat.engine import template
 from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import generic_resource as generic_rsrc
-from heat.tests.utils import setup_dummy_db
-from heat.tests.utils import stack_delete_after
+from heat.tests import utils
+
 
 ws_res_snippet = {"Type": "some_magic_type",
                   "metadata": {
                       "key": "value",
                       "some": "more stuff"}}
 
-wp_template = '''
+param_template = '''
 {
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "WordPress",
   "Parameters" : {
     "KeyName" : {
       "Description" : "KeyName",
@@ -45,14 +45,21 @@ wp_template = '''
   },
   "Resources" : {
     "WebServer": {
-      "Type": "AWS::EC2::Instance",
-      "metadata": {"Fn::ResourceFacade": "Metadata"},
-      "Properties": {
-        "ImageId" : "F17-x86_64-gold",
-        "InstanceType"   : "m1.large",
-        "KeyName"        : "test",
-        "UserData"       : "wordpress"
-      }
+      "Type": "GenericResource",
+      "Properties": {}
+    }
+  }
+}
+'''
+
+
+simple_template = '''
+{
+  "Parameters" : {},
+  "Resources" : {
+    "WebServer": {
+      "Type": "GenericResource",
+      "Properties": {}
     }
   }
 }
@@ -80,20 +87,22 @@ class StackResourceTest(HeatTestCase):
 
     def setUp(self):
         super(StackResourceTest, self).setUp()
-        setup_dummy_db()
+        utils.setup_dummy_db()
         resource._register_class('some_magic_type',
                                  MyStackResource)
+        resource._register_class('GenericResource',
+                                 generic_rsrc.GenericResource)
         t = parser.Template({template.RESOURCES:
                              {"provider_resource": ws_res_snippet}})
-        self.parent_stack = parser.Stack(None, 'test_stack', t,
-                                         stack_id=uuidutils.generate_uuid())
+        self.parent_stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                                         t, stack_id=uuidutils.generate_uuid())
         self.parent_resource = MyStackResource('test',
                                                ws_res_snippet,
                                                self.parent_stack)
-        self.parent_resource.context = context.get_admin_context()
-        self.templ = template_format.parse(wp_template)
+        self.templ = template_format.parse(param_template)
+        self.simple_template = template_format.parse(simple_template)
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_create_with_template_ok(self):
         self.parent_resource.create_with_template(self.templ,
                                                   {"KeyName": "key"})
@@ -105,7 +114,100 @@ class StackResourceTest(HeatTestCase):
         self.assertEqual(self.templ, self.stack.t.t)
         self.assertEqual(self.stack.id, self.parent_resource.resource_id)
 
-    @stack_delete_after
+    @utils.stack_delete_after
+    def test_create_with_template_validates(self):
+        """
+        Creating a stack with a template validates the created stack, so that
+        an invalid template will cause an error to be raised.
+        """
+        # Make a parameter key with the same name as the resource to cause a
+        # simple validation error
+        template = self.simple_template.copy()
+        template['Parameters']['WebServer'] = {'Type': 'String'}
+        self.assertRaises(
+            exception.StackValidationFailed,
+            self.parent_resource.create_with_template,
+            template, {'WebServer': 'foo'})
+
+    @utils.stack_delete_after
+    def test_update_with_template_validates(self):
+        """Updating a stack with a template validates the created stack."""
+        create_result = self.parent_resource.create_with_template(
+            self.simple_template, {})
+        while not create_result.step():
+            pass
+
+        template = self.simple_template.copy()
+        template['Parameters']['WebServer'] = {'Type': 'String'}
+        self.assertRaises(
+            exception.StackValidationFailed,
+            self.parent_resource.update_with_template,
+            template, {'WebServer': 'foo'})
+
+    @utils.stack_delete_after
+    def test_update_with_template_ok(self):
+        """
+        The update_with_template method updates the nested stack with the
+        given template and user parameters.
+        """
+        create_result = self.parent_resource.create_with_template(
+            self.simple_template, {})
+        while not create_result.step():
+            pass
+        self.stack = self.parent_resource.nested()
+
+        new_templ = self.simple_template.copy()
+        inst_snippet = new_templ["Resources"]["WebServer"].copy()
+        new_templ["Resources"]["WebServer2"] = inst_snippet
+        updater = self.parent_resource.update_with_template(
+            new_templ, {})
+        updater.run_to_completion()
+        self.assertEqual(True,
+                         self.parent_resource.check_update_complete(updater))
+        self.assertEqual(self.stack.state, ('UPDATE', 'COMPLETE'))
+        self.assertEqual(set(self.stack.resources.keys()),
+                         set(["WebServer", "WebServer2"]))
+
+        # The stack's owner_id is maintained.
+        saved_stack = parser.Stack.load(
+            self.parent_stack.context, self.stack.id)
+        self.assertEqual(saved_stack.owner_id, self.parent_stack.id)
+
+    @utils.stack_delete_after
+    def test_update_with_template_state_err(self):
+        """
+        update_with_template_state_err method should raise error when update
+        task is done but the nested stack is in (UPDATE, FAILED) state.
+        """
+        create_creator = self.parent_resource.create_with_template(
+            self.simple_template, {})
+        create_creator.run_to_completion()
+        self.stack = self.parent_resource.nested()
+
+        new_templ = self.simple_template.copy()
+        inst_snippet = new_templ["Resources"]["WebServer"].copy()
+        new_templ["Resources"]["WebServer2"] = inst_snippet
+
+        def update_task():
+            yield
+            self.stack.state_set(parser.Stack.UPDATE, parser.Stack.FAILED, '')
+
+        self.m.StubOutWithMock(self.stack, 'update_task')
+        self.stack.update_task(mox.IgnoreArg()).AndReturn(update_task())
+        self.m.ReplayAll()
+
+        updater = self.parent_resource.update_with_template(new_templ, {})
+        updater.run_to_completion()
+        self.assertEqual((self.stack.UPDATE, self.stack.FAILED),
+                         self.stack.state)
+        ex = self.assertRaises(exception.Error,
+                               self.parent_resource.check_update_complete,
+                               updater)
+        self.assertEqual('Nested stack update failed: ', str(ex))
+
+        self.m.VerifyAll()
+
+    @utils.stack_delete_after
     def test_load_nested_ok(self):
         self.parent_resource.create_with_template(self.templ,
                                                   {"KeyName": "key"})
@@ -121,7 +223,7 @@ class StackResourceTest(HeatTestCase):
         self.parent_resource.nested()
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_load_nested_non_exist(self):
         self.parent_resource.create_with_template(self.templ,
                                                   {"KeyName": "key"})
@@ -172,7 +274,7 @@ class StackResourceTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_create_complete_state_err(self):
         """
         check_create_complete should raise error when create task is
@@ -198,7 +300,8 @@ class StackResourceTest(HeatTestCase):
         self.m.StubOutWithMock(parser, 'Stack')
         parser.Stack(ctx, phy_id, templ, env, timeout_mins=None,
                      disable_rollback=True,
-                     parent_resource=self.parent_resource)\
+                     parent_resource=self.parent_resource,
+                     owner_id=self.parent_stack.id)\
             .AndReturn(self.stack)
 
         st_set = self.stack.state_set
@@ -220,7 +323,7 @@ class StackResourceTest(HeatTestCase):
         # Restore state_set to let clean up proceed
         self.stack.state_set = st_set
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_suspend_complete_state_err(self):
         """
         check_suspend_complete should raise error when suspend task is
@@ -250,7 +353,7 @@ class StackResourceTest(HeatTestCase):
         # Restore state_set to let clean up proceed
         self.stack.state_set = st_set
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_resume_complete_state_err(self):
         """
         check_resume_complete should raise error when resume task is

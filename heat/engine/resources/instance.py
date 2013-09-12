@@ -13,32 +13,29 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-import json
-import os
-import pkgutil
-from urlparse import urlparse
-
-from oslo.config import cfg
-
+from heat.engine import signal_responder
 from heat.engine import clients
 from heat.engine import resource
 from heat.engine import scheduler
+from heat.engine.resources import nova_utils
 from heat.engine.resources import volume
 
 from heat.common import exception
 from heat.engine.resources.network_interface import NetworkInterface
 
+from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
-from heat.openstack.common import uuidutils
 
 logger = logging.getLogger(__name__)
 
 
-class Restarter(resource.Resource):
+class Restarter(signal_responder.SignalResponder):
     properties_schema = {'InstanceId': {'Type': 'String',
                                         'Required': True}}
+    attributes_schema = {
+        "AlarmUrl": ("A signed url to handle the alarm. "
+                     "(Heat extension)")
+    }
 
     def _find_resource(self, resource_id):
         '''
@@ -50,9 +47,18 @@ class Restarter(resource.Resource):
                 return resource
         return None
 
-    def alarm(self):
-        victim = self._find_resource(self.properties['InstanceId'])
+    def handle_signal(self, details=None):
+        if details is None:
+            alarm_state = 'alarm'
+        else:
+            alarm_state = details.get('state', 'alarm').lower()
 
+        logger.info('%s Alarm, new state %s' % (self.name, alarm_state))
+
+        if alarm_state != 'alarm':
+            return
+
+        victim = self._find_resource(self.properties['InstanceId'])
         if victim is None:
             logger.info('%s Alarm, can not find instance %s' %
                        (self.name, self.properties['InstanceId']))
@@ -61,6 +67,14 @@ class Restarter(resource.Resource):
         logger.info('%s Alarm, restarting resource: %s' %
                     (self.name, victim.name))
         self.stack.restart_resource(victim.name)
+
+    def _resolve_attribute(self, name):
+        '''
+        heat extension: "AlarmUrl" returns the url to post to the policy
+        when there is an alarm.
+        '''
+        if name == 'AlarmUrl' and self.resource_id is not None:
+            return unicode(self._get_signed_url())
 
 
 class Instance(resource.Resource):
@@ -121,20 +135,8 @@ class Instance(resource.Resource):
                          'PublicIp': ('Public IP address of the specified '
                                       'instance.')}
 
-    # template keys supported for handle_update, note trailing comma
-    # is required for a single item to get a tuple not a string
-    update_allowed_keys = ('Metadata',)
-
-    _deferred_server_statuses = ['BUILD',
-                                 'HARD_REBOOT',
-                                 'PASSWORD',
-                                 'REBOOT',
-                                 'RESCUE',
-                                 'RESIZE',
-                                 'REVERT_RESIZE',
-                                 'SHUTOFF',
-                                 'SUSPENDED',
-                                 'VERIFY_RESIZE']
+    update_allowed_keys = ('Metadata', 'Properties')
+    update_allowed_properties = ('InstanceType',)
 
     def __init__(self, name, json_snippet, stack):
         super(Instance, self).__init__(name, json_snippet, stack)
@@ -156,12 +158,8 @@ class Instance(resource.Resource):
         Return the server's IP address, fetching it from Nova if necessary
         '''
         if self.ipaddress is None:
-            try:
-                server = self.nova().servers.get(self.resource_id)
-            except clients.novaclient.exceptions.NotFound as ex:
-                logger.warn('Instance IP address not found (%s)' % str(ex))
-            else:
-                self._set_ipaddress(server.networks)
+            self.ipaddress = nova_utils.server_to_ipaddress(
+                self.nova(), self.resource_id)
 
         return self.ipaddress or '0.0.0.0'
 
@@ -175,69 +173,6 @@ class Instance(resource.Resource):
 
         logger.info('%s._resolve_attribute(%s) == %s' % (self.name, name, res))
         return unicode(res) if res else None
-
-    def _build_userdata(self, userdata):
-        if not self.mime_string:
-            # Build mime multipart data blob for cloudinit userdata
-
-            def make_subpart(content, filename, subtype=None):
-                if subtype is None:
-                    subtype = os.path.splitext(filename)[0]
-                msg = MIMEText(content, _subtype=subtype)
-                msg.add_header('Content-Disposition', 'attachment',
-                               filename=filename)
-                return msg
-
-            def read_cloudinit_file(fn):
-                data = pkgutil.get_data('heat', 'cloudinit/%s' % fn)
-                data = data.replace('@INSTANCE_USER@',
-                                    cfg.CONF.instance_user)
-                return data
-
-            attachments = [(read_cloudinit_file('config'), 'cloud-config'),
-                           (read_cloudinit_file('boothook.sh'), 'boothook.sh',
-                            'cloud-boothook'),
-                           (read_cloudinit_file('part_handler.py'),
-                            'part-handler.py'),
-                           (userdata, 'cfn-userdata', 'x-cfninitdata'),
-                           (read_cloudinit_file('loguserdata.py'),
-                            'loguserdata.py', 'x-shellscript')]
-
-            if 'Metadata' in self.t:
-                attachments.append((json.dumps(self.metadata),
-                                    'cfn-init-data', 'x-cfninitdata'))
-
-            attachments.append((cfg.CONF.heat_watch_server_url,
-                                'cfn-watch-server', 'x-cfninitdata'))
-
-            attachments.append((cfg.CONF.heat_metadata_server_url,
-                                'cfn-metadata-server', 'x-cfninitdata'))
-
-            # Create a boto config which the cfntools on the host use to know
-            # where the cfn and cw API's are to be accessed
-            cfn_url = urlparse(cfg.CONF.heat_metadata_server_url)
-            cw_url = urlparse(cfg.CONF.heat_watch_server_url)
-            is_secure = cfg.CONF.instance_connection_is_secure
-            vcerts = cfg.CONF.instance_connection_https_validate_certificates
-            boto_cfg = "\n".join(["[Boto]",
-                                  "debug = 0",
-                                  "is_secure = %s" % is_secure,
-                                  "https_validate_certificates = %s" % vcerts,
-                                  "cfn_region_name = heat",
-                                  "cfn_region_endpoint = %s" %
-                                  cfn_url.hostname,
-                                  "cloudwatch_region_name = heat",
-                                  "cloudwatch_region_endpoint = %s" %
-                                  cw_url.hostname])
-            attachments.append((boto_cfg,
-                                'cfn-boto-cfg', 'x-cfninitdata'))
-
-            subparts = [make_subpart(*args) for args in attachments]
-            mime_blob = MIMEMultipart(_subparts=subparts)
-
-            self.mime_string = mime_blob.as_string()
-
-        return self.mime_string
 
     def _build_nics(self, network_interfaces, subnet_id=None):
 
@@ -258,9 +193,9 @@ class Instance(resource.Resource):
         else:
             # if SubnetId property in Instance, ensure subnet exists
             if subnet_id:
-                quantumclient = self.quantum()
+                neutronclient = self.neutron()
                 network_id = NetworkInterface.network_id_from_subnet_id(
-                    quantumclient, subnet_id)
+                    neutronclient, subnet_id)
                 # if subnet verified, create a port to use this subnet
                 # if port is not created explicitly, nova will choose
                 # the first subnet in the given network.
@@ -271,7 +206,7 @@ class Instance(resource.Resource):
                         'network_id': network_id,
                         'fixed_ips': [fixed_ip]
                     }
-                    port = quantumclient.create_port({'port': props})['port']
+                    port = neutronclient.create_port({'port': props})['port']
                     nics = [{'port-id': port['id']}]
 
         return nics
@@ -286,30 +221,28 @@ class Instance(resource.Resource):
             security_groups = None
         return security_groups
 
+    def get_mime_string(self, userdata):
+        if not self.mime_string:
+            self.mime_string = nova_utils.build_userdata(self, userdata)
+        return self.mime_string
+
     def handle_create(self):
         security_groups = self._get_security_groups()
 
         userdata = self.properties['UserData'] or ''
         flavor = self.properties['InstanceType']
-        key_name = self.properties['KeyName']
         availability_zone = self.properties['AvailabilityZone']
 
-        keypairs = [k.name for k in self.nova().keypairs.list()]
-        if key_name not in keypairs and key_name is not None:
-            raise exception.UserKeyPairMissing(key_name=key_name)
+        key_name = self.properties['KeyName']
+        if key_name:
+            # confirm keypair exists
+            nova_utils.get_keypair(self.nova(), key_name)
 
         image_name = self.properties['ImageId']
 
-        image_id = self._get_image_id(image_name)
+        image_id = nova_utils.get_image_id(self.nova(), image_name)
 
-        flavor_id = None
-        flavor_list = self.nova().flavors.list()
-        for o in flavor_list:
-            if o.name == flavor:
-                flavor_id = o.id
-                break
-        if flavor_id is None:
-            raise exception.FlavorMissing(flavor_id=flavor)
+        flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
 
         tags = {}
         if self.properties['Tags']:
@@ -327,8 +260,6 @@ class Instance(resource.Resource):
 
         nics = self._build_nics(self.properties['NetworkInterfaces'],
                                 subnet_id=self.properties['SubnetId'])
-
-        server_userdata = self._build_userdata(userdata)
         server = None
         try:
             server = self.nova().servers.create(
@@ -337,7 +268,7 @@ class Instance(resource.Resource):
                 flavor=flavor_id,
                 key_name=key_name,
                 security_groups=security_groups,
-                userdata=server_userdata,
+                userdata=self.get_mime_string(userdata),
                 meta=tags,
                 scheduler_hints=scheduler_hints,
                 nics=nics,
@@ -370,16 +301,28 @@ class Instance(resource.Resource):
 
             # Some clouds append extra (STATUS) strings to the status
             short_server_status = server.status.split('(')[0]
-            if short_server_status in self._deferred_server_statuses:
+            if short_server_status in nova_utils.deferred_server_statuses:
                 return False
             elif server.status == 'ACTIVE':
                 self._set_ipaddress(server.networks)
                 volume_attach.start()
                 return volume_attach.done()
+            elif server.status == 'ERROR':
+                fault = getattr(server, 'fault', {})
+                message = fault.get('message', 'Unknown')
+                code = fault.get('code', 500)
+                exc = exception.Error(_("Creation of server %(server)s "
+                                        "failed: %(message)s (%(code)s)") %
+                                      dict(server=server.name,
+                                           message=message,
+                                           code=code))
+                raise exc
             else:
-                raise exception.Error('%s instance[%s] status[%s]' %
-                                      ('nova reported unexpected',
-                                       self.name, server.status))
+                exc = exception.Error(_("Creation of server %(server)s failed "
+                                        "with unknown status: %(status)s") %
+                                      dict(server=server.name,
+                                           status=server.status))
+                raise exc
         else:
             return volume_attach.step()
 
@@ -396,7 +339,19 @@ class Instance(resource.Resource):
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if 'Metadata' in tmpl_diff:
-            self.metadata = tmpl_diff.get('Metadata', {})
+            self.metadata = tmpl_diff['Metadata']
+        if 'InstanceType' in prop_diff:
+            flavor = prop_diff['InstanceType']
+            flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
+            server = self.nova().servers.get(self.resource_id)
+            server.resize(flavor_id)
+            checker = scheduler.TaskRunner(nova_utils.check_resize,
+                                           server, flavor)
+            checker.start()
+            return checker
+
+    def check_update_complete(self, checker):
+        return checker.step() if checker is not None else True
 
     def metadata_update(self, new_metadata=None):
         '''
@@ -416,36 +371,25 @@ class Instance(resource.Resource):
         # check validity of key
         key_name = self.properties.get('KeyName', None)
         if key_name:
-            keypairs = self.nova().keypairs.list()
-            if not any(k.name == key_name for k in keypairs):
-                return {'Error':
-                        'Provided KeyName is not registered with nova'}
+            nova_utils.get_keypair(self.nova(), key_name)
 
         # check validity of security groups vs. network interfaces
         security_groups = self._get_security_groups()
         if security_groups and self.properties.get('NetworkInterfaces'):
-            return {'Error':
-                    'Cannot define both SecurityGroups/SecurityGroupIds and '
-                    'NetworkInterfaces properties.'}
+            raise exception.ResourcePropertyConflict(
+                'SecurityGroups/SecurityGroupIds',
+                'NetworkInterfaces')
 
         # make sure the image exists.
-        image_identifier = self.properties['ImageId']
-        try:
-            self._get_image_id(image_identifier)
-        except exception.ImageNotFound:
-            return {'Error': 'Image %s was not found in glance' %
-                    image_identifier}
-        except exception.NoUniqueImageFound:
-            return {'Error': 'Multiple images were found with name %s' %
-                    image_identifier}
+        nova_utils.get_image_id(self.nova(), self.properties['ImageId'])
 
-        return
-
+    @scheduler.wrappertask
     def _delete_server(self, server):
         '''
         Return a co-routine that deletes the server and waits for it to
         disappear from Nova.
         '''
+        yield self._detach_volumes_task()()
         server.delete()
 
         while True:
@@ -454,6 +398,7 @@ class Instance(resource.Resource):
             try:
                 server.get()
             except clients.novaclient.exceptions.NotFound:
+                self.resource_id = None
                 break
 
     def _detach_volumes_task(self):
@@ -473,45 +418,23 @@ class Instance(resource.Resource):
         if self.resource_id is None:
             return
 
-        scheduler.TaskRunner(self._detach_volumes_task())()
-
         try:
             server = self.nova().servers.get(self.resource_id)
         except clients.novaclient.exceptions.NotFound:
-            pass
-        else:
-            delete = scheduler.TaskRunner(self._delete_server, server)
-            delete(wait_time=0.2)
+            self.resource_id = None
+            return
 
-        self.resource_id = None
+        server_delete_task = scheduler.TaskRunner(self._delete_server,
+                                                  server=server)
+        server_delete_task.start()
+        return server_delete_task
 
-    def _get_image_id(self, image_identifier):
-        image_id = None
-        if uuidutils.is_uuid_like(image_identifier):
-            try:
-                image_id = self.nova().images.get(image_identifier).id
-            except clients.novaclient.exceptions.NotFound:
-                logger.info("Image %s was not found in glance"
-                            % image_identifier)
-                raise exception.ImageNotFound(image_name=image_identifier)
+    def check_delete_complete(self, server_delete_task):
+        # if the resource was already deleted, server_delete_task will be None
+        if server_delete_task is None:
+            return True
         else:
-            try:
-                image_list = self.nova().images.list()
-            except clients.novaclient.exceptions.ClientException as ex:
-                raise exception.ServerError(message=str(ex))
-            image_names = dict(
-                (o.id, o.name)
-                for o in image_list if o.name == image_identifier)
-            if len(image_names) == 0:
-                logger.info("Image %s was not found in glance" %
-                            image_identifier)
-                raise exception.ImageNotFound(image_name=image_identifier)
-            elif len(image_names) > 1:
-                logger.info("Mulitple images %s were found in glance with name"
-                            % image_identifier)
-                raise exception.NoUniqueImageFound(image_name=image_identifier)
-            image_id = image_names.popitem()[0]
-        return image_id
+            return server_delete_task.step()
 
     def handle_suspend(self):
         '''
@@ -553,7 +476,7 @@ class Instance(resource.Resource):
                 server.get()
                 logger.debug("%s check_suspend_complete status = %s" %
                              (self.name, server.status))
-                if server.status in list(self._deferred_server_statuses +
+                if server.status in list(nova_utils.deferred_server_statuses +
                                          ['ACTIVE']):
                     return server.status == 'SUSPENDED'
                 else:

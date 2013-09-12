@@ -97,7 +97,7 @@ class FakeClient(object):
         pass
 
 
-class FakeKeystoneClient():
+class FakeKeystoneClient(object):
     def __init__(self, username='test_user', user_id='1234', access='4567',
                  secret='8901'):
         self.username = username
@@ -105,6 +105,7 @@ class FakeKeystoneClient():
         self.access = access
         self.secret = secret
         self.creds = None
+        self.auth_token = 'abcd1234'
 
     def create_stack_user(self, username, password=''):
         self.username = username
@@ -116,7 +117,7 @@ class FakeKeystoneClient():
     def get_ec2_keypair(self, user_id):
         if user_id == self.user_id:
             if not self.creds:
-                class FakeCred:
+                class FakeCred(object):
                     access = self.access
                     secret = self.secret
                 self.creds = FakeCred()
@@ -132,4 +133,13 @@ class FakeKeystoneClient():
         pass
 
     def disable_stack_user(self, user_id):
+        pass
+
+    def url_for(self, **kwargs):
+        return 'http://example.com:1234/v1'
+
+    def create_trust_context(self):
+        pass
+
+    def delete_trust_context(self):
         pass

@@ -15,7 +15,6 @@
 
 import datetime
 import mox
-from heat.common import context
 import heat.db.api as db_api
 
 from heat.common import exception
@@ -26,15 +25,15 @@ from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
 
-class WatchData:
+class WatchData(object):
     def __init__(self, data, created_at):
         self.created_at = created_at
         self.data = {'test_metric': {'Value': data,
                                      'Unit': 'Count'}}
 
 
-class DummyAction:
-    alarm = "DummyAction"
+class DummyAction(object):
+    signal = "DummyAction"
 
 
 class WatchRuleTest(HeatTestCase):
@@ -47,9 +46,8 @@ class WatchRuleTest(HeatTestCase):
         # Create a dummy stack in the DB as WatchRule instances
         # must be associated with a stack
         utils.setup_dummy_db()
-        ctx = context.get_admin_context()
-        ctx.username = 'dummyuser'
-        ctx.tenant_id = '123456'
+        ctx = utils.dummy_context()
+        ctx.auth_token = 'abcd1234'
         empty_tmpl = {"template": {}}
         tmpl = parser.Template(empty_tmpl)
         stack_name = 'dummystack'
@@ -65,9 +63,8 @@ class WatchRuleTest(HeatTestCase):
         self.setUpDatabase()
         self.username = 'watchrule_test_user'
 
-        self.ctx = context.get_admin_context()
-        self.ctx.username = self.username
-        self.ctx.tenant_id = u'123456'
+        self.ctx = utils.dummy_context()
+        self.ctx.auth_token = 'abcd1234'
 
         self.m.ReplayAll()
 
@@ -78,9 +75,9 @@ class WatchRuleTest(HeatTestCase):
 
         if action_expected:
             dummy_action = DummyAction()
-            self.m.StubOutWithMock(parser.Stack, '__getitem__')
-            parser.Stack.__getitem__(mox.IgnoreArg()
-                                     ).MultipleTimes().AndReturn(dummy_action)
+            self.m.StubOutWithMock(parser.Stack, 'resource_by_refid')
+            parser.Stack.resource_by_refid(mox.IgnoreArg()).\
+                MultipleTimes().AndReturn(dummy_action)
 
         self.m.ReplayAll()
 
@@ -645,6 +642,137 @@ class WatchRuleTest(HeatTestCase):
 
         dbwr = db_api.watch_rule_get_by_name(self.ctx, 'create_data_test')
         self.assertEqual(dbwr.watch_data, [])
+
+    @utils.wr_delete_after
+    def test_create_watch_data_match(self):
+        rule = {u'EvaluationPeriods': u'1',
+                u'AlarmDescription': u'test alarm',
+                u'Period': u'300',
+                u'ComparisonOperator': u'GreaterThanThreshold',
+                u'Statistic': u'SampleCount',
+                u'Threshold': u'2',
+                u'Dimensions': [{u'Name': 'AutoScalingGroupName',
+                                 u'Value': 'group_x'}],
+                u'MetricName': u'CreateDataMetric'}
+        self.wr = watchrule.WatchRule(context=self.ctx,
+                                      watch_name='create_data_test',
+                                      stack_id=self.stack_id, rule=rule)
+        self.wr.store()
+
+        data = {u'CreateDataMetric': {"Unit": "Counter",
+                                      "Value": "1",
+                                      "Dimensions": [{u'AutoScalingGroupName':
+                                                      u'group_x'}]}}
+        self.assertTrue(watchrule.rule_can_use_sample(self.wr, data))
+
+    @utils.wr_delete_after
+    def test_create_watch_data_match_2(self):
+        rule = {u'EvaluationPeriods': u'1',
+                u'AlarmDescription': u'test alarm',
+                u'Period': u'300',
+                u'ComparisonOperator': u'GreaterThanThreshold',
+                u'Statistic': u'SampleCount',
+                u'Threshold': u'2',
+                u'Dimensions': [{u'Name': 'AutoScalingGroupName',
+                                 u'Value': 'group_x'}],
+                u'MetricName': u'CreateDataMetric'}
+        self.wr = watchrule.WatchRule(context=self.ctx,
+                                      watch_name='create_data_test',
+                                      stack_id=self.stack_id, rule=rule)
+        self.wr.store()
+
+        data = {u'not_interesting': {"Unit": "Counter",
+                                     "Value": "1",
+                                     "Dimensions": [
+                                         {u'AutoScalingGroupName':
+                                          u'group_x'}]},
+                u'CreateDataMetric': {"Unit": "Counter",
+                                      "Value": "1",
+                                      "Dimensions": [
+                                          {u'AutoScalingGroupName':
+                                           u'group_x'}]}}
+        self.assertTrue(watchrule.rule_can_use_sample(self.wr, data))
+
+    def test_create_watch_data_match_3(self):
+        rule = {u'EvaluationPeriods': u'1',
+                u'AlarmDescription': u'test alarm',
+                u'Period': u'300',
+                u'ComparisonOperator': u'GreaterThanThreshold',
+                u'Statistic': u'SampleCount',
+                u'Threshold': u'2',
+                u'Dimensions': [{u'Name': 'AutoScalingGroupName',
+                                 u'Value': 'group_x'}],
+                u'MetricName': u'CreateDataMetric'}
+        self.wr = watchrule.WatchRule(context=self.ctx,
+                                      watch_name='create_data_test',
+                                      stack_id=self.stack_id, rule=rule)
+        self.wr.store()
+
+        data = {u'CreateDataMetric': {"Unit": "Counter",
+                                      "Value": "1",
+                                      "Dimensions": [
+                                          {u'AutoScalingGroupName':
+                                           u'not_this'}]},
+                u'CreateDataMetric': {"Unit": "Counter",
+                                      "Value": "1",
+                                      "Dimensions": [
+                                          {u'AutoScalingGroupName':
+                                           u'group_x'}]}}
+        self.assertTrue(watchrule.rule_can_use_sample(self.wr, data))
+
+    def test_create_watch_data_not_match_metric(self):
+        rule = {u'EvaluationPeriods': u'1',
+                u'AlarmDescription': u'test alarm',
+                u'Period': u'300',
+                u'ComparisonOperator': u'GreaterThanThreshold',
+                u'Statistic': u'SampleCount',
+                u'Threshold': u'2',
+                u'Dimensions': [{u'Name': 'AutoScalingGroupName',
+                                 u'Value': 'group_x'}],
+                u'MetricName': u'CreateDataMetric'}
+        self.wr = watchrule.WatchRule(context=self.ctx,
+                                      watch_name='create_data_test',
+                                      stack_id=self.stack_id, rule=rule)
+        self.wr.store()
+
+        data = {u'not_this': {"Unit": "Counter",
+                              "Value": "1",
+                              "Dimensions": [
+                                  {u'AutoScalingGroupName':
+                                   u'group_x'}]},
+                u'nor_this': {"Unit": "Counter",
+                              "Value": "1",
+                              "Dimensions": [
+                                  {u'AutoScalingGroupName':
+                                   u'group_x'}]}}
+        self.assertFalse(watchrule.rule_can_use_sample(self.wr, data))
+
+    def test_create_watch_data_not_match_dimensions(self):
+        rule = {u'EvaluationPeriods': u'1',
+                u'AlarmDescription': u'test alarm',
+                u'Period': u'300',
+                u'ComparisonOperator': u'GreaterThanThreshold',
+                u'Statistic': u'SampleCount',
+                u'Threshold': u'2',
+                u'Dimensions': [{u'Name': 'AutoScalingGroupName',
+                                 u'Value': 'group_x'}],
+                u'MetricName': u'CreateDataMetric'}
+        self.wr = watchrule.WatchRule(context=self.ctx,
+                                      watch_name='create_data_test',
+                                      stack_id=self.stack_id, rule=rule)
+        self.wr.store()
+
+        data = {u'CreateDataMetric': {"Unit": "Counter",
+                                      "Value": "1",
+                                      "Dimensions": [
+                                          {u'AutoScalingGroupName':
+                                           u'not_this'}]},
+                u'CreateDataMetric': {"Unit": "Counter",
+                                      "Value": "1",
+                                      "Dimensions": [
+                                          {u'wrong_key':
+                                           u'group_x'}]}}
+        self.assertFalse(watchrule.rule_can_use_sample(self.wr, data))
 
     def test_destroy(self):
         rule = {'EvaluationPeriods': '1',

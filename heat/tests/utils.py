@@ -12,8 +12,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import sys
 import functools
+import random
+import string
+import sys
+import uuid
+
+import sqlalchemy
 
 from heat.common import context
 from heat.common import exception
@@ -22,6 +27,24 @@ from heat.engine import parser
 
 from heat.db.sqlalchemy.session import get_engine
 from heat.db import migration
+
+
+class UUIDStub(object):
+    def __init__(self, value):
+        self.value = value
+
+    def __enter__(self):
+        self.uuid4 = uuid.uuid4
+        uuid_stub = lambda: self.value
+        uuid.uuid4 = uuid_stub
+
+    def __exit__(self, *exc_info):
+        uuid.uuid4 = self.uuid4
+
+
+def random_name():
+    return ''.join(random.choice(string.ascii_uppercase)
+                   for x in range(10))
 
 
 def stack_delete_after(test_fn):
@@ -91,16 +114,36 @@ def wr_delete_after(test_fn):
 def setup_dummy_db():
     migration.db_sync()
     engine = get_engine()
-    conn = engine.connect()
+    engine.connect()
+
+
+def reset_dummy_db():
+    engine = get_engine()
+    meta = sqlalchemy.MetaData()
+    meta.reflect(bind=engine)
+
+    for table in reversed(meta.sorted_tables):
+        if table.name == 'migrate_version':
+            continue
+        engine.execute(table.delete())
+
+
+def dummy_context(user='test_username', tenant_id='test_tenant_id',
+                  password='password', roles=[]):
+    return context.RequestContext.from_dict({
+        'tenant_id': tenant_id,
+        'tenant': 'test_tenant',
+        'username': user,
+        'password': password,
+        'roles': roles,
+        'trust_id': 'atrust123',
+        'auth_url': 'http://server.test:5000/v2.0',
+        'auth_token': 'abcd1234'
+    })
 
 
 def parse_stack(t, params={}, stack_name='test_stack', stack_id=None):
-    ctx = context.RequestContext.from_dict({'tenant_id': 'test_tenant',
-                                            'tenant': 'test_tenant',
-                                            'username': 'test_username',
-                                            'password': 'password',
-                                            'auth_url':
-                                            'http://localhost:5000/v2.0'})
+    ctx = dummy_context()
     template = parser.Template(t)
     stack = parser.Stack(ctx, stack_name, template,
                          environment.Environment(params), stack_id)

@@ -19,15 +19,18 @@ import json
 from oslo.config import cfg
 import webob
 
+from heat.openstack.common import timeutils
 from heat.common import context
 from heat.db import api as db_api
 from heat.engine import api
 from heat.rpc import api as rpc_api
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine.event import Event
 from heat.engine import environment
 from heat.common import exception
 from heat.common import identifier
+from heat.common import heat_keystoneclient as hkc
 from heat.engine import parameters
 from heat.engine import parser
 from heat.engine import properties
@@ -95,6 +98,24 @@ class EngineService(service.Service):
         """
         pass
 
+    def _start_watch_task(self, stack_id, cnxt):
+        wrs = db_api.watch_rule_get_all_by_stack(cnxt,
+                                                 stack_id)
+
+        now = timeutils.utcnow()
+        start_watch_thread = False
+        for wr in wrs:
+            # reset the last_evaluated so we don't fire off alarms when
+            # the engine has not been running.
+            db_api.watch_rule_update(cnxt, wr.id, {'last_evaluated': now})
+
+            if wr.state != rpc_api.WATCH_STATE_CEILOMETER_CONTROLLED:
+                start_watch_thread = True
+
+        if start_watch_thread:
+            self._timer_in_thread(stack_id, self._periodic_watcher_task,
+                                  sid=stack_id)
+
     def start(self):
         super(EngineService, self).start()
 
@@ -107,7 +128,7 @@ class EngineService(service.Service):
         admin_context = context.get_admin_context()
         stacks = db_api.stack_get_all(admin_context)
         for s in stacks:
-            self._timer_in_thread(s.id, self._periodic_watcher_task, sid=s.id)
+            self._start_watch_task(s.id, admin_context)
 
     @request_context
     def identify_stack(self, cnxt, stack_name):
@@ -118,7 +139,7 @@ class EngineService(service.Service):
         arg2 -> Name or UUID of the stack to look up.
         """
         if uuidutils.is_uuid_like(stack_name):
-            s = db_api.stack_get(cnxt, stack_name)
+            s = db_api.stack_get(cnxt, stack_name, show_deleted=True)
         else:
             s = db_api.stack_get_by_name(cnxt, stack_name)
         if s:
@@ -127,14 +148,15 @@ class EngineService(service.Service):
         else:
             raise exception.StackNotFound(stack_name=stack_name)
 
-    def _get_stack(self, cnxt, stack_identity):
+    def _get_stack(self, cnxt, stack_identity, show_deleted=False):
         identity = identifier.HeatIdentifier(**stack_identity)
 
         if identity.tenant != cnxt.tenant_id:
             raise exception.InvalidTenant(target=identity.tenant,
                                           actual=cnxt.tenant_id)
 
-        s = db_api.stack_get(cnxt, identity.stack_id)
+        s = db_api.stack_get(cnxt, identity.stack_id,
+                             show_deleted=show_deleted)
 
         if s is None:
             raise exception.StackNotFound(stack_name=identity.stack_name)
@@ -152,7 +174,7 @@ class EngineService(service.Service):
         arg2 -> Name of the stack you want to show, or None to show all
         """
         if stack_identity is not None:
-            stacks = [self._get_stack(cnxt, stack_identity)]
+            stacks = [self._get_stack(cnxt, stack_identity, show_deleted=True)]
         else:
             stacks = db_api.stack_get_all_by_tenant(cnxt) or []
 
@@ -214,8 +236,7 @@ class EngineService(service.Service):
             stack.create()
             if stack.action == stack.CREATE and stack.status == stack.COMPLETE:
                 # Schedule a periodic watcher task for this stack
-                self._timer_in_thread(stack.id, self._periodic_watcher_task,
-                                      sid=stack.id)
+                self._start_watch_task(stack.id, cnxt)
             else:
                 logger.warning("Stack create failed, status %s" % stack.status)
 
@@ -231,6 +252,11 @@ class EngineService(service.Service):
                              env, **common_params)
 
         stack.validate()
+
+        # Creates a trust and sets the trust_id and trustor_user_id in
+        # the current context, before we store it in stack.store()
+        # Does nothing if deferred_auth_method is 'password'
+        stack.clients.keystone().create_trust_context()
 
         stack_id = stack.store()
 
@@ -292,15 +318,25 @@ class EngineService(service.Service):
             return webob.exc.HTTPBadRequest(explanation=msg)
 
         tmpl = parser.Template(template)
-        tmpl_resources = template.get('Resources', [])
+        tmpl_resources = tmpl.get('Resources', [])
 
         if not tmpl_resources:
             return {'Error': 'At least one Resources member must be defined.'}
 
         for res in tmpl_resources.values():
-            if not res.get('Type'):
+            try:
+                if not res.get('Type'):
+                    return {'Error':
+                            'Every Resource object must '
+                            'contain a Type member.'}
+            except AttributeError:
+                type_res = type(res)
+                if isinstance(res, unicode):
+                    type_res = "string"
                 return {'Error':
-                        'Every Resources object must contain a Type member.'}
+                        'Resources must contain Resource. '
+                        'Found a [%s] instead' % type_res}
+
             ResourceClass = resource.get_class(res['Type'])
             props = properties.Properties(ResourceClass.properties_schema,
                                           res.get('Properties', {}))
@@ -316,7 +352,7 @@ class EngineService(service.Service):
         params = tmpl_params.map(format_validate_parameter, is_real_param)
 
         result = {
-            'Description': template.get('Description', ''),
+            'Description': tmpl.get('Description', ''),
             'Parameters': params,
         }
         return result
@@ -336,7 +372,7 @@ class EngineService(service.Service):
         arg1 -> RPC context.
         arg2 -> Name of the stack you want to see.
         """
-        s = self._get_stack(cnxt, stack_identity)
+        s = self._get_stack(cnxt, stack_identity, show_deleted=True)
         if s:
             return s.raw_template.template
         return None
@@ -354,6 +390,13 @@ class EngineService(service.Service):
 
         stack = parser.Stack.load(cnxt, stack=st)
 
+        # If we created a trust, delete it
+        # Note this is using the current request context, not the stored
+        # context, as it seems it's not possible to delete a trust with
+        # a token obtained via that trust.  This means that only the user
+        # who created the stack can delete it when using trusts atm.
+        stack.clients.keystone().delete_trust_context()
+
         # Kill any pending threads by calling ThreadGroup.stop()
         if st.id in self.stg:
             self.stg[st.id].stop()
@@ -369,6 +412,46 @@ class EngineService(service.Service):
         """
         return list(resource.get_types())
 
+    def resource_schema(self, cnxt, type_name):
+        """
+        Return the schema of the specified type.
+        arg1 -> RPC context.
+        arg2 -> Name of the resource type to obtain the schema of.
+        """
+        try:
+            resource_class = resource.get_class(type_name)
+        except exception.StackValidationFailed:
+            raise exception.ResourceTypeNotFound(type_name=type_name)
+
+        def properties_schema():
+            for name, schema_dict in resource_class.properties_schema.items():
+                schema = properties.Schema.from_legacy(schema_dict)
+                if schema.implemented:
+                    yield name, dict(schema)
+
+        def attributes_schema():
+            for schema_item in resource_class.attributes_schema.items():
+                schema = attributes.Attribute(*schema_item)
+                yield schema.name, {schema.DESCRIPTION: schema.description}
+
+        return {
+            rpc_api.RES_SCHEMA_RES_TYPE: type_name,
+            rpc_api.RES_SCHEMA_PROPERTIES: dict(properties_schema()),
+            rpc_api.RES_SCHEMA_ATTRIBUTES: dict(attributes_schema()),
+        }
+
+    def generate_template(self, cnxt, type_name):
+        """
+        Generate a template based on the specified type.
+        arg1 -> RPC context.
+        arg2 -> Name of the resource type to generate a template for.
+        """
+        try:
+            return \
+                resource.get_class(type_name).resource_to_template(type_name)
+        except exception.StackValidationFailed:
+            raise exception.ResourceTypeNotFound(type_name=type_name)
+
     @request_context
     def list_events(self, cnxt, stack_identity):
         """
@@ -378,7 +461,7 @@ class EngineService(service.Service):
         """
 
         if stack_identity is not None:
-            st = self._get_stack(cnxt, stack_identity)
+            st = self._get_stack(cnxt, stack_identity, show_deleted=True)
 
             events = db_api.event_get_all_by_stack(cnxt, st.id)
         else:
@@ -452,6 +535,28 @@ class EngineService(service.Service):
         return api.format_stack_resource(stack[resource_name])
 
     @request_context
+    def resource_signal(self, cnxt, stack_identity, resource_name, details):
+        s = self._get_stack(cnxt, stack_identity)
+
+        # This is not "nice" converting to the stored context here,
+        # but this happens because the keystone user associated with the
+        # signal doesn't have permission to read the secret key of
+        # the user associated with the cfn-credentials file
+        stack_context = self._load_user_creds(s.user_creds_id)
+        stack = parser.Stack.load(stack_context, stack=s)
+
+        if resource_name not in stack:
+            raise exception.ResourceNotFound(resource_name=resource_name,
+                                             stack_name=stack.name)
+
+        resource = stack[resource_name]
+        if resource.id is None:
+            raise exception.ResourceNotAvailable(resource_name=resource_name)
+
+        if callable(stack[resource_name].signal):
+            stack[resource_name].signal(details)
+
+    @request_context
     def find_physical_resource(self, cnxt, physical_resource_id):
         """
         Return an identifier for the resource with the specified physical
@@ -482,8 +587,7 @@ class EngineService(service.Service):
             name_match = lambda r: True
 
         return [api.format_stack_resource(resource)
-                for resource in stack
-                if resource.id is not None and name_match(resource)]
+                for resource in stack if name_match(resource)]
 
     @request_context
     def list_stack_resources(self, cnxt, stack_identity):
@@ -492,7 +596,7 @@ class EngineService(service.Service):
         stack = parser.Stack.load(cnxt, stack=s)
 
         return [api.format_stack_resource(resource, detail=False)
-                for resource in stack if resource.id is not None]
+                for resource in stack]
 
     @request_context
     def stack_suspend(self, cnxt, stack_identity):
@@ -522,6 +626,15 @@ class EngineService(service.Service):
         stack = parser.Stack.load(cnxt, stack=s)
         self._start_in_thread(stack.id, _stack_resume, stack)
 
+    def _load_user_creds(self, creds_id):
+        user_creds = db_api.user_creds_get(creds_id)
+        stored_context = context.RequestContext.from_dict(user_creds)
+        # heat_keystoneclient populates the context with an auth_token
+        # either via the stored user/password or trust_id, depending
+        # on how deferred_auth_method is configured in the conf file
+        kc = hkc.KeystoneClient(stored_context)
+        return stored_context
+
     @request_context
     def metadata_update(self, cnxt, stack_identity,
                         resource_name, metadata):
@@ -542,8 +655,7 @@ class EngineService(service.Service):
         # but this happens because the keystone user associated with the
         # WaitCondition doesn't have permission to read the secret key of
         # the user associated with the cfn-credentials file
-        user_creds = db_api.user_creds_get(s.user_creds_id)
-        stack_context = context.RequestContext.from_dict(user_creds)
+        stack_context = self._load_user_creds(s.user_creds_id)
         refresh_stack = parser.Stack.load(stack_context, stack=s)
 
         # Refresh the metadata for all other resources, since we expect
@@ -572,8 +684,7 @@ class EngineService(service.Service):
             logger.error("Unable to retrieve stack %s for periodic task" %
                          sid)
             return
-        user_creds = db_api.user_creds_get(stack.user_creds_id)
-        stack_context = context.RequestContext.from_dict(user_creds)
+        stack_context = self._load_user_creds(stack.user_creds_id)
 
         # Get all watchrules for this stack and evaluate them
         try:
@@ -583,9 +694,9 @@ class EngineService(service.Service):
                         ('watch rule removed?', str(ex)))
             return
 
-        def run_alarm_action(actions):
+        def run_alarm_action(actions, details):
             for action in actions:
-                action()
+                action(details=details)
 
             stk = parser.Stack.load(stack_context, stack=stack)
             for res in stk:
@@ -595,7 +706,8 @@ class EngineService(service.Service):
             rule = watchrule.WatchRule.load(stack_context, watch=wr)
             actions = rule.evaluate()
             if actions:
-                self._start_in_thread(sid, run_alarm_action, actions)
+                self._start_in_thread(sid, run_alarm_action, actions,
+                                      rule.get_details())
 
     @request_context
     def create_watch_data(self, cnxt, watch_name, stats_data):
@@ -603,9 +715,24 @@ class EngineService(service.Service):
         This could be used by CloudWatch and WaitConditions
         and treat HA service events like any other CloudWatch.
         '''
-        rule = watchrule.WatchRule.load(cnxt, watch_name)
-        rule.create_watch_data(stats_data)
-        logger.debug('new watch:%s data:%s' % (watch_name, str(stats_data)))
+        def get_matching_watches():
+            if watch_name:
+                yield watchrule.WatchRule.load(cnxt, watch_name)
+            else:
+                for wr in db_api.watch_rule_get_all(cnxt):
+                    if watchrule.rule_can_use_sample(wr, stats_data):
+                        yield watchrule.WatchRule.load(cnxt, watch=wr)
+
+        rule_run = False
+        for rule in get_matching_watches():
+            rule.create_watch_data(stats_data)
+            rule_run = True
+
+        if not rule_run:
+            if watch_name is None:
+                watch_name = 'Unknown'
+            raise exception.WatchRuleNotFound(watch_name=watch_name)
+
         return stats_data
 
     @request_context
@@ -662,6 +789,8 @@ class EngineService(service.Service):
         arg3 -> State (must be one defined in WatchRule class
         '''
         wr = watchrule.WatchRule.load(cnxt, watch_name)
+        if wr.state == rpc_api.WATCH_STATE_CEILOMETER_CONTROLLED:
+            return
         actions = wr.set_watch_state(state)
         for action in actions:
             self._start_in_thread(wr.stack_id, action)

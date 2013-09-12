@@ -83,8 +83,8 @@ class RackspaceResource(resource.Resource):
 
         return self._cloud_blockstore
 
-    def quantum(self):
-        '''Rackspace quantum client.'''
+    def neutron(self):
+        '''Rackspace neutron client.'''
         if not self._cloud_nw:
             self.__authenticate()
             self._cloud_nw = self.pyrax.cloud_networks
@@ -100,8 +100,9 @@ class RackspaceResource(resource.Resource):
             pyrax.set_setting("tenant_id", self.context.tenant)
             logger.info("Authenticating with username:%s" %
                         self.context.username)
-            pyrax.set_credentials(self.context.username,
-                                  password=self.context.password)
+            pyrax.auth_with_token(self.context.auth_token,
+                                  tenant_id=self.context.tenant_id,
+                                  tenant_name=self.context.tenant)
             logger.info("User %s authenticated successfully."
                         % self.context.username)
             self._authenticated = True

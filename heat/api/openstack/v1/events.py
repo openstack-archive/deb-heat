@@ -21,8 +21,6 @@ from heat.common import wsgi
 from heat.rpc import api as engine_api
 from heat.common import identifier
 from heat.rpc import client as rpc_client
-import heat.openstack.common.rpc.common as rpc_common
-from heat.openstack.common.gettextutils import _
 
 
 summary_keys = [
@@ -59,6 +57,9 @@ def format_event(req, event, keys=None):
             # and RES_STATUS, so the API format doesn't expose the
             # internal split of state into action/status
             yield (key, '_'.join((event[engine_api.EVENT_RES_ACTION], value)))
+        elif (key == engine_api.RES_NAME):
+            yield ('logical_resource_id', value)
+            yield (key, value)
 
         else:
             yield (key, value)
@@ -79,11 +80,8 @@ class EventController(object):
 
     def _event_list(self, req, identity,
                     filter_func=lambda e: True, detail=False):
-        try:
-            events = self.engine.list_events(req.context,
-                                             identity)
-        except rpc_common.RemoteError as ex:
-            return util.remote_error(ex)
+        events = self.engine.list_events(req.context,
+                                         identity)
 
         keys = None if detail else summary_keys
 

@@ -17,7 +17,6 @@ from testtools import skipIf
 from heat.engine import clients
 from heat.engine import environment
 from heat.tests.v1_1 import fakes
-from heat.common import context
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import resources
@@ -27,7 +26,7 @@ from heat.openstack.common.importutils import try_import
 import heat.db.api as db_api
 from heat.engine import parser
 from heat.tests.common import HeatTestCase
-from heat.tests.utils import setup_dummy_db
+from heat.tests import utils
 
 test_template_volumeattach = '''
 {
@@ -211,6 +210,31 @@ test_template_findinmap_invalid = '''
 }
 '''
 
+test_template_invalid_resources = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "AWS CloudFormation Sample Template for xyz.",
+   "Parameters" : {
+        "InstanceType" : {
+            "Description" : "Defined instance type",
+            "Type" : "String",
+            "Default" : "node.ee",
+            "AllowedValues" : ["node.ee", "node.apache", "node.api"],
+            "ConstraintDescription" : "must be a valid instance type."
+        }
+    },
+    "Resources" : {
+        "Type" : "AWS::EC2::Instance",
+        "Metadata" : {
+        },
+        "Properties" : {
+            "ImageId" : { "Ref" : "centos-6.4-20130701-0" },
+            "InstanceType" : { "Ref" : "InstanceType" }
+         }
+    }
+}
+'''
+
 test_template_invalid_property = '''
 {
   "AWSTemplateFormatVersion" : "2010-09-09",
@@ -372,6 +396,34 @@ test_unregistered_key = '''
     }
     '''
 
+test_template_image = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "test.",
+  "Parameters" : {
+
+    "KeyName" : {
+''' + \
+    '"Description" : "Name of an existing EC2' + \
+    'KeyPair to enable SSH access to the instances",' + \
+    '''
+          "Type" : "String"
+        }
+      },
+
+      "Resources" : {
+        "Instance": {
+          "Type": "AWS::EC2::Instance",
+          "Properties": {
+            "ImageId": "image_name",
+            "InstanceType": "m1.large",
+            "KeyName": { "Ref" : "KeyName" }
+          }
+        }
+      }
+    }
+    '''
+
 test_template_invalid_secgroups = '''
 {
   "AWSTemplateFormatVersion" : "2010-09-09",
@@ -492,12 +544,12 @@ class validateTest(HeatTestCase):
         resources.initialise()
         self.fc = fakes.FakeClient()
         resources.initialise()
-        setup_dummy_db()
-        self.ctx = context.get_admin_context()
+        utils.setup_dummy_db()
+        self.ctx = utils.dummy_context()
 
     def test_validate_volumeattach_valid(self):
         t = template_format.parse(test_template_volumeattach % 'vdq')
-        stack = parser.Stack(None, 'test_stack', parser.Template(t))
+        stack = parser.Stack(self.ctx, 'test_stack', parser.Template(t))
 
         self.m.StubOutWithMock(db_api, 'resource_get_by_name_and_stack')
         db_api.resource_get_by_name_and_stack(None, 'test_resource_name',
@@ -509,7 +561,7 @@ class validateTest(HeatTestCase):
 
     def test_validate_volumeattach_invalid(self):
         t = template_format.parse(test_template_volumeattach % 'sda')
-        stack = parser.Stack(None, 'test_stack', parser.Template(t))
+        stack = parser.Stack(self.ctx, 'test_stack', parser.Template(t))
 
         self.m.StubOutWithMock(db_api, 'resource_get_by_name_and_stack')
         db_api.resource_get_by_name_and_stack(None, 'test_resource_name',
@@ -523,6 +575,23 @@ class validateTest(HeatTestCase):
     def test_validate_ref_valid(self):
         t = template_format.parse(test_template_ref % 'WikiDatabase')
 
+        self.m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        engine = service.EngineService('a', 't')
+        res = dict(engine.validate_template(None, t))
+        self.assertEqual(res['Description'], 'test.')
+
+    def test_validate_hot_valid(self):
+        t = template_format.parse(
+            """
+            heat_template_version: 2013-05-23
+            description: test.
+            resources:
+              my_instance:
+                type: AWS::EC2::Instance
+            """)
         self.m.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().AndReturn(self.fc)
         self.m.ReplayAll()
@@ -588,6 +657,18 @@ class validateTest(HeatTestCase):
         res = dict(engine.validate_template(None, t))
         self.assertEqual(res, {'Error': 'Unknown Property UnknownProperty'})
 
+    def test_invalid_resources(self):
+        t = template_format.parse(test_template_invalid_resources)
+        self.m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        engine = service.EngineService('a', 't')
+        res = dict(engine.validate_template(None, t))
+        self.assertEqual({'Error': 'Resources must contain Resource. '
+                          'Found a [string] instead'},
+                         res)
+
     def test_unimplemented_property(self):
         t = template_format.parse(test_template_unimplemented_property)
         self.m.StubOutWithMock(instances.Instance, 'nova')
@@ -637,7 +718,7 @@ class validateTest(HeatTestCase):
         t = template_format.parse(test_unregistered_key)
         template = parser.Template(t)
         params = {'KeyName': 'not_registered'}
-        stack = parser.Stack(None, 'test_stack', template,
+        stack = parser.Stack(self.ctx, 'test_stack', template,
                              environment.Environment(params))
 
         self.m.StubOutWithMock(instances.Instance, 'nova')
@@ -646,12 +727,60 @@ class validateTest(HeatTestCase):
         self.m.ReplayAll()
 
         resource = stack.resources['Instance']
-        self.assertNotEqual(resource.validate(), None)
+        self.assertRaises(exception.UserKeyPairMissing, resource.validate)
+
+    def test_unregistered_image(self):
+        t = template_format.parse(test_template_image)
+        template = parser.Template(t)
+
+        stack = parser.Stack(self.ctx, 'test_stack', template,
+                             environment.Environment({'KeyName': 'test'}))
+
+        self.m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().AndReturn(self.fc)
+        instances.Instance.nova().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        resource = stack.resources['Instance']
+        self.assertRaises(exception.ImageNotFound, resource.validate)
+
+        self.m.VerifyAll()
+
+    def test_duplicated_image(self):
+        t = template_format.parse(test_template_image)
+        template = parser.Template(t)
+
+        stack = parser.Stack(self.ctx, 'test_stack', template,
+                             environment.Environment({'KeyName': 'test'}))
+
+        class image_type(object):
+
+            def __init__(self, id, name):
+                self.id = id
+                self.name = name
+
+        image_list = [image_type(id='768b5464-3df5-4abf-be33-63b60f8b99d0',
+                                 name='image_name'),
+                      image_type(id='a57384f5-690f-48e1-bf46-c4291e6c887e',
+                                 name='image_name')]
+
+        self.m.StubOutWithMock(self.fc.images, 'list')
+        self.fc.images.list().AndReturn(image_list)
+
+        self.m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().AndReturn(self.fc)
+        instances.Instance.nova().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        resource = stack.resources['Instance']
+        self.assertRaises(exception.NoUniqueImageFound, resource.validate)
+
+        self.m.VerifyAll()
 
     def test_invalid_security_groups_with_nics(self):
         t = template_format.parse(test_template_invalid_secgroups)
         template = parser.Template(t)
-        stack = parser.Stack(None, 'test_stack', template,
+        stack = parser.Stack(self.ctx, 'test_stack', template,
                              environment.Environment({'KeyName': 'test'}))
 
         self.m.StubOutWithMock(instances.Instance, 'nova')
@@ -659,12 +788,13 @@ class validateTest(HeatTestCase):
         self.m.ReplayAll()
 
         resource = stack.resources['Instance']
-        self.assertNotEqual(resource.validate(), None)
+        self.assertRaises(exception.ResourcePropertyConflict,
+                          resource.validate)
 
     def test_invalid_security_group_ids_with_nics(self):
         t = template_format.parse(test_template_invalid_secgroupids)
         template = parser.Template(t)
-        stack = parser.Stack(None, 'test_stack', template,
+        stack = parser.Stack(self.ctx, 'test_stack', template,
                              environment.Environment({'KeyName': 'test'}))
 
         self.m.StubOutWithMock(instances.Instance, 'nova')
@@ -672,7 +802,8 @@ class validateTest(HeatTestCase):
         self.m.ReplayAll()
 
         resource = stack.resources['Instance']
-        self.assertNotEqual(resource.validate(), None)
+        self.assertRaises(exception.ResourcePropertyConflict,
+                          resource.validate)
 
     def test_client_exception_from_nova_client(self):
         t = template_format.parse(test_template_nova_client_exception)
@@ -686,8 +817,7 @@ class validateTest(HeatTestCase):
         instances.Instance.nova().AndReturn(self.fc)
         self.m.ReplayAll()
 
-        self.assertRaises(exception.ServerError,
-                          stack.validate)
+        self.assertRaises(exception.Error, stack.validate)
         self.m.VerifyAll()
 
     def test_validate_unique_logical_name(self):

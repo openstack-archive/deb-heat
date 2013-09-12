@@ -14,12 +14,11 @@
 
 from heat.tests.v1_1 import fakes
 from heat.engine.resources import instance as instances
+from heat.engine.resources import nova_utils
 from heat.common import template_format
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
-from heat.tests.utils import setup_dummy_db
-from heat.tests.utils import parse_stack
 
 
 nokey_template = '''
@@ -45,13 +44,13 @@ class nokeyTest(HeatTestCase):
     def setUp(self):
         super(nokeyTest, self).setUp()
         self.fc = fakes.FakeClient()
-        setup_dummy_db()
+        utils.setup_dummy_db()
 
     def test_nokey_create(self):
 
         stack_name = 'instance_create_test_nokey_stack'
         t = template_format.parse(nokey_template)
-        stack = parse_stack(t, stack_name=stack_name)
+        stack = utils.parse_stack(t, stack_name=stack_name)
 
         t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
         t['Resources']['WebServer']['Properties']['InstanceType'] = \
@@ -65,8 +64,10 @@ class nokeyTest(HeatTestCase):
         instance.t = instance.stack.resolve_runtime_data(instance.t)
 
         # need to resolve the template functions
-        server_userdata = instance._build_userdata(
+        server_userdata = nova_utils.build_userdata(
+            instance,
             instance.t['Properties']['UserData'])
+        instance.mime_string = server_userdata
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=1, flavor=1, key_name=None,

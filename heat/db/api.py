@@ -28,7 +28,6 @@ supported backend.
 
 from oslo.config import cfg
 
-from heat.common import config
 from heat.db import utils
 
 SQL_CONNECTION = 'sqlite://'
@@ -38,14 +37,19 @@ db_opts = [
                default='sqlalchemy',
                help='The backend to use for db')]
 
+cfg.CONF.register_opts(db_opts)
+
 IMPL = utils.LazyPluggable('db_backend',
                            sqlalchemy='heat.db.sqlalchemy.api')
+
+
+cfg.CONF.import_opt('sql_connection', 'heat.common.config')
+cfg.CONF.import_opt('sql_idle_timeout', 'heat.common.config')
 
 
 def configure():
     global SQL_CONNECTION
     global SQL_IDLE_TIMEOUT
-    config.register_db_opts()
     SQL_CONNECTION = cfg.CONF.sql_connection
     SQL_IDLE_TIMEOUT = cfg.CONF.sql_idle_timeout
 
@@ -56,10 +60,6 @@ def get_session():
 
 def raw_template_get(context, template_id):
     return IMPL.raw_template_get(context, template_id)
-
-
-def raw_template_get_all(context):
-    return IMPL.raw_template_get_all(context)
 
 
 def raw_template_create(context, values):
@@ -78,6 +78,11 @@ def resource_data_get_by_key(context, resource_id, key):
     return IMPL.resource_data_get_by_key(context, resource_id, key)
 
 
+def resource_data_delete(resource, key):
+    """Remove a resource_data element associated to a resource."""
+    return IMPL.resource_data_delete(resource, key)
+
+
 def resource_get(context, resource_id):
     return IMPL.resource_get(context, resource_id)
 
@@ -88,6 +93,10 @@ def resource_get_all(context):
 
 def resource_create(context, values):
     return IMPL.resource_create(context, values)
+
+
+def resource_exchange_stacks(context, resource_id1, resource_id2):
+    return IMPL.resource_exchange_stacks(context, resource_id1, resource_id2)
 
 
 def resource_get_all_by_stack(context, stack_id):
@@ -104,12 +113,12 @@ def resource_get_by_physical_resource_id(context, physical_resource_id):
                                                      physical_resource_id)
 
 
-def stack_get(context, stack_id, admin=False):
-    return IMPL.stack_get(context, stack_id, admin)
+def stack_get(context, stack_id, admin=False, show_deleted=False):
+    return IMPL.stack_get(context, stack_id, admin, show_deleted=show_deleted)
 
 
-def stack_get_by_name(context, stack_name):
-    return IMPL.stack_get_by_name(context, stack_name)
+def stack_get_by_name(context, stack_name, owner_id=None):
+    return IMPL.stack_get_by_name(context, stack_name, owner_id=owner_id)
 
 
 def stack_get_all(context):

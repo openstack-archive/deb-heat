@@ -15,20 +15,20 @@
 import collections
 
 from heat.engine import clients
-from heat.common import context
+from heat.common import exception
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import resource
+from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
-from heat.tests.utils import setup_dummy_db
+from heat.tests.fakes import FakeKeystoneClient
 from heat.tests.v1_1 import fakes
 from heat.tests import utils
-from heat.tests.utils import stack_delete_after
 
 from novaclient.v1_1 import security_groups as nova_sg
 from novaclient.v1_1 import security_group_rules as nova_sgr
-from quantumclient.common.exceptions import QuantumClientException
-from quantumclient.v2_0 import client as quantumclient
+from neutronclient.common.exceptions import NeutronClientException
+from neutronclient.v2_0 import client as neutronclient
 
 NovaSG = collections.namedtuple('NovaSG',
                                 ' '.join([
@@ -50,16 +50,34 @@ Resources:
       GroupDescription: HTTP and SSH access
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
+          FromPort: "22"
+          ToPort: "22"
           CidrIp: 0.0.0.0/0
         - IpProtocol: tcp
-          FromPort : 80
-          ToPort : 80
+          FromPort : "80"
+          ToPort : "80"
           CidrIp : 0.0.0.0/0
+        - IpProtocol: tcp
+          SourceSecurityGroupName: test
+        - IpProtocol: icmp
+          SourceSecurityGroupId: "1"
 '''
 
-    test_template_quantum = '''
+    test_template_nova_with_egress = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Resources:
+  the_sg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: HTTP and SSH access
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: "22"
+          ToPort: "22"
+          CidrIp: 0.0.0.0/0
+'''
+
+    test_template_neutron = '''
 HeatTemplateFormatVersion: '2012-12-12'
 Resources:
   the_sg:
@@ -69,38 +87,42 @@ Resources:
       VpcId: aaaa
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
+          FromPort: "22"
+          ToPort: "22"
           CidrIp: 0.0.0.0/0
         - IpProtocol: tcp
-          FromPort : 80
-          ToPort : 80
+          FromPort : "80"
+          ToPort : "80"
           CidrIp : 0.0.0.0/0
+        - IpProtocol: tcp
+          SourceSecurityGroupId: wwww
       SecurityGroupEgress:
         - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
+          FromPort: "22"
+          ToPort: "22"
           CidrIp: 10.0.1.0/24
+        - SourceSecurityGroupName: xxxx
 '''
 
     def setUp(self):
         super(SecurityGroupTest, self).setUp()
         self.fc = fakes.FakeClient()
         self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
         self.m.StubOutWithMock(nova_sgr.SecurityGroupRuleManager, 'create')
         self.m.StubOutWithMock(nova_sgr.SecurityGroupRuleManager, 'delete')
         self.m.StubOutWithMock(nova_sg.SecurityGroupManager, 'create')
         self.m.StubOutWithMock(nova_sg.SecurityGroupManager, 'delete')
         self.m.StubOutWithMock(nova_sg.SecurityGroupManager, 'get')
         self.m.StubOutWithMock(nova_sg.SecurityGroupManager, 'list')
-        setup_dummy_db()
-        self.m.StubOutWithMock(quantumclient.Client, 'create_security_group')
+        utils.setup_dummy_db()
+        self.m.StubOutWithMock(neutronclient.Client, 'create_security_group')
         self.m.StubOutWithMock(
-            quantumclient.Client, 'create_security_group_rule')
-        self.m.StubOutWithMock(quantumclient.Client, 'show_security_group')
+            neutronclient.Client, 'create_security_group_rule')
+        self.m.StubOutWithMock(neutronclient.Client, 'show_security_group')
         self.m.StubOutWithMock(
-            quantumclient.Client, 'delete_security_group_rule')
-        self.m.StubOutWithMock(quantumclient.Client, 'delete_security_group')
+            neutronclient.Client, 'delete_security_group_rule')
+        self.m.StubOutWithMock(neutronclient.Client, 'delete_security_group')
 
     def create_stack(self, template):
         t = template_format.parse(template)
@@ -109,14 +131,9 @@ Resources:
         return self.stack
 
     def parse_stack(self, t):
-        ctx = context.RequestContext.from_dict({
-            'tenant': 'test_tenant',
-            'username': 'test_username',
-            'password': 'password',
-            'auth_url': 'http://localhost:5000/v2.0'})
         stack_name = 'test_stack'
         tmpl = parser.Template(t)
-        stack = parser.Stack(ctx, stack_name, tmpl)
+        stack = parser.Stack(utils.dummy_context(), stack_name, tmpl)
         stack.store()
         return stack
 
@@ -126,7 +143,7 @@ Resources:
         self.assertEqual(ref_id, rsrc.FnGetRefId())
         self.assertEqual(metadata, dict(rsrc.metadata))
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_security_group_nova(self):
         #create script
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
@@ -148,9 +165,13 @@ Resources:
 
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.create(
-            2, 'tcp', 22, 22, '0.0.0.0/0').AndReturn(None)
+            2, 'tcp', '22', '22', '0.0.0.0/0', None).AndReturn(None)
         nova_sgr.SecurityGroupRuleManager.create(
-            2, 'tcp', 80, 80, '0.0.0.0/0').AndReturn(None)
+            2, 'tcp', '80', '80', '0.0.0.0/0', None).AndReturn(None)
+        nova_sgr.SecurityGroupRuleManager.create(
+            2, 'tcp', None, None, None, 1).AndReturn(None)
+        nova_sgr.SecurityGroupRuleManager.create(
+            2, 'icmp', None, None, None, '1').AndReturn(None)
 
         # delete script
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
@@ -159,31 +180,57 @@ Resources:
             name=sg_name,
             description='HTTP and SSH access',
             rules=[{
-                "from_port": 22,
+                "from_port": '22',
                 "group": {},
                 "ip_protocol": "tcp",
-                "to_port": 22,
+                "to_port": '22',
                 "parent_group_id": 2,
                 "ip_range": {
                     "cidr": "0.0.0.0/0"
                 },
                 'id': 130
             }, {
-                'from_port': 80,
+                'from_port': '80',
                 'group': {},
                 'ip_protocol': 'tcp',
-                'to_port': 80,
+                'to_port': '80',
                 'parent_group_id': 2,
                 'ip_range': {
                     'cidr': '0.0.0.0/0'
                 },
                 'id': 131
+            }, {
+                'from_port': None,
+                'group': {
+                    'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
+                    'name': 'test'
+                },
+                'ip_protocol': 'tcp',
+                'to_port': None,
+                'parent_group_id': 2,
+                'ip_range': {},
+                'id': 132
+            }, {
+                'from_port': None,
+                'group': {
+                    'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
+                    'name': 'test'
+                },
+                'ip_protocol': 'icmp',
+                'to_port': None,
+                'parent_group_id': 2,
+                'ip_range': {},
+                'id': 133
             }]
         ))
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.delete(130).AndReturn(None)
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.delete(131).AndReturn(None)
+        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        nova_sgr.SecurityGroupRuleManager.delete(132).AndReturn(None)
+        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        nova_sgr.SecurityGroupRuleManager.delete(133).AndReturn(None)
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sg.SecurityGroupManager.delete(2).AndReturn(None)
 
@@ -198,25 +245,41 @@ Resources:
         stack.delete()
         self.m.VerifyAll()
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_security_group_nova_exception(self):
         #create script
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         sg_name = utils.PhysName('test_stack', 'the_sg')
-        nova_sg.SecurityGroupManager.list().AndReturn([NovaSG(
-            id=2,
-            name=sg_name,
-            description='HTTP and SSH access',
-            rules=[],
-        )])
+        nova_sg.SecurityGroupManager.list().AndReturn([
+            NovaSG(
+                id=2,
+                name=sg_name,
+                description='HTTP and SSH access',
+                rules=[],
+            ),
+            NovaSG(
+                id=1,
+                name='test',
+                description='FAKE_SECURITY_GROUP',
+                rules=[],
+            )
+        ])
 
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.create(
-            2, 'tcp', 22, 22, '0.0.0.0/0').AndRaise(
+            2, 'tcp', '22', '22', '0.0.0.0/0', None).AndRaise(
                 clients.novaclient.exceptions.BadRequest(
                     400, 'Rule already exists'))
         nova_sgr.SecurityGroupRuleManager.create(
-            2, 'tcp', 80, 80, '0.0.0.0/0').AndReturn(
+            2, 'tcp', '80', '80', '0.0.0.0/0', None).AndReturn(
+                clients.novaclient.exceptions.BadRequest(
+                    400, 'Rule already exists'))
+        nova_sgr.SecurityGroupRuleManager.create(
+            2, 'tcp', None, None, None, 1).AndReturn(
+                clients.novaclient.exceptions.BadRequest(
+                    400, 'Rule already exists'))
+        nova_sgr.SecurityGroupRuleManager.create(
+            2, 'icmp', None, None, None, '1').AndReturn(
                 clients.novaclient.exceptions.BadRequest(
                     400, 'Rule already exists'))
 
@@ -227,25 +290,47 @@ Resources:
             name=sg_name,
             description='HTTP and SSH access',
             rules=[{
-                "from_port": 22,
+                "from_port": '22',
                 "group": {},
                 "ip_protocol": "tcp",
-                "to_port": 22,
+                "to_port": '22',
                 "parent_group_id": 2,
                 "ip_range": {
                     "cidr": "0.0.0.0/0"
                 },
                 'id': 130
             }, {
-                'from_port': 80,
+                'from_port': '80',
                 'group': {},
                 'ip_protocol': 'tcp',
-                'to_port': 80,
+                'to_port': '80',
                 'parent_group_id': 2,
                 'ip_range': {
                     'cidr': '0.0.0.0/0'
                 },
                 'id': 131
+            }, {
+                'from_port': None,
+                'group': {
+                    'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
+                    'name': 'test'
+                },
+                'ip_protocol': 'tcp',
+                'to_port': None,
+                'parent_group_id': 2,
+                'ip_range': {},
+                'id': 132
+            }, {
+                'from_port': None,
+                'group': {
+                    'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
+                    'name': 'test'
+                },
+                'ip_protocol': 'icmp',
+                'to_port': None,
+                'parent_group_id': 2,
+                'ip_range': {},
+                'id': 133
             }]
         ))
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
@@ -253,6 +338,12 @@ Resources:
             clients.novaclient.exceptions.NotFound('goneburger'))
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.delete(131).AndRaise(
+            clients.novaclient.exceptions.NotFound('goneburger'))
+        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        nova_sgr.SecurityGroupRuleManager.delete(132).AndRaise(
+            clients.novaclient.exceptions.NotFound('goneburger'))
+        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        nova_sgr.SecurityGroupRuleManager.delete(133).AndRaise(
             clients.novaclient.exceptions.NotFound('goneburger'))
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sg.SecurityGroupManager.delete(2).AndReturn(None)
@@ -269,7 +360,7 @@ Resources:
 
         self.assertResourceState(sg, utils.PhysName('test_stack', 'the_sg'))
 
-        self.assertEqual(None, sg.delete())
+        scheduler.TaskRunner(sg.delete)()
 
         sg.state_set(sg.CREATE, sg.COMPLETE, 'to delete again')
         sg.resource_id = 2
@@ -277,11 +368,20 @@ Resources:
 
         self.m.VerifyAll()
 
-    @stack_delete_after
-    def test_security_group_quantum(self):
+    def test_security_group_nova_with_egress_rules(self):
+        t = template_format.parse(self.test_template_nova_with_egress)
+        stack = self.parse_stack(t)
+
+        sg = stack['the_sg']
+        self.assertRaises(exception.EgressRuleNotAllowed, sg.validate)
+
+    @utils.stack_delete_after
+    def test_security_group_neutron(self):
         #create script
+        clients.OpenStackClients.keystone().AndReturn(
+            FakeKeystoneClient())
         sg_name = utils.PhysName('test_stack', 'the_sg')
-        quantumclient.Client.create_security_group({
+        neutronclient.Client.create_security_group({
             'security_group': {
                 'name': sg_name,
                 'description': 'HTTP and SSH access'
@@ -291,80 +391,160 @@ Resources:
                 'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
                 'name': sg_name,
                 'description': 'HTTP and SSH access',
-                'security_group_rules': [],
+                'security_group_rules': [{
+                    "direction": "egress",
+                    "ethertype": "IPv4",
+                    "id": "aaaa-1",
+                    "port_range_max": None,
+                    "port_range_min": None,
+                    "protocol": None,
+                    "remote_group_id": None,
+                    "remote_ip_prefix": None,
+                    "security_group_id": "aaaa",
+                    "tenant_id": "f18ca530cc05425e8bac0a5ff92f7e88"
+                }, {
+                    "direction": "egress",
+                    "ethertype": "IPv6",
+                    "id": "aaaa-2",
+                    "port_range_max": None,
+                    "port_range_min": None,
+                    "protocol": None,
+                    "remote_group_id": None,
+                    "remote_ip_prefix": None,
+                    "security_group_id": "aaaa",
+                    "tenant_id": "f18ca530cc05425e8bac0a5ff92f7e88"
+                }],
                 'id': 'aaaa'
             }
         })
 
-        quantumclient.Client.create_security_group_rule({
+        neutronclient.Client.create_security_group_rule({
             'security_group_rule': {
                 'direction': 'ingress',
+                'remote_group_id': None,
                 'remote_ip_prefix': '0.0.0.0/0',
-                'port_range_min': 22,
+                'port_range_min': '22',
                 'ethertype': 'IPv4',
-                'port_range_max': 22,
+                'port_range_max': '22',
                 'protocol': 'tcp',
                 'security_group_id': 'aaaa'
             }
         }).AndReturn({
             'security_group_rule': {
                 'direction': 'ingress',
+                'remote_group_id': None,
                 'remote_ip_prefix': '0.0.0.0/0',
-                'port_range_min': 22,
+                'port_range_min': '22',
                 'ethertype': 'IPv4',
-                'port_range_max': 22,
+                'port_range_max': '22',
                 'protocol': 'tcp',
                 'security_group_id': 'aaaa',
                 'id': 'bbbb'
             }
         })
-        quantumclient.Client.create_security_group_rule({
+        neutronclient.Client.create_security_group_rule({
             'security_group_rule': {
                 'direction': 'ingress',
+                'remote_group_id': None,
                 'remote_ip_prefix': '0.0.0.0/0',
-                'port_range_min': 80,
+                'port_range_min': '80',
                 'ethertype': 'IPv4',
-                'port_range_max': 80,
+                'port_range_max': '80',
                 'protocol': 'tcp',
                 'security_group_id': 'aaaa'
             }
         }).AndReturn({
             'security_group_rule': {
                 'direction': 'ingress',
+                'remote_group_id': None,
                 'remote_ip_prefix': '0.0.0.0/0',
-                'port_range_min': 80,
+                'port_range_min': '80',
                 'ethertype': 'IPv4',
-                'port_range_max': 80,
+                'port_range_max': '80',
                 'protocol': 'tcp',
                 'security_group_id': 'aaaa',
                 'id': 'cccc'
             }
         })
-        quantumclient.Client.create_security_group_rule({
+        neutronclient.Client.create_security_group_rule({
+            'security_group_rule': {
+                'direction': 'ingress',
+                'remote_group_id': 'wwww',
+                'remote_ip_prefix': None,
+                'port_range_min': None,
+                'ethertype': 'IPv4',
+                'port_range_max': None,
+                'protocol': 'tcp',
+                'security_group_id': 'aaaa'
+            }
+        }).AndReturn({
+            'security_group_rule': {
+                'direction': 'ingress',
+                'remote_group_id': 'wwww',
+                'remote_ip_prefix': None,
+                'port_range_min': None,
+                'ethertype': 'IPv4',
+                'port_range_max': None,
+                'protocol': 'tcp',
+                'security_group_id': 'aaaa',
+                'id': 'dddd'
+            }
+        })
+        neutronclient.Client.delete_security_group_rule('aaaa-1').AndReturn(
+            None)
+        neutronclient.Client.delete_security_group_rule('aaaa-2').AndReturn(
+            None)
+        neutronclient.Client.create_security_group_rule({
             'security_group_rule': {
                 'direction': 'egress',
+                'remote_group_id': None,
                 'remote_ip_prefix': '10.0.1.0/24',
-                'port_range_min': 22,
+                'port_range_min': '22',
                 'ethertype': 'IPv4',
-                'port_range_max': 22,
+                'port_range_max': '22',
                 'protocol': 'tcp',
                 'security_group_id': 'aaaa'
             }
         }).AndReturn({
             'security_group_rule': {
                 'direction': 'egress',
+                'remote_group_id': None,
                 'remote_ip_prefix': '10.0.1.0/24',
-                'port_range_min': 22,
+                'port_range_min': '22',
                 'ethertype': 'IPv4',
-                'port_range_max': 22,
+                'port_range_max': '22',
                 'protocol': 'tcp',
                 'security_group_id': 'aaaa',
-                'id': 'dddd'
+                'id': 'eeee'
+            }
+        })
+        neutronclient.Client.create_security_group_rule({
+            'security_group_rule': {
+                'direction': 'egress',
+                'remote_group_id': 'xxxx',
+                'remote_ip_prefix': None,
+                'port_range_min': None,
+                'ethertype': 'IPv4',
+                'port_range_max': None,
+                'protocol': None,
+                'security_group_id': 'aaaa'
+            }
+        }).AndReturn({
+            'security_group_rule': {
+                'direction': 'egress',
+                'remote_group_id': 'xxxx',
+                'remote_ip_prefix': None,
+                'port_range_min': None,
+                'ethertype': 'IPv4',
+                'port_range_max': None,
+                'protocol': None,
+                'security_group_id': 'aaaa',
+                'id': 'ffff'
             }
         })
 
         # delete script
-        quantumclient.Client.show_security_group('aaaa').AndReturn({
+        neutronclient.Client.show_security_group('aaaa').AndReturn({
             'security_group': {
                 'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
                 'name': 'sc1',
@@ -372,42 +552,69 @@ Resources:
                 'security_group_rules': [{
                     'direction': 'ingress',
                     'protocol': 'tcp',
-                    'port_range_max': 22,
+                    'port_range_max': '22',
                     'id': 'bbbb',
                     'ethertype': 'IPv4',
                     'security_group_id': 'aaaa',
+                    'remote_group_id': None,
                     'remote_ip_prefix': '0.0.0.0/0',
                     'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
-                    'port_range_min': 22
+                    'port_range_min': '22'
                 }, {
                     'direction': 'ingress',
                     'protocol': 'tcp',
-                    'port_range_max': 80,
+                    'port_range_max': '80',
                     'id': 'cccc',
                     'ethertype': 'IPv4',
                     'security_group_id': 'aaaa',
+                    'remote_group_id': None,
                     'remote_ip_prefix': '0.0.0.0/0',
                     'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
-                    'port_range_min': 80
+                    'port_range_min': '80'
                 }, {
-                    'direction': 'egress',
+                    'direction': 'ingress',
                     'protocol': 'tcp',
-                    'port_range_max': 22,
+                    'port_range_max': None,
                     'id': 'dddd',
                     'ethertype': 'IPv4',
                     'security_group_id': 'aaaa',
+                    'remote_group_id': 'wwww',
+                    'remote_ip_prefix': None,
+                    'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
+                    'port_range_min': None
+                }, {
+                    'direction': 'egress',
+                    'protocol': 'tcp',
+                    'port_range_max': '22',
+                    'id': 'eeee',
+                    'ethertype': 'IPv4',
+                    'security_group_id': 'aaaa',
+                    'remote_group_id': None,
                     'remote_ip_prefix': '10.0.1.0/24',
                     'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
-                    'port_range_min': 22
+                    'port_range_min': '22'
+                }, {
+                    'direction': 'egress',
+                    'protocol': None,
+                    'port_range_max': None,
+                    'id': 'ffff',
+                    'ethertype': 'IPv4',
+                    'security_group_id': 'aaaa',
+                    'remote_group_id': None,
+                    'remote_ip_prefix': None,
+                    'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
+                    'port_range_min': None
                 }],
                 'id': 'aaaa'}})
-        quantumclient.Client.delete_security_group_rule('bbbb').AndReturn(None)
-        quantumclient.Client.delete_security_group_rule('cccc').AndReturn(None)
-        quantumclient.Client.delete_security_group_rule('dddd').AndReturn(None)
-        quantumclient.Client.delete_security_group('aaaa').AndReturn(None)
+        neutronclient.Client.delete_security_group_rule('bbbb').AndReturn(None)
+        neutronclient.Client.delete_security_group_rule('cccc').AndReturn(None)
+        neutronclient.Client.delete_security_group_rule('dddd').AndReturn(None)
+        neutronclient.Client.delete_security_group_rule('eeee').AndReturn(None)
+        neutronclient.Client.delete_security_group_rule('ffff').AndReturn(None)
+        neutronclient.Client.delete_security_group('aaaa').AndReturn(None)
 
         self.m.ReplayAll()
-        stack = self.create_stack(self.test_template_quantum)
+        stack = self.create_stack(self.test_template_neutron)
 
         sg = stack['the_sg']
         self.assertRaises(resource.UpdateReplace, sg.handle_update, {}, {}, {})
@@ -417,11 +624,13 @@ Resources:
         stack.delete()
         self.m.VerifyAll()
 
-    @stack_delete_after
-    def test_security_group_quantum_exception(self):
+    @utils.stack_delete_after
+    def test_security_group_neutron_exception(self):
         #create script
+        clients.OpenStackClients.keystone().AndReturn(
+            FakeKeystoneClient())
         sg_name = utils.PhysName('test_stack', 'the_sg')
-        quantumclient.Client.create_security_group({
+        neutronclient.Client.create_security_group({
             'security_group': {
                 'name': sg_name,
                 'description': 'HTTP and SSH access'
@@ -436,45 +645,74 @@ Resources:
             }
         })
 
-        quantumclient.Client.create_security_group_rule({
+        neutronclient.Client.create_security_group_rule({
             'security_group_rule': {
                 'direction': 'ingress',
+                'remote_group_id': None,
                 'remote_ip_prefix': '0.0.0.0/0',
-                'port_range_min': 22,
+                'port_range_min': '22',
                 'ethertype': 'IPv4',
-                'port_range_max': 22,
+                'port_range_max': '22',
                 'protocol': 'tcp',
                 'security_group_id': 'aaaa'
             }
         }).AndRaise(
-            QuantumClientException(status_code=409))
-        quantumclient.Client.create_security_group_rule({
+            NeutronClientException(status_code=409))
+        neutronclient.Client.create_security_group_rule({
             'security_group_rule': {
                 'direction': 'ingress',
+                'remote_group_id': None,
                 'remote_ip_prefix': '0.0.0.0/0',
-                'port_range_min': 80,
+                'port_range_min': '80',
                 'ethertype': 'IPv4',
-                'port_range_max': 80,
+                'port_range_max': '80',
                 'protocol': 'tcp',
                 'security_group_id': 'aaaa'
             }
         }).AndRaise(
-            QuantumClientException(status_code=409))
-        quantumclient.Client.create_security_group_rule({
+            NeutronClientException(status_code=409))
+        neutronclient.Client.create_security_group_rule({
+            'security_group_rule': {
+                'direction': 'ingress',
+                'remote_group_id': 'wwww',
+                'remote_ip_prefix': None,
+                'port_range_min': None,
+                'ethertype': 'IPv4',
+                'port_range_max': None,
+                'protocol': 'tcp',
+                'security_group_id': 'aaaa'
+            }
+        }).AndRaise(
+            NeutronClientException(status_code=409))
+        neutronclient.Client.create_security_group_rule({
             'security_group_rule': {
                 'direction': 'egress',
+                'remote_group_id': None,
                 'remote_ip_prefix': '10.0.1.0/24',
-                'port_range_min': 22,
+                'port_range_min': '22',
                 'ethertype': 'IPv4',
-                'port_range_max': 22,
+                'port_range_max': '22',
                 'protocol': 'tcp',
                 'security_group_id': 'aaaa'
             }
         }).AndRaise(
-            QuantumClientException(status_code=409))
+            NeutronClientException(status_code=409))
+        neutronclient.Client.create_security_group_rule({
+            'security_group_rule': {
+                'direction': 'egress',
+                'remote_group_id': 'xxxx',
+                'remote_ip_prefix': None,
+                'port_range_min': None,
+                'ethertype': 'IPv4',
+                'port_range_max': None,
+                'protocol': None,
+                'security_group_id': 'aaaa'
+            }
+        }).AndRaise(
+            NeutronClientException(status_code=409))
 
         # delete script
-        quantumclient.Client.show_security_group('aaaa').AndReturn({
+        neutronclient.Client.show_security_group('aaaa').AndReturn({
             'security_group': {
                 'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
                 'name': 'sc1',
@@ -482,56 +720,85 @@ Resources:
                 'security_group_rules': [{
                     'direction': 'ingress',
                     'protocol': 'tcp',
-                    'port_range_max': 22,
+                    'port_range_max': '22',
                     'id': 'bbbb',
                     'ethertype': 'IPv4',
                     'security_group_id': 'aaaa',
+                    'remote_group_id': None,
                     'remote_ip_prefix': '0.0.0.0/0',
                     'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
-                    'port_range_min': 22
+                    'port_range_min': '22'
                 }, {
                     'direction': 'ingress',
                     'protocol': 'tcp',
-                    'port_range_max': 80,
+                    'port_range_max': '80',
                     'id': 'cccc',
                     'ethertype': 'IPv4',
                     'security_group_id': 'aaaa',
+                    'remote_group_id': None,
                     'remote_ip_prefix': '0.0.0.0/0',
                     'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
-                    'port_range_min': 80
+                    'port_range_min': '80'
                 }, {
-                    'direction': 'egress',
+                    'direction': 'ingress',
                     'protocol': 'tcp',
-                    'port_range_max': 22,
+                    'port_range_max': None,
                     'id': 'dddd',
                     'ethertype': 'IPv4',
                     'security_group_id': 'aaaa',
+                    'remote_group_id': 'wwww',
+                    'remote_ip_prefix': None,
+                    'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
+                    'port_range_min': None
+                }, {
+                    'direction': 'egress',
+                    'protocol': 'tcp',
+                    'port_range_max': '22',
+                    'id': 'eeee',
+                    'ethertype': 'IPv4',
+                    'security_group_id': 'aaaa',
+                    'remote_group_id': None,
                     'remote_ip_prefix': '10.0.1.0/24',
                     'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
-                    'port_range_min': 22
+                    'port_range_min': '22'
+                }, {
+                    'direction': 'egress',
+                    'protocol': None,
+                    'port_range_max': None,
+                    'id': 'ffff',
+                    'ethertype': 'IPv4',
+                    'security_group_id': 'aaaa',
+                    'remote_group_id': None,
+                    'remote_ip_prefix': None,
+                    'tenant_id': 'f18ca530cc05425e8bac0a5ff92f7e88',
+                    'port_range_min': None
                 }],
                 'id': 'aaaa'}})
-        quantumclient.Client.delete_security_group_rule('bbbb').AndRaise(
-            QuantumClientException(status_code=404))
-        quantumclient.Client.delete_security_group_rule('cccc').AndRaise(
-            QuantumClientException(status_code=404))
-        quantumclient.Client.delete_security_group_rule('dddd').AndRaise(
-            QuantumClientException(status_code=404))
-        quantumclient.Client.delete_security_group('aaaa').AndRaise(
-            QuantumClientException(status_code=404))
+        neutronclient.Client.delete_security_group_rule('bbbb').AndRaise(
+            NeutronClientException(status_code=404))
+        neutronclient.Client.delete_security_group_rule('cccc').AndRaise(
+            NeutronClientException(status_code=404))
+        neutronclient.Client.delete_security_group_rule('dddd').AndRaise(
+            NeutronClientException(status_code=404))
+        neutronclient.Client.delete_security_group_rule('eeee').AndRaise(
+            NeutronClientException(status_code=404))
+        neutronclient.Client.delete_security_group_rule('ffff').AndRaise(
+            NeutronClientException(status_code=404))
+        neutronclient.Client.delete_security_group('aaaa').AndRaise(
+            NeutronClientException(status_code=404))
 
-        quantumclient.Client.show_security_group('aaaa').AndRaise(
-            QuantumClientException(status_code=404))
+        neutronclient.Client.show_security_group('aaaa').AndRaise(
+            NeutronClientException(status_code=404))
 
         self.m.ReplayAll()
-        stack = self.create_stack(self.test_template_quantum)
+        stack = self.create_stack(self.test_template_neutron)
 
         sg = stack['the_sg']
         self.assertRaises(resource.UpdateReplace, sg.handle_update, {}, {}, {})
 
         self.assertResourceState(sg, 'aaaa')
 
-        self.assertEqual(None, sg.delete())
+        scheduler.TaskRunner(sg.delete)()
 
         sg.state_set(sg.CREATE, sg.COMPLETE, 'to delete again')
         sg.resource_id = 'aaaa'

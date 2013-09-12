@@ -45,8 +45,10 @@ class Volume(resource.Resource):
         return self.physical_resource_name()
 
     def _create_arguments(self):
-        return {'size': self.properties['Size'],
-                'availability_zone': self.properties['AvailabilityZone']}
+        return {
+            'size': self.properties['Size'],
+            'availability_zone': self.properties['AvailabilityZone'] or None,
+        }
 
     def handle_create(self):
         backup_id = self.properties.get(self._restore_property)
@@ -90,31 +92,43 @@ class Volume(resource.Resource):
         if backup.status != 'available':
             raise exception.Error(backup.status)
 
+    @scheduler.wrappertask
     def _delete(self, backup=False):
         if self.resource_id is not None:
             try:
                 vol = self.cinder().volumes.get(self.resource_id)
 
                 if backup:
-                    scheduler.TaskRunner(self._backup)()
+                    yield self._backup()
                     vol.get()
 
                 if vol.status == 'in-use':
                     logger.warn('cant delete volume when in-use')
                     raise exception.Error('Volume in use')
 
-                self.cinder().volumes.delete(self.resource_id)
+                vol.delete()
+                while True:
+                    yield
+                    vol.get()
             except clients.cinderclient.exceptions.NotFound:
-                pass
+                self.resource_id = None
 
     if volume_backups is not None:
         def handle_snapshot_delete(self, state):
             backup = state not in ((self.CREATE, self.FAILED),
                                    (self.UPDATE, self.FAILED))
-            return self._delete(backup=backup)
+
+            delete_task = scheduler.TaskRunner(self._delete, backup=backup)
+            delete_task.start()
+            return delete_task
 
     def handle_delete(self):
-        return self._delete()
+        delete_task = scheduler.TaskRunner(self._delete)
+        delete_task.start()
+        return delete_task
+
+    def check_delete_complete(self, delete_task):
+        return delete_task.step()
 
 
 class VolumeAttachTask(object):
@@ -211,7 +225,7 @@ class VolumeDetachTask(object):
 
         try:
             vol.get()
-            while vol.status == 'in-use':
+            while vol.status in ('in-use', 'detaching'):
                 logger.debug('%s - volume still in use' % str(self))
                 yield
 
@@ -223,6 +237,8 @@ class VolumeDetachTask(object):
                 vol.get()
 
             logger.info('%s - status: %s' % (str(self), vol.status))
+            if vol.status != 'available':
+                raise exception.Error(vol.status)
 
         except clients.cinderclient.exceptions.NotFound:
             logger.warning('%s - volume not found' % str(self))

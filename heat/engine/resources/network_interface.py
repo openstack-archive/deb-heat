@@ -16,7 +16,7 @@
 from heat.engine import clients
 from heat.openstack.common import log as logging
 from heat.engine import resource
-from heat.common import exception
+from heat.engine.resources.neutron import neutron
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +44,12 @@ class NetworkInterface(resource.Resource):
     }
 
     @staticmethod
-    def network_id_from_subnet_id(quantumclient, subnet_id):
-        subnet_info = quantumclient.show_subnet(subnet_id)
+    def network_id_from_subnet_id(neutronclient, subnet_id):
+        subnet_info = neutronclient.show_subnet(subnet_id)
         return subnet_info['subnet']['network_id']
 
     def handle_create(self):
-        client = self.quantum()
+        client = self.neutron()
 
         subnet_id = self.properties['SubnetId']
         network_id = self.network_id_from_subnet_id(client, subnet_id)
@@ -66,32 +66,26 @@ class NetworkInterface(resource.Resource):
         }
 
         if self.properties['GroupSet']:
-            props['security_groups'] = []
-
-            for sg in self.properties.get('GroupSet'):
-                resource = self.stack.resource_by_refid(sg)
-                if resource:
-                    props['security_groups'].append(resource.resource_id)
-                else:
-                    raise exception.InvalidTemplateAttribute(
-                        resource=self.name,
-                        key='GroupSet')
+            sgs = neutron.NeutronResource.get_secgroup_uuids(
+                self.stack, self.properties, 'GroupSet', self.name,
+                self.neutron())
+            props['security_groups'] = sgs
         port = client.create_port({'port': props})['port']
         self.resource_id_set(port['id'])
 
     def handle_delete(self):
-        from quantumclient.common.exceptions import QuantumClientException
+        from neutronclient.common.exceptions import NeutronClientException
 
-        client = self.quantum()
+        client = self.neutron()
         try:
             client.delete_port(self.resource_id)
-        except QuantumClientException as ex:
+        except NeutronClientException as ex:
             if ex.status_code != 404:
                 raise ex
 
 
 def resource_mapping():
-    if clients.quantumclient is None:
+    if clients.neutronclient is None:
         return {}
 
     return {

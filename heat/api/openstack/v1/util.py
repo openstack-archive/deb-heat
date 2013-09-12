@@ -18,8 +18,6 @@ from functools import wraps
 
 from heat.common import identifier
 
-from heat.openstack.common.gettextutils import _
-
 
 def tenant_local(handler):
     '''
@@ -64,31 +62,3 @@ def make_url(req, identity):
 def make_link(req, identity, relationship='self'):
     '''Return a link structure for the supplied identity dictionary.'''
     return {'href': make_url(req, identity), 'rel': relationship}
-
-
-def remote_error(ex):
-    """
-    Map rpc_common.RemoteError exceptions returned by the engine
-    to webob exceptions which can be used to return
-    properly formatted error responses.
-    """
-
-    error_map = {
-        'AttributeError': exc.HTTPBadRequest,
-        'ValueError': exc.HTTPBadRequest,
-        'StackNotFound': exc.HTTPNotFound,
-        'ResourceNotFound': exc.HTTPNotFound,
-        'ResourceNotAvailable': exc.HTTPNotFound,
-        'PhysicalResourceNotFound': exc.HTTPNotFound,
-        'InvalidTenant': exc.HTTPForbidden,
-        'StackExists': exc.HTTPConflict,
-        'StackValidationFailed': exc.HTTPBadRequest,
-        'InvalidTemplateReference': exc.HTTPBadRequest,
-        'UnknownUserParameter': exc.HTTPBadRequest,
-        'MissingCredentialError': exc.HTTPBadRequest,
-        'UserParameterMissing': exc.HTTPBadRequest,
-    }
-
-    Exc = error_map.get(ex.exc_type, exc.HTTPInternalServerError)
-
-    raise Exc(str(ex))

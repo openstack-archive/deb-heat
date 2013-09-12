@@ -17,13 +17,13 @@ from heat.engine import environment
 from heat.tests.v1_1 import fakes
 from heat.engine.resources import instance as instances
 from heat.engine.resources import network_interface as network_interfaces
+from heat.engine.resources import nova_utils
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import scheduler
 from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
-from heat.tests.utils import setup_dummy_db
 
 
 wp_template = '''
@@ -109,7 +109,7 @@ wp_template_with_nic = '''
 '''
 
 
-class FakeQuantum(object):
+class FakeNeutron(object):
 
     def show_subnet(self, subnet, **_params):
         return {
@@ -148,7 +148,7 @@ class instancesTest(HeatTestCase):
     def setUp(self):
         super(instancesTest, self).setUp()
         self.fc = fakes.FakeClient()
-        setup_dummy_db()
+        utils.setup_dummy_db()
 
     def _create_test_instance(self, return_server, name):
         stack_name = '%s_stack' % name
@@ -157,7 +157,7 @@ class instancesTest(HeatTestCase):
         kwargs = {'KeyName': 'test',
                   'InstanceType': 'm1.large',
                   'SubnetId': '4156c7a5-e8c4-4aff-a6e1-8f3c7bc83861'}
-        stack = parser.Stack(None, stack_name, template,
+        stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment(kwargs),
                              stack_id=uuidutils.generate_uuid())
 
@@ -168,15 +168,16 @@ class instancesTest(HeatTestCase):
         self.m.StubOutWithMock(instance, 'nova')
         instance.nova().MultipleTimes().AndReturn(self.fc)
 
-        self.m.StubOutWithMock(instance, 'quantum')
-        instance.quantum().MultipleTimes().AndReturn(FakeQuantum())
+        self.m.StubOutWithMock(instance, 'neutron')
+        instance.neutron().MultipleTimes().AndReturn(FakeNeutron())
 
         instance.t = instance.stack.resolve_runtime_data(instance.t)
 
         # need to resolve the template functions
-        server_userdata = instance._build_userdata(
+        server_userdata = nova_utils.build_userdata(
+            instance,
             instance.t['Properties']['UserData'])
-
+        instance.mime_string = server_userdata
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=1, flavor=3, key_name='test',
@@ -198,7 +199,7 @@ class instancesTest(HeatTestCase):
         kwargs = {'KeyName': 'test',
                   'InstanceType': 'm1.large',
                   'SubnetId': '4156c7a5-e8c4-4aff-a6e1-8f3c7bc83861'}
-        stack = parser.Stack(None, stack_name, template,
+        stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment(kwargs),
                              stack_id=uuidutils.generate_uuid())
 
@@ -211,8 +212,8 @@ class instancesTest(HeatTestCase):
         instance = instances.Instance('%s_name' % name,
                                       t['Resources']['WebServer'], stack)
 
-        self.m.StubOutWithMock(nic, 'quantum')
-        nic.quantum().MultipleTimes().AndReturn(FakeQuantum())
+        self.m.StubOutWithMock(nic, 'neutron')
+        nic.neutron().MultipleTimes().AndReturn(FakeNeutron())
 
         self.m.StubOutWithMock(instance, 'nova')
         instance.nova().MultipleTimes().AndReturn(self.fc)
@@ -221,8 +222,10 @@ class instancesTest(HeatTestCase):
         instance.t = instance.stack.resolve_runtime_data(instance.t)
 
         # need to resolve the template functions
-        server_userdata = instance._build_userdata(
+        server_userdata = nova_utils.build_userdata(
+            instance,
             instance.t['Properties']['UserData'])
+        instance.mime_string = server_userdata
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=1, flavor=3, key_name='test',

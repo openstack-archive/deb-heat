@@ -31,12 +31,14 @@ class WatchRule(object):
         ALARM,
         NORMAL,
         NODATA,
-        SUSPENDED
+        SUSPENDED,
+        CEILOMETER_CONTROLLED,
     ) = (
         rpc_api.WATCH_STATE_ALARM,
         rpc_api.WATCH_STATE_OK,
         rpc_api.WATCH_STATE_NODATA,
-        rpc_api.WATCH_STATE_SUSPENDED
+        rpc_api.WATCH_STATE_SUSPENDED,
+        rpc_api.WATCH_STATE_CEILOMETER_CONTROLLED,
     )
     ACTION_MAP = {ALARM: 'AlarmActions',
                   NORMAL: 'OKActions',
@@ -54,7 +56,12 @@ class WatchRule(object):
         self.state = state
         self.rule = rule
         self.stack_id = stack_id
-        self.timeperiod = datetime.timedelta(seconds=int(rule['Period']))
+        period = 0
+        if 'Period' in rule:
+            period = int(rule['Period'])
+        elif 'period' in rule:
+            period = int(rule['period'])
+        self.timeperiod = datetime.timedelta(seconds=period)
         self.id = wid
         self.watch_data = watch_data
         self.last_evaluated = last_evaluated
@@ -225,6 +232,10 @@ class WatchRule(object):
             return []
         return self.run_rule()
 
+    def get_details(self):
+        return {'alarm': self.name,
+                'state': self.state}
+
     def run_rule(self):
         new_state = self.get_alarm_state()
         actions = self.rule_actions(new_state)
@@ -246,14 +257,41 @@ class WatchRule(object):
             stack = parser.Stack.load(self.context, stack=s)
             if (stack.action != stack.DELETE
                     and stack.status == stack.COMPLETE):
-                for a in self.rule[self.ACTION_MAP[new_state]]:
-                    actions.append(stack[a].alarm)
+                for refid in self.rule[self.ACTION_MAP[new_state]]:
+                    actions.append(stack.resource_by_refid(refid).signal)
             else:
                 logger.warning("Could not process watch state %s for stack" %
                                new_state)
         return actions
 
+    def _to_ceilometer(self, data):
+        from heat.engine import clients
+        clients = clients.Clients(self.context)
+        sample = {}
+        sample['counter_type'] = 'gauge'
+
+        for k, d in iter(data.items()):
+            if k == 'Namespace':
+                continue
+            sample['counter_name'] = k
+            sample['counter_volume'] = d['Value']
+            sample['counter_unit'] = d['Unit']
+            dims = d.get('Dimensions', {})
+            if isinstance(dims, list):
+                dims = dims[0]
+            sample['resource_metadata'] = dims
+            sample['resource_id'] = dims.get('InstanceId')
+            logger.debug('new sample:%s data:%s' % (k, sample))
+            clients.ceilometer().samples.create(**sample)
+
     def create_watch_data(self, data):
+        if self.state == self.CEILOMETER_CONTROLLED:
+            # this is a short term measure for those that have cfn-push-stats
+            # within their templates, but want to use Ceilometer alarms.
+
+            self._to_ceilometer(data)
+            return
+
         if self.state == self.SUSPENDED:
             logger.debug('Ignoring metric data for %s, SUSPENDED state'
                          % self.name)
@@ -305,3 +343,40 @@ class WatchRule(object):
                 logger.warning("Unable to override state %s for watch %s" %
                               (self.state, self.name))
         return actions
+
+
+def rule_can_use_sample(wr, stats_data):
+    def match_dimesions(rule, data):
+        for k, v in iter(rule.items()):
+            if k not in data:
+                return False
+            elif v != data[k]:
+                return False
+        return True
+
+    if wr.state == WatchRule.SUSPENDED:
+        return False
+    if wr.state == WatchRule.CEILOMETER_CONTROLLED:
+        metric = wr.rule['counter_name']
+        rule_dims = {}
+        for k, v in iter(wr.rule.get('matching_metadata', {}).items()):
+            name = k.split('.')[-1]
+            rule_dims[name] = v
+    else:
+        metric = wr.rule['MetricName']
+        rule_dims = dict((d['Name'], d['Value'])
+                         for d in wr.rule.get('Dimensions', []))
+
+    if metric not in stats_data:
+        return False
+
+    for k, v in iter(stats_data.items()):
+        if k == 'Namespace':
+            continue
+        if k == metric:
+            data_dims = v.get('Dimensions', {})
+            if isinstance(data_dims, list):
+                data_dims = data_dims[0]
+            if match_dimesions(rule_dims, data_dims):
+                return True
+    return False

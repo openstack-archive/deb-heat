@@ -1,5 +1,17 @@
 #!/usr/bin/env python
 
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
 import errno
 import datetime
 import logging
@@ -30,19 +42,20 @@ def init_logging():
 
 def call(args):
 
-    class LogStream:
+    class LogStream(object):
 
         def write(self, data):
             LOG.info(data)
 
-        def __getattr__(self, attr):
-            return getattr(sys.stdout, attr)
-
     LOG.info('%s\n' % ' '.join(args))
     try:
         ls = LogStream()
-        p = subprocess.Popen(args, stdout=ls, stderr=ls)
-        p.wait()
+        p = subprocess.Popen(args, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        data = p.communicate()
+        if data:
+            for x in data:
+                ls.write(x)
     except OSError as ex:
         if ex.errno == errno.ENOEXEC:
             LOG.error('Userdata empty or not executable: %s\n' % str(ex))

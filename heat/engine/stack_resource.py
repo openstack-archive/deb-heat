@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo.config import cfg
+
 from heat.common import exception
 from heat.engine import attributes
 from heat.engine import environment
@@ -33,8 +35,12 @@ class StackResource(resource.Resource):
 
     def __init__(self, name, json_snippet, stack):
         super(StackResource, self).__init__(name, json_snippet, stack)
-        self._outputs_to_attribs(json_snippet)
         self._nested = None
+        if self.stack.parent_resource:
+            self.recursion_depth = (
+                self.stack.parent_resource.recursion_depth + 1)
+        else:
+            self.recursion_depth = 0
 
     def _outputs_to_attribs(self, json_snippet):
         if not self.attributes and 'Outputs' in json_snippet:
@@ -64,24 +70,29 @@ class StackResource(resource.Resource):
         '''
         Handle the creation of the nested stack from a given JSON template.
         '''
+        if self.recursion_depth >= cfg.CONF.max_nested_stack_depth:
+            raise exception.StackRecursionLimitReached(
+                cfg.CONF.max_nested_stack_depth)
         template = parser.Template(child_template)
         self._outputs_to_attribs(child_template)
 
         # Note we disable rollback for nested stacks, since they
         # should be rolled back by the parent stack on failure
-        self._nested = parser.Stack(self.context,
-                                    self.physical_resource_name(),
-                                    template,
-                                    environment.Environment(user_params),
-                                    timeout_mins=timeout_mins,
-                                    disable_rollback=True,
-                                    parent_resource=self)
-
-        nested_id = self._nested.store(self.stack)
+        nested = parser.Stack(self.context,
+                              self.physical_resource_name(),
+                              template,
+                              environment.Environment(user_params),
+                              timeout_mins=timeout_mins,
+                              disable_rollback=True,
+                              parent_resource=self,
+                              owner_id=self.stack.id)
+        nested.validate()
+        self._nested = nested
+        nested_id = self._nested.store()
         self.resource_id_set(nested_id)
 
         stack_creator = scheduler.TaskRunner(self._nested.stack_task,
-                                             action=self.CREATE)
+                                             action=self._nested.CREATE)
         stack_creator.start(timeout=self._nested.timeout_secs())
         return stack_creator
 
@@ -94,6 +105,55 @@ class StackResource(resource.Resource):
 
         return done
 
+    def update_with_template(self, child_template, user_params,
+                             timeout_mins=None):
+        """Update the nested stack with the new template."""
+        template = parser.Template(child_template)
+        # Note that there is no call to self._outputs_to_attribs here.
+        # If we have a use case for updating attributes of the resource based
+        # on updated templates we should make sure it's optional because not
+        # all subclasses want that behavior, since they may offer custom
+        # attributes.
+
+        # Note we disable rollback for nested stacks, since they
+        # should be rolled back by the parent stack on failure
+        stack = parser.Stack(self.context,
+                             self.physical_resource_name(),
+                             template,
+                             environment.Environment(user_params),
+                             timeout_mins=timeout_mins,
+                             disable_rollback=True,
+                             parent_resource=self,
+                             owner_id=self.stack.id)
+        stack.validate()
+
+        nested_stack = self.nested()
+        if nested_stack is None:
+            raise exception.Error(_('Cannot update %s, stack not created')
+                                  % self.name)
+
+        if not hasattr(type(self), 'attributes_schema'):
+            self.attributes = None
+            self._outputs_to_attribs(child_template)
+
+        updater = scheduler.TaskRunner(nested_stack.update_task, stack)
+        updater.start()
+        return updater
+
+    def check_update_complete(self, updater):
+        if updater is None:
+            return True
+
+        if not updater.step():
+            return False
+
+        nested_stack = self.nested()
+        if nested_stack.state != (nested_stack.UPDATE,
+                                  nested_stack.COMPLETE):
+            raise exception.Error("Nested stack update failed: %s" %
+                                  nested_stack.status_reason)
+        return True
+
     def delete_nested(self):
         '''
         Delete the nested stack.
@@ -104,7 +164,22 @@ class StackResource(resource.Resource):
             logger.info("Stack not found to delete")
         else:
             if stack is not None:
-                stack.delete()
+                delete_task = scheduler.TaskRunner(stack.delete)
+                delete_task.start()
+                return delete_task
+
+    def check_delete_complete(self, delete_task):
+        if delete_task is None:
+            return True
+
+        done = delete_task.step()
+        if done:
+            nested_stack = self.nested()
+            if nested_stack.state != (nested_stack.DELETE,
+                                      nested_stack.COMPLETE):
+                raise exception.Error(nested_stack.status_reason)
+
+        return done
 
     def handle_suspend(self):
         stack = self.nested()
@@ -113,7 +188,7 @@ class StackResource(resource.Resource):
                                   % self.name)
 
         suspend_task = scheduler.TaskRunner(self._nested.stack_task,
-                                            action=self.SUSPEND,
+                                            action=self._nested.SUSPEND,
                                             reverse=True)
 
         suspend_task.start(timeout=self._nested.timeout_secs())
@@ -135,7 +210,7 @@ class StackResource(resource.Resource):
                                   % self.name)
 
         resume_task = scheduler.TaskRunner(self._nested.stack_task,
-                                           action=self.RESUME,
+                                           action=self._nested.RESUME,
                                            reverse=False)
 
         resume_task.start(timeout=self._nested.timeout_secs())
@@ -161,12 +236,9 @@ class StackResource(resource.Resource):
         if stack is None:
             return None
         if op not in stack.outputs:
-            raise exception.InvalidTemplateAttribute(
-                resource=self.name, key=op)
-
+            raise exception.InvalidTemplateAttribute(resource=self.name,
+                                                     key=op)
         return stack.output(op)
 
     def _resolve_attribute(self, name):
-        if name.startswith('Outputs.'):
-            name = name.partition('.')[-1]
         return unicode(self.get_output(name))

@@ -13,7 +13,6 @@
 #    under the License.
 
 
-from heat.common import exception
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import environment
@@ -21,7 +20,7 @@ from heat.engine import resource
 from heat.engine.resources.rackspace import clouddatabase
 from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
-from heat.tests.utils import setup_dummy_db
+from heat.tests import utils
 
 
 wp_template = '''
@@ -73,7 +72,7 @@ class FakeDBInstance(object):
 class CloudDBInstanceTest(HeatTestCase):
     def setUp(self):
         super(CloudDBInstanceTest, self).setUp()
-        setup_dummy_db()
+        utils.setup_dummy_db()
         # Test environment may not have pyrax client library installed and if
         # pyrax is not installed resource class would not be registered.
         # So register resource provider class explicitly for unit testing.
@@ -84,7 +83,7 @@ class CloudDBInstanceTest(HeatTestCase):
         stack_name = '%s_stack' % name
         t = template_format.parse(wp_template)
         template = parser.Template(t)
-        stack = parser.Stack(None,
+        stack = parser.Stack(utils.dummy_context(),
                              stack_name,
                              template,
                              environment.Environment({'InstanceName': 'Test',
@@ -142,7 +141,20 @@ class CloudDBInstanceTest(HeatTestCase):
         instance = self._setup_test_clouddbinstance('dbinstance_delete')
         instance.resource_id = None
         self.m.ReplayAll()
-        self.assertRaises(exception.ResourceNotFound, instance.handle_delete)
+        instance.handle_delete()
+        self.m.VerifyAll()
+
+    def test_attribute_not_found(self):
+        instance = self._setup_test_clouddbinstance('dbinstance_create')
+        fake_client = self.m.CreateMockAnything()
+        instance.cloud_db().AndReturn(fake_client)
+        fakedbinstance = FakeDBInstance()
+        fake_client.create('Test',
+                           flavor='1GB',
+                           volume='30').AndReturn(fakedbinstance)
+        self.m.ReplayAll()
+        instance.handle_create()
+        self.assertEqual(instance._resolve_attribute('invalid-attrib'), None)
         self.m.VerifyAll()
 
     def test_clouddbinstance_delete(self):

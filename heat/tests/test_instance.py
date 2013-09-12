@@ -18,16 +18,16 @@ import mox
 
 from heat.engine import environment
 from heat.tests.v1_1 import fakes
-from heat.engine.resources import instance as instances
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
+from heat.engine.resources import instance as instances
+from heat.engine.resources import nova_utils
 from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
-from heat.tests.utils import setup_dummy_db
 
 
 wp_template = '''
@@ -60,12 +60,12 @@ class InstancesTest(HeatTestCase):
     def setUp(self):
         super(InstancesTest, self).setUp()
         self.fc = fakes.FakeClient()
-        setup_dummy_db()
+        utils.setup_dummy_db()
 
     def _setup_test_stack(self, stack_name):
         t = template_format.parse(wp_template)
         template = parser.Template(t)
-        stack = parser.Stack(None, stack_name, template,
+        stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment({'KeyName': 'test'}),
                              stack_id=uuidutils.generate_uuid())
         return (t, stack)
@@ -87,8 +87,10 @@ class InstancesTest(HeatTestCase):
         instance.t = instance.stack.resolve_runtime_data(instance.t)
 
         # need to resolve the template functions
-        server_userdata = instance._build_userdata(
+        server_userdata = nova_utils.build_userdata(
+            instance,
             instance.t['Properties']['UserData'])
+        instance.mime_string = server_userdata
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=1, flavor=1, key_name='test',
@@ -138,7 +140,7 @@ class InstancesTest(HeatTestCase):
         expected_ip = return_server.networks['public'][0]
         self.assertEqual(instance.FnGetAtt('PublicIp'), expected_ip)
         self.assertEqual(instance.FnGetAtt('PrivateIp'), expected_ip)
-        self.assertEqual(instance.FnGetAtt('PrivateDnsName'), expected_ip)
+        self.assertEqual(instance.FnGetAtt('PublicDnsName'), expected_ip)
         self.assertEqual(instance.FnGetAtt('PrivateDnsName'), expected_ip)
 
         self.m.VerifyAll()
@@ -203,6 +205,62 @@ class InstancesTest(HeatTestCase):
 
         self.m.VerifyAll()
 
+    class FakeVolumeAttach:
+        def started(self):
+            return False
+
+    def test_instance_create_unexpected_status(self):
+        return_server = self.fc.servers.list()[1]
+        instance = self._create_test_instance(return_server,
+                                              'test_instance_create')
+        return_server.get = lambda: None
+        return_server.status = 'BOGUS'
+        self.assertRaises(exception.Error,
+                          instance.check_create_complete,
+                          (return_server, self.FakeVolumeAttach()))
+
+    def test_instance_create_error_status(self):
+        return_server = self.fc.servers.list()[1]
+        instance = self._create_test_instance(return_server,
+                                              'test_instance_create')
+        return_server.status = 'ERROR'
+        return_server.fault = {
+            'message': 'NoValidHost',
+            'code': 500,
+            'created': '2013-08-14T03:12:10Z'
+        }
+        self.m.StubOutWithMock(return_server, 'get')
+        return_server.get()
+        self.m.ReplayAll()
+
+        self.assertRaises(exception.Error,
+                          instance.check_create_complete,
+                          (return_server, self.FakeVolumeAttach()))
+
+        self.m.VerifyAll()
+
+    def test_instance_create_error_no_fault(self):
+        return_server = self.fc.servers.list()[1]
+        instance = self._create_test_instance(return_server,
+                                              'test_instance_create')
+        return_server.status = 'ERROR'
+
+        self.m.StubOutWithMock(return_server, 'get')
+        return_server.get()
+        self.m.ReplayAll()
+
+        try:
+            instance.check_create_complete(
+                (return_server, self.FakeVolumeAttach()))
+        except exception.Error as e:
+            self.assertEqual(
+                'Creation of server sample-server2 failed: Unknown (500)',
+                str(e))
+        else:
+            self.fail('Error not raised')
+
+        self.m.VerifyAll()
+
     def test_instance_validate(self):
         stack_name = 'test_instance_validate_stack'
         (t, stack) = self._setup_test_stack(stack_name)
@@ -237,7 +295,7 @@ class InstancesTest(HeatTestCase):
         get().AndRaise(instances.clients.novaclient.exceptions.NotFound(404))
         mox.Replay(get)
 
-        instance.delete()
+        scheduler.TaskRunner(instance.delete)()
         self.assertTrue(instance.resource_id is None)
         self.assertEqual(instance.state, (instance.DELETE, instance.COMPLETE))
         self.m.VerifyAll()
@@ -249,8 +307,72 @@ class InstancesTest(HeatTestCase):
 
         update_template = copy.deepcopy(instance.t)
         update_template['Metadata'] = {'test': 123}
-        self.assertEqual(None, instance.update(update_template))
+        scheduler.TaskRunner(instance.update, update_template)()
         self.assertEqual(instance.metadata, {'test': 123})
+
+    def test_instance_update_instance_type(self):
+        """
+        Instance.handle_update supports changing the InstanceType, and makes
+        the change making a resize API call against Nova.
+        """
+        return_server = self.fc.servers.list()[1]
+        return_server.id = 1234
+        instance = self._create_test_instance(return_server,
+                                              'test_instance_update')
+
+        update_template = copy.deepcopy(instance.t)
+        update_template['Properties']['InstanceType'] = 'm1.small'
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get(1234).AndReturn(return_server)
+
+        def activate_status(server):
+            server.status = 'VERIFY_RESIZE'
+        return_server.get = activate_status.__get__(return_server)
+
+        self.m.StubOutWithMock(self.fc.client, 'post_servers_1234_action')
+        self.fc.client.post_servers_1234_action(
+            body={'resize': {'flavorRef': 2}}).AndReturn((202, None))
+        self.fc.client.post_servers_1234_action(
+            body={'confirmResize': None}).AndReturn((202, None))
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.update, update_template)()
+        self.assertEqual(instance.state, (instance.UPDATE, instance.COMPLETE))
+        self.m.VerifyAll()
+
+    def test_instance_update_instance_type_failed(self):
+        """
+        If the status after a resize is not VERIFY_RESIZE, it means the resize
+        call failed, so we raise an explicit error.
+        """
+        return_server = self.fc.servers.list()[1]
+        return_server.id = 1234
+        instance = self._create_test_instance(return_server,
+                                              'test_instance_update')
+
+        update_template = copy.deepcopy(instance.t)
+        update_template['Properties']['InstanceType'] = 'm1.small'
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get(1234).AndReturn(return_server)
+
+        def activate_status(server):
+            server.status = 'ACTIVE'
+        return_server.get = activate_status.__get__(return_server)
+
+        self.m.StubOutWithMock(self.fc.client, 'post_servers_1234_action')
+        self.fc.client.post_servers_1234_action(
+            body={'resize': {'flavorRef': 2}}).AndReturn((202, None))
+        self.m.ReplayAll()
+
+        updater = scheduler.TaskRunner(instance.update, update_template)
+        error = self.assertRaises(exception.ResourceFailure, updater)
+        self.assertEqual(
+            "Error: Resizing to 'm1.small' failed, status 'ACTIVE'",
+            str(error))
+        self.assertEqual(instance.state, (instance.UPDATE, instance.FAILED))
+        self.m.VerifyAll()
 
     def test_instance_update_replace(self):
         return_server = self.fc.servers.list()[1]
@@ -259,8 +381,8 @@ class InstancesTest(HeatTestCase):
 
         update_template = copy.deepcopy(instance.t)
         update_template['Notallowed'] = {'test': 123}
-        self.assertRaises(resource.UpdateReplace,
-                          instance.update, update_template)
+        updater = scheduler.TaskRunner(instance.update, update_template)
+        self.assertRaises(resource.UpdateReplace, updater)
 
     def test_instance_update_properties(self):
         return_server = self.fc.servers.list()[1]
@@ -269,8 +391,8 @@ class InstancesTest(HeatTestCase):
 
         update_template = copy.deepcopy(instance.t)
         update_template['Properties']['KeyName'] = 'mustreplace'
-        self.assertRaises(resource.UpdateReplace,
-                          instance.update, update_template)
+        updater = scheduler.TaskRunner(instance.update, update_template)
+        self.assertRaises(resource.UpdateReplace, updater)
 
     def test_instance_status_build(self):
         return_server = self.fc.servers.list()[0]

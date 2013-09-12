@@ -24,13 +24,12 @@ from heat.api.openstack.v1 import util
 from heat.common import identifier
 from heat.common import wsgi
 from heat.common import template_format
+from heat.common import environment_format
 from heat.rpc import api as engine_api
 from heat.rpc import client as rpc_client
 from heat.common import urlfetch
 
-import heat.openstack.common.rpc.common as rpc_common
 from heat.openstack.common import log as logging
-from heat.openstack.common.gettextutils import _
 
 logger = logging.getLogger(__name__)
 
@@ -61,15 +60,17 @@ class InstantiationData(object):
         self.data = data
 
     @staticmethod
-    def format_parse(data, data_type, add_template_sections=True):
+    def format_parse(data, data_type):
         """
         Parse the supplied data as JSON or YAML, raising the appropriate
         exception if it is in the wrong format.
         """
 
         try:
-            return template_format.parse(data,
-                                         add_template_sections)
+            if data_type == 'Environment':
+                return environment_format.parse(data)
+            else:
+                return template_format.parse(data)
         except ValueError:
             err_reason = _("%s not in valid format") % data_type
             raise exc.HTTPBadRequest(err_reason)
@@ -117,17 +118,9 @@ class InstantiationData(object):
                 env = env_data
             else:
                 env = self.format_parse(env_data,
-                                        'Environment',
-                                        add_template_sections=False)
+                                        'Environment')
 
-            for field in env:
-                if field not in ('parameters', 'resource_registry'):
-                    reason = _("%s not in valid in the environment") % field
-                    raise exc.HTTPBadRequest(reason)
-
-        if not env.get(self.PARAM_USER_PARAMS):
-            env[self.PARAM_USER_PARAMS] = {}
-
+        environment_format.default_for_missing(env)
         parameters = self.data.get(self.PARAM_USER_PARAMS, {})
         env[self.PARAM_USER_PARAMS].update(parameters)
         return env
@@ -190,10 +183,7 @@ class StackController(object):
         Lists summary information for all stacks
         """
 
-        try:
-            stacks = self.engine.list_stacks(req.context)
-        except rpc_common.RemoteError as ex:
-            return util.remote_error(ex)
+        stacks = self.engine.list_stacks(req.context)
 
         summary_keys = (engine_api.STACK_ID,
                         engine_api.STACK_NAME,
@@ -211,10 +201,7 @@ class StackController(object):
         """
         Lists detailed information for all stacks
         """
-        try:
-            stacks = self.engine.list_stacks(req.context)
-        except rpc_common.RemoteError as ex:
-            return util.remote_error(ex)
+        stacks = self.engine.list_stacks(req.context)
 
         return {'stacks': [format_stack(req, s) for s in stacks]}
 
@@ -226,15 +213,12 @@ class StackController(object):
 
         data = InstantiationData(body)
 
-        try:
-            result = self.engine.create_stack(req.context,
-                                              data.stack_name(),
-                                              data.template(),
-                                              data.environment(),
-                                              data.files(),
-                                              data.args())
-        except rpc_common.RemoteError as ex:
-            return util.remote_error(ex)
+        result = self.engine.create_stack(req.context,
+                                          data.stack_name(),
+                                          data.template(),
+                                          data.environment(),
+                                          data.files(),
+                                          data.args())
 
         return {'stack': format_stack(req, {engine_api.STACK_ID: result})}
 
@@ -246,11 +230,8 @@ class StackController(object):
         try:
             identity = dict(identifier.HeatIdentifier.from_arn(stack_name))
         except ValueError:
-            try:
-                identity = self.engine.identify_stack(req.context,
-                                                      stack_name)
-            except rpc_common.RemoteError as ex:
-                return util.remote_error(ex)
+            identity = self.engine.identify_stack(req.context,
+                                                  stack_name)
 
         location = util.make_url(req, identity)
         if path:
@@ -264,11 +245,8 @@ class StackController(object):
         Gets detailed information for a stack
         """
 
-        try:
-            stack_list = self.engine.show_stack(req.context,
-                                                identity)
-        except rpc_common.RemoteError as ex:
-            return util.remote_error(ex)
+        stack_list = self.engine.show_stack(req.context,
+                                            identity)
 
         if not stack_list:
             raise exc.HTTPInternalServerError()
@@ -283,11 +261,8 @@ class StackController(object):
         Get the template body for an existing stack
         """
 
-        try:
-            templ = self.engine.get_template(req.context,
-                                             identity)
-        except rpc_common.RemoteError as ex:
-            return util.remote_error(ex)
+        templ = self.engine.get_template(req.context,
+                                         identity)
 
         if templ is None:
             raise exc.HTTPNotFound()
@@ -302,15 +277,12 @@ class StackController(object):
         """
         data = InstantiationData(body)
 
-        try:
-            res = self.engine.update_stack(req.context,
-                                           identity,
-                                           data.template(),
-                                           data.environment(),
-                                           data.files(),
-                                           data.args())
-        except rpc_common.RemoteError as ex:
-            return util.remote_error(ex)
+        res = self.engine.update_stack(req.context,
+                                       identity,
+                                       data.template(),
+                                       data.environment(),
+                                       data.files(),
+                                       data.args())
 
         raise exc.HTTPAccepted()
 
@@ -320,13 +292,9 @@ class StackController(object):
         Delete the specified stack
         """
 
-        try:
-            res = self.engine.delete_stack(req.context,
-                                           identity,
-                                           cast=False)
-
-        except rpc_common.RemoteError as ex:
-            return util.remote_error(ex)
+        res = self.engine.delete_stack(req.context,
+                                       identity,
+                                       cast=False)
 
         if res is not None:
             raise exc.HTTPBadRequest(res['Error'])
@@ -342,11 +310,8 @@ class StackController(object):
 
         data = InstantiationData(body)
 
-        try:
-            result = self.engine.validate_template(req.context,
-                                                   data.template())
-        except rpc_common.RemoteError as ex:
-            return util.remote_error(ex)
+        result = self.engine.validate_template(req.context,
+                                               data.template())
 
         if 'Error' in result:
             raise exc.HTTPBadRequest(result['Error'])
@@ -358,13 +323,21 @@ class StackController(object):
         """
         Returns a list of valid resource types that may be used in a template.
         """
+        return {'resource_types': self.engine.list_resource_types(req.context)}
 
-        try:
-            types = self.engine.list_resource_types(req.context)
-        except rpc_common.RemoteError as ex:
-            raise exc.HTTPInternalServerError(str(ex))
+    @util.tenant_local
+    def resource_schema(self, req, type_name):
+        """
+        Returns the schema of the given resource type.
+        """
+        return self.engine.resource_schema(req.context, type_name)
 
-        return {'resource_types': types}
+    @util.tenant_local
+    def generate_template(self, req, type_name):
+        """
+        Generates a template based on the specified type.
+        """
+        return self.engine.generate_template(req.context, type_name)
 
 
 class StackSerializer(wsgi.JSONResponseSerializer):

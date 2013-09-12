@@ -13,6 +13,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+try:
+    from pyrax.exceptions import NotFound
+except ImportError:
+    # fake exception for testing without pyrax
+    class NotFound(Exception):
+        pass
+
 from heat.common import exception
 from heat.engine.resources.rackspace import rackspace_resource
 from heat.openstack.common import log as logging
@@ -174,12 +181,13 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
         Delete a Rackspace Cloud DB Instance.
         '''
         logger.debug("CloudDBInstance handle_delete called.")
-        sqlinstancename = self.properties['InstanceName']
         if self.resource_id is None:
-            logger.debug("resource_id is null and returning without delete.")
-            raise exception.ResourceNotFound(resource_name=sqlinstancename,
-                                             stack_name=self.stack.name)
-        instances = self.cloud_db().delete(self.resource_id)
+            return
+
+        try:
+            instances = self.cloud_db().delete(self.resource_id)
+        except NotFound:
+            pass
         self.resource_id = None
 
     def validate(self):
@@ -215,11 +223,35 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
                         'databases.' % missing_db}
         return
 
+    def _hostname(self):
+        if self.hostname is None and self.resource_id is not None:
+            dbinstance = self.cloud_db().get(self.resource_id)
+            self.hostname = dbinstance.hostname
+
+        return self.hostname
+
+    def _href(self):
+        if self.href is None and self.resource_id is not None:
+            dbinstance = self.cloud_db().get(self.resource_id)
+            self.href = self._gethref(dbinstance)
+
+        return self.href
+
+    def _gethref(self, dbinstance):
+        if dbinstance is None or dbinstance.links is None:
+            return None
+
+        for link in dbinstance.links:
+            if link['rel'] == 'self':
+                return link['href']
+
     def _resolve_attribute(self, name):
         if name == 'hostname':
-            return self.hostname
+            return self._hostname()
         elif name == 'href':
-            return self.href
+            return self._href()
+        else:
+            return None
 
 
 # pyrax module is required to work with Rackspace cloud database provider.

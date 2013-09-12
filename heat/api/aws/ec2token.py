@@ -13,11 +13,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import urlparse
-import httplib
 import hashlib
+import requests
 
 from heat.openstack.common import gettextutils
+from heat.api.aws.exception import HeatAPIException
 
 gettextutils.install('heat')
 
@@ -34,8 +34,17 @@ logger = logging.getLogger(__name__)
 
 
 opts = [
-    cfg.StrOpt('auth_uri', default=None),
-    cfg.StrOpt('keystone_ec2_uri', default=None)
+    cfg.StrOpt('auth_uri',
+               default=None,
+               help=_("Authentication Endpoint URI")),
+    cfg.BoolOpt('multi_cloud',
+                default=False,
+                help=_('Allow orchestration of multiple clouds')),
+    cfg.ListOpt('allowed_auth_uris',
+                default=[],
+                help=_('Allowed keystone endpoints for auth_uri when '
+                       'multi_cloud is enabled. At least one endpoint needs '
+                       'to be specified.'))
 ]
 cfg.CONF.register_opts(opts, group='ec2authtoken')
 
@@ -53,6 +62,12 @@ class EC2Token(wsgi.Middleware):
             return self.conf[name]
         else:
             return cfg.CONF.ec2authtoken[name]
+
+    @staticmethod
+    def _conf_get_keystone_ec2_uri(auth_uri):
+        if auth_uri.endswith('/'):
+            return '%sec2tokens' % auth_uri
+        return '%s/ec2tokens' % auth_uri
 
     def _get_signature(self, req):
         """
@@ -93,6 +108,25 @@ class EC2Token(wsgi.Middleware):
 
     @webob.dec.wsgify(RequestClass=wsgi.Request)
     def __call__(self, req):
+        if not self._conf_get('multi_cloud'):
+            return self._authorize(req, self._conf_get('auth_uri'))
+        else:
+            # attempt to authorize for each configured allowed_auth_uris
+            # until one is successful.
+            # This is safe for the following reasons:
+            # 1. AWSAccessKeyId is a randomly generated sequence
+            # 2. No secret is transferred to validate a request
+            last_failure = None
+            for auth_uri in self._conf_get('allowed_auth_uris'):
+                try:
+                    logger.debug("Attempt authorize on %s" % auth_uri)
+                    return self._authorize(req, auth_uri)
+                except HeatAPIException as e:
+                    logger.debug("Authorize failed: %s" % e.__class__)
+                    last_failure = e
+            raise last_failure or exception.HeatAccessDeniedError()
+
+    def _authorize(self, req, auth_uri):
         # Read request signature and access id.
         # If we find X-Auth-User in the headers we ignore a key error
         # here so that we can use both authentication methods.
@@ -137,28 +171,15 @@ class EC2Token(wsgi.Middleware):
         creds_json = json.dumps(creds)
         headers = {'Content-Type': 'application/json'}
 
-        # Disable 'has no x member' pylint error
-        # for httplib and urlparse
-        # pylint: disable-msg=E1101
-
-        keystone_ec2_uri = self._conf_get('keystone_ec2_uri')
+        keystone_ec2_uri = self._conf_get_keystone_ec2_uri(auth_uri)
         logger.info('Authenticating with %s' % keystone_ec2_uri)
-        o = urlparse.urlparse(keystone_ec2_uri)
-        if o.scheme == 'http':
-            conn = httplib.HTTPConnection(o.netloc)
-        else:
-            conn = httplib.HTTPSConnection(o.netloc)
-        conn.request('POST', o.path, body=creds_json, headers=headers)
-        response = conn.getresponse().read()
-        conn.close()
-
-        # NOTE(vish): We could save a call to keystone by
-        #             having keystone return token, tenant,
-        #             user, and roles from this call.
-
-        result = json.loads(response)
+        response = requests.post(keystone_ec2_uri, data=creds_json,
+                                 headers=headers)
+        result = response.json()
         try:
             token_id = result['access']['token']['id']
+            tenant = result['access']['token']['tenant']['name']
+            tenant_id = result['access']['token']['tenant']['id']
             logger.info("AWS authentication successful.")
         except (AttributeError, KeyError):
             logger.info("AWS authentication failure.")
@@ -181,8 +202,14 @@ class EC2Token(wsgi.Middleware):
                                         'signature': signature}}
         req.headers['X-Auth-EC2-Creds'] = json.dumps(ec2_creds)
         req.headers['X-Auth-Token'] = token_id
+        req.headers['X-Tenant-Name'] = tenant
+        req.headers['X-Tenant-Id'] = tenant_id
         req.headers['X-Auth-URL'] = self._conf_get('auth_uri')
-        req.headers['X-Auth-EC2_URL'] = keystone_ec2_uri
+
+        metadata = result['access'].get('metadata', {})
+        roles = metadata.get('roles', [])
+        req.headers['X-Roles'] = ','.join(roles)
+
         return self.application
 
 

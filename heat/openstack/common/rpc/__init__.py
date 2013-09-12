@@ -29,7 +29,7 @@ import inspect
 
 from oslo.config import cfg
 
-from heat.openstack.common.gettextutils import _
+from heat.openstack.common.gettextutils import _  # noqa
 from heat.openstack.common import importutils
 from heat.openstack.common import local
 from heat.openstack.common import log as logging
@@ -57,6 +57,7 @@ rpc_opts = [
                     'Only supported by impl_zmq.'),
     cfg.ListOpt('allowed_rpc_exception_modules',
                 default=['heat.openstack.common.exception',
+                         'heat.common.exception',
                          'nova.exception',
                          'cinder.exception',
                          'exceptions',

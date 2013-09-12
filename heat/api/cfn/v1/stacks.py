@@ -31,8 +31,6 @@ from heat.common import identifier
 from heat.common import urlfetch
 from heat.common import policy
 
-import heat.openstack.common.rpc.common as rpc_common
-
 from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
 
@@ -146,7 +144,7 @@ class StackController(object):
         con = req.context
         try:
             stack_list = self.engine_rpcapi.list_stacks(con)
-        except rpc_common.RemoteError as ex:
+        except Exception as ex:
             return exception.map_remote_error(ex)
 
         res = {'StackSummaries': [format_stack_summary(s) for s in stack_list]}
@@ -237,7 +235,7 @@ class StackController(object):
 
             stack_list = self.engine_rpcapi.show_stack(con, identity)
 
-        except rpc_common.RemoteError as ex:
+        except Exception as ex:
             return exception.map_remote_error(ex)
 
         res = {'Stacks': [format_stack(s) for s in stack_list]}
@@ -289,10 +287,23 @@ class StackController(object):
             keymap = {'TimeoutInMinutes': engine_api.PARAM_TIMEOUT,
                       'DisableRollback': engine_api.PARAM_DISABLE_ROLLBACK}
 
+            if 'DisableRollback' in params and 'OnFailure' in params:
+                msg = _('DisableRollback and OnFailure '
+                        'may not be used together')
+                raise exception.HeatInvalidParameterCombinationError(
+                    detail=msg)
+
             result = {}
             for k in keymap:
-                if k in req.params:
+                if k in params:
                     result[keymap[k]] = params[k]
+
+            if 'OnFailure' in params:
+                value = params['OnFailure']
+                if value == 'DO_NOTHING':
+                    result[engine_api.PARAM_DISABLE_ROLLBACK] = 'true'
+                elif value in ('ROLLBACK', 'DELETE'):
+                    result[engine_api.PARAM_DISABLE_ROLLBACK] = 'false'
 
             return result
 
@@ -340,7 +351,7 @@ class StackController(object):
                 args['stack_identity'] = self._get_identity(con, stack_name)
 
             result = engine_action[action](con, **args)
-        except rpc_common.RemoteError as ex:
+        except Exception as ex:
             return exception.map_remote_error(ex)
 
         try:
@@ -363,7 +374,7 @@ class StackController(object):
         try:
             identity = self._get_identity(con, req.params['StackName'])
             templ = self.engine_rpcapi.get_template(con, identity)
-        except rpc_common.RemoteError as ex:
+        except Exception as ex:
             return exception.map_remote_error(ex)
 
         if templ is None:
@@ -425,10 +436,14 @@ class StackController(object):
 
         try:
             res = self.engine_rpcapi.validate_template(con, template)
+            if 'Error' in res:
+                return api_utils.format_response('ValidateTemplate',
+                                                 res['Error'])
+
             res['Parameters'] = [format_validate_parameter(k, v)
                                  for k, v in res['Parameters'].items()]
             return api_utils.format_response('ValidateTemplate', res)
-        except rpc_common.RemoteError as ex:
+        except Exception as ex:
             return exception.map_remote_error(ex)
 
     def delete(self, req):
@@ -443,7 +458,7 @@ class StackController(object):
             identity = self._get_identity(con, req.params['StackName'])
             res = self.engine_rpcapi.delete_stack(con, identity, cast=False)
 
-        except rpc_common.RemoteError as ex:
+        except Exception as ex:
             return exception.map_remote_error(ex)
 
         if res is None:
@@ -488,7 +503,7 @@ class StackController(object):
         try:
             identity = stack_name and self._get_identity(con, stack_name)
             events = self.engine_rpcapi.list_events(con, identity)
-        except rpc_common.RemoteError as ex:
+        except Exception as ex:
             return exception.map_remote_error(ex)
 
         result = [format_stack_event(e) for e in events]
@@ -540,7 +555,7 @@ class StackController(object):
                 stack_identity=identity,
                 resource_name=req.params.get('LogicalResourceId'))
 
-        except rpc_common.RemoteError as ex:
+        except Exception as ex:
             return exception.map_remote_error(ex)
 
         result = format_resource_detail(resource_details)
@@ -606,7 +621,7 @@ class StackController(object):
                 stack_identity=identity,
                 resource_name=req.params.get('LogicalResourceId'))
 
-        except rpc_common.RemoteError as ex:
+        except Exception as ex:
             return exception.map_remote_error(ex)
 
         result = [format_stack_resource(r) for r in resources]
@@ -646,7 +661,7 @@ class StackController(object):
             resources = self.engine_rpcapi.list_stack_resources(
                 con,
                 stack_identity=identity)
-        except rpc_common.RemoteError as ex:
+        except Exception as ex:
             return exception.map_remote_error(ex)
 
         summaries = [format_resource_summary(r) for r in resources]

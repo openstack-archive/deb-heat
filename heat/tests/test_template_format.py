@@ -14,12 +14,14 @@
 
 from testtools import skipIf
 import os
+import yaml
 
 from heat.engine import clients
+from heat.common import config
+from heat.common import exception
 from heat.common import template_format
 from heat.tests.common import HeatTestCase
-from heat.tests.utils import setup_dummy_db
-from heat.tests.utils import parse_stack
+from heat.tests import utils
 
 
 class JsonToYamlTest(HeatTestCase):
@@ -90,23 +92,14 @@ Outputs: {}
         tpl2 = template_format.parse(yaml2)
         self.assertEqual(tpl1, tpl2)
 
-
-class YamlEnvironmentTest(HeatTestCase):
-
-    def test_no_template_sections(self):
-        env = '''
-parameters: {}
-resource_registry: {}
-'''
-        parsed_env = template_format.parse(env, add_template_sections=False)
-
-        self.assertEqual('parameters' in parsed_env, True)
-        self.assertEqual('resource_registry' in parsed_env, True)
-
-        self.assertEqual('Parameters' in parsed_env, False)
-        self.assertEqual('Mappings' in parsed_env, False)
-        self.assertEqual('Resources' in parsed_env, False)
-        self.assertEqual('Outputs' in parsed_env, False)
+    def test_long_yaml(self):
+        template = {'HeatTemplateVersion': '2012-12-12'}
+        template['Resources'] = ['a'] * (config.cfg.CONF.max_template_size / 3)
+        limit = config.cfg.CONF.max_template_size
+        long_yaml = yaml.safe_dump(template)
+        self.assertTrue(len(long_yaml) > limit)
+        self.assertRaises(exception.TemplateTooBig, template_format.parse,
+                          long_yaml)
 
 
 class JsonYamlResolvedCompareTest(HeatTestCase):
@@ -115,7 +108,7 @@ class JsonYamlResolvedCompareTest(HeatTestCase):
         super(JsonYamlResolvedCompareTest, self).setUp()
         self.longMessage = True
         self.maxDiff = None
-        setup_dummy_db()
+        utils.setup_dummy_db()
 
     def load_template(self, file_name):
         filepath = os.path.join(os.path.dirname(os.path.realpath(__file__)),
@@ -134,8 +127,8 @@ class JsonYamlResolvedCompareTest(HeatTestCase):
         t2 = self.load_template(yaml_file)
         del(t2[u'HeatTemplateFormatVersion'])
 
-        stack1 = parse_stack(t1, parameters)
-        stack2 = parse_stack(t2, parameters)
+        stack1 = utils.parse_stack(t1, parameters)
+        stack2 = utils.parse_stack(t2, parameters)
 
         # compare resources separately so that resolved static data
         # is compared
@@ -151,9 +144,9 @@ class JsonYamlResolvedCompareTest(HeatTestCase):
         for key in stack1.resources:
             self.assertEqual(stack1.resources[key].t, stack2.resources[key].t)
 
-    @skipIf(clients.quantumclient is None, 'quantumclient unavailable')
-    def test_quantum_resolved(self):
-        self.compare_stacks('Quantum.template', 'Quantum.yaml', {})
+    @skipIf(clients.neutronclient is None, 'neutronclient unavailable')
+    def test_neutron_resolved(self):
+        self.compare_stacks('Neutron.template', 'Neutron.yaml', {})
 
     def test_wordpress_resolved(self):
         self.compare_stacks('WordPress_Single_Instance.template',

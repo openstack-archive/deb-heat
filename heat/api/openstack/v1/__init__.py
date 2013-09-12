@@ -15,10 +15,6 @@
 
 import routes
 
-from heat.openstack.common import gettextutils
-
-gettextutils.install('heat')
-
 from heat.api.openstack.v1 import stacks
 from heat.api.openstack.v1 import resources
 from heat.api.openstack.v1 import events
@@ -52,6 +48,14 @@ class API(wsgi.Router):
             stack_mapper.connect("resource_types",
                                  "/resource_types",
                                  action="list_resource_types",
+                                 conditions={'method': 'GET'})
+            stack_mapper.connect("resource_schema",
+                                 "/resource_types/{type_name}",
+                                 action="resource_schema",
+                                 conditions={'method': 'GET'})
+            stack_mapper.connect("generate_template",
+                                 "/resource_types/{type_name}/template",
+                                 action="generate_template",
                                  conditions={'method': 'GET'})
 
             # Stack collection

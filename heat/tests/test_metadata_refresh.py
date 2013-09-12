@@ -18,8 +18,7 @@ import mox
 from oslo.config import cfg
 from heat.tests import fakes
 from heat.tests.common import HeatTestCase
-from heat.tests.utils import setup_dummy_db
-from heat.tests.utils import stack_delete_after
+from heat.tests import utils
 
 from heat.engine import environment
 from heat.common import identifier
@@ -28,7 +27,6 @@ from heat.engine import parser
 from heat.engine import scheduler
 from heat.engine import service
 from heat.engine.resources import instance
-from heat.common import context
 from heat.engine.resources import wait_condition as wc
 
 
@@ -135,15 +133,14 @@ class MetadataRefreshTest(HeatTestCase):
     def setUp(self):
         super(MetadataRefreshTest, self).setUp()
         self.fc = fakes.FakeKeystoneClient()
-        setup_dummy_db()
+        utils.setup_dummy_db()
 
     # Note tests creating a stack should be decorated with @stack_delete_after
     # to ensure the stack is properly cleaned up
     def create_stack(self, stack_name='test_stack', params={}):
         temp = template_format.parse(test_template_metadata)
         template = parser.Template(temp)
-        ctx = context.get_admin_context()
-        ctx.tenant_id = 'test_tenant'
+        ctx = utils.dummy_context()
         stack = parser.Stack(ctx, stack_name, template,
                              environment.Environment(params),
                              disable_rollback=True)
@@ -160,7 +157,7 @@ class MetadataRefreshTest(HeatTestCase):
 
         return stack
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_FnGetAtt(self):
         self.stack = self.create_stack()
 
@@ -194,21 +191,19 @@ class MetadataRefreshTest(HeatTestCase):
 class WaitCondMetadataUpdateTest(HeatTestCase):
     def setUp(self):
         super(WaitCondMetadataUpdateTest, self).setUp()
-        setup_dummy_db()
-        self.ctx = context.get_admin_context()
-        self.ctx.tenant_id = 'test_tenant'
+        utils.setup_dummy_db()
         self.fc = fakes.FakeKeystoneClient()
         self.man = service.EngineService('a-host', 'a-topic')
         cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://127.0.0.1:8000/v1/waitcondition')
+                             'http://server.test:8000/v1/waitcondition')
 
     # Note tests creating a stack should be decorated with @stack_delete_after
     # to ensure the stack is properly cleaned up
     def create_stack(self, stack_name='test_stack'):
         temp = template_format.parse(test_template_waitcondition)
         template = parser.Template(temp)
-        stack = parser.Stack(self.ctx, stack_name, template,
-                             disable_rollback=True)
+        ctx = utils.dummy_context()
+        stack = parser.Stack(ctx, stack_name, template, disable_rollback=True)
 
         self.stack_id = stack.store()
 
@@ -221,16 +216,19 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'keystone')
         wc.WaitConditionHandle.keystone().MultipleTimes().AndReturn(self.fc)
 
-        id = identifier.ResourceIdentifier('test_tenant', stack.name,
+        id = identifier.ResourceIdentifier('test_tenant_id', stack.name,
                                            stack.id, '', 'WH')
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'identifier')
         wc.WaitConditionHandle.identifier().MultipleTimes().AndReturn(id)
 
         self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+        self.m.StubOutWithMock(service.EngineService, '_load_user_creds')
+        service.EngineService._load_user_creds(
+            mox.IgnoreArg()).MultipleTimes().AndReturn(ctx)
 
         return stack
 
-    @stack_delete_after
+    @utils.stack_delete_after
     def test_wait_meta(self):
         '''
         1 create stack
@@ -250,7 +248,7 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
             self.assertEqual(inst.metadata['test'], None)
 
         def update_metadata(id, data, reason):
-            self.man.metadata_update(self.ctx,
+            self.man.metadata_update(utils.dummy_context(),
                                      dict(self.stack.identifier()),
                                      'WH',
                                      {'Data': data, 'Reason': reason,
@@ -261,7 +259,8 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
 
         scheduler.TaskRunner._sleep(mox.IsA(int)).WithSideEffects(check_empty)
         scheduler.TaskRunner._sleep(mox.IsA(int)).WithSideEffects(post_success)
-        scheduler.TaskRunner._sleep(mox.IsA(int)).AndReturn(None)
+        scheduler.TaskRunner._sleep(mox.IsA(int)).MultipleTimes().AndReturn(
+            None)
 
         self.m.ReplayAll()
         self.stack.create()

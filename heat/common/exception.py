@@ -20,14 +20,14 @@
 import functools
 import urlparse
 import sys
-from heat.openstack.common.gettextutils import _
-from heat.openstack.common import exception
+
+from heat.openstack.common import log as logging
 
 
-OpenstackException = exception.OpenstackException
-NotFound = exception.NotFound
-Error = exception.Error
-InvalidContentType = exception.InvalidContentType
+_FATAL_EXCEPTION_FORMAT_ERRORS = False
+
+
+logger = logging.getLogger(__name__)
 
 
 class RedirectException(Exception):
@@ -91,32 +91,62 @@ def wrap_exception(notifier=None, publisher_id=None, event_type=None,
     return inner
 
 
-class MissingCredentialError(OpenstackException):
+class HeatException(Exception):
+    """Base Heat Exception
+
+    To correctly use this class, inherit from it and define
+    a 'msg_fmt' property. That msg_fmt will get printf'd
+    with the keyword arguments provided to the constructor.
+
+    """
+    message = _("An unknown exception occurred.")
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+        try:
+            self.message = self.message % kwargs
+        except KeyError:
+            exc_info = sys.exc_info()
+            #kwargs doesn't match a variable in the message
+            #log the issue and the kwargs
+            logger.exception(_('Exception in string format operation'))
+            for name, value in kwargs.iteritems():
+                logger.error("%s: %s" % (name, value))
+
+            if _FATAL_EXCEPTION_FORMAT_ERRORS:
+                raise exc_info[0], exc_info[1], exc_info[2]
+
+    def __str__(self):
+        return str(self.message)
+
+
+class MissingCredentialError(HeatException):
     message = _("Missing required credential: %(required)s")
 
 
-class BadAuthStrategy(OpenstackException):
+class BadAuthStrategy(HeatException):
     message = _("Incorrect auth strategy, expected \"%(expected)s\" but "
                 "received \"%(received)s\"")
 
 
-class AuthBadRequest(OpenstackException):
+class AuthBadRequest(HeatException):
     message = _("Connect error/bad request to Auth service at URL %(url)s.")
 
 
-class AuthUrlNotFound(OpenstackException):
+class AuthUrlNotFound(HeatException):
     message = _("Auth service at URL %(url)s not found.")
 
 
-class AuthorizationFailure(OpenstackException):
+class AuthorizationFailure(HeatException):
     message = _("Authorization failed.")
 
 
-class NotAuthenticated(OpenstackException):
+class NotAuthenticated(HeatException):
     message = _("You are not authenticated.")
 
 
-class Forbidden(OpenstackException):
+class Forbidden(HeatException):
     message = _("You are not authorized to complete this action.")
 
 
@@ -125,148 +155,178 @@ class NotAuthorized(Forbidden):
     message = _("You are not authorized to complete this action.")
 
 
-class Invalid(OpenstackException):
+class Invalid(HeatException):
     message = _("Data supplied was not valid: %(reason)s")
 
 
-class AuthorizationRedirect(OpenstackException):
+class AuthorizationRedirect(HeatException):
     message = _("Redirecting to %(uri)s for authorization.")
 
 
-class ClientConfigurationError(OpenstackException):
+class ClientConfigurationError(HeatException):
     message = _("There was an error configuring the client.")
 
 
-class MultipleChoices(OpenstackException):
-    message = _("The request returned a 302 Multiple Choices. This generally "
-                "means that you have not included a version indicator in a "
-                "request URI.\n\nThe body of response returned:\n%(body)s")
-
-
-class LimitExceeded(OpenstackException):
-    message = _("The request returned a 413 Request Entity Too Large. This "
-                "generally means that rate limiting or a quota threshold was "
-                "breached.\n\nThe response body:\n%(body)s")
-
-    def __init__(self, *args, **kwargs):
-        self.retry_after = (int(kwargs['retry']) if kwargs.get('retry')
-                            else None)
-        super(LimitExceeded, self).__init__(*args, **kwargs)
-
-
-class ServiceUnavailable(OpenstackException):
-    message = _("The request returned a 503 ServiceUnavilable. This "
-                "generally occurs on service overload or other transient "
-                "outage.")
-
-    def __init__(self, *args, **kwargs):
-        self.retry_after = (int(kwargs['retry']) if kwargs.get('retry')
-                            else None)
-        super(ServiceUnavailable, self).__init__(*args, **kwargs)
-
-
-class RequestUriTooLong(OpenstackException):
+class RequestUriTooLong(HeatException):
     message = _("The URI was too long.")
 
 
-class ServerError(OpenstackException):
+class ServerError(HeatException):
     message = _("The request returned 500 Internal Server Error"
                 "\n\nThe response body:\n%(body)s")
 
 
-class MaxRedirectsExceeded(OpenstackException):
+class MaxRedirectsExceeded(HeatException):
     message = _("Maximum redirects (%(redirects)s) was exceeded.")
 
 
-class InvalidRedirect(OpenstackException):
+class InvalidRedirect(HeatException):
     message = _("Received invalid HTTP redirect.")
 
 
-class NoServiceEndpoint(OpenstackException):
+class NoServiceEndpoint(HeatException):
     message = _("Response from Keystone does not contain a Heat endpoint.")
 
 
-class RegionAmbiguity(OpenstackException):
+class RegionAmbiguity(HeatException):
     message = _("Multiple 'image' service matches for region %(region)s. This "
                 "generally means that a region is required and you have not "
                 "supplied one.")
 
 
-class UserParameterMissing(OpenstackException):
+class UserParameterMissing(HeatException):
     message = _("The Parameter (%(key)s) was not provided.")
 
 
-class UnknownUserParameter(OpenstackException):
+class UnknownUserParameter(HeatException):
     message = _("The Parameter (%(key)s) was not defined in template.")
 
 
-class InvalidTemplateAttribute(OpenstackException):
+class InvalidTemplateAttribute(HeatException):
     message = _("The Referenced Attribute (%(resource)s %(key)s)"
                 " is incorrect.")
 
 
-class InvalidTemplateReference(OpenstackException):
-    message = _("The specified reference (%(resource)s %(key)s)"
+class InvalidTemplateReference(HeatException):
+    message = _("The specified reference \"%(resource)s\" (in %(key)s)"
                 " is incorrect.")
 
 
-class UserKeyPairMissing(OpenstackException):
+class UserKeyPairMissing(HeatException):
     message = _("The Key (%(key_name)s) could not be found.")
 
 
-class FlavorMissing(OpenstackException):
+class FlavorMissing(HeatException):
     message = _("The Flavor ID (%(flavor_id)s) could not be found.")
 
 
-class ImageNotFound(OpenstackException):
+class ImageNotFound(HeatException):
     message = _("The Image (%(image_name)s) could not be found.")
 
 
-class NoUniqueImageFound(OpenstackException):
+class NoUniqueImageFound(HeatException):
     message = _("Multiple images were found with name (%(image_name)s).")
 
 
-class InvalidTenant(OpenstackException):
+class InvalidTenant(HeatException):
     message = _("Searching Tenant %(target)s "
                 "from Tenant %(actual)s forbidden.")
 
 
-class StackNotFound(OpenstackException):
+class StackNotFound(HeatException):
     message = _("The Stack (%(stack_name)s) could not be found.")
 
 
-class StackExists(OpenstackException):
+class StackExists(HeatException):
     message = _("The Stack (%(stack_name)s) already exists.")
 
 
-class StackValidationFailed(OpenstackException):
+class StackValidationFailed(HeatException):
     message = _("%(message)s")
 
 
-class ResourceNotFound(OpenstackException):
+class ResourceNotFound(HeatException):
     message = _("The Resource (%(resource_name)s) could not be found "
                 "in Stack %(stack_name)s.")
 
 
-class ResourceNotAvailable(OpenstackException):
+class ResourceTypeNotFound(HeatException):
+    message = _("The Resource Type (%(type_name)s) could not be found.")
+
+
+class ResourceNotAvailable(HeatException):
     message = _("The Resource (%(resource_name)s) is not available.")
 
 
-class PhysicalResourceNotFound(OpenstackException):
+class PhysicalResourceNotFound(HeatException):
     message = _("The Resource (%(resource_id)s) could not be found.")
 
 
-class WatchRuleNotFound(OpenstackException):
+class WatchRuleNotFound(HeatException):
     message = _("The Watch Rule (%(watch_name)s) could not be found.")
 
 
-class ResourceFailure(OpenstackException):
+class ResourceFailure(HeatException):
     message = _("%(exc_type)s: %(message)s")
 
-    def __init__(self, exception):
+    def __init__(self, exception, resource, action=None):
         if isinstance(exception, ResourceFailure):
             exception = getattr(exception, 'exc', exception)
         self.exc = exception
+        self.resource = resource
+        self.action = action
         exc_type = type(exception).__name__
         super(ResourceFailure, self).__init__(exc_type=exc_type,
                                               message=str(exception))
+
+
+class NotSupported(HeatException):
+    message = _("%(feature)s is not supported.")
+
+
+class ResourcePropertyConflict(HeatException):
+    message = _('Cannot define the following properties at the same time: %s.')
+
+    def __init__(self, *args):
+        self.message = self.message % ", ".join(args)
+        super(ResourcePropertyConflict, self).__init__()
+
+
+class HTTPExceptionDisguise(Exception):
+    """Disguises HTTP exceptions so they can be handled by the webob fault
+    application in the wsgi pipeline.
+    """
+
+    def __init__(self, exception):
+        self.exc = exception
+        self.tb = sys.exc_info()[2]
+
+
+class TemplateTooBig(HeatException):
+    message = _('Template exceeds maximum allowed size.')
+
+
+class EgressRuleNotAllowed(HeatException):
+    message = _("Egress rules are only allowed when "
+                "Neutron is used and the 'VpcId' property is set.")
+
+
+class Error(Exception):
+    def __init__(self, message=None):
+        super(Error, self).__init__(message)
+
+
+class NotFound(Error):
+    pass
+
+
+class InvalidContentType(HeatException):
+    message = "Invalid content type %(content_type)s"
+
+
+class StackRecursionLimitReached(HeatException):
+    message = _("Recursion depth exceeds %d.")
+
+    def __init__(self, recursion_depth):
+        self.message = self.message % recursion_depth
+        super(StackRecursionLimitReached, self).__init__()

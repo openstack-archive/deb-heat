@@ -15,7 +15,6 @@
 
 from oslo.config import cfg
 
-from heat.common import config
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import resource
@@ -24,8 +23,6 @@ from heat.engine.resources import user
 from heat.tests.common import HeatTestCase
 from heat.tests import fakes
 from heat.tests import utils
-from heat.tests.utils import setup_dummy_db
-from heat.tests.utils import parse_stack
 
 import keystoneclient.exceptions
 
@@ -92,11 +89,10 @@ user_policy_template = '''
 class UserPolicyTestCase(HeatTestCase):
     def setUp(self):
         super(UserPolicyTestCase, self).setUp()
-        config.register_engine_opts()
         username = utils.PhysName('test_stack', 'CfnUser')
         self.fc = fakes.FakeKeystoneClient(username=username)
         cfg.CONF.set_default('heat_stack_user_role', 'stack_user_role')
-        setup_dummy_db()
+        utils.setup_dummy_db()
 
 
 class UserTest(UserPolicyTestCase):
@@ -118,7 +114,7 @@ class UserTest(UserPolicyTestCase):
         self.m.ReplayAll()
 
         t = template_format.parse(user_template)
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         rsrc = self.create_user(t, stack, 'CfnUser')
         self.assertEqual(self.fc.user_id, rsrc.resource_id)
@@ -133,20 +129,20 @@ class UserTest(UserPolicyTestCase):
         self.assertEqual(None, rsrc.handle_resume())
 
         rsrc.resource_id = None
-        self.assertEqual(None, rsrc.delete())
+        scheduler.TaskRunner(rsrc.delete)()
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
 
         rsrc.resource_id = self.fc.access
         rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE)
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
-        self.assertEqual(None, rsrc.delete())
+        scheduler.TaskRunner(rsrc.delete)()
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
 
         rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE)
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
-        self.assertEqual(None, rsrc.delete())
+        scheduler.TaskRunner(rsrc.delete)()
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
@@ -158,7 +154,7 @@ class UserTest(UserPolicyTestCase):
         self.m.ReplayAll()
 
         t = template_format.parse(user_policy_template)
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         rsrc = self.create_user(t, stack, 'CfnUser')
         self.assertEqual(self.fc.user_id, rsrc.resource_id)
@@ -198,7 +194,7 @@ class UserTest(UserPolicyTestCase):
 
         t = template_format.parse(user_policy_template)
         t['Resources']['CfnUser']['Properties']['Policies'] = ['NoExistBad']
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
         resource_name = 'CfnUser'
         rsrc = user.User(resource_name,
                          t['Resources'][resource_name],
@@ -219,7 +215,7 @@ class UserTest(UserPolicyTestCase):
         self.m.ReplayAll()
 
         t = template_format.parse(user_policy_template)
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         rsrc = self.create_user(t, stack, 'CfnUser')
         self.assertEqual(self.fc.user_id, rsrc.resource_id)
@@ -245,7 +241,7 @@ class UserTest(UserPolicyTestCase):
         t = template_format.parse(user_policy_template)
         t['Resources']['CfnUser']['Properties']['Policies'] = [
             'WebServerAccessPolicy', {'an_ignored': 'policy'}]
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         rsrc = self.create_user(t, stack, 'CfnUser')
         self.assertEqual(self.fc.user_id, rsrc.resource_id)
@@ -286,7 +282,7 @@ class AccessKeyTest(UserPolicyTestCase):
 
         t = template_format.parse(user_accesskey_template)
 
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         self.create_user(t, stack, 'CfnUser')
         rsrc = self.create_access_key(t, stack, 'HostKeys')
@@ -307,7 +303,7 @@ class AccessKeyTest(UserPolicyTestCase):
 
         self.assertRaises(exception.InvalidTemplateAttribute,
                           rsrc.FnGetAtt, 'Foo')
-        self.assertEqual(None, rsrc.delete())
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_access_key_deleted(self):
@@ -319,7 +315,7 @@ class AccessKeyTest(UserPolicyTestCase):
         self.m.ReplayAll()
 
         t = template_format.parse(user_accesskey_template)
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         self.create_user(t, stack, 'CfnUser')
         rsrc = self.create_access_key(t, stack, 'HostKeys')
@@ -330,7 +326,7 @@ class AccessKeyTest(UserPolicyTestCase):
         self.fc.delete_ec2_keypair(self.fc.user_id,
                                    rsrc.resource_id).AndRaise(NotFound('Gone'))
         self.m.ReplayAll()
-        self.assertEqual(None, rsrc.delete())
+        scheduler.TaskRunner(rsrc.delete)()
 
         self.m.VerifyAll()
 
@@ -340,7 +336,7 @@ class AccessKeyTest(UserPolicyTestCase):
         t = template_format.parse(user_accesskey_template)
         # Set the resource properties UserName to an unknown user
         t['Resources']['HostKeys']['Properties']['UserName'] = 'NonExistant'
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
         stack.resources['CfnUser'].resource_id = self.fc.user_id
 
         rsrc = user.AccessKey('HostKeys',
@@ -350,7 +346,7 @@ class AccessKeyTest(UserPolicyTestCase):
         self.assertRaises(exception.ResourceFailure, create)
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
 
-        self.assertEqual(None, rsrc.delete())
+        scheduler.TaskRunner(rsrc.delete)()
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()
@@ -360,7 +356,7 @@ class AccessPolicyTest(UserPolicyTestCase):
 
     def test_accesspolicy_create_ok(self):
         t = template_format.parse(user_policy_template)
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         resource_name = 'WebServerAccessPolicy'
         rsrc = user.AccessPolicy(resource_name,
@@ -373,7 +369,7 @@ class AccessPolicyTest(UserPolicyTestCase):
         t = template_format.parse(user_policy_template)
         resource_name = 'WebServerAccessPolicy'
         t['Resources'][resource_name]['Properties']['AllowedResources'] = []
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         rsrc = user.AccessPolicy(resource_name,
                                  t['Resources'][resource_name],
@@ -386,7 +382,7 @@ class AccessPolicyTest(UserPolicyTestCase):
         resource_name = 'WebServerAccessPolicy'
         t['Resources'][resource_name]['Properties']['AllowedResources'] = [
             'NoExistResource']
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         rsrc = user.AccessPolicy(resource_name,
                                  t['Resources'][resource_name],
@@ -396,7 +392,7 @@ class AccessPolicyTest(UserPolicyTestCase):
     def test_accesspolicy_update(self):
         t = template_format.parse(user_policy_template)
         resource_name = 'WebServerAccessPolicy'
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         rsrc = user.AccessPolicy(resource_name,
                                  t['Resources'][resource_name],
@@ -407,7 +403,7 @@ class AccessPolicyTest(UserPolicyTestCase):
     def test_accesspolicy_access_allowed(self):
         t = template_format.parse(user_policy_template)
         resource_name = 'WebServerAccessPolicy'
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
 
         rsrc = user.AccessPolicy(resource_name,
                                  t['Resources'][resource_name],

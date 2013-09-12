@@ -17,6 +17,7 @@ SQLAlchemy models for heat data.
 
 import sqlalchemy
 
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import relationship, backref, object_mapper
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declarative_base
@@ -32,14 +33,29 @@ from sqlalchemy.orm.session import Session
 BASE = declarative_base()
 
 
-class Json(types.TypeDecorator, types.MutableType):
+class Json(types.TypeDecorator):
     impl = types.Text
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'mysql':
+            return dialect.type_descriptor(mysql.LONGTEXT())
+        else:
+            return self.impl
 
     def process_bind_param(self, value, dialect):
         return dumps(value)
 
     def process_result_value(self, value, dialect):
         return loads(value)
+
+# TODO(leizhang) When we removed sqlalchemy 0.7 dependence
+# we can import MutableDict directly and remove ./mutable.py
+try:
+    from sqlalchemy.ext.mutable import MutableDict as sa_MutableDict
+    sa_MutableDict.associate_with(Json)
+except ImportError:
+    from heat.db.sqlalchemy.mutable import MutableDict
+    MutableDict.associate_with(Json)
 
 
 class HeatBase(object):
@@ -84,8 +100,6 @@ class HeatBase(object):
 
     def delete(self, session=None):
         """Delete this object."""
-        self.deleted = True
-        self.deleted_at = timeutils.utcnow()
         if not session:
             session = Session.object_session(self)
             if not session:
@@ -137,6 +151,15 @@ class HeatBase(object):
         return local.iteritems()
 
 
+class SoftDelete(object):
+    deleted_at = sqlalchemy.Column(sqlalchemy.DateTime)
+
+    def soft_delete(self, session=None):
+        """Mark this object as deleted."""
+        self.update_and_save({'deleted_at': timeutils.utcnow()},
+                             session=session)
+
+
 class RawTemplate(BASE, HeatBase):
     """Represents an unparsed template which should be in JSON format."""
 
@@ -145,7 +168,7 @@ class RawTemplate(BASE, HeatBase):
     template = sqlalchemy.Column(Json)
 
 
-class Stack(BASE, HeatBase):
+class Stack(BASE, HeatBase, SoftDelete):
     """Represents a stack created by the heat engine."""
 
     __tablename__ = 'stack'
@@ -184,13 +207,11 @@ class UserCreds(BASE, HeatBase):
     id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
     username = sqlalchemy.Column(sqlalchemy.String)
     password = sqlalchemy.Column(sqlalchemy.String)
-    service_user = sqlalchemy.Column(sqlalchemy.String)
-    service_password = sqlalchemy.Column(sqlalchemy.String)
     tenant = sqlalchemy.Column(sqlalchemy.String)
     auth_url = sqlalchemy.Column(sqlalchemy.String)
-    aws_auth_url = sqlalchemy.Column(sqlalchemy.String)
     tenant_id = sqlalchemy.Column(sqlalchemy.String)
-    aws_creds = sqlalchemy.Column(sqlalchemy.String)
+    trust_id = sqlalchemy.Column(sqlalchemy.String)
+    trustor_user_id = sqlalchemy.Column(sqlalchemy.String)
     stack = relationship(Stack, backref=backref('user_creds'))
 
 
@@ -207,7 +228,7 @@ class Event(BASE, HeatBase):
 
     resource_action = sqlalchemy.Column(sqlalchemy.String)
     resource_status = sqlalchemy.Column(sqlalchemy.String)
-    logical_resource_id = sqlalchemy.Column(sqlalchemy.String)
+    resource_name = sqlalchemy.Column(sqlalchemy.String)
     physical_resource_id = sqlalchemy.Column(sqlalchemy.String)
     resource_status_reason = sqlalchemy.Column(sqlalchemy.String)
     resource_type = sqlalchemy.Column(sqlalchemy.String)
@@ -254,7 +275,7 @@ class Resource(BASE, HeatBase):
     stack = relationship(Stack, backref=backref('resources'))
     data = relationship(ResourceData,
                         cascade="all,delete",
-                        backref=backref('resource', lazy='joined'))
+                        backref=backref('resource'))
 
 
 class WatchRule(BASE, HeatBase):

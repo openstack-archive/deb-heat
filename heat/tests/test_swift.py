@@ -20,12 +20,12 @@ from testtools import skipIf
 from heat.common import template_format
 from heat.openstack.common.importutils import try_import
 from heat.engine.resources import swift
+from heat.engine import clients
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
+from heat.tests import fakes
 from heat.tests import utils
-from heat.tests.utils import setup_dummy_db
-from heat.tests.utils import parse_stack
 
 swiftclient = try_import('swiftclient.client')
 
@@ -43,6 +43,12 @@ swift_template = '''
           "Web-Index" : "index.html",
           "Web-Error" : "error.html"
          }
+      }
+    },
+    "S3Bucket" : {
+      "Type" : "AWS::S3::Bucket",
+      "Properties" : {
+        "SwiftContainer" : {"Ref" : "SwiftContainer"}
       }
     },
     "SwiftContainer" : {
@@ -64,8 +70,9 @@ class swiftTest(HeatTestCase):
         self.m.StubOutWithMock(swiftclient.Connection, 'delete_container')
         self.m.StubOutWithMock(swiftclient.Connection, 'head_container')
         self.m.StubOutWithMock(swiftclient.Connection, 'get_auth')
+        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
 
-        setup_dummy_db()
+        utils.setup_dummy_db()
 
     def create_resource(self, t, stack, resource_name):
         rsrc = swift.SwiftContainer(
@@ -80,7 +87,7 @@ class swiftTest(HeatTestCase):
         self.m.ReplayAll()
         t = template_format.parse(swift_template)
         t['Resources']['SwiftContainer']['Properties']['name'] = 'the_name'
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
         rsrc = swift.SwiftContainer(
             'test_resource',
             t['Resources']['SwiftContainer'],
@@ -114,6 +121,8 @@ class swiftTest(HeatTestCase):
             "x-container-bytes-used": "17680980",
             "content-type": "text/plain; charset=utf-8"}
 
+        clients.OpenStackClients.keystone().AndReturn(
+            fakes.FakeKeystoneClient())
         container_name = utils.PhysName('test_stack', 'test_resource')
         swiftclient.Connection.put_container(
             container_name,
@@ -121,21 +130,21 @@ class swiftTest(HeatTestCase):
              'X-Container-Read': None}
         ).AndReturn(None)
         swiftclient.Connection.get_auth().MultipleTimes().AndReturn(
-            ('http://localhost:8080/v_2', None))
+            ('http://server.test:8080/v_2', None))
         swiftclient.Connection.head_container(
             mox.IgnoreArg()).MultipleTimes().AndReturn(headers)
         swiftclient.Connection.delete_container(container_name).AndReturn(None)
 
         self.m.ReplayAll()
         t = template_format.parse(swift_template)
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'SwiftContainer')
 
         ref_id = rsrc.FnGetRefId()
         self.assertEqual(container_name, ref_id)
 
-        self.assertEqual('localhost', rsrc.FnGetAtt('DomainName'))
-        url = 'http://localhost:8080/v_2/%s' % ref_id
+        self.assertEqual('server.test', rsrc.FnGetAtt('DomainName'))
+        url = 'http://server.test:8080/v_2/%s' % ref_id
 
         self.assertEqual(url, rsrc.FnGetAtt('WebsiteURL'))
         self.assertEqual('82', rsrc.FnGetAtt('ObjectCount'))
@@ -151,10 +160,12 @@ class swiftTest(HeatTestCase):
         self.assertRaises(resource.UpdateReplace,
                           rsrc.handle_update, {}, {}, {})
 
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_public_read(self):
+        clients.OpenStackClients.keystone().AndReturn(
+            fakes.FakeKeystoneClient())
         container_name = utils.PhysName('test_stack', 'test_resource')
         swiftclient.Connection.put_container(
             container_name,
@@ -166,12 +177,14 @@ class swiftTest(HeatTestCase):
         t = template_format.parse(swift_template)
         properties = t['Resources']['SwiftContainer']['Properties']
         properties['X-Container-Read'] = '.r:*'
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'SwiftContainer')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_public_read_write(self):
+        clients.OpenStackClients.keystone().AndReturn(
+            fakes.FakeKeystoneClient())
         container_name = utils.PhysName('test_stack', 'test_resource')
         swiftclient.Connection.put_container(
             container_name,
@@ -184,12 +197,14 @@ class swiftTest(HeatTestCase):
         properties = t['Resources']['SwiftContainer']['Properties']
         properties['X-Container-Read'] = '.r:*'
         properties['X-Container-Write'] = '.r:*'
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'SwiftContainer')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_website(self):
+        clients.OpenStackClients.keystone().AndReturn(
+            fakes.FakeKeystoneClient())
         container_name = utils.PhysName('test_stack', 'test_resource')
         swiftclient.Connection.put_container(
             container_name,
@@ -201,12 +216,14 @@ class swiftTest(HeatTestCase):
 
         self.m.ReplayAll()
         t = template_format.parse(swift_template)
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'SwiftContainerWebsite')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_delete_exception(self):
+        clients.OpenStackClients.keystone().AndReturn(
+            fakes.FakeKeystoneClient())
         container_name = utils.PhysName('test_stack', 'test_resource')
         swiftclient.Connection.put_container(
             container_name,
@@ -217,14 +234,16 @@ class swiftTest(HeatTestCase):
 
         self.m.ReplayAll()
         t = template_format.parse(swift_template)
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'SwiftContainer')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
 
         self.m.VerifyAll()
 
     def test_delete_retain(self):
 
+        clients.OpenStackClients.keystone().AndReturn(
+            fakes.FakeKeystoneClient())
         # first run, with retain policy
         swiftclient.Connection.put_container(
             utils.PhysName('test_stack', 'test_resource'),
@@ -236,9 +255,9 @@ class swiftTest(HeatTestCase):
 
         container = t['Resources']['SwiftContainer']
         container['DeletionPolicy'] = 'Retain'
-        stack = parse_stack(t)
+        stack = utils.parse_stack(t)
         rsrc = self.create_resource(t, stack, 'SwiftContainer')
-        rsrc.delete()
+        scheduler.TaskRunner(rsrc.delete)()
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()

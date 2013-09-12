@@ -20,7 +20,9 @@ from oslo.config import cfg
 
 from keystoneclient.contrib.ec2 import utils as ec2_utils
 
+from heat.db import api as db_api
 from heat.common import exception
+from heat.engine import clients
 from heat.engine import resource
 
 from heat.openstack.common import log
@@ -31,6 +33,8 @@ SIGNAL_TYPES = (
 ) = (
     '/waitcondition', '/signal'
 )
+SIGNAL_VERB = {WAITCONDITION: 'PUT',
+               SIGNAL: 'POST'}
 
 
 class SignalResponder(resource.Resource):
@@ -49,7 +53,14 @@ class SignalResponder(resource.Resource):
     def handle_delete(self):
         if self.resource_id is None:
             return
-        self.keystone().delete_stack_user(self.resource_id)
+        try:
+            self.keystone().delete_stack_user(self.resource_id)
+        except clients.hkc.kc.exceptions.NotFound:
+            pass
+        try:
+            db_api.resource_data_delete(self, 'ec2_signed_url')
+        except exception.NotFound:
+            pass
 
     def _get_signed_url(self, signal_type=SIGNAL):
         """Create properly formatted and pre-signed URL.
@@ -62,6 +73,13 @@ class SignalResponder(resource.Resource):
 
         :param signal_type: either WAITCONDITION or SIGNAL.
         """
+        try:
+            stored = db_api.resource_data_get(self, 'ec2_signed_url')
+        except exception.NotFound:
+            stored = None
+        if stored is not None:
+            return stored
+
         waitcond_url = cfg.CONF.heat_waitcondition_server_url
         signal_url = waitcond_url.replace('/waitcondition', signal_type)
         host_url = urlparse.urlparse(signal_url)
@@ -75,7 +93,7 @@ class SignalResponder(resource.Resource):
         # ensure the actual URL contains the quoted version...
         unquoted_path = urllib.unquote(host_url.path + path)
         request = {'host': host_url.netloc.lower(),
-                   'verb': 'PUT',
+                   'verb': SIGNAL_VERB[signal_type],
                    'path': unquoted_path,
                    'params': {'SignatureMethod': 'HmacSHA256',
                               'SignatureVersion': '2',
@@ -90,4 +108,6 @@ class SignalResponder(resource.Resource):
         qs = urllib.urlencode(request['params'])
         url = "%s%s?%s" % (signal_url.lower(),
                            path, qs)
+
+        db_api.resource_data_set(self, 'ec2_signed_url', url)
         return url

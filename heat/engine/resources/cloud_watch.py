@@ -109,7 +109,7 @@ class CloudWatchAlarm(resource.Resource):
             wr = watchrule.WatchRule.load(
                 self.context, watch_name=self.physical_resource_name())
             wr.destroy()
-        except exception.NotFound:
+        except exception.WatchRuleNotFound:
             pass
 
     def handle_suspend(self):
@@ -132,5 +132,5 @@ class CloudWatchAlarm(resource.Resource):
 
 def resource_mapping():
     return {
-        'AWS::CloudWatch::Alarm': CloudWatchAlarm,
+        'OS::Heat::CWLiteAlarm': CloudWatchAlarm,
     }

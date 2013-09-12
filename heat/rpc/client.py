@@ -160,6 +160,25 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
         """
         return self.call(ctxt, self.make_msg('list_resource_types'))
 
+    def resource_schema(self, ctxt, type_name):
+        """
+        Get the schema for a resource type.
+
+        :param ctxt: RPC context.
+        """
+        return self.call(ctxt, self.make_msg('resource_schema',
+                                             type_name=type_name))
+
+    def generate_template(self, ctxt, type_name):
+        """
+        Generate a template based on the specified type.
+
+        :param ctxt: RPC context.
+        :param type_name: The resource type name to generate a template for.
+        """
+        return self.call(ctxt, self.make_msg('generate_template',
+                                             type_name=type_name))
+
     def list_events(self, ctxt, stack_identity):
         """
         The list_events method lists all events associated with a given stack.
@@ -229,6 +248,19 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
                                              stack_identity=stack_identity,
                                              resource_name=resource_name,
                                              metadata=metadata))
+
+    def resource_signal(self, ctxt, stack_identity, resource_name, details):
+        """
+        Generate an alarm on the resource.
+        :param ctxt: RPC context.
+        :param stack_identity: Name of the stack.
+        :param resource_name: the Resource.
+        :param details: the details of the signal.
+        """
+        return self.call(ctxt, self.make_msg('resource_signal',
+                                             stack_identity=stack_identity,
+                                             resource_name=resource_name,
+                                             details=details))
 
     def create_watch_data(self, ctxt, watch_name, stats_data):
         '''
