@@ -1,2 +1,2 @@
-/usr/bin/heat-watch
+/usr/bin/heat-manage
 etc/heat/policy.json
