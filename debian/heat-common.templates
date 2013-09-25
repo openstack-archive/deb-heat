@@ -95,3 +95,29 @@ _Description: Set up a database for heat-engine?
  .
  You can change this setting later on by running "dpkg-reconfigure -plow
  heat-engine".
+
+Template: heat/rabbit-host
+Type: string
+Default: localhost
+_Description: IP address of your RabbitMQ host:
+ In order to interoperate with other components of OpenStack, this package
+ needs to connect to a central RabbitMQ server.
+ .
+ Please specify the IP address of that server.
+
+Template: heat/rabbit-userid
+Type: string
+Default: guest
+_Description: Username for connection to the RabbitMQ server:
+ In order to interoperate with other components of OpenStack, this package
+ needs to connect to a central RabbitMQ server.
+ .
+ Please specify the username used to connect to the RabbitMQ server.
+
+Template: heat/rabbit-password
+Type: password
+_Description: Password for connection to the RabbitMQ server:
+ In order to interoperate with other components of OpenStack, this package
+ needs to connect to a central RabbitMQ server.
+ .
+ Please specify the password used to connect to the RabbitMQ server.

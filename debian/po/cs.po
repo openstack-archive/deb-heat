@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: heat 2013.1.2-4\n"
 "Report-Msgid-Bugs-To: heat@packages.debian.org\n"
-"POT-Creation-Date: 2013-09-25 14:57+0800\n"
+"POT-Creation-Date: 2013-09-25 16:43+0800\n"
 "PO-Revision-Date: 2013-08-28 13:31+0200\n"
 "Last-Translator: Michal Simunek <michal.simunek@gmail.com>\n"
 "Language-Team: Czech <debian-l10n-czech@lists.debian.org>\n"
@@ -237,6 +237,63 @@ msgid ""
 msgstr ""
 "Toto nastavení můžete později změnit spuštěním \"dpkg-reconfigure -plow heat-"
 "engine\"."
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:12001
+msgid "IP address of your RabbitMQ host:"
+msgstr ""
+
+#. Type: string
+#. Description
+#. Type: string
+#. Description
+#. Type: password
+#. Description
+#: ../heat-common.templates:12001 ../heat-common.templates:13001
+#: ../heat-common.templates:14001
+msgid ""
+"In order to interoperate with other components of OpenStack, this package "
+"needs to connect to a central RabbitMQ server."
+msgstr ""
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:12001
+#, fuzzy
+#| msgid "Please specify the password to use with the authentication server."
+msgid "Please specify the IP address of that server."
+msgstr "Zadejte prosím heslo, které se má použít na autentizačním serveru"
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:13001
+msgid "Username for connection to the RabbitMQ server:"
+msgstr ""
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:13001
+#, fuzzy
+#| msgid "Please specify the username to use with the authentication server."
+msgid "Please specify the username used to connect to the RabbitMQ server."
+msgstr ""
+"Zadejte prosím uživatelské jméno, které se má použít na autentizačním "
+"serveru."
+
+#. Type: password
+#. Description
+#: ../heat-common.templates:14001
+msgid "Password for connection to the RabbitMQ server:"
+msgstr ""
+
+#. Type: password
+#. Description
+#: ../heat-common.templates:14001
+#, fuzzy
+#| msgid "Please specify the password to use with the authentication server."
+msgid "Please specify the password used to connect to the RabbitMQ server."
+msgstr "Zadejte prosím heslo, které se má použít na autentizačním serveru"
 
 #~ msgid "Auth server hostname:"
 #~ msgstr "Název hostitele autentizačního serveru:"
