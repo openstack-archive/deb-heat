@@ -1,9 +1,6 @@
 #!/usr/bin/make -f
 
-#export DH_VERBOSE=1
-
 include /usr/share/openstack-pkg-tools/pkgos.make
-
 export OSLO_PACKAGE_VERSION=$(VERSION)
 
 %:
@@ -11,9 +8,8 @@ export OSLO_PACKAGE_VERSION=$(VERSION)
 
 ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 override_dh_auto_test:
-	./run_tests.sh -u || true
+	python setup.py testr --slowest 
 endif
-
 
 override_dh_clean:
 	dh_clean
