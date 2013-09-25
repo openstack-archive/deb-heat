@@ -1,2 +1,1 @@
-etc/heat/heat-engine.conf	/usr/share/heat-engine
 usr/bin/heat-engine
