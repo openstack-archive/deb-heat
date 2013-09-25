@@ -1,2 +1,1 @@
-etc/heat/heat-api.conf	/usr/share/heat-api
 usr/bin/heat-api
