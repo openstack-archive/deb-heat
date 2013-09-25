@@ -1,2 +1,1 @@
 /usr/bin/heat-api-cloudwatch
-etc/heat/heat-api-cloudwatch.conf	/usr/share/heat-api-cloudwatch
