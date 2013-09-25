@@ -77,3 +77,21 @@ _Description: Name of the region to register:
  OpenStack supports using availability zones, with each region representing
  a location. Please enter the zone that you wish to use when registering the
  endpoint.
+
+Template: heat/configure_db
+Type: boolean
+Default: true
+_Description: Set up a database for heat-engine?
+ No database has been set up for heat-engine to use. Before
+ continuing, you should make sure you have the following information:
+ .
+  * the type of database that you want to use;
+  * the database server host name (that server must allow TCP connections from this
+    machine);
+  * a username and password to access the database.
+ .
+ If some of these requirements are missing, do not choose this option and run with
+ regular SQLite support.
+ .
+ You can change this setting later on by running "dpkg-reconfigure -plow
+ heat-engine".

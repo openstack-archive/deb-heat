@@ -18,28 +18,18 @@ override_dh_clean:
 	find . -iname '*.pyc' -delete
 	rm -f run_tests.err.log
 	rm -f \
-		debian/heat-api-cfn.config \
-		debian/heat-api-cfn.postinst \
-		debian/heat-api-cloudwatch.config \
-		debian/heat-api-cloudwatch.postinst \
-		debian/heat-api.config \
-		debian/heat-api.postinst \
 		debian/heat-common.postinst \
-		debian/heat-engine.config \
-		debian/heat-engine.postinst
+		debian/heat-common.config
+
+override_dh_install:
+	dh_install
+	install -D -m 0640 etc/heat/heat.conf.sample $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
+	cat $(CURDIR)/debian/keystone_authtoken >>$(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
 
 override_dh_auto_build:
 	dh_auto_build
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-common.postinst
-	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-api-cfn.config
-	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-api-cfn.postinst
-	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-api-cloudwatch.config
-	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-api-cloudwatch.postinst
-	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-api.config
-	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-api.postinst
-	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-common.postinst
-	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-engine.config
-	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-engine.postinst
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-common.config
 
 override_dh_installman:
 	python setup.py build

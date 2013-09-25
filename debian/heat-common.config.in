@@ -4,11 +4,13 @@ set -e
 
 . /usr/share/debconf/confmodule
 
-CONF=/etc/heat/heat-engine.conf
+CONF=/etc/heat/heat.conf
 
 #PKGOS-INCLUDE#
 
 pkgos_var_user_group heat
 pkgos_dbc_read_conf -pkg heat-engine ${CONF} DEFAULT sql_connection heat $@
+pkgos_read_admin_creds ${CONF} keystone_authtoken heat
+pkgos_register_endpoint_config heat
 
 exit 0

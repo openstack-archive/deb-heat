@@ -3,16 +3,27 @@
 set -e
 
 ETC=/etc/heat
+CONF=/etc/heat/heat.conf
 
 #PKGOS-INCLUDE#
 
 if [ "$1" = "configure" ] ; then
 	pkgos_var_user_group heat
-	chown -R heat:adm /var/log/heat
+	chown heat:adm /var/log/heat
 	chmod 0750 /var/log/heat
 	mkdir -p /etc/heat
 	mkdir -p /var/lib/heat
-	chown heat:heat -R /var/lib/heat /etc/heat
+	chown heat:heat /var/lib/heat /etc/heat
+        pkgos_write_new_conf heat heat.conf
+
+	pkgos_dbc_postinst ${CONF} DEFAULT sql_connection heat $@
+        pkgos_write_admin_creds ${CONF} keystone_authtoken heat
+	pkgos_register_endpoint_postinst heat heat orchestration "Heat Orchestration API" 8004 /v1/'%(tenant_id)s'
+	# This is the equivalent of db-sync:
+	su heat -c  "python -m heat.db.sync"
+
+        chown -R heat:adm /var/log/heat
+        chmod 0750 /var/log/heat
 fi
 
 #DEBHELPER#

@@ -1,4 +1,1 @@
-[type: gettext/rfc822deb] heat-engine.templates
-[type: gettext/rfc822deb] heat-api-cfn.templates
-[type: gettext/rfc822deb] heat-api-cloudwatch.templates
-[type: gettext/rfc822deb] heat-api.templates
+[type: gettext/rfc822deb] heat-common.templates
