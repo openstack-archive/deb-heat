@@ -1,0 +1,300 @@
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the heat package.
+#
+# Yuri Kozlov <yuray@komyakino.ru>, 2013.
+msgid ""
+msgstr ""
+"Project-Id-Version: heat 2013.1.2-4\n"
+"Report-Msgid-Bugs-To: heat@packages.debian.org\n"
+"POT-Creation-Date: 2013-07-10 22:55+0800\n"
+"PO-Revision-Date: 2013-08-30 09:10+0400\n"
+"Last-Translator: Yuri Kozlov <yuray@komyakino.ru>\n"
+"Language-Team: Russian <debian-l10n-russian@lists.debian.org>\n"
+"Language: ru\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<"
+"=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+"X-Generator: Lokalize 1.4\n"
+
+#. Type: boolean
+#. Description
+#: ../heat-engine.templates:2001
+msgid "Set up a database for heat-engine?"
+msgstr "Настроить базу данных для heat-engine?"
+
+#. Type: boolean
+#. Description
+#: ../heat-engine.templates:2001
+msgid ""
+"No database has been set up for heat-engine to use. Before continuing, you "
+"should make sure you have the following information:"
+msgstr ""
+"Для использования heat-engine требуется настроить базу данных. Если вы хотите "
+"сделать это сейчас, то проверьте, что у вас есть следующая информация:"
+
+#. Type: boolean
+#. Description
+#: ../heat-engine.templates:2001
+msgid ""
+" * the type of database that you want to use;\n"
+" * the database server host name (that server must allow TCP connections "
+"from this\n"
+"   machine);\n"
+" * a username and password to access the database."
+msgstr ""
+" * тип базы данных, который хотите использовать;\n"
+" * имя узла сервера (этот сервер должен принимать TCP-соединения\n"
+"   с этой машины);\n"
+" * имя пользователя и пароль для доступа к базе данных."
+
+#. Type: boolean
+#. Description
+#: ../heat-engine.templates:2001
+msgid ""
+"If some of these requirements are missing, do not choose this option and run "
+"with regular SQLite support."
+msgstr ""
+"Если не хватает хотя бы одного параметра, ответьте отрицательно и включите "
+"поддержку SQLite."
+
+#. Type: boolean
+#. Description
+#: ../heat-engine.templates:2001
+msgid ""
+"You can change this setting later on by running \"dpkg-reconfigure -plow "
+"heat-engine\"."
+msgstr ""
+"Позднее, вы можете изменить эту настройку, запустив «dpkg-reconfigure -plow "
+"heat-engine»"
+
+#. Type: string
+#. Description
+#: ../heat-api-cfn.templates:2001
+msgid "Auth server hostname:"
+msgstr "Имя узла сервера аутентификации:"
+
+#. Type: string
+#. Description
+#: ../heat-api-cfn.templates:2001
+msgid ""
+"Please specify the hostname of your authentication server. Typically this is "
+"also the hostname of your OpenStack Identity Service (Keystone)."
+msgstr ""
+"Введите имя узла сервера аутентификации. Данное имя обычно совпадает с "
+"OpenStack Identity Service (Keystone)."
+
+#. Type: string
+#. Description
+#. Type: string
+#. Description
+#. Translators: a "tenant" in OpenStack world is
+#. an entity that contains one or more username/password couples.
+#. It's typically the tenant that will be used for billing. Having more than one
+#. username/password is very helpful in larger organization.
+#. You're advised to either keep "tenant" without translating it
+#. or keep it parenthezised. Example for French:
+#. locataire ("tenant")
+#. Type: string
+#. Description
+#. Translators: a "tenant" in OpenStack world is
+#. an entity that contains one or more username/password couples.
+#. It's typically the tenant that will be used for billing. Having more than one
+#. username/password is very helpful in larger organization.
+#. You're advised to either keep "tenant" without translating it
+#. or keep it parenthezised. Example for French:
+#. locataire ("tenant")
+#: ../heat-api-cfn.templates:3001 ../heat-api-cloudwatch.templates:3001
+#: ../heat-api-cloudwatch.templates:6001 ../heat-api.templates:3001
+msgid "Authentication server tenant name:"
+msgstr "Членское имя сервера аутентификации:"
+
+#. Type: string
+#. Description
+#. Type: string
+#. Description
+#. Translators: a "tenant" in OpenStack world is
+#. an entity that contains one or more username/password couples.
+#. It's typically the tenant that will be used for billing. Having more than one
+#. username/password is very helpful in larger organization.
+#. You're advised to either keep "tenant" without translating it
+#. or keep it parenthezised. Example for French:
+#. locataire ("tenant")
+#. Type: string
+#. Description
+#. Translators: a "tenant" in OpenStack world is
+#. an entity that contains one or more username/password couples.
+#. It's typically the tenant that will be used for billing. Having more than one
+#. username/password is very helpful in larger organization.
+#. You're advised to either keep "tenant" without translating it
+#. or keep it parenthezised. Example for French:
+#. locataire ("tenant")
+#: ../heat-api-cfn.templates:3001 ../heat-api-cloudwatch.templates:3001
+#: ../heat-api-cloudwatch.templates:6001 ../heat-api.templates:3001
+msgid "Please specify the authentication server tenant name."
+msgstr "Укажите членское имя сервера аутентификации."
+
+#. Type: string
+#. Description
+#. Type: string
+#. Description
+#. Type: string
+#. Description
+#: ../heat-api-cfn.templates:4001 ../heat-api-cloudwatch.templates:4001
+#: ../heat-api-cloudwatch.templates:7001 ../heat-api.templates:4001
+msgid "Authentication server username:"
+msgstr "Имя пользователя для сервера аутентификации:"
+
+#. Type: string
+#. Description
+#. Type: string
+#. Description
+#. Type: string
+#. Description
+#: ../heat-api-cfn.templates:4001 ../heat-api-cloudwatch.templates:4001
+#: ../heat-api-cloudwatch.templates:7001 ../heat-api.templates:4001
+msgid "Please specify the username to use with the authentication server."
+msgstr "Введите имя пользователя для работы с сервером аутентификации."
+
+#. Type: password
+#. Description
+#. Type: password
+#. Description
+#. Type: password
+#. Description
+#: ../heat-api-cfn.templates:5001 ../heat-api-cloudwatch.templates:5001
+#: ../heat-api-cloudwatch.templates:8001 ../heat-api.templates:5001
+msgid "Authentication server password:"
+msgstr "Пароль для сервера аутентификации:"
+
+#. Type: password
+#. Description
+#. Type: password
+#. Description
+#. Type: password
+#. Description
+#: ../heat-api-cfn.templates:5001 ../heat-api-cloudwatch.templates:5001
+#: ../heat-api-cloudwatch.templates:8001 ../heat-api.templates:5001
+msgid "Please specify the password to use with the authentication server."
+msgstr "Введите пароль для работы с сервером аутентификации."
+
+#. Type: string
+#. Description
+#: ../heat-api-cloudwatch.templates:2001 ../heat-api.templates:2001
+msgid "Authentication server hostname:"
+msgstr "Имя узла сервера аутентификации:"
+
+#. Type: string
+#. Description
+#: ../heat-api-cloudwatch.templates:2001 ../heat-api.templates:2001
+msgid ""
+"Please specify the hostname of the authentication server. Typically this is "
+"also the hostname of the OpenStack Identity Service (Keystone)."
+msgstr ""
+"Введите имя узла сервера аутентификации. Данное имя обычно совпадает с "
+"OpenStack Identity Service (Keystone)."
+
+#. Type: boolean
+#. Description
+#: ../heat-api.templates:6001
+msgid "Register Heat in the Keystone endpoint catalog?"
+msgstr "Зарегистрировать Heat в каталоге конечных точек keystone?"
+
+#. Type: boolean
+#. Description
+#: ../heat-api.templates:6001
+msgid ""
+"Each OpenStack service (each API) should be registered in order to be "
+"accessible. This is done using \"keystone service-create\" and \"keystone "
+"endpoint-create\". This can be done automatically now."
+msgstr ""
+"Для доступа к службам Openstack (каждому API) их нужно регистрировать. "
+"Это выполняется с помощью команды «keystone service-create» и «keystone "
+"endpoint-create». Это может быть сделано автоматически прямо сейчас."
+
+#. Type: boolean
+#. Description
+#: ../heat-api.templates:6001
+msgid ""
+"Note that you will need to have an up and running Keystone server on which "
+"to connect using the Keystone authentication token."
+msgstr ""
+"Заметим, что у вас должен быть работающий сервер Keystone, к которому "
+"будет произведено подключение с помощью токена аутентификации Keystone."
+
+#. Type: string
+#. Description
+#: ../heat-api.templates:7001
+msgid "Keystone server IP address:"
+msgstr "IP-адрес сервера Keystone:"
+
+#. Type: string
+#. Description
+#: ../heat-api.templates:7001
+msgid ""
+"Please enter the IP address of the Keystone server, so that heat-api can "
+"contact Keystone to do the Heat service and endpoint creation."
+msgstr ""
+"Введите IP-адрес сервера Keystone для того, чтобы heat-api могла подключиться "
+"к Keystone для запуска службы Heat и создания конечной точки."
+
+#. Type: password
+#. Description
+#: ../heat-api.templates:8001
+msgid "Keystone authentication token:"
+msgstr "Токен аутентификации Keystone:"
+
+#. Type: password
+#. Description
+#: ../heat-api.templates:8001
+msgid ""
+"To configure its endpoint in Keystone, heat-api needs the Keystone "
+"authentication token."
+msgstr ""
+"Для настройки собственной конечной точки в Keystone heat-api "
+"требуется токен аутентификации Keystone."
+
+#. Type: string
+#. Description
+#: ../heat-api.templates:9001
+msgid "Heat endpoint IP address:"
+msgstr "IP-адрес конечной точки Heat:"
+
+#. Type: string
+#. Description
+#: ../heat-api.templates:9001
+msgid "Please enter the IP address that will be used to contact Heat."
+msgstr "Введите IP-адрес, который будет использован для подключения к Heat."
+
+#. Type: string
+#. Description
+#: ../heat-api.templates:9001
+msgid ""
+"This IP address should be accessible from the clients that will use this "
+"service, so if you are installing a public cloud, this should be a public IP "
+"address."
+msgstr ""
+"Этот IP-адрес должен быть доступен клиентам, которые будут использовать эту "
+"службу, поэтому если вы разворачиваете открытое облако, то это должен быть "
+"публичный IP-адрес."
+
+#. Type: string
+#. Description
+#: ../heat-api.templates:10001
+msgid "Name of the region to register:"
+msgstr "Название области для регистрации:"
+
+#. Type: string
+#. Description
+#: ../heat-api.templates:10001
+msgid ""
+"OpenStack supports using availability zones, with each region representing a "
+"location. Please enter the zone that you wish to use when registering the "
+"endpoint."
+msgstr ""
+"Openstack поддерживает разделение на зоны доступности, где каждая "
+"область представляет определённое расположение. Введите зону, которую вы "
+"хотите "
+"использовать при регистрации конечной точки."
+
