@@ -1,2 +1,1 @@
-etc/heat/heat-api-cfn.conf	/usr/share/heat-api-cfn
 usr/bin/heat-api-cfn
