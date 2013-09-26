@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: heat\n"
 "Report-Msgid-Bugs-To: heat@packages.debian.org\n"
-"POT-Creation-Date: 2013-09-25 16:43+0800\n"
+"POT-Creation-Date: 2013-09-27 00:04+0800\n"
 "PO-Revision-Date: 2013-08-28 13:30+0100\n"
 "Last-Translator: Julien Patriarca <leatherface@debian.org>\n"
 "Language-Team: FRENCH <debian-l10n-french@lists.debian.org>\n"
@@ -193,17 +193,17 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../heat-common.templates:11001
-msgid "Set up a database for heat-engine?"
-msgstr "Installer une base de données pour le moteur de Heat ?"
+msgid "Set up a database for heat-common?"
+msgstr "Installer une base de données pour heat-common ?"
 
 #. Type: boolean
 #. Description
 #: ../heat-common.templates:11001
 msgid ""
-"No database has been set up for heat-engine to use. Before continuing, you "
+"No database has been set up for heat-common to use. Before continuing, you "
 "should make sure you have the following information:"
 msgstr ""
-"Aucune base de données n'a été installée pour le moteur de Heat. Avant de "
+"Aucune base de données n'a été installée pour heat-common. Avant de "
 "continuer, assurez-vous d'avoir toutes les informations nécessaires :"
 
 #. Type: boolean
@@ -236,10 +236,10 @@ msgstr ""
 #: ../heat-common.templates:11001
 msgid ""
 "You can change this setting later on by running \"dpkg-reconfigure -plow "
-"heat-engine\"."
+"heat-common\"."
 msgstr ""
 "Vous pouvez modifier ce réglage plus tard en lançant « dpkg-reconfigure -"
-"plow heat-engine »."
+"plow heat-common »."
 
 #. Type: string
 #. Description

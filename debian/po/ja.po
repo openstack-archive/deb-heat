@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: heat\n"
 "Report-Msgid-Bugs-To: heat@packages.debian.org\n"
-"POT-Creation-Date: 2013-09-25 16:43+0800\n"
+"POT-Creation-Date: 2013-09-27 00:04+0800\n"
 "PO-Revision-Date: 2013-07-10 23:55+0900\n"
 "Last-Translator: victory <victory.deb@gmail.com>\n"
 "Language-Team: Japanese <debian-japanese@lists.debian.org>\n"
@@ -186,17 +186,17 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../heat-common.templates:11001
-msgid "Set up a database for heat-engine?"
-msgstr "heat-engine 用のデータベースを準備しますか?"
+msgid "Set up a database for heat-common?"
+msgstr "heat-common 用のデータベースを準備しますか?"
 
 #. Type: boolean
 #. Description
 #: ../heat-common.templates:11001
 msgid ""
-"No database has been set up for heat-engine to use. Before continuing, you "
+"No database has been set up for heat-common to use. Before continuing, you "
 "should make sure you have the following information:"
 msgstr ""
-"heat-engine で利用するデータベースが用意されていません。続行する前に以下の情"
+"heat-common で利用するデータベースが用意されていません。続行する前に以下の情"
 "報が揃っているか確認してください:"
 
 #. Type: boolean
@@ -229,9 +229,9 @@ msgstr ""
 #: ../heat-common.templates:11001
 msgid ""
 "You can change this setting later on by running \"dpkg-reconfigure -plow "
-"heat-engine\"."
+"heat-common\"."
 msgstr ""
-"この設定は後で「dpkg-reconfigure -plow heat-engine」を実行することにより変更"
+"この設定は後で「dpkg-reconfigure -plow heat-common」を実行することにより変更"
 "できます。"
 
 #. Type: string

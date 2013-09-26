@@ -81,8 +81,8 @@ _Description: Name of the region to register:
 Template: heat/configure_db
 Type: boolean
 Default: true
-_Description: Set up a database for heat-engine?
- No database has been set up for heat-engine to use. Before
+_Description: Set up a database for heat-common?
+ No database has been set up for heat-common to use. Before
  continuing, you should make sure you have the following information:
  .
   * the type of database that you want to use;
@@ -94,7 +94,7 @@ _Description: Set up a database for heat-engine?
  regular SQLite support.
  .
  You can change this setting later on by running "dpkg-reconfigure -plow
- heat-engine".
+ heat-common".
 
 Template: heat/rabbit_host
 Type: string

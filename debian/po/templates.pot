@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: heat\n"
 "Report-Msgid-Bugs-To: heat@packages.debian.org\n"
-"POT-Creation-Date: 2013-09-25 16:43+0800\n"
+"POT-Creation-Date: 2013-09-27 00:04+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -171,14 +171,14 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../heat-common.templates:11001
-msgid "Set up a database for heat-engine?"
+msgid "Set up a database for heat-common?"
 msgstr ""
 
 #. Type: boolean
 #. Description
 #: ../heat-common.templates:11001
 msgid ""
-"No database has been set up for heat-engine to use. Before continuing, you "
+"No database has been set up for heat-common to use. Before continuing, you "
 "should make sure you have the following information:"
 msgstr ""
 
@@ -206,7 +206,7 @@ msgstr ""
 #: ../heat-common.templates:11001
 msgid ""
 "You can change this setting later on by running \"dpkg-reconfigure -plow "
-"heat-engine\"."
+"heat-common\"."
 msgstr ""
 
 #. Type: string
