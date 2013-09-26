@@ -3,6 +3,23 @@
 set -e
 
 if [ "${1}" = "purge" ] ; then
+	if [ -r /usr/share/debconf/confmodule ] ; then
+		. /usr/share/debconf/confmodule
+		db_get heat/configure_db || true
+		if [ "$RET" = "true" ] ; then
+			if [ -f /usr/share/dbconfig-common/dpkg/postrm ] ; then
+				. /usr/share/dbconfig-common/dpkg/postrm
+				dbc_go heat-common $@
+			else
+				rm -f /etc/dbconfig-common/heat-common.conf
+				if which ucf >/dev/null 2>&1; then
+					ucf --purge /etc/dbconfig-common/heat-common.conf
+					ucfr --purge heat-common /etc/dbconfig-common/heat-common.conf
+				fi
+			fi
+		fi
+	fi
+
 	[ -d /var/lib/heat/cache ] && rmdir --ignore-fail-on-non-empty /var/lib/heat/cache
 	[ -d /var/lib/heat ] && rmdir --ignore-fail-on-non-empty /var/lib/heat
 

@@ -7,7 +7,10 @@ CONF=/etc/heat/heat.conf
 
 #PKGOS-INCLUDE#
 
-if [ "$1" = "configure" ] ; then
+if [ "$1" = "configure" ] || [ "$1" = "reconfigure" ] ; then
+	. /usr/share/debconf/confmodule
+	. /usr/share/dbconfig-common/dpkg/postinst
+
 	pkgos_var_user_group heat
 	chown heat:adm /var/log/heat
 	chmod 0750 /var/log/heat
