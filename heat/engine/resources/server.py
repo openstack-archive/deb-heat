@@ -127,13 +127,13 @@ class Server(resource.Resource):
             'Description': _('User data script to be executed by cloud-init')},
         'reservation_id': {
             'Type': 'String',
-            'Description': _('A UUID for the set of servers being requested'),
-            'Implemented': False},
+            'Description': _('A UUID for the set of servers being requested')
+        },
         'config_drive': {
             'Type': 'String',
             'Description': _('value for config drive either boolean, or '
-                             'volume-id'),
-            'Implemented': False},
+                             'volume-id')
+        },
         # diskConfig translates to API attribute OS-DCF:diskConfig
         # hence the camel case instead of underscore to separate the words
         'diskConfig': {
@@ -149,14 +149,12 @@ class Server(resource.Resource):
                        'the API'),
         'networks': _('A dict of assigned network addresses of the form: '
                       '{"public": [ip1, ip2...], "private": [ip3, ip4]}'),
-        'first_private_address': _('Convenience attribute to fetch the first '
-                                   'assigned private network address, or an '
-                                   'empty string if nothing has been assigned '
-                                   'at this time'),
-        'first_public_address': _('Convenience attribute to fetch the first '
-                                  'assigned public network address, or an '
-                                  'empty string if nothing has been assigned '
-                                  'at this time'),
+        'first_address': _('Convenience attribute to fetch the first '
+                           'assigned network address, or an '
+                           'empty string if nothing has been assigned '
+                           'at this time. Result may not be predictable '
+                           'if the server has addresses from more than one '
+                           'network.'),
         'instance_name': _('AWS compatible instance name'),
         'accessIPv4': _('The manually assigned alternative public IPv4 '
                         'address of the server'),
@@ -175,6 +173,13 @@ class Server(resource.Resource):
         if not self.mime_string:
             self.mime_string = nova_utils.build_userdata(self, userdata)
         return self.mime_string
+
+    def physical_resource_name(self):
+        name = self.properties.get('name')
+        if name:
+            return name
+
+        return super(Server, self).physical_resource_name()
 
     def handle_create(self):
         security_groups = self.properties.get('security_groups', [])
@@ -267,10 +272,10 @@ class Server(resource.Resource):
             if (mapping.get('volume_size') or
                     mapping.get('delete_on_termination')):
 
-                mapping_parts.append(mapping.get('volume_size', 0))
+                mapping_parts.append(mapping.get('volume_size', '0'))
             if mapping.get('delete_on_termination'):
-                mapping_parts.append(mapping.get('delete_on_termination'))
-            bdm_dict[mapping.get('device_name')] = mapping_parts
+                mapping_parts.append(str(mapping.get('delete_on_termination')))
+            bdm_dict[mapping.get('device_name')] = ':'.join(mapping_parts)
 
         return bdm_dict
 
@@ -293,21 +298,14 @@ class Server(resource.Resource):
         return nics
 
     def _resolve_attribute(self, name):
+        if name == 'first_address':
+            return nova_utils.server_to_ipaddress(
+                self.nova(), self.resource_id) or ''
         server = self.nova().servers.get(self.resource_id)
         if name == 'addresses':
             return server.addresses
         if name == 'networks':
             return server.networks
-        if name == 'first_private_address':
-            private = server.networks.get('private', [])
-            if len(private) > 0:
-                return private[0]
-            return ''
-        if name == 'first_public_address':
-            public = server.networks.get('public', [])
-            if len(public) > 0:
-                return public[0]
-            return ''
         if name == 'instance_name':
             return server._info.get('OS-EXT-SRV-ATTR:instance_name')
         if name == 'accessIPv4':
@@ -360,14 +358,30 @@ class Server(resource.Resource):
         if key_name:
             nova_utils.get_keypair(self.nova(), key_name)
 
+        # either volume_id or snapshot_id needs to be specified, but not both
+        # for block device mapping.
+        bdm = self.properties.get('block_device_mapping') or []
+        bootable_vol = False
+        for mapping in bdm:
+            if mapping['device_name'] == 'vda':
+                    bootable_vol = True
+
+            if mapping.get('volume_id') and mapping.get('snapshot_id'):
+                raise exception.ResourcePropertyConflict('volume_id',
+                                                         'snapshot_id')
+            if not mapping.get('volume_id') and not mapping.get('snapshot_id'):
+                msg = _('Either volume_id or snapshot_id must be specified for'
+                        ' device mapping %s') % mapping['device_name']
+                raise exception.StackValidationFailed(message=msg)
+
         # make sure the image exists if specified.
         image = self.properties.get('image', None)
         if image:
             nova_utils.get_image_id(self.nova(), image)
-        else:
-            # TODO(sbaker) confirm block_device_mapping is populated
-            # for boot-by-volume (see LP bug #1215267)
-            pass
+        elif not image and not bootable_vol:
+            msg = _('Neither image nor bootable volume is specified for'
+                    ' instance %s') % self.name
+            raise exception.StackValidationFailed(message=msg)
 
     def handle_delete(self):
         '''

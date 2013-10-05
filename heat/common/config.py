@@ -97,9 +97,25 @@ engine_opts = [
                       'stored password or trusts')),
     cfg.ListOpt('trusts_delegated_roles',
                 default=['heat_stack_owner'],
-                help=_('Subset of trustor roles to be delegated to heat'))]
-
-
+                help=_('Subset of trustor roles to be delegated to heat')),
+    cfg.IntOpt('max_resources_per_stack',
+               default=1000,
+               help='Maximum resources allowed per top-level stack.'),
+    cfg.IntOpt('max_stacks_per_tenant',
+               default=100,
+               help=_('Maximum number of stacks any one tenant may have'
+                      ' active at one time.')),
+    cfg.IntOpt('event_purge_batch_size',
+               default=10,
+               help=_('Controls how many events will be pruned whenever a '
+                      ' stack\'s events exceed max_events_per_stack. Set this'
+                      ' lower to keep more events at the expense of more'
+                      ' frequent purges.')),
+    cfg.IntOpt('max_events_per_stack',
+               default=1000,
+               help=_('Maximum events that will be available per stack. Older'
+                      ' events will be deleted when this is reached. Set to 0'
+                      ' for unlimited events per stack.'))]
 rpc_opts = [
     cfg.StrOpt('host',
                default=socket.gethostname(),

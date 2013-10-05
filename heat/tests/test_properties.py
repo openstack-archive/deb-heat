@@ -18,6 +18,7 @@ import testtools
 from heat.engine import parameters
 from heat.engine import properties
 from heat.engine import resources
+from heat.engine import hot
 from heat.common import exception
 
 
@@ -952,7 +953,7 @@ class PropertyTest(testtools.TestCase):
     def test_list_schema_int_bad_data(self):
         list_schema = {'Type': 'Integer'}
         p = properties.Property({'Type': 'List', 'Schema': list_schema})
-        self.assertRaises(TypeError, p.validate_data, [42, 'fish'])
+        self.assertRaises(ValueError, p.validate_data, [42, 'fish'])
 
 
 class PropertiesTest(testtools.TestCase):
@@ -986,7 +987,7 @@ class PropertiesTest(testtools.TestCase):
         self.assertRaises(ValueError, self.props.get, 'required_int')
 
     def test_integer_bad(self):
-        self.assertRaises(TypeError, self.props.get, 'bad_int')
+        self.assertRaises(ValueError, self.props.get, 'bad_int')
 
     def test_missing(self):
         self.assertEqual(self.props['missing'], None)
@@ -1075,6 +1076,16 @@ class PropertiesTest(testtools.TestCase):
         schema = {'foo': {'Type': 'List', 'Default': ['one', 'two']}}
         props = properties.Properties(schema, {'foo': None})
         self.assertEqual(['one', 'two'], props['foo'])
+
+    def test_bad_resolver(self):
+        schema = {'foo': {'Type': 'String', 'Default': 'bar'}}
+
+        def bad_resolver(prop):
+            raise Exception('resolution failed!')
+
+        props = properties.Properties(schema, {'foo': 'baz'}, bad_resolver)
+        err = self.assertRaises(ValueError, props.get, 'foo')
+        self.assertEqual('foo resolution failed!', str(err))
 
     def test_schema_from_params(self):
         params_snippet = {
@@ -1246,6 +1257,172 @@ class PropertiesTest(testtools.TestCase):
         self.assertEqual(expected,
                          dict((n, dict(s)) for n, s in props_schemata.items()))
 
+    def test_schema_from_hot_params(self):
+        params_snippet = {
+            "KeyName": {
+                "Type": "String",
+                "Description": ("Name of an existing EC2 KeyPair to enable "
+                                "SSH access to the instances")
+            },
+            "InstanceType": {
+                "Default": "m1.large",
+                "Type": "String",
+                "Description": "WebServer EC2 instance type",
+                "constraints": [
+                    {"allowed_values": ["t1.micro", "m1.small", "m1.large",
+                                        "m1.xlarge", "m2.xlarge", "m2.2xlarge",
+                                        "m2.4xlarge", "c1.medium", "c1.xlarge",
+                                        "cc1.4xlarge"],
+                     "description": "Must be a valid EC2 instance type."}
+                ]
+            },
+            "LinuxDistribution": {
+                "Default": "F17",
+                "Type": "String",
+                "Description": "Distribution of choice",
+                "constraints": [
+                    {"allowed_values": ["F18", "F17", "U10", "RHEL-6.1",
+                                        "RHEL-6.2", "RHEL-6.3"],
+                     "description": "Must be a valid Linux distribution"}
+                ]
+            },
+            "DBName": {
+                "Type": "String",
+                "Description": "The WordPress database name",
+                "Default": "wordpress",
+                "constraints": [
+                    {"length": {"min": 1, "max": 64},
+                     "description": "Length must be between 1 and 64"},
+                    {"allowed_pattern": "[a-zA-Z][a-zA-Z0-9]*",
+                     "description": ("Must begin with a letter and contain "
+                                     "only alphanumeric characters.")}
+                ]
+            },
+            "DBUsername": {
+                "Type": "String",
+                "Description": "The WordPress database admin account username",
+                "Default": "admin",
+                "NoEcho": "true",
+                "constraints": [
+                    {"length": {"min": 1, "max": 16},
+                     "description": "Length must be between 1 and 16"},
+                    {"allowed_pattern": "[a-zA-Z][a-zA-Z0-9]*",
+                     "description": ("Must begin with a letter and only "
+                                     "contain alphanumeric characters")}
+                ]
+            },
+            "DBPassword": {
+                "Type": "String",
+                "Description": "The WordPress database admin account password",
+                "Default": "admin",
+                "NoEcho": "true",
+                "constraints": [
+                    {"length": {"min": 1, "max": 41},
+                     "description": "Length must be between 1 and 41"},
+                    {"allowed_pattern": "[a-zA-Z0-9]*",
+                     "description": ("Must contain only alphanumeric "
+                                     "characters")}
+                ]
+            },
+            "DBRootPassword": {
+                "Type": "String",
+                "Description": "Root password for MySQL",
+                "Default": "admin",
+                "NoEcho": "true",
+                "constraints": [
+                    {"length": {"min": 1, "max": 41},
+                     "description": "Length must be between 1 and 41"},
+                    {"allowed_pattern": "[a-zA-Z0-9]*",
+                     "description": ("Must contain only alphanumeric "
+                                     "characters")}
+                ]
+            }
+        }
+        expected = {
+            "KeyName": {
+                "type": "string",
+                "description": ("Name of an existing EC2 KeyPair to enable "
+                                "SSH access to the instances"),
+                "required": True,
+            },
+            "InstanceType": {
+                "type": "string",
+                "description": "WebServer EC2 instance type",
+                "required": False,
+                "constraints": [
+                    {"allowed_values": ["t1.micro", "m1.small", "m1.large",
+                                        "m1.xlarge", "m2.xlarge", "m2.2xlarge",
+                                        "m2.4xlarge", "c1.medium", "c1.xlarge",
+                                        "cc1.4xlarge"],
+                     "description": "Must be a valid EC2 instance type."},
+                ]
+            },
+            "LinuxDistribution": {
+                "type": "string",
+                "description": "Distribution of choice",
+                "required": False,
+                "constraints": [
+                    {"allowed_values": ["F18", "F17", "U10",
+                                        "RHEL-6.1", "RHEL-6.2", "RHEL-6.3"],
+                     "description": "Must be a valid Linux distribution"}
+                ]
+            },
+            "DBName": {
+                "type": "string",
+                "description": "The WordPress database name",
+                "required": False,
+                "constraints": [
+                    {"length": {"min": 1, "max": 64},
+                     "description": "Length must be between 1 and 64"},
+                    {"allowed_pattern": "[a-zA-Z][a-zA-Z0-9]*",
+                     "description": ("Must begin with a letter and contain "
+                                     "only alphanumeric characters.")},
+                ]
+            },
+            "DBUsername": {
+                "type": "string",
+                "description": "The WordPress database admin account username",
+                "required": False,
+                "constraints": [
+                    {"length": {"min": 1, "max": 16},
+                     "description": "Length must be between 1 and 16"},
+                    {"allowed_pattern": "[a-zA-Z][a-zA-Z0-9]*",
+                     "description": ("Must begin with a letter and only "
+                                     "contain alphanumeric characters")},
+                ]
+            },
+            "DBPassword": {
+                "type": "string",
+                "description": "The WordPress database admin account password",
+                "required": False,
+                "constraints": [
+                    {"length": {"min": 1, "max": 41},
+                     "description": "Length must be between 1 and 41"},
+                    {"allowed_pattern": "[a-zA-Z0-9]*",
+                     "description": ("Must contain only alphanumeric "
+                                     "characters")},
+                ]
+            },
+            "DBRootPassword": {
+                "type": "string",
+                "description": "Root password for MySQL",
+                "required": False,
+                "constraints": [
+                    {"length": {"min": 1, "max": 41},
+                     "description": "Length must be between 1 and 41"},
+                    {"allowed_pattern": "[a-zA-Z0-9]*",
+                     "description": ("Must contain only alphanumeric "
+                                     "characters")},
+                ]
+            }
+        }
+        params = dict((n, hot.HOTParamSchema(s)) for n, s
+                      in params_snippet.items())
+        props_schemata = properties.Properties.schema_from_params(params)
+
+        self.assertEqual(expected,
+                         dict((n, dict(s)) for n, s in props_schemata.items()))
+
 
 class PropertiesValidationTest(testtools.TestCase):
     def test_required(self):
@@ -1356,8 +1533,8 @@ class PropertiesValidationTest(testtools.TestCase):
         param_expected = {'foo': {'Type': 'Json'}}
         (parameters, props) = \
             properties.Properties.schema_to_parameters_and_properties(schema)
-        self.assertEquals(param_expected, parameters)
-        self.assertEquals(prop_expected, props)
+        self.assertEqual(param_expected, parameters)
+        self.assertEqual(prop_expected, props)
 
     def test_schema_to_template_nested_map_list_map_schema(self):
         key_schema = {'bar': {'Type': 'Number'}}
@@ -1372,8 +1549,8 @@ class PropertiesValidationTest(testtools.TestCase):
         param_expected = {'foo': {'Type': 'CommaDelimitedList'}}
         (parameters, props) = \
             properties.Properties.schema_to_parameters_and_properties(schema)
-        self.assertEquals(param_expected, parameters)
-        self.assertEquals(prop_expected, props)
+        self.assertEqual(param_expected, parameters)
+        self.assertEqual(prop_expected, props)
 
     def test_schema_invalid_parameters_stripped(self):
         schema = {'foo': {'Type': 'String',
@@ -1385,5 +1562,5 @@ class PropertiesValidationTest(testtools.TestCase):
 
         (parameters, props) = \
             properties.Properties.schema_to_parameters_and_properties(schema)
-        self.assertEquals(param_expected, parameters)
-        self.assertEquals(prop_expected, props)
+        self.assertEqual(param_expected, parameters)
+        self.assertEqual(prop_expected, props)

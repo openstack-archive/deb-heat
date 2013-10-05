@@ -21,6 +21,7 @@ from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
+from heat.engine import template as tmpl
 
 from heat.openstack.common import log as logging
 
@@ -32,6 +33,11 @@ class StackResource(resource.Resource):
     An abstract Resource subclass that allows the management of an entire Stack
     as a resource in a parent stack.
     '''
+
+    # Assume True as this is evaluated before the stack is created
+    # so there is no way to know for sure without subclass-specific
+    # template parsing.
+    requires_deferred_auth = True
 
     def __init__(self, name, json_snippet, stack):
         super(StackResource, self).__init__(name, json_snippet, stack)
@@ -71,9 +77,15 @@ class StackResource(resource.Resource):
         Handle the creation of the nested stack from a given JSON template.
         '''
         if self.recursion_depth >= cfg.CONF.max_nested_stack_depth:
-            raise exception.StackRecursionLimitReached(
-                cfg.CONF.max_nested_stack_depth)
+            msg = _("Recursion depth exceeds %d.") % \
+                cfg.CONF.max_nested_stack_depth
+            raise exception.RequestLimitExceeded(message=msg)
         template = parser.Template(child_template)
+        if ((len(template[tmpl.RESOURCES]) +
+             self.stack.root_stack.total_resources() >
+             cfg.CONF.max_resources_per_stack)):
+            raise exception.RequestLimitExceeded(
+                message=exception.StackResourceLimitExceeded.message)
         self._outputs_to_attribs(child_template)
 
         # Note we disable rollback for nested stacks, since they
@@ -114,6 +126,14 @@ class StackResource(resource.Resource):
         # on updated templates we should make sure it's optional because not
         # all subclasses want that behavior, since they may offer custom
         # attributes.
+        nested_stack = self.nested()
+        if nested_stack is not None:
+            res_diff = (
+                len(template[tmpl.RESOURCES]) - len(nested_stack.resources))
+            new_size = nested_stack.root_stack.total_resources() + res_diff
+            if new_size > cfg.CONF.max_resources_per_stack:
+                raise exception.RequestLimitExceeded(
+                    message=exception.StackResourceLimitExceeded.message)
 
         # Note we disable rollback for nested stacks, since they
         # should be rolled back by the parent stack on failure

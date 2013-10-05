@@ -69,7 +69,8 @@ class ServersTest(HeatTestCase):
                              stack_id=uuidutils.generate_uuid())
         return (t, stack)
 
-    def _setup_test_server(self, return_server, name, image_id=None):
+    def _setup_test_server(self, return_server, name, image_id=None,
+                           override_name=False):
         stack_name = '%s_stack' % name
         (t, stack) = self._setup_test_stack(stack_name)
 
@@ -77,7 +78,13 @@ class ServersTest(HeatTestCase):
             image_id or 'CentOS 5.2'
         t['Resources']['WebServer']['Properties']['flavor'] = \
             '256 MB Server'
-        server = servers.Server('%s_name' % name,
+
+        server_name = '%s_name' % name
+        if override_name:
+            t['Resources']['WebServer']['Properties']['name'] = \
+                server_name
+
+        server = servers.Server(server_name,
                                 t['Resources']['WebServer'], stack)
 
         self.m.StubOutWithMock(server, 'nova')
@@ -93,7 +100,8 @@ class ServersTest(HeatTestCase):
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=1, flavor=1, key_name='test',
-            name=utils.PhysName(stack_name, server.name),
+            name=override_name and server.name or utils.PhysName(
+                stack_name, server.name),
             security_groups=None,
             userdata=mox.IgnoreArg(), scheduler_hints=None,
             meta=None, nics=None, availability_zone=None,
@@ -103,7 +111,7 @@ class ServersTest(HeatTestCase):
 
         return server
 
-    def _create_test_server(self, return_server, name):
+    def _create_test_server(self, return_server, name, override_name=False):
         server = self._setup_test_server(return_server, name)
         self.m.ReplayAll()
         scheduler.TaskRunner(server.create)()
@@ -121,16 +129,14 @@ class ServersTest(HeatTestCase):
             server.FnGetAtt('addresses')['public'][0]['addr'], public_ip)
         self.assertEqual(
             server.FnGetAtt('networks')['public'][0], public_ip)
-        self.assertEqual(
-            server.FnGetAtt('first_public_address'), public_ip)
 
         private_ip = return_server.networks['private'][0]
         self.assertEqual(
             server.FnGetAtt('addresses')['private'][0]['addr'], private_ip)
         self.assertEqual(
             server.FnGetAtt('networks')['private'][0], private_ip)
-        self.assertEqual(
-            server.FnGetAtt('first_private_address'), private_ip)
+        self.assertIn(
+            server.FnGetAtt('first_address'), (private_ip, public_ip))
 
         self.assertEqual(return_server._info, server.FnGetAtt('show'))
         self.assertEqual('sample-server2', server.FnGetAtt('instance_name'))
@@ -142,7 +148,8 @@ class ServersTest(HeatTestCase):
         return_server = self.fc.servers.list()[1]
         server = self._setup_test_server(return_server,
                                          'test_server_create_image_id',
-                                         image_id='1')
+                                         image_id='1',
+                                         override_name=True)
         self.m.StubOutWithMock(uuidutils, "is_uuid_like")
         uuidutils.is_uuid_like('1').AndReturn(True)
 
@@ -157,16 +164,14 @@ class ServersTest(HeatTestCase):
             server.FnGetAtt('addresses')['public'][0]['addr'], public_ip)
         self.assertEqual(
             server.FnGetAtt('networks')['public'][0], public_ip)
-        self.assertEqual(
-            server.FnGetAtt('first_public_address'), public_ip)
 
         private_ip = return_server.networks['private'][0]
         self.assertEqual(
             server.FnGetAtt('addresses')['private'][0]['addr'], private_ip)
         self.assertEqual(
             server.FnGetAtt('networks')['private'][0], private_ip)
-        self.assertEqual(
-            server.FnGetAtt('first_private_address'), private_ip)
+        self.assertIn(
+            server.FnGetAtt('first_address'), (private_ip, public_ip))
 
         self.m.VerifyAll()
 
@@ -278,6 +283,38 @@ class ServersTest(HeatTestCase):
 
         self.assertEqual(server.validate(), None)
 
+        self.m.VerifyAll()
+
+    def test_server_validate_with_bootable_vol(self):
+        stack_name = 'test_server_validate_stack'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        # create an server with bootable volume
+        web_server = t['Resources']['WebServer']
+        del web_server['Properties']['image']
+
+        def create_server(device_name):
+            web_server['Properties']['block_device_mapping'] = [{
+                "device_name": device_name,
+                "volume_id": "5d7e27da-6703-4f7e-9f94-1f67abef734c",
+                "delete_on_termination": False
+            }]
+            server = servers.Server('server_with_bootable_volume',
+                                    web_server, stack)
+            self.m.StubOutWithMock(server, 'nova')
+            server.nova().MultipleTimes().AndReturn(self.fc)
+            self.m.ReplayAll()
+            return server
+
+        server = create_server(u'vda')
+        self.assertEqual(server.validate(), None)
+        server = create_server('vda')
+        self.assertEqual(server.validate(), None)
+        server = create_server('vdb')
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               server.validate)
+        self.assertEqual('Neither image nor bootable volume is specified for '
+                         'instance server_with_bootable_volume', str(ex))
         self.m.VerifyAll()
 
     def test_server_validate_delete_policy(self):
@@ -767,8 +804,7 @@ class ServersTest(HeatTestCase):
 
         self.assertEqual(server.FnGetAtt('addresses'), {'empty_net': []})
         self.assertEqual(server.FnGetAtt('networks'), {'empty_net': []})
-        self.assertEqual(server.FnGetAtt('first_private_address'), '')
-        self.assertEqual(server.FnGetAtt('first_public_address'), '')
+        self.assertEqual(server.FnGetAtt('first_address'), '')
 
     def test_build_block_device_mapping(self):
         self.assertEqual(
@@ -777,21 +813,21 @@ class ServersTest(HeatTestCase):
             None, servers.Server._build_block_device_mapping(None))
 
         self.assertEqual({
-            'vda': ['1234', ''],
-            'vdb': ['1234', 'snap'],
+            'vda': '1234:',
+            'vdb': '1234:snap',
         }, servers.Server._build_block_device_mapping([
             {'device_name': 'vda', 'volume_id': '1234'},
             {'device_name': 'vdb', 'snapshot_id': '1234'},
         ]))
 
         self.assertEqual({
-            'vdc': ['1234', '', 10],
-            'vdd': ['1234', 'snap', 0, True]
+            'vdc': '1234::10',
+            'vdd': '1234:snap:0:True'
         }, servers.Server._build_block_device_mapping([
             {
                 'device_name': 'vdc',
                 'volume_id': '1234',
-                'volume_size': 10
+                'volume_size': '10'
             },
             {
                 'device_name': 'vdd',
@@ -799,3 +835,61 @@ class ServersTest(HeatTestCase):
                 'delete_on_termination': True
             }
         ]))
+
+    def test_validate_conflict_block_device_mapping_props(self):
+        stack_name = 'test_validate_conflict_block_device_mapping_props'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        bdm = [{'device_name': 'vdb', 'snapshot_id': '1234',
+                'volume_id': '1234'}]
+        t['Resources']['WebServer']['Properties']['block_device_mapping'] = bdm
+        server = servers.Server('server_create_image_err',
+                                t['Resources']['WebServer'], stack)
+        self.m.StubOutWithMock(server, 'nova')
+        server.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        self.assertRaises(exception.ResourcePropertyConflict, server.validate)
+        self.m.VerifyAll()
+
+    def test_validate_insufficient_block_device_mapping_props(self):
+        stack_name = 'test_validate_insufficient_block_device_mapping_props'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        bdm = [{'device_name': 'vdb', 'volume_size': '1',
+                'delete_on_termination': True}]
+        t['Resources']['WebServer']['Properties']['block_device_mapping'] = bdm
+        server = servers.Server('server_create_image_err',
+                                t['Resources']['WebServer'], stack)
+        self.m.StubOutWithMock(server, 'nova')
+        server.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               server.validate)
+        msg = 'Either volume_id or snapshot_id must be specified for device' +\
+              ' mapping vdb'
+        self.assertEqual(msg, str(ex))
+
+        self.m.VerifyAll()
+
+    def test_validate_without_image_or_bootable_volume(self):
+        stack_name = 'test_validate_without_image_or_bootable_volume'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        del t['Resources']['WebServer']['Properties']['image']
+        bdm = [{'device_name': 'vdb', 'volume_id': '1234'}]
+        t['Resources']['WebServer']['Properties']['block_device_mapping'] = bdm
+        server = servers.Server('server_create_image_err',
+                                t['Resources']['WebServer'], stack)
+        self.m.StubOutWithMock(server, 'nova')
+        server.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               server.validate)
+        msg = 'Neither image nor bootable volume is specified for instance %s'\
+            % server.name
+        self.assertEqual(msg, str(ex))
+
+        self.m.VerifyAll()

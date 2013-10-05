@@ -48,26 +48,42 @@ class Subnet(neutron.NeutronResource):
                                               'Schema': {
                                               'Type': 'Map',
                                               'Schema': allocation_schema
-                                              }}}
+                                              }},
+                         'tenant_id': {'Type': 'String'}}
     attributes_schema = {
-        "name": "friendly name of the subnet",
-        "network_id": "parent network of the subnet",
-        "tenant_id": "tenant owning the subnet",
-        "allocation_pools": "ip allocation pools and their ranges",
-        "gateway_ip": "ip of the subnet's gateway",
-        "ip_version": "ip version for the subnet",
-        "cidr": "CIDR block notation for this subnet",
-        "id": "unique identifier for this subnet",
+        "name": _("Friendly name of the subnet."),
+        "network_id": _("Parent network of the subnet."),
+        "tenant_id": _("Tenant owning the subnet."),
+        "allocation_pools": _("Ip allocation pools and their ranges."),
+        "gateway_ip": _("Ip of the subnet's gateway."),
+        "ip_version": _("Ip version for the subnet."),
+        "cidr": _("CIDR block notation for this subnet."),
         # dns_nameservers isn't in the api docs; is it right?
-        "dns_nameservers": "list of dns nameservers",
-        "enable_dhcp": ("'true' if DHCP is enabled for this subnet; 'false'"
-                        "otherwise")
+        "dns_nameservers": _("List of dns nameservers."),
+        "enable_dhcp": _("'true' if DHCP is enabled for this subnet; 'false' "
+                         "otherwise."),
+        "show": _("All attributes."),
     }
+
+    @staticmethod
+    def _null_gateway_ip(props):
+        if 'gateway_ip' not in props:
+            return
+        # Specifying null in the gateway_ip will result in
+        # a property containing an empty string.
+        # A null gateway_ip has special meaning in the API
+        # so this needs to be set back to None.
+        # See bug https://bugs.launchpad.net/heat/+bug/1226666
+        if props.get('gateway_ip') == '':
+            props['gateway_ip'] = None
 
     def handle_create(self):
         props = self.prepare_properties(
             self.properties,
             self.physical_resource_name())
+
+        self._null_gateway_ip(props)
+
         subnet = self.neutron().create_subnet({'subnet': props})['subnet']
         self.resource_id_set(subnet['id'])
 

@@ -46,7 +46,7 @@ alarm_template = '''
      "Type": "OS::Ceilometer::Alarm",
      "Properties": {
         "description": "Scale-up if MEM > 50% for 1 minute",
-        "counter_name": "MemoryUtilization",
+        "meter_name": "MemoryUtilization",
         "statistic": "avg",
         "period": "60",
         "evaluation_periods": "1",
@@ -157,6 +157,7 @@ class CeilometerAlarmTest(HeatTestCase):
         snippet['Properties']['evaluation_periods'] = '2'
         snippet['Properties']['period'] = '90'
         snippet['Properties']['enabled'] = 'true'
+        snippet['Properties']['repeat_actions'] = True
         snippet['Properties']['statistic'] = 'max'
         snippet['Properties']['threshold'] = '39'
         snippet['Properties']['insufficient_data_actions'] = []
@@ -186,7 +187,7 @@ class CeilometerAlarmTest(HeatTestCase):
         rsrc = self.stack['MEMAlarmHigh']
 
         snippet = copy.deepcopy(rsrc.parsed_template())
-        snippet['Properties']['counter_name'] = 'temp'
+        snippet['Properties']['meter_name'] = 'temp'
 
         updater = scheduler.TaskRunner(rsrc.update, snippet)
         self.assertRaises(resource.UpdateReplace, updater)
@@ -214,8 +215,8 @@ class CeilometerAlarmTest(HeatTestCase):
         self.stack.create()
         rsrc = self.stack['MEMAlarmHigh']
         scheduler.TaskRunner(rsrc.suspend)()
-        self.assertTrue((rsrc.SUSPEND, rsrc.COMPLETE), rsrc.state)
+        self.assertEqual((rsrc.SUSPEND, rsrc.COMPLETE), rsrc.state)
         scheduler.TaskRunner(rsrc.resume)()
-        self.assertTrue((rsrc.RESUME, rsrc.COMPLETE), rsrc.state)
+        self.assertEqual((rsrc.RESUME, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()

@@ -94,12 +94,15 @@ Outputs: {}
 
     def test_long_yaml(self):
         template = {'HeatTemplateVersion': '2012-12-12'}
+        config.cfg.CONF.set_override('max_template_size', 1024)
         template['Resources'] = ['a'] * (config.cfg.CONF.max_template_size / 3)
         limit = config.cfg.CONF.max_template_size
         long_yaml = yaml.safe_dump(template)
         self.assertTrue(len(long_yaml) > limit)
-        self.assertRaises(exception.TemplateTooBig, template_format.parse,
-                          long_yaml)
+        ex = self.assertRaises(exception.RequestLimitExceeded,
+                               template_format.parse, long_yaml)
+        msg = 'Request limit exceeded: Template exceeds maximum allowed size.'
+        self.assertEqual(msg, str(ex))
 
 
 class JsonYamlResolvedCompareTest(HeatTestCase):
@@ -139,8 +142,8 @@ class JsonYamlResolvedCompareTest(HeatTestCase):
         del(t2nr['Resources'])
         self.assertEqual(t1nr, t2nr)
 
-        self.assertEquals(set(stack1.resources.keys()),
-                          set(stack2.resources.keys()))
+        self.assertEqual(set(stack1.resources.keys()),
+                         set(stack2.resources.keys()))
         for key in stack1.resources:
             self.assertEqual(stack1.resources[key].t, stack2.resources[key].t)
 

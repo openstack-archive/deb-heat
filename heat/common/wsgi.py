@@ -136,6 +136,14 @@ api_cw_group = cfg.OptGroup('heat_api_cloudwatch')
 cfg.CONF.register_group(api_cw_group)
 cfg.CONF.register_opts(api_cw_opts,
                        group=api_cw_group)
+cfg.CONF.import_opt('debug', 'heat.openstack.common.log')
+cfg.CONF.import_opt('verbose', 'heat.openstack.common.log')
+
+json_size_opt = cfg.IntOpt('max_json_body_size',
+                           default=1048576,
+                           help='Maximum raw byte size of JSON request body.'
+                                ' Should be larger than max_template_size.')
+cfg.CONF.register_opt(json_size_opt)
 
 
 class WritableLogger(object):
@@ -310,7 +318,8 @@ class Server(object):
                                  self.application,
                                  custom_pool=self.pool,
                                  url_length_limit=URL_LENGTH_LIMIT,
-                                 log=WritableLogger(self.logger))
+                                 log=WritableLogger(self.logger),
+                                 debug=cfg.CONF.debug)
         except socket.error as err:
             if err[0] != errno.EINVAL:
                 raise
@@ -524,6 +533,12 @@ class JSONRequestDeserializer(object):
 
     def from_json(self, datastring):
         try:
+            if len(datastring) > cfg.CONF.max_json_body_size:
+                msg = _('JSON body size (%(len)s bytes) exceeds maximum '
+                        'allowed size (%(limit)s bytes).') % \
+                    {'len': len(datastring),
+                     'limit': cfg.CONF.max_json_body_size}
+                raise exception.RequestLimitExceeded(message=msg)
             return json.loads(datastring)
         except ValueError as ex:
             raise webob.exc.HTTPBadRequest(str(ex))
@@ -638,11 +653,10 @@ class Resource(object):
         # ContentType=JSON results in a JSON serialized response...
         content_type = request.params.get("ContentType")
 
-        deserialized_request = self.dispatch(self.deserializer,
-                                             action, request)
-        action_args.update(deserialized_request)
-
         try:
+            deserialized_request = self.dispatch(self.deserializer,
+                                                 action, request)
+            action_args.update(deserialized_request)
             action_result = self.dispatch(self.controller, action,
                                           request, **action_args)
         except TypeError as err:
@@ -665,8 +679,11 @@ class Resource(object):
                           {'code': err.code, 'explanation': err.explanation})
             http_exc = translate_exception(err, request.best_match_language())
             raise exception.HTTPExceptionDisguise(http_exc)
+        except exception.HeatException as err:
+            log_exception(err.message, sys.exc_info())
+            raise translate_exception(err, request.best_match_language())
         except Exception as err:
-            logging.error(_("Unexpected error occurred serving API: %s") % err)
+            log_exception(err, sys.exc_info())
             raise translate_exception(err, request.best_match_language())
 
         # Here we support either passing in a serializer or detecting it
@@ -729,6 +746,12 @@ class Resource(object):
             pass
 
         return args
+
+
+def log_exception(err, exc_info):
+    args = {'exc_info': exc_info} if cfg.CONF.verbose or cfg.CONF.debug else {}
+    logging.error(_("Unexpected error occurred serving API: %s") % err,
+                  **args)
 
 
 def translate_exception(exc, locale):

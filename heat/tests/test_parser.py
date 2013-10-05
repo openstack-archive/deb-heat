@@ -18,6 +18,7 @@ import time
 from heat.engine import environment
 from heat.common import exception
 from heat.common import template_format
+from heat.common import urlfetch
 from heat.engine import clients
 from heat.engine import resource
 from heat.engine import parser
@@ -519,6 +520,8 @@ Mappings:
         parent_resource.metadata = '{"foo": "bar"}'
         parent_resource.t = {'DeletionPolicy': 'Retain',
                              'UpdatePolicy': '{"foo": "bar"}'}
+        parent_resource.stack = parser.Stack(self.ctx, 'toplevel_stack',
+                                             parser.Template({}))
         stack = parser.Stack(self.ctx, 'test_stack',
                              parser.Template({}),
                              parent_resource=parent_resource)
@@ -548,6 +551,8 @@ Mappings:
         parent_resource = DummyClass()
         parent_resource.metadata = '{"foo": "bar"}'
         parent_resource.t = {}
+        parent_resource.stack = parser.Stack(self.ctx, 'toplevel_stack',
+                                             parser.Template({}))
         stack = parser.Stack(self.ctx, 'test_stack',
                              parser.Template({}),
                              parent_resource=parent_resource)
@@ -582,7 +587,8 @@ class StackTest(HeatTestCase):
         ctx = utils.dummy_context()
         ctx.auth_token = None
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        clients.OpenStackClients.keystone().AndReturn(FakeKeystoneClient())
+        clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
+            FakeKeystoneClient())
 
         self.m.ReplayAll()
         stack = parser.Stack(ctx, 'test_stack', parser.Template({}))
@@ -625,6 +631,54 @@ class StackTest(HeatTestCase):
     def test_load_nonexistant_id(self):
         self.assertRaises(exception.NotFound, parser.Stack.load,
                           None, -1)
+
+    def test_total_resources_empty(self):
+        stack = parser.Stack(self.ctx, 'test_stack', parser.Template({}),
+                             status_reason='flimflam')
+        self.assertEqual(0, stack.total_resources())
+
+    def test_total_resources_generic(self):
+        tpl = {'Resources':
+               {'A': {'Type': 'GenericResourceType'}}}
+        stack = parser.Stack(self.ctx, 'test_stack', parser.Template(tpl),
+                             status_reason='blarg')
+        self.assertEqual(1, stack.total_resources())
+
+    def _setup_nested(self, name):
+        nested_tpl = ('{"Resources":{'
+                      '"A": {"Type": "GenericResourceType"},'
+                      '"B": {"Type": "GenericResourceType"}}}')
+        tpl = {'Resources':
+               {'A': {'Type': 'AWS::CloudFormation::Stack',
+                      'Properties':
+                      {'TemplateURL': 'http://server.test/nested.json'}},
+                'B': {'Type': 'GenericResourceType'}}}
+        self.m.StubOutWithMock(urlfetch, 'get')
+        urlfetch.get('http://server.test/nested.json').AndReturn(nested_tpl)
+        self.m.ReplayAll()
+        self.stack = parser.Stack(self.ctx, 'test_stack', parser.Template(tpl),
+                                  status_reason=name)
+        self.stack.store()
+        self.stack.create()
+
+    @utils.stack_delete_after
+    def test_total_resources_nested(self):
+        self._setup_nested('zyzzyx')
+        self.assertEqual(4, self.stack.total_resources())
+        self.assertNotEqual(None, self.stack.resources['A'].nested())
+        self.assertEqual(
+            2, self.stack.resources['A'].nested().total_resources())
+        self.assertEqual(
+            4,
+            self.stack.resources['A'].nested().root_stack.total_resources())
+
+    @utils.stack_delete_after
+    def test_root_stack(self):
+        self._setup_nested('toor')
+        self.assertEqual(self.stack, self.stack.root_stack)
+        self.assertNotEqual(None, self.stack.resources['A'].nested())
+        self.assertEqual(
+            self.stack, self.stack.resources['A'].nested().root_stack)
 
     @utils.stack_delete_after
     def test_load_parent_resource(self):
@@ -914,7 +968,16 @@ class StackTest(HeatTestCase):
         rsrc = self.stack['AResource']
         rsrc.resource_id_set('aaaa')
         self.assertNotEqual(None, resource)
-        self.assertEqual(rsrc, self.stack.resource_by_refid('aaaa'))
+
+        for action, status in (
+                (rsrc.CREATE, rsrc.IN_PROGRESS),
+                (rsrc.CREATE, rsrc.COMPLETE),
+                (rsrc.RESUME, rsrc.IN_PROGRESS),
+                (rsrc.RESUME, rsrc.COMPLETE),
+                (rsrc.UPDATE, rsrc.IN_PROGRESS),
+                (rsrc.UPDATE, rsrc.COMPLETE)):
+            rsrc.state_set(action, status)
+            self.assertEqual(rsrc, self.stack.resource_by_refid('aaaa'))
 
         rsrc.state_set(rsrc.DELETE, rsrc.IN_PROGRESS)
         try:
@@ -1566,6 +1629,58 @@ class StackTest(HeatTestCase):
 
         self.m.VerifyAll()
 
+    def test_stack_delete_timeout(self):
+        stack = parser.Stack(self.ctx, 'delete_test',
+                             parser.Template({}))
+        stack_id = stack.store()
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertNotEqual(db_s, None)
+
+        self.m.StubOutWithMock(scheduler.DependencyTaskGroup, '__call__')
+        self.m.StubOutWithMock(scheduler, 'wallclock')
+
+        def dummy_task():
+            while True:
+                yield
+
+        start_time = time.time()
+        scheduler.wallclock().AndReturn(start_time)
+        scheduler.wallclock().AndReturn(start_time + 1)
+        scheduler.DependencyTaskGroup.__call__().AndReturn(dummy_task())
+        scheduler.wallclock().AndReturn(start_time + stack.timeout_secs() + 1)
+        self.m.ReplayAll()
+        stack.delete()
+
+        self.assertEqual(stack.state,
+                         (parser.Stack.DELETE, parser.Stack.FAILED))
+        self.assertEqual(stack.status_reason, 'Delete timed out')
+
+        self.m.VerifyAll()
+
+    def test_stack_delete_resourcefailure(self):
+        tmpl = {'Resources': {'AResource': {'Type': 'GenericResourceType'}}}
+        self.m.StubOutWithMock(generic_rsrc.GenericResource, 'handle_delete')
+        exc = Exception('foo')
+        generic_rsrc.GenericResource.handle_delete().AndRaise(exc)
+        self.m.ReplayAll()
+
+        self.stack = parser.Stack(self.ctx, 'delete_test_fail',
+                                  parser.Template(tmpl))
+
+        stack_id = self.stack.store()
+        self.stack.create()
+        self.assertEqual(self.stack.state,
+                         (self.stack.CREATE, self.stack.COMPLETE))
+
+        self.stack.delete()
+
+        self.assertEqual(self.stack.state,
+                         (self.stack.DELETE, self.stack.FAILED))
+        self.assertEqual(self.stack.status_reason,
+                         'Resource delete failed: Exception: foo')
+        self.m.VerifyAll()
+
     def test_stack_name_valid(self):
         stack = parser.Stack(self.ctx, 's', parser.Template({}))
         stack = parser.Stack(self.ctx, 'stack123', parser.Template({}))
@@ -1631,6 +1746,8 @@ class StackTest(HeatTestCase):
         for action, status in (
                 (rsrc.CREATE, rsrc.IN_PROGRESS),
                 (rsrc.CREATE, rsrc.COMPLETE),
+                (rsrc.RESUME, rsrc.IN_PROGRESS),
+                (rsrc.RESUME, rsrc.COMPLETE),
                 (rsrc.UPDATE, rsrc.IN_PROGRESS),
                 (rsrc.UPDATE, rsrc.COMPLETE)):
             rsrc.state_set(action, status)
@@ -1717,3 +1834,18 @@ class StackTest(HeatTestCase):
 
         saved_stack = parser.Stack.load(self.ctx, stack_id=stack_ownee.id)
         self.assertEqual(saved_stack.owner_id, self.stack.id)
+
+    @utils.stack_delete_after
+    def test_requires_deferred_auth(self):
+        tmpl = {'Resources': {'AResource': {'Type': 'GenericResourceType'},
+                              'BResource': {'Type': 'GenericResourceType'},
+                              'CResource': {'Type': 'GenericResourceType'}}}
+
+        self.stack = parser.Stack(self.ctx, 'update_test_stack',
+                                  template.Template(tmpl),
+                                  disable_rollback=False)
+
+        self.assertFalse(self.stack.requires_deferred_auth())
+
+        self.stack['CResource'].requires_deferred_auth = True
+        self.assertTrue(self.stack.requires_deferred_auth())

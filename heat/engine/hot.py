@@ -12,11 +12,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from string import Template
-
 from heat.common import exception
 from heat.engine import template
-from heat.engine.parameters import ParamSchema
+from heat.engine import parameters
+from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 
 
@@ -26,6 +25,11 @@ SECTIONS = (VERSION, DESCRIPTION, PARAMETERS,
             RESOURCES, OUTPUTS, UNDEFINED) = \
            ('heat_template_version', 'description', 'parameters',
             'resources', 'outputs', '__undefined__')
+
+PARAM_CONSTRAINTS = (CONSTRAINTS, DESCRIPTION, LENGTH, RANGE,
+                     MIN, MAX, ALLOWED_VALUES, ALLOWED_PATTERN) = \
+                    ('constraints', 'description', 'length', 'range',
+                     'min', 'max', 'allowed_values', 'allowed_pattern')
 
 _CFN_TO_HOT_SECTIONS = {template.VERSION: VERSION,
                         template.DESCRIPTION: DESCRIPTION,
@@ -50,7 +54,7 @@ class HOTemplate(template.Template):
         section = HOTemplate._translate(section, _CFN_TO_HOT_SECTIONS, section)
 
         if section not in SECTIONS:
-            raise KeyError('"%s" is not a valid template section' % section)
+            raise KeyError(_('"%s" is not a valid template section') % section)
 
         if section == VERSION:
             return self.t[section]
@@ -88,49 +92,18 @@ class HOTemplate(template.Template):
 
         return default
 
-    def _translate_constraints(self, constraints):
-        param = {}
-
-        def add_constraint(key, val, desc):
-            cons = param.get(key, [])
-            cons.append((val, desc))
-            param[key] = cons
-
-        def add_min_max(key, val, desc):
-            minv = val.get('min')
-            maxv = val.get('max')
-            if minv:
-                add_constraint('Min%s' % key, minv, desc)
-            if maxv:
-                add_constraint('Max%s' % key, maxv, desc)
-
-        for constraint in constraints:
-            desc = constraint.get('description')
-            for key, val in constraint.iteritems():
-                key = snake_to_camel(key)
-                if key == 'Description':
-                    continue
-                elif key == 'Range':
-                    add_min_max('Value', val, desc)
-                elif key == 'Length':
-                    add_min_max(key, val, desc)
-                else:
-                    add_constraint(key, val, desc)
-
-        return param
-
     def _translate_parameters(self, parameters):
         """Get the parameters of the template translated into CFN format."""
         params = {}
         for name, attrs in parameters.iteritems():
             param = {}
             for key, val in attrs.iteritems():
-                key = snake_to_camel(key)
+                # Do not translate 'constraints' since we want to handle this
+                # specifically in HOT and not in common code.
+                if key != CONSTRAINTS:
+                    key = snake_to_camel(key)
                 if key == 'Type':
                     val = snake_to_camel(val)
-                elif key == 'Constraints':
-                    param.update(self._translate_constraints(val))
-                    continue
                 elif key == 'Hidden':
                     key = 'NoEcho'
                 param[key] = val
@@ -180,8 +153,8 @@ class HOTemplate(template.Template):
         Resolve constructs of the form { get_param: my_param }
         """
         def match_param_ref(key, value):
-            return (key == 'get_param' and
-                    isinstance(value, basestring) and
+            return (key in ['get_param', 'Ref'] and
+                    value is not None and
                     value in parameters)
 
         def handle_param_ref(ref):
@@ -198,7 +171,7 @@ class HOTemplate(template.Template):
         Resolve constructs of the form { "get_resource" : "resource" }
         '''
         def match_resource_ref(key, value):
-            return key == 'get_resource' and value in resources
+            return key in ['get_resource', 'Ref'] and value in resources
 
         def handle_resource_ref(arg):
             return resources[arg].FnGetRefId()
@@ -211,10 +184,10 @@ class HOTemplate(template.Template):
         Resolve constructs of the form { get_attr: [my_resource, my_attr] }
         """
         def match_get_attr(key, value):
-            return (key == 'get_attr' and
+            return (key in ['get_attr', 'Fn::GetAtt'] and
                     isinstance(value, list) and
                     len(value) == 2 and
-                    isinstance(value[0], basestring) and
+                    None not in value and
                     value[0] in resources)
 
         def handle_get_attr(args):
@@ -224,6 +197,8 @@ class HOTemplate(template.Template):
                 if r.state in (
                         (r.CREATE, r.IN_PROGRESS),
                         (r.CREATE, r.COMPLETE),
+                        (r.RESUME, r.IN_PROGRESS),
+                        (r.RESUME, r.COMPLETE),
                         (r.UPDATE, r.IN_PROGRESS),
                         (r.UPDATE, r.COMPLETE)):
                     return r.FnGetAtt(att)
@@ -246,31 +221,38 @@ class HOTemplate(template.Template):
               <param dictionary>
         """
         def handle_str_replace(args):
-            if not isinstance(args, dict):
-                raise TypeError('Arguments to "str_replace" must be a'
-                                'dictionary')
+            if not (isinstance(args, dict) or isinstance(args, list)):
+                raise TypeError(_('Arguments to "str_replace" must be a'
+                                'dictionary or a list'))
 
             try:
-                template = args['template']
-                params = args['params']
+                if isinstance(args, dict):
+                    text = args.get('template')
+                    params = args.get('params', {})
+                elif isinstance(args, list):
+                    params, text = args
+                if text is None:
+                    raise KeyError()
             except KeyError:
                 example = ('''str_replace:
-                  template: This is $var1 template $var2
+                  template: This is var1 template var2
                   params:
-                    - var1: a
-                    - var2: string''')
-                raise KeyError('"str_replace" syntax should be %s' %
+                    var1: a
+                    var2: string''')
+                raise KeyError(_('"str_replace" syntax should be %s') %
                                example)
-
-            if not isinstance(template, basestring):
-                raise TypeError('"template" parameter must be a string')
+            if not hasattr(text, 'replace'):
+                raise TypeError(_('"template" parameter must be a string'))
             if not isinstance(params, dict):
                 raise TypeError(
-                    '"params" parameter must be a dictionary')
+                    _('"params" parameter must be a dictionary'))
+            for key in params.iterkeys():
+                value = params.get(key, '')
+                text = text.replace(key, value)
+            return text
 
-            return Template(template).substitute(params)
-
-        return template._resolve(lambda k, v: k == 'str_replace',
+        match_str_replace = lambda k, v: k in ['str_replace', 'Fn::Replace']
+        return template._resolve(match_str_replace,
                                  handle_str_replace, s)
 
     def param_schemata(self):
@@ -278,12 +260,32 @@ class HOTemplate(template.Template):
         return dict((name, HOTParamSchema(schema)) for name, schema in params)
 
 
-class HOTParamSchema(ParamSchema):
-    def do_check(self, name, val, keys):
-        for key in keys:
-            consts = self.get(key)
-            check = self.check(key)
-            if consts is None or check is None:
-                continue
-            for (const, desc) in consts:
-                check(name, val, const, desc)
+class HOTParamSchema(parameters.ParamSchema):
+    """HOT parameter schema."""
+
+    def do_check(self, name, value, keys):
+        # map ParamSchema constraint type to keys used in HOT constraints
+        constraint_map = {
+            parameters.ALLOWED_PATTERN: [ALLOWED_PATTERN],
+            parameters.ALLOWED_VALUES: [ALLOWED_VALUES],
+            parameters.MIN_LENGTH: [LENGTH, MIN],
+            parameters.MAX_LENGTH: [LENGTH, MAX],
+            parameters.MIN_VALUE: [RANGE, MIN],
+            parameters.MAX_VALUE: [RANGE, MAX]
+        }
+
+        for const_type in keys:
+            # get constraint type specific check function
+            check = self.check(const_type)
+            # get constraint type specific keys in HOT
+            const_keys = constraint_map[const_type]
+
+            for constraint in self.get(CONSTRAINTS, []):
+                const_descr = constraint.get(DESCRIPTION)
+
+                for const_key in const_keys:
+                    if const_key not in constraint:
+                        break
+                    constraint = constraint[const_key]
+                else:
+                    check(name, value, constraint, const_descr)

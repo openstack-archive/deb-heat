@@ -203,6 +203,20 @@ class SqlAlchemyTest(HeatTestCase):
         st_db = db_api.stack_get_all_by_tenant(self.ctx)
         self.assertEqual(0, len(st_db))
 
+    def test_stack_count_all_by_tenant(self):
+        stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
+
+        st_db = db_api.stack_count_all_by_tenant(self.ctx)
+        self.assertEqual(2, st_db)
+
+        stacks[0].delete()
+        st_db = db_api.stack_count_all_by_tenant(self.ctx)
+        self.assertEqual(1, st_db)
+
+        stacks[1].delete()
+        st_db = db_api.stack_count_all_by_tenant(self.ctx)
+        self.assertEqual(0, st_db)
+
     def test_event_get_all_by_stack(self):
         stack = self._setup_test_stack('stack', UUID1)[1]
 
@@ -220,6 +234,26 @@ class SqlAlchemyTest(HeatTestCase):
 
         events = db_api.event_get_all_by_stack(self.ctx, UUID1)
         self.assertEqual(4, len(events))
+
+        self.m.VerifyAll()
+
+    def test_event_count_all_by_stack(self):
+        stack = self._setup_test_stack('stack', UUID1)[1]
+
+        self._mock_create(self.m)
+        self.m.ReplayAll()
+        stack.create()
+        self.m.UnsetStubs()
+
+        num_events = db_api.event_count_all_by_stack(self.ctx, UUID1)
+        self.assertEqual(2, num_events)
+
+        self._mock_delete(self.m)
+        self.m.ReplayAll()
+        stack.delete()
+
+        num_events = db_api.event_count_all_by_stack(self.ctx, UUID1)
+        self.assertEqual(4, num_events)
 
         self.m.VerifyAll()
 
@@ -284,15 +318,17 @@ class SqlAlchemyTest(HeatTestCase):
         self.ctx.password = None
         self.ctx.trust_id = 'atrust123'
         self.ctx.trustor_user_id = 'atrustor123'
+        self.ctx.tenant_id = 'atenant123'
+        self.ctx.tenant = 'atenant'
         db_creds = db_api.user_creds_create(self.ctx)
         load_creds = db_api.user_creds_get(db_creds.id)
 
         self.assertIsNone(load_creds.get('username'))
         self.assertIsNone(load_creds.get('password'))
-        self.assertIsNone(load_creds.get('tenant'))
-        self.assertIsNone(load_creds.get('tenant_id'))
         self.assertIsNotNone(load_creds.get('created_at'))
         self.assertIsNone(load_creds.get('updated_at'))
         self.assertIsNone(load_creds.get('auth_url'))
+        self.assertEqual(load_creds.get('tenant_id'), 'atenant123')
+        self.assertEqual(load_creds.get('tenant'), 'atenant')
         self.assertEqual(load_creds.get('trust_id'), 'atrust123')
         self.assertEqual(load_creds.get('trustor_user_id'), 'atrustor123')

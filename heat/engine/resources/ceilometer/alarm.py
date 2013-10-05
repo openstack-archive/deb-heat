@@ -20,37 +20,79 @@ from heat.engine import watchrule
 
 class CeilometerAlarm(resource.Resource):
 
-    properties_schema = {'comparison_operator': {'Type': 'String',
-                                                 'Required': True,
-                                                 'AllowedValues': ['ge',
-                                                                   'gt',
-                                                                   'eq',
-                                                                   'ne',
-                                                                   'lt',
-                                                                   'le']},
-                         'evaluation_periods': {'Type': 'String',
-                                                'Required': True},
-                         'counter_name': {'Type': 'String',
-                                          'Required': True},
-                         'period': {'Type': 'String',
-                                    'Required': True},
-                         'statistic': {'Type': 'String',
-                                       'Required': True,
-                                       'AllowedValues': ['count',
-                                                         'avg',
-                                                         'sum',
-                                                         'min',
-                                                         'max']},
-                         'threshold': {'Type': 'String',
-                                       'Required': True},
-                         'alarm_actions': {'Type': 'List'},
-                         'ok_actions': {'Type': 'List'},
-                         'insufficient_data_actions': {'Type': 'List'},
-                         'description': {'Type': 'String'},
-                         'source': {'Type': 'String'},
-                         'enabled': {'Type': 'Boolean',
-                                     'Default': 'true'},
-                         'matching_metadata': {'Type': 'Map'}}
+    properties_schema = {
+        'comparison_operator': {
+            'Type': 'String',
+            'Required': True,
+            'AllowedValues': ['ge', 'gt', 'eq', 'ne', 'lt', 'le'],
+            'Description': _('Operator used to compare specified statistic '
+                             'with threshold')
+        },
+        'evaluation_periods': {
+            'Type': 'String',
+            'Required': True,
+            'Description': _('Number of periods to evaluate over')
+        },
+        'meter_name': {
+            'Type': 'String',
+            'Required': True,
+            'Description': _('Meter name watched by the alarm')
+        },
+        'period': {
+            'Type': 'String',
+            'Required': True,
+            'Description': _('Period (seconds) to evaluate over')
+        },
+        'statistic': {
+            'Type': 'String',
+            'Required': True,
+            'AllowedValues': ['count', 'avg', 'sum', 'min', 'max'],
+            'Description': _('Meter statistic to evaluate')
+        },
+        'threshold': {
+            'Type': 'String',
+            'Required': True,
+            'Description': _('Threshold to evaluate against')
+        },
+        'alarm_actions': {
+            'Type': 'List',
+            'Description': _('A list of URLs (webhooks) to invoke when state '
+                             'transitions to alarm')
+        },
+        'ok_actions': {
+            'Type': 'List',
+            'Description': _('A list of URLs (webhooks) to invoke when state '
+                             'transitions to ok')
+        },
+        'insufficient_data_actions': {
+            'Type': 'List',
+            'Description': _('A list of URLs (webhooks) to invoke when state '
+                             'transitions to insufficient-data')
+        },
+        'description': {
+            'Type': 'String',
+            'Description': _('Description for the alarm')
+        },
+        'enabled': {
+            'Type': 'Boolean',
+            'Default': 'true',
+            'Description': _('True if alarm evaluation/actioning is enabled')
+        },
+        'repeat_actions': {
+            'Type': 'Boolean',
+            'Default': 'false',
+            'Description': _('True to trigger actions each time the threshold '
+                             'is reached. '
+                             'By default, actions are called when : '
+                             'the threshold is reached AND the alarm\'s state '
+                             'have changed')
+        },
+        'matching_metadata': {
+            'Type': 'Map',
+            'Description': _('Meter should match this resource metadata '
+                             '(key=value) additionally to the meter_name')
+        }
+    }
 
     update_allowed_keys = ('Properties',)
     # allow the properties that affect the watch calculation.
@@ -60,12 +102,13 @@ class CeilometerAlarm(resource.Resource):
                                  'evaluation_periods', 'period', 'statistic',
                                  'alarm_actions', 'ok_actions',
                                  'insufficient_data_actions', 'threshold',
-                                 'enabled')
+                                 'enabled', 'repeat_actions')
 
     def _actions_to_urls(self, props):
         kwargs = {}
         for k, v in iter(props.items()):
-            if k.endswith('_actions') and v is not None:
+            if k in ['alarm_actions', 'ok_actions',
+                     'insufficient_data_actions'] and v is not None:
                 kwargs[k] = []
                 for act in v:
                     # if the action is a resource name

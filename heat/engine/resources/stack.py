@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from requests import exceptions
+
 from heat.common import exception
 from heat.common import template_format
 from heat.common import urlfetch
@@ -34,17 +36,32 @@ class NestedStack(stack_resource.StackResource):
     A Resource representing a child stack to allow composition of templates.
     '''
 
-    properties_schema = {PROP_TEMPLATE_URL: {'Type': 'String',
-                                             'Required': True},
-                         PROP_TIMEOUT_MINS: {'Type': 'Number'},
-                         PROP_PARAMETERS: {'Type': 'Map'}}
+    properties_schema = {
+        PROP_TEMPLATE_URL: {
+            'Type': 'String',
+            'Required': True,
+            'Description': _('The URL of a template that specifies the stack'
+                             ' to be created as a resource.')},
+        PROP_TIMEOUT_MINS: {
+            'Type': 'Number',
+            'Description': _('The length of time, in minutes, to wait for the'
+                             ' nested stack creation.')},
+        PROP_PARAMETERS: {
+            'Type': 'Map',
+            'Description': _('The set of parameters passed to this nested'
+                             ' stack.')}}
 
     update_allowed_keys = ('Properties',)
     update_allowed_properties = (PROP_TEMPLATE_URL, PROP_TIMEOUT_MINS,
                                  PROP_PARAMETERS)
 
     def handle_create(self):
-        template_data = urlfetch.get(self.properties[PROP_TEMPLATE_URL])
+        try:
+            template_data = urlfetch.get(self.properties[PROP_TEMPLATE_URL])
+        except (exceptions.RequestException, IOError) as r_exc:
+            raise ValueError("Could not fetch remote template '%s': %s" %
+                             (self.properties[PROP_TEMPLATE_URL], str(r_exc)))
+
         template = template_format.parse(template_data)
 
         return self.create_with_template(template,
@@ -70,7 +87,12 @@ class NestedStack(stack_resource.StackResource):
                                      self.stack.resolve_runtime_data,
                                      self.name)
 
-        template_data = urlfetch.get(self.properties[PROP_TEMPLATE_URL])
+        try:
+            template_data = urlfetch.get(self.properties[PROP_TEMPLATE_URL])
+        except (exceptions.RequestException, IOError) as r_exc:
+            raise ValueError("Could not fetch remote template '%s': %s" %
+                             (self.properties[PROP_TEMPLATE_URL], str(r_exc)))
+
         template = template_format.parse(template_data)
 
         return self.update_with_template(template,

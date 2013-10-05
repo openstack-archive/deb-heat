@@ -116,6 +116,10 @@ class Resource(object):
     # that describes the appropriate resource attributes
     attributes_schema = {}
 
+    # If True, this resource may perform authenticated API requests
+    # throughout its lifecycle
+    requires_deferred_auth = False
+
     def __new__(cls, name, json, stack):
         '''Create a new Resource of the appropriate class for its type.'''
 
@@ -273,8 +277,9 @@ class Resource(object):
     def _add_dependencies(self, deps, path, fragment):
         if isinstance(fragment, dict):
             for key, value in fragment.items():
-                if key in ('DependsOn', 'Ref', 'Fn::GetAtt'):
-                    if key == 'Fn::GetAtt':
+                if key in ('DependsOn', 'Ref', 'Fn::GetAtt', 'get_attr',
+                           'get_resource'):
+                    if key in ('Fn::GetAtt', 'get_attr'):
                         value, att = value
 
                     try:

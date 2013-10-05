@@ -19,6 +19,9 @@ import json
 from oslo.config import cfg
 import webob
 
+cfg.CONF.import_opt('max_resources_per_stack', 'heat.common.config')
+cfg.CONF.import_opt('max_stacks_per_tenant', 'heat.common.config')
+
 from heat.openstack.common import timeutils
 from heat.common import context
 from heat.db import api as db_api
@@ -36,6 +39,7 @@ from heat.engine import parser
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine import resources
+from heat.engine import template as tpl
 from heat.engine import watchrule
 
 from heat.openstack.common import log as logging
@@ -206,7 +210,13 @@ class EngineService(service.Service):
         stacks = db_api.stack_get_all_by_tenant(cnxt) or []
         return list(format_stack_details(stacks))
 
-    def _validate_mandatory_credentials(self, cnxt):
+    def _validate_deferred_auth_context(self, cnxt, stack):
+        if cfg.CONF.deferred_auth_method != 'password':
+            return
+
+        if not stack.requires_deferred_auth():
+            return
+
         if cnxt.username is None:
             raise exception.MissingCredentialError(required='X-Auth-User')
         if cnxt.password is None:
@@ -229,8 +239,6 @@ class EngineService(service.Service):
         """
         logger.info('template is %s' % template)
 
-        self._validate_mandatory_credentials(cnxt)
-
         def _stack_create(stack):
             # Create the stack, and create the periodic task if successful
             stack.create()
@@ -242,8 +250,17 @@ class EngineService(service.Service):
 
         if db_api.stack_get_by_name(cnxt, stack_name):
             raise exception.StackExists(stack_name=stack_name)
+        tenant_limit = cfg.CONF.max_stacks_per_tenant
+        if db_api.stack_count_all_by_tenant(cnxt) >= tenant_limit:
+            message = _("You have reached the maximum stacks per tenant, %d."
+                        " Please delete some stacks.") % tenant_limit
+            raise exception.RequestLimitExceeded(message=message)
 
         tmpl = parser.Template(template, files=files)
+
+        if len(tmpl[tpl.RESOURCES]) > cfg.CONF.max_resources_per_stack:
+            raise exception.RequestLimitExceeded(
+                message=exception.StackResourceLimitExceeded.message)
 
         # Extract the common query parameters
         common_params = api.extract_args(args)
@@ -251,12 +268,9 @@ class EngineService(service.Service):
         stack = parser.Stack(cnxt, stack_name, tmpl,
                              env, **common_params)
 
-        stack.validate()
+        self._validate_deferred_auth_context(cnxt, stack)
 
-        # Creates a trust and sets the trust_id and trustor_user_id in
-        # the current context, before we store it in stack.store()
-        # Does nothing if deferred_auth_method is 'password'
-        stack.clients.keystone().create_trust_context()
+        stack.validate()
 
         stack_id = stack.store()
 
@@ -280,8 +294,6 @@ class EngineService(service.Service):
         """
         logger.info('template is %s' % template)
 
-        self._validate_mandatory_credentials(cnxt)
-
         # Get the database representation of the existing stack
         db_stack = self._get_stack(cnxt, stack_identity)
 
@@ -290,12 +302,16 @@ class EngineService(service.Service):
         # Now parse the template and any parameters for the updated
         # stack definition.
         tmpl = parser.Template(template, files=files)
+        if len(tmpl[tpl.RESOURCES]) > cfg.CONF.max_resources_per_stack:
+            raise exception.RequestLimitExceeded(
+                message=exception.StackResourceLimitExceeded.message)
         stack_name = current_stack.name
         common_params = api.extract_args(args)
         env = environment.Environment(params)
         updated_stack = parser.Stack(cnxt, stack_name, tmpl,
                                      env, **common_params)
 
+        self._validate_deferred_auth_context(cnxt, updated_stack)
         updated_stack.validate()
 
         self._start_in_thread(db_stack.id, current_stack.update, updated_stack)
@@ -389,13 +405,6 @@ class EngineService(service.Service):
         logger.info('deleting stack %s' % st.name)
 
         stack = parser.Stack.load(cnxt, stack=st)
-
-        # If we created a trust, delete it
-        # Note this is using the current request context, not the stored
-        # context, as it seems it's not possible to delete a trust with
-        # a token obtained via that trust.  This means that only the user
-        # who created the stack can delete it when using trusts atm.
-        stack.clients.keystone().delete_trust_context()
 
         # Kill any pending threads by calling ThreadGroup.stop()
         if st.id in self.stg:

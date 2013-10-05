@@ -50,7 +50,14 @@ class TemplateResource(stack_resource.StackResource):
         else:
             self.allowed_schemes = ('http', 'https', 'file')
 
-        tmpl = template.Template(self.parsed_nested)
+        # parse_nested can fail if the URL in the environment is bad
+        # or otherwise inaccessible.  Suppress the error here so the
+        # stack can be deleted, and detect it at validate/create time
+        try:
+            tmpl = template.Template(self.parsed_nested)
+        except ValueError:
+            tmpl = template.Template({})
+
         self.properties_schema = (properties.Properties
             .schema_from_params(tmpl.param_schemata()))
         self.attributes_schema = (attributes.Attributes
@@ -72,7 +79,9 @@ class TemplateResource(stack_resource.StackResource):
             if val is not None:
                 # take a list and create a CommaDelimitedList
                 if v.type() == properties.LIST:
-                    if isinstance(val[0], dict):
+                    if len(val) == 0:
+                        val = ''
+                    elif isinstance(val[0], dict):
                         flattened = []
                         for (i, item) in enumerate(val):
                             for (k, v) in iter(item.items()):
@@ -112,7 +121,43 @@ class TemplateResource(stack_resource.StackResource):
                 self.stack.t.files[self.template_name] = t_data
         return t_data
 
+    def _validate_against_facade(self, facade_cls):
+        facade_schemata = properties.schemata(facade_cls.properties_schema)
+
+        for n, fs in facade_schemata.items():
+            if fs.required and n not in self.properties_schema:
+                msg = ("Required property %s for facade %s "
+                       "missing in provider") % (n, self.type())
+                raise exception.StackValidationFailed(message=msg)
+
+            ps = self.properties_schema.get(n)
+            if (n in self.properties_schema and
+                    (fs.type != ps.type)):
+                # Type mismatch
+                msg = ("Property %s type mismatch between facade %s (%s) "
+                       "and provider (%s)") % (n, self.type(),
+                                               fs.type, ps.type)
+                raise exception.StackValidationFailed(message=msg)
+
+        for n, ps in self.properties_schema.items():
+            if ps.required and n not in facade_schemata:
+                # Required property for template not present in facade
+                msg = ("Provider requires property %s "
+                       "unknown in facade %s") % (n, self.type())
+                raise exception.StackValidationFailed(message=msg)
+
+        for attr in facade_cls.attributes_schema:
+            if attr not in self.attributes_schema:
+                msg = ("Attribute %s for facade %s "
+                       "missing in provider") % (attr, self.type())
+                raise exception.StackValidationFailed(message=msg)
+
     def validate(self):
+        try:
+            td = self.template_data
+        except ValueError as ex:
+            msg = _("Failed to retrieve template data: %s") % str(ex)
+            raise exception.StackValidationFailed(message=msg)
         cri = self.stack.env.get_resource_info(
             self.type(),
             registry_type=environment.ClassResourceInfo)
@@ -121,35 +166,7 @@ class TemplateResource(stack_resource.StackResource):
         # template, check for compatibility between the interfaces.
         if cri is not None and not isinstance(self, cri.get_class()):
             facade_cls = cri.get_class()
-            facade_schemata = properties.schemata(facade_cls.properties_schema)
-
-            for n, fs in facade_schemata.items():
-                if fs.required and n not in self.properties_schema:
-                    msg = ("Required property %s for facade %s "
-                           "missing in provider") % (n, self.type())
-                    raise exception.StackValidationFailed(message=msg)
-
-                ps = self.properties_schema.get(n)
-                if (n in self.properties_schema and
-                        (fs.type != ps.type)):
-                    # Type mismatch
-                    msg = ("Property %s type mismatch between facade %s (%s) "
-                           "and provider (%s)") % (n, self.type(),
-                                                   fs.type, ps.type)
-                    raise exception.StackValidationFailed(message=msg)
-
-            for n, ps in self.properties_schema.items():
-                if ps.required and n not in facade_schemata:
-                    # Required property for template not present in facade
-                    msg = ("Provider requires property %s "
-                           "unknown in facade %s") % (n, self.type())
-                    raise exception.StackValidationFailed(message=msg)
-
-            for attr in facade_cls.attributes_schema:
-                if attr not in self.attributes_schema:
-                    msg = ("Attribute %s for facade %s "
-                           "missing in provider") % (attr, self.type())
-                    raise exception.StackValidationFailed(message=msg)
+            self._validate_against_facade(facade_cls)
 
         return super(TemplateResource, self).validate()
 

@@ -15,6 +15,10 @@
 
 import copy
 
+from oslo.config import cfg
+
+cfg.CONF.import_opt('max_resources_per_stack', 'heat.common.config')
+
 from heat.common import exception
 from heat.common import template_format
 from heat.common import urlfetch
@@ -105,6 +109,62 @@ Outputs:
 
         self.m.VerifyAll()
 
+    def test_nested_stack_create_exceeds_resource_limit(self):
+        cfg.CONF.set_override('max_resources_per_stack', 1)
+        resource._register_class('GenericResource',
+                                 generic_rsrc.GenericResource)
+        urlfetch.get('https://server.test/the.template').MultipleTimes().\
+            AndReturn('''
+HeatTemplateFormatVersion: '2012-12-12'
+Parameters:
+  KeyName:
+    Type: String
+Resources:
+  NestedResource:
+    Type: GenericResource
+Outputs:
+  Foo:
+    Value: bar
+''')
+        self.m.ReplayAll()
+
+        t = template_format.parse(self.test_template)
+        stack = self.parse_stack(t)
+        stack.create()
+        self.assertEquals(stack.state, (stack.CREATE, stack.FAILED))
+        self.assertIn('Maximum resources per stack exceeded',
+                      stack.status_reason)
+
+        self.m.VerifyAll()
+
+    def test_nested_stack_create_equals_resource_limit(self):
+        cfg.CONF.set_override('max_resources_per_stack', 2)
+        resource._register_class('GenericResource',
+                                 generic_rsrc.GenericResource)
+        urlfetch.get('https://server.test/the.template').MultipleTimes().\
+            AndReturn('''
+HeatTemplateFormatVersion: '2012-12-12'
+Parameters:
+  KeyName:
+    Type: String
+Resources:
+  NestedResource:
+    Type: GenericResource
+Outputs:
+  Foo:
+    Value: bar
+''')
+        self.m.ReplayAll()
+
+        t = template_format.parse(self.test_template)
+        stack = self.parse_stack(t)
+        stack.create()
+        self.assertEquals(stack.state, (stack.CREATE, stack.COMPLETE))
+        self.assertIn('NestedResource',
+                      stack.resources['the_nested'].nested().resources)
+
+        self.m.VerifyAll()
+
     def test_nested_stack_update(self):
         urlfetch.get('https://server.test/the.template').MultipleTimes().\
             AndReturn(self.nested_template)
@@ -142,6 +202,88 @@ Outputs:
         self.assertRaises(
             exception.InvalidTemplateAttribute, rsrc.FnGetAtt, 'Bar')
 
+        rsrc.delete()
+
+        self.m.VerifyAll()
+
+    def test_nested_stack_update_equals_resource_limit(self):
+        resource._register_class('GenericResource',
+                                 generic_rsrc.GenericResource)
+        urlfetch.get('https://server.test/the.template').MultipleTimes().\
+            AndReturn(self.nested_template)
+        urlfetch.get('https://server.test/new.template').MultipleTimes().\
+            AndReturn('''
+HeatTemplateFormatVersion: '2012-12-12'
+Parameters:
+  KeyName:
+    Type: String
+Resources:
+  NestedResource:
+    Type: GenericResource
+Outputs:
+  Bar:
+    Value: foo
+''')
+        self.m.ReplayAll()
+
+        stack = self.create_stack(self.test_template)
+
+        cfg.CONF.set_override('max_resources_per_stack', 2)
+
+        rsrc = stack['the_nested']
+
+        original_nested_id = rsrc.resource_id
+        t = template_format.parse(self.test_template)
+        new_res = copy.deepcopy(t['Resources']['the_nested'])
+        new_res['Properties']['TemplateURL'] = (
+            'https://server.test/new.template')
+        prop_diff = {'TemplateURL': 'https://server.test/new.template'}
+        updater = rsrc.handle_update(new_res, {}, prop_diff)
+        updater.run_to_completion()
+        self.assertEqual(True, rsrc.check_update_complete(updater))
+
+        self.assertEqual('foo', rsrc.FnGetAtt('Outputs.Bar'))
+
+        rsrc.delete()
+
+        self.m.VerifyAll()
+
+    def test_nested_stack_update_exceeds_limit(self):
+        resource._register_class('GenericResource',
+                                 generic_rsrc.GenericResource)
+        urlfetch.get('https://server.test/the.template').MultipleTimes().\
+            AndReturn(self.nested_template)
+        urlfetch.get('https://server.test/new.template').MultipleTimes().\
+            AndReturn('''
+HeatTemplateFormatVersion: '2012-12-12'
+Parameters:
+  KeyName:
+    Type: String
+Resources:
+  NestedResource:
+    Type: GenericResource
+Outputs:
+  Bar:
+    Value: foo
+''')
+        self.m.ReplayAll()
+
+        stack = self.create_stack(self.test_template)
+
+        cfg.CONF.set_override('max_resources_per_stack', 1)
+
+        rsrc = stack['the_nested']
+
+        original_nested_id = rsrc.resource_id
+        t = template_format.parse(self.test_template)
+        new_res = copy.deepcopy(t['Resources']['the_nested'])
+        new_res['Properties']['TemplateURL'] = (
+            'https://server.test/new.template')
+        prop_diff = {'TemplateURL': 'https://server.test/new.template'}
+        ex = self.assertRaises(exception.RequestLimitExceeded,
+                               rsrc.handle_update, new_res, {}, prop_diff)
+        self.assertIn(exception.StackResourceLimitExceeded.message,
+                      str(ex))
         rsrc.delete()
 
         self.m.VerifyAll()
@@ -254,7 +396,7 @@ Resources:
         t = template_format.parse(root_template)
         stack = self.parse_stack(t)
         stack.create()
-        self.assertEquals((stack.CREATE, stack.FAILED), stack.state)
+        self.assertEqual((stack.CREATE, stack.FAILED), stack.state)
         self.assertIn('Recursion depth exceeds', stack.status_reason)
         self.m.VerifyAll()
 

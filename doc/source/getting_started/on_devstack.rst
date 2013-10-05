@@ -30,11 +30,6 @@ a VM image that Heat can launch::
 
 URLs for any of [http://fedorapeople.org/groups/heat/prebuilt-jeos-images/ these prebuilt JEOS images] can be specified.
 
-Also see the TripleO autobuilt images:
-
-    [http://jenkins.tripleo.org:8080/job/autobuilt-images/elements=fedora%20vm%20heat-cfntools/lastSuccessfulBuild/artifact/fedora-vm-heat-cfntools.qcow2 fedora-vm-heat-cfntools.qcow2]
-    [http://jenkins.tripleo.org:8080/job/autobuilt-images/elements=ubuntu%20vm%20heat-cfntools/lastSuccessfulBuild/artifact/ubuntu-vm-heat-cfntools.qcow2 ubuntu-vm-heat-cfntools.qcow2]
-
 That is all the configuration that is required. When you run `./stack.sh` the Heat processes will be launched in `screen` with the labels prefixed with `h-`.
 
 Confirming heat is responding
@@ -72,7 +67,7 @@ Launching a stack
 Now lets launch a stack, using an example template from the heat-templates repository::
 
     heat stack-create teststack -u
-    https://raw.github.com/openstack/heat-templates/master/cfn/WordPress_Single_Instance.template -P "InstanceType=m1.large;DBUsername=wp;DBPassword=verybadpassword;KeyName=heat_key;LinuxDistribution=F17"
+    https://raw.github.com/openstack/heat-templates/master/cfn/F17/WordPress_Single_Instance.template -P "InstanceType=m1.large;DBUsername=wp;DBPassword=verybadpassword;KeyName=heat_key;LinuxDistribution=F17"
 
 Which will respond::
 

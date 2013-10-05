@@ -17,8 +17,11 @@
 from datetime import datetime
 from datetime import timedelta
 
+from oslo.config import cfg
 import sqlalchemy
 from sqlalchemy.orm.session import Session
+
+cfg.CONF.import_opt('max_events_per_stack', 'heat.common.config')
 
 from heat.openstack.common.gettextutils import _
 
@@ -116,6 +119,16 @@ def resource_data_get(resource, key):
     return result.value
 
 
+def _encrypt(value):
+    return crypt.encrypt(value.encode('utf-8'))
+
+
+def _decrypt(enc_value):
+    value = crypt.decrypt(enc_value)
+    if value is not None:
+        return unicode(value, 'utf-8')
+
+
 def resource_data_get_by_key(context, resource_id, key):
     result = (model_query(context, models.ResourceData)
               .filter_by(resource_id=resource_id)
@@ -124,14 +137,14 @@ def resource_data_get_by_key(context, resource_id, key):
     if not result:
         raise exception.NotFound('No resource data found')
     if result.redact and result.value:
-        result.value = crypt.decrypt(result.value)
+        result.value = _decrypt(result.value)
     return result
 
 
 def resource_data_set(resource, key, value, redact=False):
     """Save resource's key/value pair to database."""
     if redact:
-        value = crypt.encrypt(value)
+        value = _encrypt(value)
     try:
         current = resource_data_get_by_key(resource.context, resource.id, key)
     except exception.NotFound:
@@ -213,11 +226,19 @@ def stack_get_all(context):
     return results
 
 
-def stack_get_all_by_tenant(context):
-    results = soft_delete_aware_query(context, models.Stack).\
+def _query_stack_get_all_by_tenant(context):
+    query = soft_delete_aware_query(context, models.Stack).\
         filter_by(owner_id=None).\
-        filter_by(tenant=context.tenant_id).all()
-    return results
+        filter_by(tenant=context.tenant_id)
+    return query
+
+
+def stack_get_all_by_tenant(context):
+    return _query_stack_get_all_by_tenant(context).all()
+
+
+def stack_count_all_by_tenant(context):
+    return _query_stack_get_all_by_tenant(context).count()
 
 
 def stack_create(context, values):
@@ -260,13 +281,15 @@ def user_creds_create(context):
     values = context.to_dict()
     user_creds_ref = models.UserCreds()
     if values.get('trust_id'):
-        user_creds_ref.trust_id = crypt.encrypt(values.get('trust_id'))
+        user_creds_ref.trust_id = _encrypt(values.get('trust_id'))
         user_creds_ref.trustor_user_id = values.get('trustor_user_id')
         user_creds_ref.username = None
         user_creds_ref.password = None
+        user_creds_ref.tenant = values.get('tenant')
+        user_creds_ref.tenant_id = values.get('tenant_id')
     else:
         user_creds_ref.update(values)
-        user_creds_ref.password = crypt.encrypt(values['password'])
+        user_creds_ref.password = _encrypt(values['password'])
     user_creds_ref.save(_session(context))
     return user_creds_ref
 
@@ -276,8 +299,8 @@ def user_creds_get(user_creds_id):
     # Return a dict copy of db results, do not decrypt details into db_result
     # or it can be committed back to the DB in decrypted form
     result = dict(db_result)
-    result['password'] = crypt.decrypt(result['password'])
-    result['trust_id'] = crypt.decrypt(result['trust_id'])
+    result['password'] = _decrypt(result['password'])
+    result['trust_id'] = _decrypt(result['trust_id'])
     return result
 
 
@@ -307,14 +330,49 @@ def event_get_all_by_tenant(context):
     return results
 
 
-def event_get_all_by_stack(context, stack_id):
-    results = model_query(context, models.Event).\
-        filter_by(stack_id=stack_id).all()
+def _query_all_by_stack(context, stack_id):
+    query = model_query(context, models.Event).\
+        filter_by(stack_id=stack_id)
+    return query
 
-    return results
+
+def event_get_all_by_stack(context, stack_id):
+    return _query_all_by_stack(context, stack_id).all()
+
+
+def event_count_all_by_stack(context, stack_id):
+    return _query_all_by_stack(context, stack_id).count()
+
+
+def _delete_event_rows(context, stack_id, limit):
+    # MySQL does not support LIMIT in subqueries,
+    # sqlite does not support JOIN in DELETE.
+    # So we must manually supply the IN() values.
+    # pgsql SHOULD work with the pure DELETE/JOIN below but that must be
+    # confirmed via integration tests.
+    query = _query_all_by_stack(context, stack_id)
+    session = _session(context)
+    if 'postgres' not in session.connection().dialect.name:
+        ids = [r.id for r in query.order_by(
+            models.Event.id).limit(limit).all()]
+        q = session.query(models.Event).filter(
+            models.Event.id.in_(ids))
+    else:
+        stmt = session.query(
+            models.Event.id).filter_by(
+                stack_id=stack_id).order_by(
+                    models.Event.id).limit(limit).subquery()
+        q = query.join(stmt, models.Event.id == stmt.c.id)
+    return q.delete(synchronize_session='fetch')
 
 
 def event_create(context, values):
+    if 'stack_id' in values and cfg.CONF.max_events_per_stack:
+        if ((event_count_all_by_stack(context, values['stack_id']) >=
+             cfg.CONF.max_events_per_stack)):
+            # prune
+            _delete_event_rows(
+                context, values['stack_id'], cfg.CONF.event_purge_batch_size)
     event_ref = models.Event()
     event_ref.update(values)
     event_ref.save(_session(context))

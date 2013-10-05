@@ -1,6 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright 2013 OpenStack LLC
+# Copyright 2013 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -81,11 +81,6 @@ class KeystonePasswordAuthProtocolTest(HeatTestCase):
         self.app = FakeApp(
             expected_env={'HTTP_X_AUTH_URL': self.config['auth_uri']})
         self.middleware = KeystonePasswordAuthProtocol(self.app, self.config)
-
-    def tearDown(self):
-        super(KeystonePasswordAuthProtocolTest, self).tearDown()
-        cfg.CONF.clear_override('multi_cloud', 'auth_password')
-        cfg.CONF.clear_override('allowed_auth_uris', 'auth_password')
 
     def _start_fake_response(self, status, headers):
         self.response_status = int(status.split(' ', 1)[0])

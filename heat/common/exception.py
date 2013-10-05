@@ -120,6 +120,9 @@ class HeatException(Exception):
     def __str__(self):
         return str(self.message)
 
+    def __unicode__(self):
+        return unicode(self.message)
+
 
 class MissingCredentialError(HeatException):
     message = _("Missing required credential: %(required)s")
@@ -302,10 +305,6 @@ class HTTPExceptionDisguise(Exception):
         self.tb = sys.exc_info()[2]
 
 
-class TemplateTooBig(HeatException):
-    message = _('Template exceeds maximum allowed size.')
-
-
 class EgressRuleNotAllowed(HeatException):
     message = _("Egress rules are only allowed when "
                 "Neutron is used and the 'VpcId' property is set.")
@@ -324,9 +323,9 @@ class InvalidContentType(HeatException):
     message = "Invalid content type %(content_type)s"
 
 
-class StackRecursionLimitReached(HeatException):
-    message = _("Recursion depth exceeds %d.")
+class RequestLimitExceeded(HeatException):
+    message = _('Request limit exceeded: %(message)s')
 
-    def __init__(self, recursion_depth):
-        self.message = self.message % recursion_depth
-        super(StackRecursionLimitReached, self).__init__()
+
+class StackResourceLimitExceeded(HeatException):
+    message = _('Maximum resources per stack exceeded.')
