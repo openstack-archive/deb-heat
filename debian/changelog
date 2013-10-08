@@ -4,6 +4,33 @@ heat (2013.2~rc1-1) experimental; urgency=low
 
  -- Thomas Goirand <zigo@debian.org>  Sat, 29 Jun 2013 18:08:30 +0800
 
+heat (2013.1.3-2) unstable; urgency=low
+
+  * New Debconf translations:
+    - FR (Closes: #722422).
+    - IT (Closes: #721334).
+    - RU (Closes: #721305).
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 25 Sep 2013 16:39:56 +0800
+
+heat (2013.1.3-1) unstable; urgency=low
+
+  * New upstream point release.
+  * Added some Debconf templates translations:
+    - Danish, thanks to Joe Dalton (Closes: #720039).
+    - Japanese, thanks to victory (Closes: #720594).
+    - Czech, thanks to Michal Šimůnek (Closes: #721141).
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 30 Aug 2013 13:04:59 +0800
+
+heat (2013.1.2-4) unstable; urgency=low
+
+  * Added patch so that Heat can work with SQLAlchemy 0.8. Thanks to Zhang
+  * Lei
+    for working on that (Closes: #718157, #717225).
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 07 Aug 2013 22:41:20 +0200
+
 heat (2013.1.2-3) unstable; urgency=low
 
   * Modified templates accoding to the review from the debian-l10n-english. A
