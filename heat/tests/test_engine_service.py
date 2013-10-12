@@ -24,6 +24,7 @@ from oslo.config import cfg
 
 from heat.engine import environment
 from heat.common import exception
+from heat.common import urlfetch
 from heat.tests.v1_1 import fakes
 import heat.rpc.api as engine_api
 import heat.db.api as db_api
@@ -67,6 +68,15 @@ wp_template = '''
     }
   }
 }
+'''
+
+nested_alarm_template = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Resources:
+  the_nested:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://server.test/alarm.template
 '''
 
 alarm_template = '''
@@ -941,7 +951,7 @@ class StackServiceTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @stack_context('service_event_list_deleted_resource_test_stack')
+    @stack_context('event_list_deleted_stack')
     def test_stack_event_list_deleted_resource(self):
         rsrs._register_class('GenericResourceType',
                              generic_rsrc.GenericResource)
@@ -1341,7 +1351,7 @@ class StackServiceTest(HeatTestCase):
                           self.eng.describe_stack_resources,
                           self.ctx, non_exist_identifier, 'WebServer')
 
-    @stack_context('service_find_physical_resource_test_stack')
+    @stack_context('find_phys_res_stack')
     def test_find_physical_resource(self):
         resources = self.eng.describe_stack_resources(self.ctx,
                                                       self.stack.identifier(),
@@ -1533,6 +1543,25 @@ class StackServiceTest(HeatTestCase):
                          self.eng.stg[stack.id].threads)
         self.stack.delete()
 
+    def test_periodic_watch_task_created_nested(self):
+        self.m.StubOutWithMock(urlfetch, 'get')
+        urlfetch.get('https://server.test/alarm.template').MultipleTimes().\
+            AndReturn(alarm_template)
+        self.m.ReplayAll()
+
+        stack = get_stack('period_watch_task_created_nested',
+                          utils.dummy_context(),
+                          nested_alarm_template)
+        self.stack = stack
+        self.m.ReplayAll()
+        stack.store()
+        stack.create()
+        self.eng.stg[stack.id] = DummyThreadGroup()
+        self.eng._start_watch_task(stack.id, self.ctx)
+        self.assertEqual([self.eng._periodic_watcher_task],
+                         self.eng.stg[stack.id].threads)
+        self.stack.delete()
+
     @stack_context('service_show_watch_test_stack', False)
     @utils.wr_delete_after
     def test_show_watch(self):
@@ -1548,7 +1577,7 @@ class StackServiceTest(HeatTestCase):
                 u'MetricName': u'ServiceFailure'}
         self.wr = []
         self.wr.append(watchrule.WatchRule(context=self.ctx,
-                                           watch_name='HttpFailureAlarm',
+                                           watch_name='show_watch_1',
                                            rule=rule,
                                            watch_data=[],
                                            stack_id=self.stack.id,
@@ -1556,20 +1585,28 @@ class StackServiceTest(HeatTestCase):
         self.wr[0].store()
 
         self.wr.append(watchrule.WatchRule(context=self.ctx,
-                                           watch_name='AnotherWatch',
+                                           watch_name='show_watch_2',
                                            rule=rule,
                                            watch_data=[],
                                            stack_id=self.stack.id,
                                            state='NORMAL'))
         self.wr[1].store()
 
-        # watch_name=None should return both watches
+        # watch_name=None should return all watches
         result = self.eng.show_watch(self.ctx, watch_name=None)
-        self.assertEqual(2, len(result))
+        result_names = [r.get('name') for r in result]
+        self.assertIn('show_watch_1', result_names)
+        self.assertIn('show_watch_2', result_names)
 
-        # watch_name="HttpFailureAlarm" should return only one
-        result = self.eng.show_watch(self.ctx, watch_name="HttpFailureAlarm")
+        result = self.eng.show_watch(self.ctx, watch_name="show_watch_1")
         self.assertEqual(1, len(result))
+        self.assertIn('name', result[0])
+        self.assertEqual('show_watch_1', result[0]['name'])
+
+        result = self.eng.show_watch(self.ctx, watch_name="show_watch_2")
+        self.assertEqual(1, len(result))
+        self.assertIn('name', result[0])
+        self.assertEqual('show_watch_2', result[0]['name'])
 
         self.assertRaises(exception.WatchRuleNotFound,
                           self.eng.show_watch,
@@ -1593,7 +1630,7 @@ class StackServiceTest(HeatTestCase):
                 u'Threshold': u'2',
                 u'MetricName': u'ServiceFailure'}
         self.wr = watchrule.WatchRule(context=self.ctx,
-                                      watch_name='HttpFailureAlarm',
+                                      watch_name='show_watch_metric_1',
                                       rule=rule,
                                       watch_data=[],
                                       stack_id=self.stack.id,
@@ -1601,7 +1638,7 @@ class StackServiceTest(HeatTestCase):
         self.wr.store()
 
         # And add a metric datapoint
-        watch = db_api.watch_rule_get_by_name(self.ctx, "HttpFailureAlarm")
+        watch = db_api.watch_rule_get_by_name(self.ctx, 'show_watch_metric_1')
         self.assertNotEqual(watch, None)
         values = {'watch_rule_id': watch.id,
                   'data': {u'Namespace': u'system/linux',

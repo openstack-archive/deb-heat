@@ -12,8 +12,13 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-
+import fixtures
 import mock
+import os.path
+
+from oslo.config import cfg
+
+cfg.CONF.import_opt('environment_dir', 'heat.common.config')
 
 from heat.engine import environment
 from heat.engine import resources
@@ -112,7 +117,8 @@ class GlobalEnvLoadingTest(common.HeatTestCase):
             with mock.patch('heat.engine.resources.open',
                             mock.mock_open(read_data=env_content),
                             create=True) as m_open:
-                resources._load_global_environment(env_dir)
+                resources._load_global_environment(resources.global_env(),
+                                                   env_dir)
 
         m_ldir.assert_called_once_with(env_dir)
         m_open.assert_called_once_with('%s/a.yaml' % env_dir)
@@ -122,7 +128,8 @@ class GlobalEnvLoadingTest(common.HeatTestCase):
         with mock.patch(list_dir) as m_ldir:
             m_ldir.return_value = []
             env_dir = '/etc_etc/heat/enviroment.d'
-            resources._load_global_environment(env_dir)
+            resources._load_global_environment(resources.global_env(),
+                                               env_dir)
 
         m_ldir.assert_called_once_with(env_dir)
 
@@ -140,7 +147,8 @@ class GlobalEnvLoadingTest(common.HeatTestCase):
                             mock.mock_open(read_data=env_content),
                             create=True) as m_open:
                 m_open.side_effect = IOError
-                resources._load_global_environment(env_dir)
+                resources._load_global_environment(resources.global_env(),
+                                                   env_dir)
 
         m_ldir.assert_called_once_with(env_dir)
         expected = [mock.call('%s/a.yaml' % env_dir),
@@ -160,9 +168,35 @@ class GlobalEnvLoadingTest(common.HeatTestCase):
             with mock.patch('heat.engine.resources.open',
                             mock.mock_open(read_data=env_content),
                             create=True) as m_open:
-                resources._load_global_environment(env_dir)
+                resources._load_global_environment(resources.global_env(),
+                                                   env_dir)
 
         m_ldir.assert_called_once_with(env_dir)
         expected = [mock.call('%s/a.yaml' % env_dir),
                     mock.call('%s/b.yaml' % env_dir)]
         self.assertEqual(expected, m_open.call_args_list)
+
+    def test_env_resources_override_plugins(self):
+        # assertion: any template resources in the global environment
+        #            should override the default plugins.
+
+        # 1. set our own global test env
+        #    (with a template resource that shadows a plugin)
+        g_env_content = '''
+        resource_registry:
+          "OS::Nova::Server": "file:///not_really_here.yaml"
+        '''
+        envdir = self.useFixture(fixtures.TempDir())
+        #
+        envfile = os.path.join(envdir.path, 'test.yaml')
+        with open(envfile, 'w+') as ef:
+            ef.write(g_env_content)
+        cfg.CONF.set_override('environment_dir', envdir.path)
+
+        # 2. load global env
+        g_env = environment.Environment({}, user_env=False)
+        resources._load_all(g_env)
+
+        # 3. assert our resource is in place.
+        self.assertEqual('file:///not_really_here.yaml',
+                         g_env.get_resource_info('OS::Nova::Server').value)

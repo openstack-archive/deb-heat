@@ -318,14 +318,14 @@ class LoadBalancer(resource.Resource):
 
     update_allowed_keys = ('Properties',)
 
-    update_allowed_properties = ('members',)
+    update_allowed_properties = ('members', 'pool_id',)
 
     def handle_create(self):
         pool = self.properties['pool_id']
         client = self.neutron()
         nova_client = self.nova()
         protocol_port = self.properties['protocol_port']
-        for member in self.properties['members']:
+        for member in self.t['Properties'].get('members', []):
             address = nova_utils.server_to_ipaddress(nova_client, member)
             lb_member = client.create_member({
                 'member': {
@@ -361,7 +361,7 @@ class LoadBalancer(resource.Resource):
 
     def handle_delete(self):
         client = self.neutron()
-        for member in self.properties['members']:
+        for member in self.t['Properties'].get('members', []):
             member_id = db_api.resource_data_get(self, member)
             try:
                 client.delete_member(member_id)
