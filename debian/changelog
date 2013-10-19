@@ -1,3 +1,10 @@
+heat (2013.2-2) unstable; urgency=low
+
+  * Added upstream patch to fix the /usr/bin/coverage call and use
+    "python -m coverage" instead.
+
+ -- Thomas Goirand <zigo@debian.org>  Sat, 19 Oct 2013 16:22:07 +0000
+
 heat (2013.2-1) unstable; urgency=low
 
   * New upstream release.
