@@ -1,3 +1,9 @@
+heat (2013.2-3) UNRELEASED; urgency=low
+
+  * Added missing depends: python-babel in the python-heat package.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 25 Oct 2013 02:04:19 +0800
+
 heat (2013.2-2) unstable; urgency=low
 
   * Added upstream patch to fix the /usr/bin/coverage call and use
