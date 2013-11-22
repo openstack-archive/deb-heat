@@ -1,8 +1,9 @@
-heat (2013.2-3) UNRELEASED; urgency=low
+heat (2013.2-3) unstable; urgency=low
 
   * Added missing depends: python-babel in the python-heat package.
+  * Added missing configuration files in /etc/heat (Closes: #730122).
 
- -- Thomas Goirand <zigo@debian.org>  Fri, 25 Oct 2013 02:04:19 +0800
+ -- Thomas Goirand <zigo@debian.org>  Fri, 22 Nov 2013 17:17:50 +0800
 
 heat (2013.2-2) unstable; urgency=low
 

@@ -1,2 +1,4 @@
 /usr/bin/heat-manage
 etc/heat/policy.json
+etc/heat/environment.d/default.yaml
+etc/heat/api-paste.ini
