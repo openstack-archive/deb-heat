@@ -1,27 +1,28 @@
-# Translation of heat debconf templates to French. 
-# Copyright (C) 2013, French l10n team <debian-l10n-french@lists.debian.org>
-# This file is distributed under the same license as the HEAT package.
-# Julien Patriarca <leatherface@debian.org>, 2013.
+# Translation of heat's debconf messages to european portuguese
+# Copyright (C) 2013 THE heat'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the heat package.
 #
+# Américo Monteiro <a_monteiro@gmx.com>, 2013.
 msgid ""
 msgstr ""
-"Project-Id-Version: heat\n"
+"Project-Id-Version: heat 2013.2-2\n"
 "Report-Msgid-Bugs-To: heat@packages.debian.org\n"
 "POT-Creation-Date: 2013-09-27 00:04+0800\n"
-"PO-Revision-Date: 2013-10-27 18:41+0100\n"
-"Last-Translator: Julien Patriarca <leatherface@debian.org>\n"
-"Language-Team: FRENCH <debian-l10n-french@lists.debian.org>\n"
-"Language: fr\n"
+"PO-Revision-Date: 2013-11-18 19:26+0000\n"
+"Last-Translator: Américo Monteiro <a_monteiro@gmx.com>\n"
+"Language-Team: Portuguese <traduz@debianpt.org>\n"
+"Language: pt\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"X-Generator: Poedit 1.5.4\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"X-Generator: Lokalize 1.4\n"
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:2001
 msgid "Authentication server hostname:"
-msgstr "Nom d'hôte du serveur d'authentification : "
+msgstr "Nome de máquina do servidor de autenticação:"
 
 #. Type: string
 #. Description
@@ -30,8 +31,9 @@ msgid ""
 "Please specify the hostname of the authentication server. Typically this is "
 "also the hostname of the OpenStack Identity Service (Keystone)."
 msgstr ""
-"Veuillez indiquer l'adresse URL du serveur d'authentification. En général, "
-"c'est également le nom d'hôte du Service d'Identité d'OpenStack (Keystone)."
+"Por favor especifique o nome de máquina do servidor de autenticação. "
+"Tipicamente este é também o nome de máquina do Serviço de Identidade "
+"OpenStack (Keystone)."
 
 #. Type: string
 #. Description
@@ -44,7 +46,7 @@ msgstr ""
 #. locataire ("tenant")
 #: ../heat-common.templates:3001
 msgid "Authentication server tenant name:"
-msgstr "Nom d'espace client du serveur d'authentification :"
+msgstr "Nome \"tenant\" do servidor de autenticação:"
 
 #. Type: string
 #. Description
@@ -57,39 +59,40 @@ msgstr "Nom d'espace client du serveur d'authentification :"
 #. locataire ("tenant")
 #: ../heat-common.templates:3001
 msgid "Please specify the authentication server tenant name."
-msgstr ""
-"Veuillez indiquer le nom d'espace client du serveur d'authentification :"
+msgstr "Por favor especifique o nome \"tenant\" do servidor de autenticação."
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:4001
 msgid "Authentication server username:"
-msgstr "Nom d'utilisateur pour le serveur d'authentification : "
+msgstr "Nome de utilizador do servidor de autenticação:"
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:4001
 msgid "Please specify the username to use with the authentication server."
 msgstr ""
-"Veuillez indiquer le nom d'utilisateur pour le serveur d'authentification."
+"Por favor especifique o nome de utilizador a usar com o servidor de "
+"autenticação."
 
 #. Type: password
 #. Description
 #: ../heat-common.templates:5001
 msgid "Authentication server password:"
-msgstr "Mot de passe du serveur d'authentification : "
+msgstr "Palavra passe do servidor de autenticação:"
 
 #. Type: password
 #. Description
 #: ../heat-common.templates:5001
 msgid "Please specify the password to use with the authentication server."
-msgstr "Veuillez indiquer le mot de passe pour le serveur d'authentification. "
+msgstr ""
+"Por favor especifique a palavra passe a usar com o servidor de autenticação."
 
 #. Type: boolean
 #. Description
 #: ../heat-common.templates:6001
 msgid "Register Heat in the Keystone endpoint catalog?"
-msgstr "Enregistrer Heat dans le catalogue de points d'accès de Keystone ?"
+msgstr "Registar o Heat no catálogo de \"endpoint\" do Keystone?"
 
 #. Type: boolean
 #. Description
@@ -99,9 +102,9 @@ msgid ""
 "accessible. This is done using \"keystone service-create\" and \"keystone "
 "endpoint-create\". This can be done automatically now."
 msgstr ""
-"Chaque service OpenStack (chaque API) doit être enregistré pour être "
-"accessible. Cela peut être fait en utilisant « keystone service-create » et "
-"« keystone endpoint-create ». Cela peut être fait automatiquement maintenant."
+"Cada serviço do OpenStack (cada API) deve ser registado de modo a ser "
+"acessível. Isto é feito usado \"keystone service-create\" e \"keystone "
+"endpoint-create\". Isto pode ser feito automaticamente agora."
 
 #. Type: boolean
 #. Description
@@ -110,14 +113,14 @@ msgid ""
 "Note that you will need to have an up and running Keystone server on which "
 "to connect using the Keystone authentication token."
 msgstr ""
-"Veuillez noter que vous aurez besoin d'un serveur Keystone fonctionnel "
-"sur lequel se connecter en utilisant le jeton d'authentification Keystone."
+"Note que irá precisar de ter um servidor Keystone a funcionar no qual "
+"ligar usando o sinal de autenticação do Keystone."
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:7001
 msgid "Keystone server IP address:"
-msgstr "Adresse IP du serveur Keystone :"
+msgstr "Endereço IP do servidor Keystone:"
 
 #. Type: string
 #. Description
@@ -126,15 +129,15 @@ msgid ""
 "Please enter the IP address of the Keystone server, so that heat-api can "
 "contact Keystone to do the Heat service and endpoint creation."
 msgstr ""
-"Veuillez indiquer l'adresse IP du serveur Keystone, pour que l'api de Heat "
-"puisse contacter Keystone pour établir le service Heat et créer un point "
-"d'accès."
+"Por favor indique o endereço IP do servidor Keystone, para que o heat-api "
+"possa contactar o Keystone para fazer o serviço Heat e a criação do "
+"\"endpoint\"."
 
 #. Type: password
 #. Description
 #: ../heat-common.templates:8001
 msgid "Keystone authentication token:"
-msgstr "Jeton d'authentification Keystone : "
+msgstr "Sinal (token) de autenticação do Keystone:"
 
 #. Type: password
 #. Description
@@ -143,20 +146,20 @@ msgid ""
 "To configure its endpoint in Keystone, heat-api needs the Keystone "
 "authentication token."
 msgstr ""
-"Pour configurer son point d'accès dans Keystone, l'api de Heat a besoin du "
-"jeton d'authentification Keystone."
+"Para configurar o seu endpoint no Keystone, o heat-api precisa do sinal "
+"de autenticação do Keystone."
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:9001
 msgid "Heat endpoint IP address:"
-msgstr "Adresse IP du point d'accès de Heat : "
+msgstr "Endereço IP do endpoint do Heat:"
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:9001
 msgid "Please enter the IP address that will be used to contact Heat."
-msgstr "Veuillez indiquer l'adresse IP qui sera utilisée pour contacter Heat."
+msgstr "Por favor indique o endereço IP que será usado para contactar o Heat."
 
 #. Type: string
 #. Description
@@ -166,15 +169,15 @@ msgid ""
 "service, so if you are installing a public cloud, this should be a public IP "
 "address."
 msgstr ""
-"Cette adresse IP doit être accessible depuis les clients qui utiliseront ce "
-"service, donc si vous installez un nuage public, ce devra être une adresse "
-"IP publique."
+"Este endereço IP deve ser acessível a partir dos clientes que vão usar "
+"este serviço, portanto se está a instalar uma \"cloud\" pública, este deve "
+"ser um endereço IP público."
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:10001
 msgid "Name of the region to register:"
-msgstr "Nom de la région à enregistrer : "
+msgstr "Nome da região a registar:"
 
 #. Type: string
 #. Description
@@ -184,15 +187,15 @@ msgid ""
 "location. Please enter the zone that you wish to use when registering the "
 "endpoint."
 msgstr ""
-"OpenStack prend en charge l'utilisation de zones disponibles, avec chaque région "
-"représentant un lieu. Veuillez entrer une zone que vous souhaitez utiliser "
-"lors de l'enregistrement d'un point d'accès."
+"O OpenStack suporta usar zonas de disponibilidade, com cada região a "
+"representar um local. Por favor indique a zona que deseja usar ao registar "
+"o endpoint."
 
 #. Type: boolean
 #. Description
 #: ../heat-common.templates:11001
 msgid "Set up a database for heat-common?"
-msgstr "Installer une base de données pour heat-common ?"
+msgstr "Configurar uma base de dados para o heat-common?"
 
 #. Type: boolean
 #. Description
@@ -201,8 +204,8 @@ msgid ""
 "No database has been set up for heat-common to use. Before continuing, you "
 "should make sure you have the following information:"
 msgstr ""
-"Aucune base de données n'a été installée pour heat-common. Avant de "
-"continuer, assurez-vous d'avoir toutes les informations nécessaires :"
+"Nenhuma base de dados foi configurada para o heat-common usar. Antes de "
+"continuar, você deve certificar-se que tem a seguinte informação:"
 
 #. Type: boolean
 #. Description
@@ -214,11 +217,11 @@ msgid ""
 "   machine);\n"
 " * a username and password to access the database."
 msgstr ""
-" - le type de base de données que vous souhaitez utiliser ;\n"
-" - le nom d'hôte du serveur de base de données (qui doit\n
-    autoriser les connexions TCP depuis cette machine) ;\n"
-" - un nom d'utilisateur et un mot de passe pour accéder\n
-    à la base de données."
+" * o tipo de base de dados que deseja usar;\n"
+" * o nome de máquina do servidor da base de dados (esse servidor deve "
+"permitir ligações TCP a partir desta\n"
+"   máquina);\n"
+" * um nome de utilizador e palavra passe para aceder à base de dados."
 
 #. Type: boolean
 #. Description
@@ -227,8 +230,8 @@ msgid ""
 "If some of these requirements are missing, do not choose this option and run "
 "with regular SQLite support."
 msgstr ""
-"Si certains de ces prérequis sont manquants, ignorez cette option et "
-"exécutez l'application avec le support SQLite normal."
+"Se alguns destes requerimentos estão em falta, não escolha esta opção e "
+"corra com o suporte SQLite regular."
 
 #. Type: boolean
 #. Description
@@ -237,14 +240,14 @@ msgid ""
 "You can change this setting later on by running \"dpkg-reconfigure -plow "
 "heat-common\"."
 msgstr ""
-"Vous pouvez modifier ce réglage plus tard en lançant « dpkg-reconfigure -"
-"plow heat-common »."
+"Você pode modificar estas definições mais tarde ao correr "
+"\"dpkg-reconfigure -plow heat-common\"."
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:12001
 msgid "IP address of your RabbitMQ host:"
-msgstr "Adresse IP de l'hôte RabbitMQ :"
+msgstr "Endereço IP da sua máquina RabbitMQ:"
 
 #. Type: string
 #. Description
@@ -258,51 +261,41 @@ msgid ""
 "In order to interoperate with other components of OpenStack, this package "
 "needs to connect to a central RabbitMQ server."
 msgstr ""
-"Afin de pouvoir interagir avec d'autres composants d'OpenStack, ce paquet "
-"doit se connecter à un serveur centralisé RabbitMQ."
+"De modo a interagir com outros componentes do OpenStack, este pacote "
+"precisa de ligar a um servidor RabbitMQ central."
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:12001
-#| msgid "Please specify the password to use with the authentication server."
 msgid "Please specify the IP address of that server."
-msgstr "Veuillez indiquer l'adresse IP de ce serveur. "
+msgstr "Por favor especifique o endereço IP desse servidor."
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:13001
 msgid "Username for connection to the RabbitMQ server:"
-msgstr "Nom d'utilisateur pour la connexion au serveur RabbitMQ :"
+msgstr "Nome de utilizador para ligação ao servidor RabbitMQ:"
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:13001
-#| msgid "Please specify the username to use with the authentication server."
 msgid "Please specify the username used to connect to the RabbitMQ server."
 msgstr ""
-"Veuillez indiquer le nom d'utilisateur pour se connecter au serveur RabbitMQ."
+"Por favor especifique o nome de utilizador a usar para ligação ao servidor "
+"RabbitMQ."
 
 #. Type: password
 #. Description
 #: ../heat-common.templates:14001
 msgid "Password for connection to the RabbitMQ server:"
-msgstr "Mot de passe pour la connexion au serveur RabbitMQ :"
+msgstr "Palavra passe para ligação ao servidor RabbitMQ:"
 
 #. Type: password
 #. Description
 #: ../heat-common.templates:14001
-#| msgid "Please specify the password to use with the authentication server."
 msgid "Please specify the password used to connect to the RabbitMQ server."
 msgstr ""
-"Veuillez indiquer le mot de passe pour se connecter au serveur RabbitMQ."
+"Por favor especifique a palavra passe a usar para ligação ao servidor "
+"RabbitMQ."
 
-#~ msgid "Auth server hostname:"
-#~ msgstr "Nom d'hôte du serveur d'authentification : "
 
-#~ msgid ""
-#~ "Please specify the hostname of your authentication server. Typically this "
-#~ "is also the hostname of your OpenStack Identity Service (Keystone)."
-#~ msgstr ""
-#~ "Veuillez indiquer l'adresse URL du serveur d'authentification. "
-#~ "Typiquement c'est également le nom d'hôte du Service d'Identité OpenStack "
-#~ "(Keystone)."

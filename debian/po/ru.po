@@ -4,10 +4,10 @@
 # Yuri Kozlov <yuray@komyakino.ru>, 2013.
 msgid ""
 msgstr ""
-"Project-Id-Version: heat 2013.1.2-4\n"
+"Project-Id-Version: heat 2013.2-2\n"
 "Report-Msgid-Bugs-To: heat@packages.debian.org\n"
 "POT-Creation-Date: 2013-09-27 00:04+0800\n"
-"PO-Revision-Date: 2013-08-30 09:10+0400\n"
+"PO-Revision-Date: 2013-11-17 08:50+0400\n"
 "Last-Translator: Yuri Kozlov <yuray@komyakino.ru>\n"
 "Language-Team: Russian <debian-l10n-russian@lists.debian.org>\n"
 "Language: ru\n"
@@ -213,8 +213,8 @@ msgid ""
 " * a username and password to access the database."
 msgstr ""
 " * тип базы данных, который хотите использовать;\n"
-" * имя узла сервера (этот сервер должен принимать TCP-соединения\n"
-"   с этой машины);\n"
+" * имя узла сервера (этот сервер должен принимать\n"
+"   TCP-соединения с этой машины);\n"
 " * имя пользователя и пароль для доступа к базе данных."
 
 #. Type: boolean
@@ -241,7 +241,7 @@ msgstr ""
 #. Description
 #: ../heat-common.templates:12001
 msgid "IP address of your RabbitMQ host:"
-msgstr ""
+msgstr "IP-адрес узла RabbitMQ:"
 
 #. Type: string
 #. Description
@@ -255,42 +255,41 @@ msgid ""
 "In order to interoperate with other components of OpenStack, this package "
 "needs to connect to a central RabbitMQ server."
 msgstr ""
+"Для взаимодействия с другими компонентами OpenStack, этому пакету "
+"необходимо подключаться к центральному серверу RabbitMQ."
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:12001
-#, fuzzy
 #| msgid "Please specify the password to use with the authentication server."
 msgid "Please specify the IP address of that server."
-msgstr "Введите пароль для работы с сервером аутентификации."
+msgstr "Укажите IP-адрес этого сервера."
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:13001
 msgid "Username for connection to the RabbitMQ server:"
-msgstr ""
+msgstr "Имя пользователя для подключения к серверу RabbitMQ:"
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:13001
-#, fuzzy
 #| msgid "Please specify the username to use with the authentication server."
 msgid "Please specify the username used to connect to the RabbitMQ server."
-msgstr "Введите имя пользователя для работы с сервером аутентификации."
+msgstr "Введите имя пользователя для подключения к серверу RabbitMQ."
 
 #. Type: password
 #. Description
 #: ../heat-common.templates:14001
 msgid "Password for connection to the RabbitMQ server:"
-msgstr ""
+msgstr "Пароль для подключения к серверу RabbitMQ:"
 
 #. Type: password
 #. Description
 #: ../heat-common.templates:14001
-#, fuzzy
 #| msgid "Please specify the password to use with the authentication server."
 msgid "Please specify the password used to connect to the RabbitMQ server."
-msgstr "Введите пароль для работы с сервером аутентификации."
+msgstr "Введите пароль для подключения к серверу RabbitMQ."
 
 #~ msgid "Auth server hostname:"
 #~ msgstr "Имя узла сервера аутентификации:"

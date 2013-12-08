@@ -1,3 +1,13 @@
+heat (2013.2-4) unstable; urgency=medium
+
+  * Updated debconf translations, with warm thanks to:
+    - French, Julien Patriarca <leatherface@debian.org> (Closes: #728767).
+    - Russian, Yuri Kozlov <yuray@komyakino.ru> (Closes: #729776).
+  * New debconf translation, with warm thanks to:
+    - Portuguese, Américo Monteiro <a_monteiro@gmx.com> (Closes: #729903).
+
+ -- Thomas Goirand <zigo@debian.org>  Sun, 08 Dec 2013 11:11:40 +0800
+
 heat (2013.2-3) unstable; urgency=low
 
   * Added missing depends: python-babel in the python-heat package.
