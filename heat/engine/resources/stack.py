@@ -40,27 +40,30 @@ class NestedStack(stack_resource.StackResource):
         PROP_TEMPLATE_URL: {
             'Type': 'String',
             'Required': True,
+            'UpdateAllowed': True,
             'Description': _('The URL of a template that specifies the stack'
                              ' to be created as a resource.')},
         PROP_TIMEOUT_MINS: {
             'Type': 'Number',
+            'UpdateAllowed': True,
             'Description': _('The length of time, in minutes, to wait for the'
                              ' nested stack creation.')},
         PROP_PARAMETERS: {
             'Type': 'Map',
+            'UpdateAllowed': True,
             'Description': _('The set of parameters passed to this nested'
                              ' stack.')}}
 
     update_allowed_keys = ('Properties',)
-    update_allowed_properties = (PROP_TEMPLATE_URL, PROP_TIMEOUT_MINS,
-                                 PROP_PARAMETERS)
 
     def handle_create(self):
         try:
             template_data = urlfetch.get(self.properties[PROP_TEMPLATE_URL])
         except (exceptions.RequestException, IOError) as r_exc:
-            raise ValueError("Could not fetch remote template '%s': %s" %
-                             (self.properties[PROP_TEMPLATE_URL], str(r_exc)))
+            raise ValueError(_("Could not fetch remote template '%(url)s': "
+                             "%(exc)s") %
+                             {'url': self.properties[PROP_TEMPLATE_URL],
+                              'exc': str(r_exc)})
 
         template = template_format.parse(template_data)
 
@@ -90,8 +93,10 @@ class NestedStack(stack_resource.StackResource):
         try:
             template_data = urlfetch.get(self.properties[PROP_TEMPLATE_URL])
         except (exceptions.RequestException, IOError) as r_exc:
-            raise ValueError("Could not fetch remote template '%s': %s" %
-                             (self.properties[PROP_TEMPLATE_URL], str(r_exc)))
+            raise ValueError(_("Could not fetch remote template '%(url)s': "
+                             "%(exc)s") %
+                             {'url': self.properties[PROP_TEMPLATE_URL],
+                              'exc': str(r_exc)})
 
         template = template_format.parse(template_data)
 

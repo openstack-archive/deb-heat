@@ -28,25 +28,41 @@ class NetworkInterface(resource.Resource):
                              'Required': True}}
 
     properties_schema = {
-        'Description': {'Type': 'String'},
-        'GroupSet': {'Type': 'List'},
+        'Description': {
+            'Type': 'String',
+            'Description': _('Description for this interface.')},
+        'GroupSet': {
+            'Type': 'List',
+            'Description': _('List of security group IDs associated '
+                             'with this interface.')},
         'PrivateIpAddress': {'Type': 'String'},
         'SourceDestCheck': {
             'Type': 'Boolean',
-            'Implemented': False},
+            'Implemented': False,
+            'Description': _('Flag indicating if traffic to or from '
+                             'instance is validated.')},
         'SubnetId': {
             'Type': 'String',
-            'Required': True},
+            'Required': True,
+            'Description': _('Subnet ID to associate with this interface.')},
         'Tags': {'Type': 'List', 'Schema': {
             'Type': 'Map',
             'Implemented': False,
-            'Schema': tags_schema}}
+            'Schema': tags_schema,
+            'Description': _('List of tags associated with this interface.')}}
     }
+
+    attributes_schema = {'PrivateIpAddress': _('Private IP address of the '
+                                               'network interface.')}
 
     @staticmethod
     def network_id_from_subnet_id(neutronclient, subnet_id):
         subnet_info = neutronclient.show_subnet(subnet_id)
         return subnet_info['subnet']['network_id']
+
+    def __init__(self, name, json_snippet, stack):
+        super(NetworkInterface, self).__init__(name, json_snippet, stack)
+        self.fixed_ip_address = None
 
     def handle_create(self):
         client = self.neutron()
@@ -67,8 +83,7 @@ class NetworkInterface(resource.Resource):
 
         if self.properties['GroupSet']:
             sgs = neutron.NeutronResource.get_secgroup_uuids(
-                self.stack, self.properties, 'GroupSet', self.name,
-                self.neutron())
+                self.properties.get('GroupSet', []), self.neutron())
             props['security_groups'] = sgs
         port = client.create_port({'port': props})['port']
         self.resource_id_set(port['id'])
@@ -82,6 +97,25 @@ class NetworkInterface(resource.Resource):
         except NeutronClientException as ex:
             if ex.status_code != 404:
                 raise ex
+
+    def _get_fixed_ip_address(self, ):
+        if self.fixed_ip_address is None:
+            from neutronclient.common.exceptions import NeutronClientException
+
+            client = self.neutron()
+            try:
+                port = client.show_port(self.resource_id)['port']
+                if port['fixed_ips'] and len(port['fixed_ips']) > 0:
+                    self.fixed_ip_address = port['fixed_ips'][0]['ip_address']
+            except NeutronClientException as ex:
+                if ex.status_code != 404:
+                    raise ex
+
+        return self.fixed_ip_address
+
+    def _resolve_attribute(self, name):
+        if name == 'PrivateIpAddress':
+            return self._get_fixed_ip_address()
 
 
 def resource_mapping():

@@ -13,8 +13,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
 import functools
 import re
+import six
 
 from oslo.config import cfg
 
@@ -22,6 +24,7 @@ from heat.engine import environment
 from heat.common import exception
 from heat.engine import dependencies
 from heat.common import identifier
+from heat.engine import notification
 from heat.engine import resource
 from heat.engine import resources
 from heat.engine import scheduler
@@ -35,6 +38,7 @@ from heat.db import api as db_api
 
 from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import strutils
 
 from heat.common.exception import StackValidationFailed
 
@@ -43,7 +47,7 @@ logger = logging.getLogger(__name__)
 (PARAM_STACK_NAME, PARAM_REGION) = ('AWS::StackName', 'AWS::Region')
 
 
-class Stack(object):
+class Stack(collections.Mapping):
 
     ACTIONS = (CREATE, DELETE, UPDATE, ROLLBACK, SUSPEND, RESUME
                ) = ('CREATE', 'DELETE', 'UPDATE', 'ROLLBACK', 'SUSPEND',
@@ -136,14 +140,18 @@ class Stack(object):
 
     def total_resources(self):
         '''
-        Total number of resources in a stack, including nested stacks below.
+        Return the total number of resources in a stack, including nested
+        stacks below.
         '''
-        total = 0
-        for res in iter(self.resources.values()):
-            if hasattr(res, 'nested') and res.nested():
-                total += res.nested().total_resources()
-            total += 1
-        return total
+        def total_nested(res):
+            get_nested = getattr(res, 'nested', None)
+            if callable(get_nested):
+                nested_stack = get_nested()
+                if nested_stack is not None:
+                    return nested_stack.total_resources()
+            return 0
+
+        return len(self) + sum(total_nested(res) for res in self.itervalues())
 
     def _set_param_stackid(self):
         '''
@@ -155,7 +163,7 @@ class Stack(object):
         try:
             stack_arn = self.identifier().arn()
         except (AttributeError, ValueError, TypeError):
-            logger.warning("Unable to set parameters StackId identifier")
+            logger.warning(_("Unable to set parameters StackId identifier"))
         else:
             self.parameters.set_stack_id(stack_arn)
 
@@ -176,7 +184,7 @@ class Stack(object):
             stack = db_api.stack_get(context, stack_id,
                                      show_deleted=show_deleted)
         if stack is None:
-            message = 'No stack exists with id "%s"' % str(stack_id)
+            message = _('No stack exists with id "%s"') % str(stack_id)
             raise exception.NotFound(message)
 
         template = Template.load(context, stack.raw_template_id)
@@ -237,17 +245,9 @@ class Stack(object):
 
     def __iter__(self):
         '''
-        Return an iterator over this template's resources in the order that
-        they should be started.
+        Return an iterator over the resource names.
         '''
-        return iter(self.dependencies)
-
-    def __reversed__(self):
-        '''
-        Return an iterator over this template's resources in the order that
-        they should be stopped.
-        '''
-        return reversed(self.dependencies)
+        return iter(self.resources)
 
     def __len__(self):
         '''Return the number of resources.'''
@@ -257,17 +257,26 @@ class Stack(object):
         '''Get the resource with the specified name.'''
         return self.resources[key]
 
-    def __setitem__(self, key, value):
+    def __setitem__(self, key, resource):
         '''Set the resource with the specified name to a specific value.'''
-        self.resources[key] = value
+        resource.stack = self
+        self.resources[key] = resource
+
+    def __delitem__(self, key):
+        '''Remove the resource with the specified name.'''
+        del self.resources[key]
 
     def __contains__(self, key):
         '''Determine whether the stack contains the specified resource.'''
         return key in self.resources
 
-    def keys(self):
-        '''Return a list of resource keys for the stack.'''
-        return self.resources.keys()
+    def __eq__(self, other):
+        '''
+        Compare two Stacks for equality.
+
+        Stacks are considered equal only if they are identical.
+        '''
+        return self is other
 
     def __str__(self):
         '''Return a human-readable string representation of the stack.'''
@@ -278,7 +287,7 @@ class Stack(object):
         Return the resource in this stack with the specified
         refid, or None if not found
         '''
-        for r in self.resources.values():
+        for r in self.values():
             if r.state in (
                     (r.CREATE, r.IN_PROGRESS),
                     (r.CREATE, r.COMPLETE),
@@ -290,20 +299,19 @@ class Stack(object):
 
     def validate(self):
         '''
-        http://docs.amazonwebservices.com/AWSCloudFormation/latest/\
-        APIReference/API_ValidateTemplate.html
+        Validates the template.
         '''
         # TODO(sdake) Should return line number of invalid reference
 
         # Check duplicate names between parameters and resources
-        dup_names = set(self.parameters.keys()) & set(self.resources.keys())
+        dup_names = set(self.parameters.keys()) & set(self.keys())
 
         if dup_names:
-            logger.debug("Duplicate names %s" % dup_names)
-            raise StackValidationFailed(message="Duplicate names %s" %
+            logger.debug(_("Duplicate names %s") % dup_names)
+            raise StackValidationFailed(message=_("Duplicate names %s") %
                                         dup_names)
 
-        for res in self:
+        for res in self.dependencies:
             try:
                 result = res.validate()
             except exception.Error as ex:
@@ -311,7 +319,8 @@ class Stack(object):
                 raise ex
             except Exception as ex:
                 logger.exception(ex)
-                raise StackValidationFailed(message=str(ex))
+                raise StackValidationFailed(message=strutils.safe_decode(
+                                            six.text_type(ex)))
             if result:
                 raise StackValidationFailed(message=result)
 
@@ -321,15 +330,15 @@ class Stack(object):
         during its lifecycle using the configured deferred authentication
         method.
         '''
-        return any(res.requires_deferred_auth for res in self)
+        return any(res.requires_deferred_auth for res in self.values())
 
     def state_set(self, action, status, reason):
         '''Update the stack state in the database.'''
         if action not in self.ACTIONS:
-            raise ValueError("Invalid action %s" % action)
+            raise ValueError(_("Invalid action %s") % action)
 
         if status not in self.STATUSES:
-            raise ValueError("Invalid status %s" % status)
+            raise ValueError(_("Invalid status %s") % status)
 
         self.action = action
         self.status = status
@@ -342,6 +351,7 @@ class Stack(object):
         stack.update_and_save({'action': action,
                                'status': status,
                                'status_reason': reason})
+        notification.send(self)
 
     @property
     def state(self):
@@ -419,13 +429,13 @@ class Stack(object):
         s = db_api.stack_get_by_name(self.context, self._backup_name(),
                                      owner_id=self.id)
         if s is not None:
-            logger.debug('Loaded existing backup stack')
+            logger.debug(_('Loaded existing backup stack'))
             return self.load(self.context, stack=s)
         elif create_if_missing:
             prev = type(self)(self.context, self.name, self.t, self.env,
                               owner_id=self.id)
             prev.store(backup=True)
-            logger.debug('Created new backup stack')
+            logger.debug(_('Created new backup stack'))
             return prev
         else:
             return None
@@ -448,7 +458,7 @@ class Stack(object):
     @scheduler.wrappertask
     def update_task(self, newstack, action=UPDATE):
         if action not in (self.UPDATE, self.ROLLBACK):
-            logger.error("Unexpected action %s passed to update!" % action)
+            logger.error(_("Unexpected action %s passed to update!") % action)
             self.state_set(self.UPDATE, self.FAILED,
                            "Invalid action %s" % action)
             return
@@ -456,7 +466,7 @@ class Stack(object):
         if self.status != self.COMPLETE:
             if (action == self.ROLLBACK and
                     self.state == (self.UPDATE, self.IN_PROGRESS)):
-                logger.debug("Starting update rollback for %s" % self.name)
+                logger.debug(_("Starting update rollback for %s") % self.name)
             else:
                 self.state_set(action, self.FAILED,
                                'State invalid for %s' % action)
@@ -475,6 +485,7 @@ class Stack(object):
 
             self.env = newstack.env
             self.parameters = newstack.parameters
+            self._set_param_stackid()
 
             try:
                 updater.start(timeout=self.timeout_secs())
@@ -504,7 +515,7 @@ class Stack(object):
                     yield self.update_task(oldstack, action=self.ROLLBACK)
                     return
         else:
-            logger.debug('Deleting backup stack')
+            logger.debug(_('Deleting backup stack'))
             backup_stack.delete()
 
         self.state_set(action, stack_status, reason)
@@ -527,7 +538,7 @@ class Stack(object):
         differently.
         '''
         if action not in (self.DELETE, self.ROLLBACK):
-            logger.error("Unexpected action %s passed to delete!" % action)
+            logger.error(_("Unexpected action %s passed to delete!") % action)
             self.state_set(self.DELETE, self.FAILED,
                            "Invalid action %s" % action)
             return
@@ -558,14 +569,22 @@ class Stack(object):
             stack_status = self.FAILED
             reason = '%s timed out' % action.title()
 
-        self.state_set(action, stack_status, reason)
         if stack_status != self.FAILED:
             # If we created a trust, delete it
             stack = db_api.stack_get(self.context, self.id)
             user_creds = db_api.user_creds_get(stack.user_creds_id)
             trust_id = user_creds.get('trust_id')
             if trust_id:
-                self.clients.keystone().delete_trust(trust_id)
+                try:
+                    self.clients.keystone().delete_trust(trust_id)
+                except Exception as ex:
+                    logger.exception(ex)
+                    stack_status = self.FAILED
+                    reason = "Error deleting trust: %s" % str(ex)
+
+        self.state_set(action, stack_status, reason)
+
+        if stack_status != self.FAILED:
             # delete the stack
             db_api.stack_delete(self.context, self.id)
             self.id = None
@@ -618,7 +637,7 @@ class Stack(object):
                 scheduler.TaskRunner(res.destroy)()
             except exception.ResourceFailure as ex:
                 failed = True
-                logger.error('delete: %s' % str(ex))
+                logger.error(_('delete: %s') % str(ex))
 
         for res in deps:
             if not failed:
@@ -626,7 +645,7 @@ class Stack(object):
                     res.state_reset()
                     scheduler.TaskRunner(res.create)()
                 except exception.ResourceFailure as ex:
-                    logger.exception('create')
+                    logger.exception(_('create'))
                     failed = True
             else:
                 res.state_set(res.CREATE, res.FAILED,

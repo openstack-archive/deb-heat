@@ -31,17 +31,26 @@ class SecurityGroup(resource.Resource):
                    'SourceSecurityGroupName': {'Type': 'String'},
                    'SourceSecurityGroupOwnerId': {'Type': 'String',
                                                   'Implemented': False}}
-    properties_schema = {'GroupDescription': {'Type': 'String',
-                                              'Required': True},
-                         'VpcId': {'Type': 'String'},
-                         'SecurityGroupIngress': {'Type': 'List',
-                                                  'Schema': {
-                                                      'Type': 'Map',
-                                                      'Schema': rule_schema}},
-                         'SecurityGroupEgress': {'Type': 'List',
-                                                 'Schema': {
-                                                     'Type': 'Map',
-                                                     'Schema': rule_schema}}}
+    properties_schema = {
+        'GroupDescription': {
+            'Type': 'String',
+            'Required': True,
+            'Description': _('Description of the security group.')},
+        'VpcId': {
+            'Type': 'String',
+            'Description': _('Physical ID of the VPC.')},
+        'SecurityGroupIngress': {
+            'Type': 'List',
+            'Schema': {
+            'Type': 'Map',
+            'Schema': rule_schema,
+            'Description': _('List of security group ingress rules.')}},
+        'SecurityGroupEgress': {
+            'Type': 'List',
+            'Schema': {
+            'Type': 'Map',
+            'Schema': rule_schema,
+            'Description': _('List of security group egress rules.')}}}
 
     def handle_create(self):
         if self.properties['VpcId'] and clients.neutronclient is not None:
@@ -180,7 +189,7 @@ class SecurityGroup(resource.Resource):
                         pass
 
                 self.nova().security_groups.delete(self.resource_id)
-            self.resource_id = None
+            self.resource_id_set(None)
 
     def _handle_delete_neutron(self):
         from neutronclient.common.exceptions import NeutronClientException
@@ -206,7 +215,7 @@ class SecurityGroup(resource.Resource):
                 except NeutronClientException as ex:
                     if ex.status_code != 404:
                         raise
-            self.resource_id = None
+            self.resource_id_set(None)
 
     def FnGetRefId(self):
         if self.properties['VpcId']:

@@ -21,6 +21,7 @@ from testtools import skipIf
 
 from oslo.config import cfg
 
+from heat.common import short_id
 from heat.common import template_format
 from heat.common import exception
 from heat.engine.resources import autoscaling as asc
@@ -113,20 +114,20 @@ class AutoScalingTest(HeatTestCase):
 
     def create_scaling_group(self, t, stack, resource_name):
         # create the launch configuration resource
-        conf = stack.resources['LaunchConfig']
+        conf = stack['LaunchConfig']
         self.assertEqual(None, conf.validate())
         scheduler.TaskRunner(conf.create)()
         self.assertEqual((conf.CREATE, conf.COMPLETE), conf.state)
 
         # create the group resource
-        rsrc = stack.resources[resource_name]
+        rsrc = stack[resource_name]
         self.assertEqual(None, rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
 
     def create_scaling_policy(self, t, stack, resource_name):
-        rsrc = stack.resources[resource_name]
+        rsrc = stack[resource_name]
         self.assertEqual(None, rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
@@ -208,13 +209,14 @@ class AutoScalingTest(HeatTestCase):
         self.m.ReplayAll()
 
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        instance_names = rsrc.get_instance_names()
+        self.assertEqual(len(instance_names), 1)
 
         # Reduce the min size to 0, should complete without adjusting
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['MinSize'] = '0'
         scheduler.TaskRunner(rsrc.update, update_snippet)()
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(instance_names, rsrc.get_instance_names())
 
         # trigger adjustment to reduce to 0, there should be no more instances
         self._stub_lb_reload(0)
@@ -236,10 +238,9 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-
         self.assertEqual(utils.PhysName(stack.name, rsrc.name),
                          rsrc.FnGetRefId())
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['AvailabilityZones'] = ['foo']
         updater = scheduler.TaskRunner(rsrc.update, update_snippet)
@@ -260,7 +261,7 @@ class AutoScalingTest(HeatTestCase):
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
         self.assertEqual(utils.PhysName(stack.name, rsrc.name),
                          rsrc.FnGetRefId())
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         self.m.VerifyAll()
@@ -292,7 +293,7 @@ class AutoScalingTest(HeatTestCase):
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
         self.assertEqual(utils.PhysName(stack.name, rsrc.name),
                          rsrc.FnGetRefId())
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         self.m.VerifyAll()
@@ -307,7 +308,7 @@ class AutoScalingTest(HeatTestCase):
         self.m.ReplayAll()
 
         rsrc.state_set(rsrc.SUSPEND, rsrc.COMPLETE)
-        for i in rsrc.nested().resources.values():
+        for i in rsrc.nested().values():
             i.state_set(rsrc.SUSPEND, rsrc.COMPLETE)
 
         scheduler.TaskRunner(rsrc.resume)()
@@ -330,8 +331,7 @@ class AutoScalingTest(HeatTestCase):
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
         self.assertEqual(utils.PhysName(stack.name, rsrc.name),
                          rsrc.FnGetRefId())
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         self.m.VerifyAll()
@@ -369,8 +369,7 @@ class AutoScalingTest(HeatTestCase):
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
         self.assertEqual(utils.PhysName(stack.name, rsrc.name),
                          rsrc.FnGetRefId())
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         self.m.VerifyAll()
@@ -389,7 +388,7 @@ class AutoScalingTest(HeatTestCase):
         self.m.ReplayAll()
 
         rsrc.state_set(rsrc.SUSPEND, rsrc.COMPLETE)
-        for i in rsrc.nested().resources.values():
+        for i in rsrc.nested().values():
             i.state_set(rsrc.SUSPEND, rsrc.COMPLETE)
 
         scheduler.TaskRunner(rsrc.resume)()
@@ -410,7 +409,7 @@ class AutoScalingTest(HeatTestCase):
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
         self.assertEqual(utils.PhysName(stack.name, rsrc.name),
                          rsrc.FnGetRefId())
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         self.m.VerifyAll()
@@ -442,7 +441,7 @@ class AutoScalingTest(HeatTestCase):
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
         self.assertEqual(utils.PhysName(stack.name, rsrc.name),
                          rsrc.FnGetRefId())
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
         self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
 
         self.m.VerifyAll()
@@ -454,7 +453,7 @@ class AutoScalingTest(HeatTestCase):
         self.m.ReplayAll()
 
         rsrc.state_set(rsrc.SUSPEND, rsrc.COMPLETE)
-        for i in rsrc.nested().resources.values():
+        for i in rsrc.nested().values():
             i.state_set(rsrc.SUSPEND, rsrc.COMPLETE)
 
         sus_task = scheduler.TaskRunner(rsrc.resume)
@@ -477,12 +476,12 @@ class AutoScalingTest(HeatTestCase):
 
         self.m.ReplayAll()
 
-        conf = stack.resources['LaunchConfig']
+        conf = stack['LaunchConfig']
         self.assertEqual(None, conf.validate())
         scheduler.TaskRunner(conf.create)()
         self.assertEqual((conf.CREATE, conf.COMPLETE), conf.state)
 
-        rsrc = stack.resources['WebServerGroup']
+        rsrc = stack['WebServerGroup']
         self.assertEqual(None, rsrc.validate())
         self.assertRaises(exception.ResourceFailure,
                           scheduler.TaskRunner(rsrc.create))
@@ -505,14 +504,14 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
+        instance_names = rsrc.get_instance_names()
 
         # Reduce the max size to 2, should complete without adjusting
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['MaxSize'] = '2'
         scheduler.TaskRunner(rsrc.update, update_snippet)()
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
-
+        self.assertEqual(instance_names, rsrc.get_instance_names())
         self.assertEqual('2', rsrc.properties['MaxSize'])
 
         rsrc.delete()
@@ -531,7 +530,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         # Increase min size to 2, should trigger an ExactCapacity adjust
         self._stub_lb_reload(2)
@@ -542,8 +541,7 @@ class AutoScalingTest(HeatTestCase):
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['MinSize'] = '2'
         scheduler.TaskRunner(rsrc.update, update_snippet)()
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
         self.assertEqual('2', rsrc.properties['MinSize'])
 
         rsrc.delete()
@@ -562,7 +560,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         # Increase min size to 2 via DesiredCapacity, should adjust
         self._stub_lb_reload(2)
@@ -573,10 +571,8 @@ class AutoScalingTest(HeatTestCase):
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['DesiredCapacity'] = '2'
         scheduler.TaskRunner(rsrc.update, update_snippet)()
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
-
-        self.assertEqual('2', rsrc.properties['DesiredCapacity'])
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
+        self.assertEqual(2, rsrc.properties['DesiredCapacity'])
 
         rsrc.delete()
         self.m.VerifyAll()
@@ -593,17 +589,15 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(2)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
+        instance_names = rsrc.get_instance_names()
 
         # Remove DesiredCapacity from the updated template, which should
         # have no effect, it's an optional parameter
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         del(update_snippet['Properties']['DesiredCapacity'])
         scheduler.TaskRunner(rsrc.update, update_snippet)()
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
-
+        self.assertEqual(instance_names, rsrc.get_instance_names())
         self.assertEqual(None, rsrc.properties['DesiredCapacity'])
 
         rsrc.delete()
@@ -624,7 +618,7 @@ class AutoScalingTest(HeatTestCase):
 
         self.assertEqual(utils.PhysName(stack.name, rsrc.name),
                          rsrc.FnGetRefId())
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['Cooldown'] = '61'
         scheduler.TaskRunner(rsrc.update, update_snippet)()
@@ -644,11 +638,14 @@ class AutoScalingTest(HeatTestCase):
 
         # Check that the Fn::GetAZs is correctly resolved
         expected = {u'Type': u'AWS::ElasticLoadBalancing::LoadBalancer',
-                    u'Properties': {'Instances': ['WebServerGroup-0'],
+                    u'Properties': {'Instances': ['aaaabbbbcccc'],
                                     u'Listeners': [{u'InstancePort': u'80',
                                                     u'LoadBalancerPort': u'80',
                                                     u'Protocol': u'HTTP'}],
                                     u'AvailabilityZones': ['abc', 'xyz']}}
+
+        self.m.StubOutWithMock(short_id, 'generate_id')
+        short_id.generate_id().AndReturn('aaaabbbbcccc')
 
         now = timeutils.utcnow()
         self._stub_meta_expected(now, 'ExactCapacity : 1')
@@ -666,7 +663,7 @@ class AutoScalingTest(HeatTestCase):
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
         self.assertEqual(utils.PhysName(stack.name, rsrc.name),
                          rsrc.FnGetRefId())
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
         update_snippet = copy.deepcopy(rsrc.parsed_template())
         update_snippet['Properties']['Cooldown'] = '61'
         scheduler.TaskRunner(rsrc.update, update_snippet)()
@@ -690,8 +687,12 @@ class AutoScalingTest(HeatTestCase):
             'Properties': {
                 'protocol_port': 8080,
                 'pool_id': 'pool123',
-                'members': [u'WebServerGroup-0']}
+                'members': [u'aaaabbbbcccc']}
         }
+
+        self.m.StubOutWithMock(short_id, 'generate_id')
+        short_id.generate_id().AndReturn('aaaabbbbcccc')
+
         self.m.StubOutWithMock(neutron_lb.LoadBalancer, 'handle_update')
         neutron_lb.LoadBalancer.handle_update(expected,
                                               mox.IgnoreArg(),
@@ -742,9 +743,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(3)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1',
-                          'WebServerGroup-2'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 3)
 
         # reduce to 1
         self._stub_lb_reload(1)
@@ -752,7 +751,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_meta_expected(now, 'ChangeInCapacity : -2')
         self.m.ReplayAll()
         rsrc.adjust(-2)
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         # raise to 3
         self._stub_lb_reload(3)
@@ -760,9 +759,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(2)
         self.m.ReplayAll()
         rsrc.adjust(2)
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1',
-                          'WebServerGroup-2'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 3)
 
         # set to 2
         self._stub_lb_reload(2)
@@ -770,8 +767,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_meta_expected(now, 'ExactCapacity : 2')
         self.m.ReplayAll()
         rsrc.adjust(2, 'ExactCapacity')
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
         self.m.VerifyAll()
 
     def test_scaling_group_scale_up_failure(self):
@@ -785,7 +781,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
         self.m.VerifyAll()
         self.m.UnsetStubs()
 
@@ -797,11 +793,11 @@ class AutoScalingTest(HeatTestCase):
         self.m.ReplayAll()
 
         self.assertRaises(exception.Error, rsrc.adjust, 1)
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         self.m.VerifyAll()
 
-    def test_scaling_group_nochange(self):
+    def test_scaling_group_truncate_adjustment(self):
         t = template_format.parse(as_template)
         stack = utils.parse_stack(t, params=self.params)
 
@@ -814,28 +810,34 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(2)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack.resources['WebServerGroup'] = rsrc
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        stack['WebServerGroup'] = rsrc
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
 
         # raise above the max
+        self._stub_lb_reload(5)
+        self._stub_meta_expected(now, 'ChangeInCapacity : 4')
+        self._stub_create(3)
+        self.m.ReplayAll()
         rsrc.adjust(4)
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 5)
 
         # lower below the min
-        rsrc.adjust(-2)
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self._stub_lb_reload(1)
+        self._stub_validate()
+        self._stub_meta_expected(now, 'ChangeInCapacity : -5')
+        self.m.ReplayAll()
+        rsrc.adjust(-5)
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         # no change
         rsrc.adjust(0)
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
+
         rsrc.delete()
         self.m.VerifyAll()
 
-    def test_scaling_group_percent(self):
+    def _do_test_scaling_group_percent(self, decrease, lowest,
+                                       increase, create, highest):
         t = template_format.parse(as_template)
         stack = utils.parse_stack(t, params=self.params)
 
@@ -848,30 +850,37 @@ class AutoScalingTest(HeatTestCase):
         self._stub_meta_expected(now, 'ExactCapacity : 2')
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack.resources['WebServerGroup'] = rsrc
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        stack['WebServerGroup'] = rsrc
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
 
-        # reduce by 50%
-        self._stub_lb_reload(1)
-        self._stub_meta_expected(now, 'PercentChangeInCapacity : -50')
+        # reduce by decrease %
+        self._stub_lb_reload(lowest)
+        adjust = 'PercentChangeInCapacity : %d' % decrease
+        self._stub_meta_expected(now, adjust)
         self._stub_validate()
         self.m.ReplayAll()
-        rsrc.adjust(-50, 'PercentChangeInCapacity')
-        self.assertEqual(['WebServerGroup-0'],
-                         rsrc.get_instance_names())
+        rsrc.adjust(decrease, 'PercentChangeInCapacity')
+        self.assertEqual(len(rsrc.get_instance_names()), lowest)
 
-        # raise by 200%
-        self._stub_lb_reload(3)
-        self._stub_meta_expected(now, 'PercentChangeInCapacity : 200')
-        self._stub_create(2)
+        # raise by increase %
+        self._stub_lb_reload(highest)
+        adjust = 'PercentChangeInCapacity : %d' % increase
+        self._stub_meta_expected(now, adjust)
+        self._stub_create(create)
         self.m.ReplayAll()
-        rsrc.adjust(200, 'PercentChangeInCapacity')
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1',
-                          'WebServerGroup-2'],
-                         rsrc.get_instance_names())
+        rsrc.adjust(increase, 'PercentChangeInCapacity')
+        self.assertEqual(len(rsrc.get_instance_names()), highest)
 
         rsrc.delete()
+
+    def test_scaling_group_percent(self):
+        self._do_test_scaling_group_percent(-50, 1, 200, 2, 3)
+
+    def test_scaling_group_percent_round_up(self):
+        self._do_test_scaling_group_percent(-33, 1, 33, 1, 2)
+
+    def test_scaling_group_percent_round_down(self):
+        self._do_test_scaling_group_percent(-66, 1, 225, 2, 3)
 
     def test_scaling_group_cooldown_toosoon(self):
         t = template_format.parse(as_template)
@@ -887,9 +896,8 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(2)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack.resources['WebServerGroup'] = rsrc
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        stack['WebServerGroup'] = rsrc
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
 
         # reduce by 50%
         self._stub_lb_reload(1)
@@ -897,8 +905,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_meta_expected(now, 'PercentChangeInCapacity : -50')
         self.m.ReplayAll()
         rsrc.adjust(-50, 'PercentChangeInCapacity')
-        self.assertEqual(['WebServerGroup-0'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         # Now move time on 10 seconds - Cooldown in template is 60
         # so this should not update the policy metadata, and the
@@ -923,7 +930,7 @@ class AutoScalingTest(HeatTestCase):
 
         # raise by 200%, too soon for Cooldown so there should be no change
         rsrc.adjust(200, 'PercentChangeInCapacity')
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         rsrc.delete()
 
@@ -941,9 +948,8 @@ class AutoScalingTest(HeatTestCase):
         self._stub_meta_expected(now, 'ExactCapacity : 2')
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack.resources['WebServerGroup'] = rsrc
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        stack['WebServerGroup'] = rsrc
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
 
         # reduce by 50%
         self._stub_lb_reload(1)
@@ -951,8 +957,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_meta_expected(now, 'PercentChangeInCapacity : -50')
         self.m.ReplayAll()
         rsrc.adjust(-50, 'PercentChangeInCapacity')
-        self.assertEqual(['WebServerGroup-0'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         # Now move time on 61 seconds - Cooldown in template is 60
         # so this should update the policy metadata, and the
@@ -979,9 +984,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_meta_expected(now, 'PercentChangeInCapacity : 200')
         self.m.ReplayAll()
         rsrc.adjust(200, 'PercentChangeInCapacity')
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1',
-                          'WebServerGroup-2'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 3)
 
         rsrc.delete()
 
@@ -999,9 +1002,8 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(2)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack.resources['WebServerGroup'] = rsrc
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        stack['WebServerGroup'] = rsrc
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
 
         # reduce by 50%
         self._stub_lb_reload(1)
@@ -1009,8 +1011,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_validate()
         self.m.ReplayAll()
         rsrc.adjust(-50, 'PercentChangeInCapacity')
-        self.assertEqual(['WebServerGroup-0'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         # Don't move time, since cooldown is zero, it should work
         previous_meta = {timeutils.strtime(now):
@@ -1033,9 +1034,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(2)
         self.m.ReplayAll()
         rsrc.adjust(200, 'PercentChangeInCapacity')
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1',
-                          'WebServerGroup-2'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 3)
 
         rsrc.delete()
         self.m.VerifyAll()
@@ -1052,8 +1051,8 @@ class AutoScalingTest(HeatTestCase):
 
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack.resources['WebServerGroup'] = rsrc
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        stack['WebServerGroup'] = rsrc
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         # Scale up one
         self._stub_lb_reload(2)
@@ -1071,8 +1070,7 @@ class AutoScalingTest(HeatTestCase):
         alarm_url = up_policy.FnGetAtt('AlarmUrl')
         self.assertNotEqual(None, alarm_url)
         up_policy.signal()
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
 
         rsrc.delete()
         self.m.VerifyAll()
@@ -1090,9 +1088,8 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(2)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack.resources['WebServerGroup'] = rsrc
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        stack['WebServerGroup'] = rsrc
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
 
         # Scale down one
         self._stub_lb_reload(1)
@@ -1107,7 +1104,7 @@ class AutoScalingTest(HeatTestCase):
         down_policy = self.create_scaling_policy(t, stack,
                                                  'WebServerScaleDownPolicy')
         down_policy.signal()
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         rsrc.delete()
         self.m.VerifyAll()
@@ -1123,8 +1120,8 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack.resources['WebServerGroup'] = rsrc
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        stack['WebServerGroup'] = rsrc
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         # Scale up one
         self._stub_lb_reload(2)
@@ -1139,8 +1136,7 @@ class AutoScalingTest(HeatTestCase):
         up_policy = self.create_scaling_policy(t, stack,
                                                'WebServerScaleUpPolicy')
         up_policy.signal()
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
 
         # Now move time on 10 seconds - Cooldown in template is 60
         # so this should not update the policy metadata, and the
@@ -1162,8 +1158,7 @@ class AutoScalingTest(HeatTestCase):
 
         self.m.ReplayAll()
         up_policy.signal()
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
 
         rsrc.delete()
         self.m.VerifyAll()
@@ -1179,8 +1174,8 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack.resources['WebServerGroup'] = rsrc
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        stack['WebServerGroup'] = rsrc
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         # Scale up one
         self._stub_lb_reload(2)
@@ -1195,8 +1190,7 @@ class AutoScalingTest(HeatTestCase):
         up_policy = self.create_scaling_policy(t, stack,
                                                'WebServerScaleUpPolicy')
         up_policy.signal()
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
 
         # Now move time on 61 seconds - Cooldown in template is 60
         # so this should trigger a scale-up
@@ -1220,9 +1214,7 @@ class AutoScalingTest(HeatTestCase):
 
         self.m.ReplayAll()
         up_policy.signal()
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1',
-                          'WebServerGroup-2'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 3)
 
         rsrc.delete()
         self.m.VerifyAll()
@@ -1238,8 +1230,8 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack.resources['WebServerGroup'] = rsrc
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        stack['WebServerGroup'] = rsrc
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         # Create the scaling policy (with Cooldown=0) and scale up one
         properties = t['Resources']['WebServerScaleUpPolicy']['Properties']
@@ -1256,8 +1248,7 @@ class AutoScalingTest(HeatTestCase):
         up_policy = self.create_scaling_policy(t, stack,
                                                'WebServerScaleUpPolicy')
         up_policy.signal()
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
 
         # Now trigger another scale-up without changing time, should work
         previous_meta = {timeutils.strtime(now): 'ChangeInCapacity : 1'}
@@ -1279,9 +1270,7 @@ class AutoScalingTest(HeatTestCase):
 
         self.m.ReplayAll()
         up_policy.signal()
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1',
-                          'WebServerGroup-2'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 3)
 
         rsrc.delete()
         self.m.VerifyAll()
@@ -1297,8 +1286,8 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack.resources['WebServerGroup'] = rsrc
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        stack['WebServerGroup'] = rsrc
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         # Create the scaling policy no Cooldown property, should behave the
         # same as when Cooldown==0
@@ -1317,8 +1306,7 @@ class AutoScalingTest(HeatTestCase):
         up_policy = self.create_scaling_policy(t, stack,
                                                'WebServerScaleUpPolicy')
         up_policy.signal()
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
 
         # Now trigger another scale-up without changing time, should work
         previous_meta = {timeutils.strtime(now): 'ChangeInCapacity : 1'}
@@ -1340,9 +1328,7 @@ class AutoScalingTest(HeatTestCase):
 
         self.m.ReplayAll()
         up_policy.signal()
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1',
-                          'WebServerGroup-2'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 3)
 
         rsrc.delete()
         self.m.VerifyAll()
@@ -1363,8 +1349,8 @@ class AutoScalingTest(HeatTestCase):
 
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack.resources['WebServerGroup'] = rsrc
-        self.assertEqual(['WebServerGroup-0'], rsrc.get_instance_names())
+        stack['WebServerGroup'] = rsrc
+        self.assertEqual(len(rsrc.get_instance_names()), 1)
 
         # Create initial scaling policy
         up_policy = self.create_scaling_policy(t, stack,
@@ -1383,15 +1369,13 @@ class AutoScalingTest(HeatTestCase):
 
         # Trigger alarm
         up_policy.signal()
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 2)
 
         # Update scaling policy
         update_snippet = copy.deepcopy(up_policy.parsed_template())
         update_snippet['Properties']['ScalingAdjustment'] = '2'
         scheduler.TaskRunner(up_policy.update, update_snippet)()
-        self.assertEqual('2',
-                         up_policy.properties['ScalingAdjustment'])
+        self.assertEqual(2, up_policy.properties['ScalingAdjustment'])
 
         # Now move time on 61 seconds - Cooldown in template is 60
         # so this should trigger a scale-up
@@ -1419,9 +1403,7 @@ class AutoScalingTest(HeatTestCase):
 
         # Trigger alarm
         up_policy.signal()
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1',
-                          'WebServerGroup-2', 'WebServerGroup-3'],
-                         rsrc.get_instance_names())
+        self.assertEqual(len(rsrc.get_instance_names()), 4)
 
         rsrc.delete()
         self.m.VerifyAll()

@@ -22,8 +22,7 @@ import sys
 
 from oslo.config import cfg
 
-from heat.db import api as db_api
-from heat.db import migration
+from heat.db import api
 from heat.db import utils
 from heat.openstack.common import log
 from heat import version
@@ -34,7 +33,7 @@ CONF = cfg.CONF
 
 def do_db_version():
     """Print database's current migration level."""
-    print(migration.db_version())
+    print(api.db_version())
 
 
 def do_db_sync():
@@ -42,14 +41,14 @@ def do_db_sync():
     Place a database under migration control and upgrade,
     creating first if necessary.
     """
-    migration.db_sync(CONF.command.version)
+    api.db_sync(CONF.command.version)
 
 
 def purge_deleted():
     """
     Remove database records that have been previously soft deleted
     """
-    utils.purge_deleted(CONF.command.age)
+    utils.purge_deleted(CONF.command.age, CONF.command.granularity)
 
 
 def add_command_parsers(subparsers):
@@ -63,7 +62,12 @@ def add_command_parsers(subparsers):
 
     parser = subparsers.add_parser('purge_deleted')
     parser.set_defaults(func=purge_deleted)
-    parser.add_argument('age', nargs='?')
+    parser.add_argument('age', nargs='?', default='90',
+                        help=_('How long to preserve deleted data.'))
+    parser.add_argument(
+        '-g', '--granularity', default='days',
+        choices=['days', 'hours', 'minutes', 'seconds'],
+        help=_('Granularity to use for age argument, defaults to days.'))
 
 command_opt = cfg.SubCommandOpt('command',
                                 title='Commands',
@@ -79,7 +83,6 @@ def main():
              version=version.version_info.version_string(),
              default_config_files=default_config_files)
         log.setup("heat")
-        db_api.configure()
     except RuntimeError as e:
         sys.exit("ERROR: %s" % e)
 

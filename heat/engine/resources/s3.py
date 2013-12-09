@@ -23,21 +23,45 @@ logger = logging.getLogger(__name__)
 
 
 class S3Bucket(resource.Resource):
-    website_schema = {'IndexDocument': {'Type': 'String'},
-                      'ErrorDocument': {'Type': 'String'}}
-    properties_schema = {'AccessControl': {
-                         'Type': 'String',
-                         'AllowedValues': ['Private',
-                                           'PublicRead',
-                                           'PublicReadWrite',
-                                           'AuthenticatedRead',
-                                           'BucketOwnerRead',
-                                           'BucketOwnerFullControl']},
-                         'WebsiteConfiguration': {'Type': 'Map',
-                                                  'Schema': website_schema}}
+    website_schema = {
+        'IndexDocument': {
+            'Type': 'String',
+            'Description': _('The name of the index document.')},
+        'ErrorDocument': {
+            'Type': 'String',
+            'Description': _('The name of the error document.')}}
+    tags_schema = {'Key': {'Type': 'String',
+                           'Description': _('The tag key name.'),
+                           'Required': True},
+                   'Value': {'Type': 'String',
+                             'Description': _('The tag value.'),
+                             'Required': True}}
+
+    properties_schema = {
+        'AccessControl': {
+            'Type': 'String',
+            'AllowedValues': ['Private',
+                              'PublicRead',
+                              'PublicReadWrite',
+                              'AuthenticatedRead',
+                              'BucketOwnerRead',
+                              'BucketOwnerFullControl'],
+            'Description': _('A predefined access control list (ACL) that'
+                             ' grants permissions on the bucket.')},
+        'WebsiteConfiguration': {
+            'Type': 'Map',
+            'Schema': website_schema,
+            'Description': _('Information used to configure the bucket as '
+                             'a static website.')},
+        'Tags': {
+            'Type': 'List',
+            'Schema': {'Type': 'Map', 'Schema': tags_schema},
+            'Required': False,
+            'Description': _('Tags to attach to the bucket.')},
+    }
     attributes_schema = {
-        "DomainName": "The DNS name of the specified bucket.",
-        "WebsiteURL": "The website endpoint for the specified bucket."
+        'DomainName': _('The DNS name of the specified bucket.'),
+        'WebsiteURL': _('The website endpoint for the specified bucket.')
     }
 
     def validate(self):
@@ -49,12 +73,20 @@ class S3Bucket(resource.Resource):
             return {'Error':
                     'S3 services unavailable because of missing swiftclient.'}
 
+    def tags_to_headers(self):
+        if self.properties['Tags'] is None:
+            return {}
+        return dict(
+            ('X-Container-Meta-S3-Tag-' + tm['Key'], tm['Value'])
+            for tm in self.properties['Tags'])
+
     def handle_create(self):
         """Create a bucket."""
         container = self.physical_resource_name()
-        headers = {}
-        logger.debug('S3Bucket create container %s with headers %s' %
-                     (container, headers))
+        headers = self.tags_to_headers()
+        logger.debug(_('S3Bucket create container %(container)s with headers '
+                     '%(headers)s') % {
+                     'container': container, 'headers': headers})
         if self.properties['WebsiteConfiguration'] is not None:
             sc = self.properties['WebsiteConfiguration']
             # we will assume that swift is configured for the staticweb
@@ -82,12 +114,12 @@ class S3Bucket(resource.Resource):
 
     def handle_delete(self):
         """Perform specified delete policy."""
-        logger.debug('S3Bucket delete container %s' % self.resource_id)
+        logger.debug(_('S3Bucket delete container %s') % self.resource_id)
         if self.resource_id is not None:
             try:
                 self.swift().delete_container(self.resource_id)
             except clients.swiftclient.ClientException as ex:
-                logger.warn("Delete container failed: %s" % str(ex))
+                logger.warn(_("Delete container failed: %s") % str(ex))
 
     def FnGetRefId(self):
         return unicode(self.resource_id)

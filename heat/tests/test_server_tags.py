@@ -11,6 +11,7 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+import copy
 import mox
 
 from heat.engine import environment
@@ -171,6 +172,34 @@ class ServerTagsTest(HeatTestCase):
         # nova call.
         self.m.VerifyAll()
 
+    def test_instance_tags_updated(self):
+        tags = [{'Key': 'Food', 'Value': 'yum'}]
+        metadata = dict((tm['Key'], tm['Value']) for tm in tags)
+
+        instance = self._setup_test_instance(intags=tags, nova_tags=metadata)
+        self.m.ReplayAll()
+        scheduler.TaskRunner(instance.create)()
+        self.assertEqual(instance.state, (instance.CREATE, instance.COMPLETE))
+        # we are just using mock to verify that the tags get through to the
+        # nova call.
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
+
+        new_tags = [{'Key': 'Food', 'Value': 'yuk'}]
+        new_metadata = dict((tm['Key'], tm['Value']) for tm in new_tags)
+
+        self.m.StubOutWithMock(instance, 'nova')
+        instance.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(self.fc.servers, 'set_meta')
+        self.fc.servers.set_meta(self.fc.servers.list()[1],
+                                 new_metadata).AndReturn(None)
+        self.m.ReplayAll()
+        update_template = copy.deepcopy(instance.t)
+        update_template['Properties']['Tags'] = new_tags
+        scheduler.TaskRunner(instance.update, update_template)()
+        self.assertEqual(instance.state, (instance.UPDATE, instance.COMPLETE))
+        self.m.VerifyAll()
+
     def _setup_test_group(self, intags=None, nova_tags=None):
         stack_name = 'tag_test'
         t = template_format.parse(group_template)
@@ -182,12 +211,12 @@ class ServerTagsTest(HeatTestCase):
         t['Resources']['WebServer']['Properties']['Tags'] = intags
 
         # create the launch configuration
-        conf = stack.resources['Config']
+        conf = stack['Config']
         self.assertEqual(None, conf.validate())
         scheduler.TaskRunner(conf.create)()
         self.assertEqual((conf.CREATE, conf.COMPLETE), conf.state)
 
-        group = stack.resources['WebServer']
+        group = stack['WebServer']
 
         nova_tags['metering.groupname'] = utils.PhysName(stack.name,
                                                          group.name)
@@ -229,11 +258,11 @@ class ServerTagsTest(HeatTestCase):
         t['Resources']['WebServer']['Properties']['Tags'] += intags
 
         # create the launch configuration
-        conf = stack.resources['Config']
+        conf = stack['Config']
         self.assertEqual(None, conf.validate())
         scheduler.TaskRunner(conf.create)()
         self.assertEqual((conf.CREATE, conf.COMPLETE), conf.state)
-        group = stack.resources['WebServer']
+        group = stack['WebServer']
 
         group_refid = utils.PhysName(stack.name, group.name)
 

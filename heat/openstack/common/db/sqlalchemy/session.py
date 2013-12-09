@@ -241,11 +241,11 @@ Efficient use of soft deletes:
         # This will produce count(bar_refs) db requests.
 """
 
+import functools
 import os.path
 import re
 import time
 
-from eventlet import greenthread
 from oslo.config import cfg
 import six
 from sqlalchemy import exc as sqla_exc
@@ -279,13 +279,13 @@ database_opts = [
                deprecated_opts=[cfg.DeprecatedOpt('sql_connection',
                                                   group='DEFAULT'),
                                 cfg.DeprecatedOpt('sql_connection',
-                                                  group='DATABASE')],
-               secret=True),
+                                                  group='DATABASE'),
+                                cfg.DeprecatedOpt('connection',
+                                                  group='sql'), ]),
     cfg.StrOpt('slave_connection',
                default='',
                help='The SQLAlchemy connection string used to connect to the '
-                    'slave database',
-               secret=True),
+                    'slave database'),
     cfg.IntOpt('idle_timeout',
                default=3600,
                deprecated_opts=[cfg.DeprecatedOpt('sql_idle_timeout',
@@ -527,6 +527,7 @@ def _raise_if_deadlock_error(operational_error, engine_name):
 
 
 def _wrap_db_error(f):
+    @functools.wraps(f)
     def _wrap(*args, **kwargs):
         try:
             return f(*args, **kwargs)
@@ -551,7 +552,6 @@ def _wrap_db_error(f):
         except Exception as e:
             LOG.exception(_('DB exception wrapped.'))
             raise exception.DBError(e)
-    _wrap.func_name = f.func_name
     return _wrap
 
 
@@ -591,14 +591,16 @@ def _add_regexp_listener(dbapi_con, con_record):
     dbapi_con.create_function('regexp', 2, regexp)
 
 
-def _greenthread_yield(dbapi_con, con_record):
+def _thread_yield(dbapi_con, con_record):
     """Ensure other greenthreads get a chance to be executed.
 
+    If we use eventlet.monkey_patch(), eventlet.greenthread.sleep(0) will
+    execute instead of time.sleep(0).
     Force a context switch. With common database backends (eg MySQLdb and
     sqlite), there is no implicit yield caused by network I/O since they are
     implemented by C libraries that eventlet cannot monkey patch.
     """
-    greenthread.sleep(0)
+    time.sleep(0)
 
 
 def _ping_listener(dbapi_conn, connection_rec, connection_proxy):
@@ -621,7 +623,8 @@ def _is_db_connection_error(args):
     """Return True if error in connecting to db."""
     # NOTE(adam_g): This is currently MySQL specific and needs to be extended
     #               to support Postgres and others.
-    conn_err_codes = ('2002', '2003', '2006')
+    # For the db2, the error code is -30081 since the db2 is still not ready
+    conn_err_codes = ('2002', '2003', '2006', '-30081')
     for err_code in conn_err_codes:
         if args.find(err_code) != -1:
             return True
@@ -667,7 +670,7 @@ def create_engine(sql_connection, sqlite_fk=False):
 
     engine = sqlalchemy.create_engine(sql_connection, **engine_args)
 
-    sqlalchemy.event.listen(engine, 'checkin', _greenthread_yield)
+    sqlalchemy.event.listen(engine, 'checkin', _thread_yield)
 
     if 'mysql' in connection_dict.drivername:
         sqlalchemy.event.listen(engine, 'checkout', _ping_listener)
@@ -751,25 +754,25 @@ def _patch_mysqldb_with_stacktrace_comments():
 
     def _do_query(self, q):
         stack = ''
-        for file, line, method, function in traceback.extract_stack():
+        for filename, line, method, function in traceback.extract_stack():
             # exclude various common things from trace
-            if file.endswith('session.py') and method == '_do_query':
+            if filename.endswith('session.py') and method == '_do_query':
                 continue
-            if file.endswith('api.py') and method == 'wrapper':
+            if filename.endswith('api.py') and method == 'wrapper':
                 continue
-            if file.endswith('utils.py') and method == '_inner':
+            if filename.endswith('utils.py') and method == '_inner':
                 continue
-            if file.endswith('exception.py') and method == '_wrap':
+            if filename.endswith('exception.py') and method == '_wrap':
                 continue
             # db/api is just a wrapper around db/sqlalchemy/api
-            if file.endswith('db/api.py'):
+            if filename.endswith('db/api.py'):
                 continue
             # only trace inside heat
-            index = file.rfind('heat')
+            index = filename.rfind('heat')
             if index == -1:
                 continue
             stack += "File:%s:%s Method:%s() Line:%s | " \
-                     % (file[index:], line, method, function)
+                     % (filename[index:], line, method, function)
 
         # strip trailing " | " from stack
         if stack:

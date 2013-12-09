@@ -29,19 +29,55 @@ class Port(neutron.NeutronResource):
     fixed_ip_schema = {'subnet_id': {'Type': 'String'},
                        'ip_address': {'Type': 'String'}}
 
-    properties_schema = {'network_id': {'Type': 'String',
-                                        'Required': True},
-                         'name': {'Type': 'String'},
-                         'value_specs': {'Type': 'Map',
-                                         'Default': {}},
-                         'admin_state_up': {'Default': True,
-                                            'Type': 'Boolean'},
-                         'fixed_ips': {'Type': 'List',
-                                       'Schema': {'Type': 'Map',
-                                                  'Schema': fixed_ip_schema}},
-                         'mac_address': {'Type': 'String'},
-                         'device_id': {'Type': 'String'},
-                         'security_groups': {'Type': 'List'}}
+    address_pair_schema = {'mac_address': {'Type': 'String'},
+                           'ip_address': {'Type': 'String', 'Required': True}}
+
+    properties_schema = {
+        'network_id': {
+            'Type': 'String',
+            'Required': True
+        },
+        'name': {
+            'Type': 'String'
+        },
+        'value_specs': {
+            'Type': 'Map',
+            'Default': {},
+        },
+        'admin_state_up': {
+            'Default': True,
+            'Type': 'Boolean',
+            'UpdateAllowed': True
+        },
+        'fixed_ips': {
+            'Type': 'List',
+            'Default': [],
+            'UpdateAllowed': True,
+            'Schema': {
+                'Type': 'Map',
+                'Schema': fixed_ip_schema
+            }
+        },
+        'mac_address': {
+            'Type': 'String'
+        },
+        'device_id': {
+            'Type': 'String'
+        },
+        'security_groups': {
+            'Type': 'List',
+            'UpdateAllowed': True,
+            'Default': [],
+        },
+        'allowed_address_pairs': {
+            'Type': 'List',
+            'Schema': {
+                'Type': 'Map',
+                'Schema': address_pair_schema
+            }
+        }
+    }
+
     attributes_schema = {
         "admin_state_up": _("The administrative state of this port."),
         "device_id": _("Unique identifier for the device."),
@@ -52,9 +88,13 @@ class Port(neutron.NeutronResource):
         "network_id": _("Unique identifier for the network owning the port."),
         "security_groups": _("A list of security groups for the port."),
         "status": _("The status of the port."),
-        "tenant_id": _("Tenant owning the port"),
+        "tenant_id": _("Tenant owning the port."),
+        "allowed_address_pairs": _("Additional mac/ip address pairs allowed "
+                                   "to pass through a port"),
         "show": _("All attributes."),
     }
+
+    update_allowed_keys = ('Properties',)
 
     def add_dependencies(self, deps):
         super(Port, self).add_dependencies(deps)
@@ -63,7 +103,7 @@ class Port(neutron.NeutronResource):
         # It is not known which subnet a port might be assigned
         # to so all subnets in a network should be created before
         # the ports in that network.
-        for resource in self.stack.resources.itervalues():
+        for resource in self.stack.itervalues():
             if (resource.has_interface('OS::Neutron::Subnet') and
                 resource.properties.get('network_id') ==
                     self.properties.get('network_id')):
@@ -74,18 +114,26 @@ class Port(neutron.NeutronResource):
             self.properties,
             self.physical_resource_name())
 
+        self._prepare_list_properties(props)
+
+        port = self.neutron().create_port({'port': props})['port']
+        self.resource_id_set(port['id'])
+
+    def _prepare_list_properties(self, props):
         for fixed_ip in props.get('fixed_ips', []):
             for key, value in fixed_ip.items():
                 if value is None:
                     fixed_ip.pop(key)
 
-        if self.properties['security_groups']:
-            props['security_groups'] = self.get_secgroup_uuids(
-                self.stack, self.properties, 'security_groups', self.name,
-                self.neutron())
+        # delete empty MAC addresses so that Neutron validation code
+        # wouldn't fail as it not accepts Nones
+        for pair in props.get('allowed_address_pairs', []):
+            if 'mac_address' in pair and pair['mac_address'] is None:
+                del pair['mac_address']
 
-        port = self.neutron().create_port({'port': props})['port']
-        self.resource_id_set(port['id'])
+        if props.get('security_groups'):
+            props['security_groups'] = self.get_secgroup_uuids(
+                props.get('security_groups'), self.neutron())
 
     def _show_resource(self):
         return self.neutron().show_port(
@@ -109,6 +157,18 @@ class Port(neutron.NeutronResource):
         if not (ex.status_code == 404 or
                 isinstance(ex, neutron_exp.PortNotFoundClient)):
             raise ex
+
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
+        props = self.prepare_update_properties(json_snippet)
+
+        self._prepare_list_properties(props)
+
+        logger.debug(_('updating port with %s') % props)
+        self.neutron().update_port(self.resource_id, {'port': props})
+
+    def check_update_complete(self, *args):
+        attributes = self._show_resource()
+        return self.is_built(attributes)
 
 
 def resource_mapping():

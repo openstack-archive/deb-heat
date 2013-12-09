@@ -112,9 +112,10 @@ class VolumeTest(HeatTestCase):
             self.cinder_fc)
         vol_name = utils.PhysName(stack_name, 'DataVolume')
         self.cinder_fc.volumes.create(
-            size=u'1', availability_zone='nova',
+            size=1, availability_zone='nova',
             display_description=vol_name,
-            display_name=vol_name).AndReturn(fv)
+            display_name=vol_name,
+            metadata={u'Usage': u'Wiki Data Volume'}).AndReturn(fv)
 
     def _stubout_delete_volume(self, fv):
         self.m.StubOutWithMock(fv, 'delete')
@@ -183,9 +184,10 @@ class VolumeTest(HeatTestCase):
             self.cinder_fc)
         vol_name = utils.PhysName(stack_name, 'DataVolume')
         self.cinder_fc.volumes.create(
-            size=u'1', availability_zone=None,
+            size=1, availability_zone=None,
             display_description=vol_name,
-            display_name=vol_name).AndReturn(fv)
+            display_name=vol_name,
+            metadata={u'Usage': u'Wiki Data Volume'}).AndReturn(fv)
         vol.VolumeAttachment.handle_create().AndReturn(None)
         vol.VolumeAttachment.check_create_complete(None).AndReturn(True)
 
@@ -227,6 +229,18 @@ class VolumeTest(HeatTestCase):
                           stack)
         create = scheduler.TaskRunner(rsrc.create)
         self.assertRaises(exception.ResourceFailure, create)
+
+        self.m.VerifyAll()
+
+    def test_volume_bad_tags(self):
+        t = template_format.parse(volume_template)
+        t['Resources']['DataVolume']['Properties']['Tags'] = [{'Foo': 'bar'}]
+        stack = utils.parse_stack(t, stack_name='test_volume_bad_tags_stack')
+
+        rsrc = vol.Volume('DataVolume',
+                          t['Resources']['DataVolume'],
+                          stack)
+        self.assertRaises(exception.StackValidationFailed, rsrc.validate)
 
         self.m.VerifyAll()
 
@@ -593,7 +607,7 @@ class VolumeTest(HeatTestCase):
         clients.OpenStackClients.cinder().MultipleTimes().AndReturn(
             self.cinder_fc)
         self.cinder_fc.volumes.create(
-            size=u'1', availability_zone='nova',
+            size=1, availability_zone='nova',
             display_description='CustomDescription',
             display_name='CustomName',
             imageRef='46988116-6703-4623-9dbc-2bc6d284021b',
@@ -642,7 +656,7 @@ class VolumeTest(HeatTestCase):
             self.fc, '46988116-6703-4623-9dbc-2bc6d284021b').AndReturn(
                 '46988116-6703-4623-9dbc-2bc6d284021b')
         self.cinder_fc.volumes.create(
-            size=u'1', availability_zone='nova',
+            size=1, availability_zone='nova',
             display_description='ImageVolumeDescription',
             display_name='ImageVolume',
             imageRef='46988116-6703-4623-9dbc-2bc6d284021b').AndReturn(fv)
@@ -677,7 +691,7 @@ class VolumeTest(HeatTestCase):
             self.cinder_fc)
         vol_name = utils.PhysName(stack_name, 'DataVolume')
         self.cinder_fc.volumes.create(
-            size=u'1', availability_zone='nova',
+            size=1, availability_zone='nova',
             display_description=None,
             display_name=vol_name).AndReturn(fv)
 
@@ -713,7 +727,7 @@ class VolumeTest(HeatTestCase):
             self.cinder_fc)
         vol_name = utils.PhysName(stack_name, 'DataVolume')
         self.cinder_fc.volumes.create(
-            size=u'1', availability_zone='nova',
+            size=1, availability_zone='nova',
             display_description=None,
             display_name=vol_name).AndReturn(fv)
 

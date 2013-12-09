@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 
 class Volume(resource.Resource):
+    tags_schema = {'Key': {'Type': 'String',
+                           'Required': True},
+                   'Value': {'Type': 'String',
+                             'Required': True}}
 
     properties_schema = {
         'AvailabilityZone': {
@@ -45,8 +49,9 @@ class Volume(resource.Resource):
                              'to create the volume.')},
         'Tags': {
             'Type': 'List',
-            'Description': _('The list of tags to associate with the volume '
-                             ' (ignored).')}
+            'Description': _('The list of tags to associate '
+                             'with the volume.'),
+            'Schema': {'Type': 'Map', 'Schema': tags_schema}},
     }
 
     _restore_property = 'SnapshotId'
@@ -60,9 +65,16 @@ class Volume(resource.Resource):
         return self.physical_resource_name()
 
     def _create_arguments(self):
+        if self.properties['Tags']:
+            tags = dict((tm['Key'], tm['Value'])
+                        for tm in self.properties['Tags'])
+        else:
+            tags = None
+
         return {
             'size': self.properties['Size'],
             'availability_zone': self.properties['AvailabilityZone'] or None,
+            'metadata': tags
         }
 
     def handle_create(self):
@@ -116,15 +128,15 @@ class Volume(resource.Resource):
                     vol.get()
 
                 if vol.status == 'in-use':
-                    logger.warn('cant delete volume when in-use')
-                    raise exception.Error('Volume in use')
+                    logger.warn(_('cant delete volume when in-use'))
+                    raise exception.Error(_('Volume in use'))
 
                 vol.delete()
                 while True:
                     yield
                     vol.get()
             except clients.cinderclient.exceptions.NotFound:
-                self.resource_id = None
+                self.resource_id_set(None)
 
     if volume_backups is not None:
         def handle_snapshot_delete(self, state):
@@ -184,14 +196,15 @@ class VolumeAttachTask(object):
 
         vol = self.clients.cinder().volumes.get(self.volume_id)
         while vol.status == 'available' or vol.status == 'attaching':
-            logger.debug('%s - volume status: %s' % (str(self), vol.status))
+            logger.debug(_('%(name)s - volume status: %(status)s') % {
+                         'name': str(self), 'status': vol.status})
             yield
             vol.get()
 
         if vol.status != 'in-use':
             raise exception.Error(vol.status)
 
-        logger.info('%s - complete' % str(self))
+        logger.info(_('%s - complete') % str(self))
 
 
 class VolumeDetachTask(object):
@@ -224,7 +237,7 @@ class VolumeDetachTask(object):
         try:
             vol = self.clients.cinder().volumes.get(self.volume_id)
         except clients.cinderclient.exceptions.NotFound:
-            logger.warning('%s - volume not found' % str(self))
+            logger.warning(_('%s - volume not found') % str(self))
             return
 
         server_api = self.clients.nova().volumes
@@ -240,7 +253,7 @@ class VolumeDetachTask(object):
         try:
             vol.get()
             while vol.status in ('in-use', 'detaching'):
-                logger.debug('%s - volume still in use' % str(self))
+                logger.debug(_('%s - volume still in use') % str(self))
                 yield
 
                 try:
@@ -251,12 +264,13 @@ class VolumeDetachTask(object):
                     pass
                 vol.get()
 
-            logger.info('%s - status: %s' % (str(self), vol.status))
+            logger.info(_('%(name)s - status: %(status)s') % {
+                        'name': str(self), 'status': vol.status})
             if vol.status != 'available':
                 raise exception.Error(vol.status)
 
         except clients.cinderclient.exceptions.NotFound:
-            logger.warning('%s - volume not found' % str(self))
+            logger.warning(_('%s - volume not found') % str(self))
 
 
 class VolumeAttachment(resource.Resource):

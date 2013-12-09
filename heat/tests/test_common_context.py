@@ -12,8 +12,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import mock
+import os
+
 from heat.common import context
 from heat.tests.common import HeatTestCase
+
+policy_path = os.path.dirname(os.path.realpath(__file__)) + "/policy/"
 
 
 class TestRequestContext(HeatTestCase):
@@ -22,10 +27,12 @@ class TestRequestContext(HeatTestCase):
         self.ctx = {'username': 'mick',
                     'trustor_user_id': None,
                     'auth_token': '123',
-                    'is_admin': True,
+                    'is_admin': False,
+                    'user': 'mick',
                     'password': 'foo',
                     'trust_id': None,
-                    'roles': ['arole', 'admin'],
+                    'show_deleted': False,
+                    'roles': ['arole', 'notadmin'],
                     'tenant_id': '456tenant',
                     'tenant': 'atenant',
                     'auth_url': 'http://xyz',
@@ -42,13 +49,16 @@ class TestRequestContext(HeatTestCase):
                                      tenant_id=self.ctx.get('tenant_id'),
                                      auth_url=self.ctx.get('auth_url'),
                                      roles=self.ctx.get('roles'),
+                                     show_deleted=self.ctx.get('show_deleted'),
                                      is_admin=self.ctx.get('is_admin'))
         ctx_dict = ctx.to_dict()
+        del(ctx_dict['request_id'])
         self.assertEqual(ctx_dict, self.ctx)
 
     def test_request_context_from_dict(self):
         ctx = context.RequestContext.from_dict(self.ctx)
         ctx_dict = ctx.to_dict()
+        del(ctx_dict['request_id'])
         self.assertEqual(ctx_dict, self.ctx)
 
     def test_request_context_update(self):
@@ -59,3 +69,27 @@ class TestRequestContext(HeatTestCase):
             override = '%s_override' % k
             setattr(ctx, k, override)
             self.assertEqual(ctx.to_dict().get(k), override)
+
+    def test_get_admin_context(self):
+        ctx = context.get_admin_context()
+        self.assertTrue(ctx.is_admin)
+        self.assertFalse(ctx.show_deleted)
+
+    def test_get_admin_context_show_deleted(self):
+        ctx = context.get_admin_context(show_deleted=True)
+        self.assertTrue(ctx.is_admin)
+        self.assertTrue(ctx.show_deleted)
+
+    def test_admin_context_policy_true(self):
+        policy_check = 'heat.common.policy.Enforcer.check_is_admin'
+        with mock.patch(policy_check) as pc:
+            pc.return_value = True
+            ctx = context.RequestContext(roles=['admin'])
+            self.assertTrue(ctx.is_admin)
+
+    def test_admin_context_policy_false(self):
+        policy_check = 'heat.common.policy.Enforcer.check_is_admin'
+        with mock.patch(policy_check) as pc:
+            pc.return_value = False
+            ctx = context.RequestContext(roles=['notadmin'])
+            self.assertFalse(ctx.is_admin)

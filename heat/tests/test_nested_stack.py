@@ -14,6 +14,7 @@
 
 
 import copy
+import json
 
 from oslo.config import cfg
 
@@ -109,6 +110,20 @@ Outputs:
 
         self.m.VerifyAll()
 
+    def test_nested_stack_create_with_timeout(self):
+        urlfetch.get('https://server.test/the.template').MultipleTimes().\
+            AndReturn(self.nested_template)
+        self.m.ReplayAll()
+
+        timeout_template = template_format.parse(
+            copy.deepcopy(self.test_template))
+        props = timeout_template['Resources']['the_nested']['Properties']
+        props['TimeoutInMinutes'] = '50'
+
+        stack = self.create_stack(json.dumps(timeout_template))
+        self.assertEqual(stack.state, (stack.CREATE, stack.COMPLETE))
+        self.m.VerifyAll()
+
     def test_nested_stack_create_exceeds_resource_limit(self):
         cfg.CONF.set_override('max_resources_per_stack', 1)
         resource._register_class('GenericResource',
@@ -131,7 +146,7 @@ Outputs:
         t = template_format.parse(self.test_template)
         stack = self.parse_stack(t)
         stack.create()
-        self.assertEquals(stack.state, (stack.CREATE, stack.FAILED))
+        self.assertEqual(stack.state, (stack.CREATE, stack.FAILED))
         self.assertIn('Maximum resources per stack exceeded',
                       stack.status_reason)
 
@@ -159,9 +174,9 @@ Outputs:
         t = template_format.parse(self.test_template)
         stack = self.parse_stack(t)
         stack.create()
-        self.assertEquals(stack.state, (stack.CREATE, stack.COMPLETE))
+        self.assertEqual(stack.state, (stack.CREATE, stack.COMPLETE))
         self.assertIn('NestedResource',
-                      stack.resources['the_nested'].nested().resources)
+                      stack['the_nested'].nested())
 
         self.m.VerifyAll()
 
@@ -282,7 +297,7 @@ Outputs:
         prop_diff = {'TemplateURL': 'https://server.test/new.template'}
         ex = self.assertRaises(exception.RequestLimitExceeded,
                                rsrc.handle_update, new_res, {}, prop_diff)
-        self.assertIn(exception.StackResourceLimitExceeded.message,
+        self.assertIn(exception.StackResourceLimitExceeded.msg_fmt,
                       str(ex))
         rsrc.delete()
 
@@ -487,8 +502,8 @@ Outputs:
 '''
 
     def setUp(self):
-        resource._register_class("res.data.resource", ResDataResource)
         super(ResDataNestedStackTest, self).setUp()
+        resource._register_class("res.data.resource", ResDataResource)
 
     def test_res_data_delete(self):
         urlfetch.get('https://server.test/the.template').AndReturn(

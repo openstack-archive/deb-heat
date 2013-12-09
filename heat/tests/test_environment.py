@@ -20,6 +20,8 @@ from oslo.config import cfg
 
 cfg.CONF.import_opt('environment_dir', 'heat.common.config')
 
+from heat.common import environment_format
+
 from heat.engine import environment
 from heat.engine import resources
 
@@ -200,3 +202,71 @@ class GlobalEnvLoadingTest(common.HeatTestCase):
         # 3. assert our resource is in place.
         self.assertEqual('file:///not_really_here.yaml',
                          g_env.get_resource_info('OS::Nova::Server').value)
+
+    def test_env_one_resource_disable(self):
+        # prove we can disable a resource in the global environment
+
+        g_env_content = '''
+        resource_registry:
+            "OS::Nova::Server":
+        '''
+        # 1. fake an environment file
+        envdir = self.useFixture(fixtures.TempDir())
+        envfile = os.path.join(envdir.path, 'test.yaml')
+        with open(envfile, 'w+') as ef:
+            ef.write(g_env_content)
+        cfg.CONF.set_override('environment_dir', envdir.path)
+
+        # 2. load global env
+        g_env = environment.Environment({}, user_env=False)
+        resources._load_all(g_env)
+
+        # 3. assert our resource is in now gone.
+        self.assertEqual(None,
+                         g_env.get_resource_info('OS::Nova::Server'))
+
+        # 4. make sure we haven't removed something we shouldn't have
+        self.assertEqual(resources.instance.Instance,
+                         g_env.get_resource_info('AWS::EC2::Instance').value)
+
+    def test_env_multi_resources_disable(self):
+        # prove we can disable resources in the global environment
+
+        g_env_content = '''
+        resource_registry:
+            "AWS::*":
+        '''
+        # 1. fake an environment file
+        envdir = self.useFixture(fixtures.TempDir())
+        envfile = os.path.join(envdir.path, 'test.yaml')
+        with open(envfile, 'w+') as ef:
+            ef.write(g_env_content)
+        cfg.CONF.set_override('environment_dir', envdir.path)
+
+        # 2. load global env
+        g_env = environment.Environment({}, user_env=False)
+        resources._load_all(g_env)
+
+        # 3. assert our resources are now gone.
+        self.assertEqual(None,
+                         g_env.get_resource_info('AWS::EC2::Instance'))
+
+        # 4. make sure we haven't removed something we shouldn't have
+        self.assertEqual(resources.server.Server,
+                         g_env.get_resource_info('OS::Nova::Server').value)
+
+    def test_env_user_cant_disable_sys_resource(self):
+        # prove a user can't disable global resources from the user environment
+
+        u_env_content = '''
+        resource_registry:
+            "AWS::*":
+        '''
+        # 1. load user env
+        u_env = environment.Environment()
+        u_env.load(environment_format.parse(u_env_content))
+
+        # 2. assert global resources are NOT gone.
+        self.assertEqual(
+            resources.instance.Instance,
+            u_env.get_resource_info('AWS::EC2::Instance').value)

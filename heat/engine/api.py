@@ -17,6 +17,7 @@ from heat.openstack.common import timeutils
 from heat.engine import template
 
 from heat.openstack.common import log as logging
+from heat.openstack.common.gettextutils import _
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ def extract_args(params):
     try:
         timeout_mins = int(params.get(api.PARAM_TIMEOUT, 0))
     except (ValueError, TypeError):
-        logger.exception('create timeout conversion')
+        logger.exception(_('create timeout conversion'))
     else:
         if timeout_mins > 0:
             kwargs[api.PARAM_TIMEOUT] = timeout_mins
@@ -43,8 +44,10 @@ def extract_args(params):
         elif str(disable_rollback).lower() == 'false':
             kwargs[api.PARAM_DISABLE_ROLLBACK] = False
         else:
-            raise ValueError("Unexpected value for parameter %s : %s" %
-                             (api.PARAM_DISABLE_ROLLBACK, disable_rollback))
+            raise ValueError(_('Unexpected value for parameter'
+                               ' %(name)s : %(value)s') %
+                             dict(name=api.PARAM_DISABLE_ROLLBACK,
+                                  value=disable_rollback))
     return kwargs
 
 
@@ -139,6 +142,27 @@ def format_event(event):
     return result
 
 
+def format_notification_body(stack):
+    # some other posibilities here are:
+    # - template name
+    # - template size
+    # - resource count
+    if stack.status is not None and stack.action is not None:
+        state = '_'.join(stack.state)
+    else:
+        state = 'Unknown'
+    result = {
+        api.NOTIFY_TENANT_ID: stack.context.tenant_id,
+        api.NOTIFY_USER_ID: stack.context.user,
+        api.NOTIFY_STACK_ID: stack.identifier().arn(),
+        api.NOTIFY_STACK_NAME: stack.name,
+        api.NOTIFY_STATE: state,
+        api.NOTIFY_STATE_REASON: stack.status_reason,
+        api.NOTIFY_CREATE_AT: timeutils.isotime(stack.created_time),
+    }
+    return result
+
+
 def format_watch(watch):
 
     result = {
@@ -182,7 +206,7 @@ def format_watch_data(wd):
     if len(metric) == 1:
         metric_name, metric_data = metric[0]
     else:
-        logger.error("Unexpected number of keys in watch_data.data!")
+        logger.error(_("Unexpected number of keys in watch_data.data!"))
         return
 
     result = {

@@ -226,8 +226,9 @@ class ProviderTemplateTest(HeatTestCase):
         files = {'test_resource.template': json.dumps(provider)}
 
         class DummyResource(object):
-            properties_schema = {"Foo": properties.Schema(properties.STRING,
-                                                          required=True)}
+            properties_schema = {"Foo":
+                                 properties.Schema(properties.Schema.STRING,
+                                                   required=True)}
             attributes_schema = {}
 
         json_snippet = {
@@ -258,8 +259,9 @@ class ProviderTemplateTest(HeatTestCase):
         files = {'test_resource.template': json.dumps(provider)}
 
         class DummyResource(object):
-            properties_schema = {"Foo": properties.Schema(properties.STRING,
-                                                          required=True)}
+            properties_schema = {"Foo":
+                                 properties.Schema(properties.Schema.STRING,
+                                                   required=True)}
             attributes_schema = {}
 
         json_snippet = {
@@ -320,7 +322,8 @@ class ProviderTemplateTest(HeatTestCase):
         files = {'test_resource.template': json.dumps(provider)}
 
         class DummyResource(object):
-            properties_schema = {"Foo": properties.Schema(properties.MAP)}
+            properties_schema = {"Foo":
+                                 properties.Schema(properties.Schema.MAP)}
             attributes_schema = {}
 
         json_snippet = {
@@ -459,9 +462,6 @@ class ProviderTemplateTest(HeatTestCase):
         urlfetch.get(test_templ_name,
                      allowed_schemes=('http', 'https',
                                       'file')).AndRaise(IOError)
-        urlfetch.get(test_templ_name,
-                     allowed_schemes=('http', 'https',
-                                      'file')).AndRaise(IOError)
         self.m.ReplayAll()
 
         temp_res = template_resource.TemplateResource('test_t_res',
@@ -485,8 +485,6 @@ class ProviderTemplateTest(HeatTestCase):
                              stack_id=uuidutils.generate_uuid())
 
         self.m.StubOutWithMock(urlfetch, "get")
-        urlfetch.get(test_templ_name,
-                     allowed_schemes=('http', 'https')).AndRaise(IOError)
         urlfetch.get(test_templ_name,
                      allowed_schemes=('http', 'https')).AndRaise(IOError)
         self.m.ReplayAll()

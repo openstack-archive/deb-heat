@@ -165,7 +165,7 @@ class StackResourceTest(HeatTestCase):
         self.assertEqual(True,
                          self.parent_resource.check_update_complete(updater))
         self.assertEqual(self.stack.state, ('UPDATE', 'COMPLETE'))
-        self.assertEqual(set(self.stack.resources.keys()),
+        self.assertEqual(set(self.stack.keys()),
                          set(["WebServer", "WebServer2"]))
 
         # The stack's owner_id is maintained.
@@ -306,10 +306,10 @@ class StackResourceTest(HeatTestCase):
 
         st_set = self.stack.state_set
         self.m.StubOutWithMock(self.stack, 'state_set')
-        self.stack.state_set(parser.Stack.CREATE, parser.Stack.IN_PROGRESS,
+        self.stack.state_set(self.stack.CREATE, self.stack.IN_PROGRESS,
                              "Stack CREATE started").WithSideEffects(st_set)
 
-        self.stack.state_set(parser.Stack.CREATE, parser.Stack.COMPLETE,
+        self.stack.state_set(self.stack.CREATE, self.stack.COMPLETE,
                              "Stack create completed successfully")
         self.m.ReplayAll()
 

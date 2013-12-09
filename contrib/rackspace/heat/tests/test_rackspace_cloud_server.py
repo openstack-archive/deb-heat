@@ -23,13 +23,13 @@ from heat.common import exception
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
-from heat.engine import environment
 from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
-from ..engine.plugins import rackspace_resource
-from ..engine.plugins import cloud_server
+from heat.engine import clients
+from ..engine.plugins import cloud_server  # noqa
+
 
 wp_template = '''
 {
@@ -39,8 +39,8 @@ wp_template = '''
     "flavor" : {
       "Description" : "Rackspace Cloud Server flavor",
       "Type" : "String",
-      "Default" : "2",
-      "AllowedValues" : [ "2", "3", "4", "5", "6", "7", "8" ],
+      "Default" : "m1.small",
+      "AllowedValues" : ["256 MB Server", "m1.small", "m1.large", "invalid"],
       "ConstraintDescription" : "must be a valid Rackspace Cloud Server flavor"
     },
   },
@@ -48,8 +48,8 @@ wp_template = '''
     "WebServer": {
       "Type": "Rackspace::Cloud::Server",
       "Properties": {
-        "image"      : "Fedora 17 (Beefy Miracle)",
-        "flavor"         : "2",
+        "image"      : "CentOS 5.2",
+        "flavor"         : "256 MB Server",
         "user_data"       : "wordpress"
       }
     }
@@ -86,31 +86,15 @@ class RackspaceCloudServerTest(HeatTestCase):
         resource._register_class("Rackspace::Cloud::Server",
                                  cloud_server.CloudServer)
 
-        f2 = self.m.CreateMockAnything()
-        f2.id = '2'
-        f3 = self.m.CreateMockAnything()
-        f3.id = '3'
-        f4 = self.m.CreateMockAnything()
-        f4.id = '4'
-        f5 = self.m.CreateMockAnything()
-        f5.id = '5'
-        f6 = self.m.CreateMockAnything()
-        f6.id = '6'
-        f7 = self.m.CreateMockAnything()
-        f7.id = '7'
-        f8 = self.m.CreateMockAnything()
-        f8.id = '8'
-        self.flavors = [f2, f3, f4, f5, f6, f7, f8]
-
     def _setup_test_stack(self, stack_name):
         t = template_format.parse(wp_template)
         template = parser.Template(t)
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
-                             environment.Environment({'flavor': '2'}),
+                             {},
                              stack_id=uuidutils.generate_uuid())
         return (t, stack)
 
-    def _mock_ssh_sftp(self):
+    def _mock_ssh_sftp(self, exit_code=0):
         # SSH
         self.m.StubOutWithMock(paramiko, "SSHClient")
         self.m.StubOutWithMock(paramiko, "MissingHostKeyPolicy")
@@ -121,12 +105,13 @@ class RackspaceCloudServerTest(HeatTestCase):
         ssh.connect(mox.IgnoreArg(),
                     key_filename=mox.IgnoreArg(),
                     username='root')
-        stdin = self.m.CreateMockAnything()
-        stdout = self.m.CreateMockAnything()
-        stderr = self.m.CreateMockAnything()
-        stdout.read().AndReturn("stdout")
-        stderr.read().AndReturn("stderr")
-        ssh.exec_command(mox.IgnoreArg()).AndReturn((stdin, stdout, stderr))
+        fake_chan = self.m.CreateMockAnything()
+        self.m.StubOutWithMock(paramiko.SSHClient, "get_transport")
+        chan = ssh.get_transport().AndReturn(fake_chan)
+        fake_chan_session = self.m.CreateMockAnything()
+        chan_session = chan.open_session().AndReturn(fake_chan_session)
+        chan_session.exec_command(mox.IgnoreArg())
+        chan_session.recv_exit_status().AndReturn(exit_code)
 
         # SFTP
         self.m.StubOutWithMock(paramiko, "Transport")
@@ -145,49 +130,46 @@ class RackspaceCloudServerTest(HeatTestCase):
         sftp_file.write(mox.IgnoreArg())
         sftp_file.close()
 
-    def _setup_test_cs(self, return_server, name):
+    def _setup_test_cs(self, return_server, name, exit_code=0):
         stack_name = '%s_stack' % name
         (t, stack) = self._setup_test_stack(stack_name)
 
-        cs_name = 'Fedora 17 (Beefy Miracle)'
-        t['Resources']['WebServer']['Properties']['image'] = '1'
-        t['Resources']['WebServer']['Properties']['flavor'] = '2'
+        self.m.StubOutWithMock(clients.OpenStackClients, "nova")
+        clients.OpenStackClients.nova(
+            mox.IgnoreArg()).MultipleTimes().AndReturn(self.fc)
+
+        t['Resources']['WebServer']['Properties']['image'] = 'CentOS 5.2'
+        t['Resources']['WebServer']['Properties']['flavor'] = '256 MB Server'
 
         cs = cloud_server.CloudServer('%s_name' % name,
                                       t['Resources']['WebServer'], stack)
         cs._private_key = rsa_key
         cs.t = cs.stack.resolve_runtime_data(cs.t)
 
-        flavor = t['Resources']['WebServer']['Properties']['flavor']
-
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(utils.PhysName(stack_name, cs.name),
-                               "1", flavor,
+                               1, 1,
                                files=mox.IgnoreArg()).AndReturn(return_server)
         return_server.adminPass = "foobar"
 
         self.m.StubOutWithMock(cloud_server.CloudServer, 'script')
         cloud_server.CloudServer.script = "foobar"
 
-        self.m.StubOutWithMock(rackspace_resource.RackspaceResource, "nova")
-        rackspace_resource.RackspaceResource.nova().MultipleTimes()\
-                                                   .AndReturn(self.fc)
-
-        self._mock_ssh_sftp()
+        self._mock_ssh_sftp(exit_code)
         return cs
 
-    def _create_test_cs(self, return_server, name):
-        cs = self._setup_test_cs(return_server, name)
+    def _create_test_cs(self, return_server, name, exit_code=0):
+        cs = self._setup_test_cs(return_server, name, exit_code)
 
         self.m.ReplayAll()
         scheduler.TaskRunner(cs.create)()
         return cs
 
-    def _update_test_cs(self, return_server, name):
-        self._mock_ssh_sftp()
-        self.m.StubOutWithMock(rackspace_resource.RackspaceResource, "nova")
-        rackspace_resource.RackspaceResource.nova().MultipleTimes()\
-                                                   .AndReturn(self.fc)
+    def _update_test_cs(self, return_server, name, exit_code=0):
+        self._mock_ssh_sftp(exit_code)
+        self.m.StubOutWithMock(clients.OpenStackClients, "nova")
+        clients.OpenStackClients.nova(
+            mox.IgnoreArg()).MultipleTimes().AndReturn(self.fc)
 
     def test_cs_create(self):
         return_server = self.fc.servers.list()[1]
@@ -225,6 +207,9 @@ class RackspaceCloudServerTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_cs_create_image_name_err(self):
+        self.m.StubOutWithMock(clients.OpenStackClients, "nova")
+        clients.OpenStackClients.nova(
+            mox.IgnoreArg()).MultipleTimes().AndReturn(self.fc)
         stack_name = 'test_cs_create_image_name_err_stack'
         (t, stack) = self._setup_test_stack(stack_name)
 
@@ -232,30 +217,26 @@ class RackspaceCloudServerTest(HeatTestCase):
         t['Resources']['WebServer']['Properties']['image'] = 'Slackware'
 
         # Mock flavors
-        self.m.StubOutWithMock(cloud_server.CloudServer, "flavors")
-        cloud_server.CloudServer.flavors.__contains__('2').AndReturn(True)
         cloud_server.CloudServer.script = None
         self.m.ReplayAll()
 
         cs = cloud_server.CloudServer('cs_create_image_err',
                                       t['Resources']['WebServer'], stack)
 
-        self.assertEqual({'Error': "user_data/metadata are not supported with "
-                          "Slackware."},
-                         cs.validate())
+        self.assertRaises(exception.ImageNotFound, cs.validate)
         self.m.VerifyAll()
 
     def test_cs_create_image_name_okay(self):
+        self.m.StubOutWithMock(clients.OpenStackClients, "nova")
+        clients.OpenStackClients.nova(
+            mox.IgnoreArg()).MultipleTimes().AndReturn(self.fc)
         stack_name = 'test_cs_create_image_name_err_stack'
         (t, stack) = self._setup_test_stack(stack_name)
 
         # create a cloud server with non exist image name
-        t['Resources']['WebServer']['Properties']['image'] = 'Slackware'
+        t['Resources']['WebServer']['Properties']['image'] = 'CentOS 5.2'
         t['Resources']['WebServer']['Properties']['user_data'] = ''
 
-        # Mock flavors
-        self.m.StubOutWithMock(cloud_server.CloudServer, "flavors")
-        cloud_server.CloudServer.flavors.__contains__('2').AndReturn(True)
         cloud_server.CloudServer.script = None
         self.m.ReplayAll()
 
@@ -265,24 +246,59 @@ class RackspaceCloudServerTest(HeatTestCase):
         self.assertEqual(None, cs.validate())
         self.m.VerifyAll()
 
+    def test_cs_create_heatscript_nonzero_exit_status(self):
+        return_server = self.fc.servers.list()[1]
+        cs = self._setup_test_cs(return_server, 'test_cs_create_image_id',
+                                 exit_code=1)
+        self.m.ReplayAll()
+        create = scheduler.TaskRunner(cs.create)
+        exc = self.assertRaises(exception.ResourceFailure, create)
+        self.assertTrue("The heat-script.sh script exited" in str(exc))
+        self.m.VerifyAll()
+
+    def test_cs_create_cfnuserdata_nonzero_exit_status(self):
+        return_server = self.fc.servers.list()[1]
+        cs = self._setup_test_cs(return_server, 'test_cs_create_image_id',
+                                 exit_code=42)
+        self.m.ReplayAll()
+        create = scheduler.TaskRunner(cs.create)
+        exc = self.assertRaises(exception.ResourceFailure, create)
+        self.assertTrue("The cfn-userdata script exited" in str(exc))
+        self.m.VerifyAll()
+
+    def test_cs_update_cfnuserdata_nonzero_exit_status(self):
+        return_server = self.fc.servers.list()[1]
+        cs = self._create_test_cs(return_server,
+                                  'test_cs_update_cfnuserdata_nonzero_exit')
+        self.m.UnsetStubs()
+        self._update_test_cs(return_server,
+                             'test_cs_update_cfnuserdata_nonzero_exit',
+                             exit_code=1)
+        self.m.ReplayAll()
+        update_template = copy.deepcopy(cs.t)
+        update_template['Metadata'] = {'test': 123}
+        update = scheduler.TaskRunner(cs.update, update_template)
+        exc = self.assertRaises(exception.ResourceFailure, update)
+        self.assertTrue("The cfn-userdata script exited" in str(exc))
+
     def test_cs_create_flavor_err(self):
         """validate() should throw an if the flavor is invalid."""
+        self.m.StubOutWithMock(clients.OpenStackClients, "nova")
+        clients.OpenStackClients.nova(
+            mox.IgnoreArg()).MultipleTimes().AndReturn(self.fc)
         stack_name = 'test_cs_create_flavor_err_stack'
         (t, stack) = self._setup_test_stack(stack_name)
 
         # create a cloud server with non exist image name
-        t['Resources']['WebServer']['Properties']['flavor'] = '1'
+        t['Resources']['WebServer']['Properties']['flavor'] = 'invalid'
 
         # Mock flavors
-        self.m.StubOutWithMock(cloud_server.CloudServer, "flavors")
-        flavors = ['2', '3', '4', '5', '6', '7', '8']
-        cloud_server.CloudServer.flavors = flavors
         self.m.ReplayAll()
 
         cs = cloud_server.CloudServer('cs_create_flavor_err',
                                       t['Resources']['WebServer'], stack)
 
-        self.assertEqual({'Error': "flavor not found."}, cs.validate())
+        self.assertRaises(exception.FlavorMissing, cs.validate)
 
         self.m.VerifyAll()
 
@@ -434,10 +450,106 @@ class RackspaceCloudServerTest(HeatTestCase):
         cs._store_or_update(cs.CREATE, cs.IN_PROGRESS, 'test_store')
 
         cs.private_key = 'fake private key'
-        rs = db_api.resource_get_by_name_and_stack(None,
+        self.ctx = utils.dummy_context()
+        rs = db_api.resource_get_by_name_and_stack(self.ctx,
                                                    'cs_private_key',
                                                    stack.id)
         encrypted_key = rs.data[0]['value']
         self.assertNotEqual(encrypted_key, "fake private key")
         decrypted_key = cs.private_key
         self.assertEqual(decrypted_key, "fake private key")
+
+    def test_rackconnect_deployed(self):
+        return_server = self.fc.servers.list()[1]
+        return_server.metadata = {'rackconnect_automation_status': 'DEPLOYED'}
+        self.m.StubOutWithMock(return_server, 'get')
+        return_server.get()
+        cs = self._setup_test_cs(return_server, 'test_rackconnect_deployed')
+        cs.context.roles = ['rack_connect']
+        self.m.ReplayAll()
+        scheduler.TaskRunner(cs.create)()
+        self.assertEqual(cs.action, 'CREATE')
+        self.assertEqual(cs.status, 'COMPLETE')
+        self.m.VerifyAll()
+
+    def test_rackconnect_failed(self):
+        return_server = self.fc.servers.list()[1]
+        return_server.metadata = {'rackconnect_automation_status': 'FAILED'}
+        self.m.StubOutWithMock(return_server, 'get')
+        return_server.get()
+        cs = self._setup_test_cs(return_server, 'test_rackconnect_failed')
+        cs.context.roles = ['rack_connect']
+        self.m.ReplayAll()
+        create = scheduler.TaskRunner(cs.create)
+        exc = self.assertRaises(exception.ResourceFailure, create)
+        self.assertEqual('Error: RackConnect automation FAILED', str(exc))
+
+    def test_rackconnect_unprocessable(self):
+        return_server = self.fc.servers.list()[1]
+        return_server.metadata = {'rackconnect_automation_status':
+                                  'UNPROCESSABLE',
+                                  'rackconnect_unprocessable_reason':
+                                  'Fake reason'}
+        self.m.StubOutWithMock(return_server, 'get')
+        return_server.get()
+        cs = self._setup_test_cs(return_server,
+                                 'test_rackconnect_unprocessable')
+        cs.context.roles = ['rack_connect']
+        self.m.ReplayAll()
+        scheduler.TaskRunner(cs.create)()
+        self.assertEqual(cs.action, 'CREATE')
+        self.assertEqual(cs.status, 'COMPLETE')
+        self.m.VerifyAll()
+
+    def test_rackconnect_unknown(self):
+        return_server = self.fc.servers.list()[1]
+        return_server.metadata = {'rackconnect_automation_status': 'FOO'}
+        self.m.StubOutWithMock(return_server, 'get')
+        return_server.get()
+        cs = self._setup_test_cs(return_server, 'test_rackconnect_unknown')
+        cs.context.roles = ['rack_connect']
+        self.m.ReplayAll()
+        create = scheduler.TaskRunner(cs.create)
+        exc = self.assertRaises(exception.ResourceFailure, create)
+        self.assertEqual('Error: Unknown RackConnect automation status: FOO',
+                         str(exc))
+
+    def test_managed_cloud_complete(self):
+        return_server = self.fc.servers.list()[1]
+        return_server.metadata = {'rax_service_level_automation': 'Complete'}
+        self.m.StubOutWithMock(return_server, 'get')
+        return_server.get()
+        cs = self._setup_test_cs(return_server, 'test_managed_cloud_complete')
+        cs.context.roles = ['rax_managed']
+        self.m.ReplayAll()
+        scheduler.TaskRunner(cs.create)()
+        self.assertEqual(cs.action, 'CREATE')
+        self.assertEqual(cs.status, 'COMPLETE')
+        self.m.VerifyAll()
+
+    def test_managed_cloud_build_error(self):
+        return_server = self.fc.servers.list()[1]
+        return_server.metadata = {'rax_service_level_automation':
+                                  'Build Error'}
+        self.m.StubOutWithMock(return_server, 'get')
+        return_server.get()
+        cs = self._setup_test_cs(return_server,
+                                 'test_managed_cloud_build_error')
+        cs.context.roles = ['rax_managed']
+        self.m.ReplayAll()
+        create = scheduler.TaskRunner(cs.create)
+        exc = self.assertRaises(exception.ResourceFailure, create)
+        self.assertEqual('Error: Managed Cloud automation failed', str(exc))
+
+    def test_managed_cloud_unknown(self):
+        return_server = self.fc.servers.list()[1]
+        return_server.metadata = {'rax_service_level_automation': 'FOO'}
+        self.m.StubOutWithMock(return_server, 'get')
+        return_server.get()
+        cs = self._setup_test_cs(return_server, 'test_managed_cloud_unknown')
+        cs.context.roles = ['rax_managed']
+        self.m.ReplayAll()
+        create = scheduler.TaskRunner(cs.create)
+        exc = self.assertRaises(exception.ResourceFailure, create)
+        self.assertEqual('Error: Unknown Managed Cloud automation status: FOO',
+                         str(exc))

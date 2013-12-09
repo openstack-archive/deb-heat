@@ -14,7 +14,7 @@
 #    under the License.
 
 from heat.common import exception
-from heat.db.sqlalchemy import api as db_api
+from heat.db import api as db_api
 from heat.engine import clients
 from heat.engine import resource
 from heat.engine import scheduler
@@ -33,6 +33,7 @@ class HealthMonitor(neutron.NeutronResource):
     properties_schema = {
         'delay': {
             'Type': 'Integer', 'Required': True,
+            'UpdateAllowed': True,
             'Description': _('The minimum time in seconds between regular '
                              'connections of the member.')},
         'type': {
@@ -41,36 +42,39 @@ class HealthMonitor(neutron.NeutronResource):
             'Description': _('One of predefined health monitor types.')},
         'max_retries': {
             'Type': 'Integer', 'Required': True,
+            'UpdateAllowed': True,
             'Description': _('Number of permissible connection failures before'
                              ' changing the member status to INACTIVE.')},
         'timeout': {
             'Type': 'Integer', 'Required': True,
+            'UpdateAllowed': True,
             'Description': _('Maximum number of seconds for a monitor to '
                              'wait for a connection to be established before '
                              'it times out.')},
         'admin_state_up': {
             'Default': True, 'Type': 'Boolean',
+            'UpdateAllowed': True,
             'Description': _('The administrative state of the health '
                              'monitor.')},
         'http_method': {
             'Type': 'String',
+            'UpdateAllowed': True,
             'Description': _('The HTTP method used for requests by the '
                              'monitor of type HTTP.')},
         'expected_codes': {
             'Type': 'String',
+            'UpdateAllowed': True,
             'Description': _('The list of HTTP status codes expected in '
                              'response from the member to declare it '
                              'healthy.')},
         'url_path': {
             'Type': 'String',
+            'UpdateAllowed': True,
             'Description': _('The HTTP path used in the HTTP request used '
                              'by the monitor to test a member health.')},
     }
 
     update_allowed_keys = ('Properties',)
-    update_allowed_properties = ('delay', 'max_retries', 'timeout',
-                                 'admin_state_up', 'http_method',
-                                 'expected_codes', 'url_path')
 
     attributes_schema = {
         'admin_state_up': _('The administrative state of this health '
@@ -160,6 +164,7 @@ class Pool(neutron.NeutronResource):
             'Type': 'String', 'Required': True,
             'AllowedValues': ['ROUND_ROBIN', 'LEAST_CONNECTIONS',
                               'SOURCE_IP'],
+            'UpdateAllowed': True,
             'Description': _('The algorithm used to distribute load between '
                              'the members of the pool.')},
         'name': {
@@ -167,22 +172,23 @@ class Pool(neutron.NeutronResource):
             'Description': _('Name of the pool.')},
         'description': {
             'Type': 'String',
+            'UpdateAllowed': True,
             'Description': _('Description of the pool.')},
         'admin_state_up': {
             'Default': True, 'Type': 'Boolean',
+            'UpdateAllowed': True,
             'Description': _('The administrative state of this pool.')},
         'vip': {
             'Type': 'Map', 'Schema': vip_schema, 'Required': True,
             'Description': _('IP address and port of the pool.')},
         'monitors': {
             'Type': 'List',
+            'UpdateAllowed': True,
             'Description': _('List of health monitors associated with the '
                              'pool.')},
     }
 
     update_allowed_keys = ('Properties',)
-    update_allowed_properties = ('description', 'admin_state_up', 'lb_method',
-                                 'monitors')
 
     attributes_schema = {
         'admin_state_up': _('The administrative state of this pool.'),
@@ -306,6 +312,7 @@ class LoadBalancer(resource.Resource):
     properties_schema = {
         'pool_id': {
             'Type': 'String', 'Required': True,
+            'UpdateAllowed': True,
             'Description': _('The ID of the load balancing pool.')},
         'protocol_port': {
             'Type': 'Integer', 'Required': True,
@@ -313,19 +320,20 @@ class LoadBalancer(resource.Resource):
                              'running on the members.')},
         'members': {
             'Type': 'List',
+            'Default': [],
+            'UpdateAllowed': True,
             'Description': _('The list of Nova server IDs load balanced.')},
     }
 
     update_allowed_keys = ('Properties',)
-
-    update_allowed_properties = ('members', 'pool_id',)
 
     def handle_create(self):
         pool = self.properties['pool_id']
         client = self.neutron()
         nova_client = self.nova()
         protocol_port = self.properties['protocol_port']
-        for member in self.t['Properties'].get('members', []):
+
+        for member in self.properties.get('members'):
             address = nova_utils.server_to_ipaddress(nova_client, member)
             lb_member = client.create_member({
                 'member': {
@@ -337,10 +345,11 @@ class LoadBalancer(resource.Resource):
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if 'members' in prop_diff:
             members = set(prop_diff['members'])
-            old_members = set(self.t['Properties'].get('members', []))
+            rd_members = db_api.resource_data_get_all(self)
+            old_members = set(rd_members.keys())
             client = self.neutron()
             for member in old_members - members:
-                member_id = db_api.resource_data_get(self, member)
+                member_id = rd_members[member]
                 try:
                     client.delete_member(member_id)
                 except NeutronClientException as ex:
@@ -361,7 +370,7 @@ class LoadBalancer(resource.Resource):
 
     def handle_delete(self):
         client = self.neutron()
-        for member in self.t['Properties'].get('members', []):
+        for member in self.properties.get('members'):
             member_id = db_api.resource_data_get(self, member)
             try:
                 client.delete_member(member_id)

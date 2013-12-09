@@ -28,30 +28,19 @@ supported backend.
 
 from oslo.config import cfg
 
-from heat.db import utils
+from heat.openstack.common.db import api as db_api
 
-SQL_CONNECTION = 'sqlite://'
-SQL_IDLE_TIMEOUT = 3600
 db_opts = [
     cfg.StrOpt('db_backend',
                default='sqlalchemy',
                help='The backend to use for db')]
 
-cfg.CONF.register_opts(db_opts)
+CONF = cfg.CONF
+CONF.register_opts(db_opts)
 
-IMPL = utils.LazyPluggable('db_backend',
-                           sqlalchemy='heat.db.sqlalchemy.api')
+_BACKEND_MAPPING = {'sqlalchemy': 'heat.db.sqlalchemy.api'}
 
-
-cfg.CONF.import_opt('sql_connection', 'heat.common.config')
-cfg.CONF.import_opt('sql_idle_timeout', 'heat.common.config')
-
-
-def configure():
-    global SQL_CONNECTION
-    global SQL_IDLE_TIMEOUT
-    SQL_CONNECTION = cfg.CONF.sql_connection
-    SQL_IDLE_TIMEOUT = cfg.CONF.sql_idle_timeout
+IMPL = db_api.DBAPI(backend_mapping=_BACKEND_MAPPING)
 
 
 def get_session():
@@ -64,6 +53,10 @@ def raw_template_get(context, template_id):
 
 def raw_template_create(context, values):
     return IMPL.raw_template_create(context, values)
+
+
+def resource_data_get_all(resource):
+    return IMPL.resource_data_get_all(resource)
 
 
 def resource_data_get(resource, key):
@@ -113,8 +106,9 @@ def resource_get_by_physical_resource_id(context, physical_resource_id):
                                                      physical_resource_id)
 
 
-def stack_get(context, stack_id, admin=False, show_deleted=False):
-    return IMPL.stack_get(context, stack_id, admin, show_deleted=show_deleted)
+def stack_get(context, stack_id, show_deleted=False, tenant_safe=True):
+    return IMPL.stack_get(context, stack_id, show_deleted=show_deleted,
+                          tenant_safe=tenant_safe)
 
 
 def stack_get_by_name(context, stack_name, owner_id=None):
@@ -129,8 +123,10 @@ def stack_get_all_by_owner_id(context, owner_id):
     return IMPL.stack_get_all_by_owner_id(context, owner_id)
 
 
-def stack_get_all_by_tenant(context):
-    return IMPL.stack_get_all_by_tenant(context)
+def stack_get_all_by_tenant(context, limit=None, sort_keys=None,
+                            marker=None, sort_dir=None, filters=None):
+    return IMPL.stack_get_all_by_tenant(context, limit, sort_keys,
+                                        marker, sort_dir, filters)
 
 
 def stack_count_all_by_tenant(context):
@@ -217,5 +213,11 @@ def watch_data_get_all(context):
     return IMPL.watch_data_get_all(context)
 
 
-def watch_data_delete(context, watch_name):
-    return IMPL.watch_data_delete(context, watch_name)
+def db_sync(version=None):
+    """Migrate the database to `version` or the most recent version."""
+    return IMPL.db_sync(version=version)
+
+
+def db_version():
+    """Display the current database version."""
+    return IMPL.db_version()

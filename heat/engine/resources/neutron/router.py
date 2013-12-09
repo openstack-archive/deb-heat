@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.common import exception
 from heat.engine import clients
 from heat.engine.resources.neutron import neutron
 from heat.engine import scheduler
@@ -27,11 +28,14 @@ logger = logging.getLogger(__name__)
 
 
 class Router(neutron.NeutronResource):
-    properties_schema = {'name': {'Type': 'String'},
+    properties_schema = {'name': {'Type': 'String',
+                                  'UpdateAllowed': True},
                          'value_specs': {'Type': 'Map',
-                                         'Default': {}},
+                                         'Default': {},
+                                         'UpdateAllowed': True},
                          'admin_state_up': {'Type': 'Boolean',
-                                            'Default': True}}
+                                            'Default': True,
+                                            'UpdateAllowed': True}}
     attributes_schema = {
         "status": _("The status of the router."),
         "external_gateway_info": _("Gateway network for the router."),
@@ -40,6 +44,8 @@ class Router(neutron.NeutronResource):
         "tenant_id": _("Tenant owning the router."),
         "show": _("All attributes."),
     }
+
+    update_allowed_keys = ('Properties',)
 
     def handle_create(self):
         props = self.prepare_properties(
@@ -66,30 +72,64 @@ class Router(neutron.NeutronResource):
         else:
             return scheduler.TaskRunner(self._confirm_delete)()
 
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
+        props = self.prepare_update_properties(json_snippet)
+        self.neutron().update_router(
+            self.resource_id, {'router': props})
+
 
 class RouterInterface(neutron.NeutronResource):
-    properties_schema = {'router_id': {'Type': 'String',
-                                       'Required': True},
-                         'subnet_id': {'Type': 'String',
-                                       'Required': True}}
+    properties_schema = {
+        'router_id': {
+            'Type': 'String',
+            'Required': True,
+            'Description': _('The router id.')},
+        'subnet_id': {
+            'Type': 'String',
+            'Description': _('The subnet id, either '
+                             'subnet_id or port_id should be specified.')},
+        'port_id': {
+            'Type': 'String',
+            'Description': _('The port id, either '
+                             'subnet_id or port_id should be specified.')}}
+
+    def validate(self):
+        '''
+        Validate any of the provided params
+        '''
+        super(RouterInterface, self).validate()
+        subnet_id = self.properties.get('subnet_id')
+        port_id = self.properties.get('port_id')
+        if subnet_id and port_id:
+            raise exception.ResourcePropertyConflict('subnet_id', 'port_id')
+        if not subnet_id and not port_id:
+            msg = 'Either subnet_id or port_id must be specified.'
+            raise exception.StackValidationFailed(message=msg)
 
     def handle_create(self):
         router_id = self.properties.get('router_id')
-        subnet_id = self.properties.get('subnet_id')
+        key = 'subnet_id'
+        value = self.properties.get(key)
+        if not value:
+            key = 'port_id'
+            value = self.properties.get(key)
         self.neutron().add_interface_router(
             router_id,
-            {'subnet_id': subnet_id})
-        self.resource_id_set('%s:%s' % (router_id, subnet_id))
+            {key: value})
+        self.resource_id_set('%s:%s=%s' % (router_id, key, value))
 
     def handle_delete(self):
         if not self.resource_id:
             return
         client = self.neutron()
-        (router_id, subnet_id) = self.resource_id.split(':')
+        tokens = self.resource_id.replace('=', ':').split(':')
+        if len(tokens) == 2:    # compatible with old data
+            tokens.insert(1, 'subnet_id')
+        (router_id, key, value) = tokens
         try:
             client.remove_interface_router(
                 router_id,
-                {'subnet_id': subnet_id})
+                {key: value})
         except NeutronClientException as ex:
             if ex.status_code != 404:
                 raise ex
@@ -103,7 +143,7 @@ class RouterGateway(neutron.NeutronResource):
 
     def add_dependencies(self, deps):
         super(RouterGateway, self).add_dependencies(deps)
-        for resource in self.stack.resources.itervalues():
+        for resource in self.stack.itervalues():
             # depend on any RouterInterface in this template with the same
             # router_id as this router_id
             if (resource.has_interface('OS::Neutron::RouterInterface') and

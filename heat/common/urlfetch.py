@@ -22,6 +22,10 @@ from requests import exceptions
 import urllib2
 import urlparse
 
+from oslo.config import cfg
+
+cfg.CONF.import_opt('max_template_size', 'heat.common.config')
+
 from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
 
@@ -42,17 +46,34 @@ def get(url, allowed_schemes=('http', 'https')):
     components = urlparse.urlparse(url)
 
     if components.scheme not in allowed_schemes:
-        raise IOError('Invalid URL scheme %s' % components.scheme)
+        raise IOError(_('Invalid URL scheme %s') % components.scheme)
 
     if components.scheme == 'file':
         try:
             return urllib2.urlopen(url).read()
         except urllib2.URLError as uex:
-            raise IOError('Failed to retrieve template: %s' % str(uex))
+            raise IOError(_('Failed to retrieve template: %s') % str(uex))
 
     try:
-        resp = requests.get(url)
+        resp = requests.get(url, stream=True)
         resp.raise_for_status()
-        return resp.text
+
+        # We cannot use resp.text here because it would download the
+        # entire file, and a large enough file would bring down the
+        # engine.  The 'Content-Length' header could be faked, so it's
+        # necessary to download the content in chunks to until
+        # max_template_size is reached.  The chunk_size we use needs
+        # to balance CPU-intensive string concatenation with accuracy
+        # (eg. it's possible to fetch 1000 bytes greater than
+        # max_template_size with a chunk_size of 1000).
+        reader = resp.iter_content(chunk_size=1000)
+        result = ""
+        for chunk in reader:
+            result += chunk
+            if len(result) > cfg.CONF.max_template_size:
+                raise IOError("Template exceeds maximum allowed size (%s "
+                              "bytes)" % cfg.CONF.max_template_size)
+        return result
+
     except exceptions.RequestException as ex:
-        raise IOError('Failed to retrieve template: %s' % str(ex))
+        raise IOError(_('Failed to retrieve template: %s') % str(ex))

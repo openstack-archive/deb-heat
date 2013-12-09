@@ -17,14 +17,17 @@ import functools
 import json
 import sys
 
+import mock
 import mox
 from testtools import matchers
+import testscenarios
 
 from oslo.config import cfg
 
 from heat.engine import environment
 from heat.common import exception
 from heat.common import urlfetch
+from heat.tests import fakes as test_fakes
 from heat.tests.v1_1 import fakes
 import heat.rpc.api as engine_api
 import heat.db.api as db_api
@@ -44,6 +47,10 @@ from heat.openstack.common import threadgroup
 from heat.tests.common import HeatTestCase
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
+
+
+load_tests = testscenarios.load_tests_apply_scenarios
+
 
 wp_template = '''
 {
@@ -136,12 +143,19 @@ def get_stack(stack_name, ctx, template):
     return stack
 
 
+def setup_keystone_mocks(mocks, stack):
+    fkc = test_fakes.FakeKeystoneClient()
+    mocks.StubOutWithMock(stack.clients, 'keystone')
+    stack.clients.keystone().MultipleTimes().AndReturn(fkc)
+
+
 def setup_mocks(mocks, stack):
     fc = fakes.FakeClient()
     mocks.StubOutWithMock(instances.Instance, 'nova')
     instances.Instance.nova().MultipleTimes().AndReturn(fc)
+    setup_keystone_mocks(mocks, stack)
 
-    instance = stack.resources['WebServer']
+    instance = stack['WebServer']
     user_data = instance.properties['UserData']
     server_userdata = nova_utils.build_userdata(instance, user_data)
     instance.mime_string = server_userdata
@@ -152,7 +166,7 @@ def setup_mocks(mocks, stack):
                       userdata=server_userdata, scheduler_hints=None,
                       meta=None, nics=None,
                       availability_zone=None).AndReturn(
-                          fc.servers.list()[-1])
+                          fc.servers.list()[4])
     return fc
 
 
@@ -249,9 +263,9 @@ class StackCreateTest(HeatTestCase):
         stack.store()
         stack.create()
 
-        self.assertNotEqual(stack.resources['WebServer'], None)
-        self.assertTrue(stack.resources['WebServer'].resource_id > 0)
-        self.assertNotEqual(stack.resources['WebServer'].ipaddress, '0.0.0.0')
+        self.assertNotEqual(stack['WebServer'], None)
+        self.assertTrue(stack['WebServer'].resource_id > 0)
+        self.assertNotEqual(stack['WebServer'].ipaddress, '0.0.0.0')
 
     def test_wordpress_single_instance_stack_delete(self):
         ctx = utils.dummy_context()
@@ -264,8 +278,8 @@ class StackCreateTest(HeatTestCase):
         db_s = db_api.stack_get(ctx, stack_id)
         self.assertNotEqual(db_s, None)
 
-        self.assertNotEqual(stack.resources['WebServer'], None)
-        self.assertTrue(stack.resources['WebServer'].resource_id > 0)
+        self.assertNotEqual(stack['WebServer'], None)
+        self.assertTrue(stack['WebServer'].resource_id > 0)
 
         self.m.StubOutWithMock(fc.client, 'get_servers_9999')
         get = fc.client.get_servers_9999
@@ -273,7 +287,7 @@ class StackCreateTest(HeatTestCase):
         mox.Replay(get)
         stack.delete()
 
-        rsrc = stack.resources['WebServer']
+        rsrc = stack['WebServer']
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
         self.assertEqual((stack.DELETE, stack.COMPLETE), rsrc.state)
         self.assertEqual(None, db_api.stack_get(ctx, stack_id))
@@ -395,7 +409,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         stack = get_wordpress_stack(stack_name, self.ctx)
         # force check for credentials on create
-        stack.resources['WebServer'].requires_deferred_auth = True
+        stack['WebServer'].requires_deferred_auth = True
 
         self.m.StubOutWithMock(parser, 'Template')
         self.m.StubOutWithMock(environment, 'Environment')
@@ -421,14 +435,14 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                                ctx_no_pwd, stack_name,
                                template, params, None, {})
         self.assertEqual(
-            'Missing required credential: X-Auth-Key', ex.message)
+            'Missing required credential: X-Auth-Key', str(ex))
 
         ex = self.assertRaises(exception.MissingCredentialError,
                                self.man.create_stack,
                                ctx_no_user, stack_name,
                                template, params, None, {})
         self.assertEqual(
-            'Missing required credential: X-Auth-User', ex.message)
+            'Missing required credential: X-Auth-User', str(ex))
 
     def test_stack_create_total_resources_equals_max(self):
         stack_name = 'service_create_stack_total_resources_equals_max'
@@ -461,8 +475,9 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         result = self.man.create_stack(self.ctx, stack_name, template, params,
                                        None, {})
         self.m.VerifyAll()
-        self.assertEquals(stack.identifier(), result)
-        self.assertEquals(3, stack.total_resources())
+        self.assertEqual(stack.identifier(), result)
+        self.assertEqual(3, stack.total_resources())
+        stack.delete()
 
     def test_stack_create_total_resources_exceeds_max(self):
         stack_name = 'service_create_stack_total_resources_exceeds_max'
@@ -478,7 +493,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         ex = self.assertRaises(exception.RequestLimitExceeded,
                                self.man.create_stack, self.ctx, stack_name,
                                template, params, None, {})
-        self.assertIn(exception.StackResourceLimitExceeded.message,
+        self.assertIn(exception.StackResourceLimitExceeded.msg_fmt,
                       str(ex))
 
     def test_stack_validate(self):
@@ -621,7 +636,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.assertEqual(old_stack.identifier(), result)
         self.assertTrue(isinstance(result, dict))
         self.assertTrue(result['stack_id'])
-        self.assertEquals(3, old_stack.root_stack.total_resources())
+        self.assertEqual(3, old_stack.root_stack.total_resources())
         self.m.VerifyAll()
 
     def test_stack_update_exceeds_resource_limit(self):
@@ -646,7 +661,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                                self.man.update_stack, self.ctx,
                                old_stack.identifier(), template, params, None,
                                {})
-        self.assertIn(exception.StackResourceLimitExceeded.message,
+        self.assertIn(exception.StackResourceLimitExceeded.msg_fmt,
                       str(ex))
 
     def test_stack_update_verify_err(self):
@@ -707,7 +722,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         old_stack = get_wordpress_stack(stack_name, self.ctx)
         # force check for credentials on create
-        old_stack.resources['WebServer'].requires_deferred_auth = True
+        old_stack['WebServer'].requires_deferred_auth = True
 
         sid = old_stack.store()
         s = db_api.stack_get(self.ctx, sid)
@@ -718,6 +733,9 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.m.StubOutWithMock(parser.Stack, 'load')
         self.m.StubOutWithMock(parser, 'Template')
         self.m.StubOutWithMock(environment, 'Environment')
+        self.m.StubOutWithMock(self.man, '_get_stack')
+
+        self.man._get_stack(self.ctx, old_stack.identifier()).AndReturn(s)
 
         parser.Stack.load(self.ctx, stack=s).AndReturn(old_stack)
 
@@ -734,13 +752,13 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                                template, params, None, {})
 
         self.assertEqual(
-            'Missing required credential: X-Auth-Key', ex.message)
+            'Missing required credential: X-Auth-Key', str(ex))
 
         self.m.VerifyAll()
 
     def test_validate_deferred_auth_context_trusts(self):
         stack = get_wordpress_stack('test_deferred_auth', self.ctx)
-        stack.resources['WebServer'].requires_deferred_auth = True
+        stack['WebServer'].requires_deferred_auth = True
         ctx = utils.dummy_context(user=None, password=None)
         cfg.CONF.set_default('deferred_auth_method', 'trusts')
 
@@ -749,7 +767,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
     def test_validate_deferred_auth_context_not_required(self):
         stack = get_wordpress_stack('test_deferred_auth', self.ctx)
-        stack.resources['WebServer'].requires_deferred_auth = False
+        stack['WebServer'].requires_deferred_auth = False
         ctx = utils.dummy_context(user=None, password=None)
         cfg.CONF.set_default('deferred_auth_method', 'password')
 
@@ -759,7 +777,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
     def test_validate_deferred_auth_context_missing_credentials(self):
         stack = get_wordpress_stack('test_deferred_auth', self.ctx)
-        stack.resources['WebServer'].requires_deferred_auth = True
+        stack['WebServer'].requires_deferred_auth = True
         cfg.CONF.set_default('deferred_auth_method', 'password')
 
         # missing username
@@ -768,7 +786,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                                self.man._validate_deferred_auth_context,
                                ctx, stack)
         self.assertEqual(
-            'Missing required credential: X-Auth-User', ex.message)
+            'Missing required credential: X-Auth-User', str(ex))
 
         # missing password
         ctx = utils.dummy_context(password=None)
@@ -776,7 +794,54 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                                self.man._validate_deferred_auth_context,
                                ctx, stack)
         self.assertEqual(
-            'Missing required credential: X-Auth-Key', ex.message)
+            'Missing required credential: X-Auth-Key', str(ex))
+
+
+class StackServiceUpdateNotSupportedTest(HeatTestCase):
+
+    scenarios = [
+        ('suspend_in_progress', dict(action='SUSPEND', status='IN_PROGRESS')),
+        ('suspend_complete', dict(action='SUSPEND', status='COMPLETE')),
+        ('suspend_failed', dict(action='SUSPEND', status='FAILED')),
+        ('create_in_progress', dict(action='CREATE', status='IN_PROGRESS')),
+        ('delete_in_progress', dict(action='DELETE', status='IN_PROGRESS')),
+        ('update_in_progress', dict(action='UPDATE', status='IN_PROGRESS')),
+        ('rb_in_progress', dict(action='ROLLBACK', status='IN_PROGRESS')),
+        ('resume_in_progress', dict(action='RESUME', status='IN_PROGRESS')),
+    ]
+
+    def setUp(self):
+        super(StackServiceUpdateNotSupportedTest, self).setUp()
+        utils.setup_dummy_db()
+        utils.reset_dummy_db()
+        self.ctx = utils.dummy_context()
+        self.man = service.EngineService('a-host', 'a-topic')
+
+    def test_stack_update_during(self):
+        stack_name = '%s-%s' % (self.action, self.status)
+
+        old_stack = get_wordpress_stack(stack_name, self.ctx)
+        old_stack.action = self.action
+        old_stack.status = self.status
+
+        sid = old_stack.store()
+        s = db_api.stack_get(self.ctx, sid)
+
+        stack = get_wordpress_stack(stack_name, self.ctx)
+
+        self.m.StubOutWithMock(parser, 'Stack')
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx, stack=s).AndReturn(old_stack)
+
+        self.m.ReplayAll()
+
+        params = {'foo': 'bar'}
+        template = '{ "Resources": {} }'
+        self.assertRaises(exception.NotSupported,
+                          self.man.update_stack,
+                          self.ctx, old_stack.identifier(), template, params,
+                          None, {})
+        self.m.VerifyAll()
 
 
 class StackServiceSuspendResumeTest(HeatTestCase):
@@ -1076,15 +1141,29 @@ class StackServiceTest(HeatTestCase):
 
         self.m.VerifyAll()
 
+    @mock.patch.object(db_api, 'stack_get_all_by_tenant')
+    def test_stack_list_passes_filtering_info(self, mock_stack_get_all_by_t):
+
+        filters = {'foo': 'bar'}
+        self.eng.list_stacks(self.ctx, filters=filters)
+        mock_stack_get_all_by_t.assert_called_once_with(mock.ANY,
+                                                        mock.ANY,
+                                                        mock.ANY,
+                                                        mock.ANY,
+                                                        mock.ANY,
+                                                        filters
+                                                        )
+
     def test_stack_describe_nonexistent(self):
         non_exist_identifier = identifier.HeatIdentifier(
             self.ctx.tenant_id, 'wibble',
             '18d06e2e-44d3-4bef-9fbf-52480d604b02')
 
+        stack_not_found_exc = exception.StackNotFound(stack_name='test')
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
         service.EngineService._get_stack(
             self.ctx, non_exist_identifier,
-            show_deleted=True).AndRaise(exception.StackNotFound)
+            show_deleted=True).AndRaise(stack_not_found_exc)
         self.m.ReplayAll()
 
         self.assertRaises(exception.StackNotFound,
@@ -1097,10 +1176,12 @@ class StackServiceTest(HeatTestCase):
             'wibble', 'wibble',
             '18d06e2e-44d3-4bef-9fbf-52480d604b02')
 
+        invalid_tenant_exc = exception.InvalidTenant(target='test',
+                                                     actual='test')
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
         service.EngineService._get_stack(
             self.ctx, non_exist_identifier,
-            show_deleted=True).AndRaise(exception.InvalidTenant)
+            show_deleted=True).AndRaise(invalid_tenant_exc)
         self.m.ReplayAll()
 
         self.assertRaises(exception.InvalidTenant,
@@ -1169,6 +1250,7 @@ class StackServiceTest(HeatTestCase):
                 'Foo': {
                     'type': 'string',
                     'required': False,
+                    'update_allowed': False,
                 },
             },
             'attributes': {
@@ -1218,9 +1300,10 @@ class StackServiceTest(HeatTestCase):
             'wibble',
             '18d06e2e-44d3-4bef-9fbf-52480d604b02')
 
+        stack_not_found_exc = exception.StackNotFound(stack_name='test')
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
         service.EngineService._get_stack(
-            self.ctx, non_exist_identifier).AndRaise(exception.StackNotFound)
+            self.ctx, non_exist_identifier).AndRaise(stack_not_found_exc)
         self.m.ReplayAll()
 
         self.assertRaises(exception.StackNotFound,
@@ -1397,9 +1480,10 @@ class StackServiceTest(HeatTestCase):
             self.ctx.tenant_id, 'wibble',
             '18d06e2e-44d3-4bef-9fbf-52480d604b02')
 
+        stack_not_found_exc = exception.StackNotFound(stack_name='test')
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
         service.EngineService._get_stack(
-            self.ctx, non_exist_identifier).AndRaise(exception.StackNotFound)
+            self.ctx, non_exist_identifier).AndRaise(stack_not_found_exc)
         self.m.ReplayAll()
 
         self.assertRaises(exception.StackNotFound,
@@ -1413,6 +1497,7 @@ class StackServiceTest(HeatTestCase):
                           self.ctx,
                           policy_template)
         self.stack = stack
+        setup_keystone_mocks(self.m, stack)
         self.m.ReplayAll()
         stack.store()
         stack.create()
@@ -1442,6 +1527,7 @@ class StackServiceTest(HeatTestCase):
         stack = get_stack('signal_reception_no_resource',
                           self.ctx,
                           policy_template)
+        setup_keystone_mocks(self.m, stack)
         self.stack = stack
         self.m.ReplayAll()
         stack.store()
@@ -1496,9 +1582,10 @@ class StackServiceTest(HeatTestCase):
             self.ctx.tenant_id, 'wibble',
             '18d06e2e-44d3-4bef-9fbf-52480d604b02')
 
+        stack_not_found_exc = exception.StackNotFound(stack_name='test')
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
         service.EngineService._get_stack(
-            self.ctx, non_exist_identifier).AndRaise(exception.StackNotFound)
+            self.ctx, non_exist_identifier).AndRaise(stack_not_found_exc)
         self.m.ReplayAll()
 
         test_metadata = {'foo': 'bar', 'baz': 'quux', 'blarg': 'wibble'}
@@ -1552,6 +1639,7 @@ class StackServiceTest(HeatTestCase):
         stack = get_stack('period_watch_task_created_nested',
                           utils.dummy_context(),
                           nested_alarm_template)
+        setup_keystone_mocks(self.m, stack)
         self.stack = stack
         self.m.ReplayAll()
         stack.store()
@@ -1643,7 +1731,7 @@ class StackServiceTest(HeatTestCase):
         values = {'watch_rule_id': watch.id,
                   'data': {u'Namespace': u'system/linux',
                            u'ServiceFailure': {
-                           u'Units': u'Counter', u'Value': 1}}}
+                               u'Units': u'Counter', u'Value': 1}}}
         watch = db_api.watch_data_create(self.ctx, values)
 
         # Check there is one result returned
@@ -1762,7 +1850,7 @@ class StackServiceTest(HeatTestCase):
 
         self.m.StubOutWithMock(watchrule.WatchRule, 'load')
         watchrule.WatchRule.load(self.ctx, "nonexistent")\
-            .AndRaise(exception.WatchRuleNotFound)
+            .AndRaise(exception.WatchRuleNotFound(watch_name='test'))
         self.m.ReplayAll()
 
         self.assertRaises(exception.WatchRuleNotFound,

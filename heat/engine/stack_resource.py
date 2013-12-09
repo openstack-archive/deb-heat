@@ -24,6 +24,7 @@ from heat.engine import scheduler
 from heat.engine import template as tmpl
 
 from heat.openstack.common import log as logging
+from heat.openstack.common.gettextutils import _
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ class StackResource(resource.Resource):
                                              parent_resource=self)
 
             if self._nested is None:
-                raise exception.NotFound('Nested stack not found in DB')
+                raise exception.NotFound(_('Nested stack not found in DB'))
 
         return self._nested
 
@@ -85,7 +86,7 @@ class StackResource(resource.Resource):
              self.stack.root_stack.total_resources() >
              cfg.CONF.max_resources_per_stack)):
             raise exception.RequestLimitExceeded(
-                message=exception.StackResourceLimitExceeded.message)
+                message=exception.StackResourceLimitExceeded.msg_fmt)
         self._outputs_to_attribs(child_template)
 
         # Note we disable rollback for nested stacks, since they
@@ -133,7 +134,7 @@ class StackResource(resource.Resource):
             new_size = nested_stack.root_stack.total_resources() + res_diff
             if new_size > cfg.CONF.max_resources_per_stack:
                 raise exception.RequestLimitExceeded(
-                    message=exception.StackResourceLimitExceeded.message)
+                    message=exception.StackResourceLimitExceeded.msg_fmt)
 
         # Note we disable rollback for nested stacks, since they
         # should be rolled back by the parent stack on failure
@@ -170,7 +171,7 @@ class StackResource(resource.Resource):
         nested_stack = self.nested()
         if nested_stack.state != (nested_stack.UPDATE,
                                   nested_stack.COMPLETE):
-            raise exception.Error("Nested stack update failed: %s" %
+            raise exception.Error(_("Nested stack update failed: %s") %
                                   nested_stack.status_reason)
         return True
 
@@ -181,7 +182,7 @@ class StackResource(resource.Resource):
         try:
             stack = self.nested()
         except exception.NotFound:
-            logger.info("Stack not found to delete")
+            logger.info(_("Stack not found to delete"))
         else:
             if stack is not None:
                 delete_task = scheduler.TaskRunner(stack.delete)

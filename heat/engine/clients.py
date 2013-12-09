@@ -17,40 +17,50 @@ from oslo.config import cfg
 
 from heat.openstack.common import importutils
 from heat.openstack.common import log as logging
+from heat.openstack.common.gettextutils import _
 
 logger = logging.getLogger(__name__)
 
 
 from heat.common import heat_keystoneclient as hkc
+from heatclient import client as heatclient
 from novaclient import client as novaclient
 from novaclient import shell as novashell
+
 try:
     from swiftclient import client as swiftclient
 except ImportError:
     swiftclient = None
-    logger.info('swiftclient not available')
+    logger.info(_('swiftclient not available'))
 try:
     from neutronclient.v2_0 import client as neutronclient
 except ImportError:
     neutronclient = None
-    logger.info('neutronclient not available')
+    logger.info(_('neutronclient not available'))
 try:
     from cinderclient import client as cinderclient
 except ImportError:
     cinderclient = None
-    logger.info('cinderclient not available')
+    logger.info(_('cinderclient not available'))
+
+try:
+    from troveclient import client as troveclient
+except ImportError:
+    troveclient = None
+    logger.info(_('troveclient not available'))
 
 try:
     from ceilometerclient.v2 import client as ceilometerclient
 except ImportError:
     ceilometerclient = None
-    logger.info('ceilometerclient not available')
+    logger.info(_('ceilometerclient not available'))
 
+_default_backend = "heat.engine.clients.OpenStackClients"
 
 cloud_opts = [
     cfg.StrOpt('cloud_backend',
-               default=None,
-               help="Cloud module to use as a backend. Defaults to OpenStack.")
+               default=_default_backend,
+               help="Fully qualified class name to use as a client backend.")
 ]
 cfg.CONF.register_opts(cloud_opts)
 
@@ -59,7 +69,6 @@ class OpenStackClients(object):
     '''
     Convenience class to create and cache client instances.
     '''
-
     def __init__(self, context):
         self.context = context
         self._nova = {}
@@ -67,7 +76,9 @@ class OpenStackClients(object):
         self._swift = None
         self._neutron = None
         self._cinder = None
+        self._trove = None
         self._ceilometer = None
+        self._heat = None
 
     @property
     def auth_token(self):
@@ -91,7 +102,7 @@ class OpenStackClients(object):
 
         con = self.context
         if self.auth_token is None:
-            logger.error("Nova connection failed, no auth_token!")
+            logger.error(_("Nova connection failed, no auth_token!"))
             return None
 
         computeshell = novashell.OpenStackComputeShell()
@@ -103,7 +114,9 @@ class OpenStackClients(object):
             'service_type': service_type,
             'username': None,
             'api_key': None,
-            'extensions': extensions
+            'extensions': extensions,
+            'cacert': self._get_client_option('nova', 'ca_file'),
+            'insecure': self._get_client_option('nova', 'insecure')
         }
 
         client = novaclient.Client(1.1, **args)
@@ -123,7 +136,7 @@ class OpenStackClients(object):
 
         con = self.context
         if self.auth_token is None:
-            logger.error("Swift connection failed, no auth_token!")
+            logger.error(_("Swift connection failed, no auth_token!"))
             return None
 
         args = {
@@ -133,7 +146,9 @@ class OpenStackClients(object):
             'key': None,
             'authurl': None,
             'preauthtoken': self.auth_token,
-            'preauthurl': self.url_for(service_type='object-store')
+            'preauthurl': self.url_for(service_type='object-store'),
+            'cacert': self._get_client_option('swift', 'ca_file'),
+            'insecure': self._get_client_option('swift', 'insecure')
         }
         self._swift = swiftclient.Connection(**args)
         return self._swift
@@ -146,14 +161,16 @@ class OpenStackClients(object):
 
         con = self.context
         if self.auth_token is None:
-            logger.error("Neutron connection failed, no auth_token!")
+            logger.error(_("Neutron connection failed, no auth_token!"))
             return None
 
         args = {
             'auth_url': con.auth_url,
             'service_type': 'network',
             'token': self.auth_token,
-            'endpoint_url': self.url_for(service_type='network')
+            'endpoint_url': self.url_for(service_type='network'),
+            'ca_cert': self._get_client_option('neutron', 'ca_file'),
+            'insecure': self._get_client_option('neutron', 'insecure')
         }
 
         self._neutron = neutronclient.Client(**args)
@@ -168,7 +185,7 @@ class OpenStackClients(object):
 
         con = self.context
         if self.auth_token is None:
-            logger.error("Cinder connection failed, no auth_token!")
+            logger.error(_("Cinder connection failed, no auth_token!"))
             return None
 
         args = {
@@ -176,7 +193,9 @@ class OpenStackClients(object):
             'auth_url': con.auth_url,
             'project_id': con.tenant,
             'username': None,
-            'api_key': None
+            'api_key': None,
+            'cacert': self._get_client_option('cinder', 'ca_file'),
+            'insecure': self._get_client_option('cinder', 'insecure')
         }
 
         self._cinder = cinderclient.Client('1', **args)
@@ -186,6 +205,32 @@ class OpenStackClients(object):
 
         return self._cinder
 
+    def trove(self, service_type="database"):
+        if troveclient is None:
+            return None
+        if self._trove:
+            return self._trove
+
+        con = self.context
+        if self.auth_token is None:
+            logger.error(_("Trove connection failed, no auth_token!"))
+            return None
+
+        args = {
+            'service_type': service_type,
+            'auth_url': con.auth_url,
+            'proxy_token': con.auth_token,
+            'username': None,
+            'password': None
+        }
+
+        self._trove = troveclient.Client('1.0', **args)
+        management_url = self.url_for(service_type=service_type)
+        self._trove.client.auth_token = con.auth_token
+        self._trove.client.management_url = management_url
+
+        return self._trove
+
     def ceilometer(self):
         if ceilometerclient is None:
             return None
@@ -193,7 +238,7 @@ class OpenStackClients(object):
             return self._ceilometer
 
         if self.auth_token is None:
-            logger.error("Ceilometer connection failed, no auth_token!")
+            logger.error(_("Ceilometer connection failed, no auth_token!"))
             return None
         con = self.context
         args = {
@@ -202,6 +247,10 @@ class OpenStackClients(object):
             'project_id': con.tenant,
             'token': lambda: self.auth_token,
             'endpoint': self.url_for(service_type='metering'),
+            'ca_file': self._get_client_option('ceilometer', 'ca_file'),
+            'cert_file': self._get_client_option('ceilometer', 'cert_file'),
+            'key_file': self._get_client_option('ceilometer', 'key_file'),
+            'insecure': self._get_client_option('ceilometer', 'insecure')
         }
 
         client = ceilometerclient.Client(**args)
@@ -209,11 +258,50 @@ class OpenStackClients(object):
         self._ceilometer = client
         return self._ceilometer
 
+    def _get_client_option(self, client, option):
+        try:
+            group_name = 'clients_' + client
+            cfg.CONF.import_opt(option, 'heat.common.config',
+                                group=group_name)
+            return getattr(getattr(cfg.CONF, group_name), option)
+        except (cfg.NoSuchGroupError, cfg.NoSuchOptError):
+            cfg.CONF.import_opt(option, 'heat.common.config', group='clients')
+            return getattr(cfg.CONF.clients, option)
 
-if cfg.CONF.cloud_backend:
-    cloud_backend_module = importutils.import_module(cfg.CONF.cloud_backend)
-    Clients = cloud_backend_module.Clients
-else:
-    Clients = OpenStackClients
+    def heat(self):
+        if self._heat:
+            return self._heat
 
-logger.debug('Using backend %s' % Clients)
+        con = self.context
+        if self.auth_token is None:
+            logger.error(_("Heat connection failed, no auth_token!"))
+            return None
+
+        args = {
+            'auth_url': con.auth_url,
+            'token': self.auth_token,
+            'username': None,
+            'password': None
+        }
+
+        endpoint = self.url_for(service_type='orchestration')
+        self._heat = heatclient.Client('1', endpoint, **args)
+
+        return self._heat
+
+
+class ClientBackend(object):
+    '''Delay choosing the backend client module until the client's class needs
+    to be initialized.
+    '''
+    def __new__(cls, context):
+        if cfg.CONF.cloud_backend == _default_backend:
+            return OpenStackClients(context)
+        else:
+            return importutils.import_object(
+                cfg.CONF.cloud_backend,
+                context
+            )
+
+
+Clients = ClientBackend

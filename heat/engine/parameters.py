@@ -151,7 +151,7 @@ class Parameter(object):
         elif param_type == JSON:
             ParamClass = JsonParam
         else:
-            raise ValueError('Invalid Parameter type "%s"' % param_type)
+            raise ValueError(_('Invalid Parameter type "%s"') % param_type)
 
         return ParamClass(name, schema, value, validate_value)
 
@@ -180,7 +180,7 @@ class Parameter(object):
         if self.has_default():
             return self.default()
 
-        raise KeyError('Missing parameter %s' % self.name)
+        raise KeyError(_('Missing parameter %s') % self.name)
 
     def no_echo(self):
         '''
@@ -251,7 +251,7 @@ class CommaDelimitedListParam(Parameter, collections.Sequence):
             if value:
                 return value.split(',')
         except (KeyError, AttributeError) as err:
-            message = 'Value must be a comma-delimited list string: %s'
+            message = _('Value must be a comma-delimited list string: %s')
             raise ValueError(message % str(err))
         return value
 
@@ -287,7 +287,7 @@ class JsonParam(Parameter, collections.Mapping):
             if val:
                 return json.loads(val)
         except (ValueError, TypeError) as err:
-            message = 'Value must be valid JSON: %s' % str(err)
+            message = _('Value must be valid JSON: %s') % str(err)
             raise ValueError(message)
         return value
 
@@ -298,7 +298,7 @@ class JsonParam(Parameter, collections.Mapping):
                 val = json.dumps(val)
                 self.user_value = val
             except (ValueError, TypeError) as err:
-                message = 'Value must be valid JSON'
+                message = _('Value must be valid JSON')
                 raise ValueError("%s: %s" % (message, str(err)))
         return val
 
@@ -355,6 +355,7 @@ class Parameters(collections.Mapping):
                 yield Parameter(name, schema, value, validate_value)
 
         self.tmpl = tmpl
+        self._validate_tmpl_parameters()
         self._validate(user_params)
         self.params = dict((p.name, p) for p in parameters())
 
@@ -393,3 +394,15 @@ class Parameters(collections.Mapping):
         for param in user_params:
             if param not in schemata:
                 raise exception.UnknownUserParameter(key=param)
+
+    def _validate_tmpl_parameters(self):
+        param = None
+        for key in self.tmpl.t.keys():
+            if key == 'Parameters' or key == 'parameters':
+                param = key
+                break
+        if param is not None:
+            template_params = self.tmpl.t[key]
+            for name, attrs in template_params.iteritems():
+                if not isinstance(attrs, dict):
+                    raise exception.InvalidTemplateParameter(key=name)

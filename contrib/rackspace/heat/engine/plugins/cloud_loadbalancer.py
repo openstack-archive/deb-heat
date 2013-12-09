@@ -18,22 +18,28 @@ except ImportError:
     class NotFound(Exception):
         pass
 
+    def resource_mapping():
+        return {}
+else:
+
+    def resource_mapping():
+        return {'Rackspace::Cloud::LoadBalancer': CloudLoadBalancer}
+
 from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
 from heat.engine import scheduler
+from heat.engine import resource
 from heat.engine.properties import Properties
 from heat.common import exception
-
-from . import rackspace_resource
 
 logger = logging.getLogger(__name__)
 
 
 class LoadbalancerBuildError(exception.HeatException):
-    message = _("There was an error building the loadbalancer:%(lb_name)s.")
+    msg_fmt = _("There was an error building the loadbalancer:%(lb_name)s.")
 
 
-class CloudLoadBalancer(rackspace_resource.RackspaceResource):
+class CloudLoadBalancer(resource.Resource):
 
     protocol_values = ["DNS_TCP", "DNS_UDP", "FTP", "HTTP", "HTTPS", "IMAPS",
                        "IMAPv4", "LDAP", "LDAPS", "MYSQL", "POP3", "POP3S",
@@ -152,6 +158,7 @@ class CloudLoadBalancer(rackspace_resource.RackspaceResource):
     properties_schema = {
         'name': {'Type': 'String', 'Required': False},
         'nodes': {'Type': 'List', 'Required': True,
+                  'UpdateAllowed': True,
                   'Schema': {'Type': 'Map', 'Schema': nodes_schema}},
         'protocol': {'Type': 'String', 'Required': True,
                      'AllowedValues': protocol_values},
@@ -185,11 +192,13 @@ class CloudLoadBalancer(rackspace_resource.RackspaceResource):
                      'instance.')}
 
     update_allowed_keys = ('Properties',)
-    update_allowed_properties = ('nodes',)
 
     def __init__(self, name, json_snippet, stack):
         super(CloudLoadBalancer, self).__init__(name, json_snippet, stack)
         self.clb = self.cloud_lb()
+
+    def cloud_lb(self):
+        return self.stack.clients.cloud_lb()
 
     def _setup_properties(self, properties, function):
         """Use defined schema properties as kwargs for loadbalancer objects."""
@@ -271,7 +280,7 @@ class CloudLoadBalancer(rackspace_resource.RackspaceResource):
             del node['ref']
             node_list.append(node)
 
-        nodes = self._setup_properties(node_list, self.clb.Node)
+        nodes = [self.clb.Node(**node) for node in node_list]
         virtual_ips = self._setup_properties(self.properties.get('virtualIps'),
                                              self.clb.VirtualIP)
 
@@ -431,9 +440,6 @@ class CloudLoadBalancer(rackspace_resource.RackspaceResource):
                 except exception.StackValidationFailed as svf:
                     return {'Error': str(svf)}
 
-    def FnGetRefId(self):
-        return unicode(self.name)
-
     def _public_ip(self):
         #TODO(andrew-plunk) return list here and let caller choose ip
         for ip in self.clb.get(self.resource_id).virtual_ips:
@@ -450,12 +456,3 @@ class CloudLoadBalancer(rackspace_resource.RackspaceResource):
         function = attribute_function[key]
         logger.info('%s.GetAtt(%s) == %s' % (self.name, key, function))
         return unicode(function)
-
-
-def resource_mapping():
-    if rackspace_resource.PYRAX_INSTALLED:
-        return {
-            'Rackspace::Cloud::LoadBalancer': CloudLoadBalancer
-        }
-    else:
-        return {}

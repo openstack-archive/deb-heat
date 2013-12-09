@@ -680,7 +680,7 @@ class Resource(object):
             http_exc = translate_exception(err, request.best_match_language())
             raise exception.HTTPExceptionDisguise(http_exc)
         except exception.HeatException as err:
-            log_exception(err.message, sys.exc_info())
+            log_exception(err, sys.exc_info())
             raise translate_exception(err, request.best_match_language())
         except Exception as err:
             log_exception(err, sys.exc_info())
@@ -716,7 +716,8 @@ class Resource(object):
                     err_body = action_result.get_unserialized_body()
                     serializer.default(action_result, err_body)
                 except Exception:
-                    logging.warning("Unable to serialize exception response")
+                    logging.warning(_("Unable to serialize exception "
+                                    "response"))
 
             return action_result
 
@@ -756,7 +757,7 @@ def log_exception(err, exc_info):
 
 def translate_exception(exc, locale):
     """Translates all translatable elements of the given exception."""
-    exc.message = gettextutils.get_localized_message(exc.message, locale)
+    exc.message = gettextutils.get_localized_message(str(exc), locale)
     if isinstance(exc, webob.exc.HTTPError):
         # If the explanation is not a Message, that means that the
         # explanation is the default, generic and not translatable explanation
@@ -765,7 +766,7 @@ def translate_exception(exc, locale):
         # message, since message is what gets passed in at construction time
         # in the API
         if not isinstance(exc.explanation, gettextutils.Message):
-            exc.explanation = exc.message
+            exc.explanation = str(exc)
             exc.detail = ''
         else:
             exc.explanation = \

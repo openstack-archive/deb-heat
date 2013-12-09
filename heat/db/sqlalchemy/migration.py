@@ -16,17 +16,22 @@ import distutils.version as dist_version
 import os
 import sys
 
-from heat.db.sqlalchemy.session import get_engine
-from heat.db import migration
-
 import sqlalchemy
 import migrate
 from migrate.versioning import util as migrate_util
 
-from heat.openstack.common import exception
+from heat.common import exception
+from heat.openstack.common.db.sqlalchemy.session import get_engine
 from heat.openstack.common.gettextutils import _
 
 _REPOSITORY = None
+INIT_VERSION = 14
+
+
+def get_backend():
+    """The backend is this module itself."""
+
+    return sys.modules[__name__]
 
 
 @migrate_util.decorator
@@ -38,7 +43,8 @@ def patched_with_engine(f, *a, **kw):
         return f(*a, **kw)
     finally:
         if isinstance(engine, migrate_util.Engine) and engine is not url:
-            migrate_util.log.debug('Disposing SQLAlchemy engine %s', engine)
+            migrate_util.log.debug(_('Disposing SQLAlchemy engine %s') %
+                                   engine)
             engine.dispose()
 
 
@@ -94,7 +100,7 @@ def db_version():
         if len(tables):
             raise exc
 
-        db_version_control(migration.INIT_VERSION)
+        db_version_control(INIT_VERSION)
         return versioning_api.db_version(get_engine(), repository)
 
 

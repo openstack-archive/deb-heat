@@ -213,7 +213,7 @@ class HOTemplate(template.Template):
         """
         Resolve template string substitution via function str_replace
 
-        Resolves the str_replace function of the form
+        Resolves the str_replace function of the form::
 
           str_replace:
             template: <string template>
@@ -248,7 +248,7 @@ class HOTemplate(template.Template):
                     _('"params" parameter must be a dictionary'))
             for key in params.iterkeys():
                 value = params.get(key, '') or ""
-                text = text.replace(key, value)
+                text = text.replace(key, str(value))
             return text
 
         match_str_replace = lambda k, v: k in ['str_replace', 'Fn::Replace']

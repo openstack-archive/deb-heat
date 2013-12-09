@@ -75,7 +75,18 @@ class FaultWrapper(wsgi.Middleware):
         'MissingCredentialError': webob.exc.HTTPBadRequest,
         'UserParameterMissing': webob.exc.HTTPBadRequest,
         'RequestLimitExceeded': webob.exc.HTTPBadRequest,
+        'InvalidTemplateParameter': webob.exc.HTTPBadRequest,
+        'Invalid': webob.exc.HTTPBadRequest,
     }
+
+    def _map_exception_to_error(self, class_exception):
+        if class_exception == Exception:
+            return webob.exc.HTTPInternalServerError
+
+        if class_exception.__name__ not in self.error_map:
+            return self._map_exception_to_error(class_exception.__base__)
+
+        return self.error_map[class_exception.__name__]
 
     def _error(self, ex):
 
@@ -94,18 +105,18 @@ class FaultWrapper(wsgi.Middleware):
         if ex_type.endswith(rpc_common._REMOTE_POSTFIX):
             ex_type = ex_type[:-len(rpc_common._REMOTE_POSTFIX)]
 
-        message = unicode(ex.message)
+        full_message = unicode(ex)
+        if full_message.find('\n') > -1:
+            message, msg_trace = full_message.split('\n', 1)
+        else:
+            msg_trace = traceback.format_exc()
+            message = full_message
 
         if cfg.CONF.debug and not trace:
-            trace = unicode(ex)
-            if trace.find('\n') > -1:
-                unused, trace = trace.split('\n', 1)
-            else:
-                trace = traceback.format_exc()
+            trace = msg_trace
 
         if not webob_exc:
-            webob_exc = self.error_map.get(ex_type,
-                                           webob.exc.HTTPInternalServerError)
+            webob_exc = self._map_exception_to_error(ex.__class__)
 
         error = {
             'code': webob_exc.code,

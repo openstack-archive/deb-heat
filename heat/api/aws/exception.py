@@ -19,6 +19,7 @@
 
 import webob.exc
 from heat.common import wsgi
+from heat.openstack.common.gettextutils import _
 import heat.openstack.common.rpc.common as rpc_common
 
 
@@ -31,7 +32,8 @@ class HeatAPIException(webob.exc.HTTPError):
     '''
     code = 400
     title = "HeatAPIException"
-    explanation = "Generic HeatAPIException, please use specific subclasses!"
+    explanation = _("Generic HeatAPIException, please use specific "
+                    "subclasses!")
     err_type = "Sender"
 
     def __init__(self, detail=None):
@@ -62,9 +64,6 @@ class HeatAPIException(webob.exc.HTTPError):
 
 
 # Common Error Subclasses:
-# As defined in http://docs.amazonwebservices.com/AWSCloudFormation/
-# latest/APIReference/CommonErrors.html
-
 
 class HeatIncompleteSignatureError(HeatAPIException):
     '''
@@ -72,7 +71,7 @@ class HeatIncompleteSignatureError(HeatAPIException):
     '''
     code = 400
     title = "IncompleteSignature"
-    explanation = "The request signature does not conform to AWS standards"
+    explanation = _("The request signature does not conform to AWS standards")
 
 
 class HeatInternalFailureError(HeatAPIException):
@@ -81,7 +80,8 @@ class HeatInternalFailureError(HeatAPIException):
     '''
     code = 500
     title = "InternalFailure"
-    explanation = "The request processing has failed due to an internal error"
+    explanation = _("The request processing has failed due to an "
+                    "internal error")
     err_type = "Server"
 
 
@@ -91,7 +91,7 @@ class HeatInvalidActionError(HeatAPIException):
     '''
     code = 400
     title = "InvalidAction"
-    explanation = "The action or operation requested is invalid"
+    explanation = _("The action or operation requested is invalid")
 
 
 class HeatInvalidClientTokenIdError(HeatAPIException):
@@ -100,7 +100,7 @@ class HeatInvalidClientTokenIdError(HeatAPIException):
     '''
     code = 403
     title = "InvalidClientTokenId"
-    explanation = "The certificate or AWS Key ID provided does not exist"
+    explanation = _("The certificate or AWS Key ID provided does not exist")
 
 
 class HeatInvalidParameterCombinationError(HeatAPIException):
@@ -109,7 +109,7 @@ class HeatInvalidParameterCombinationError(HeatAPIException):
     '''
     code = 400
     title = "InvalidParameterCombination"
-    explanation = "Incompatible parameters were used together"
+    explanation = _("Incompatible parameters were used together")
 
 
 class HeatInvalidParameterValueError(HeatAPIException):
@@ -118,7 +118,7 @@ class HeatInvalidParameterValueError(HeatAPIException):
     '''
     code = 400
     title = "InvalidParameterValue"
-    explanation = "A bad or out-of-range value was supplied"
+    explanation = _("A bad or out-of-range value was supplied")
 
 
 class HeatInvalidQueryParameterError(HeatAPIException):
@@ -127,7 +127,8 @@ class HeatInvalidQueryParameterError(HeatAPIException):
     '''
     code = 400
     title = "InvalidQueryParameter"
-    explanation = "AWS query string is malformed, does not adhere to AWS spec"
+    explanation = _("AWS query string is malformed, does not adhere to "
+                    "AWS spec")
 
 
 class HeatMalformedQueryStringError(HeatAPIException):
@@ -136,7 +137,7 @@ class HeatMalformedQueryStringError(HeatAPIException):
     '''
     code = 404
     title = "MalformedQueryString"
-    explanation = "The query string is malformed"
+    explanation = _("The query string is malformed")
 
 
 class HeatMissingActionError(HeatAPIException):
@@ -145,7 +146,7 @@ class HeatMissingActionError(HeatAPIException):
     '''
     code = 400
     title = "MissingAction"
-    explanation = "The request is missing an action or operation parameter"
+    explanation = _("The request is missing an action or operation parameter")
 
 
 class HeatMissingAuthenticationTokenError(HeatAPIException):
@@ -155,7 +156,7 @@ class HeatMissingAuthenticationTokenError(HeatAPIException):
     '''
     code = 403
     title = "MissingAuthenticationToken"
-    explanation = "Does not contain a valid AWS Access Key or certificate"
+    explanation = _("Does not contain a valid AWS Access Key or certificate")
 
 
 class HeatMissingParameterError(HeatAPIException):
@@ -164,7 +165,7 @@ class HeatMissingParameterError(HeatAPIException):
     '''
     code = 400
     title = "MissingParameter"
-    explanation = "A mandatory input parameter is missing"
+    explanation = _("A mandatory input parameter is missing")
 
 
 class HeatOptInRequiredError(HeatAPIException):
@@ -173,7 +174,8 @@ class HeatOptInRequiredError(HeatAPIException):
     '''
     code = 403
     title = "OptInRequired"
-    explanation = "The AWS Access Key ID needs a subscription for the service"
+    explanation = _("The AWS Access Key ID needs a subscription for the "
+                    "service")
 
 
 class HeatRequestExpiredError(HeatAPIException):
@@ -183,7 +185,7 @@ class HeatRequestExpiredError(HeatAPIException):
     '''
     code = 400
     title = "RequestExpired"
-    explanation = "Request expired or more than 15mins in the future"
+    explanation = _("Request expired or more than 15mins in the future")
 
 
 class HeatServiceUnavailableError(HeatAPIException):
@@ -192,7 +194,7 @@ class HeatServiceUnavailableError(HeatAPIException):
     '''
     code = 503
     title = "ServiceUnavailable"
-    explanation = "Service temporarily unvavailable"
+    explanation = _("Service temporarily unvavailable")
     err_type = "Server"
 
 
@@ -202,7 +204,7 @@ class HeatThrottlingError(HeatAPIException):
     '''
     code = 400
     title = "Throttling"
-    explanation = "Request was denied due to request throttling"
+    explanation = _("Request was denied due to request throttling")
 
 
 class AlreadyExistsError(HeatAPIException):
@@ -211,7 +213,7 @@ class AlreadyExistsError(HeatAPIException):
     '''
     code = 400
     title = 'AlreadyExists'
-    explanation = "Resource with the name requested already exists"
+    explanation = _("Resource with the name requested already exists")
 
 
 # Not documented in the AWS docs, authentication failure errors
@@ -222,7 +224,7 @@ class HeatAccessDeniedError(HeatAPIException):
     '''
     code = 403
     title = "AccessDenied"
-    explanation = "User is not authorized to perform action"
+    explanation = _("User is not authorized to perform action")
 
 
 class HeatSignatureError(HeatAPIException):
@@ -232,8 +234,8 @@ class HeatSignatureError(HeatAPIException):
     '''
     code = 403
     title = "SignatureDoesNotMatch"
-    explanation = ("The request signature we calculated does not match the " +
-                   "signature you provided")
+    explanation = _("The request signature we calculated does not match the "
+                    "signature you provided")
 
 
 # Heat-specific errors
@@ -243,7 +245,7 @@ class HeatAPINotImplementedError(HeatAPIException):
     '''
     code = 500
     title = "APINotImplemented"
-    explanation = ("The requested action is not yet implemented")
+    explanation = _("The requested action is not yet implemented")
     err_type = "Server"
 
 
@@ -267,6 +269,7 @@ def map_remote_error(ex):
             'InvalidTemplateReference',
             'UnknownUserParameter',
             'UserParameterMissing',
+            'InvalidTemplateParameter',
         )
         denied_errors = ('Forbidden', 'NotAuthorized')
         already_exists_errors = ('StackExists')
@@ -277,11 +280,11 @@ def map_remote_error(ex):
             ex_type = ex_type[:-len(rpc_common._REMOTE_POSTFIX)]
 
         if ex_type in inval_param_errors:
-            return HeatInvalidParameterValueError(detail=str(ex.message))
+            return HeatInvalidParameterValueError(detail=str(ex))
         elif ex_type in denied_errors:
-            return HeatAccessDeniedError(detail=str(ex.message))
+            return HeatAccessDeniedError(detail=str(ex))
         elif ex_type in already_exists_errors:
-            return AlreadyExistsError(detail=str(ex.message))
+            return AlreadyExistsError(detail=str(ex))
         else:
             # Map everything else to internal server error for now
-            return HeatInternalFailureError(detail=str(ex.message))
+            return HeatInternalFailureError(detail=str(ex))

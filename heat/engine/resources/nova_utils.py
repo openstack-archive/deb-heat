@@ -27,7 +27,9 @@ from oslo.config import cfg
 
 from heat.common import exception
 from heat.engine import clients
+from heat.engine import scheduler
 from heat.openstack.common import log as logging
+from heat.openstack.common.gettextutils import _
 from heat.openstack.common import uuidutils
 
 logger = logging.getLogger(__name__)
@@ -52,14 +54,14 @@ def get_image_id(nova_client, image_identifier):
     :param nova_client: the nova client to use
     :param image_identifier: image name or a UUID-like identifier
     :returns: the id of the requested :image_identifier:
-    :raises: exception.ImageNotFound, exception.NoUniqueImageFound
+    :raises: exception.ImageNotFound, exception.PhysicalResourceNameAmbiguity
     '''
     image_id = None
     if uuidutils.is_uuid_like(image_identifier):
         try:
             image_id = nova_client.images.get(image_identifier).id
         except clients.novaclient.exceptions.NotFound:
-            logger.info("Image %s was not found in glance"
+            logger.info(_("Image %s was not found in glance")
                         % image_identifier)
             raise exception.ImageNotFound(image_name=image_identifier)
     else:
@@ -67,18 +69,20 @@ def get_image_id(nova_client, image_identifier):
             image_list = nova_client.images.list()
         except clients.novaclient.exceptions.ClientException as ex:
             raise exception.Error(
-                message="Error retrieving image list from nova: %s" % str(ex))
+                message=(_("Error retrieving image list from nova: %s") %
+                         str(ex)))
         image_names = dict(
             (o.id, o.name)
             for o in image_list if o.name == image_identifier)
         if len(image_names) == 0:
-            logger.info("Image %s was not found in glance" %
+            logger.info(_("Image %s was not found in glance") %
                         image_identifier)
             raise exception.ImageNotFound(image_name=image_identifier)
         elif len(image_names) > 1:
-            logger.info("Mulitple images %s were found in glance with name"
+            logger.info(_("Mulitple images %s were found in glance with name")
                         % image_identifier)
-            raise exception.NoUniqueImageFound(image_name=image_identifier)
+            raise exception.PhysicalResourceNameAmbiguity(
+                name=image_identifier)
         image_id = image_names.popitem()[0]
     return image_id
 
@@ -122,7 +126,7 @@ def get_keypair(nova_client, key_name):
     raise exception.UserKeyPairMissing(key_name=key_name)
 
 
-def build_userdata(resource, userdata=None):
+def build_userdata(resource, userdata=None, instance_user=None):
     '''
     Build multipart data blob for CloudInit which includes user-supplied
     Metadata, user data, and the required Heat in-instance configuration.
@@ -131,6 +135,8 @@ def build_userdata(resource, userdata=None):
     :type resource: heat.engine.Resource
     :param userdata: user data string
     :type userdata: str or None
+    :param instance_user: the user to create on the server
+    :type instance_user: string
     :returns: multipart mime as a string
     '''
 
@@ -145,7 +151,7 @@ def build_userdata(resource, userdata=None):
     def read_cloudinit_file(fn):
         data = pkgutil.get_data('heat', 'cloudinit/%s' % fn)
         data = data.replace('@INSTANCE_USER@',
-                            cfg.CONF.instance_user)
+                            instance_user or cfg.CONF.instance_user)
         return data
 
     attachments = [(read_cloudinit_file('config'), 'cloud-config'),
@@ -208,12 +214,18 @@ def delete_server(server):
             break
 
 
-def check_resize(server, flavor):
+@scheduler.wrappertask
+def resize(server, flavor, flavor_id):
+    """Resize the server and then call check_resize task to verify."""
+    server.resize(flavor_id)
+    yield check_resize(server, flavor, flavor_id)
+
+
+def check_resize(server, flavor, flavor_id):
     """
-    Verify that the server is properly resized. If that's the case, confirm
-    the resize, if not raise an error.
+    Verify that a resizing server is properly resized.
+    If that's the case, confirm the resize, if not raise an error.
     """
-    yield
     server.get()
     while server.status == 'RESIZE':
         yield
@@ -226,6 +238,37 @@ def check_resize(server, flavor):
             dict(flavor=flavor, status=server.status))
 
 
+@scheduler.wrappertask
+def rebuild(server, image_id):
+    """Rebuild the server and call check_rebuild to verify."""
+    server.rebuild(image_id)
+    yield check_rebuild(server, image_id)
+
+
+def check_rebuild(server, image_id):
+    """
+    Verify that a rebuilding server is rebuilt.
+    Raise error if it ends up in an ERROR state.
+    """
+    server.get()
+    while server.status == 'REBUILD':
+        yield
+        server.get()
+    if server.status == 'ERROR':
+        raise exception.Error(
+            _("Rebuilding server failed, status '%s'") % server.status)
+
+
+def meta_update(client, server, metadata):
+    """Delete/Add the metadata in nova as needed."""
+    current_md = server.metadata
+    to_del = [key for key in current_md.keys() if key not in metadata]
+    if len(to_del) > 0:
+        client.servers.delete_meta(server, to_del)
+
+    client.servers.set_meta(server, metadata)
+
+
 def server_to_ipaddress(client, server):
     '''
     Return the server's IP address, fetching it from Nova.
@@ -233,7 +276,8 @@ def server_to_ipaddress(client, server):
     try:
         server = client.servers.get(server)
     except clients.novaclient.exceptions.NotFound as ex:
-        logger.warn('Instance (%s) not found: %s' % (server, str(ex)))
+        logger.warn(_('Instance (%(server)s) not found: %(ex)s') % {
+                    'server': server, 'ex': str(ex)})
     else:
         for n in server.networks:
             if len(server.networks[n]) > 0:

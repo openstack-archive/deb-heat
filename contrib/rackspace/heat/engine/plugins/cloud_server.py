@@ -24,7 +24,16 @@ from heat.engine.resources import instance
 from heat.engine.resources import nova_utils
 from heat.db.sqlalchemy import api as db_api
 
-from . import rackspace_resource
+try:
+    import pyrax  # noqa
+except ImportError:
+
+    def resource_mapping():
+        return {}
+else:
+
+    def resource_mapping():
+        return {'Rackspace::Cloud::Server': CloudServer}
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +41,8 @@ logger = logging.getLogger(__name__)
 class CloudServer(instance.Instance):
     """Resource for Rackspace Cloud Servers."""
 
-    properties_schema = {'flavor': {'Type': 'String', 'Required': True},
+    properties_schema = {'flavor': {'Type': 'String', 'Required': True,
+                                    'UpdateAllowed': True},
                          'image': {'Type': 'String', 'Required': True},
                          'user_data': {'Type': 'String'},
                          'key_name': {'Type': 'String'},
@@ -60,13 +70,17 @@ chmod 600 /var/lib/cloud/seed/nocloud-net/*
 
 # Run cloud-init & cfn-init
 cloud-init start || cloud-init init
-bash -x /var/lib/cloud/data/cfn-userdata > /root/cfn-userdata.log 2>&1
+bash -x /var/lib/cloud/data/cfn-userdata > /root/cfn-userdata.log 2>&1 ||
+exit 42
 """
 
     # - Ubuntu 12.04: Verified working
     ubuntu_script = base_script % """\
 apt-get update
-apt-get install -y cloud-init python-boto python-pip gcc python-dev
+export DEBIAN_FRONTEND=noninteractive
+apt-get install -y -o Dpkg::Options::="--force-confdef" -o \
+  Dpkg::Options::="--force-confold" cloud-init python-boto python-pip gcc \
+  python-dev
 pip install heat-cfntools
 cfn-create-aws-symlinks --source /usr/local/bin
 """
@@ -85,7 +99,10 @@ cfn-create-aws-symlinks
 
     # - Centos 6.4: Verified working
     centos_script = base_script % """\
-rpm -ivh http://mirror.rackspace.com/epel/6/i386/epel-release-6-8.noarch.rpm
+if ! (yum repolist 2> /dev/null | egrep -q "^[\!\*]?epel ");
+then
+ rpm -ivh http://mirror.rackspace.com/epel/6/i386/epel-release-6-8.noarch.rpm
+fi
 yum install -y cloud-init python-boto python-pip gcc python-devel \
   python-argparse
 pip-python install heat-cfntools
@@ -93,7 +110,10 @@ pip-python install heat-cfntools
 
     # - RHEL 6.4: Verified working
     rhel_script = base_script % """\
-rpm -ivh http://mirror.rackspace.com/epel/6/i386/epel-release-6-8.noarch.rpm
+if ! (yum repolist 2> /dev/null | egrep -q "^[\!\*]?epel ");
+then
+ rpm -ivh http://mirror.rackspace.com/epel/6/i386/epel-release-6-8.noarch.rpm
+fi
 # The RPM DB stays locked for a few secs
 while fuser /var/lib/rpm/*; do sleep 1; done
 yum install -y cloud-init python-boto python-pip gcc python-devel \
@@ -102,15 +122,14 @@ pip-python install heat-cfntools
 cfn-create-aws-symlinks
 """
 
-    # - Debian 7: Not working (heat-cfntools patch submitted)
-    # TODO(jason): Test with Debian 7 as soon as heat-cfntools patch
-    # is in https://review.openstack.org/#/c/38822/
     debian_script = base_script % """\
 echo "deb http://mirror.rackspace.com/debian wheezy-backports main" >> \
   /etc/apt/sources.list
 apt-get update
 apt-get -t wheezy-backports install -y cloud-init
-apt-get install -y python-pip gcc python-dev
+export DEBIAN_FRONTEND=noninteractive
+apt-get install -y -o Dpkg::Options::="--force-confdef" -o \
+  Dpkg::Options::="--force-confold" python-pip gcc python-dev
 pip install heat-cfntools
 """
 
@@ -143,10 +162,13 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                      'rhel': rhel_script,
                      'ubuntu': ubuntu_script}
 
+    script_error_msg = ("The %(path)s script exited with a non-zero exit "
+                        "status.  To see the error message, log into the "
+                        "server and view %(log)s")
+
     # Template keys supported for handle_update.  Properties not
     # listed here trigger an UpdateReplace
     update_allowed_keys = ('Metadata', 'Properties')
-    update_allowed_properties = ('flavor', 'name')
 
     def __init__(self, name, json_snippet, stack):
         super(CloudServer, self).__init__(name, json_snippet, stack)
@@ -155,9 +177,8 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         self._distro = None
         self._public_ip = None
         self._private_ip = None
-        self.rs = rackspace_resource.RackspaceResource(name,
-                                                       json_snippet,
-                                                       stack)
+        self._flavor = None
+        self._image = None
 
     def physical_resource_name(self):
         name = self.properties.get('name')
@@ -165,12 +186,6 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
             return name
 
         return super(CloudServer, self).physical_resource_name()
-
-    def nova(self):
-        return self.rs.nova()  # Override the Instance method
-
-    def cinder(self):
-        return self.rs.cinder()
 
     @property
     def server(self):
@@ -185,8 +200,8 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         """Get the Linux distribution for this server."""
         if not self._distro:
             logger.debug("Calling nova().images.get()")
-            image = self.nova().images.get(self.properties['image'])
-            self._distro = image.metadata['os_distro']
+            image_data = self.nova().images.get(self.image)
+            self._distro = image_data.metadata['os_distro']
         return self._distro
 
     @property
@@ -195,10 +210,19 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         return self.image_scripts[self.distro]
 
     @property
-    def flavors(self):
+    def flavor(self):
         """Get the flavors from the API."""
-        logger.debug("Calling nova().flavors.list()")
-        return [flavor.id for flavor in self.nova().flavors.list()]
+        if not self._flavor:
+            self._flavor = nova_utils.get_flavor_id(self.nova(),
+                                                    self.properties['flavor'])
+        return self._flavor
+
+    @property
+    def image(self):
+        if not self._image:
+            self._image = nova_utils.get_image_id(self.nova(),
+                                                  self.properties['image'])
+        return self._image
 
     @property
     def private_key(self):
@@ -252,14 +276,14 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
 
     def validate(self):
         """Validate user parameters."""
-        if self.properties['flavor'] not in self.flavors:
-            return {'Error': "flavor not found."}
+        self.flavor
+        self.image
 
         # It's okay if there's no script, as long as user_data and
         # metadata are empty
         if not self.script and self.has_userdata:
-            return {'Error': "user_data/metadata are not supported with %s." %
-                    self.properties['image']}
+            return {'Error': "user_data/metadata are not supported for image"
+                    " %s." % self.properties['image']}
 
     def _run_ssh_command(self, command):
         """Run a shell command on the Cloud Server via SSH."""
@@ -271,9 +295,9 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
             ssh.connect(self.public_ip,
                         username="root",
                         key_filename=private_key_file.name)
-            stdin, stdout, stderr = ssh.exec_command(command)
-            logger.debug(stdout.read())
-            logger.debug(stderr.read())
+            chan = ssh.get_transport().open_session()
+            chan.exec_command(command)
+            return chan.recv_exit_status()
 
     def _sftp_files(self, files):
         """Transfer files to the Cloud Server via SFTP."""
@@ -296,9 +320,6 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         running, so we have to transfer the user-data file to the
         server and then trigger cloud-init.
         """
-        # Retrieve server creation parameters from properties
-        flavor = self.properties['flavor']
-
         # Generate SSH public/private keypair
         if self._private_key is not None:
             rsa = RSA.importKey(self._private_key)
@@ -317,8 +338,8 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         client = self.nova().servers
         logger.debug("Calling nova().servers.create()")
         server = client.create(self.physical_resource_name(),
-                               self.properties['image'],
-                               flavor,
+                               self.image,
+                               self.flavor,
                                files=personality_files)
 
         # Save resource ID to db
@@ -366,6 +387,63 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         if not self._check_active(cookie):
             return False
 
+        server = cookie[0]
+        server.get()
+        if 'rack_connect' in self.context.roles:  # Account has RackConnect
+            if 'rackconnect_automation_status' not in server.metadata:
+                logger.debug("RackConnect server does not have the "
+                             "rackconnect_automation_status metadata tag yet")
+                return False
+
+            rc_status = server.metadata['rackconnect_automation_status']
+            logger.debug("RackConnect automation status: " + rc_status)
+
+            if rc_status == 'DEPLOYING':
+                return False
+
+            elif rc_status == 'DEPLOYED':
+                self._public_ip = None  # The public IP changed, forget old one
+
+            elif rc_status == 'FAILED':
+                raise exception.Error("RackConnect automation FAILED")
+
+            elif rc_status == 'UNPROCESSABLE':
+                reason = server.metadata.get(
+                    "rackconnect_unprocessable_reason", None)
+                if reason is not None:
+                    logger.warning("RackConnect unprocessable reason: "
+                                   + reason)
+                # UNPROCESSABLE means the RackConnect automation was
+                # not attempted (eg. Cloud Server in a different DC
+                # than dedicated gear, so RackConnect does not apply).
+                # It is okay if we do not raise an exception.
+
+            else:
+                raise exception.Error("Unknown RackConnect automation status: "
+                                      + rc_status)
+
+        if 'rax_managed' in self.context.roles:  # Managed Cloud account
+            if 'rax_service_level_automation' not in server.metadata:
+                logger.debug("Managed Cloud server does not have the "
+                             "rax_service_level_automation metadata tag yet")
+                return False
+
+            mc_status = server.metadata['rax_service_level_automation']
+            logger.debug("Managed Cloud automation status: " + mc_status)
+
+            if mc_status == 'In Progress':
+                return False
+
+            elif mc_status == 'Complete':
+                pass
+
+            elif mc_status == 'Build Error':
+                raise exception.Error("Managed Cloud automation failed")
+
+            else:
+                raise exception.Error("Unknown Managed Cloud automation "
+                                      "status: " + mc_status)
+
         if self.has_userdata:
             # Create heat-script and userdata files on server
             raw_userdata = self.properties['user_data'] or ''
@@ -377,7 +455,15 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
 
             # Connect via SSH and run script
             cmd = "bash -ex /root/heat-script.sh > /root/heat-script.log 2>&1"
-            self._run_ssh_command(cmd)
+            exit_code = self._run_ssh_command(cmd)
+            if exit_code == 42:
+                raise exception.Error(self.script_error_msg %
+                                      {'path': "cfn-userdata",
+                                       'log': "/root/cfn-userdata.log"})
+            elif exit_code != 0:
+                raise exception.Error(self.script_error_msg %
+                                      {'path': "heat-script.sh",
+                                       'log': "/root/heat-script.log"})
 
         return True
 
@@ -404,13 +490,6 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         Cloud Server.  If any other parameters changed, re-create the
         Cloud Server with the new parameters.
         """
-        # If name is the only update, fail update
-        if prop_diff.keys() == ['name'] and \
-           tmpl_diff.keys() == ['Properties']:
-            raise exception.NotSupported(feature="Cloud Server rename")
-        # Other updates were successful, so don't cause update to fail
-        elif 'name' in prop_diff:
-            logger.info("Cloud Server rename not supported.")
 
         if 'Metadata' in tmpl_diff:
             self.metadata = json_snippet['Metadata']
@@ -422,14 +501,19 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
 
             command = "bash -x /var/lib/cloud/data/cfn-userdata > " + \
                       "/root/cfn-userdata.log 2>&1"
-            self._run_ssh_command(command)
+            exit_code = self._run_ssh_command(command)
+            if exit_code != 0:
+                raise exception.Error(self.script_error_msg %
+                                      {'path': "cfn-userdata",
+                                       'log': "/root/cfn-userdata.log"})
 
         if 'flavor' in prop_diff:
-            self.flavor = json_snippet['Properties']['flavor']
-            self.server.resize(self.flavor)
+            flav = json_snippet['Properties']['flavor']
+            new_flavor = nova_utils.get_flavor_id(self.nova(), flav)
+            self.server.resize(new_flavor)
             resize = scheduler.TaskRunner(nova_utils.check_resize,
                                           self.server,
-                                          self.flavor)
+                                          flav)
             resize.start()
             return resize
 
@@ -446,12 +530,3 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         logger.info('%s._resolve_attribute(%s) == %s'
                     % (self.name, key, function))
         return unicode(function)
-
-
-# pyrax module is required to work with Rackspace cloud server provider.
-# If it is not installed, don't register cloud server provider
-def resource_mapping():
-    if rackspace_resource.PYRAX_INSTALLED:
-        return {'Rackspace::Cloud::Server': CloudServer}
-    else:
-        return {}

@@ -21,8 +21,12 @@ from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
-from ..engine.plugins import clouddatabase
+from ..engine.plugins import clouddatabase  # noqa
 
+try:
+    from pyrax.exceptions import ClientException
+except ImportError:
+    from ..engine.plugins.clouddatabase import ClientException  # noqa
 
 wp_template = '''
 {
@@ -128,7 +132,7 @@ class CloudDBInstanceTest(HeatTestCase):
         fakedbinstance = FakeDBInstance()
         fake_client.create('Test',
                            flavor='1GB',
-                           volume='30').AndReturn(fakedbinstance)
+                           volume=30).AndReturn(fakedbinstance)
         self.m.ReplayAll()
         instance.handle_create()
         expected_hostname = fakedbinstance.hostname
@@ -145,6 +149,16 @@ class CloudDBInstanceTest(HeatTestCase):
         instance.handle_delete()
         self.m.VerifyAll()
 
+    def test_cloudbinstance_delete_exception(self):
+        instance = self._setup_test_clouddbinstance('dbinstance_delete')
+        fake_client = self.m.CreateMockAnything()
+        instance.cloud_db().AndReturn(fake_client)
+        client_exc = ClientException(404)
+        fake_client.delete(instance.resource_id).AndRaise(client_exc)
+        self.m.ReplayAll()
+        instance.handle_delete()
+        self.m.VerifyAll()
+
     def test_attribute_not_found(self):
         instance = self._setup_test_clouddbinstance('dbinstance_create')
         fake_client = self.m.CreateMockAnything()
@@ -152,7 +166,7 @@ class CloudDBInstanceTest(HeatTestCase):
         fakedbinstance = FakeDBInstance()
         fake_client.create('Test',
                            flavor='1GB',
-                           volume='30').AndReturn(fakedbinstance)
+                           volume=30).AndReturn(fakedbinstance)
         self.m.ReplayAll()
         instance.handle_create()
         self.assertEqual(instance._resolve_attribute('invalid-attrib'), None)

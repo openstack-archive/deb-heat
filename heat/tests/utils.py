@@ -20,13 +20,18 @@ import uuid
 
 import sqlalchemy
 
+from oslo.config import cfg
+
 from heat.common import context
 from heat.common import exception
 from heat.engine import environment
 from heat.engine import parser
+from heat.engine import resource
 
-from heat.db.sqlalchemy.session import get_engine
-from heat.db import migration
+from heat.db import api as db_api
+from heat.openstack.common.db.sqlalchemy import session
+
+get_engine = session.get_engine
 
 
 class UUIDStub(object):
@@ -112,7 +117,9 @@ def wr_delete_after(test_fn):
 
 
 def setup_dummy_db():
-    migration.db_sync()
+    cfg.CONF.set_default('sqlite_synchronous', False)
+    session.set_defaults(sql_connection="sqlite://", sqlite_db='heat.db')
+    db_api.db_sync()
     engine = get_engine()
     engine.connect()
 
@@ -136,6 +143,7 @@ def dummy_context(user='test_username', tenant_id='test_tenant_id',
         'username': user,
         'password': password,
         'roles': roles,
+        'is_admin': False,
         'auth_url': 'http://server.test:5000/v2.0',
         'auth_token': 'abcd1234'
     })
@@ -152,9 +160,13 @@ def parse_stack(t, params={}, stack_name='test_stack', stack_id=None):
 
 
 class PhysName(object):
-    def __init__(self, stack_name, resource_name):
+
+    mock_short_id = 'x' * 12
+
+    def __init__(self, stack_name, resource_name, limit=255):
         self.stack_name = stack_name
         self.resource_name = resource_name
+        self.limit = limit
 
     def __eq__(self, physical_name):
         try:
@@ -162,18 +174,18 @@ class PhysName(object):
         except ValueError:
             return False
 
-        if self.stack_name != stack or self.resource_name != res:
+        if len(short_id) != len(self.mock_short_id):
             return False
 
-        if len(short_id) != 12:
-            return False
-
-        return True
+        # ignore the stack portion of the name, as it may have been truncated
+        return self.resource_name == res
 
     def __ne__(self, physical_name):
         return not self.__eq__(physical_name)
 
     def __repr__(self):
-        return '%s-%s-%s' % (self.stack_name,
+        name = '%s-%s-%s' % (self.stack_name,
                              self.resource_name,
-                             'x' * 12)
+                             self.mock_short_id)
+        return resource.Resource.reduce_physical_resource_name(
+            name, self.limit)

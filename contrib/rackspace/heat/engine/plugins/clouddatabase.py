@@ -14,21 +14,38 @@
 #    under the License.
 
 try:
-    from pyrax.exceptions import NotFound
+    from pyrax.exceptions import ClientException
 except ImportError:
-    # fake exception for testing without pyrax
-    class NotFound(Exception):
-        pass
+    # define exception for testing without pyrax
+    class ClientException(Exception):
+        def __init__(self, code, message=None, details=None, request_id=None):
+            self.code = code
+            self.message = message or self.__class__.message
+            self.details = details
+            self.request_id = request_id
+
+        def __str__(self):
+            formatted_string = "%s (HTTP %s)" % (self.message, self.code)
+            if self.request_id:
+                formatted_string += " (Request-ID: %s)" % self.request_id
+
+            return formatted_string
+
+    def resource_mapping():
+        return {}
+else:
+
+    def resource_mapping():
+        return {'Rackspace::Cloud::DBInstance': CloudDBInstance}
 
 from heat.common import exception
 from heat.openstack.common import log as logging
-
-from . import rackspace_resource
+from heat.engine import resource
 
 logger = logging.getLogger(__name__)
 
 
-class CloudDBInstance(rackspace_resource.RackspaceResource):
+class CloudDBInstance(resource.Resource):
     '''
     Rackspace cloud database resource.
     '''
@@ -121,6 +138,9 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
         self.hostname = None
         self.href = None
 
+    def cloud_db(self):
+        return self.stack.clients.cloud_db()
+
     def handle_create(self):
         '''
         Create Rackspace Cloud DB Instance.
@@ -184,12 +204,11 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
         logger.debug("CloudDBInstance handle_delete called.")
         if self.resource_id is None:
             return
-
         try:
-            instances = self.cloud_db().delete(self.resource_id)
-        except NotFound:
-            pass
-        self.resource_id = None
+            self.cloud_db().delete(self.resource_id)
+        except ClientException as cexc:
+            if str(cexc.code) != "404":
+                raise cexc
 
     def validate(self):
         '''
@@ -253,14 +272,3 @@ class CloudDBInstance(rackspace_resource.RackspaceResource):
             return self._href()
         else:
             return None
-
-
-# pyrax module is required to work with Rackspace cloud database provider.
-# If it is not installed, don't register clouddatabase provider
-def resource_mapping():
-    if rackspace_resource.PYRAX_INSTALLED:
-        return {
-            'Rackspace::Cloud::DBInstance': CloudDBInstance,
-        }
-    else:
-        return {}

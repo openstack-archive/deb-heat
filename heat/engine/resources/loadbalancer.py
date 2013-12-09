@@ -18,6 +18,7 @@ from heat.engine import stack_resource
 from heat.engine.resources import nova_utils
 
 from heat.openstack.common import log as logging
+from heat.openstack.common.gettextutils import _
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +262,7 @@ class LoadBalancer(stack_resource.StackResource):
                              ' instances.')},
         'Instances': {
             'Type': 'List',
+            'UpdateAllowed': True,
             'Description': _('The list of instance IDs load balanced.')},
         'Listeners': {
             'Type': 'List', 'Required': True,
@@ -296,7 +298,6 @@ class LoadBalancer(stack_resource.StackResource):
         "SourceSecurityGroup.OwnerAlias": "Owner of the source security group."
     }
     update_allowed_keys = ('Properties',)
-    update_allowed_properties = ('Instances',)
 
     def _haproxy_config(self, templ, instances):
         # initial simplifications:
@@ -353,7 +354,7 @@ class LoadBalancer(stack_resource.StackResource):
         client = self.nova()
         for i in instances:
             ip = nova_utils.server_to_ipaddress(client, i) or '0.0.0.0'
-            logger.debug('haproxy server:%s' % ip)
+            logger.debug(_('haproxy server:%s') % ip)
             servers.append('%sserver server%d %s:%s %s' % (spaces, n,
                                                            ip, inst_port,
                                                            check))

@@ -222,7 +222,8 @@ class ServersTest(HeatTestCase):
                              {'id': 4, 'name': 'CentOS 5.2'}]}))
         self.m.ReplayAll()
 
-        self.assertRaises(exception.NoUniqueImageFound, server.handle_create)
+        self.assertRaises(exception.PhysicalResourceNameAmbiguity,
+                          server.handle_create)
 
         self.m.VerifyAll()
 
@@ -276,6 +277,37 @@ class ServersTest(HeatTestCase):
                           server.check_create_complete,
                           return_server)
 
+        self.m.VerifyAll()
+
+    def test_server_create_raw_userdata(self):
+        return_server = self.fc.servers.list()[1]
+        stack_name = 'raw_userdata_s'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        t['Resources']['WebServer']['Properties']['user_data_format'] = \
+            'RAW'
+
+        server = servers.Server('WebServer',
+                                t['Resources']['WebServer'], stack)
+
+        self.m.StubOutWithMock(server, 'nova')
+        server.nova().MultipleTimes().AndReturn(self.fc)
+
+        server.t = server.stack.resolve_runtime_data(server.t)
+
+        self.m.StubOutWithMock(self.fc.servers, 'create')
+        self.fc.servers.create(
+            image=744, flavor=3, key_name='test',
+            name=utils.PhysName(stack_name, server.name),
+            security_groups=None,
+            userdata='wordpress', scheduler_hints=None,
+            meta=None, nics=None, availability_zone=None,
+            block_device_mapping=None, config_drive=None,
+            disk_config=None, reservation_id=None).AndReturn(
+                return_server)
+
+        self.m.ReplayAll()
+        scheduler.TaskRunner(server.create)()
         self.m.VerifyAll()
 
     def test_server_validate(self):
@@ -408,6 +440,64 @@ class ServersTest(HeatTestCase):
         server.metadata_update()
         self.assertEqual(server.metadata, {'test': 456})
 
+    def test_server_update_nova_metadata(self):
+        return_server = self.fc.servers.list()[1]
+        server = self._create_test_server(return_server,
+                                          'md_update')
+
+        new_meta = {'test': 123}
+        self.m.StubOutWithMock(self.fc.servers, 'set_meta')
+        self.fc.servers.set_meta(return_server,
+                                 new_meta).AndReturn(None)
+        self.m.ReplayAll()
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['metadata'] = new_meta
+        scheduler.TaskRunner(server.update, update_template)()
+        self.assertEqual(server.state, (server.UPDATE, server.COMPLETE))
+        self.m.VerifyAll()
+
+    def test_server_update_nova_metadata_with_delete(self):
+        return_server = self.fc.servers.list()[1]
+        server = self._create_test_server(return_server,
+                                          'md_update')
+
+        # part one, add some metadata
+        new_meta = {'test': '123', 'this': 'that'}
+        self.m.StubOutWithMock(self.fc.servers, 'set_meta')
+        self.fc.servers.set_meta(return_server,
+                                 new_meta).AndReturn(None)
+        self.m.ReplayAll()
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['metadata'] = new_meta
+        scheduler.TaskRunner(server.update, update_template)()
+        self.assertEqual(server.state, (server.UPDATE, server.COMPLETE))
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
+
+        # part two change the metadata (test removing the old key)
+        self.m.StubOutWithMock(server, 'nova')
+        server.nova().MultipleTimes().AndReturn(self.fc)
+        new_meta = {'new_key': 'yeah'}
+
+        self.m.StubOutWithMock(self.fc.servers, 'delete_meta')
+        new_return_server = self.fc.servers.list()[5]
+        self.fc.servers.delete_meta(new_return_server,
+                                    ['test', 'this']).AndReturn(None)
+
+        self.m.StubOutWithMock(self.fc.servers, 'set_meta')
+        self.fc.servers.set_meta(new_return_server,
+                                 new_meta).AndReturn(None)
+        self.m.ReplayAll()
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['metadata'] = new_meta
+
+        # new fake with the correct metadata
+        server.resource_id = '56789'
+
+        scheduler.TaskRunner(server.update, update_template)()
+        self.assertEqual(server.state, (server.UPDATE, server.COMPLETE))
+        self.m.VerifyAll()
+
     def test_server_update_server_flavor(self):
         """
         Server.handle_update supports changing the flavor, and makes
@@ -502,13 +592,100 @@ class ServersTest(HeatTestCase):
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(resource.UpdateReplace, updater)
 
-    def test_server_update_replace(self):
+    def test_server_update_image_replace(self):
+        stack_name = 'update_imgrep'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        t['Resources']['WebServer']['Properties'][
+            'image_update_policy'] = 'REPLACE'
+        server = servers.Server('server_update_image_replace',
+                                t['Resources']['WebServer'], stack)
+
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['image'] = self.getUniqueString()
+        updater = scheduler.TaskRunner(server.update, update_template)
+        self.assertRaises(resource.UpdateReplace, updater)
+
+    def _test_server_update_image_rebuild(self, status):
+        # Server.handle_update supports changing the image, and makes
+        # the change making a rebuild API call against Nova.
+        return_server = self.fc.servers.list()[1]
+        return_server.id = 1234
+        server = self._create_test_server(return_server,
+                                          'srv_updimgrbld')
+
+        new_image = 'F17-x86_64-gold'
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['image'] = new_image
+        server.t['Properties']['image_update_policy'] = 'REBUILD'
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get(1234).MultipleTimes().AndReturn(return_server)
+        self.m.StubOutWithMock(self.fc.servers, 'rebuild')
+        # 744 is a static lookup from the fake images list
+        self.fc.servers.rebuild(return_server, 744, password=None)
+        self.m.StubOutWithMock(self.fc.client, 'post_servers_1234_action')
+        for stat in status:
+            def activate_status(serv):
+                serv.status = stat
+            return_server.get = activate_status.__get__(return_server)
+
+        self.m.ReplayAll()
+        scheduler.TaskRunner(server.update, update_template)()
+        self.assertEqual(server.state, (server.UPDATE, server.COMPLETE))
+        self.m.VerifyAll()
+
+    def test_server_update_image_rebuild_status_rebuild(self):
+        # Normally we will see 'REBUILD' first and then 'ACTIVE".
+        self._test_server_update_image_rebuild(status=('REBUILD', 'ACTIVE'))
+
+    def test_server_update_image_rebuild_status_active(self):
+        # It is possible for us to miss the REBUILD status.
+        self._test_server_update_image_rebuild(status=('ACTIVE',))
+
+    def test_server_update_image_rebuild_failed(self):
+        # If the status after a rebuild is not REBUILD or ACTIVE, it means the
+        # rebuild call failed, so we raise an explicit error.
+        return_server = self.fc.servers.list()[1]
+        return_server.id = 1234
+        server = self._create_test_server(return_server,
+                                          'srv_updrbldfail')
+
+        new_image = 'F17-x86_64-gold'
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['image'] = new_image
+        server.t['Properties']['image_update_policy'] = 'REBUILD'
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get(1234).MultipleTimes().AndReturn(return_server)
+        self.m.StubOutWithMock(self.fc.servers, 'rebuild')
+        # 744 is a static lookup from the fake images list
+        self.fc.servers.rebuild(return_server, 744, password=None)
+        self.m.StubOutWithMock(self.fc.client, 'post_servers_1234_action')
+
+        def activate_status(server):
+            server.status = 'REBUILD'
+        return_server.get = activate_status.__get__(return_server)
+
+        def activate_status2(server):
+            server.status = 'ERROR'
+        return_server.get = activate_status2.__get__(return_server)
+        self.m.ReplayAll()
+        updater = scheduler.TaskRunner(server.update, update_template)
+        error = self.assertRaises(exception.ResourceFailure, updater)
+        self.assertEqual(
+            "Error: Rebuilding server failed, status 'ERROR'",
+            str(error))
+        self.assertEqual(server.state, (server.UPDATE, server.FAILED))
+        self.m.VerifyAll()
+
+    def test_server_update_attr_replace(self):
         return_server = self.fc.servers.list()[1]
         server = self._create_test_server(return_server,
                                           'update_rep')
 
         update_template = copy.deepcopy(server.t)
-        update_template['Notallowed'] = {'test': 123}
+        update_template['UpdatePolicy'] = {'test': 123}
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(resource.UpdateReplace, updater)
 

@@ -17,10 +17,10 @@
 Stack endpoint for Heat v1 ReST API.
 """
 
-import itertools
 from webob import exc
 
 from heat.api.openstack.v1 import util
+from heat.api.openstack.v1.views import stacks_view
 from heat.common import identifier
 from heat.common import wsgi
 from heat.common import template_format
@@ -71,9 +71,10 @@ class InstantiationData(object):
                 return environment_format.parse(data)
             else:
                 return template_format.parse(data)
-        except ValueError:
-            err_reason = _("%s not in valid format") % data_type
-            raise exc.HTTPBadRequest(err_reason)
+        except ValueError as parse_ex:
+            mdict = {'type': data_type, 'error': parse_ex}
+            msg = _("%(type)s not in valid format: %(error)s") % mdict
+            raise exc.HTTPBadRequest(msg)
 
     def stack_name(self):
         """
@@ -136,34 +137,6 @@ class InstantiationData(object):
         return dict((k, v) for k, v in params if k not in self.PARAMS)
 
 
-def format_stack(req, stack, keys=[]):
-    include_key = lambda k: k in keys if keys else True
-
-    def transform(key, value):
-        if not include_key(key):
-            return
-
-        if key == engine_api.STACK_ID:
-            yield ('id', value['stack_id'])
-            yield ('links', [util.make_link(req, value)])
-        elif key == engine_api.STACK_ACTION:
-            return
-        elif (key == engine_api.STACK_STATUS and
-              engine_api.STACK_ACTION in stack):
-            # To avoid breaking API compatibility, we join RES_ACTION
-            # and RES_STATUS, so the API format doesn't expose the
-            # internal split of state into action/status
-            yield (key, '_'.join((stack[engine_api.STACK_ACTION], value)))
-        else:
-            # TODO(zaneb): ensure parameters can be formatted for XML
-            #elif key == engine_api.STACK_PARAMETERS:
-            #    return key, json.dumps(value)
-            yield (key, value)
-
-    return dict(itertools.chain.from_iterable(
-        transform(k, v) for k, v in stack.items()))
-
-
 class StackController(object):
     """
     WSGI controller for stacks resource in Heat v1 API
@@ -182,19 +155,22 @@ class StackController(object):
         """
         Lists summary information for all stacks
         """
+        filter_whitelist = {
+            'status': 'mixed',
+            'name': 'mixed',
+        }
+        whitelist = {
+            'limit': 'single',
+            'marker': 'single',
+            'sort_dir': 'single',
+            'sort_keys': 'multi',
+        }
+        params = util.get_allowed_params(req.params, whitelist)
+        filter_params = util.get_allowed_params(req.params, filter_whitelist)
+        stacks = self.engine.list_stacks(req.context, filters=filter_params,
+                                         **params)
 
-        stacks = self.engine.list_stacks(req.context)
-
-        summary_keys = (engine_api.STACK_ID,
-                        engine_api.STACK_NAME,
-                        engine_api.STACK_DESCRIPTION,
-                        engine_api.STACK_STATUS,
-                        engine_api.STACK_STATUS_DATA,
-                        engine_api.STACK_CREATION_TIME,
-                        engine_api.STACK_DELETION_TIME,
-                        engine_api.STACK_UPDATED_TIME)
-
-        return {'stacks': [format_stack(req, s, summary_keys) for s in stacks]}
+        return stacks_view.collection(req, stacks)
 
     @util.tenant_local
     def detail(self, req):
@@ -203,7 +179,7 @@ class StackController(object):
         """
         stacks = self.engine.list_stacks(req.context)
 
-        return {'stacks': [format_stack(req, s) for s in stacks]}
+        return {'stacks': [stacks_view.format_stack(req, s) for s in stacks]}
 
     @util.tenant_local
     def create(self, req, body):
@@ -220,7 +196,11 @@ class StackController(object):
                                           data.files(),
                                           data.args())
 
-        return {'stack': format_stack(req, {engine_api.STACK_ID: result})}
+        formatted_stack = stacks_view.format_stack(
+            req,
+            {engine_api.STACK_ID: result}
+        )
+        return {'stack': formatted_stack}
 
     @util.tenant_local
     def lookup(self, req, stack_name, path='', body=None):
@@ -253,7 +233,7 @@ class StackController(object):
 
         stack = stack_list[0]
 
-        return {'stack': format_stack(req, stack)}
+        return {'stack': stacks_view.format_stack(req, stack)}
 
     @util.identified_stack
     def template(self, req, identity):

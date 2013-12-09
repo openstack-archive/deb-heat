@@ -14,6 +14,7 @@
 #    under the License.
 
 '''Implementation of SQLAlchemy backend.'''
+import sys
 from datetime import datetime
 from datetime import timedelta
 
@@ -27,9 +28,21 @@ from heat.openstack.common.gettextutils import _
 
 from heat.common import crypt
 from heat.common import exception
+from heat.db.sqlalchemy import filters as db_filters
+from heat.db.sqlalchemy import migration
 from heat.db.sqlalchemy import models
-from heat.db.sqlalchemy.session import get_engine
-from heat.db.sqlalchemy.session import get_session
+from heat.openstack.common.db.sqlalchemy import session as db_session
+from heat.openstack.common.db.sqlalchemy import utils
+
+
+get_engine = db_session.get_engine
+get_session = db_session.get_session
+
+
+def get_backend():
+    """The backend is this module itself."""
+
+    return sys.modules[__name__]
 
 
 def model_query(context, *args):
@@ -62,7 +75,7 @@ def raw_template_get(context, template_id):
     result = model_query(context, models.RawTemplate).get(template_id)
 
     if not result:
-        raise exception.NotFound('raw template with id %s not found' %
+        raise exception.NotFound(_('raw template with id %s not found') %
                                  template_id)
 
     return result
@@ -79,7 +92,8 @@ def resource_get(context, resource_id):
     result = model_query(context, models.Resource).get(resource_id)
 
     if not result:
-        raise exception.NotFound("resource with id %s not found" % resource_id)
+        raise exception.NotFound(_("resource with id %s not found") %
+                                 resource_id)
 
     return result
 
@@ -108,9 +122,31 @@ def resource_get_all(context):
     results = model_query(context, models.Resource).all()
 
     if not results:
-        raise exception.NotFound('no resources were found')
+        raise exception.NotFound(_('no resources were found'))
 
     return results
+
+
+def resource_data_get_all(resource):
+    """
+    Looks up resource_data by resource.id.  If data is encrypted,
+    this method will decrypt the results.
+    """
+    result = (model_query(resource.context, models.ResourceData)
+              .filter_by(resource_id=resource.id))
+
+    if not result:
+        raise exception.NotFound(_('no resource data found'))
+
+    ret = {}
+
+    for res in result:
+        if res.redact:
+            ret[res.key] = _decrypt(res.value)
+        else:
+            ret[res.key] = res.value
+
+    return ret
 
 
 def resource_data_get(resource, key):
@@ -145,7 +181,7 @@ def resource_data_get_by_key(context, resource_id, key):
               .filter_by(key=key).first())
 
     if not result:
-        raise exception.NotFound('No resource data found')
+        raise exception.NotFound(_('No resource data found'))
     return result
 
 
@@ -161,7 +197,7 @@ def resource_data_set(resource, key, value, redact=False):
         current.resource_id = resource.id
     current.redact = redact
     current.value = value
-    current.save()
+    current.save(session=resource.context.session)
     return current
 
 
@@ -195,8 +231,8 @@ def resource_get_all_by_stack(context, stack_id):
         filter_by(stack_id=stack_id).all()
 
     if not results:
-        raise exception.NotFound("no resources for stack_id %s were found" %
-                                 stack_id)
+        raise exception.NotFound(_("no resources for stack_id %s were found")
+                                 % stack_id)
 
     return results
 
@@ -210,18 +246,13 @@ def stack_get_by_name(context, stack_name, owner_id=None):
     return query.first()
 
 
-def stack_get(context, stack_id, admin=False, show_deleted=False):
+def stack_get(context, stack_id, show_deleted=False, tenant_safe=True):
     result = model_query(context, models.Stack).get(stack_id)
 
     if result is None or result.deleted_at is not None and not show_deleted:
         return None
 
-    # If the admin flag is True, we allow retrieval of a specific
-    # stack without the tenant scoping
-    if admin:
-        return result
-
-    if (result is not None and context is not None and
+    if (tenant_safe and result is not None and context is not None and
             result.tenant != context.tenant_id):
         return None
 
@@ -240,15 +271,69 @@ def stack_get_all_by_owner_id(context, owner_id):
     return results
 
 
+def _filter_sort_keys(sort_keys, whitelist):
+    '''Returns an array containing only whitelisted keys
+
+    :param sort_keys: an array of strings
+    :param whitelist: an array of allowed strings
+    :returns: filtered list of sort keys
+    '''
+    if not sort_keys:
+        return []
+    elif not isinstance(sort_keys, list):
+        sort_keys = [sort_keys]
+
+    return [key for key in sort_keys if key in whitelist]
+
+
+def _paginate_query(context, query, model, limit=None, sort_keys=None,
+                    marker=None, sort_dir=None):
+    default_sort_keys = ['created_at']
+    if not sort_keys:
+        sort_keys = default_sort_keys
+        if not sort_dir:
+            sort_dir = 'desc'
+
+    # This assures the order of the stacks will always be the same
+    # even for sort_key values that are not unique in the database
+    sort_keys = sort_keys + ['id']
+
+    model_marker = None
+    if marker:
+        model_marker = model_query(context, model).get(marker)
+
+    try:
+        query = utils.paginate_query(query, model, limit, sort_keys,
+                                     model_marker, sort_dir)
+    except utils.InvalidSortKey as exc:
+        raise exception.Invalid(reason=exc.message)
+
+    return query
+
+
 def _query_stack_get_all_by_tenant(context):
     query = soft_delete_aware_query(context, models.Stack).\
         filter_by(owner_id=None).\
         filter_by(tenant=context.tenant_id)
+
     return query
 
 
-def stack_get_all_by_tenant(context):
-    return _query_stack_get_all_by_tenant(context).all()
+def stack_get_all_by_tenant(context, limit=None, sort_keys=None, marker=None,
+                            sort_dir=None, filters=None):
+    if filters is None:
+        filters = {}
+
+    allowed_sort_keys = [models.Stack.name.key,
+                         models.Stack.status.key,
+                         models.Stack.created_at.key,
+                         models.Stack.updated_at.key]
+    filtered_keys = _filter_sort_keys(sort_keys, allowed_sort_keys)
+
+    query = _query_stack_get_all_by_tenant(context)
+    query = db_filters.exact_filter(query, models.Stack, filters)
+    return _paginate_query(context, query, models.Stack, limit, filtered_keys,
+                           marker, sort_dir).all()
 
 
 def stack_count_all_by_tenant(context):
@@ -266,8 +351,10 @@ def stack_update(context, stack_id, values):
     stack = stack_get(context, stack_id)
 
     if not stack:
-        raise exception.NotFound('Attempt to update a stack with id: %s %s' %
-                                 (stack_id, 'that does not exist'))
+        raise exception.NotFound(_('Attempt to update a stack with id: '
+                                 '%(id)s %(msg)s') % {
+                                 'id': stack_id,
+                                 'msg': 'that does not exist'})
 
     old_template_id = stack.raw_template_id
 
@@ -278,8 +365,10 @@ def stack_update(context, stack_id, values):
 def stack_delete(context, stack_id):
     s = stack_get(context, stack_id)
     if not s:
-        raise exception.NotFound('Attempt to delete a stack with id: %s %s' %
-                                 (stack_id, 'that does not exist'))
+        raise exception.NotFound(_('Attempt to delete a stack with id: '
+                                 '%(id)s %(msg)s') % {
+                                 'id': stack_id,
+                                 'msg': 'that does not exist'})
 
     session = Session.object_session(s)
 
@@ -426,8 +515,10 @@ def watch_rule_update(context, watch_id, values):
     wr = watch_rule_get(context, watch_id)
 
     if not wr:
-        raise exception.NotFound('Attempt to update a watch with id: %s %s' %
-                                 (watch_id, 'that does not exist'))
+        raise exception.NotFound(_('Attempt to update a watch with id: '
+                                 '%(id)s %(msg)s') % {
+                                 'id': watch_id,
+                                 'msg': 'that does not exist'})
 
     wr.update(values)
     wr.save(_session(context))
@@ -436,9 +527,10 @@ def watch_rule_update(context, watch_id, values):
 def watch_rule_delete(context, watch_id):
     wr = watch_rule_get(context, watch_id)
     if not wr:
-        raise exception.NotFound('Attempt to delete watch_rule: %s %s' %
-                                 (watch_id, 'that does not exist'))
-
+        raise exception.NotFound(_('Attempt to delete watch_rule: '
+                                 '%(id)s %(msg)s') % {
+                                 'id': watch_id,
+                                 'msg': 'that does not exist'})
     session = Session.object_session(wr)
 
     for d in wr.watch_data:
@@ -460,32 +552,26 @@ def watch_data_get_all(context):
     return results
 
 
-def watch_data_delete(context, watch_name):
-    ds = model_query(context, models.WatchRule).\
-        filter_by(name=watch_name).all()
+def purge_deleted(age, granularity='days'):
+    try:
+        age = int(age)
+    except ValueError:
+        raise exception.Error(_("age should be an integer"))
+    if age < 0:
+        raise exception.Error(_("age should be a positive integer"))
 
-    if not ds:
-        raise exception.NotFound('Attempt to delete watch_data: %s %s' %
-                                 (watch_name, 'that does not exist'))
+    if granularity not in ('days', 'hours', 'minutes', 'seconds'):
+        raise exception.Error(
+            _("granularity should be days, hours, minutes, or seconds"))
 
-    session = Session.object_session(ds)
-    for d in ds:
-        session.delete(d)
-    session.flush()
+    if granularity == 'days':
+        age = age * 86400
+    elif granularity == 'hours':
+        age = age * 3600
+    elif granularity == 'minutes':
+        age = age * 60
 
-
-def purge_deleted(age):
-    if age is not None:
-        try:
-            age = int(age)
-        except ValueError:
-            raise exception.Error(_("age should be an integer"))
-        if age < 0:
-            raise exception.Error(_("age should be a positive integer"))
-    else:
-        age = 90
-
-    time_line = datetime.now() - timedelta(days=age)
+    time_line = datetime.now() - timedelta(seconds=age)
     engine = get_engine()
     meta = sqlalchemy.MetaData()
     meta.bind = engine
@@ -511,3 +597,13 @@ def purge_deleted(age):
         engine.execute(raw_template_del)
         user_creds_del = user_creds.delete().where(user_creds.c.id == s[2])
         engine.execute(user_creds_del)
+
+
+def db_sync(version=None):
+    """Migrate the database to `version` or the most recent version."""
+    return migration.db_sync(version=version)
+
+
+def db_version():
+    """Display the current database version."""
+    return migration.db_version()

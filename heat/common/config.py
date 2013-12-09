@@ -17,7 +17,7 @@
 """
 Routines for configuring Heat
 """
-
+import copy
 import logging as sys_logging
 import os
 
@@ -67,15 +67,6 @@ service_opts = [
     cfg.IntOpt('max_nested_stack_depth',
                default=3,
                help='Maximum depth allowed when using nested stacks.')]
-
-db_opts = [
-    cfg.StrOpt('sql_connection',
-               default='mysql://heat:heat@localhost/heat',
-               help='The SQLAlchemy connection string used to connect to the '
-               'database'),
-    cfg.IntOpt('sql_idle_timeout',
-               default=3600,
-               help='timeout before idle sql connections are reaped')]
 
 engine_opts = [
     cfg.StrOpt('instance_user',
@@ -133,8 +124,41 @@ auth_password_opts = [
                 help=_('Allowed keystone endpoints for auth_uri when '
                        'multi_cloud is enabled. At least one endpoint needs '
                        'to be specified.'))]
+clients_opts = [
+    cfg.StrOpt('ca_file',
+               help=_('Optional CA cert file to use in SSL connections')),
+    cfg.StrOpt('cert_file',
+               help=_('Optional PEM-formatted certificate chain file')),
+    cfg.StrOpt('key_file',
+               help=_('Optional PEM-formatted file that contains the '
+                      'private key')),
+    cfg.BoolOpt('insecure',
+                default=False,
+                help=_("If set then the server's certificate will not "
+                       "be verified"))]
 
-cfg.CONF.register_opts(db_opts)
+
+def register_clients_opts():
+    cfg.CONF.register_opts(clients_opts, group='clients')
+    for client in ('nova', 'swift', 'neutron', 'cinder',
+                   'ceilometer', 'keystone'):
+        client_specific_group = 'clients_' + client
+        # register opts copy and put it to globals in order to
+        # generate_sample.sh to work
+        opts_copy = copy.deepcopy(clients_opts)
+        globals()[client_specific_group + '_opts'] = opts_copy
+        cfg.CONF.register_opts(opts_copy, group=client_specific_group)
+
+
+revision_group = cfg.OptGroup('revision')
+revision_opts = [
+    cfg.StrOpt('heat_revision',
+               default='unknown',
+               help=_('Heat build revision. '
+                      'If you would prefer to manage your build revision '
+                      'separately you can move this section to a different '
+                      'file and add it as another config option'))]
+
 cfg.CONF.register_opts(engine_opts)
 cfg.CONF.register_opts(service_opts)
 cfg.CONF.register_opts(rpc_opts)
@@ -142,6 +166,9 @@ cfg.CONF.register_group(paste_deploy_group)
 cfg.CONF.register_opts(paste_deploy_opts, group=paste_deploy_group)
 cfg.CONF.register_group(auth_password_group)
 cfg.CONF.register_opts(auth_password_opts, group=auth_password_group)
+cfg.CONF.register_group(revision_group)
+cfg.CONF.register_opts(revision_opts, group=revision_group)
+register_clients_opts()
 
 
 def rpc_set_default():
@@ -191,7 +218,7 @@ def load_paste_app(app_name=None):
 
     conf_file = _get_deployment_config_file()
     if conf_file is None:
-        raise RuntimeError("Unable to locate config file")
+        raise RuntimeError(_("Unable to locate config file"))
 
     try:
         app = wsgi.paste_deploy_app(conf_file, app_name, cfg.CONF)
@@ -203,8 +230,8 @@ def load_paste_app(app_name=None):
 
         return app
     except (LookupError, ImportError) as e:
-        raise RuntimeError("Unable to load %(app_name)s from "
-                           "configuration file %(conf_file)s."
-                           "\nGot: %(e)r" % {'app_name': app_name,
-                                             'conf_file': conf_file,
-                                             'e': e})
+        raise RuntimeError(_("Unable to load %(app_name)s from "
+                             "configuration file %(conf_file)s."
+                             "\nGot: %(e)r") % {'app_name': app_name,
+                                                'conf_file': conf_file,
+                                                'e': e})

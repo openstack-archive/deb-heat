@@ -17,6 +17,7 @@ from heat.engine import signal_responder
 from heat.engine import clients
 from heat.engine import resource
 from heat.engine import scheduler
+from heat.engine.resources.neutron import neutron
 from heat.engine.resources import nova_utils
 from heat.engine.resources import volume
 
@@ -45,7 +46,7 @@ class Restarter(signal_responder.SignalResponder):
         Return the resource with the specified instance ID, or None if it
         cannot be found.
         '''
-        for resource in self.stack:
+        for resource in self.stack.itervalues():
             if resource.resource_id == resource_id:
                 return resource
         return None
@@ -56,19 +57,21 @@ class Restarter(signal_responder.SignalResponder):
         else:
             alarm_state = details.get('state', 'alarm').lower()
 
-        logger.info('%s Alarm, new state %s' % (self.name, alarm_state))
+        logger.info(_('%(name)s Alarm, new state %(state)s') % {
+                    'name': self.name, 'state': alarm_state})
 
         if alarm_state != 'alarm':
             return
 
         victim = self._find_resource(self.properties['InstanceId'])
         if victim is None:
-            logger.info('%s Alarm, can not find instance %s' %
-                       (self.name, self.properties['InstanceId']))
+            logger.info(_('%(name)s Alarm, can not find instance '
+                        '%(instance)s') % {'name': self.name,
+                        'instance': self.properties['InstanceId']})
             return
 
-        logger.info('%s Alarm, restarting resource: %s' %
-                    (self.name, victim.name))
+        logger.info(_('%(name)s Alarm, restarting resource: %(victim)s') % {
+                    'name': self.name, 'victim': victim.name})
         self.stack.restart_resource(victim.name)
 
     def _resolve_attribute(self, name):
@@ -96,6 +99,7 @@ class Instance(resource.Resource):
         'InstanceType': {
             'Type': 'String',
             'Required': True,
+            'UpdateAllowed': True,
             'Description': _('Nova instance type (flavor).')},
         'KeyName': {
             'Type': 'String',
@@ -146,6 +150,7 @@ class Instance(resource.Resource):
             'Description': _('Subnet ID to launch instance in.')},
         'Tags': {
             'Type': 'List',
+            'UpdateAllowed': True,
             'Schema': {'Type': 'Map', 'Schema': tags_schema},
             'Description': _('Tags to attach to instance.')},
         'NovaSchedulerHints': {
@@ -178,7 +183,10 @@ class Instance(resource.Resource):
                                        'instance.')}
 
     update_allowed_keys = ('Metadata', 'Properties')
-    update_allowed_properties = ('InstanceType',)
+
+    # Server host name limit to 53 characters by due to typical default
+    # linux HOST_NAME_MAX of 64, minus the .novalocal appended to the name
+    physical_resource_name_limit = 53
 
     def __init__(self, name, json_snippet, stack):
         super(Instance, self).__init__(name, json_snippet, stack)
@@ -252,37 +260,13 @@ class Instance(resource.Resource):
 
                     if security_groups:
                         props['security_groups'] = \
-                            self._get_security_groups_id(security_groups)
+                            neutron.NeutronResource.get_secgroup_uuids(
+                                security_groups, self.neutron())
 
                     port = neutronclient.create_port({'port': props})['port']
                     nics = [{'port-id': port['id']}]
 
         return nics
-
-    def _get_security_groups_id(self, security_groups):
-        """Extract security_groups ids from security group list
-
-        This function will be deprecated if Neutron client resolves security
-        group name to id internally.
-
-        Args:
-            security_groups : A list contains security_groups ids or names
-        Returns:
-            A list of security_groups ids.
-        """
-        ids = []
-        response = self.neutron().list_security_groups(self.resource_id)
-        for item in response:
-            if item['security_groups'] is not None:
-                for security_group in security_groups:
-                    for groups in item['security_groups']:
-                        if groups['name'] == security_group \
-                                and groups['id'] not in ids:
-                            ids.append(groups['id'])
-                        elif groups['id'] == security_group \
-                                and groups['id'] not in ids:
-                            ids.append(groups['id'])
-        return ids
 
     def _get_security_groups(self):
         security_groups = []
@@ -298,6 +282,13 @@ class Instance(resource.Resource):
         if not self.mime_string:
             self.mime_string = nova_utils.build_userdata(self, userdata)
         return self.mime_string
+
+    def _get_nova_metadata(self, properties):
+        if properties is None or properties.get('Tags') is None:
+            return None
+
+        return dict((tm['Key'], tm['Value'])
+                    for tm in properties['Tags'])
 
     def handle_create(self):
         security_groups = self._get_security_groups()
@@ -317,13 +308,6 @@ class Instance(resource.Resource):
 
         flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
 
-        tags = {}
-        if self.properties['Tags']:
-            for tm in self.properties['Tags']:
-                tags[tm['Key']] = tm['Value']
-        else:
-            tags = None
-
         scheduler_hints = {}
         if self.properties['NovaSchedulerHints']:
             for tm in self.properties['NovaSchedulerHints']:
@@ -336,18 +320,6 @@ class Instance(resource.Resource):
                                 subnet_id=self.properties['SubnetId'])
         server = None
 
-        # TODO(sdake/shardy) ensure physical_resource_name() never returns a
-        # string longer than 63 characters, as this is pretty inconvenient
-        # behavior for autoscaling groups and nested stacks where instance
-        # names can easily become quite long even with terse names.
-        physical_resource_name_len = len(self.physical_resource_name())
-        if physical_resource_name_len > 63:
-            raise exception.Error(_('Server %(server)s length %(length)d > 63'
-                                  ' characters, please reduce the length of'
-                                  ' stack or resource names') %
-                                  dict(server=self.physical_resource_name(),
-                                       length=physical_resource_name_len))
-
         try:
             server = self.nova().servers.create(
                 name=self.physical_resource_name(),
@@ -356,7 +328,7 @@ class Instance(resource.Resource):
                 key_name=key_name,
                 security_groups=security_groups,
                 userdata=self.get_mime_string(userdata),
-                meta=tags,
+                meta=self._get_nova_metadata(self.properties),
                 scheduler_hints=scheduler_hints,
                 nics=nics,
                 availability_zone=availability_zone)
@@ -427,13 +399,21 @@ class Instance(resource.Resource):
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if 'Metadata' in tmpl_diff:
             self.metadata = tmpl_diff['Metadata']
+
+        server = None
+        if 'Tags' in prop_diff:
+            server = self.nova().servers.get(self.resource_id)
+            nova_utils.meta_update(self.nova(),
+                                   server,
+                                   self._get_nova_metadata(prop_diff))
+
         if 'InstanceType' in prop_diff:
             flavor = prop_diff['InstanceType']
             flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
-            server = self.nova().servers.get(self.resource_id)
-            server.resize(flavor_id)
-            checker = scheduler.TaskRunner(nova_utils.check_resize,
-                                           server, flavor)
+            if not server:
+                server = self.nova().servers.get(self.resource_id)
+            checker = scheduler.TaskRunner(nova_utils.resize, server, flavor,
+                                           flavor_id)
             checker.start()
             return checker
 
@@ -484,8 +464,14 @@ class Instance(resource.Resource):
 
             try:
                 server.get()
+                if server.status == "DELETED":
+                    self.resource_id_set(None)
+                    break
+                elif server.status == "ERROR":
+                    raise exception.Error(_("Deletion of server %s failed.") %
+                                          server.id)
             except clients.novaclient.exceptions.NotFound:
-                self.resource_id = None
+                self.resource_id_set(None)
                 break
 
     def _detach_volumes_task(self):
@@ -508,7 +494,7 @@ class Instance(resource.Resource):
         try:
             server = self.nova().servers.get(self.resource_id)
         except clients.novaclient.exceptions.NotFound:
-            self.resource_id = None
+            self.resource_id_set(None)
             return
 
         server_delete_task = scheduler.TaskRunner(self._delete_server,
@@ -539,7 +525,7 @@ class Instance(resource.Resource):
             raise exception.NotFound(_('Failed to find instance %s') %
                                      self.resource_id)
         else:
-            logger.debug("suspending instance %s" % self.resource_id)
+            logger.debug(_("suspending instance %s") % self.resource_id)
             # We want the server.suspend to happen after the volume
             # detachement has finished, so pass both tasks and the server
             suspend_runner = scheduler.TaskRunner(server.suspend)
@@ -593,7 +579,7 @@ class Instance(resource.Resource):
             raise exception.NotFound(_('Failed to find instance %s') %
                                      self.resource_id)
         else:
-            logger.debug("resuming instance %s" % self.resource_id)
+            logger.debug(_("resuming instance %s") % self.resource_id)
             server.resume()
             return server, scheduler.TaskRunner(self._attach_volumes_task())
 
