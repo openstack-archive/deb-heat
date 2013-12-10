@@ -270,21 +270,6 @@ class InstancesTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    def test_instance_create_err_toolong(self):
-        # Attempt to create a server with a 64 character name should fail
-        # instance name is name_s-name-xxxxxxxxxxxx, so 24 characters gives
-        # a 64 character physical_resource_name
-        return_server = self.fc.servers.list()[1]
-        name = 'e' * 24
-        error = self.assertRaises(exception.ResourceFailure,
-                                  self._create_test_instance,
-                                  return_server,
-                                  name, stub_create=False)
-        substr = ('length 64 > 63 characters, '
-                  'please reduce the length of stack or resource names')
-        self.assertIn(substr, str(error))
-        self.m.VerifyAll()
-
     def test_instance_validate(self):
         stack_name = 'test_instance_validate_stack'
         (t, stack) = self._setup_test_stack(stack_name)
