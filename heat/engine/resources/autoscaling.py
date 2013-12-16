@@ -14,6 +14,7 @@
 #    under the License.
 
 import copy
+import math
 
 from heat.engine import resource
 from heat.engine import signal_responder
@@ -410,14 +411,32 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
             new_capacity = adjustment
         else:
             # PercentChangeInCapacity
-            new_capacity = capacity + (capacity * adjustment / 100)
+            delta = capacity * adjustment / 100.0
+            if math.fabs(delta) < 1.0:
+                rounded = int(math.ceil(delta) if delta > 0.0
+                              else math.floor(delta))
+            else:
+                rounded = int(math.floor(delta) if delta > 0.0
+                              else math.ceil(delta))
+            new_capacity = capacity + rounded
 
-        if new_capacity > int(self.properties['MaxSize']):
-            logger.warn('can not exceed %s' % self.properties['MaxSize'])
-            return
-        if new_capacity < int(self.properties['MinSize']):
-            logger.warn('can not be less than %s' % self.properties['MinSize'])
-            return
+        upper = int(self.properties['MaxSize'])
+        lower = int(self.properties['MinSize'])
+
+        if new_capacity > upper:
+            if upper > capacity:
+                logger.info(_('truncating growth to %s') % upper)
+                new_capacity = upper
+            else:
+                logger.warn(_('can not exceed %s') % upper)
+                return
+        if new_capacity < lower:
+            if lower < capacity:
+                logger.info(_('truncating shrinkage to %s') % lower)
+                new_capacity = lower
+            else:
+                logger.warn(_('can not be less than %s') % lower)
+                return
 
         if new_capacity == capacity:
             logger.debug('no change in capacity %d' % capacity)

@@ -801,7 +801,7 @@ class AutoScalingTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    def test_scaling_group_nochange(self):
+    def test_scaling_group_truncate_adjustment(self):
         t = template_format.parse(as_template)
         stack = utils.parse_stack(t, params=self.params)
 
@@ -819,23 +819,36 @@ class AutoScalingTest(HeatTestCase):
                          rsrc.get_instance_names())
 
         # raise above the max
+        self._stub_lb_reload(5)
+        self._stub_meta_expected(now, 'ChangeInCapacity : 4')
+        self._stub_create(3)
+        self.m.ReplayAll()
         rsrc.adjust(4)
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self._verify_instance_names(rsrc, 5)
 
         # lower below the min
-        rsrc.adjust(-2)
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self._stub_lb_reload(1)
+        self._stub_validate()
+        self._stub_meta_expected(now, 'ChangeInCapacity : -5')
+        self.m.ReplayAll()
+        rsrc.adjust(-5)
+        self._verify_instance_names(rsrc, 1)
 
         # no change
         rsrc.adjust(0)
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self._verify_instance_names(rsrc, 1)
+
         rsrc.delete()
         self.m.VerifyAll()
 
-    def test_scaling_group_percent(self):
+    def _verify_instance_names(self, group, bound):
+        instance_names = group.get_instance_names()
+        self.assertEqual(len(instance_names), bound)
+        for i in xrange(bound):
+            self.assertEqual('WebServerGroup-%d' % i, instance_names[i])
+
+    def _do_test_scaling_group_percent(self, decrease, lowest,
+                                       increase, create, highest):
         t = template_format.parse(as_template)
         stack = utils.parse_stack(t, params=self.params)
 
@@ -849,29 +862,36 @@ class AutoScalingTest(HeatTestCase):
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
         stack.resources['WebServerGroup'] = rsrc
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1'],
-                         rsrc.get_instance_names())
+        self._verify_instance_names(rsrc, 2)
 
-        # reduce by 50%
-        self._stub_lb_reload(1)
-        self._stub_meta_expected(now, 'PercentChangeInCapacity : -50')
+        # reduce by decrease %
+        self._stub_lb_reload(lowest)
+        adjust = 'PercentChangeInCapacity : %d' % decrease
+        self._stub_meta_expected(now, adjust)
         self._stub_validate()
         self.m.ReplayAll()
-        rsrc.adjust(-50, 'PercentChangeInCapacity')
-        self.assertEqual(['WebServerGroup-0'],
-                         rsrc.get_instance_names())
+        rsrc.adjust(decrease, 'PercentChangeInCapacity')
+        self._verify_instance_names(rsrc, lowest)
 
-        # raise by 200%
-        self._stub_lb_reload(3)
-        self._stub_meta_expected(now, 'PercentChangeInCapacity : 200')
-        self._stub_create(2)
+        # raise by increase %
+        self._stub_lb_reload(highest)
+        adjust = 'PercentChangeInCapacity : %d' % increase
+        self._stub_meta_expected(now, adjust)
+        self._stub_create(create)
         self.m.ReplayAll()
-        rsrc.adjust(200, 'PercentChangeInCapacity')
-        self.assertEqual(['WebServerGroup-0', 'WebServerGroup-1',
-                          'WebServerGroup-2'],
-                         rsrc.get_instance_names())
+        rsrc.adjust(increase, 'PercentChangeInCapacity')
+        self._verify_instance_names(rsrc, highest)
 
         rsrc.delete()
+
+    def test_scaling_group_percent(self):
+        self._do_test_scaling_group_percent(-50, 1, 200, 2, 3)
+
+    def test_scaling_group_percent_round_up(self):
+        self._do_test_scaling_group_percent(-33, 1, 33, 1, 2)
+
+    def test_scaling_group_percent_round_down(self):
+        self._do_test_scaling_group_percent(-66, 1, 225, 2, 3)
 
     def test_scaling_group_cooldown_toosoon(self):
         t = template_format.parse(as_template)
