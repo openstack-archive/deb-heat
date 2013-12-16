@@ -110,8 +110,8 @@ msgid ""
 "Note that you will need to have an up and running Keystone server on which "
 "to connect using the Keystone authentication token."
 msgstr ""
-"Veuillez noter que vous aurez besoin d'un serveur Keystone fonctionnel "
-"sur lequel se connecter en utilisant le jeton d'authentification Keystone."
+"Veuillez noter que vous aurez besoin d'un serveur Keystone fonctionnel sur "
+"lequel se connecter en utilisant le jeton d'authentification Keystone."
 
 #. Type: string
 #. Description
@@ -184,9 +184,9 @@ msgid ""
 "location. Please enter the zone that you wish to use when registering the "
 "endpoint."
 msgstr ""
-"OpenStack prend en charge l'utilisation de zones disponibles, avec chaque région "
-"représentant un lieu. Veuillez entrer une zone que vous souhaitez utiliser "
-"lors de l'enregistrement d'un point d'accès."
+"OpenStack prend en charge l'utilisation de zones disponibles, avec chaque "
+"région représentant un lieu. Veuillez entrer une zone que vous souhaitez "
+"utiliser lors de l'enregistrement d'un point d'accès."
 
 #. Type: boolean
 #. Description
@@ -215,10 +215,10 @@ msgid ""
 " * a username and password to access the database."
 msgstr ""
 " - le type de base de données que vous souhaitez utiliser ;\n"
-" - le nom d'hôte du serveur de base de données (qui doit\n
-    autoriser les connexions TCP depuis cette machine) ;\n"
-" - un nom d'utilisateur et un mot de passe pour accéder\n
-    à la base de données."
+" - le nom d'hôte du serveur de base de données (qui doit\n"
+"    autoriser les connexions TCP depuis cette machine) ;\n"
+" - un nom d'utilisateur et un mot de passe pour accéder\n"
+"    à la base de données."
 
 #. Type: boolean
 #. Description
@@ -264,7 +264,6 @@ msgstr ""
 #. Type: string
 #. Description
 #: ../heat-common.templates:12001
-#| msgid "Please specify the password to use with the authentication server."
 msgid "Please specify the IP address of that server."
 msgstr "Veuillez indiquer l'adresse IP de ce serveur. "
 
@@ -277,7 +276,6 @@ msgstr "Nom d'utilisateur pour la connexion au serveur RabbitMQ :"
 #. Type: string
 #. Description
 #: ../heat-common.templates:13001
-#| msgid "Please specify the username to use with the authentication server."
 msgid "Please specify the username used to connect to the RabbitMQ server."
 msgstr ""
 "Veuillez indiquer le nom d'utilisateur pour se connecter au serveur RabbitMQ."
@@ -291,7 +289,6 @@ msgstr "Mot de passe pour la connexion au serveur RabbitMQ :"
 #. Type: password
 #. Description
 #: ../heat-common.templates:14001
-#| msgid "Please specify the password to use with the authentication server."
 msgid "Please specify the password used to connect to the RabbitMQ server."
 msgstr ""
 "Veuillez indiquer le mot de passe pour se connecter au serveur RabbitMQ."
