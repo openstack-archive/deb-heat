@@ -1,4 +1,4 @@
-heat (2013.2.1-2) UNRELEASED; urgency=low
+heat (2013.2.1-2) unstable; urgency=medium
 
   * New debconf template translations:
     - German: Martin Schauer (Closes: #734738)
