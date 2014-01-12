@@ -1,8 +1,22 @@
 heat (2014.1~b1-1) experimental; urgency=low
 
   * New upstream release (Icehouse beta 1).
-  * Removes coverage call patch, now applied upstream.
   * Added new (build)-depends python-heatclient (>= 0.2.3).
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 09 Dec 2013 22:01:07 +0800
+
+heat (2013.2.1-2) unstable; urgency=low
+
+  * New debconf template translations:
+    - German: Martin Schauer (Closes: #734738)
+    - Swedish: Martin Bagge (Closes: #734619)
+    - Spanish: Matias A. Bellone (Closes: #732536)
+
+ -- Thomas Goirand <zigo@debian.org>  Sun, 12 Jan 2014 17:14:00 +0800
+
+heat (2013.2.1-1) unstable; urgency=high
+
+  * New upstream release.
 
  -- Thomas Goirand <zigo@debian.org>  Mon, 09 Dec 2013 22:01:07 +0800
 
