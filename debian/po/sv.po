@@ -1,0 +1,290 @@
+# Translation of heat debconf template to Swedish
+# Copyright (C) 2014 Martin Bagge <brother@bsnet.se>
+# This file is distributed under the same license as the heat package.
+#
+# Martin Bagge <brother@bsnet.se>, 2014
+msgid ""
+msgstr ""
+"Project-Id-Version: heat\n"
+"Report-Msgid-Bugs-To: heat@packages.debian.org\n"
+"POT-Creation-Date: 2013-09-27 00:04+0800\n"
+"PO-Revision-Date: 2014-01-08 17:06+0100\n"
+"Last-Translator: Martin Bagge / brother <brother@bsnet.se>\n"
+"Language-Team: Swedish <debian-l10n-swedish@lists.debian.org>\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"X-Generator: Poedit 1.5.4\n"
+"Language: Swedish\n"
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:2001
+msgid "Authentication server hostname:"
+msgstr "Värdnamn för identifieringsserver:"
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:2001
+msgid ""
+"Please specify the hostname of the authentication server. Typically this is "
+"also the hostname of the OpenStack Identity Service (Keystone)."
+msgstr ""
+"Ange värdnamn för identifieringsserver. Detta är vanligtvis samma värdnamn "
+"som till din OpenStack-identitetstjänst (Keystone)."
+
+#. Type: string
+#. Description
+#. Translators: a "tenant" in OpenStack world is
+#. an entity that contains one or more username/password couples.
+#. It's typically the tenant that will be used for billing. Having more than one
+#. username/password is very helpful in larger organization.
+#. You're advised to either keep "tenant" without translating it
+#. or keep it parenthezised. Example for French:
+#. locataire ("tenant")
+#: ../heat-common.templates:3001
+msgid "Authentication server tenant name:"
+msgstr "Namn för \"tenant\" (administratör) på identifieringsservern:"
+
+#. Type: string
+#. Description
+#. Translators: a "tenant" in OpenStack world is
+#. an entity that contains one or more username/password couples.
+#. It's typically the tenant that will be used for billing. Having more than one
+#. username/password is very helpful in larger organization.
+#. You're advised to either keep "tenant" without translating it
+#. or keep it parenthezised. Example for French:
+#. locataire ("tenant")
+#: ../heat-common.templates:3001
+msgid "Please specify the authentication server tenant name."
+msgstr ""
+"Ange \"tenant\"-namn för identifieringsservern. (\"Tenant\" är ungefär "
+"översättningsbart till \"administratör\")."
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:4001
+msgid "Authentication server username:"
+msgstr "Användarnamn på identifieringsservern:"
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:4001
+msgid "Please specify the username to use with the authentication server."
+msgstr ""
+"Ange användarnamnet som ska användas för att komma åt identifieringsservern."
+
+#. Type: password
+#. Description
+#: ../heat-common.templates:5001
+msgid "Authentication server password:"
+msgstr "Lösenord på identifieringsservern:"
+
+#. Type: password
+#. Description
+#: ../heat-common.templates:5001
+msgid "Please specify the password to use with the authentication server."
+msgstr ""
+"Ange lösenordet som ska användas för att komma åt identifieringsservern."
+
+#. Type: boolean
+#. Description
+#: ../heat-common.templates:6001
+msgid "Register Heat in the Keystone endpoint catalog?"
+msgstr "Ska Heat registreras i keystones katalog med ändpunkter?"
+
+#. Type: boolean
+#. Description
+#: ../heat-common.templates:6001
+msgid ""
+"Each OpenStack service (each API) should be registered in order to be "
+"accessible. This is done using \"keystone service-create\" and \"keystone "
+"endpoint-create\". This can be done automatically now."
+msgstr ""
+"Alla OpenStack-tjänster (varje API) ska registreras för att kunna användas. "
+"Detta görs med kommandona \"keystone service-create\" och \"keystone "
+"endpoint-create\". Detta kan göras automatiskt nu."
+
+#. Type: boolean
+#. Description
+#: ../heat-common.templates:6001
+msgid ""
+"Note that you will need to have an up and running Keystone server on which "
+"to connect using the Keystone authentication token."
+msgstr "OBS. Du behöver ha en fungerande keystone-server att ansluta till."
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:7001
+msgid "Keystone server IP address:"
+msgstr "IP-adress till Keystone:"
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:7001
+msgid ""
+"Please enter the IP address of the Keystone server, so that heat-api can "
+"contact Keystone to do the Heat service and endpoint creation."
+msgstr ""
+"Ange IP-adressen till din keystone-server så att heat-api kan kontakta "
+"Keystone för att lägga till Heat-tjänsten som en ändpunkt."
+
+#. Type: password
+#. Description
+#: ../heat-common.templates:8001
+msgid "Keystone authentication token:"
+msgstr "Autetiseringsvärde för Keystone:"
+
+#. Type: password
+#. Description
+#: ../heat-common.templates:8001
+msgid ""
+"To configure its endpoint in Keystone, heat-api needs the Keystone "
+"authentication token."
+msgstr ""
+"För att lägga till ändpunkt i Keystone behöver glance-api ett "
+"autentiseringsvärde för Keystone."
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:9001
+msgid "Heat endpoint IP address:"
+msgstr "IP-adress för Heat-ändpunkt:"
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:9001
+msgid "Please enter the IP address that will be used to contact Heat."
+msgstr "Ange den IP-adress som ska användas för att kontakta Heat."
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:9001
+msgid ""
+"This IP address should be accessible from the clients that will use this "
+"service, so if you are installing a public cloud, this should be a public IP "
+"address."
+msgstr ""
+"Denna IP-adress ska vara nåbar från klienterna som vill använda den här "
+"tjänsten. Om detta är en publik molntjänst så ska det vara en publik IP-"
+"adress."
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:10001
+msgid "Name of the region to register:"
+msgstr "Regionnamn:"
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:10001
+msgid ""
+"OpenStack supports using availability zones, with each region representing a "
+"location. Please enter the zone that you wish to use when registering the "
+"endpoint."
+msgstr ""
+"OpenStack kan användas med tillgänglighetszoner. Varje region representerar "
+"en plats. Ange zonen som ska användas när ändpunkten registreras."
+
+#. Type: boolean
+#. Description
+#: ../heat-common.templates:11001
+msgid "Set up a database for heat-common?"
+msgstr "Ska en databas installeras för heat-common?"
+
+#. Type: boolean
+#. Description
+#: ../heat-common.templates:11001
+msgid ""
+"No database has been set up for heat-common to use. Before continuing, you "
+"should make sure you have the following information:"
+msgstr ""
+"Ingen databas har installerats för glance-registry eller glance-api. Innan "
+"du fortsätter behöver följande finnas tillgängligt:"
+
+#. Type: boolean
+#. Description
+#: ../heat-common.templates:11001
+msgid ""
+" * the type of database that you want to use;\n"
+" * the database server host name (that server must allow TCP connections "
+"from this\n"
+"   machine);\n"
+" * a username and password to access the database."
+msgstr ""
+" * vilken databastyp du vill använda.\n"
+" * serverns värdnamn (som måste kunna ta emot TCP-anslutningar\n"
+"   från den här maskinen)\n"
+" * användarnamn och lösenord för att komma åt databasen."
+
+#. Type: boolean
+#. Description
+#: ../heat-common.templates:11001
+msgid ""
+"If some of these requirements are missing, do not choose this option and run "
+"with regular SQLite support."
+msgstr ""
+"Om något av dessa krav saknar bör du avböja detta alternativ och fortsätta "
+"använda SQLite-stödet."
+
+#. Type: boolean
+#. Description
+#: ../heat-common.templates:11001
+msgid ""
+"You can change this setting later on by running \"dpkg-reconfigure -plow "
+"heat-common\"."
+msgstr ""
+"Denna inställning kan ändras senare genom att köra \"dpkg-reconfigure -plow "
+"heat-common\"."
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:12001
+msgid "IP address of your RabbitMQ host:"
+msgstr "IP-adress för din RabbitMQ-värd:"
+
+#. Type: string
+#. Description
+#. Type: string
+#. Description
+#. Type: password
+#. Description
+#: ../heat-common.templates:12001 ../heat-common.templates:13001
+#: ../heat-common.templates:14001
+msgid ""
+"In order to interoperate with other components of OpenStack, this package "
+"needs to connect to a central RabbitMQ server."
+msgstr ""
+"För att interagera med andra Openstack-komponenter behöver detta paketet "
+"kunna ansluta till en central RabbitMQ-server."
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:12001
+msgid "Please specify the IP address of that server."
+msgstr "Ange IP-adressen för den servern."
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:13001
+msgid "Username for connection to the RabbitMQ server:"
+msgstr "Användarnamn för att ansluta till RabbitMQ-servern:"
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:13001
+msgid "Please specify the username used to connect to the RabbitMQ server."
+msgstr ""
+"Ange användarnamnet som ska användas för att ansluta till RabbitMQ-servern:"
+
+#. Type: password
+#. Description
+#: ../heat-common.templates:14001
+msgid "Password for connection to the RabbitMQ server:"
+msgstr "Lösenord för att ansluta till RabbitMQ-servern:"
+
+#. Type: password
+#. Description
+#: ../heat-common.templates:14001
+msgid "Please specify the password used to connect to the RabbitMQ server."
+msgstr "Lösenord för att ansluta till RabbitMQ-servern:"
