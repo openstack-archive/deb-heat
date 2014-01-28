@@ -191,3 +191,15 @@ Description: OpenStack orchestration service - CloudWatch API
  CloudFormation-compatible Query API.
  .
  This package contains the CloudWatch API.
+
+Package: heat-doc
+Architecture: all
+Section: doc
+Pre-Depends: dpkg (>= 1.15.6~)
+Depends: ${misc:Depends}, ${sphinxdoc:Depends}
+Description: OpenStack orchestration service - Documentation
+ Heat is a service to orchestrate multiple composite cloud applications using
+ templates, through both an OpenStack-native ReST API and a
+ CloudFormation-compatible Query API.
+ .
+ This package contains the documentation.

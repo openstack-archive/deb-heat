@@ -4,7 +4,7 @@ include /usr/share/openstack-pkg-tools/pkgos.make
 export OSLO_PACKAGE_VERSION=$(VERSION)
 
 %:
-	dh $@  --with python2
+	dh $@ --buildsystem=python_distutils --with python2,sphinxdoc
 
 ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 override_dh_auto_test:
@@ -32,6 +32,13 @@ override_dh_auto_build:
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-common.config
 
 override_dh_installman:
-	python setup.py build
-	make -C doc man
+ifeq (,$(findstring nodocs, $(DEB_BUILD_OPTIONS)))
+	sphinx-build -b man doc/source doc/build/man
 	dh_installman
+endif
+
+override_dh_sphinxdoc:
+ifeq (,$(findstring nodocs, $(DEB_BUILD_OPTIONS)))
+	sphinx-build -b html doc/source $(CURDIR)/debian/heat-doc/usr/share/doc/heat-doc/html
+	dh_sphinxdoc -O--buildsystem=python_distutils
+endif

@@ -2,6 +2,7 @@ heat (2014.1~b2-1) experimental; urgency=low
 
   * New upstream release (Icehouse beta 1).
   * Added new (build)-depends python-heatclient (>= 0.2.3).
+  * Now building the sphinx doc in a heat-doc package.
 
  -- Thomas Goirand <zigo@debian.org>  Mon, 09 Dec 2013 22:01:07 +0800
 

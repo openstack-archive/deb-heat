@@ -1,0 +1,9 @@
+Document: heat-doc
+Title: Heat Documentation
+Author: OpenStack
+Abstract: Sphinx documentation for Heat
+Section: Network/File Transfer
+
+Format: HTML
+Index: /usr/share/doc/heat-doc/html/index.html
+Files: /usr/share/doc/heat-doc/html/*
