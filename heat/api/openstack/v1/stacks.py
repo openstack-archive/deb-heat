@@ -142,6 +142,8 @@ class StackController(object):
     WSGI controller for stacks resource in Heat v1 API
     Implements the API actions
     """
+    # Define request scope (must match what is in policy.json)
+    REQUEST_SCOPE = 'stacks'
 
     def __init__(self, options):
         self.options = options
@@ -150,7 +152,7 @@ class StackController(object):
     def default(self, req, **args):
         raise exc.HTTPNotFound()
 
-    @util.tenant_local
+    @util.policy_enforce
     def index(self, req):
         """
         Lists summary information for all stacks
@@ -167,12 +169,24 @@ class StackController(object):
         }
         params = util.get_allowed_params(req.params, whitelist)
         filter_params = util.get_allowed_params(req.params, filter_whitelist)
-        stacks = self.engine.list_stacks(req.context, filters=filter_params,
+
+        stacks = self.engine.list_stacks(req.context,
+                                         filters=filter_params,
                                          **params)
 
-        return stacks_view.collection(req, stacks)
+        count = None
+        if req.params.get('with_count'):
+            try:
+                # Check if engine has been updated to a version with
+                # support to count_stacks before trying to use it.
+                count = self.engine.count_stacks(req.context,
+                                                 filters=filter_params)
+            except AttributeError as exc:
+                logger.warning("Old Engine Version: %s" % str(exc))
 
-    @util.tenant_local
+        return stacks_view.collection(req, stacks=stacks, count=count)
+
+    @util.policy_enforce
     def detail(self, req):
         """
         Lists detailed information for all stacks
@@ -181,12 +195,11 @@ class StackController(object):
 
         return {'stacks': [stacks_view.format_stack(req, s) for s in stacks]}
 
-    @util.tenant_local
+    @util.policy_enforce
     def create(self, req, body):
         """
         Create a new stack
         """
-
         data = InstantiationData(body)
 
         result = self.engine.create_stack(req.context,
@@ -202,7 +215,7 @@ class StackController(object):
         )
         return {'stack': formatted_stack}
 
-    @util.tenant_local
+    @util.policy_enforce
     def lookup(self, req, stack_name, path='', body=None):
         """
         Redirect to the canonical URL for a stack
@@ -257,12 +270,12 @@ class StackController(object):
         """
         data = InstantiationData(body)
 
-        res = self.engine.update_stack(req.context,
-                                       identity,
-                                       data.template(),
-                                       data.environment(),
-                                       data.files(),
-                                       data.args())
+        self.engine.update_stack(req.context,
+                                 identity,
+                                 data.template(),
+                                 data.environment(),
+                                 data.files(),
+                                 data.args())
 
         raise exc.HTTPAccepted()
 
@@ -281,7 +294,16 @@ class StackController(object):
 
         raise exc.HTTPNoContent()
 
-    @util.tenant_local
+    @util.identified_stack
+    def abandon(self, req, identity):
+        """
+        Abandons specified stack by deleting the stack and it's resources
+        from the database, but underlying resources will not be deleted.
+        """
+        return self.engine.abandon_stack(req.context,
+                                         identity)
+
+    @util.policy_enforce
     def validate_template(self, req, body):
         """
         Implements the ValidateTemplate API action
@@ -298,21 +320,24 @@ class StackController(object):
 
         return result
 
-    @util.tenant_local
+    @util.policy_enforce
     def list_resource_types(self, req):
         """
         Returns a list of valid resource types that may be used in a template.
         """
-        return {'resource_types': self.engine.list_resource_types(req.context)}
+        support_status = req.params.get('support_status', None)
+        return {
+            'resource_types':
+            self.engine.list_resource_types(req.context, support_status)}
 
-    @util.tenant_local
+    @util.policy_enforce
     def resource_schema(self, req, type_name):
         """
         Returns the schema of the given resource type.
         """
         return self.engine.resource_schema(req.context, type_name)
 
-    @util.tenant_local
+    @util.policy_enforce
     def generate_template(self, req, type_name):
         """
         Generates a template based on the specified type.

@@ -55,11 +55,11 @@ def model_query(context, *args):
 def soft_delete_aware_query(context, *args, **kwargs):
     """Stack query helper that accounts for context's `show_deleted` field.
 
-    :param show_deleted: if present, overrides context's show_deleted field.
+    :param show_deleted: if True, overrides context's show_deleted field.
     """
 
     query = model_query(context, *args)
-    show_deleted = kwargs.get('show_deleted')
+    show_deleted = kwargs.get('show_deleted') or context.show_deleted
 
     if not show_deleted:
         query = query.filter_by(deleted_at=None)
@@ -142,7 +142,7 @@ def resource_data_get_all(resource):
 
     for res in result:
         if res.redact:
-            ret[res.key] = _decrypt(res.value)
+            ret[res.key] = _decrypt(res.value, res.decrypt_method)
         else:
             ret[res.key] = res.value
 
@@ -157,17 +157,22 @@ def resource_data_get(resource, key):
                                       resource.id,
                                       key)
     if result.redact:
-        return _decrypt(result.value)
+        return _decrypt(result.value, result.decrypt_method)
     return result.value
 
 
 def _encrypt(value):
     if value is not None:
         return crypt.encrypt(value.encode('utf-8'))
+    else:
+        return None, None
 
 
-def _decrypt(enc_value):
-    value = crypt.decrypt(enc_value)
+def _decrypt(enc_value, method):
+    if method is None:
+        return None
+    decryptor = getattr(crypt, method)
+    value = decryptor(enc_value)
     if value is not None:
         return unicode(value, 'utf-8')
 
@@ -188,7 +193,9 @@ def resource_data_get_by_key(context, resource_id, key):
 def resource_data_set(resource, key, value, redact=False):
     """Save resource's key/value pair to database."""
     if redact:
-        value = _encrypt(value)
+        method, value = _encrypt(value)
+    else:
+        method = ''
     try:
         current = resource_data_get_by_key(resource.context, resource.id, key)
     except exception.NotFound:
@@ -197,6 +204,7 @@ def resource_data_set(resource, key, value, redact=False):
         current.resource_id = resource.id
     current.redact = redact
     current.value = value
+    current.decrypt_method = method
     current.save(session=resource.context.session)
     return current
 
@@ -237,7 +245,7 @@ def resource_get_all_by_stack(context, stack_id):
     return results
 
 
-def stack_get_by_name(context, stack_name, owner_id=None):
+def stack_get_by_name_and_owner_id(context, stack_name, owner_id):
     query = soft_delete_aware_query(context, models.Stack).\
         filter_by(tenant=context.tenant_id).\
         filter_by(name=stack_name).\
@@ -246,10 +254,19 @@ def stack_get_by_name(context, stack_name, owner_id=None):
     return query.first()
 
 
+def stack_get_by_name(context, stack_name):
+    query = soft_delete_aware_query(context, models.Stack).\
+        filter_by(tenant=context.tenant_id).\
+        filter_by(name=stack_name)
+
+    return query.first()
+
+
 def stack_get(context, stack_id, show_deleted=False, tenant_safe=True):
     result = model_query(context, models.Stack).get(stack_id)
 
-    if result is None or result.deleted_at is not None and not show_deleted:
+    deleted_ok = show_deleted or context.show_deleted
+    if result is None or result.deleted_at is not None and not deleted_ok:
         return None
 
     if (tenant_safe and result is not None and context is not None and
@@ -257,12 +274,6 @@ def stack_get(context, stack_id, show_deleted=False, tenant_safe=True):
         return None
 
     return result
-
-
-def stack_get_all(context):
-    results = soft_delete_aware_query(context, models.Stack).\
-        filter_by(owner_id=None).all()
-    return results
 
 
 def stack_get_all_by_owner_id(context, owner_id):
@@ -312,15 +323,35 @@ def _paginate_query(context, query, model, limit=None, sort_keys=None,
 
 
 def _query_stack_get_all_by_tenant(context):
-    query = soft_delete_aware_query(context, models.Stack).\
-        filter_by(owner_id=None).\
+    query = _query_stack_get_all(context).\
         filter_by(tenant=context.tenant_id)
 
     return query
 
 
+def _query_stack_get_all(context):
+    query = soft_delete_aware_query(context, models.Stack).\
+        filter_by(owner_id=None)
+
+    return query
+
+
+def stack_get_all(context, limit=None, sort_keys=None, marker=None,
+                  sort_dir=None, filters=None):
+    query = _query_stack_get_all(context)
+    return _filter_and_page_query(context, query, limit, sort_keys,
+                                  marker, sort_dir, filters).all()
+
+
 def stack_get_all_by_tenant(context, limit=None, sort_keys=None, marker=None,
                             sort_dir=None, filters=None):
+    query = _query_stack_get_all_by_tenant(context)
+    return _filter_and_page_query(context, query, limit, sort_keys,
+                                  marker, sort_dir, filters).all()
+
+
+def _filter_and_page_query(context, query, limit=None, sort_keys=None,
+                           marker=None, sort_dir=None, filters=None):
     if filters is None:
         filters = {}
 
@@ -328,16 +359,17 @@ def stack_get_all_by_tenant(context, limit=None, sort_keys=None, marker=None,
                          models.Stack.status.key,
                          models.Stack.created_at.key,
                          models.Stack.updated_at.key]
-    filtered_keys = _filter_sort_keys(sort_keys, allowed_sort_keys)
+    whitelisted_sort_keys = _filter_sort_keys(sort_keys, allowed_sort_keys)
 
+    query = db_filters.exact_filter(query, models.Stack, filters)
+    return _paginate_query(context, query, models.Stack, limit,
+                           whitelisted_sort_keys, marker, sort_dir)
+
+
+def stack_count_all_by_tenant(context, filters=None):
     query = _query_stack_get_all_by_tenant(context)
     query = db_filters.exact_filter(query, models.Stack, filters)
-    return _paginate_query(context, query, models.Stack, limit, filtered_keys,
-                           marker, sort_dir).all()
-
-
-def stack_count_all_by_tenant(context):
-    return _query_stack_get_all_by_tenant(context).count()
+    return query.count()
 
 
 def stack_create(context, values):
@@ -355,8 +387,6 @@ def stack_update(context, stack_id, values):
                                  '%(id)s %(msg)s') % {
                                  'id': stack_id,
                                  'msg': 'that does not exist'})
-
-    old_template_id = stack.raw_template_id
 
     stack.update(values)
     stack.save(_session(context))
@@ -380,11 +410,43 @@ def stack_delete(context, stack_id):
     session.flush()
 
 
+def stack_lock_create(stack_id, engine_id):
+    session = get_session()
+    with session.begin():
+        lock = session.query(models.StackLock).get(stack_id)
+        if lock is not None:
+            return lock.engine_id
+        session.add(models.StackLock(stack_id=stack_id, engine_id=engine_id))
+
+
+def stack_lock_steal(stack_id, old_engine_id, new_engine_id):
+    session = get_session()
+    with session.begin():
+        lock = session.query(models.StackLock).get(stack_id)
+        rows_affected = session.query(models.StackLock).\
+            filter_by(stack_id=stack_id, engine_id=old_engine_id).\
+            update({"engine_id": new_engine_id})
+    if not rows_affected:
+        return lock.engine_id if lock is not None else True
+
+
+def stack_lock_release(stack_id, engine_id):
+    session = get_session()
+    with session.begin():
+        rows_affected = session.query(models.StackLock).\
+            filter_by(stack_id=stack_id, engine_id=engine_id).\
+            delete()
+    if not rows_affected:
+        return True
+
+
 def user_creds_create(context):
     values = context.to_dict()
     user_creds_ref = models.UserCreds()
     if values.get('trust_id'):
-        user_creds_ref.trust_id = _encrypt(values.get('trust_id'))
+        method, trust_id = _encrypt(values.get('trust_id'))
+        user_creds_ref.trust_id = trust_id
+        user_creds_ref.decrypt_method = method
         user_creds_ref.trustor_user_id = values.get('trustor_user_id')
         user_creds_ref.username = None
         user_creds_ref.password = None
@@ -392,7 +454,9 @@ def user_creds_create(context):
         user_creds_ref.tenant_id = values.get('tenant_id')
     else:
         user_creds_ref.update(values)
-        user_creds_ref.password = _encrypt(values['password'])
+        method, password = _encrypt(values['password'])
+        user_creds_ref.password = password
+        user_creds_ref.decrypt_method = method
     user_creds_ref.save(_session(context))
     return user_creds_ref
 
@@ -402,8 +466,9 @@ def user_creds_get(user_creds_id):
     # Return a dict copy of db results, do not decrypt details into db_result
     # or it can be committed back to the DB in decrypted form
     result = dict(db_result)
-    result['password'] = _decrypt(result['password'])
-    result['trust_id'] = _decrypt(result['trust_id'])
+    del result['decrypt_method']
+    result['password'] = _decrypt(result['password'], db_result.decrypt_method)
+    result['trust_id'] = _decrypt(result['trust_id'], db_result.decrypt_method)
     return result
 
 

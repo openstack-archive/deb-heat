@@ -199,7 +199,7 @@ Outputs:
         prop_diff = {'TemplateURL': 'https://server.test/new.template'}
         updater = rsrc.handle_update(new_res, {}, prop_diff)
         updater.run_to_completion()
-        self.assertEqual(True, rsrc.check_update_complete(updater))
+        self.assertIs(True, rsrc.check_update_complete(updater))
 
         # Expect the physical resource name staying the same after update,
         # so that the nested was actually updated instead of replaced.
@@ -247,7 +247,6 @@ Outputs:
 
         rsrc = stack['the_nested']
 
-        original_nested_id = rsrc.resource_id
         t = template_format.parse(self.test_template)
         new_res = copy.deepcopy(t['Resources']['the_nested'])
         new_res['Properties']['TemplateURL'] = (
@@ -255,7 +254,7 @@ Outputs:
         prop_diff = {'TemplateURL': 'https://server.test/new.template'}
         updater = rsrc.handle_update(new_res, {}, prop_diff)
         updater.run_to_completion()
-        self.assertEqual(True, rsrc.check_update_complete(updater))
+        self.assertIs(True, rsrc.check_update_complete(updater))
 
         self.assertEqual('foo', rsrc.FnGetAtt('Outputs.Bar'))
 
@@ -289,7 +288,6 @@ Outputs:
 
         rsrc = stack['the_nested']
 
-        original_nested_id = rsrc.resource_id
         t = template_format.parse(self.test_template)
         new_res = copy.deepcopy(t['Resources']['the_nested'])
         new_res['Properties']['TemplateURL'] = (
@@ -478,6 +476,41 @@ Resources:
         stack.create()
         self.assertEqual(stack.state, (stack.CREATE, stack.FAILED))
         self.assertIn('Recursion depth exceeds', stack.status_reason)
+        self.m.VerifyAll()
+
+    def test_nested_stack_delete(self):
+        urlfetch.get('https://server.test/the.template').MultipleTimes().\
+            AndReturn(self.nested_template)
+        self.m.ReplayAll()
+
+        stack = self.create_stack(self.test_template)
+        rsrc = stack['the_nested']
+        scheduler.TaskRunner(rsrc.delete)()
+        self.assertEqual((stack.DELETE, stack.COMPLETE), rsrc.state)
+
+        nested_stack = parser.Stack.load(utils.dummy_context(
+            'test_username', 'aaaa', 'password'), rsrc.resource_id)
+        self.assertEqual((stack.DELETE, stack.COMPLETE), nested_stack.state)
+
+        self.m.VerifyAll()
+
+    def test_nested_stack_delete_then_delete_parent_stack(self):
+        urlfetch.get('https://server.test/the.template').MultipleTimes().\
+            AndReturn(self.nested_template)
+        self.m.ReplayAll()
+
+        stack = self.create_stack(self.test_template)
+        rsrc = stack['the_nested']
+
+        nested_stack = parser.Stack.load(utils.dummy_context(
+            'test_username', 'aaaa', 'password'), rsrc.resource_id)
+        nested_stack.delete()
+
+        stack = parser.Stack.load(utils.dummy_context(
+            'test_username', 'aaaa', 'password'), stack.id)
+        stack.delete()
+        self.assertEqual((stack.DELETE, stack.COMPLETE), stack.state)
+
         self.m.VerifyAll()
 
 

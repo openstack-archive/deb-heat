@@ -94,13 +94,13 @@ class RequestTest(HeatTestCase):
         self.stubs.SmartSet(request.accept_language,
                             'best_match', fake_best_match)
 
-        self.assertEqual(request.best_match_language(), None)
+        self.assertIsNone(request.best_match_language())
 
         # If Accept-Language is missing or empty, match should be None
         request.headers = {'Accept-Language': ''}
-        self.assertEqual(request.best_match_language(), None)
+        self.assertIsNone(request.best_match_language())
         request.headers.pop('Accept-Language')
-        self.assertEqual(request.best_match_language(), None)
+        self.assertIsNone(request.best_match_language())
 
 
 class ResourceTest(HeatTestCase):
@@ -226,6 +226,39 @@ class ResourceTest(HeatTestCase):
         self.m.VerifyAll()
 
 
+class ResourceExceptionHandlingTest(HeatTestCase):
+    scenarios = [
+        ('client_exceptions', dict(
+            exception=exception.StackResourceLimitExceeded,
+            exception_catch=exception.StackResourceLimitExceeded)),
+        ('webob_bad_request', dict(
+            exception=webob.exc.HTTPBadRequest,
+            exception_catch=exception.HTTPExceptionDisguise)),
+        ('webob_not_found', dict(
+            exception=webob.exc.HTTPNotFound,
+            exception_catch=exception.HTTPExceptionDisguise)),
+    ]
+
+    def test_resource_client_exceptions_dont_log_error(self):
+        class Controller(object):
+            def __init__(self, excpetion_to_raise):
+                self.excpetion_to_raise = excpetion_to_raise
+
+            def raise_exception(self, req, body):
+                raise self.excpetion_to_raise()
+
+        actions = {'action': 'raise_exception', 'body': 'data'}
+        env = {'wsgiorg.routing_args': [None, actions]}
+        request = wsgi.Request.blank('/tests/123', environ=env)
+        request.body = '{"foo" : "value"}'
+        resource = wsgi.Resource(Controller(self.exception),
+                                 wsgi.JSONRequestDeserializer(),
+                                 None)
+        e = self.assertRaises(self.exception_catch, resource, request)
+        e = e.exc if hasattr(e, 'exc') else e
+        self.assertNotIn(str(e), self.logger.output)
+
+
 class JSONResponseSerializerTest(HeatTestCase):
 
     def test_to_json(self):
@@ -280,14 +313,14 @@ class JSONRequestDeserializerTest(HeatTestCase):
         request = wsgi.Request.blank('/')
         request.method = 'POST'
         request.body = '{"key": "value"}'
-        self.assertTrue('Content-Length' in request.headers)
+        self.assertIn('Content-Length', request.headers)
         self.assertTrue(wsgi.JSONRequestDeserializer().has_body(request))
 
     def test_has_body_has_content_length_plain_content_type(self):
         request = wsgi.Request.blank('/')
         request.method = 'POST'
         request.body = '{"key": "value"}'
-        self.assertTrue('Content-Length' in request.headers)
+        self.assertIn('Content-Length', request.headers)
         request.headers['Content-Type'] = 'text/plain'
         self.assertTrue(wsgi.JSONRequestDeserializer().has_body(request))
 
@@ -295,7 +328,7 @@ class JSONRequestDeserializerTest(HeatTestCase):
         request = wsgi.Request.blank('/')
         request.method = 'POST'
         request.body = 'asdf'
-        self.assertTrue('Content-Length' in request.headers)
+        self.assertIn('Content-Length', request.headers)
         request.headers['Content-Type'] = 'application/json'
         self.assertFalse(wsgi.JSONRequestDeserializer().has_body(request))
 
@@ -303,7 +336,7 @@ class JSONRequestDeserializerTest(HeatTestCase):
         request = wsgi.Request.blank('/')
         request.method = 'POST'
         request.body = '{"key": "value"}'
-        self.assertTrue('Content-Length' in request.headers)
+        self.assertIn('Content-Length', request.headers)
         request.headers['Content-Type'] = 'application/json'
         self.assertTrue(wsgi.JSONRequestDeserializer().has_body(request))
 
@@ -311,7 +344,7 @@ class JSONRequestDeserializerTest(HeatTestCase):
         request = wsgi.Request.blank('/')
         request.method = 'POST'
         request.body = '{"key": "value"}'
-        self.assertTrue('Content-Length' in request.headers)
+        self.assertIn('Content-Length', request.headers)
         request.headers['Content-Type'] = 'application/xml'
         self.assertFalse(wsgi.JSONRequestDeserializer().has_body(request))
 
@@ -319,14 +352,14 @@ class JSONRequestDeserializerTest(HeatTestCase):
         request = wsgi.Request.blank('/?ContentType=JSON')
         request.method = 'GET'
         request.body = '{"key": "value"}'
-        self.assertTrue('Content-Length' in request.headers)
+        self.assertIn('Content-Length', request.headers)
         self.assertTrue(wsgi.JSONRequestDeserializer().has_body(request))
 
     def test_has_body_respect_aws_content_type(self):
         request = wsgi.Request.blank('/?ContentType=JSON')
         request.method = 'GET'
         request.body = '{"key": "value"}'
-        self.assertTrue('Content-Length' in request.headers)
+        self.assertIn('Content-Length', request.headers)
         request.headers['Content-Type'] = 'application/xml'
         self.assertTrue(wsgi.JSONRequestDeserializer().has_body(request))
 
@@ -334,7 +367,7 @@ class JSONRequestDeserializerTest(HeatTestCase):
         request = wsgi.Request.blank('/')
         request.method = 'GET'
         request.body = '{"key": "value"}'
-        self.assertTrue('Content-Length' in request.headers)
+        self.assertIn('Content-Length', request.headers)
         self.assertTrue(wsgi.JSONRequestDeserializer().has_body(request))
 
     def test_no_body_no_content_length(self):

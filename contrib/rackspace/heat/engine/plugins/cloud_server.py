@@ -10,6 +10,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import socket
 import tempfile
 
 import json
@@ -19,6 +20,8 @@ import novaclient.exceptions as novaexception
 
 from heat.common import exception
 from heat.openstack.common import log as logging
+from heat.openstack.common.gettextutils import _
+from heat.engine import properties
 from heat.engine import scheduler
 from heat.engine.resources import instance
 from heat.engine.resources import nova_utils
@@ -41,13 +44,36 @@ logger = logging.getLogger(__name__)
 class CloudServer(instance.Instance):
     """Resource for Rackspace Cloud Servers."""
 
-    properties_schema = {'flavor': {'Type': 'String', 'Required': True,
-                                    'UpdateAllowed': True},
-                         'image': {'Type': 'String', 'Required': True},
-                         'user_data': {'Type': 'String'},
-                         'key_name': {'Type': 'String'},
-                         'Volumes': {'Type': 'List'},
-                         'name': {'Type': 'String'}}
+    PROPERTIES = (
+        FLAVOR, IMAGE, USER_DATA, KEY_NAME, VOLUMES, NAME,
+    ) = (
+        'flavor', 'image', 'user_data', 'key_name', 'Volumes', 'name',
+    )
+
+    properties_schema = {
+        FLAVOR: properties.Schema(
+            properties.Schema.STRING,
+            required=True,
+            update_allowed=True
+        ),
+        IMAGE: properties.Schema(
+            properties.Schema.STRING,
+            required=True
+        ),
+        USER_DATA: properties.Schema(
+            properties.Schema.STRING
+        ),
+        KEY_NAME: properties.Schema(
+            properties.Schema.STRING
+        ),
+        VOLUMES: properties.Schema(
+            properties.Schema.LIST,
+            default=[]
+        ),
+        NAME: properties.Schema(
+            properties.Schema.STRING
+        ),
+    }
 
     attributes_schema = {'PrivateDnsName': ('Private DNS name of the specified'
                                             ' instance.'),
@@ -162,9 +188,9 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                      'rhel': rhel_script,
                      'ubuntu': ubuntu_script}
 
-    script_error_msg = ("The %(path)s script exited with a non-zero exit "
+    script_error_msg = (_("The %(path)s script exited with a non-zero exit "
                         "status.  To see the error message, log into the "
-                        "server and view %(log)s")
+                        "server and view %(log)s"))
 
     # Template keys supported for handle_update.  Properties not
     # listed here trigger an UpdateReplace
@@ -172,6 +198,7 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
 
     def __init__(self, name, json_snippet, stack):
         super(CloudServer, self).__init__(name, json_snippet, stack)
+        self.stack = stack
         self._private_key = None
         self._server = None
         self._distro = None
@@ -180,18 +207,11 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         self._flavor = None
         self._image = None
 
-    def physical_resource_name(self):
-        name = self.properties.get('name')
-        if name:
-            return name
-
-        return super(CloudServer, self).physical_resource_name()
-
     @property
     def server(self):
         """Get the Cloud Server object."""
         if not self._server:
-            logger.debug("Calling nova().servers.get()")
+            logger.debug(_("Calling nova().servers.get()"))
             self._server = self.nova().servers.get(self.resource_id)
         return self._server
 
@@ -199,7 +219,7 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
     def distro(self):
         """Get the Linux distribution for this server."""
         if not self._distro:
-            logger.debug("Calling nova().images.get()")
+            logger.debug(_("Calling nova().images.get()"))
             image_data = self.nova().images.get(self.image)
             self._distro = image_data.metadata['os_distro']
         return self._distro
@@ -213,15 +233,15 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
     def flavor(self):
         """Get the flavors from the API."""
         if not self._flavor:
-            self._flavor = nova_utils.get_flavor_id(self.nova(),
-                                                    self.properties['flavor'])
+            flavor = self.properties[self.FLAVOR]
+            self._flavor = nova_utils.get_flavor_id(self.nova(), flavor)
         return self._flavor
 
     @property
     def image(self):
         if not self._image:
             self._image = nova_utils.get_image_id(self.nova(),
-                                                  self.properties['image'])
+                                                  self.properties[self.IMAGE])
         return self._image
 
     @property
@@ -250,8 +270,10 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                 if ip['version'] == 4:
                     return ip['addr']
 
-        raise exception.Error("Could not determine the %s IP of %s." %
-                              (ip_type, self.properties['image']))
+        raise exception.Error(_("Could not determine the %(ip)s IP of "
+                                "%(image)s.") %
+                              {'ip': ip_type,
+                               'image': self.properties[self.IMAGE]})
 
     @property
     def public_ip(self):
@@ -269,7 +291,7 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
 
     @property
     def has_userdata(self):
-        if self.properties['user_data'] or self.metadata != {}:
+        if self.properties[self.USER_DATA] or self.metadata != {}:
             return True
         else:
             return False
@@ -283,7 +305,7 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         # metadata are empty
         if not self.script and self.has_userdata:
             return {'Error': "user_data/metadata are not supported for image"
-                    " %s." % self.properties['image']}
+                    " %s." % self.properties[self.IMAGE]}
 
     def _run_ssh_command(self, command):
         """Run a shell command on the Cloud Server via SSH."""
@@ -296,8 +318,19 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                         username="root",
                         key_filename=private_key_file.name)
             chan = ssh.get_transport().open_session()
+            chan.settimeout(self.stack.timeout_mins * 60.0)
             chan.exec_command(command)
-            return chan.recv_exit_status()
+            try:
+                # The channel timeout only works for read/write operations
+                chan.recv(1024)
+            except socket.timeout:
+                raise exception.Error("SSH command timed out after %s minutes"
+                                      % self.stack.timeout_mins)
+            else:
+                return chan.recv_exit_status()
+            finally:
+                ssh.close()
+                chan.close()
 
     def _sftp_files(self, files):
         """Transfer files to the Cloud Server via SFTP."""
@@ -308,10 +341,16 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
             transport = paramiko.Transport((self.public_ip, 22))
             transport.connect(hostkey=None, username="root", pkey=pkey)
             sftp = paramiko.SFTPClient.from_transport(transport)
-            for remote_file in files:
-                sftp_file = sftp.open(remote_file['path'], 'w')
-                sftp_file.write(remote_file['data'])
-                sftp_file.close()
+            try:
+                for remote_file in files:
+                    sftp_file = sftp.open(remote_file['path'], 'w')
+                    sftp_file.write(remote_file['data'])
+                    sftp_file.close()
+            except:
+                raise
+            finally:
+                sftp.close()
+                transport.close()
 
     def handle_create(self):
         """Create a Rackspace Cloud Servers container.
@@ -327,8 +366,8 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
             rsa = RSA.generate(1024)
         self.private_key = rsa.exportKey()
         public_keys = [rsa.publickey().exportKey('OpenSSH')]
-        if self.properties.get('key_name'):
-            key_name = self.properties['key_name']
+        if self.properties.get(self.KEY_NAME):
+            key_name = self.properties[self.KEY_NAME]
             public_keys.append(nova_utils.get_keypair(self.nova(),
                                                       key_name).public_key)
         personality_files = {
@@ -336,7 +375,7 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
 
         # Create server
         client = self.nova().servers
-        logger.debug("Calling nova().servers.create()")
+        logger.debug(_("Calling nova().servers.create()"))
         server = client.create(self.physical_resource_name(),
                                self.image,
                                self.flavor,
@@ -353,7 +392,7 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
         return scheduler.PollingTaskGroup(tasks)
 
     def _attach_volume(self, volume_id, device):
-        logger.debug("Calling nova().volumes.create_server_volume()")
+        logger.debug(_("Calling nova().volumes.create_server_volume()"))
         self.nova().volumes.create_server_volume(self.server.id,
                                                  volume_id,
                                                  device or None)
@@ -384,19 +423,20 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
 
     def check_create_complete(self, cookie):
         """Check if server creation is complete and handle server configs."""
-        if not self._check_active(cookie):
+        if not super(CloudServer, self).check_create_complete(cookie):
             return False
 
         server = cookie[0]
         server.get()
         if 'rack_connect' in self.context.roles:  # Account has RackConnect
             if 'rackconnect_automation_status' not in server.metadata:
-                logger.debug("RackConnect server does not have the "
-                             "rackconnect_automation_status metadata tag yet")
+                logger.debug(_("RackConnect server does not have the "
+                               "rackconnect_automation_status metadata tag "
+                               "yet"))
                 return False
 
             rc_status = server.metadata['rackconnect_automation_status']
-            logger.debug("RackConnect automation status: " + rc_status)
+            logger.debug(_("RackConnect automation status: ") + rc_status)
 
             if rc_status == 'DEPLOYING':
                 return False
@@ -405,13 +445,13 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                 self._public_ip = None  # The public IP changed, forget old one
 
             elif rc_status == 'FAILED':
-                raise exception.Error("RackConnect automation FAILED")
+                raise exception.Error(_("RackConnect automation FAILED"))
 
             elif rc_status == 'UNPROCESSABLE':
                 reason = server.metadata.get(
                     "rackconnect_unprocessable_reason", None)
                 if reason is not None:
-                    logger.warning("RackConnect unprocessable reason: "
+                    logger.warning(_("RackConnect unprocessable reason: ")
                                    + reason)
                 # UNPROCESSABLE means the RackConnect automation was
                 # not attempted (eg. Cloud Server in a different DC
@@ -419,17 +459,17 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                 # It is okay if we do not raise an exception.
 
             else:
-                raise exception.Error("Unknown RackConnect automation status: "
-                                      + rc_status)
+                raise exception.Error(_("Unknown RackConnect automation "
+                                        "status: ") + rc_status)
 
         if 'rax_managed' in self.context.roles:  # Managed Cloud account
             if 'rax_service_level_automation' not in server.metadata:
-                logger.debug("Managed Cloud server does not have the "
-                             "rax_service_level_automation metadata tag yet")
+                logger.debug(_("Managed Cloud server does not have the "
+                             "rax_service_level_automation metadata tag yet"))
                 return False
 
             mc_status = server.metadata['rax_service_level_automation']
-            logger.debug("Managed Cloud automation status: " + mc_status)
+            logger.debug(_("Managed Cloud automation status: ") + mc_status)
 
             if mc_status == 'In Progress':
                 return False
@@ -438,15 +478,15 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                 pass
 
             elif mc_status == 'Build Error':
-                raise exception.Error("Managed Cloud automation failed")
+                raise exception.Error(_("Managed Cloud automation failed"))
 
             else:
-                raise exception.Error("Unknown Managed Cloud automation "
-                                      "status: " + mc_status)
+                raise exception.Error(_("Unknown Managed Cloud automation "
+                                      "status: ") + mc_status)
 
         if self.has_userdata:
             # Create heat-script and userdata files on server
-            raw_userdata = self.properties['user_data'] or ''
+            raw_userdata = self.properties[self.USER_DATA] or ''
             userdata = nova_utils.build_userdata(self, raw_userdata)
 
             files = [{'path': "/tmp/userdata", 'data': userdata},
@@ -478,7 +518,7 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                 if server.status == "DELETED":
                     break
                 elif server.status == "ERROR":
-                    raise exception.Error("Deletion of server %s failed." %
+                    raise exception.Error(_("Deletion of server %s failed.") %
                                           server.name)
             except novaexception.NotFound:
                 break
@@ -507,8 +547,8 @@ zypper --non-interactive in cloud-init python-boto python-pip gcc python-devel
                                       {'path': "cfn-userdata",
                                        'log': "/root/cfn-userdata.log"})
 
-        if 'flavor' in prop_diff:
-            flav = json_snippet['Properties']['flavor']
+        if self.FLAVOR in prop_diff:
+            flav = json_snippet['Properties'][self.FLAVOR]
             new_flavor = nova_utils.get_flavor_id(self.nova(), flav)
             self.server.resize(new_flavor)
             resize = scheduler.TaskRunner(nova_utils.check_resize,

@@ -13,7 +13,7 @@
 #    under the License.
 
 import copy
-
+import uuid
 import mox
 
 from heat.engine import environment
@@ -25,8 +25,10 @@ from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine.resources import server as servers
 from heat.openstack.common import uuidutils
+from heat.openstack.common.gettextutils import _
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
+from novaclient import exceptions
 
 
 wp_template = '''
@@ -66,7 +68,7 @@ class ServersTest(HeatTestCase):
         template = parser.Template(t)
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment({'key_name': 'test'}),
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
         return (t, stack)
 
     def _setup_test_server(self, return_server, name, image_id=None,
@@ -98,7 +100,7 @@ class ServersTest(HeatTestCase):
                 image=1, flavor=1, key_name='test',
                 name=override_name and server.name or utils.PhysName(
                     stack_name, server.name),
-                security_groups=None,
+                security_groups=[],
                 userdata=mox.IgnoreArg(), scheduler_hints=None,
                 meta=None, nics=None, availability_zone=None,
                 block_device_mapping=None, config_drive=None,
@@ -140,6 +142,35 @@ class ServersTest(HeatTestCase):
         self.assertEqual('sample-server2', server.FnGetAtt('instance_name'))
         self.assertEqual('192.0.2.0', server.FnGetAtt('accessIPv4'))
         self.assertEqual('::babe:4317:0A83', server.FnGetAtt('accessIPv6'))
+        self.m.VerifyAll()
+
+    def test_server_create_metadata(self):
+        return_server = self.fc.servers.list()[1]
+        stack_name = 'create_metadata_test_stack'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        t['Resources']['WebServer']['Properties']['metadata'] = \
+            {'a': 1}
+        server = servers.Server('create_metadata_test_server',
+                                t['Resources']['WebServer'], stack)
+        server.t = server.stack.resolve_runtime_data(server.t)
+
+        instance_meta = {'a': "1"}
+        self.m.StubOutWithMock(self.fc.servers, 'create')
+        self.fc.servers.create(
+            image=mox.IgnoreArg(), flavor=mox.IgnoreArg(), key_name='test',
+            name=mox.IgnoreArg(), security_groups=[],
+            userdata=mox.IgnoreArg(), scheduler_hints=None,
+            meta=instance_meta, nics=None, availability_zone=None,
+            block_device_mapping=None, config_drive=None,
+            disk_config=None, reservation_id=None).AndReturn(
+                return_server)
+
+        self.m.StubOutWithMock(server, 'nova')
+        server.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(server.create)()
         self.m.VerifyAll()
 
     def test_server_create_with_image_id(self):
@@ -284,7 +315,7 @@ class ServersTest(HeatTestCase):
         self.fc.servers.create(
             image=744, flavor=3, key_name='test',
             name=utils.PhysName(stack_name, server.name),
-            security_groups=None,
+            security_groups=[],
             userdata='wordpress', scheduler_hints=None,
             meta=None, nics=None, availability_zone=None,
             block_device_mapping=None, config_drive=None,
@@ -311,7 +342,7 @@ class ServersTest(HeatTestCase):
         uuidutils.is_uuid_like('1').AndReturn(True)
         self.m.ReplayAll()
 
-        self.assertEqual(server.validate(), None)
+        self.assertIsNone(server.validate())
 
         self.m.VerifyAll()
 
@@ -337,9 +368,9 @@ class ServersTest(HeatTestCase):
             return server
 
         server = create_server(u'vda')
-        self.assertEqual(server.validate(), None)
+        self.assertIsNone(server.validate())
         server = create_server('vda')
-        self.assertEqual(server.validate(), None)
+        self.assertIsNone(server.validate())
         server = create_server('vdb')
         ex = self.assertRaises(exception.StackValidationFailed,
                                server.validate)
@@ -365,6 +396,33 @@ class ServersTest(HeatTestCase):
 
         self.m.VerifyAll()
 
+    def test_server_validate_with_networks(self):
+        stack_name = 'srv_net'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        network_name = 'public'
+        # create an server with 'uuid' and 'network' properties
+        t['Resources']['WebServer']['Properties']['networks'] = (
+            [{'uuid': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+              'network': network_name}])
+
+        server = servers.Server('server_validate_with_networks',
+                                t['Resources']['WebServer'], stack)
+
+        self.m.StubOutWithMock(server, 'nova')
+        server.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               server.validate)
+        self.assertIn(_('Properties "uuid" and "network" are both set to '
+                        'the network "%(network)s" for the server '
+                        '"%(server)s". The "uuid" property is deprecated. '
+                        'Use only "network" property.'
+                        '') % dict(network=network_name, server=server.name),
+                      str(ex))
+        self.m.VerifyAll()
+
     def test_server_delete(self):
         return_server = self.fc.servers.list()[1]
         server = self._create_test_server(return_server,
@@ -383,7 +441,7 @@ class ServersTest(HeatTestCase):
         self.m.ReplayAll()
 
         scheduler.TaskRunner(server.delete)()
-        self.assertTrue(server.resource_id is None)
+        self.assertIsNone(server.resource_id)
         self.assertEqual(server.state, (server.DELETE, server.COMPLETE))
         self.m.VerifyAll()
 
@@ -402,7 +460,7 @@ class ServersTest(HeatTestCase):
         mox.Replay(get)
 
         scheduler.TaskRunner(server.delete)()
-        self.assertTrue(server.resource_id is None)
+        self.assertIsNone(server.resource_id)
         self.assertEqual(server.state, (server.DELETE, server.COMPLETE))
         self.m.VerifyAll()
 
@@ -591,7 +649,7 @@ class ServersTest(HeatTestCase):
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(resource.UpdateReplace, updater)
 
-    def _test_server_update_image_rebuild(self, status):
+    def _test_server_update_image_rebuild(self, status, policy='REBUILD'):
         # Server.handle_update supports changing the image, and makes
         # the change making a rebuild API call against Nova.
         return_server = self.fc.servers.list()[1]
@@ -602,13 +660,17 @@ class ServersTest(HeatTestCase):
         new_image = 'F17-x86_64-gold'
         update_template = copy.deepcopy(server.t)
         update_template['Properties']['image'] = new_image
-        server.t['Properties']['image_update_policy'] = 'REBUILD'
+        server.t['Properties']['image_update_policy'] = policy
 
         self.m.StubOutWithMock(self.fc.servers, 'get')
         self.fc.servers.get(1234).MultipleTimes().AndReturn(return_server)
         self.m.StubOutWithMock(self.fc.servers, 'rebuild')
         # 744 is a static lookup from the fake images list
-        self.fc.servers.rebuild(return_server, 744, password=None)
+        if 'REBUILD' == policy:
+            self.fc.servers.rebuild(return_server, 744, password=None)
+        else:
+            self.fc.servers.rebuild(
+                return_server, 744, password=None, preserve_ephemeral=True)
         self.m.StubOutWithMock(self.fc.client, 'post_servers_1234_action')
         for stat in status:
             def activate_status(serv):
@@ -627,6 +689,16 @@ class ServersTest(HeatTestCase):
     def test_server_update_image_rebuild_status_active(self):
         # It is possible for us to miss the REBUILD status.
         self._test_server_update_image_rebuild(status=('ACTIVE',))
+
+    def test_server_update_image_rebuild_status_rebuild_keep_ephemeral(self):
+        # Normally we will see 'REBUILD' first and then 'ACTIVE".
+        self._test_server_update_image_rebuild(
+            policy='REBUILD_PRESERVE_EPHEMERAL', status=('REBUILD', 'ACTIVE'))
+
+    def test_server_update_image_rebuild_status_active_keep_ephemeral(self):
+        # It is possible for us to miss the REBUILD status.
+        self._test_server_update_image_rebuild(
+            policy='REBUILD_PRESERVE_EPHEMERAL', status=('ACTIVE'))
 
     def test_server_update_image_rebuild_failed(self):
         # If the status after a rebuild is not REBUILD or ACTIVE, it means the
@@ -960,17 +1032,33 @@ class ServersTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_build_nics(self):
-        self.assertEqual(None, servers.Server._build_nics([]))
-        self.assertEqual(None, servers.Server._build_nics(None))
-        self.assertEqual([
-            {'net-id': '1234abcd'},
-            {'v4-fixed-ip': '192.0.2.0'},
-            {'port-id': 'aaaabbbb'}
-        ], servers.Server._build_nics([
-            {'uuid': '1234abcd'},
-            {'fixed_ip': '192.0.2.0'},
-            {'port': 'aaaabbbb'}
-        ]))
+        return_server = self.fc.servers.list()[1]
+        server = self._create_test_server(return_server,
+                                          'test_server_create')
+        self.assertIsNone(server._build_nics([]))
+        self.assertIsNone(server._build_nics(None))
+        self.assertEqual([{'port-id': 'aaaabbbb'},
+                          {'v4-fixed-ip': '192.0.2.0'}],
+                         server._build_nics([{'port': 'aaaabbbb'},
+                                             {'fixed_ip': '192.0.2.0'}]))
+
+        self.assertEqual([{'net-id': '1234abcd'}],
+                         server._build_nics([{'uuid': '1234abcd'}]))
+
+        self.assertEqual([{'net-id': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}],
+                         server._build_nics(
+                             [{'network':
+                               'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}]
+                         ))
+
+        self.assertEqual([{'net-id': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}],
+                         server._build_nics([{'network': 'public'}]))
+
+        self.assertRaises(exceptions.NoUniqueMatch, server._build_nics,
+                          ([{'network': 'foo'}]))
+
+        self.assertRaises(exceptions.NotFound, server._build_nics,
+                          ([{'network': 'bar'}]))
 
     def test_server_without_ip_address(self):
         return_server = self.fc.servers.list()[3]
@@ -982,10 +1070,8 @@ class ServersTest(HeatTestCase):
         self.assertEqual(server.FnGetAtt('first_address'), '')
 
     def test_build_block_device_mapping(self):
-        self.assertEqual(
-            None, servers.Server._build_block_device_mapping([]))
-        self.assertEqual(
-            None, servers.Server._build_block_device_mapping(None))
+        self.assertIsNone(servers.Server._build_block_device_mapping([]))
+        self.assertIsNone(servers.Server._build_block_device_mapping(None))
 
         self.assertEqual({
             'vda': '1234:',
@@ -1002,7 +1088,7 @@ class ServersTest(HeatTestCase):
             {
                 'device_name': 'vdc',
                 'volume_id': '1234',
-                'volume_size': '10'
+                'volume_size': 10
             },
             {
                 'device_name': 'vdd',
@@ -1010,6 +1096,51 @@ class ServersTest(HeatTestCase):
                 'delete_on_termination': True
             }
         ]))
+
+    def test_validate_block_device_mapping_volume_size_valid_int(self):
+        stack_name = 'val_vsize_valid'
+        t, stack = self._setup_test_stack(stack_name)
+        bdm = [{'device_name': 'vda', 'volume_id': '1234',
+                'volume_size': 10}]
+        t['Resources']['WebServer']['Properties']['block_device_mapping'] = bdm
+        server = servers.Server('server_create_image_err',
+                                t['Resources']['WebServer'], stack)
+
+        self.m.StubOutWithMock(server, 'nova')
+        server.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        self.assertIsNone(server.validate())
+        self.m.VerifyAll()
+
+    def test_validate_block_device_mapping_volume_size_valid_str(self):
+        stack_name = 'val_vsize_valid'
+        t, stack = self._setup_test_stack(stack_name)
+        bdm = [{'device_name': 'vda', 'volume_id': '1234',
+                'volume_size': '10'}]
+        t['Resources']['WebServer']['Properties']['block_device_mapping'] = bdm
+        server = servers.Server('server_create_image_err',
+                                t['Resources']['WebServer'], stack)
+
+        self.m.StubOutWithMock(server, 'nova')
+        server.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        self.assertIsNone(server.validate())
+        self.m.VerifyAll()
+
+    def test_validate_block_device_mapping_volume_size_invalid_str(self):
+        stack_name = 'val_vsize_invalid'
+        t, stack = self._setup_test_stack(stack_name)
+        bdm = [{'device_name': 'vda', 'volume_id': '1234',
+                'volume_size': '10a'}]
+        t['Resources']['WebServer']['Properties']['block_device_mapping'] = bdm
+        server = servers.Server('server_create_image_err',
+                                t['Resources']['WebServer'], stack)
+
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                server.validate)
+        self.assertIn("Value '10a' is not an integer", str(exc))
 
     def test_validate_conflict_block_device_mapping_props(self):
         stack_name = 'val_blkdev1'
@@ -1031,7 +1162,7 @@ class ServersTest(HeatTestCase):
         stack_name = 'val_blkdev2'
         (t, stack) = self._setup_test_stack(stack_name)
 
-        bdm = [{'device_name': 'vdb', 'volume_size': '1',
+        bdm = [{'device_name': 'vdb', 'volume_size': 1,
                 'delete_on_termination': True}]
         t['Resources']['WebServer']['Properties']['block_device_mapping'] = bdm
         server = servers.Server('server_create_image_err',
@@ -1067,4 +1198,58 @@ class ServersTest(HeatTestCase):
             % server.name
         self.assertEqual(msg, str(ex))
 
+        self.m.VerifyAll()
+
+    def test_validate_metadata_too_many(self):
+        stack_name = 'srv_val_metadata'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        t['Resources']['WebServer']['Properties']['metadata'] = {'a': 1,
+                                                                 'b': 2,
+                                                                 'c': 3,
+                                                                 'd': 4}
+        server = servers.Server('server_create_image_err',
+                                t['Resources']['WebServer'], stack)
+
+        limits = self.m.CreateMockAnything()
+        max_server_meta = self.m.CreateMockAnything()
+        max_server_meta.name = 'maxServerMeta'
+        max_server_meta.value = 3
+        limits.absolute = [max_server_meta]
+        self.m.StubOutWithMock(self.fc.limits, 'get')
+        self.fc.limits.get().AndReturn(limits)
+
+        self.m.StubOutWithMock(server, 'nova')
+        server.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               server.validate)
+        self.assertIn('Instance metadata must not contain greater than 3 '
+                      'entries', str(ex))
+        self.m.VerifyAll()
+
+    def test_validate_metadata_okay(self):
+        stack_name = 'srv_val_metadata'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        t['Resources']['WebServer']['Properties']['metadata'] = {'a': 1,
+                                                                 'b': 2,
+                                                                 'c': 3}
+        server = servers.Server('server_create_image_err',
+                                t['Resources']['WebServer'], stack)
+
+        limits = self.m.CreateMockAnything()
+        max_server_meta = self.m.CreateMockAnything()
+        max_server_meta.name = 'maxServerMeta'
+        max_server_meta.value = 3
+        limits.absolute = [max_server_meta]
+        self.m.StubOutWithMock(self.fc.limits, 'get')
+        self.fc.limits.get().AndReturn(limits)
+
+        self.m.StubOutWithMock(server, 'nova')
+        server.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        self.assertIsNone(server.validate())
         self.m.VerifyAll()

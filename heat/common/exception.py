@@ -18,10 +18,11 @@
 """Heat exception subclasses"""
 
 import functools
-import urlparse
 import sys
 
+from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
+from heat.openstack.common.py3kcompat import urlutils
 
 
 _FATAL_EXCEPTION_FORMAT_ERRORS = False
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 class RedirectException(Exception):
     def __init__(self, url):
-        self.url = urlparse.urlparse(url)
+        self.url = urlutils.urlparse(url)
 
 
 class KeystoneError(Exception):
@@ -166,17 +167,8 @@ class AuthorizationRedirect(HeatException):
     msg_fmt = _("Redirecting to %(uri)s for authorization.")
 
 
-class ClientConfigurationError(HeatException):
-    msg_fmt = _("There was an error configuring the client.")
-
-
 class RequestUriTooLong(HeatException):
     msg_fmt = _("The URI was too long.")
-
-
-class ServerError(HeatException):
-    msg_fmt = _("The request returned 500 Internal Server Error"
-                "\n\nThe response body:\n%(body)s")
 
 
 class MaxRedirectsExceeded(HeatException):
@@ -185,10 +177,6 @@ class MaxRedirectsExceeded(HeatException):
 
 class InvalidRedirect(HeatException):
     msg_fmt = _("Received invalid HTTP redirect.")
-
-
-class NoServiceEndpoint(HeatException):
-    msg_fmt = _("Response from Keystone does not contain a Heat endpoint.")
 
 
 class RegionAmbiguity(HeatException):
@@ -325,7 +313,7 @@ class NotFound(Error):
 
 
 class InvalidContentType(HeatException):
-    msg_fmt = "Invalid content type %(content_type)s"
+    msg_fmt = _("Invalid content type %(content_type)s")
 
 
 class RequestLimitExceeded(HeatException):
@@ -334,3 +322,8 @@ class RequestLimitExceeded(HeatException):
 
 class StackResourceLimitExceeded(HeatException):
     msg_fmt = _('Maximum resources per stack exceeded.')
+
+
+class ActionInProgress(HeatException):
+    msg_fmt = _("Stack %(stack_name)s already has an action (%(action)s) "
+                "in progress.")

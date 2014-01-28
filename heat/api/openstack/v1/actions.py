@@ -25,6 +25,8 @@ class ActionController(object):
     WSGI controller for Actions in Heat v1 API
     Implements the API for stack actions
     """
+    # Define request scope (must match what is in policy.json)
+    REQUEST_SCOPE = 'actions'
 
     ACTIONS = (SUSPEND, RESUME) = ('suspend', 'resume')
 
@@ -50,9 +52,9 @@ class ActionController(object):
             raise exc.HTTPBadRequest(_("Invalid action %s specified") % ac)
 
         if ac == self.SUSPEND:
-            res = self.engine.stack_suspend(req.context, identity)
+            self.engine.stack_suspend(req.context, identity)
         elif ac == self.RESUME:
-            res = self.engine.stack_resume(req.context, identity)
+            self.engine.stack_resume(req.context, identity)
         else:
             raise exc.HTTPInternalServerError(_("Unexpected action %s") % ac)
 

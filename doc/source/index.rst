@@ -36,7 +36,6 @@ Getting Started
     getting_started/index
     templates/index
     template_guide/index
-    scaleout_apis
     glossary
 
 Man Pages
@@ -53,6 +52,13 @@ Developers Documentation
    :maxdepth: 1
 
    architecture
+
+Operations Documentation
+========================
+.. toctree::
+   :maxdepth: 1
+
+   scale_deployment
 
 Code Documentation
 ==================

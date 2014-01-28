@@ -25,13 +25,16 @@ from heat.tests import generic_resource
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
+from heat.common import exception
 from heat.common import template_format
 
 from heat.openstack.common.importutils import try_import
 
+from heat.engine import clients
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
+from heat.engine.properties import schemata
 from heat.engine.resources.ceilometer import alarm
 
 ceilometerclient = try_import('ceilometerclient.v2')
@@ -63,6 +66,51 @@ alarm_template = '''
 }
 '''
 
+not_string_alarm_template = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Alarm Test",
+  "Parameters" : {},
+  "Resources" : {
+    "MEMAlarmHigh": {
+     "Type": "OS::Ceilometer::Alarm",
+     "Properties": {
+        "description": "Scale-up if MEM > 50% for 1 minute",
+        "meter_name": "MemoryUtilization",
+        "statistic": "avg",
+        "period": 60,
+        "evaluation_periods": 1,
+        "threshold": 50,
+        "alarm_actions": [],
+        "matching_metadata": {},
+        "comparison_operator": "gt"
+      }
+    },
+    "signal_handler" : {
+      "Type" : "SignalResourceType"
+    }
+  }
+}
+'''
+
+combination_alarm_template = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Combination Alarm Test",
+  "Resources" : {
+    "CombinAlarm": {
+     "Type": "OS::Ceilometer::CombinationAlarm",
+     "Properties": {
+        "description": "Do stuff in combination",
+        "alarm_ids": ["alarm1", "alarm2"],
+        "operator": "and",
+        "alarm_actions": [],
+      }
+    }
+  }
+}
+'''
+
 
 class FakeCeilometerAlarm(object):
     alarm_id = 'foo'
@@ -83,6 +131,7 @@ class FakeCeilometerClient(object):
     alarms = FakeCeilometerAlarms()
 
 
+@testtools.skipIf(ceilometerclient is None, 'ceilometerclient unavailable')
 class CeilometerAlarmTest(HeatTestCase):
     def setUp(self):
         super(CeilometerAlarmTest, self).setUp()
@@ -126,7 +175,6 @@ class CeilometerAlarmTest(HeatTestCase):
         self.fa.alarms.create(**al).AndReturn(FakeCeilometerAlarm())
         return stack
 
-    @testtools.skipIf(ceilometerclient is None, 'ceilometerclient unavailable')
     @utils.stack_delete_after
     def test_mem_alarm_high_update_no_replace(self):
         '''
@@ -141,11 +189,9 @@ class CeilometerAlarmTest(HeatTestCase):
 
         self.stack = self.create_stack(template=json.dumps(t))
         self.m.StubOutWithMock(self.fa.alarms, 'update')
-        al2 = {}
-        for k in alarm.CeilometerAlarm.properties_schema:
-            if alarm.CeilometerAlarm.properties_schema[k].get('UpdateAllowed',
-                                                              False):
-                al2[k] = mox.IgnoreArg()
+        schema = schemata(alarm.CeilometerAlarm.properties_schema)
+        al2 = dict((k, mox.IgnoreArg())
+                   for k, s in schema.items() if s.update_allowed)
         al2['alarm_id'] = mox.IgnoreArg()
         self.fa.alarms.update(**al2).AndReturn(None)
 
@@ -170,7 +216,6 @@ class CeilometerAlarmTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @testtools.skipIf(ceilometerclient is None, 'ceilometerclient unavailable')
     @utils.stack_delete_after
     def test_mem_alarm_high_update_replace(self):
         '''
@@ -196,7 +241,6 @@ class CeilometerAlarmTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @testtools.skipIf(ceilometerclient is None, 'ceilometerclient unavailable')
     @utils.stack_delete_after
     def test_mem_alarm_suspend_resume(self):
         """
@@ -220,5 +264,174 @@ class CeilometerAlarmTest(HeatTestCase):
         self.assertEqual((rsrc.SUSPEND, rsrc.COMPLETE), rsrc.state)
         scheduler.TaskRunner(rsrc.resume)()
         self.assertEqual((rsrc.RESUME, rsrc.COMPLETE), rsrc.state)
+
+        self.m.VerifyAll()
+
+    @utils.stack_delete_after
+    def test_mem_alarm_high_correct_int_parameters(self):
+        self.stack = self.create_stack(not_string_alarm_template)
+
+        self.m.ReplayAll()
+        self.stack.create()
+        rsrc = self.stack['MEMAlarmHigh']
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        self.assertIsNone(rsrc.validate())
+
+        self.assertIsInstance(rsrc.properties['evaluation_periods'], int)
+        self.assertIsInstance(rsrc.properties['period'], int)
+        self.assertIsInstance(rsrc.properties['threshold'], int)
+
+        self.m.VerifyAll()
+
+    def test_mem_alarm_high_not_correct_string_parameters(self):
+        snippet = template_format.parse(not_string_alarm_template)
+        for p in ('period', 'evaluation_periods'):
+            snippet['Resources']['MEMAlarmHigh']['Properties'][p] = '60a'
+            stack = utils.parse_stack(snippet)
+
+            rsrc = alarm.CeilometerAlarm(
+                'MEMAlarmHigh', snippet['Resources']['MEMAlarmHigh'], stack)
+            error = self.assertRaises(exception.StackValidationFailed,
+                                      rsrc.validate)
+            self.assertEqual(
+                "Property error : MEMAlarmHigh: %s Value '60a' is not an "
+                "integer" % p, str(error))
+
+    def test_mem_alarm_high_not_integer_parameters(self):
+        snippet = template_format.parse(not_string_alarm_template)
+        for p in ('period', 'evaluation_periods'):
+            snippet['Resources']['MEMAlarmHigh']['Properties'][p] = [60]
+            stack = utils.parse_stack(snippet)
+
+            rsrc = alarm.CeilometerAlarm(
+                'MEMAlarmHigh', snippet['Resources']['MEMAlarmHigh'], stack)
+            error = self.assertRaises(exception.StackValidationFailed,
+                                      rsrc.validate)
+            self.assertEqual(
+                "Property error : MEMAlarmHigh: %s int() argument must be "
+                "a string or a number, not 'list'" % p, str(error))
+
+    def test_mem_alarm_high_check_not_required_parameters(self):
+        snippet = template_format.parse(not_string_alarm_template)
+        snippet['Resources']['MEMAlarmHigh']['Properties'].pop('meter_name')
+        stack = utils.parse_stack(snippet)
+
+        rsrc = alarm.CeilometerAlarm(
+            'MEMAlarmHigh', snippet['Resources']['MEMAlarmHigh'], stack)
+        error = self.assertRaises(exception.StackValidationFailed,
+                                  rsrc.validate)
+        self.assertEqual(
+            "Property error : MEMAlarmHigh: Property meter_name not assigned",
+            str(error))
+
+        for p in ('period', 'evaluation_periods', 'statistic',
+                  'comparison_operator'):
+            snippet = template_format.parse(not_string_alarm_template)
+            snippet['Resources']['MEMAlarmHigh']['Properties'].pop(p)
+            stack = utils.parse_stack(snippet)
+
+            rsrc = alarm.CeilometerAlarm(
+                'MEMAlarmHigh', snippet['Resources']['MEMAlarmHigh'], stack)
+            self.assertIsNone(rsrc.validate())
+
+
+@testtools.skipIf(ceilometerclient is None, 'ceilometerclient unavailable')
+class CombinationAlarmTest(HeatTestCase):
+
+    def setUp(self):
+        super(CombinationAlarmTest, self).setUp()
+        self.fc = FakeCeilometerClient()
+        self.m.StubOutWithMock(clients.OpenStackClients, 'ceilometer')
+        utils.setup_dummy_db()
+
+    def create_alarm(self):
+        clients.OpenStackClients.ceilometer().MultipleTimes().AndReturn(
+            self.fc)
+        self.m.StubOutWithMock(self.fc.alarms, 'create')
+        self.fc.alarms.create(
+            alarm_actions=[],
+            description=u'Do stuff in combination',
+            name=mox.IgnoreArg(), type='combination',
+            combination_rule={'alarm_ids': [u'alarm1', u'alarm2'],
+                              'operator': u'and'}
+        ).AndReturn(FakeCeilometerAlarm())
+        snippet = template_format.parse(combination_alarm_template)
+        stack = utils.parse_stack(snippet)
+        return alarm.CombinationAlarm(
+            'CombinAlarm', snippet['Resources']['CombinAlarm'], stack)
+
+    def test_create(self):
+        rsrc = self.create_alarm()
+
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        self.assertEqual('foo', rsrc.resource_id)
+        self.m.VerifyAll()
+
+    def test_invalid_alarm_list(self):
+        snippet = template_format.parse(combination_alarm_template)
+        snippet['Resources']['CombinAlarm']['Properties']['alarm_ids'] = []
+        stack = utils.parse_stack(snippet)
+        rsrc = alarm.CombinationAlarm(
+            'CombinAlarm', snippet['Resources']['CombinAlarm'], stack)
+        error = self.assertRaises(exception.StackValidationFailed,
+                                  rsrc.validate)
+        self.assertEqual(
+            "Property error : CombinAlarm: alarm_ids length (0) is out of "
+            "range (min: 1, max: None)", str(error))
+
+    def test_update(self):
+        rsrc = self.create_alarm()
+        self.m.StubOutWithMock(self.fc.alarms, 'update')
+        self.fc.alarms.update(
+            alarm_id='foo',
+            combination_rule={'alarm_ids': [u'alarm1', u'alarm3']})
+
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+
+        update_template = copy.deepcopy(rsrc.t)
+        update_template['Properties']['alarm_ids'] = ['alarm1', 'alarm3']
+        scheduler.TaskRunner(rsrc.update, update_template)()
+        self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
+
+        self.m.VerifyAll()
+
+    def test_suspend(self):
+        rsrc = self.create_alarm()
+        self.m.StubOutWithMock(self.fc.alarms, 'update')
+        self.fc.alarms.update(alarm_id='foo', enabled=False)
+
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+
+        scheduler.TaskRunner(rsrc.suspend)()
+        self.assertEqual((rsrc.SUSPEND, rsrc.COMPLETE), rsrc.state)
+
+        self.m.VerifyAll()
+
+    def test_resume(self):
+        rsrc = self.create_alarm()
+        self.m.StubOutWithMock(self.fc.alarms, 'update')
+        self.fc.alarms.update(alarm_id='foo', enabled=True)
+
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+        rsrc.state_set(rsrc.SUSPEND, rsrc.COMPLETE)
+
+        scheduler.TaskRunner(rsrc.resume)()
+        self.assertEqual((rsrc.RESUME, rsrc.COMPLETE), rsrc.state)
+
+        self.m.VerifyAll()
+
+    def test_delete(self):
+        rsrc = self.create_alarm()
+        self.m.StubOutWithMock(self.fc.alarms, 'delete')
+        self.fc.alarms.delete('foo')
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+        scheduler.TaskRunner(rsrc.delete)()
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()

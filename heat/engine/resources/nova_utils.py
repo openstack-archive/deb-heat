@@ -21,8 +21,6 @@ import json
 import os
 import pkgutil
 
-from urlparse import urlparse
-
 from oslo.config import cfg
 
 from heat.common import exception
@@ -31,6 +29,8 @@ from heat.engine import scheduler
 from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import uuidutils
+from heat.openstack.common.py3kcompat import urlutils
+
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,8 @@ def get_keypair(nova_client, key_name):
     raise exception.UserKeyPairMissing(key_name=key_name)
 
 
-def build_userdata(resource, userdata=None, instance_user=None):
+def build_userdata(resource, userdata=None, instance_user=None,
+                   user_data_format='HEAT_CFNTOOLS'):
     '''
     Build multipart data blob for CloudInit which includes user-supplied
     Metadata, user data, and the required Heat in-instance configuration.
@@ -137,8 +138,13 @@ def build_userdata(resource, userdata=None, instance_user=None):
     :type userdata: str or None
     :param instance_user: the user to create on the server
     :type instance_user: string
+    :param user_data_format: Format of user data to return
+    :type user_data_format: string
     :returns: multipart mime as a string
     '''
+
+    if user_data_format == 'RAW':
+        return userdata
 
     def make_subpart(content, filename, subtype=None):
         if subtype is None:
@@ -175,8 +181,8 @@ def build_userdata(resource, userdata=None, instance_user=None):
 
     # Create a boto config which the cfntools on the host use to know
     # where the cfn and cw API's are to be accessed
-    cfn_url = urlparse(cfg.CONF.heat_metadata_server_url)
-    cw_url = urlparse(cfg.CONF.heat_watch_server_url)
+    cfn_url = urlutils.urlparse(cfg.CONF.heat_metadata_server_url)
+    cw_url = urlutils.urlparse(cfg.CONF.heat_watch_server_url)
     is_secure = cfg.CONF.instance_connection_is_secure
     vcerts = cfg.CONF.instance_connection_https_validate_certificates
     boto_cfg = "\n".join(["[Boto]",
@@ -239,9 +245,14 @@ def check_resize(server, flavor, flavor_id):
 
 
 @scheduler.wrappertask
-def rebuild(server, image_id):
+def rebuild(server, image_id, preserve_ephemeral=False):
     """Rebuild the server and call check_rebuild to verify."""
-    server.rebuild(image_id)
+    # Only require a newer nova client if the new preserve_ephemeral feature is
+    # actually used.
+    kwargs = {}
+    if preserve_ephemeral:
+        kwargs['preserve_ephemeral'] = True
+    server.rebuild(image_id, **kwargs)
     yield check_rebuild(server, image_id)
 
 
@@ -282,3 +293,9 @@ def server_to_ipaddress(client, server):
         for n in server.networks:
             if len(server.networks[n]) > 0:
                 return server.networks[n][0]
+
+
+def absolute_limits(nova_client):
+    """Return the absolute limits as a dictionary."""
+    limits = nova_client.limits.get()
+    return dict([(limit.name, limit.value) for limit in list(limits.absolute)])

@@ -29,6 +29,7 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
     API version history::
 
         1.0 - Initial version.
+        1.1 - Add support_status argument to list_resource_types()
     '''
 
     BASE_RPC_API_VERSION = '1.0'
@@ -68,6 +69,16 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
         return self.call(ctxt, self.make_msg('list_stacks', limit=limit,
                          sort_keys=sort_keys, marker=marker,
                          sort_dir=sort_dir, filters=filters))
+
+    def count_stacks(self, ctxt, filters=None):
+        """
+        Return the number of stacks that match the given filters
+        :param ctxt: RPC context.
+        :param filters: a dict of ATTR:VALUE to match agains stacks
+        :returns: a integer representing the number of matched stacks
+        """
+        return self.call(ctxt, self.make_msg('count_stacks',
+                                             filters=filters))
 
     def show_stack(self, ctxt, stack_identity):
         """
@@ -163,13 +174,27 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
                           self.make_msg('delete_stack',
                                         stack_identity=stack_identity))
 
-    def list_resource_types(self, ctxt):
+    def abandon_stack(self, ctxt, stack_identity):
+        """
+        The abandon_stack method deletes a given stack but
+        resources would not be deleted.
+
+        :param ctxt: RPC context.
+        :param stack_identity: Name of the stack you want to abandon.
+        """
+        return self.call(ctxt,
+                         self.make_msg('abandon_stack',
+                                       stack_identity=stack_identity))
+
+    def list_resource_types(self, ctxt, support_status=None):
         """
         Get a list of valid resource types.
 
         :param ctxt: RPC context.
         """
-        return self.call(ctxt, self.make_msg('list_resource_types'))
+        return self.call(ctxt, self.make_msg('list_resource_types',
+                                             support_status=support_status),
+                         version='1.1')
 
     def resource_schema(self, ctxt, type_name):
         """

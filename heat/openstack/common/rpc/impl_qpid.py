@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 #    Copyright 2011 OpenStack Foundation
 #    Copyright 2011 - 2012, Red Hat, Inc.
 #
@@ -18,11 +16,11 @@
 import functools
 import itertools
 import time
-import uuid
 
 import eventlet
 import greenlet
 from oslo.config import cfg
+import six
 
 from heat.openstack.common import excutils
 from heat.openstack.common.gettextutils import _  # noqa
@@ -124,7 +122,6 @@ class ConsumerBase(object):
                     },
                 },
                 "link": {
-                    "name": link_name,
                     "durable": True,
                     "x-declare": {
                         "durable": False,
@@ -139,6 +136,7 @@ class ConsumerBase(object):
                 "link": {
                     "x-declare": {
                         "auto-delete": True,
+                        "exclusive": False,
                     },
                 },
             }
@@ -146,13 +144,15 @@ class ConsumerBase(object):
             raise_invalid_topology_version()
 
         addr_opts["link"]["x-declare"].update(link_opts)
+        if link_name:
+            addr_opts["link"]["name"] = link_name
 
         self.address = "%s ; %s" % (node_name, jsonutils.dumps(addr_opts))
 
         self.connect(session)
 
     def connect(self, session):
-        """Declare the reciever on connect."""
+        """Declare the receiver on connect."""
         self._declare_receiver(session)
 
     def reconnect(self, session):
@@ -220,14 +220,16 @@ class DirectConsumer(ConsumerBase):
         if conf.qpid_topology_version == 1:
             node_name = "%s/%s" % (msg_id, msg_id)
             node_opts = {"type": "direct"}
+            link_name = msg_id
         elif conf.qpid_topology_version == 2:
             node_name = "amq.direct/%s" % msg_id
             node_opts = {}
+            link_name = None
         else:
             raise_invalid_topology_version()
 
         super(DirectConsumer, self).__init__(conf, session, callback,
-                                             node_name, node_opts, msg_id,
+                                             node_name, node_opts, link_name,
                                              link_opts)
 
 
@@ -279,29 +281,15 @@ class FanoutConsumer(ConsumerBase):
         if conf.qpid_topology_version == 1:
             node_name = "%s_fanout" % topic
             node_opts = {"durable": False, "type": "fanout"}
-            link_name = "%s_fanout_%s" % (topic, uuid.uuid4().hex)
         elif conf.qpid_topology_version == 2:
             node_name = "amq.topic/fanout/%s" % topic
             node_opts = {}
-            link_name = ""
         else:
             raise_invalid_topology_version()
 
         super(FanoutConsumer, self).__init__(conf, session, callback,
-                                             node_name, node_opts, link_name,
+                                             node_name, node_opts, None,
                                              link_opts)
-
-    def reconnect(self, session):
-        topic = self.get_node_name().rpartition('_fanout')[0]
-        params = {
-            'session': session,
-            'topic': topic,
-            'callback': self.callback,
-        }
-
-        self.__init__(conf=self.conf, **params)
-
-        super(FanoutConsumer, self).reconnect(session)
 
 
 class Publisher(object):
@@ -395,7 +383,7 @@ class DirectPublisher(Publisher):
 class TopicPublisher(Publisher):
     """Publisher class for 'topic'."""
     def __init__(self, conf, session, topic):
-        """init a 'topic' publisher.
+        """Init a 'topic' publisher.
         """
         exchange_name = rpc_amqp.get_control_exchange(conf)
 
@@ -412,7 +400,7 @@ class TopicPublisher(Publisher):
 class FanoutPublisher(Publisher):
     """Publisher class for 'fanout'."""
     def __init__(self, conf, session, topic):
-        """init a 'fanout' publisher.
+        """Init a 'fanout' publisher.
         """
 
         if conf.qpid_topology_version == 1:
@@ -431,7 +419,7 @@ class FanoutPublisher(Publisher):
 class NotifyPublisher(Publisher):
     """Publisher class for notifications."""
     def __init__(self, conf, session, topic):
-        """init a 'topic' publisher.
+        """Init a 'topic' publisher.
         """
         exchange_name = rpc_amqp.get_control_exchange(conf)
         node_opts = {"durable": True}
@@ -539,7 +527,7 @@ class Connection(object):
             consumers = self.consumers
             self.consumers = {}
 
-            for consumer in consumers.itervalues():
+            for consumer in six.itervalues(consumers):
                 consumer.reconnect(self.session)
                 self._register_consumer(consumer)
 
@@ -697,7 +685,7 @@ class Connection(object):
         it = self.iterconsume(limit=limit)
         while True:
             try:
-                it.next()
+                six.next(it)
             except StopIteration:
                 return
 

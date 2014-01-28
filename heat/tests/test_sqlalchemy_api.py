@@ -10,6 +10,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import uuid
 from datetime import datetime
 from datetime import timedelta
 
@@ -18,7 +19,6 @@ from json import loads
 from json import dumps
 import mock
 import mox
-
 
 from heat.db.sqlalchemy import api as db_api
 from heat.engine import environment
@@ -31,7 +31,6 @@ from heat.engine.resources import instance as instances
 from heat.engine import parser
 from heat.engine import scheduler
 from heat.openstack.common import timeutils
-from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
@@ -63,7 +62,7 @@ wp_template = '''
 }
 '''
 
-UUIDs = (UUID1, UUID2, UUID3) = sorted([uuidutils.generate_uuid()
+UUIDs = (UUID1, UUID2, UUID3) = sorted([str(uuid.uuid4())
                                         for x in range(3)])
 
 
@@ -96,12 +95,13 @@ class SqlAlchemyTest(HeatTestCase):
     def tearDown(self):
         super(SqlAlchemyTest, self).tearDown()
 
-    def _setup_test_stack(self, stack_name, stack_id=None):
+    def _setup_test_stack(self, stack_name, stack_id=None, owner_id=None):
         t = template_format.parse(wp_template)
         template = parser.Template(t)
-        stack_id = stack_id or uuidutils.generate_uuid()
+        stack_id = stack_id or str(uuid.uuid4())
         stack = parser.Stack(self.ctx, stack_name, template,
-                             environment.Environment({'KeyName': 'test'}))
+                             environment.Environment({'KeyName': 'test'}),
+                             owner_id=owner_id)
         with utils.UUIDStub(stack_id):
             stack.store()
         return (t, stack)
@@ -129,6 +129,114 @@ class SqlAlchemyTest(HeatTestCase):
         mocks.StubOutWithMock(fc.client, 'get_servers_9999')
         get = fc.client.get_servers_9999
         get().MultipleTimes().AndRaise(novaclient.exceptions.NotFound(404))
+
+    @mock.patch.object(db_api, '_paginate_query')
+    def test_filter_and_page_query_paginates_query(self, mock_paginate_query):
+        query = mock.Mock()
+        db_api._filter_and_page_query(self.ctx, query)
+
+        assert mock_paginate_query.called
+
+    @mock.patch.object(db_api.db_filters, 'exact_filter')
+    def test_filter_and_page_query_handles_no_filters(self, mock_db_filter):
+        query = mock.Mock()
+        db_api._filter_and_page_query(self.ctx, query)
+
+        mock_db_filter.assert_called_once_with(mock.ANY, mock.ANY, {})
+
+    @mock.patch.object(db_api.db_filters, 'exact_filter')
+    def test_filter_and_page_query_applies_filters(self, mock_db_filter):
+        query = mock.Mock()
+        filters = {'foo': 'bar'}
+        db_api._filter_and_page_query(self.ctx, query, filters=filters)
+
+        assert mock_db_filter.called
+
+    @mock.patch.object(db_api, '_paginate_query')
+    def test_filter_and_page_query_whitelists_sort_keys(self,
+                                                        mock_paginate_query):
+        query = mock.Mock()
+        sort_keys = ['name', 'foo']
+        db_api._filter_and_page_query(self.ctx, query, sort_keys=sort_keys)
+
+        args, _ = mock_paginate_query.call_args
+        self.assertIn(['name'], args)
+
+    @mock.patch.object(db_api.utils, 'paginate_query')
+    def test_paginate_query_default_sorts_by_created_at_and_id(
+            self, mock_paginate_query):
+        query = mock.Mock()
+        model = mock.Mock()
+        db_api._paginate_query(self.ctx, query, model, sort_keys=None)
+        args, _ = mock_paginate_query.call_args
+        self.assertIn(['created_at', 'id'], args)
+
+    @mock.patch.object(db_api.utils, 'paginate_query')
+    def test_paginate_query_default_sorts_dir_by_desc(self,
+                                                      mock_paginate_query):
+        query = mock.Mock()
+        model = mock.Mock()
+        db_api._paginate_query(self.ctx, query, model, sort_dir=None)
+        args, _ = mock_paginate_query.call_args
+        self.assertIn('desc', args)
+
+    @mock.patch.object(db_api.utils, 'paginate_query')
+    def test_paginate_query_uses_given_sort_plus_id(self,
+                                                    mock_paginate_query):
+        query = mock.Mock()
+        model = mock.Mock()
+        db_api._paginate_query(self.ctx, query, model, sort_keys=['name'])
+        args, _ = mock_paginate_query.call_args
+        self.assertIn(['name', 'id'], args)
+
+    @mock.patch.object(db_api.utils, 'paginate_query')
+    @mock.patch.object(db_api, 'model_query')
+    def test_paginate_query_gets_model_marker(self, mock_query,
+                                              mock_paginate_query):
+        query = mock.Mock()
+        model = mock.Mock()
+        marker = mock.Mock()
+
+        mock_query_object = mock.Mock()
+        mock_query_object.get.return_value = 'real_marker'
+        mock_query.return_value = mock_query_object
+
+        db_api._paginate_query(self.ctx, query, model, marker=marker)
+        mock_query_object.get.assert_called_once_with(marker)
+        args, _ = mock_paginate_query.call_args
+        self.assertIn('real_marker', args)
+
+    @mock.patch.object(db_api.utils, 'paginate_query')
+    def test_paginate_query_raises_invalid_sort_key(self, mock_paginate_query):
+        query = mock.Mock()
+        model = mock.Mock()
+
+        mock_paginate_query.side_effect = db_api.utils.InvalidSortKey()
+        self.assertRaises(exception.Invalid, db_api._paginate_query,
+                          self.ctx, query, model, sort_keys=['foo'])
+
+    def test_filter_sort_keys_returns_empty_list_if_no_keys(self):
+        sort_keys = None
+        whitelist = None
+
+        filtered_keys = db_api._filter_sort_keys(sort_keys, whitelist)
+        self.assertEqual([], filtered_keys)
+
+    def test_filter_sort_keys_whitelists_single_key(self):
+        sort_key = 'foo'
+        whitelist = ['foo']
+
+        filtered_keys = db_api._filter_sort_keys(sort_key, whitelist)
+        self.assertEqual(['foo'], filtered_keys)
+
+    def test_filter_sort_keys_whitelists_multiple_keys(self):
+        sort_keys = ['foo', 'bar', 'nope']
+        whitelist = ['foo', 'bar']
+
+        filtered_keys = db_api._filter_sort_keys(sort_keys, whitelist)
+        self.assertIn('foo', filtered_keys)
+        self.assertIn('bar', filtered_keys)
+        self.assertNotIn('nope', filtered_keys)
 
     def test_encryption(self):
         stack_name = 'test_encryption'
@@ -177,6 +285,39 @@ class SqlAlchemyTest(HeatTestCase):
         st = db_api.stack_get_by_name(self.ctx, 'stack')
         self.assertIsNone(st)
 
+    def test_nested_stack_get_by_name(self):
+        stack1 = self._setup_test_stack('stack1', UUID1)[1]
+        stack2 = self._setup_test_stack('stack2', UUID2,
+                                        owner_id=stack1.id)[1]
+
+        result = db_api.stack_get_by_name(self.ctx, 'stack2')
+        self.assertEqual(UUID2, result.id)
+
+        stack2.delete()
+
+        result = db_api.stack_get_by_name(self.ctx, 'stack2')
+        self.assertIsNone(result)
+
+    def test_stack_get_by_name_and_owner_id(self):
+        stack1 = self._setup_test_stack('stack1', UUID1)[1]
+        stack2 = self._setup_test_stack('stack2', UUID2,
+                                        owner_id=stack1.id)[1]
+
+        result = db_api.stack_get_by_name_and_owner_id(self.ctx, 'stack2',
+                                                       None)
+        self.assertIsNone(result)
+
+        result = db_api.stack_get_by_name_and_owner_id(self.ctx, 'stack2',
+                                                       stack1.id)
+
+        self.assertEqual(UUID2, result.id)
+
+        stack2.delete()
+
+        result = db_api.stack_get_by_name_and_owner_id(self.ctx, 'stack2',
+                                                       stack1.id)
+        self.assertIsNone(result)
+
     def test_stack_get(self):
         stack = self._setup_test_stack('stack', UUID1)[1]
 
@@ -188,6 +329,21 @@ class SqlAlchemyTest(HeatTestCase):
         self.assertIsNone(st)
 
         st = db_api.stack_get(self.ctx, UUID1, show_deleted=True)
+        self.assertEqual(UUID1, st.id)
+
+    def test_stack_get_show_deleted_context(self):
+        stack = self._setup_test_stack('stack', UUID1)[1]
+
+        self.assertFalse(self.ctx.show_deleted)
+        st = db_api.stack_get(self.ctx, UUID1)
+        self.assertEqual(UUID1, st.id)
+
+        stack.delete()
+        st = db_api.stack_get(self.ctx, UUID1)
+        self.assertIsNone(st)
+
+        self.ctx.show_deleted = True
+        st = db_api.stack_get(self.ctx, UUID1)
         self.assertEqual(UUID1, st.id)
 
     def test_stack_get_all(self):
@@ -219,9 +375,8 @@ class SqlAlchemyTest(HeatTestCase):
         self.assertEqual(1, len(st_db))
 
     def test_stack_get_all_by_tenant_and_filters(self):
-        stack1 = self._setup_test_stack('foo', UUIDs[0])
-        stack2 = self._setup_test_stack('bar', UUIDs[1])
-        stacks = [stack1, stack2]
+        self._setup_test_stack('foo', UUID1)
+        self._setup_test_stack('bar', UUID2)
 
         filters = {'name': 'foo'}
         results = db_api.stack_get_all_by_tenant(self.ctx,
@@ -231,9 +386,8 @@ class SqlAlchemyTest(HeatTestCase):
         self.assertEqual('foo', results[0]['name'])
 
     def test_stack_get_all_by_tenant_filter_matches_in_list(self):
-        stack1 = self._setup_test_stack('foo', UUIDs[0])
-        stack2 = self._setup_test_stack('bar', UUIDs[1])
-        stacks = [stack1, stack2]
+        self._setup_test_stack('foo', UUID1)
+        self._setup_test_stack('bar', UUID2)
 
         filters = {'name': ['bar', 'quux']}
         results = db_api.stack_get_all_by_tenant(self.ctx,
@@ -243,9 +397,8 @@ class SqlAlchemyTest(HeatTestCase):
         self.assertEqual('bar', results[0]['name'])
 
     def test_stack_get_all_by_tenant_returns_all_if_no_filters(self):
-        stack1 = self._setup_test_stack('foo', UUIDs[0])
-        stack2 = self._setup_test_stack('bar', UUIDs[1])
-        stacks = [stack1, stack2]
+        self._setup_test_stack('foo', UUID1)
+        self._setup_test_stack('bar', UUID2)
 
         filters = None
         results = db_api.stack_get_all_by_tenant(self.ctx,
@@ -284,8 +437,8 @@ class SqlAlchemyTest(HeatTestCase):
     @mock.patch.object(db_api.utils, 'paginate_query')
     def test_stack_get_all_by_tenant_filters_sort_keys(self, mock_paginate):
         sort_keys = ['name', 'status', 'created_at', 'updated_at', 'username']
-        st_db = db_api.stack_get_all_by_tenant(self.ctx,
-                                               sort_keys=sort_keys)
+        db_api.stack_get_all_by_tenant(self.ctx,
+                                       sort_keys=sort_keys)
 
         args, _ = mock_paginate.call_args
         used_sort_keys = set(args[3])
@@ -301,17 +454,17 @@ class SqlAlchemyTest(HeatTestCase):
         self.assertEqual(stacks[0].id, st_db[0].id)
 
     def test_stack_get_all_by_tenant_non_existing_marker(self):
-        stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
+        [self._setup_test_stack('stack', x)[1] for x in UUIDs]
 
         uuid = 'this stack doesnt exist'
         st_db = db_api.stack_get_all_by_tenant(self.ctx, marker=uuid)
         self.assertEqual(3, len(st_db))
 
     def test_stack_get_all_by_tenant_doesnt_mutate_sort_keys(self):
-        stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
+        [self._setup_test_stack('stack', x)[1] for x in UUIDs]
         sort_keys = ['id']
 
-        st_db = db_api.stack_get_all_by_tenant(self.ctx, sort_keys=sort_keys)
+        db_api.stack_get_all_by_tenant(self.ctx, sort_keys=sort_keys)
         self.assertEqual(['id'], sort_keys)
 
     def test_stack_count_all_by_tenant(self):
@@ -327,6 +480,15 @@ class SqlAlchemyTest(HeatTestCase):
         stacks[1].delete()
         st_db = db_api.stack_count_all_by_tenant(self.ctx)
         self.assertEqual(1, st_db)
+
+    def test_stack_count_all_by_tenant_with_filters(self):
+        self._setup_test_stack('foo', UUID1)
+        self._setup_test_stack('bar', UUID2)
+        self._setup_test_stack('bar', UUID3)
+        filters = {'name': 'bar'}
+
+        st_db = db_api.stack_count_all_by_tenant(self.ctx, filters=filters)
+        self.assertEqual(2, st_db)
 
     def test_event_get_all_by_stack(self):
         stack = self._setup_test_stack('stack', UUID1)[1]
@@ -580,7 +742,9 @@ class DBAPIUserCredsTest(HeatTestCase):
         user_creds = create_user_creds(self.ctx, trust_id='test_trust_id',
                                        trustor_user_id='trustor_id')
         self.assertIsNotNone(user_creds.id)
-        self.assertEqual('test_trust_id', db_api._decrypt(user_creds.trust_id))
+        self.assertEqual('test_trust_id',
+                         db_api._decrypt(user_creds.trust_id,
+                                         user_creds.decrypt_method))
         self.assertEqual('trustor_id', user_creds.trustor_user_id)
         self.assertIsNone(user_creds.username)
         self.assertIsNone(user_creds.password)
@@ -591,12 +755,14 @@ class DBAPIUserCredsTest(HeatTestCase):
         user_creds = create_user_creds(self.ctx)
         self.assertIsNotNone(user_creds.id)
         self.assertEqual(self.ctx.password,
-                         db_api._decrypt(user_creds.password))
+                         db_api._decrypt(user_creds.password,
+                                         user_creds.decrypt_method))
 
     def test_user_creds_get(self):
         user_creds = create_user_creds(self.ctx)
         ret_user_creds = db_api.user_creds_get(user_creds.id)
-        self.assertEqual(db_api._decrypt(user_creds.password),
+        self.assertEqual(db_api._decrypt(user_creds.password,
+                                         user_creds.decrypt_method),
                          ret_user_creds['password'])
 
 
@@ -623,7 +789,7 @@ class DBAPIStackTest(HeatTestCase):
         self.assertEqual(self.user_creds.id, stack.user_creds_id)
         self.assertIsNone(stack.owner_id)
         self.assertEqual('60', stack.timeout)
-        self.assertEqual(False, stack.disable_rollback)
+        self.assertFalse(stack.disable_rollback)
 
     def test_stack_delete(self):
         stack = create_stack(self.ctx, self.template, self.user_creds)
@@ -895,6 +1061,68 @@ class DBAPIResourceTest(HeatTestCase):
 
         self.assertRaises(exception.NotFound, db_api.resource_get_all_by_stack,
                           self.ctx, self.stack2.id)
+
+
+class DBAPIStackLockTest(HeatTestCase):
+    def setUp(self):
+        super(DBAPIStackLockTest, self).setUp()
+        self.ctx = utils.dummy_context()
+        utils.setup_dummy_db()
+        utils.reset_dummy_db()
+        self.template = create_raw_template(self.ctx)
+        self.user_creds = create_user_creds(self.ctx)
+        self.stack = create_stack(self.ctx, self.template, self.user_creds)
+
+    def test_stack_lock_create_success(self):
+        observed = db_api.stack_lock_create(self.stack.id, UUID1)
+        self.assertIsNone(observed)
+
+    def test_stack_lock_create_fail_double_same(self):
+        db_api.stack_lock_create(self.stack.id, UUID1)
+        observed = db_api.stack_lock_create(self.stack.id, UUID1)
+        self.assertEqual(UUID1, observed)
+
+    def test_stack_lock_create_fail_double_different(self):
+        db_api.stack_lock_create(self.stack.id, UUID1)
+        observed = db_api.stack_lock_create(self.stack.id, UUID2)
+        self.assertEqual(UUID1, observed)
+
+    def test_stack_lock_steal_success(self):
+        db_api.stack_lock_create(self.stack.id, UUID1)
+        observed = db_api.stack_lock_steal(self.stack.id, UUID1, UUID2)
+        self.assertIsNone(observed)
+
+    def test_stack_lock_steal_fail_gone(self):
+        db_api.stack_lock_create(self.stack.id, UUID1)
+        db_api.stack_lock_release(self.stack.id, UUID1)
+        observed = db_api.stack_lock_steal(self.stack.id, UUID1, UUID2)
+        self.assertTrue(observed)
+
+    def test_stack_lock_steal_fail_stolen(self):
+        db_api.stack_lock_create(self.stack.id, UUID1)
+
+        # Simulate stolen lock
+        db_api.stack_lock_release(self.stack.id, UUID1)
+        db_api.stack_lock_create(self.stack.id, UUID2)
+
+        observed = db_api.stack_lock_steal(self.stack.id, UUID3, UUID2)
+        self.assertEqual(UUID2, observed)
+
+    def test_stack_lock_release_success(self):
+        db_api.stack_lock_create(self.stack.id, UUID1)
+        observed = db_api.stack_lock_release(self.stack.id, UUID1)
+        self.assertIsNone(observed)
+
+    def test_stack_lock_release_fail_double(self):
+        db_api.stack_lock_create(self.stack.id, UUID1)
+        db_api.stack_lock_release(self.stack.id, UUID1)
+        observed = db_api.stack_lock_release(self.stack.id, UUID1)
+        self.assertTrue(observed)
+
+    def test_stack_lock_release_fail_wrong_engine_id(self):
+        db_api.stack_lock_create(self.stack.id, UUID1)
+        observed = db_api.stack_lock_release(self.stack.id, UUID2)
+        self.assertTrue(observed)
 
 
 class DBAPIResourceDataTest(HeatTestCase):

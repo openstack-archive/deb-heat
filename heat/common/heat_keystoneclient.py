@@ -16,8 +16,7 @@
 from heat.common import context
 from heat.common import exception
 
-import eventlet
-
+import keystoneclient.exceptions as kc_exception
 from keystoneclient.v2_0 import client as kc
 from keystoneclient.v3 import client as kc_v3
 from oslo.config import cfg
@@ -118,6 +117,12 @@ class KeystoneClient(object):
             # All OK so update the context with the token
             self.context.auth_token = client_v2.auth_ref.auth_token
             self.context.auth_url = kwargs.get('auth_url')
+            # Ensure the v2 API we're using is not impacted by keystone
+            # bug #1239303, otherwise we can't trust the user_id
+            if self.context.trustor_user_id != client_v2.auth_ref.user_id:
+                logger.error("Trust impersonation failed, bug #1239303 "
+                             "suspected, you may need a newer keystone")
+                raise exception.AuthorizationFailure()
 
         return client_v2
 
@@ -187,13 +192,12 @@ class KeystoneClient(object):
 
     def create_trust_context(self):
         """
-        If cfg.CONF.deferred_auth_method is trusts, we create a
-        trust using the trustor identity in the current context, with the
-        trustee as the heat service user and return a context containing
-        the new trust_id
+        Create a trust using the trustor identity in the current context,
+        with the trustee as the heat service user and return a context
+        containing the new trust_id.
 
-        If deferred_auth_method != trusts, or the current context already
-        contains a trust_id, we do nothing and return the current context
+        If the current context already contains a trust_id, we do nothing
+        and return the current context.
         """
         if self.context.trust_id:
             return self.context
@@ -224,7 +228,10 @@ class KeystoneClient(object):
         """
         Delete the specified trust.
         """
-        self.client_v3.trusts.delete(trust_id)
+        try:
+            self.client_v3.trusts.delete(trust_id)
+        except kc_exception.NotFound:
+            pass
 
     def create_stack_user(self, username, password=''):
         """
@@ -238,26 +245,22 @@ class KeystoneClient(object):
                            "characters.") % username)
             #get the last 64 characters of the username
             username = username[-64:]
-        user = self.client_v2.users.create(username,
-                                           password,
-                                           '%s@openstack.org' %
-                                           username,
-                                           tenant_id=self.context.tenant_id,
-                                           enabled=True)
+        user = self.client_v3.users.create(
+            name=username, password=password,
+            default_project=self.context.tenant_id)
 
         # We add the new user to a special keystone role
         # This role is designed to allow easier differentiation of the
         # heat-generated "stack users" which will generally have credentials
         # deployed on an instance (hence are implicitly untrusted)
-        roles = self.client_v2.roles.list()
-        stack_user_role = [r.id for r in roles
-                           if r.name == cfg.CONF.heat_stack_user_role]
+        stack_user_role = self.client_v3.roles.list(
+            name=cfg.CONF.heat_stack_user_role)
         if len(stack_user_role) == 1:
             role_id = stack_user_role[0]
             logger.debug(_("Adding user %(user)s to role %(role)s") % {
                          'user': user.id, 'role': role_id})
-            self.client_v2.roles.add_user_role(user.id, role_id,
-                                               self.context.tenant_id)
+            self.client_v3.roles.grant(role=role_id, user=user.id,
+                                       project=self.context.tenant_id)
         else:
             logger.error(_("Failed to add user %(user)s to role %(role)s, "
                          "check role exists!") % {'user': username,
@@ -266,70 +269,28 @@ class KeystoneClient(object):
         return user.id
 
     def delete_stack_user(self, user_id):
-
-        user = self.client_v2.users.get(user_id)
-
-        # FIXME (shardy) : need to test, do we still need this retry logic?
-        # Copied from user.py, but seems like something we really shouldn't
-        # need to do, no bug reference in the original comment (below)...
-        # tempory hack to work around an openstack bug.
-        # seems you can't delete a user first time - you have to try
-        # a couple of times - go figure!
-        tmo = eventlet.Timeout(10)
-        status = 'WAITING'
-        reason = 'Timed out trying to delete user'
-        try:
-            while status == 'WAITING':
-                try:
-                    user.delete()
-                    status = 'DELETED'
-                except Exception as ce:
-                    reason = str(ce)
-                    logger.warning(_("Problem deleting user %(user)s: "
-                                     "%(reason)s") % {'user': user_id,
-                                                      'reason': reason})
-                    eventlet.sleep(1)
-        except eventlet.Timeout as t:
-            if t is not tmo:
-                # not my timeout
-                raise
-            else:
-                status = 'TIMEDOUT'
-        finally:
-            tmo.cancel()
-
-        if status != 'DELETED':
-            raise exception.Error(reason)
+        self.client_v3.users.delete(user=user_id)
 
     def delete_ec2_keypair(self, user_id, accesskey):
         self.client_v2.ec2.delete(user_id, accesskey)
 
-    def get_ec2_keypair(self, user_id):
-        # We make the assumption that each user will only have one
-        # ec2 keypair, it's not clear if AWS allow multiple AccessKey resources
-        # to be associated with a single User resource, but for simplicity
-        # we assume that here for now
-        cred = self.client_v2.ec2.list(user_id)
-        if len(cred) == 0:
-            return self.client_v2.ec2.create(user_id, self.context.tenant_id)
-        if len(cred) == 1:
-            return cred[0]
-        else:
-            logger.error(_("Unexpected number of ec2 credentials %(len)s "
-                           "for %(user)s") % {'len': len(cred),
-                                              'user': user_id})
+    def get_ec2_keypair(self, access, user_id=None):
+        uid = user_id or self.client_v2.auth_ref.user_id
+        return self.client_v2.ec2.get(uid, access)
+
+    def create_ec2_keypair(self, user_id=None):
+        uid = user_id or self.client_v2.auth_ref.user_id
+        return self.client_v2.ec2.create(uid, self.context.tenant_id)
 
     def disable_stack_user(self, user_id):
-        # FIXME : This won't work with the v3 keystone API
-        self.client_v2.users.update_enabled(user_id, False)
+        self.client_v3.users.update(user=user_id, enabled=False)
 
     def enable_stack_user(self, user_id):
-        # FIXME : This won't work with the v3 keystone API
-        self.client_v2.users.update_enabled(user_id, True)
+        self.client_v3.users.update(user=user_id, enabled=True)
 
     def url_for(self, **kwargs):
-        return self.client_v2.service_catalog.url_for(**kwargs)
+        return self.client_v3.service_catalog.url_for(**kwargs)
 
     @property
     def auth_token(self):
-        return self.client_v2.auth_token
+        return self.client_v3.auth_token

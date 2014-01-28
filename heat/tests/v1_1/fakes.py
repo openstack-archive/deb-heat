@@ -14,11 +14,12 @@
 # limitations under the License.
 
 import httplib2
-import urlparse
 
 from novaclient import client as base_client
 from novaclient.v1_1 import client
 from heat.tests import fakes
+
+from heat.openstack.common.py3kcompat import urlutils
 
 
 class FakeClient(fakes.FakeClient, client.Client):
@@ -45,7 +46,7 @@ class FakeHTTPClient(base_client.HTTPClient):
             assert 'body' in kwargs
 
         # Call the method
-        args = urlparse.parse_qsl(urlparse.urlparse(url)[4])
+        args = urlutils.parse_qsl(urlutils.urlparse(url)[4])
         kwargs.update(args)
         munged_url = url.rsplit('?', 1)[0]
         munged_url = munged_url.strip('/').replace('/', '_').replace('.', '_')
@@ -336,6 +337,14 @@ class FakeHTTPClient(base_client.HTTPClient):
                                   "created": "2010-08-10T12:00:00Z",
                                   "status": "SAVING",
                                   "progress": 80,
+                                  "links": {}},
+                                 {"id": 746,
+                                  "name": "F20-x86_64-cfntools",
+                                  "serverId": 9998,
+                                  "updated": "2010-10-10T12:00:00Z",
+                                  "created": "2010-08-10T12:00:00Z",
+                                  "status": "SAVING",
+                                  "progress": 80,
                                   "links": {}}]})
 
     def get_images_1(self, **kw):
@@ -350,3 +359,18 @@ class FakeHTTPClient(base_client.HTTPClient):
 
     def get_os_availability_zone(self, *kw):
         return (200, {"availabilityZoneInfo": [{'zoneName': 'nova1'}]})
+
+    def get_os_networks(self, **kw):
+        return (200, {'networks':
+                [{'label': 'public',
+                  'id': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'},
+                 {'label': 'foo',
+                  'id': '42'},
+                 {'label': 'foo',
+                  'id': '42'}]})
+
+    #
+    # Limits
+    #
+    def get_limits(self, *kw):
+        return (200, {'limits': {'absolute': {'maxServerMeta': 3}}})

@@ -13,37 +13,58 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from urlparse import urlparse
-
 from heat.common import exception
+from heat.engine import properties
 from heat.engine import resource
-from heat.openstack.common import log as logging
 from heat.engine import clients
+
+from heat.openstack.common import log as logging
+from heat.openstack.common.py3kcompat import urlutils
+
 
 logger = logging.getLogger(__name__)
 
 
 class SwiftContainer(resource.Resource):
+    PROPERTIES = (
+        NAME, X_CONTAINER_READ, X_CONTAINER_WRITE, X_CONTAINER_META,
+        X_ACCOUNT_META
+    ) = (
+        'name', 'X-Container-Read', 'X-Container-Write', 'X-Container-Meta',
+        'X-Account-Meta'
+    )
+
     properties_schema = {
-        'name': {
-            'Type': 'String',
-            'Description': _('Name for the container. If not specified, a '
-                             'unique name will be generated.')},
-        'X-Container-Read': {
-            'Type': 'String',
-            'Description': _('Specify the ACL permissions on who can read '
-                             'objects in the container.')},
-        'X-Container-Write': {
-            'Type': 'String',
-            'Description': _('Specify the ACL permissions on who can write '
-                             'objects to the container.')},
-        'X-Container-Meta': {
-            'Type': 'Map', 'Default': {},
-            'Description': _('A map of user-defined meta data to associate '
-                             'with the container. Each key in the map will '
-                             'set the header X-Container-Meta-{key} with the '
-                             'corresponding value.')
-        }}
+        NAME: properties.Schema(
+            properties.Schema.STRING,
+            _('Name for the container. If not specified, a unique name will '
+              'be generated.')
+        ),
+        X_CONTAINER_READ: properties.Schema(
+            properties.Schema.STRING,
+            _('Specify the ACL permissions on who can read objects in the '
+              'container.')
+        ),
+        X_CONTAINER_WRITE: properties.Schema(
+            properties.Schema.STRING,
+            _('Specify the ACL permissions on who can write objects to the '
+              'container.')
+        ),
+        X_CONTAINER_META: properties.Schema(
+            properties.Schema.MAP,
+            _('A map of user-defined meta data to associate with the '
+              'container. Each key in the map will set the header '
+              'X-Container-Meta-{key} with the corresponding value.'),
+            default={}
+        ),
+        X_ACCOUNT_META: properties.Schema(
+            properties.Schema.MAP,
+            _('A map of user-defined meta data to associate with the '
+              'account. Each key in the map will set the header '
+              'X-Account-Meta-{key} with the corresponding value.'),
+            default={}
+        ),
+    }
 
     attributes_schema = {
         'DomainName': _('The host from the container URL.'),
@@ -54,24 +75,15 @@ class SwiftContainer(resource.Resource):
         'HeadContainer': _('A map containing all headers for the container.')
     }
 
-    def validate(self):
-        '''
-        Validate any of the provided params
-        '''
-        #check if swiftclient is installed
-        if clients.swiftclient is None:
-            return {'Error':
-                    'SwiftContainer unavailable due to missing swiftclient.'}
-
     def physical_resource_name(self):
-        name = self.properties.get('name')
+        name = self.properties.get(self.NAME)
         if name:
             return name
 
         return super(SwiftContainer, self).physical_resource_name()
 
     @staticmethod
-    def _build_meta_headers(meta_props):
+    def _build_meta_headers(obj_type, meta_props):
         '''
         Returns a new dict where each key is prepended with:
         X-Container-Meta-
@@ -79,22 +91,35 @@ class SwiftContainer(resource.Resource):
         if meta_props is None:
             return {}
         return dict(
-            ('X-Container-Meta-' + k, v) for (k, v) in meta_props.items())
+            ('X-' + obj_type.title() + '-Meta-' + k, v)
+            for (k, v) in meta_props.items())
 
     def handle_create(self):
         """Create a container."""
         container = self.physical_resource_name()
-        headers = SwiftContainer._build_meta_headers(
-            self.properties['X-Container-Meta'])
-        if 'X-Container-Read' in self.properties.keys():
-            headers['X-Container-Read'] = self.properties['X-Container-Read']
-        if 'X-Container-Write' in self.properties.keys():
-            headers['X-Container-Write'] = self.properties['X-Container-Write']
-        logger.debug(_('SwiftContainer create container %(container)s with '
-                     'headers %(headers)s') % {
-                     'container': container, 'headers': headers})
 
-        self.swift().put_container(container, headers)
+        container_headers = SwiftContainer._build_meta_headers(
+            "container", self.properties[self.X_CONTAINER_META])
+
+        account_headers = SwiftContainer._build_meta_headers(
+            "account", self.properties[self.X_ACCOUNT_META])
+
+        for key in (self.X_CONTAINER_READ, self.X_CONTAINER_WRITE):
+            if self.properties.get(key) is not None:
+                container_headers[key] = self.properties[key]
+
+        logger.debug(_('SwiftContainer create container %(container)s with '
+                     'container headers %(container_headers)s and '
+                     'account headers %(account_headers)s') % {
+                     'container': container,
+                     'account_headers': account_headers,
+                     'container_headers': container_headers})
+
+        self.swift().put_container(container, container_headers)
+
+        if account_headers:
+            self.swift().post_account(account_headers)
+
         self.resource_id_set(container)
 
     def handle_delete(self):
@@ -111,8 +136,7 @@ class SwiftContainer(resource.Resource):
         return unicode(self.resource_id)
 
     def FnGetAtt(self, key):
-        url, token_id = self.swift().get_auth()
-        parsed = list(urlparse(url))
+        parsed = list(urlutils.urlparse(self.swift().url))
         if key == 'DomainName':
             return parsed[1].split(':')[0]
         elif key == 'WebsiteURL':

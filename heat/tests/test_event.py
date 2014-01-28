@@ -68,7 +68,7 @@ class EventTest(HeatTestCase):
                         self.resource.name, self.resource.type())
 
         e.store()
-        self.assertNotEqual(e.id, None)
+        self.assertIsNotNone(e.id)
 
         loaded_e = event.Event.load(self.ctx, e.id)
 
@@ -78,7 +78,7 @@ class EventTest(HeatTestCase):
         self.assertEqual('TEST', loaded_e.action)
         self.assertEqual('IN_PROGRESS', loaded_e.status)
         self.assertEqual('Testing', loaded_e.reason)
-        self.assertNotEqual(None, loaded_e.timestamp)
+        self.assertIsNotNone(loaded_e.timestamp)
         self.assertEqual({'Foo': 'goo'}, loaded_e.resource_properties)
 
     def test_load_given_stack_event(self):
@@ -89,7 +89,7 @@ class EventTest(HeatTestCase):
                         self.resource.name, self.resource.type())
 
         e.store()
-        self.assertNotEqual(e.id, None)
+        self.assertIsNotNone(e.id)
 
         ev = db_api.event_get(self.ctx, e.id)
 
@@ -101,7 +101,7 @@ class EventTest(HeatTestCase):
         self.assertEqual('TEST', loaded_e.action)
         self.assertEqual('IN_PROGRESS', loaded_e.status)
         self.assertEqual('Testing', loaded_e.reason)
-        self.assertNotEqual(None, loaded_e.timestamp)
+        self.assertIsNotNone(loaded_e.timestamp)
         self.assertEqual({'Foo': 'goo'}, loaded_e.resource_properties)
 
     def test_store_caps_events(self):
@@ -144,4 +144,4 @@ class EventTest(HeatTestCase):
         res = generic_rsrc.ResourceWithRequiredProps(rname, tmpl, self.stack)
         e = event.Event(self.ctx, self.stack, 'TEST', 'IN_PROGRESS', 'Testing',
                         'wibble', res.properties, res.name, res.type())
-        self.assertTrue('Error' in e.resource_properties)
+        self.assertIn('Error', e.resource_properties)

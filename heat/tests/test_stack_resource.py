@@ -12,7 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
+import uuid
 import mox
 
 from heat.common import template_format
@@ -23,7 +23,6 @@ from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import stack_resource
 from heat.engine import template
-from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
@@ -95,7 +94,7 @@ class StackResourceTest(HeatTestCase):
         t = parser.Template({template.RESOURCES:
                              {"provider_resource": ws_res_snippet}})
         self.parent_stack = parser.Stack(utils.dummy_context(), 'test_stack',
-                                         t, stack_id=uuidutils.generate_uuid())
+                                         t, stack_id=str(uuid.uuid4()))
         self.parent_resource = MyStackResource('test',
                                                ws_res_snippet,
                                                self.parent_stack)
@@ -113,6 +112,31 @@ class StackResourceTest(HeatTestCase):
                          self.stack.name)
         self.assertEqual(self.templ, self.stack.t.t)
         self.assertEqual(self.stack.id, self.parent_resource.resource_id)
+
+    @utils.stack_delete_after
+    def test_set_deletion_policy(self):
+        self.parent_resource.create_with_template(self.templ,
+                                                  {"KeyName": "key"})
+        self.stack = self.parent_resource.nested()
+        self.parent_resource.set_deletion_policy(resource.RETAIN)
+        for res in self.stack.resources.values():
+            self.assertEqual(resource.RETAIN, res.t['DeletionPolicy'])
+
+    @utils.stack_delete_after
+    def test_get_abandon_data(self):
+        self.parent_resource.create_with_template(self.templ,
+                                                  {"KeyName": "key"})
+        ret = self.parent_resource.get_abandon_data()
+        # check abandoned data contains all the necessary information.
+        # (no need to check stack/resource IDs, because they are
+        # randomly generated uuids)
+        self.assertEqual(6, len(ret))
+        self.assertEqual('CREATE', ret['action'])
+        self.assertIn('name', ret)
+        self.assertIn('id', ret)
+        self.assertIn('resources', ret)
+        self.assertEqual(template_format.parse(param_template),
+                         ret['template'])
 
     @utils.stack_delete_after
     def test_create_with_template_validates(self):
@@ -162,8 +186,8 @@ class StackResourceTest(HeatTestCase):
         updater = self.parent_resource.update_with_template(
             new_templ, {})
         updater.run_to_completion()
-        self.assertEqual(True,
-                         self.parent_resource.check_update_complete(updater))
+        self.assertIs(True,
+                      self.parent_resource.check_update_complete(updater))
         self.assertEqual(self.stack.state, ('UPDATE', 'COMPLETE'))
         self.assertEqual(set(self.stack.keys()),
                          set(["WebServer", "WebServer2"]))
@@ -217,7 +241,8 @@ class StackResourceTest(HeatTestCase):
         self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.parent_resource.context,
                           self.parent_resource.resource_id,
-                          parent_resource=self.parent_resource).AndReturn('s')
+                          parent_resource=self.parent_resource,
+                          show_deleted=False).AndReturn('s')
         self.m.ReplayAll()
 
         self.parent_resource.nested()
@@ -233,7 +258,8 @@ class StackResourceTest(HeatTestCase):
         self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.parent_resource.context,
                           self.parent_resource.resource_id,
-                          parent_resource=self.parent_resource)
+                          parent_resource=self.parent_resource,
+                          show_deleted=False)
         self.m.ReplayAll()
 
         self.assertRaises(exception.NotFound, self.parent_resource.nested)
@@ -248,6 +274,21 @@ class StackResourceTest(HeatTestCase):
 
         self.parent_resource.delete_nested()
         self.m.VerifyAll()
+
+    def test_delete_nested_not_found_nested_stack(self):
+        self.parent_resource.create_with_template(self.templ,
+                                                  {"KeyName": "key"})
+        self.stack = self.parent_resource.nested()
+
+        self.parent_resource._nested = None
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.parent_resource.context,
+                          self.parent_resource.resource_id,
+                          parent_resource=self.parent_resource,
+                          show_deleted=False).AndRaise(exception.NotFound)
+        self.m.ReplayAll()
+
+        self.assertIsNone(self.parent_resource.delete_nested())
 
     def test_get_output_ok(self):
         nested = self.m.CreateMockAnything()

@@ -24,6 +24,7 @@ from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
 from ..engine.plugins import cloud_loadbalancer as lb  # noqa
+from heat.common.exception import StackValidationFailed
 
 # The following fakes are for pyrax
 
@@ -308,7 +309,7 @@ class LoadBalancerTest(HeatTestCase):
         rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
                                                           self.lb_name,
                                                           expected)
-        self.assertEqual(rsrc.validate(), None)
+        self.assertIsNone(rsrc.validate())
 
         #test TCP_CLIENT_FIRST protocol
         template = self._set_template(template,
@@ -318,7 +319,7 @@ class LoadBalancerTest(HeatTestCase):
         rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
                                                           self.lb_name,
                                                           expected)
-        self.assertEqual(rsrc.validate(), None)
+        self.assertIsNone(rsrc.validate())
 
     def test_validate_health_monitor(self):
         #test connect success
@@ -336,7 +337,7 @@ class LoadBalancerTest(HeatTestCase):
                                                           self.lb_name,
                                                           expected)
 
-        self.assertEqual(rsrc.validate(), None)
+        self.assertIsNone(rsrc.validate())
 
         #test connect failure
         #bodyRegex is only valid for type 'HTTP(S)'
@@ -365,13 +366,12 @@ class LoadBalancerTest(HeatTestCase):
         rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
                                                           self.lb_name,
                                                           expected)
-        self.assertEqual(rsrc.validate(), None)
+        self.assertIsNone(rsrc.validate())
 
     def test_validate_ssl_termination(self):
         ssl_termination = {
             'enabled': True,
             'privatekey': 'ewfawe',
-            'certificate': 'dfaewfwef',
             'intermediateCertificate': 'fwaefawe',
             'secureTrafficOnly': True
         }
@@ -384,12 +384,10 @@ class LoadBalancerTest(HeatTestCase):
         rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
                                                           self.lb_name,
                                                           expected)
-        self.assertEqual(rsrc.validate(),
-                         {'Error':
-                          'Property error : %s: Property securePort not '
-                          'assigned' % rsrc.name})
+        exc = self.assertRaises(StackValidationFailed, rsrc.validate)
+        self.assertIn("Property certificate not assigned", str(exc))
 
-        ssl_termination['securePort'] = 443
+        ssl_termination['certificate'] = 'dfaewfwef'
         template = self._set_template(template,
                                       sslTermination=ssl_termination)
         expected = self._set_expected(expected,
@@ -397,7 +395,7 @@ class LoadBalancerTest(HeatTestCase):
         rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
                                                           self.lb_name,
                                                           expected)
-        self.assertEqual(rsrc.validate(), None)
+        self.assertIsNone(rsrc.validate())
 
     def test_post_creation_access_list(self):
         access_list = [{"address": '192.168.1.1/0',

@@ -13,8 +13,9 @@
 #    under the License.
 
 import itertools
+import uuid
 
-import testscenarios
+import mock
 
 from heat.common import exception
 from heat.engine import dependencies
@@ -23,15 +24,12 @@ from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import template
 from heat.engine import environment
-from heat.openstack.common import uuidutils
+from heat.openstack.common.gettextutils import _
 import heat.db.api as db_api
 
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
-
-
-load_tests = testscenarios.load_tests_apply_scenarios
 
 
 class ResourceTest(HeatTestCase):
@@ -48,7 +46,7 @@ class ResourceTest(HeatTestCase):
 
         self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
                                   parser.Template({}), env=env,
-                                  stack_id=uuidutils.generate_uuid())
+                                  stack_id=str(uuid.uuid4()))
 
     def test_get_class_ok(self):
         cls = resource.get_class('GenericResourceType')
@@ -61,17 +59,76 @@ class ResourceTest(HeatTestCase):
     def test_resource_new_ok(self):
         snippet = {'Type': 'GenericResourceType'}
         res = resource.Resource('aresource', snippet, self.stack)
+        self.assertIsInstance(res, generic_rsrc.GenericResource)
+        self.assertEqual("INIT", res.action)
+
+    def test_resource_new_stack_not_stored(self):
+        snippet = {'Type': 'GenericResourceType'}
+        self.stack.id = None
+        db_method = 'resource_get_by_name_and_stack'
+        with mock.patch.object(db_api, db_method) as resource_get:
+            res = resource.Resource('aresource', snippet, self.stack)
+            self.assertEqual("INIT", res.action)
+            self.assertIs(False, resource_get.called)
 
     def test_resource_new_err(self):
         snippet = {'Type': 'NoExistResourceType'}
         self.assertRaises(exception.StackValidationFailed,
                           resource.Resource, 'aresource', snippet, self.stack)
 
+    def test_resource_non_type(self):
+        snippet = {'Type': ''}
+        resource_name = 'aresource'
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               resource.Resource, resource_name,
+                               snippet, self.stack)
+        self.assertIn(_('Resource "%s" has no type') % resource_name, str(ex))
+
+    def test_resource_missed_type(self):
+        snippet = {'not-a-Type': 'GenericResourceType'}
+        resource_name = 'aresource'
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               resource.Resource, resource_name,
+                               snippet, self.stack)
+        self.assertIn(_('Non-empty resource type is required '
+                        'for resource "%s"') % resource_name, str(ex))
+
     def test_state_defaults(self):
         tmpl = {'Type': 'Foo'}
         res = generic_rsrc.GenericResource('test_res_def', tmpl, self.stack)
         self.assertEqual(res.state, (res.INIT, res.COMPLETE))
         self.assertEqual(res.status_reason, '')
+
+    def test_resource_str_repr_stack_id_resource_id(self):
+        tmpl = {'Type': 'Foo'}
+        res = generic_rsrc.GenericResource('test_res_str_repr', tmpl,
+                                           self.stack)
+        res.stack.id = "123"
+        res.resource_id = "456"
+        expected = ('GenericResource "test_res_str_repr" [456] Stack '
+                    '"test_stack" [123]')
+        observed = str(res)
+        self.assertEqual(expected, observed)
+
+    def test_resource_str_repr_stack_id_no_resource_id(self):
+        tmpl = {'Type': 'Foo'}
+        res = generic_rsrc.GenericResource('test_res_str_repr', tmpl,
+                                           self.stack)
+        res.stack.id = "123"
+        res.resource_id = None
+        expected = ('GenericResource "test_res_str_repr" Stack "test_stack" '
+                    '[123]')
+        observed = str(res)
+        self.assertEqual(expected, observed)
+
+    def test_resource_str_repr_no_stack_id(self):
+        tmpl = {'Type': 'Foo'}
+        res = generic_rsrc.GenericResource('test_res_str_repr', tmpl,
+                                           self.stack)
+        res.stack.id = None
+        expected = ('GenericResource "test_res_str_repr"')
+        observed = str(res)
+        self.assertEqual(expected, observed)
 
     def test_state_set(self):
         tmpl = {'Type': 'Foo'}
@@ -81,6 +138,29 @@ class ResourceTest(HeatTestCase):
         self.assertEqual(res.status, res.COMPLETE)
         self.assertEqual(res.state, (res.CREATE, res.COMPLETE))
         self.assertEqual(res.status_reason, 'wibble')
+
+    def test_set_deletion_policy(self):
+        tmpl = {'Type': 'Foo'}
+        res = generic_rsrc.GenericResource('test_resource', tmpl, self.stack)
+        res.set_deletion_policy(resource.RETAIN)
+        self.assertEqual(resource.RETAIN, res.t['DeletionPolicy'])
+        res.set_deletion_policy(resource.DELETE)
+        self.assertEqual(resource.DELETE, res.t['DeletionPolicy'])
+
+    def test_get_abandon_data(self):
+        tmpl = {'Type': 'Foo'}
+        res = generic_rsrc.GenericResource('test_resource', tmpl, self.stack)
+        expected = {
+            'action': 'INIT',
+            'metadata': {},
+            'name': 'test_resource',
+            'resource_data': {},
+            'resource_id': None,
+            'status': 'COMPLETE',
+            'type': 'Foo'
+        }
+        actual = res.get_abandon_data()
+        self.assertEqual(expected, actual)
 
     def test_state_set_invalid(self):
         tmpl = {'Type': 'Foo'}
@@ -120,9 +200,9 @@ class ResourceTest(HeatTestCase):
     def test_created_time(self):
         tmpl = {'Type': 'Foo'}
         res = generic_rsrc.GenericResource('test_res_new', tmpl, self.stack)
-        self.assertEqual(res.created_time, None)
+        self.assertIsNone(res.created_time)
         res._store()
-        self.assertNotEqual(res.created_time, None)
+        self.assertIsNotNone(res.created_time)
 
     def test_updated_time(self):
         tmpl = {'Type': 'Foo'}
@@ -130,19 +210,19 @@ class ResourceTest(HeatTestCase):
         res._store()
         stored_time = res.updated_time
         res.state_set(res.CREATE, res.IN_PROGRESS, 'testing')
-        self.assertNotEqual(res.updated_time, None)
+        self.assertIsNotNone(res.updated_time)
         self.assertNotEqual(res.updated_time, stored_time)
 
     def test_store_or_update(self):
         tmpl = {'Type': 'Foo'}
         res = generic_rsrc.GenericResource('test_res_upd', tmpl, self.stack)
         res._store_or_update(res.CREATE, res.IN_PROGRESS, 'test_store')
-        self.assertNotEqual(None, res.id)
-        self.assertEqual(res.action, res.CREATE)
-        self.assertEqual(res.status, res.IN_PROGRESS)
-        self.assertEqual(res.status_reason, 'test_store')
+        self.assertIsNotNone(res.id)
+        self.assertEqual(res.CREATE, res.action)
+        self.assertEqual(res.IN_PROGRESS, res.status)
+        self.assertEqual('test_store', res.status_reason)
 
-        db_res = r = db_api.resource_get(res.context, res.id)
+        db_res = db_api.resource_get(res.context, res.id)
         self.assertEqual(db_res.action, res.CREATE)
         self.assertEqual(db_res.status, res.IN_PROGRESS)
         self.assertEqual(db_res.status_reason, 'test_store')
@@ -294,7 +374,8 @@ class ResourceTest(HeatTestCase):
 
         estr = 'Property error : test_resource: Property Foo not assigned'
         create = scheduler.TaskRunner(res.create)
-        self.assertRaises(exception.ResourceFailure, create)
+        err = self.assertRaises(exception.ResourceFailure, create)
+        self.assertIn(estr, str(err))
         self.assertEqual((res.CREATE, res.FAILED), res.state)
 
     def test_create_fail_prop_typo(self):
@@ -302,9 +383,10 @@ class ResourceTest(HeatTestCase):
         rname = 'test_resource'
         res = generic_rsrc.ResourceWithProps(rname, tmpl, self.stack)
 
-        estr = 'Property error : test_resource: Property Foo not assigned'
+        estr = 'StackValidationFailed: Unknown Property Food'
         create = scheduler.TaskRunner(res.create)
-        self.assertRaises(exception.ResourceFailure, create)
+        err = self.assertRaises(exception.ResourceFailure, create)
+        self.assertIn(estr, str(err))
         self.assertEqual((res.CREATE, res.FAILED), res.state)
 
     def test_create_fail_metadata_parse_error(self):
@@ -516,8 +598,7 @@ class ResourceTest(HeatTestCase):
                            'Default': 42},
                 'list': {'Type': 'List', 'Schema': {'Type': 'Map',
                          'Schema': list_schema}},
-                'map': {'Type': 'Map', 'Schema': {'Type': 'Map',
-                        'Schema': map_schema}},
+                'map': {'Type': 'Map', 'Schema': map_schema},
             }
 
             attributes_schema = {
@@ -526,9 +607,11 @@ class ResourceTest(HeatTestCase):
             }
 
         expected_template = {
+            'HeatTemplateFormatVersion': '2012-12-12',
             'Parameters': {
                 'name': {'Type': 'String'},
-                'bool': {'Type': 'Boolean'},
+                'bool': {'Type': 'String',
+                         'AllowedValues': ['True', 'true', 'False', 'false']},
                 'implemented': {
                     'Type': 'String',
                     'AllowedPattern': '.*',
@@ -550,7 +633,7 @@ class ResourceTest(HeatTestCase):
                         'bool': {'Ref': 'bool'},
                         'implemented': {'Ref': 'implemented'},
                         'number': {'Ref': 'number'},
-                        'list': {'Fn::Split': {'Ref': 'list'}},
+                        'list': {'Fn::Split': [",", {'Ref': 'list'}]},
                         'map': {'Ref': 'map'}
                     }
                 }
@@ -1105,3 +1188,26 @@ class ReducePhysicalResourceNameTest(HeatTestCase):
             else:
                 # check that nothing has changed
                 self.assertEqual(self.original, reduced)
+
+
+class SupportStatusTest(HeatTestCase):
+    def test_valid_status(self):
+        status = resource.SupportStatus(
+            status='DEPRECATED',
+            message='test_message',
+            version='test_version'
+        )
+        self.assertEqual('DEPRECATED', status.status)
+        self.assertEqual('test_message', status.message)
+        self.assertEqual('test_version', status.version)
+
+    def test_invalid_status(self):
+        status = resource.SupportStatus(
+            status='RANDOM',
+            message='test_message',
+            version='test_version'
+        )
+        self.assertEqual('UNKNOWN', status.status)
+        self.assertEqual('Specified status is invalid, defaulting to UNKNOWN',
+                         status.message)
+        self.assertIsNone(status.version)

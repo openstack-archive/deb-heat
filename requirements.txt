@@ -9,7 +9,7 @@ argparse
 lxml>=2.3
 netaddr>=0.7.6
 six>=1.4.1
-sqlalchemy-migrate>=0.7.2
+sqlalchemy-migrate>=0.8.2
 python-novaclient>=2.15.0
 PasteDeploy>=1.5.0
 requests>=1.1
@@ -22,7 +22,7 @@ python-swiftclient>=1.5
 python-neutronclient>=2.3.0,<3
 python-ceilometerclient>=1.0.6
 python-cinderclient>=1.0.6
-python-troveclient>=1.0.0
+python-troveclient>=1.0.3
 PyYAML>=3.1.0
 paramiko>=1.8.0
 Babel>=1.3

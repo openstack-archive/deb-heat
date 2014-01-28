@@ -56,7 +56,7 @@ class StackController(object):
         except heat_exception.Forbidden:
             msg = _('Action %s not allowed for user') % action
             raise exception.HeatAccessDeniedError(msg)
-        except Exception as ex:
+        except Exception:
             # We expect policy.enforce to either pass or raise Forbidden
             # however, if anything else happens, we want to raise
             # HeatInternalFailureError, failure to do this results in
@@ -267,9 +267,11 @@ class StackController(object):
     )
 
     def create(self, req):
+        self._enforce(req, 'CreateStack')
         return self.create_or_update(req, self.CREATE_STACK)
 
     def update(self, req):
+        self._enforce(req, 'UpdateStack')
         return self.create_or_update(req, self.UPDATE_STACK)
 
     def create_or_update(self, req, action=None):

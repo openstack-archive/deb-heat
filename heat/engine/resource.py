@@ -37,9 +37,9 @@ logger = logging.getLogger(__name__)
 DELETION_POLICY = (DELETE, RETAIN, SNAPSHOT) = ('Delete', 'Retain', 'Snapshot')
 
 
-def get_types():
-    '''Return an iterator over the list of valid resource types.'''
-    return iter(resources.global_env().get_types())
+def get_types(support_status):
+    '''Return a list of valid resource types.'''
+    return resources.global_env().get_types(support_status)
 
 
 def get_class(resource_type, resource_name=None):
@@ -90,6 +90,29 @@ class Metadata(object):
         rs.update_and_save({'rsrc_metadata': metadata})
 
 
+class SupportStatus(object):
+    SUPPORT_STATUSES = (UNKNOWN, SUPPORTED, PROTOTYPE, DEPRECATED,
+                        UNSUPPORTED) = ('UNKNOWN', 'SUPPORTED', 'PROTOTYPE',
+                                        'DEPRECATED', 'UNSUPPORTED')
+
+    def __init__(self, status=SUPPORTED, message=None, version=None):
+        if status in self.SUPPORT_STATUSES:
+            self.status = status
+            self.message = message
+            self.version = version
+        else:
+            self.status = self.UNKNOWN
+            self.message = _("Specified status is invalid, defaulting to"
+                             " %s") % self.UNKNOWN
+
+            self.version = None
+
+    def to_dict(self):
+            return {'status': self.status,
+                    'message': self.message,
+                    'version': self.version}
+
+
 class Resource(object):
     ACTIONS = (INIT, CREATE, DELETE, UPDATE, ROLLBACK, SUSPEND, RESUME
                ) = ('INIT', 'CREATE', 'DELETE', 'UPDATE', 'ROLLBACK',
@@ -104,7 +127,7 @@ class Resource(object):
     created_time = timestamp.Timestamp(db_api.resource_get, 'created_at')
     updated_time = timestamp.Timestamp(db_api.resource_get, 'updated_at')
 
-    metadata = Metadata()
+    _metadata = Metadata()
 
     # Resource implementation set this to the subset of template keys
     # which are supported for handle_update, used by update_template_diff
@@ -126,6 +149,8 @@ class Resource(object):
     # If set to None no limit will be applied.
     physical_resource_name_limit = 255
 
+    support_status = SupportStatus()
+
     def __new__(cls, name, json, stack):
         '''Create a new Resource of the appropriate class for its type.'''
 
@@ -134,7 +159,7 @@ class Resource(object):
             return super(Resource, cls).__new__(cls)
 
         # Select the correct subclass to instantiate
-        ResourceClass = stack.env.get_class(json['Type'],
+        ResourceClass = stack.env.get_class(json.get('Type'),
                                             resource_name=name)
         return ResourceClass(name, json, stack)
 
@@ -155,8 +180,12 @@ class Resource(object):
                                      self.attributes_schema,
                                      self._resolve_attribute)
 
-        resource = db_api.resource_get_by_name_and_stack(self.context,
-                                                         name, stack.id)
+        if stack.id:
+            resource = db_api.resource_get_by_name_and_stack(self.context,
+                                                             name, stack.id)
+        else:
+            resource = None
+
         if resource:
             self.resource_id = resource.nova_instance
             self.action = resource.action
@@ -192,6 +221,14 @@ class Resource(object):
             return result
         return not result
 
+    @property
+    def metadata(self):
+        return self._metadata
+
+    @metadata.setter
+    def metadata(self, metadata):
+        self._metadata = metadata
+
     def type(self):
         return self.t['Type']
 
@@ -207,6 +244,16 @@ class Resource(object):
         ri = self.stack.env.get_resource_info(self.type(),
                                               self.name)
         return ri.name == resource_type
+
+    def implementation_signature(self):
+        '''
+        Return a tuple defining the implementation.
+
+        This should be broken down into a definition and an
+        implementation version.
+        '''
+
+        return (self.__class__.__name__, self.support_status.version)
 
     def identifier(self):
         '''Return an identifier for this resource.'''
@@ -244,7 +291,6 @@ class Resource(object):
                                 if before.get(k) != after.get(k)])
 
         if not changed_keys_set.issubset(update_allowed_set):
-            badkeys = changed_keys_set - update_allowed_set
             raise UpdateReplace(self.name)
 
         return dict((k, after.get(k)) for k in changed_keys_set)
@@ -281,6 +327,12 @@ class Resource(object):
                     for k in changed_properties_set)
 
     def __str__(self):
+        if self.stack.id:
+            if self.resource_id:
+                return '%s "%s" [%s] %s' % (self.__class__.__name__, self.name,
+                                            self.resource_id, str(self.stack))
+            return '%s "%s" %s' % (self.__class__.__name__, self.name,
+                                   str(self.stack))
         return '%s "%s"' % (self.__class__.__name__, self.name)
 
     def _add_dependencies(self, deps, path, fragment):
@@ -289,7 +341,7 @@ class Resource(object):
                 if key in ('DependsOn', 'Ref', 'Fn::GetAtt', 'get_attr',
                            'get_resource'):
                     if key in ('Fn::GetAtt', 'get_attr'):
-                        res_name, att = value
+                        res_name = value[0]
                         res_list = [res_name]
                     elif key == 'DependsOn' and isinstance(value, list):
                         res_list = value
@@ -420,16 +472,39 @@ class Resource(object):
                                      self.name)
         return self._do_action(action, self.properties.validate)
 
-    def update(self, after, before=None):
+    def set_deletion_policy(self, policy):
+        self.t['DeletionPolicy'] = policy
+
+    def get_abandon_data(self):
+        return {
+            'name': self.name,
+            'resource_id': self.resource_id,
+            'type': self.type(),
+            'action': self.action,
+            'status': self.status,
+            'metadata': self.metadata,
+            'resource_data': dict((r.key, r.value)
+                                  for r in db_api.resource_data_get_all(self))
+        }
+
+    def update(self, after, before=None, prev_resource=None):
         '''
         update the resource. Subclasses should provide a handle_update() method
         to customise update, the base-class handle_update will fail by default.
         '''
         action = self.UPDATE
 
+        (cur_class_def, cur_ver) = self.implementation_signature()
+        prev_ver = cur_ver
+        if prev_resource is not None:
+            (prev_class_def,
+             prev_ver) = prev_resource.implementation_signature()
+            if prev_class_def != cur_class_def:
+                raise UpdateReplace(self.name)
+
         if before is None:
             before = self.parsed_template()
-        elif before == after:
+        if prev_ver == cur_ver and before == after:
             return
 
         if (self.action, self.status) in ((self.CREATE, self.IN_PROGRESS),
@@ -826,6 +901,7 @@ class Resource(object):
 
         resource_name = cls.__name__
         return {
+            'HeatTemplateFormatVersion': '2012-12-12',
             'Parameters': parameters,
             'Resources': {
                 resource_name: {

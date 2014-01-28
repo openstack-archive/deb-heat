@@ -16,7 +16,6 @@ import mock
 
 from heat.tests.common import HeatTestCase
 from heat.api.openstack.v1.views import stacks_view
-from heat.engine import parser
 from heat.common import identifier
 
 
@@ -37,14 +36,14 @@ class TestFormatStack(HeatTestCase):
 
         result = stacks_view.format_stack(self.request, stack)
         self.assertIn('stack_status', result)
-        self.assertEquals('CREATE_COMPLETE', result['stack_status'])
+        self.assertEqual('CREATE_COMPLETE', result['stack_status'])
 
     def test_include_stack_status_with_no_action(self):
         stack = {'stack_status': 'COMPLETE'}
 
         result = stacks_view.format_stack(self.request, stack)
         self.assertIn('stack_status', result)
-        self.assertEquals('COMPLETE', result['stack_status'])
+        self.assertEqual('COMPLETE', result['stack_status'])
 
     @mock.patch.object(stacks_view, 'util')
     def test_replace_stack_identity_with_id_and_links(self, mock_util):
@@ -54,10 +53,10 @@ class TestFormatStack(HeatTestCase):
         result = stacks_view.format_stack(self.request, stack)
         self.assertIn('id', result)
         self.assertNotIn('stack_identity', result)
-        self.assertEquals('foo', result['id'])
+        self.assertEqual('foo', result['id'])
 
         self.assertIn('links', result)
-        self.assertEquals(['blah'], result['links'])
+        self.assertEqual(['blah'], result['links'])
 
     def test_includes_all_other_keys(self):
         stack = {'foo': 'bar'}
@@ -84,7 +83,6 @@ class TestStacksViewBuilder(HeatTestCase):
         super(TestStacksViewBuilder, self).setUp()
         self.request = mock.Mock()
         self.request.params = {}
-        template = parser.Template({})
         identity = identifier.HeatIdentifier('123456', 'wordpress', '1')
         self.stack1 = {
             u'stack_identity': dict(identity),
@@ -115,7 +113,7 @@ class TestStacksViewBuilder(HeatTestCase):
         stacks = [self.stack1]
         expected_keys = stacks_view.basic_keys
 
-        stack_view = stacks_view.collection(self.request, stacks)
+        stacks_view.collection(self.request, stacks)
         mock_format_stack.assert_called_once_with(self.request,
                                                   self.stack1,
                                                   expected_keys)
@@ -134,3 +132,25 @@ class TestStacksViewBuilder(HeatTestCase):
         mock_get_collection_links.return_value = None
         stack_view = stacks_view.collection(self.request, stacks)
         self.assertNotIn('links', stack_view)
+
+    @mock.patch.object(stacks_view.views_common, 'get_collection_links')
+    def test_append_collection_count(self, mock_get_collection_links):
+        stacks = [self.stack1]
+        count = 1
+        stack_view = stacks_view.collection(self.request, stacks, count)
+        self.assertIn('count', stack_view)
+        self.assertEqual(1, stack_view['count'])
+
+    @mock.patch.object(stacks_view.views_common, 'get_collection_links')
+    def test_doesnt_append_collection_count(self, mock_get_collection_links):
+        stacks = [self.stack1]
+        stack_view = stacks_view.collection(self.request, stacks)
+        self.assertNotIn('count', stack_view)
+
+    @mock.patch.object(stacks_view.views_common, 'get_collection_links')
+    def test_appends_collection_count_of_zero(self, mock_get_collection_links):
+        stacks = [self.stack1]
+        count = 0
+        stack_view = stacks_view.collection(self.request, stacks, count)
+        self.assertIn('count', stack_view)
+        self.assertEqual(0, stack_view['count'])

@@ -15,47 +15,20 @@
 SQLAlchemy models for heat data.
 """
 
+import uuid
+
 import sqlalchemy
 
-from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import relationship, backref
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import types
-from json import dumps
-from json import loads
-from heat.openstack.common import uuidutils
 from heat.openstack.common import timeutils
 from heat.openstack.common.db.sqlalchemy import models
 from heat.openstack.common.db.sqlalchemy import session
 from sqlalchemy.orm.session import Session
+from heat.db.sqlalchemy.types import Json
 
 BASE = declarative_base()
 get_session = session.get_session
-
-
-class Json(types.TypeDecorator):
-    impl = types.Text
-
-    def load_dialect_impl(self, dialect):
-        if dialect.name == 'mysql':
-            return dialect.type_descriptor(mysql.LONGTEXT())
-        else:
-            return self.impl
-
-    def process_bind_param(self, value, dialect):
-        return dumps(value)
-
-    def process_result_value(self, value, dialect):
-        return loads(value)
-
-# TODO(leizhang) When we removed sqlalchemy 0.7 dependence
-# we can import MutableDict directly and remove ./mutable.py
-try:
-    from sqlalchemy.ext.mutable import MutableDict as sa_MutableDict
-    sa_MutableDict.associate_with(Json)
-except ImportError:
-    from heat.db.sqlalchemy.mutable import MutableDict
-    MutableDict.associate_with(Json)
 
 
 class HeatBase(models.ModelBase, models.TimestampMixin):
@@ -121,7 +94,7 @@ class Stack(BASE, HeatBase, SoftDelete):
     __tablename__ = 'stack'
 
     id = sqlalchemy.Column(sqlalchemy.String(36), primary_key=True,
-                           default=uuidutils.generate_uuid)
+                           default=lambda: str(uuid.uuid4()))
     name = sqlalchemy.Column(sqlalchemy.String(255))
     raw_template_id = sqlalchemy.Column(
         sqlalchemy.Integer,
@@ -143,6 +116,17 @@ class Stack(BASE, HeatBase, SoftDelete):
     disable_rollback = sqlalchemy.Column(sqlalchemy.Boolean, nullable=False)
 
 
+class StackLock(BASE, HeatBase):
+    """Store stack locks for deployments with multiple-engines."""
+
+    __tablename__ = 'stack_lock'
+
+    stack_id = sqlalchemy.Column(sqlalchemy.String(36),
+                                 sqlalchemy.ForeignKey('stack.id'),
+                                 primary_key=True)
+    engine_id = sqlalchemy.Column(sqlalchemy.String(36))
+
+
 class UserCreds(BASE, HeatBase):
     """
     Represents user credentials and mirrors the 'context'
@@ -154,6 +138,7 @@ class UserCreds(BASE, HeatBase):
     id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
     username = sqlalchemy.Column(sqlalchemy.String(255))
     password = sqlalchemy.Column(sqlalchemy.String(255))
+    decrypt_method = sqlalchemy.Column(sqlalchemy.String(64))
     tenant = sqlalchemy.Column(sqlalchemy.String(1024))
     auth_url = sqlalchemy.Column(sqlalchemy.String)
     tenant_id = sqlalchemy.Column(sqlalchemy.String(256))
@@ -167,7 +152,8 @@ class Event(BASE, HeatBase):
 
     __tablename__ = 'event'
 
-    id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
+    id = sqlalchemy.Column(sqlalchemy.String(36), primary_key=True,
+                           default=lambda: str(uuid.uuid4()))
     stack_id = sqlalchemy.Column(sqlalchemy.String(36),
                                  sqlalchemy.ForeignKey('stack.id'),
                                  nullable=False)
@@ -194,6 +180,7 @@ class ResourceData(BASE, HeatBase):
     key = sqlalchemy.Column('key', sqlalchemy.String(255))
     value = sqlalchemy.Column('value', sqlalchemy.String)
     redact = sqlalchemy.Column('redact', sqlalchemy.Boolean)
+    decrypt_method = sqlalchemy.Column(sqlalchemy.String(64))
     resource_id = sqlalchemy.Column('resource_id',
                                     sqlalchemy.String(36),
                                     sqlalchemy.ForeignKey('resource.id'),
@@ -207,7 +194,7 @@ class Resource(BASE, HeatBase):
 
     id = sqlalchemy.Column(sqlalchemy.String(36),
                            primary_key=True,
-                           default=uuidutils.generate_uuid)
+                           default=lambda: str(uuid.uuid4()))
     action = sqlalchemy.Column('action', sqlalchemy.String(255))
     status = sqlalchemy.Column('status', sqlalchemy.String(255))
     name = sqlalchemy.Column('name', sqlalchemy.String(255), nullable=True)

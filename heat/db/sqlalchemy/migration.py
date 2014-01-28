@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -12,110 +10,27 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import distutils.version as dist_version
 import os
-import sys
 
-import sqlalchemy
-import migrate
-from migrate.versioning import util as migrate_util
+from heat.openstack.common.db.sqlalchemy import migration as oslo_migration
 
-from heat.common import exception
-from heat.openstack.common.db.sqlalchemy.session import get_engine
-from heat.openstack.common.gettextutils import _
 
-_REPOSITORY = None
 INIT_VERSION = 14
 
 
-def get_backend():
-    """The backend is this module itself."""
-
-    return sys.modules[__name__]
-
-
-@migrate_util.decorator
-def patched_with_engine(f, *a, **kw):
-    url = a[0]
-    engine = migrate_util.construct_engine(url, **kw)
-    try:
-        kw['engine'] = engine
-        return f(*a, **kw)
-    finally:
-        if isinstance(engine, migrate_util.Engine) and engine is not url:
-            migrate_util.log.debug(_('Disposing SQLAlchemy engine %s') %
-                                   engine)
-            engine.dispose()
-
-
-# TODO(jkoelker) When migrate 0.7.3 is released and nova depends
-#                on that version or higher, this can be removed
-MIN_PKG_VERSION = dist_version.StrictVersion('0.7.3')
-if (not hasattr(migrate, '__version__') or
-        dist_version.StrictVersion(migrate.__version__) < MIN_PKG_VERSION):
-        migrate_util.with_engine = patched_with_engine
-
-
-# NOTE(jkoelker) Delay importing migrate until we are patched
-from migrate.versioning import api as versioning_api
-from migrate.versioning.repository import Repository
-
-try:
-    from migrate.versioning import exceptions as versioning_exceptions
-except ImportError:
-    try:
-        from migrate import exceptions as versioning_exceptions
-    except ImportError:
-        sys.exit(_("python-migrate is not installed. Exiting."))
-
-#_REPOSITORY = None
-
-
 def db_sync(version=None):
-    if version is not None:
-        try:
-            version = int(version)
-        except ValueError:
-            raise exception.Error(_("version should be an integer"))
-    current_version = db_version()
-    repository = _find_migrate_repo()
-    if version is None or version > current_version:
-        return versioning_api.upgrade(get_engine(), repository, version)
-    else:
-        return versioning_api.downgrade(get_engine(), repository,
-                                        version)
+    path = os.path.join(os.path.abspath(os.path.dirname(__file__)),
+                        'migrate_repo')
+    return oslo_migration.db_sync(path, version, init_version=INIT_VERSION)
 
 
 def db_version():
-    repository = _find_migrate_repo()
-    try:
-        return versioning_api.db_version(get_engine(), repository)
-    except versioning_exceptions.DatabaseNotControlledError as exc:
-        # If we aren't version controlled there may be an existing,
-        # non-version controlled database present.
-        meta = sqlalchemy.MetaData()
-        engine = get_engine()
-        meta.reflect(bind=engine)
-        tables = meta.tables
-        if len(tables):
-            raise exc
-
-        db_version_control(INIT_VERSION)
-        return versioning_api.db_version(get_engine(), repository)
+    path = os.path.join(os.path.abspath(os.path.dirname(__file__)),
+                        'migrate_repo')
+    return oslo_migration.db_version(path, INIT_VERSION)
 
 
 def db_version_control(version=None):
-    repository = _find_migrate_repo()
-    versioning_api.version_control(get_engine(), repository, version)
-    return version
-
-
-def _find_migrate_repo():
-    """Get the path for the migrate repository."""
     path = os.path.join(os.path.abspath(os.path.dirname(__file__)),
                         'migrate_repo')
-    assert os.path.exists(path)
-    global _REPOSITORY
-    if _REPOSITORY is None:
-        _REPOSITORY = Repository(path)
-    return _REPOSITORY
+    return oslo_migration.db_version_control(path, version)

@@ -14,6 +14,8 @@
 
 import mox
 
+import keystoneclient.exceptions as kc_exception
+
 from oslo.config import cfg
 
 from heat.common import exception
@@ -44,8 +46,8 @@ class KeystoneClientTest(HeatTestCase):
                               group='keystone_authtoken')
         self.addCleanup(self.m.VerifyAll)
 
-    def _stubs_v2(self, method='token', auth_ok=True,
-                  trust_scoped=True):
+    def _stubs_v2(self, method='token', auth_ok=True, trust_scoped=True,
+                  user_id='trustor_user_id'):
         self.m.StubOutClassWithMocks(heat_keystoneclient.kc, "Client")
         if method == 'token':
             self.mock_ks_client = heat_keystoneclient.kc.Client(
@@ -85,6 +87,7 @@ class KeystoneClientTest(HeatTestCase):
             self.mock_ks_client.auth_ref = self.m.CreateMockAnything()
             self.mock_ks_client.auth_ref.trust_scoped = trust_scoped
             self.mock_ks_client.auth_ref.auth_token = 'atrusttoken'
+            self.mock_ks_client.auth_ref.user_id = user_id
 
     def _stubs_v3(self, method='token', auth_ok=True):
         self.m.StubOutClassWithMocks(heat_keystoneclient.kc_v3, "Client")
@@ -125,33 +128,50 @@ class KeystoneClientTest(HeatTestCase):
     def test_username_length(self):
         """Test that user names >64 characters are properly truncated."""
 
-        self._stubs_v2()
+        self._stubs_v3()
+
+        ctx = utils.dummy_context()
+        ctx.trust_id = None
 
         # a >64 character user name and the expected version
         long_user_name = 'U' * 64 + 'S'
         good_user_name = long_user_name[-64:]
         # mock keystone client user functions
-        self.mock_ks_client.users = self.m.CreateMockAnything()
+        self.mock_ks_v3_client.users = self.m.CreateMockAnything()
         mock_user = self.m.CreateMockAnything()
         # when keystone is called, the name should have been truncated
         # to the last 64 characters of the long name
-        (self.mock_ks_client.users.create(good_user_name, 'password',
-                                          mox.IgnoreArg(), enabled=True,
-                                          tenant_id=mox.IgnoreArg())
-         .AndReturn(mock_user))
+        self.mock_ks_v3_client.users.create(name=good_user_name,
+                                            password='password',
+                                            default_project=ctx.tenant_id
+                                            ).AndReturn(mock_user)
         # mock out the call to roles; will send an error log message but does
         # not raise an exception
-        self.mock_ks_client.roles = self.m.CreateMockAnything()
-        self.mock_ks_client.roles.list().AndReturn([])
+        self.mock_ks_v3_client.roles = self.m.CreateMockAnything()
+        self.mock_ks_v3_client.roles.list(name='heat_stack_user').AndReturn([])
         self.m.ReplayAll()
         # call create_stack_user with a long user name.
         # the cleanup VerifyAll should verify that though we passed
         # long_user_name, keystone was actually called with a truncated
         # user name
-        ctx = utils.dummy_context()
-        ctx.trust_id = None
         heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
         heat_ks_client.create_stack_user(long_user_name, password='password')
+
+    def test_delete_stack_user(self):
+
+        """Test deleting a stack user."""
+
+        self._stubs_v3()
+
+        ctx = utils.dummy_context()
+        ctx.trust_id = None
+
+        # mock keystone client delete function
+        self.mock_ks_v3_client.users = self.m.CreateMockAnything()
+        self.mock_ks_v3_client.users.delete(user='atestuser').AndReturn(None)
+        self.m.ReplayAll()
+        heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
+        heat_ks_client.delete_stack_user('atestuser')
 
     def test_init_v2_password(self):
 
@@ -235,6 +255,7 @@ class KeystoneClientTest(HeatTestCase):
 
         ctx = utils.dummy_context()
         ctx.trust_id = 'atrust123'
+        ctx.trustor_user_id = 'trustor_user_id'
 
         heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
         trust_context = heat_ks_client.create_trust_context()
@@ -292,6 +313,7 @@ class KeystoneClientTest(HeatTestCase):
         ctx.password = None
         ctx.auth_token = None
         ctx.trust_id = 'atrust123'
+        ctx.trustor_user_id = 'trustor_user_id'
         heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
         client_v2 = heat_ks_client.client_v2
         self.assertIsNotNone(client_v2)
@@ -310,6 +332,25 @@ class KeystoneClientTest(HeatTestCase):
         ctx.password = None
         ctx.auth_token = None
         ctx.trust_id = 'atrust123'
+        ctx.trustor_user_id = 'trustor_user_id'
+        self.assertRaises(exception.AuthorizationFailure,
+                          heat_keystoneclient.KeystoneClient, ctx)
+
+    def test_trust_init_fail_impersonation(self):
+
+        """Test consuming a trust when initializing, impersonation error."""
+
+        cfg.CONF.set_override('deferred_auth_method', 'trusts')
+
+        self._stubs_v2(method='trust', user_id='wrong_user_id')
+        self.m.ReplayAll()
+
+        ctx = utils.dummy_context()
+        ctx.username = 'heat'
+        ctx.password = None
+        ctx.auth_token = None
+        ctx.trust_id = 'atrust123'
+        ctx.trustor_user_id = 'trustor_user_id'
         self.assertRaises(exception.AuthorizationFailure,
                           heat_keystoneclient.KeystoneClient, ctx)
 
@@ -323,6 +364,7 @@ class KeystoneClientTest(HeatTestCase):
         ctx = utils.dummy_context()
         ctx.auth_token = None
         ctx.trust_id = 'atrust123'
+        ctx.trustor_user_id = 'trustor_user_id'
         heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
         self.assertIsNotNone(heat_ks_client._client_v2)
         self.assertIsNone(heat_ks_client._client_v3)
@@ -338,6 +380,7 @@ class KeystoneClientTest(HeatTestCase):
         ctx.username = None
         ctx.password = None
         ctx.trust_id = 'atrust123'
+        ctx.trustor_user_id = 'trustor_user_id'
         heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
         self.assertIsNotNone(heat_ks_client._client_v2)
         self.assertIsNone(heat_ks_client._client_v3)
@@ -356,3 +399,53 @@ class KeystoneClientTest(HeatTestCase):
         ctx = utils.dummy_context()
         heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
         self.assertIsNone(heat_ks_client.delete_trust(trust_id='atrust123'))
+
+    def test_delete_trust_not_found(self):
+
+        """Test delete_trust when trust already deleted."""
+
+        cfg.CONF.set_override('deferred_auth_method', 'trusts')
+
+        self._stubs_v3()
+        self.mock_ks_v3_client.trusts = self.m.CreateMockAnything()
+        self.mock_ks_v3_client.trusts.delete('atrust123').AndRaise(
+            kc_exception.NotFound)
+
+        self.m.ReplayAll()
+        ctx = utils.dummy_context()
+        heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
+        self.assertIsNone(heat_ks_client.delete_trust(trust_id='atrust123'))
+
+    def test_disable_stack_user(self):
+
+        """Test disabling a stack user."""
+
+        self._stubs_v3()
+
+        ctx = utils.dummy_context()
+        ctx.trust_id = None
+
+        # mock keystone client update function
+        self.mock_ks_v3_client.users = self.m.CreateMockAnything()
+        self.mock_ks_v3_client.users.update(user='atestuser', enabled=False
+                                            ).AndReturn(None)
+        self.m.ReplayAll()
+        heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
+        heat_ks_client.disable_stack_user('atestuser')
+
+    def test_enable_stack_user(self):
+
+        """Test enabling a stack user."""
+
+        self._stubs_v3()
+
+        ctx = utils.dummy_context()
+        ctx.trust_id = None
+
+        # mock keystone client update function
+        self.mock_ks_v3_client.users = self.m.CreateMockAnything()
+        self.mock_ks_v3_client.users.update(user='atestuser', enabled=True
+                                            ).AndReturn(None)
+        self.m.ReplayAll()
+        heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
+        heat_ks_client.enable_stack_user('atestuser')

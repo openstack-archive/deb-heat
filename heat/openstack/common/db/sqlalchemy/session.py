@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
 # All Rights Reserved.
@@ -109,7 +107,7 @@ Recommended ways to use sessions within this framework:
                 filter_by(id=subq.as_scalar()).\
                 update({'bar': newbar})
 
-  For reference, this emits approximagely the following SQL statement:
+  For reference, this emits approximately the following SQL statement:
 
     UPDATE bar SET bar = ${newbar}
         WHERE id=(SELECT bar_id FROM foo WHERE id = ${foo_id} LIMIT 1);
@@ -603,18 +601,24 @@ def _thread_yield(dbapi_con, con_record):
     time.sleep(0)
 
 
-def _ping_listener(dbapi_conn, connection_rec, connection_proxy):
-    """Ensures that MySQL connections checked out of the pool are alive.
+def _ping_listener(engine, dbapi_conn, connection_rec, connection_proxy):
+    """Ensures that MySQL and DB2 connections are alive.
 
     Borrowed from:
     http://groups.google.com/group/sqlalchemy/msg/a4ce563d802c929f
     """
+    cursor = dbapi_conn.cursor()
     try:
-        dbapi_conn.cursor().execute('select 1')
-    except dbapi_conn.OperationalError as ex:
-        if ex.args[0] in (2006, 2013, 2014, 2045, 2055):
-            LOG.warn(_('Got mysql server has gone away: %s'), ex)
-            raise sqla_exc.DisconnectionError("Database server went away")
+        ping_sql = 'select 1'
+        if engine.name == 'ibm_db_sa':
+            # DB2 requires a table expression
+            ping_sql = 'select 1 from (values (1)) AS t1'
+        cursor.execute(ping_sql)
+    except Exception as ex:
+        if engine.dialect.is_disconnect(ex, dbapi_conn, cursor):
+            msg = _('Database server has gone away: %s') % ex
+            LOG.warning(msg)
+            raise sqla_exc.DisconnectionError(msg)
         else:
             raise
 
@@ -672,8 +676,9 @@ def create_engine(sql_connection, sqlite_fk=False):
 
     sqlalchemy.event.listen(engine, 'checkin', _thread_yield)
 
-    if 'mysql' in connection_dict.drivername:
-        sqlalchemy.event.listen(engine, 'checkout', _ping_listener)
+    if engine.name in ['mysql', 'ibm_db_sa']:
+        callback = functools.partial(_ping_listener, engine)
+        sqlalchemy.event.listen(engine, 'checkout', callback)
     elif 'sqlite' in connection_dict.drivername:
         if not CONF.sqlite_synchronous:
             sqlalchemy.event.listen(engine, 'connect',
@@ -695,7 +700,7 @@ def create_engine(sql_connection, sqlite_fk=False):
             remaining = 'infinite'
         while True:
             msg = _('SQL connection failed. %s attempts left.')
-            LOG.warn(msg % remaining)
+            LOG.warning(msg % remaining)
             if remaining != 'infinite':
                 remaining -= 1
             time.sleep(CONF.database.retry_interval)

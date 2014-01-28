@@ -36,14 +36,9 @@ class HOTemplateTest(HeatTestCase):
 
         tmpl = parser.Template(hot_tpl_empty)
         # check if we get the right class
-        self.assertTrue(isinstance(tmpl, hot.HOTemplate))
-        try:
-            # test getting an invalid section
-            tmpl['foobar']
-        except KeyError:
-            pass
-        else:
-            self.fail('Expected KeyError for invalid section')
+        self.assertIsInstance(tmpl, hot.HOTemplate)
+        # test getting an invalid section
+        self.assertNotIn('foobar', tmpl)
 
         # test defaults for valid sections
         self.assertEqual(tmpl[hot.VERSION], '2013-05-23')

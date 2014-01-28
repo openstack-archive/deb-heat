@@ -12,6 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import uuid
 
 from heat.engine import environment
 from heat.tests.v1_1 import fakes
@@ -21,7 +22,6 @@ from heat.engine.resources import nova_utils
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import scheduler
-from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
@@ -159,7 +159,7 @@ class instancesTest(HeatTestCase):
                   'SubnetId': '4156c7a5-e8c4-4aff-a6e1-8f3c7bc83861'}
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment(kwargs),
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
         instance = instances.Instance('%s_name' % name,
@@ -177,7 +177,11 @@ class instancesTest(HeatTestCase):
         server_userdata = nova_utils.build_userdata(
             instance,
             instance.t['Properties']['UserData'])
-        instance.mime_string = server_userdata
+        self.m.StubOutWithMock(nova_utils, 'build_userdata')
+        nova_utils.build_userdata(
+            instance,
+            instance.t['Properties']['UserData']).AndReturn(server_userdata)
+
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=1, flavor=3, key_name='test',
@@ -201,7 +205,7 @@ class instancesTest(HeatTestCase):
                   'SubnetId': '4156c7a5-e8c4-4aff-a6e1-8f3c7bc83861'}
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment(kwargs),
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
 
@@ -225,7 +229,11 @@ class instancesTest(HeatTestCase):
         server_userdata = nova_utils.build_userdata(
             instance,
             instance.t['Properties']['UserData'])
-        instance.mime_string = server_userdata
+        self.m.StubOutWithMock(nova_utils, 'build_userdata')
+        nova_utils.build_userdata(
+            instance,
+            instance.t['Properties']['UserData']).AndReturn(server_userdata)
+
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=1, flavor=3, key_name='test',

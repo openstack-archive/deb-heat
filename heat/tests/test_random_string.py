@@ -21,11 +21,8 @@ from heat.engine.resources.random_string import RandomString
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
-import testscenarios
 from testtools.matchers import MatchesRegex
 from testtools.matchers import HasLength
-
-load_tests = testscenarios.load_tests_apply_scenarios
 
 
 class TestRandomString(HeatTestCase):
@@ -54,7 +51,7 @@ Resources:
     def create_stack(self, template):
         t = template_format.parse(template)
         self.stack = self.parse_stack(t)
-        self.assertEqual(None, self.stack.create())
+        self.assertIsNone(self.stack.create())
         return self.stack
 
     def parse_stack(self, t):

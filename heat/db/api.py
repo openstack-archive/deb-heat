@@ -111,12 +111,19 @@ def stack_get(context, stack_id, show_deleted=False, tenant_safe=True):
                           tenant_safe=tenant_safe)
 
 
-def stack_get_by_name(context, stack_name, owner_id=None):
-    return IMPL.stack_get_by_name(context, stack_name, owner_id=owner_id)
+def stack_get_by_name_and_owner_id(context, stack_name, owner_id):
+    return IMPL.stack_get_by_name_and_owner_id(context, stack_name,
+                                               owner_id=owner_id)
 
 
-def stack_get_all(context):
-    return IMPL.stack_get_all(context)
+def stack_get_by_name(context, stack_name):
+    return IMPL.stack_get_by_name(context, stack_name)
+
+
+def stack_get_all(context, limit=None, sort_keys=None, marker=None,
+                  sort_dir=None, filters=None):
+    return IMPL.stack_get_all(context, limit, sort_keys,
+                              marker, sort_dir, filters)
 
 
 def stack_get_all_by_owner_id(context, owner_id):
@@ -129,8 +136,8 @@ def stack_get_all_by_tenant(context, limit=None, sort_keys=None,
                                         marker, sort_dir, filters)
 
 
-def stack_count_all_by_tenant(context):
-    return IMPL.stack_count_all_by_tenant(context)
+def stack_count_all_by_tenant(context, filters=None):
+    return IMPL.stack_count_all_by_tenant(context, filters=filters)
 
 
 def stack_create(context, values):
@@ -143,6 +150,18 @@ def stack_update(context, stack_id, values):
 
 def stack_delete(context, stack_id):
     return IMPL.stack_delete(context, stack_id)
+
+
+def stack_lock_create(stack_id, engine_id):
+    return IMPL.stack_lock_create(stack_id, engine_id)
+
+
+def stack_lock_steal(stack_id, old_engine_id, new_engine_id):
+    return IMPL.stack_lock_steal(stack_id, old_engine_id, new_engine_id)
+
+
+def stack_lock_release(stack_id, engine_id):
+    return IMPL.stack_lock_release(stack_id, engine_id)
 
 
 def user_creds_create(context):

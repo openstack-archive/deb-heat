@@ -19,16 +19,19 @@ import mox
 import os
 import sys
 import time
+import testscenarios
 import testtools
 
 from oslo.config import cfg
+
+from heat.openstack.common.fixture import mockpatch
 
 from heat.engine import environment
 from heat.engine import resources
 from heat.engine import scheduler
 
 
-class HeatTestCase(testtools.TestCase):
+class HeatTestCase(testscenarios.WithScenarios, testtools.TestCase):
 
     TIME_STEP = 0.1
 
@@ -36,7 +39,7 @@ class HeatTestCase(testtools.TestCase):
         super(HeatTestCase, self).setUp()
         self.m = mox.Mox()
         self.addCleanup(self.m.UnsetStubs)
-        self.useFixture(fixtures.FakeLogger(level=logging.DEBUG))
+        self.logger = self.useFixture(fixtures.FakeLogger(level=logging.DEBUG))
         scheduler.ENABLE_SLEEP = False
         self.useFixture(fixtures.MonkeyPatch(
             'heat.common.exception._FATAL_EXCEPTION_FORMAT_ERRORS',
@@ -53,6 +56,8 @@ class HeatTestCase(testtools.TestCase):
                                'environment.d')
 
         cfg.CONF.set_default('environment_dir', env_dir)
+        cfg.CONF.set_override('allowed_rpc_exception_modules',
+                              ['heat.common.exception', 'exceptions'])
         self.addCleanup(cfg.CONF.reset)
 
         tri = resources.global_env().get_resource_info(
@@ -77,3 +82,7 @@ class HeatTestCase(testtools.TestCase):
 
         self.m.StubOutWithMock(scheduler, 'wallclock')
         scheduler.wallclock = fake_wallclock
+
+    def patchobject(self, obj, attr):
+        mockfixture = self.useFixture(mockpatch.PatchObject(obj, attr))
+        return mockfixture.mock

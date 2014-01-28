@@ -325,7 +325,7 @@ class ScalingGroupTest(HeatTestCase):
         resource = self.stack['my_group']
         err = self.assertRaises(
             exception.ResourceFailure, scheduler.TaskRunner(resource.delete))
-        self.assertIs(type(err.exc), ZeroDivisionError)
+        self.assertIsInstance(err.exc, ZeroDivisionError)
 
 
 class PolicyTest(HeatTestCase):
@@ -385,7 +385,6 @@ class PolicyTest(HeatTestCase):
         template['Resources']['my_policy']['Properties']['changePercent'] = 10
         del template['Resources']['my_policy']['Properties']['change']
         self._setup_test_stack(template)
-        resource = self.stack['my_policy']
         self.assertEqual(
             self.fake_auto_scale.policies['0'].kwargs,
             {
@@ -405,7 +404,6 @@ class PolicyTest(HeatTestCase):
         template['Resources']['my_policy']['Properties']['desiredCapacity'] = 1
         del template['Resources']['my_policy']['Properties']['change']
         self._setup_test_stack(template)
-        resource = self.stack['my_policy']
         self.assertEqual(
             self.fake_auto_scale.policies['0'].kwargs,
             {
@@ -422,7 +420,6 @@ class PolicyTest(HeatTestCase):
         props['type'] = 'schedule'
         props['args'] = {'cron': '0 0 0 * *'}
         self._setup_test_stack(template)
-        resource = self.stack['my_policy']
         self.assertEqual(
             self.fake_auto_scale.policies['0'].kwargs,
             {
@@ -524,7 +521,7 @@ class WebHookTest(HeatTestCase):
         self.stack = utils.parse_stack(template)
         self.stack.create()
         resource = self.stack['my_webhook']
-        self.assertIs(resource.FnGetAtt('capabilityUrl'), None)
+        self.assertIsNone(resource.FnGetAtt('capabilityUrl'))
 
     def test_update(self):
         self._setup_test_stack(self.webhook_template)

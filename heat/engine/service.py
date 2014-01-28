@@ -39,6 +39,7 @@ from heat.engine import parser
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine import resources
+from heat.engine import stack_lock
 from heat.engine import template as tpl
 from heat.engine import watchrule
 
@@ -46,6 +47,8 @@ from heat.openstack.common import log as logging
 from heat.openstack.common import threadgroup
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common.rpc import service
+from heat.openstack.common.rpc import common as rpc_common
+from heat.openstack.common import excutils
 from heat.openstack.common import uuidutils
 
 
@@ -61,6 +64,19 @@ def request_context(func):
     return wrapped
 
 
+class EngineListener(service.Service):
+    '''
+    Listen on an AMQP queue while a stack action is in-progress and
+    respond to stack-related questions.  Used for multi-engine support.
+    '''
+    def listening(self, ctxt):
+        '''
+        Respond affirmatively to confirm that the engine performing the
+        action is still alive.
+        '''
+        return True
+
+
 class EngineService(service.Service):
     """
     Manages the running instances from creation to destruction.
@@ -71,16 +87,52 @@ class EngineService(service.Service):
     are also dynamically added and will be named as keyword arguments
     by the RPC caller.
     """
+
+    RPC_API_VERSION = '1.1'
+
     def __init__(self, host, topic, manager=None):
         super(EngineService, self).__init__(host, topic)
         # stg == "Stack Thread Groups"
         self.stg = {}
         resources.initialise()
 
+        self.listener = EngineListener(host, stack_lock.engine_id)
+        logger.debug(_("Starting listener for engine %s")
+                     % stack_lock.engine_id)
+        self.listener.start()
+
     def _start_in_thread(self, stack_id, func, *args, **kwargs):
         if stack_id not in self.stg:
             self.stg[stack_id] = threadgroup.ThreadGroup()
-        self.stg[stack_id].add_thread(func, *args, **kwargs)
+        return self.stg[stack_id].add_thread(func, *args, **kwargs)
+
+    def _start_thread_with_lock(self, cnxt, stack, func, *args):
+        """
+        Try to acquire a stack lock and, if successful, run the method in a
+        sub-thread.
+
+        :param cnxt: RPC context
+        :param stack: Stack to be operated on
+        :type stack: heat.engine.parser.Stack
+        :param func: Callable to be invoked in sub-thread
+        :type func: function or instancemethod
+        :param args: Args to be passed to func
+        """
+        lock = stack_lock.StackLock(cnxt, stack)
+
+        def release(gt, *args, **kwargs):
+            """
+            Callback function that will be passed to GreenThread.link().
+            """
+            lock.release()
+
+        lock.acquire()
+        try:
+            th = self._start_in_thread(stack.id, func, *args)
+            th.link(release)
+        except:
+            with excutils.save_and_reraise_exception():
+                lock.release()
 
     def _timer_in_thread(self, stack_id, func, *args, **kwargs):
         """
@@ -142,6 +194,7 @@ class EngineService(service.Service):
         for s in stacks:
             self._start_watch_task(s.id, admin_context)
 
+    @rpc_common.client_exceptions(exception.StackNotFound)
     @request_context
     def identify_stack(self, cnxt, stack_name):
         """
@@ -235,6 +288,16 @@ class EngineService(service.Service):
                                                 sort_dir, filters) or []
         return list(format_stack_details(stacks))
 
+    @request_context
+    def count_stacks(self, cnxt, filters=None):
+        """
+        Return the number of stacks that match the given filters
+        :param ctxt: RPC context.
+        :param filters: a dict of ATTR:VALUE to match agains stacks
+        :returns: a integer representing the number of matched stacks
+        """
+        return db_api.stack_count_all_by_tenant(cnxt, filters=filters)
+
     def _validate_deferred_auth_context(self, cnxt, stack):
         if cfg.CONF.deferred_auth_method != 'password':
             return
@@ -298,9 +361,9 @@ class EngineService(service.Service):
 
         stack.validate()
 
-        stack_id = stack.store()
+        stack.store()
 
-        self._start_in_thread(stack_id, _stack_create, stack)
+        self._start_thread_with_lock(cnxt, stack, _stack_create, stack)
 
         return dict(stack.identifier())
 
@@ -350,7 +413,8 @@ class EngineService(service.Service):
         self._validate_deferred_auth_context(cnxt, updated_stack)
         updated_stack.validate()
 
-        self._start_in_thread(db_stack.id, current_stack.update, updated_stack)
+        self._start_thread_with_lock(cnxt, current_stack, current_stack.update,
+                                     updated_stack)
 
         return dict(current_stack.identifier())
 
@@ -449,21 +513,34 @@ class EngineService(service.Service):
 
         stack = parser.Stack.load(cnxt, stack=st)
 
-        # Kill any pending threads by calling ThreadGroup.stop()
-        if st.id in self.stg:
-            self.stg[st.id].stop()
-            del self.stg[st.id]
-        # use the service ThreadGroup for deletes
-        self.tg.add_thread(stack.delete)
+        self._start_thread_with_lock(cnxt, stack, stack.delete)
         return None
 
-    def list_resource_types(self, cnxt):
+    @request_context
+    def abandon_stack(self, cnxt, stack_identity):
+        """
+        The abandon_stack method abandons a given stack.
+        :param cnxt: RPC context.
+        :param stack_identity: Name of the stack you want to abandon.
+        """
+        st = self._get_stack(cnxt, stack_identity)
+        logger.info(_('abandoning stack %s') % st.name)
+        stack = parser.Stack.load(cnxt, stack=st)
+
+        # Get stack details before deleting it.
+        stack_info = stack.get_abandon_data()
+        # Set deletion policy to 'Retain' for all resources in the stack.
+        stack.set_deletion_policy(resource.RETAIN)
+        self._start_thread_with_lock(cnxt, stack, stack.delete)
+        return stack_info
+
+    def list_resource_types(self, cnxt, support_status=None):
         """
         Get a list of supported resource types.
 
         :param cnxt: RPC context.
         """
-        return list(resource.get_types())
+        return resource.get_types(support_status)
 
     def resource_schema(self, cnxt, type_name):
         """
@@ -548,27 +625,11 @@ class EngineService(service.Service):
         except (TypeError, AttributeError):
             ec2_creds = None
 
-        if ec2_creds:
-            access_key = ec2_creds.get('access')
-            # Then we look up the AccessKey resource and check the stack
-            try:
-                akey_rsrc = self.find_physical_resource(cnxt, access_key)
-            except exception.PhysicalResourceNotFound:
-                logger.warning(_("access_key % not found!") % access_key)
-                return False
+        if not ec2_creds:
+            return False
 
-            akey_rsrc_id = identifier.ResourceIdentifier(**akey_rsrc)
-            if stack.identifier() == akey_rsrc_id.stack():
-                # The stack matches, so check if access is allowed to this
-                # resource via the AccessKey resource access_allowed()
-                ak_akey_rsrc = stack[akey_rsrc_id.resource_name]
-                return ak_akey_rsrc.access_allowed(resource_name)
-            else:
-                logger.warning(_("Cannot access resource from wrong stack!"))
-        else:
-            logger.warning(_("Cannot access resource, invalid credentials!"))
-
-        return False
+        access_key = ec2_creds.get('access')
+        return stack.access_allowed(access_key, resource_name)
 
     @request_context
     def describe_stack_resource(self, cnxt, stack_identity, resource_name):
@@ -664,7 +725,7 @@ class EngineService(service.Service):
         s = self._get_stack(cnxt, stack_identity)
 
         stack = parser.Stack.load(cnxt, stack=s)
-        self._start_in_thread(stack.id, _stack_suspend, stack)
+        self._start_thread_with_lock(cnxt, stack, _stack_suspend, stack)
 
     @request_context
     def stack_resume(self, cnxt, stack_identity):
@@ -678,7 +739,7 @@ class EngineService(service.Service):
         s = self._get_stack(cnxt, stack_identity)
 
         stack = parser.Stack.load(cnxt, stack=s)
-        self._start_in_thread(stack.id, _stack_resume, stack)
+        self._start_thread_with_lock(cnxt, stack, _stack_resume, stack)
 
     def _load_user_creds(self, creds_id):
         user_creds = db_api.user_creds_get(creds_id)
@@ -686,7 +747,7 @@ class EngineService(service.Service):
         # heat_keystoneclient populates the context with an auth_token
         # either via the stored user/password or trust_id, depending
         # on how deferred_auth_method is configured in the conf file
-        kc = hkc.KeystoneClient(stored_context)
+        hkc.KeystoneClient(stored_context)
         return stored_context
 
     @request_context

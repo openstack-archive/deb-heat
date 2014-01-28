@@ -100,6 +100,27 @@ as_template = '''
 }
 '''
 
+as_template_bad_group = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Parameters" : {
+  "ImageId": {"Type": "String"},
+  "KeyName": {"Type": "String"}
+  },
+  "Resources" : {
+    "WebServerScaleUpPolicy" : {
+      "Type" : "AWS::AutoScaling::ScalingPolicy",
+      "Properties" : {
+        "AdjustmentType" : "ChangeInCapacity",
+        "AutoScalingGroupName" : "not a real group",
+        "Cooldown" : "60",
+        "ScalingAdjustment" : "1"
+      }
+    }
+  }
+}
+'''
+
 
 class AutoScalingTest(HeatTestCase):
     dummy_instance_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
@@ -115,20 +136,20 @@ class AutoScalingTest(HeatTestCase):
     def create_scaling_group(self, t, stack, resource_name):
         # create the launch configuration resource
         conf = stack['LaunchConfig']
-        self.assertEqual(None, conf.validate())
+        self.assertIsNone(conf.validate())
         scheduler.TaskRunner(conf.create)()
         self.assertEqual((conf.CREATE, conf.COMPLETE), conf.state)
 
         # create the group resource
         rsrc = stack[resource_name]
-        self.assertEqual(None, rsrc.validate())
+        self.assertIsNone(rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
 
     def create_scaling_policy(self, t, stack, resource_name):
         rsrc = stack[resource_name]
-        self.assertEqual(None, rsrc.validate())
+        self.assertIsNone(rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
@@ -158,11 +179,8 @@ class AutoScalingTest(HeatTestCase):
             instance.Instance.FnGetRefId().MultipleTimes().AndReturn(
                 self.dummy_instance_id)
 
-        self.m.StubOutWithMock(loadbalancer.LoadBalancer, 'handle_update')
-        if nochange:
-            loadbalancer.LoadBalancer.handle_update(
-                mox.IgnoreArg(), mox.IgnoreArg(), {}).AndReturn(None)
-        else:
+        if not nochange:
+            self.m.StubOutWithMock(loadbalancer.LoadBalancer, 'handle_update')
             loadbalancer.LoadBalancer.handle_update(
                 mox.IgnoreArg(), mox.IgnoreArg(),
                 {'Instances': expected_list}).AndReturn(None)
@@ -190,7 +208,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_lb_reload(0)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        self.assertEqual(None, rsrc.FnGetAtt("InstanceList"))
+        self.assertIsNone(rsrc.FnGetAtt("InstanceList"))
 
         rsrc.delete()
         self.m.VerifyAll()
@@ -477,12 +495,12 @@ class AutoScalingTest(HeatTestCase):
         self.m.ReplayAll()
 
         conf = stack['LaunchConfig']
-        self.assertEqual(None, conf.validate())
+        self.assertIsNone(conf.validate())
         scheduler.TaskRunner(conf.create)()
         self.assertEqual((conf.CREATE, conf.COMPLETE), conf.state)
 
         rsrc = stack['WebServerGroup']
-        self.assertEqual(None, rsrc.validate())
+        self.assertIsNone(rsrc.validate())
         self.assertRaises(exception.ResourceFailure,
                           scheduler.TaskRunner(rsrc.create))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
@@ -598,7 +616,7 @@ class AutoScalingTest(HeatTestCase):
         del(update_snippet['Properties']['DesiredCapacity'])
         scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual(instance_names, rsrc.get_instance_names())
-        self.assertEqual(None, rsrc.properties['DesiredCapacity'])
+        self.assertIsNone(rsrc.properties['DesiredCapacity'])
 
         rsrc.delete()
         self.m.VerifyAll()
@@ -1039,6 +1057,26 @@ class AutoScalingTest(HeatTestCase):
         rsrc.delete()
         self.m.VerifyAll()
 
+    def test_scaling_policy_bad_group(self):
+        t = template_format.parse(as_template_bad_group)
+        stack = utils.parse_stack(t, params=self.params)
+
+        self.m.StubOutWithMock(asc.ScalingPolicy, 'keystone')
+        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(
+            self.fc)
+
+        self.m.ReplayAll()
+        up_policy = self.create_scaling_policy(t, stack,
+                                               'WebServerScaleUpPolicy')
+
+        alarm_url = up_policy.FnGetAtt('AlarmUrl')
+        self.assertIsNotNone(alarm_url)
+        ex = self.assertRaises(exception.ResourceFailure, up_policy.signal)
+        self.assertIn('Alarm WebServerScaleUpPolicy could '
+                      'not find scaling group', str(ex))
+
+        self.m.VerifyAll()
+
     def test_scaling_policy_up(self):
         t = template_format.parse(as_template)
         stack = utils.parse_stack(t, params=self.params)
@@ -1068,9 +1106,64 @@ class AutoScalingTest(HeatTestCase):
                                                'WebServerScaleUpPolicy')
 
         alarm_url = up_policy.FnGetAtt('AlarmUrl')
-        self.assertNotEqual(None, alarm_url)
+        self.assertIsNotNone(alarm_url)
         up_policy.signal()
         self.assertEqual(len(rsrc.get_instance_names()), 2)
+
+        rsrc.delete()
+        self.m.VerifyAll()
+
+    def test_scaling_up_meta_update(self):
+        t = template_format.parse(as_template)
+
+        # Add CustomLB (just AWS::EC2::Instance) to template
+        t['Resources']['MyCustomLB'] = {
+            'Type': 'AWS::EC2::Instance',
+            'ImageId': {'Ref': 'ImageId'},
+            'InstanceType': 'bar',
+            'Metadata': {
+                'IPs': {'Fn::GetAtt': ['WebServerGroup', 'InstanceList']}
+            }
+        }
+        stack = utils.parse_stack(t, params=self.params)
+
+        # Create initial group
+        self._stub_lb_reload(1)
+        now = timeutils.utcnow()
+        self._stub_meta_expected(now, 'ExactCapacity : 1')
+        self._stub_create(1)
+
+        self.m.ReplayAll()
+        rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
+        stack['WebServerGroup'] = rsrc
+        self.assertEqual(1, len(rsrc.get_instance_names()))
+
+        # Scale up one
+        self._stub_lb_reload(2)
+        self._stub_meta_expected(now, 'ChangeInCapacity : 1', 2)
+        self._stub_create(1)
+
+        self.m.StubOutWithMock(asc.ScalingPolicy, 'keystone')
+        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(
+            self.fc)
+
+        self.m.ReplayAll()
+        up_policy = self.create_scaling_policy(t, stack,
+                                               'WebServerScaleUpPolicy')
+
+        alarm_url = up_policy.FnGetAtt('AlarmUrl')
+        self.assertIsNotNone(alarm_url)
+        up_policy.signal()
+        self.assertEqual(2, len(rsrc.get_instance_names()))
+
+        # Check CustomLB metadata was updated
+        self.m.StubOutWithMock(instance.Instance, '_ipaddress')
+        instance.Instance._ipaddress().MultipleTimes().AndReturn(
+            '127.0.0.1')
+        self.m.ReplayAll()
+
+        expected_meta = {'IPs': u'127.0.0.1,127.0.0.1'}
+        self.assertEqual(expected_meta, stack['MyCustomLB'].metadata)
 
         rsrc.delete()
         self.m.VerifyAll()
@@ -1344,8 +1437,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
 
         self.m.StubOutWithMock(asc.ScalingPolicy, 'keystone')
-        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(
-            self.fc)
+        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(self.fc)
 
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
@@ -1360,10 +1452,6 @@ class AutoScalingTest(HeatTestCase):
         self._stub_lb_reload(2)
         self._stub_meta_expected(now, 'ChangeInCapacity : 1', 2)
         self._stub_create(1)
-
-        self.m.StubOutWithMock(asc.ScalingPolicy, 'keystone')
-        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(
-            self.fc)
 
         self.m.ReplayAll()
 

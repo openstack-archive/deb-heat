@@ -65,7 +65,8 @@ class StackResource(resource.Resource):
         if self._nested is None and self.resource_id is not None:
             self._nested = parser.Stack.load(self.context,
                                              self.resource_id,
-                                             parent_resource=self)
+                                             parent_resource=self,
+                                             show_deleted=False)
 
             if self._nested is None:
                 raise exception.NotFound(_('Nested stack not found in DB'))
@@ -128,13 +129,15 @@ class StackResource(resource.Resource):
         # all subclasses want that behavior, since they may offer custom
         # attributes.
         nested_stack = self.nested()
-        if nested_stack is not None:
-            res_diff = (
-                len(template[tmpl.RESOURCES]) - len(nested_stack.resources))
-            new_size = nested_stack.root_stack.total_resources() + res_diff
-            if new_size > cfg.CONF.max_resources_per_stack:
-                raise exception.RequestLimitExceeded(
-                    message=exception.StackResourceLimitExceeded.msg_fmt)
+        if nested_stack is None:
+            raise exception.Error(_('Cannot update %s, stack not created')
+                                  % self.name)
+        res_diff = (
+            len(template[tmpl.RESOURCES]) - len(nested_stack.resources))
+        new_size = nested_stack.root_stack.total_resources() + res_diff
+        if new_size > cfg.CONF.max_resources_per_stack:
+            raise exception.RequestLimitExceeded(
+                message=exception.StackResourceLimitExceeded.msg_fmt)
 
         # Note we disable rollback for nested stacks, since they
         # should be rolled back by the parent stack on failure
@@ -147,11 +150,6 @@ class StackResource(resource.Resource):
                              parent_resource=self,
                              owner_id=self.stack.id)
         stack.validate()
-
-        nested_stack = self.nested()
-        if nested_stack is None:
-            raise exception.Error(_('Cannot update %s, stack not created')
-                                  % self.name)
 
         if not hasattr(type(self), 'attributes_schema'):
             self.attributes = None
@@ -245,6 +243,12 @@ class StackResource(resource.Resource):
                 raise exception.Error(self._nested.status_reason)
 
         return done
+
+    def set_deletion_policy(self, policy):
+        self.nested().set_deletion_policy(policy)
+
+    def get_abandon_data(self):
+        return self.nested().get_abandon_data()
 
     def get_output(self, op):
         '''

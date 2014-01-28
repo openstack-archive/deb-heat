@@ -42,6 +42,15 @@ swift_template = '''
         "X-Container-Meta" : {
           "Web-Index" : "index.html",
           "Web-Error" : "error.html"
+}
+      }
+    },
+    "SwiftAccountMetadata" : {
+      "Type" : "OS::Swift::Container",
+      "DeletionPolicy" : "Delete",
+      "Properties" : {
+        "X-Account-Meta" : {
+          "Temp-Url-Key" : "secret"
          }
       }
     },
@@ -66,6 +75,7 @@ class swiftTest(HeatTestCase):
     def setUp(self):
         super(swiftTest, self).setUp()
         self.m.CreateMock(swiftclient.Connection)
+        self.m.StubOutWithMock(swiftclient.Connection, 'post_account')
         self.m.StubOutWithMock(swiftclient.Connection, 'put_container')
         self.m.StubOutWithMock(swiftclient.Connection, 'delete_container')
         self.m.StubOutWithMock(swiftclient.Connection, 'head_container')
@@ -97,22 +107,24 @@ class swiftTest(HeatTestCase):
 
     def test_build_meta_headers(self):
         self.m.UnsetStubs()
-        self.assertEqual({}, swift.SwiftContainer._build_meta_headers({}))
-        self.assertEqual({}, swift.SwiftContainer._build_meta_headers(None))
+        self.assertEqual({}, swift.SwiftContainer._build_meta_headers(
+            'container', {}))
+        self.assertEqual({}, swift.SwiftContainer._build_meta_headers(
+            'container', None))
         meta = {
             'X-Container-Meta-Web-Index': 'index.html',
             'X-Container-Meta-Web-Error': 'error.html'
         }
-        self.assertEqual(meta, swift.SwiftContainer._build_meta_headers({
-            "Web-Index": "index.html",
-            "Web-Error": "error.html"
-        }))
+        self.assertEqual(meta, swift.SwiftContainer._build_meta_headers(
+            'container', {
+                "Web-Index": "index.html",
+                "Web-Error": "error.html"
+            }))
 
     def test_attributes(self):
         headers = {
             "content-length": "0",
             "x-container-object-count": "82",
-            "x-container-write": "None",
             "accept-ranges": "bytes",
             "x-trans-id": "tx08ea48ef2fa24e6da3d2f5c188fd938b",
             "date": "Wed, 23 Jan 2013 22:48:05 GMT",
@@ -125,12 +137,7 @@ class swiftTest(HeatTestCase):
             fakes.FakeKeystoneClient())
         container_name = utils.PhysName('test_stack', 'test_resource')
         swiftclient.Connection.put_container(
-            container_name,
-            {'X-Container-Write': None,
-             'X-Container-Read': None}
-        ).AndReturn(None)
-        swiftclient.Connection.get_auth().MultipleTimes().AndReturn(
-            ('http://server.test:8080/v_2', None))
+            container_name, {}).AndReturn(None)
         swiftclient.Connection.head_container(
             mox.IgnoreArg()).MultipleTimes().AndReturn(headers)
         swiftclient.Connection.delete_container(container_name).AndReturn(None)
@@ -143,19 +150,16 @@ class swiftTest(HeatTestCase):
         ref_id = rsrc.FnGetRefId()
         self.assertEqual(container_name, ref_id)
 
-        self.assertEqual('server.test', rsrc.FnGetAtt('DomainName'))
-        url = 'http://server.test:8080/v_2/%s' % ref_id
+        self.assertEqual('example.com', rsrc.FnGetAtt('DomainName'))
+        url = 'http://example.com:1234/v1/%s' % ref_id
 
         self.assertEqual(url, rsrc.FnGetAtt('WebsiteURL'))
         self.assertEqual('82', rsrc.FnGetAtt('ObjectCount'))
         self.assertEqual('17680980', rsrc.FnGetAtt('BytesUsed'))
         self.assertEqual(headers, rsrc.FnGetAtt('HeadContainer'))
 
-        try:
-            rsrc.FnGetAtt('Foo')
-            raise Exception('Expected InvalidTemplateAttribute')
-        except swift.exception.InvalidTemplateAttribute:
-            pass
+        self.assertRaises(swift.exception.InvalidTemplateAttribute,
+                          rsrc.FnGetAtt, 'Foo')
 
         self.assertRaises(resource.UpdateReplace,
                           rsrc.handle_update, {}, {}, {})
@@ -169,8 +173,7 @@ class swiftTest(HeatTestCase):
         container_name = utils.PhysName('test_stack', 'test_resource')
         swiftclient.Connection.put_container(
             container_name,
-            {'X-Container-Write': None,
-             'X-Container-Read': '.r:*'}).AndReturn(None)
+            {'X-Container-Read': '.r:*'}).AndReturn(None)
         swiftclient.Connection.delete_container(container_name).AndReturn(None)
 
         self.m.ReplayAll()
@@ -202,7 +205,7 @@ class swiftTest(HeatTestCase):
         scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
-    def test_website(self):
+    def test_container_headers(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
         container_name = utils.PhysName('test_stack', 'test_resource')
@@ -210,7 +213,6 @@ class swiftTest(HeatTestCase):
             container_name,
             {'X-Container-Meta-Web-Error': 'error.html',
              'X-Container-Meta-Web-Index': 'index.html',
-             'X-Container-Write': None,
              'X-Container-Read': '.r:*'}).AndReturn(None)
         swiftclient.Connection.delete_container(container_name).AndReturn(None)
 
@@ -221,14 +223,29 @@ class swiftTest(HeatTestCase):
         scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
+    def test_account_headers(self):
+        clients.OpenStackClients.keystone().AndReturn(
+            fakes.FakeKeystoneClient())
+        container_name = utils.PhysName('test_stack', 'test_resource')
+        swiftclient.Connection.put_container(container_name, {})
+        swiftclient.Connection.post_account(
+            {'X-Account-Meta-Temp-Url-Key': 'secret'}).AndReturn(None)
+        swiftclient.Connection.delete_container(container_name).AndReturn(None)
+
+        self.m.ReplayAll()
+        t = template_format.parse(swift_template)
+        stack = utils.parse_stack(t)
+        rsrc = self.create_resource(t, stack, 'SwiftAccountMetadata')
+        scheduler.TaskRunner(rsrc.delete)()
+        self.m.VerifyAll()
+
     def test_delete_exception(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
         container_name = utils.PhysName('test_stack', 'test_resource')
         swiftclient.Connection.put_container(
             container_name,
-            {'X-Container-Write': None,
-             'X-Container-Read': None}).AndReturn(None)
+            {}).AndReturn(None)
         swiftclient.Connection.delete_container(container_name).AndRaise(
             swiftclient.ClientException('Test delete failure'))
 
@@ -247,8 +264,7 @@ class swiftTest(HeatTestCase):
         # first run, with retain policy
         swiftclient.Connection.put_container(
             utils.PhysName('test_stack', 'test_resource'),
-            {'X-Container-Write': None,
-             'X-Container-Read': None}).AndReturn(None)
+            {}).AndReturn(None)
 
         self.m.ReplayAll()
         t = template_format.parse(swift_template)
@@ -261,3 +277,24 @@ class swiftTest(HeatTestCase):
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()
+
+    def test_default_headers_not_none_empty_string(self):
+        '''Test that we are not passing None when we have a default
+        empty string or swiftclient will pass them as string None. see
+        bug lp:1259571.
+        '''
+        clients.OpenStackClients.keystone().AndReturn(
+            fakes.FakeKeystoneClient())
+        container_name = utils.PhysName('test_stack', 'test_resource')
+        swiftclient.Connection.put_container(
+            container_name, {}).AndReturn(None)
+        swiftclient.Connection.delete_container(container_name).AndReturn(None)
+
+        self.m.ReplayAll()
+        t = template_format.parse(swift_template)
+        stack = utils.parse_stack(t)
+        rsrc = self.create_resource(t, stack, 'SwiftContainer')
+        scheduler.TaskRunner(rsrc.delete)()
+        self.m.VerifyAll()
+
+        self.assertEqual({}, rsrc.metadata)

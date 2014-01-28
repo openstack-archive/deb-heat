@@ -302,7 +302,7 @@ class WatchRuleTest(HeatTestCase):
         # and check that the object properties match the data above
         for wn in ('HttpFailureAlarm', 'AnotherWatch'):
             wr = watchrule.WatchRule.load(self.ctx, wn)
-            self.assertEqual(type(wr), watchrule.WatchRule)
+            self.assertIsInstance(wr, watchrule.WatchRule)
             self.assertEqual(wr.name, wn)
             self.assertEqual(wr.state, 'NORMAL')
             self.assertEqual(wr.rule, rule)
@@ -325,7 +325,7 @@ class WatchRuleTest(HeatTestCase):
         self.wr.store()
 
         dbwr = db_api.watch_rule_get_by_name(self.ctx, 'storetest')
-        self.assertNotEqual(dbwr, None)
+        self.assertIsNotNone(dbwr)
         self.assertEqual(dbwr.name, 'storetest')
         self.assertEqual(dbwr.state, watchrule.WatchRule.NODATA)
         self.assertEqual(dbwr.rule, rule)
@@ -795,7 +795,7 @@ class WatchRuleTest(HeatTestCase):
 
         check = watchrule.WatchRule.load(context=self.ctx,
                                          watch_name="testwatch_destroy")
-        self.assertTrue(isinstance(check, watchrule.WatchRule))
+        self.assertIsInstance(check, watchrule.WatchRule)
 
         self.wr.destroy()
         self.assertRaises(exception.WatchRuleNotFound,

@@ -14,6 +14,7 @@
 #    under the License.
 
 import collections
+import copy
 import functools
 import re
 import six
@@ -96,6 +97,7 @@ class Stack(collections.Mapping):
         self.parent_resource = parent_resource
         self._resources = None
         self._dependencies = None
+        self._access_allowed_handlers = {}
 
         resources.initialise()
 
@@ -280,7 +282,7 @@ class Stack(collections.Mapping):
 
     def __str__(self):
         '''Return a human-readable string representation of the stack.'''
-        return 'Stack "%s"' % self.name
+        return 'Stack "%s" [%s]' % (self.name, self.id)
 
     def resource_by_refid(self, refid):
         '''
@@ -296,6 +298,28 @@ class Stack(collections.Mapping):
                     (r.UPDATE, r.IN_PROGRESS),
                     (r.UPDATE, r.COMPLETE)) and r.FnGetRefId() == refid:
                 return r
+
+    def register_access_allowed_handler(self, credential_id, handler):
+        '''
+        Register a function which determines whether the credentials with
+        a give ID can have access to a named resource.
+        '''
+        assert callable(handler), 'Handler is not callable'
+        self._access_allowed_handlers[credential_id] = handler
+
+    def access_allowed(self, credential_id, resource_name):
+        '''
+        Returns True if the credential_id is authorised to access the
+        resource with the specified resource_name.
+        '''
+        if not self.resources:
+            # this also triggers lazy-loading of resources
+            # so is required for register_access_allowed_handler
+            # to be called
+            return False
+
+        handler = self._access_allowed_handlers.get(credential_id)
+        return handler and handler(resource_name)
 
     def validate(self):
         '''
@@ -394,7 +418,6 @@ class Stack(collections.Mapping):
 
         stack_status = self.COMPLETE
         reason = 'Stack %s completed successfully' % action.lower()
-        res = None
 
         def resource_action(r):
             # Find e.g resource.create and call it
@@ -426,13 +449,16 @@ class Stack(collections.Mapping):
         Get a Stack containing any in-progress resources from the previous
         stack state prior to an update.
         '''
-        s = db_api.stack_get_by_name(self.context, self._backup_name(),
-                                     owner_id=self.id)
+        s = db_api.stack_get_by_name_and_owner_id(self.context,
+                                                  self._backup_name(),
+                                                  owner_id=self.id)
         if s is not None:
             logger.debug(_('Loaded existing backup stack'))
             return self.load(self.context, stack=s)
         elif create_if_missing:
-            prev = type(self)(self.context, self.name, self.t, self.env,
+            templ = Template.load(self.context, self.t.id)
+            templ.files = copy.deepcopy(self.t.files)
+            prev = type(self)(self.context, self.name, templ, self.env,
                               owner_id=self.id)
             prev.store(backup=True)
             logger.debug(_('Created new backup stack'))
@@ -477,7 +503,6 @@ class Stack(collections.Mapping):
 
         oldstack = Stack(self.context, self.name, self.t, self.env)
         backup_stack = self._backup_stack()
-
         try:
             update_task = update.StackUpdate(self, newstack, backup_stack,
                                              rollback=action == self.ROLLBACK)
@@ -485,6 +510,7 @@ class Stack(collections.Mapping):
 
             self.env = newstack.env
             self.parameters = newstack.parameters
+            self.t.files = newstack.t.files
             self._set_param_stackid()
 
             try:
@@ -660,6 +686,21 @@ class Stack(collections.Mapping):
                 self.clients.nova().availability_zones.list(detailed=False)]
         return self._zones
 
+    def set_deletion_policy(self, policy):
+        for res in self.resources.values():
+            res.set_deletion_policy(policy)
+
+    def get_abandon_data(self):
+        return {
+            'name': self.name,
+            'id': self.id,
+            'action': self.action,
+            'status': self.status,
+            'template': self.t.t,
+            'resources': dict((res.name, res.get_abandon_data())
+                              for res in self.resources.values())
+        }
+
     def resolve_static_data(self, snippet):
         return resolve_static_data(self.t, self, self.parameters, snippet)
 
@@ -710,6 +751,9 @@ def transform(data, transformations):
     Apply each of the transformation functions in the supplied list to the data
     in turn.
     '''
+    def sub_transform(d):
+        return transform(d, transformations)
+
     for t in transformations:
-        data = t(data)
+        data = t(data, transform=sub_transform)
     return data

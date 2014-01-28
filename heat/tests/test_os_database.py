@@ -12,13 +12,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import uuid
+
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine import scheduler
 from heat.engine.resources import os_database
-from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests.utils import setup_dummy_db
 
@@ -99,7 +100,7 @@ class OSDBInstanceTest(HeatTestCase):
                              stack_name,
                              template,
                              environment.Environment({'name': 'test'}),
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         instance = os_database.OSDBInstance(
             '%s_name' % name,
@@ -117,9 +118,11 @@ class OSDBInstanceTest(HeatTestCase):
                                           FakeFlavor(2, '2GB')])
         self.m.StubOutWithMock(self.fc, 'instances')
         self.m.StubOutWithMock(self.fc.instances, 'create')
-        users = [{"name": "testuser", "password": "pass",
+        users = [{"name": "testuser", "password": "pass", "host": "%",
                   "databases": [{"name": "validdb"}]}]
-        databases = [{"name": "validdb"}]
+        databases = [{"collate": "utf8_general_ci",
+                      "character_set": "utf8",
+                      "name": "validdb"}]
         self.fc.instances.create('test', 1, volume={'size': 30},
                                  databases=databases,
                                  users=users,
@@ -163,7 +166,7 @@ class OSDBInstanceTest(HeatTestCase):
 
         self.m.ReplayAll()
         scheduler.TaskRunner(instance.delete)()
-        self.assertEqual(None, instance.resource_id)
+        self.assertIsNone(instance.resource_id)
         self.m.VerifyAll()
 
     def test_osdatabase_delete_resource_none(self):
@@ -176,7 +179,7 @@ class OSDBInstanceTest(HeatTestCase):
 
         self.m.ReplayAll()
         scheduler.TaskRunner(instance.delete)()
-        self.assertEqual(None, instance.resource_id)
+        self.assertIsNone(instance.resource_id)
         self.m.VerifyAll()
 
     def test_osdatabase_resource_not_found(self):
@@ -190,15 +193,14 @@ class OSDBInstanceTest(HeatTestCase):
 
         self.m.ReplayAll()
         scheduler.TaskRunner(instance.delete)()
-        self.assertEqual(None, instance.resource_id)
+        self.assertIsNone(instance.resource_id)
         self.m.VerifyAll()
 
     def test_osdatabase_invalid_attribute(self):
-        fake_dbinstance = FakeDBInstance()
         t = template_format.parse(wp_template)
         instance = self._setup_test_clouddbinstance("db_invalid_attrib", t)
         attrib = instance._resolve_attribute("invalid_attrib")
-        self.assertEqual(None, attrib)
+        self.assertIsNone(attrib)
         self.m.VerifyAll()
 
     def test_osdatabase_get_hostname(self):
@@ -243,13 +245,13 @@ class OSDBInstanceTest(HeatTestCase):
         self.fc.instances.get(12345).AndReturn(fake_dbinstance)
         self.m.ReplayAll()
         attrib = instance._resolve_attribute('href')
-        self.assertEqual(None, attrib)
+        self.assertIsNone(attrib)
 
     def test_osdatabase_prop_validation_success(self):
         t = template_format.parse(wp_template)
         instance = self._setup_test_clouddbinstance('dbinstance_test', t)
         ret = instance.validate()
-        self.assertEqual(None, ret)
+        self.assertIsNone(ret)
 
     def test_osdatabase_prop_validation_invaliddb(self):
         t = template_format.parse(wp_template)
@@ -267,7 +269,7 @@ class OSDBInstanceTest(HeatTestCase):
         t['Resources']['MySqlCloudDB']['Properties']['users'] = []
         instance = self._setup_test_clouddbinstance('dbinstance_test', t)
         ret = instance.validate()
-        self.assertEqual(None, ret)
+        self.assertIsNone(ret)
 
     def test_osdatabase_prop_validation_databases_none(self):
         t = template_format.parse(wp_template)

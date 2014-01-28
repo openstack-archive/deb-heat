@@ -20,6 +20,8 @@ from heat.openstack.common.importutils import try_import
 
 from heat.common import exception
 from heat.engine import clients
+from heat.engine import constraints
+from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources import nova_utils
 from heat.engine import scheduler
@@ -30,31 +32,52 @@ logger = logging.getLogger(__name__)
 
 
 class Volume(resource.Resource):
-    tags_schema = {'Key': {'Type': 'String',
-                           'Required': True},
-                   'Value': {'Type': 'String',
-                             'Required': True}}
+
+    PROPERTIES = (
+        AVAILABILITY_ZONE, SIZE, BACKUP_ID, TAGS,
+    ) = (
+        'AvailabilityZone', 'Size', 'SnapshotId', 'Tags',
+    )
+
+    _TAG_KEYS = (
+        TAG_KEY, TAG_VALUE,
+    ) = (
+        'Key', 'Value',
+    )
 
     properties_schema = {
-        'AvailabilityZone': {
-            'Type': 'String', 'Required': True,
-            'Description': _('The availability zone in which the volume '
-                             'will be created.')},
-        'Size': {
-            'Type': 'Number',
-            'Description': _('The size of the volume in GB.')},
-        'SnapshotId': {
-            'Type': 'String',
-            'Description': _('If specified, the backup used as the source '
-                             'to create the volume.')},
-        'Tags': {
-            'Type': 'List',
-            'Description': _('The list of tags to associate '
-                             'with the volume.'),
-            'Schema': {'Type': 'Map', 'Schema': tags_schema}},
+        AVAILABILITY_ZONE: properties.Schema(
+            properties.Schema.STRING,
+            _('The availability zone in which the volume will be created.'),
+            required=True
+        ),
+        SIZE: properties.Schema(
+            properties.Schema.NUMBER,
+            _('The size of the volume in GB.')
+        ),
+        BACKUP_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('If specified, the backup used as the source to create the '
+              'volume.')
+        ),
+        TAGS: properties.Schema(
+            properties.Schema.LIST,
+            _('The list of tags to associate with the volume.'),
+            schema=properties.Schema(
+                properties.Schema.MAP,
+                schema={
+                    TAG_KEY: properties.Schema(
+                        properties.Schema.STRING,
+                        required=True
+                    ),
+                    TAG_VALUE: properties.Schema(
+                        properties.Schema.STRING,
+                        required=True
+                    ),
+                },
+            )
+        ),
     }
-
-    _restore_property = 'SnapshotId'
 
     _volume_creating_status = ['creating', 'restoring-backup']
 
@@ -65,25 +88,26 @@ class Volume(resource.Resource):
         return self.physical_resource_name()
 
     def _create_arguments(self):
-        if self.properties['Tags']:
-            tags = dict((tm['Key'], tm['Value'])
-                        for tm in self.properties['Tags'])
+        if self.properties[self.TAGS]:
+            tags = dict((tm[self.TAG_KEY], tm[self.TAG_VALUE])
+                        for tm in self.properties[self.TAGS])
         else:
             tags = None
 
         return {
-            'size': self.properties['Size'],
-            'availability_zone': self.properties['AvailabilityZone'] or None,
+            'size': self.properties[self.SIZE],
+            'availability_zone': (self.properties[self.AVAILABILITY_ZONE] or
+                                  None),
             'metadata': tags
         }
 
     def handle_create(self):
-        backup_id = self.properties.get(self._restore_property)
+        backup_id = self.properties.get(self.BACKUP_ID)
         cinder = self.cinder()
         if backup_id is not None:
             if volume_backups is None:
                 raise exception.Error(
-                    '%s not supported' % self._restore_property)
+                    '%s not supported' % self.BACKUP_ID)
             vol_id = cinder.restores.restore(backup_id).volume_id
 
             vol = cinder.volumes.get(vol_id)
@@ -274,29 +298,39 @@ class VolumeDetachTask(object):
 
 
 class VolumeAttachment(resource.Resource):
+    PROPERTIES = (
+        INSTANCE_ID, VOLUME_ID, DEVICE,
+    ) = (
+        'InstanceId', 'VolumeId', 'Device',
+    )
+
     properties_schema = {
-        'InstanceId': {
-            'Type': 'String', 'Required': True,
-            'Description': _('The ID of the instance to which the '
-                             'volume attaches.')},
-        'VolumeId': {
-            'Type': 'String', 'Required': True,
-            'Description': _('The ID of the volume to be attached.')},
-        'Device': {
-            'Type': 'String', 'Required': True,
-            'AllowedPattern': '/dev/vd[b-z]',
-            'Description': _('The device where the volume is exposed on '
-                             'the instance.')}
+        INSTANCE_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('The ID of the instance to which the volume attaches.'),
+            required=True
+        ),
+        VOLUME_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('The ID of the volume to be attached.'),
+            required=True
+        ),
+        DEVICE: properties.Schema(
+            properties.Schema.STRING,
+            _('The device where the volume is exposed on the instance. This '
+              'assignment may not be honored and it is advised that the path '
+              '/dev/disk/by-id/virtio-<VolumeId> be used instead.'),
+            required=True,
+            constraints=[
+                constraints.AllowedPattern('/dev/vd[b-z]'),
+            ]
+        ),
     }
 
-    _instance_property = 'InstanceId'
-    _volume_property = 'VolumeId'
-    _device_property = 'Device'
-
     def handle_create(self):
-        server_id = self.properties[self._instance_property]
-        volume_id = self.properties[self._volume_property]
-        dev = self.properties[self._device_property]
+        server_id = self.properties[self.INSTANCE_ID]
+        volume_id = self.properties[self.VOLUME_ID]
+        dev = self.properties[self.DEVICE]
 
         attach_task = VolumeAttachTask(self.stack, server_id, volume_id, dev)
         attach_runner = scheduler.TaskRunner(attach_task)
@@ -311,53 +345,71 @@ class VolumeAttachment(resource.Resource):
         return attach_runner.step()
 
     def handle_delete(self):
-        server_id = self.properties[self._instance_property]
-        volume_id = self.properties[self._volume_property]
+        server_id = self.properties[self.INSTANCE_ID]
+        volume_id = self.properties[self.VOLUME_ID]
         detach_task = VolumeDetachTask(self.stack, server_id, volume_id)
         scheduler.TaskRunner(detach_task)()
 
 
 class CinderVolume(Volume):
 
+    PROPERTIES = (
+        AVAILABILITY_ZONE, SIZE, SNAPSHOT_ID, BACKUP_ID, NAME,
+        DESCRIPTION, VOLUME_TYPE, METADATA, IMAGE_REF, IMAGE,
+        SOURCE_VOLID,
+    ) = (
+        'availability_zone', 'size', 'snapshot_id', 'backup_id', 'name',
+        'description', 'volume_type', 'metadata', 'imageRef', 'image',
+        'source_volid',
+    )
+
     properties_schema = {
-        'availability_zone': {
-            'Type': 'String',
-            'Description': _('The availability zone in which the volume '
-                             'will be created.')},
-        'size': {
-            'Type': 'Number',
-            'Description': _('The size of the volume in GB.')},
-        'snapshot_id': {
-            'Type': 'String',
-            'Description': _('If specified, the snapshot to create the '
-                             'volume from.')},
-        'backup_id': {
-            'Type': 'String',
-            'Description': _('If specified, the backup to create the '
-                             'volume from.')},
-        'name': {
-            'Type': 'String',
-            'Description': _('A name used to distinguish the volume.')},
-        'description': {
-            'Type': 'String',
-            'Description': _('A description of the volume.')},
-        'volume_type': {
-            'Type': 'String',
-            'Description': _('If specified, the type of volume to use, '
-                             'mapping to a specific backend.')},
-        'metadata': {
-            'Type': 'Map',
-            'Description': _('Key/value pairs to associate with the volume.')},
-        'imageRef': {
-            'Type': 'String',
-            'Description': _('DEPRECATED: use "image" instead.')},
-        'image': {
-            'Type': 'String',
-            'Description': _('If specified, the name or ID of the image to '
-                             'create the volume from.')},
-        'source_volid': {
-            'Type': 'String',
-            'Description': _('If specified, the volume to use as source.')}
+        AVAILABILITY_ZONE: properties.Schema(
+            properties.Schema.STRING,
+            _('The availability zone in which the volume will be created.')
+        ),
+        SIZE: properties.Schema(
+            properties.Schema.NUMBER,
+            _('The size of the volume in GB.')
+        ),
+        SNAPSHOT_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('If specified, the snapshot to create the volume from.')
+        ),
+        BACKUP_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('If specified, the backup to create the volume from.')
+        ),
+        NAME: properties.Schema(
+            properties.Schema.STRING,
+            _('A name used to distinguish the volume.')
+        ),
+        DESCRIPTION: properties.Schema(
+            properties.Schema.STRING,
+            _('A description of the volume.')
+        ),
+        VOLUME_TYPE: properties.Schema(
+            properties.Schema.STRING,
+            _('If specified, the type of volume to use, mapping to a '
+              'specific backend.')
+        ),
+        METADATA: properties.Schema(
+            properties.Schema.MAP,
+            _('Key/value pairs to associate with the volume.')
+        ),
+        IMAGE_REF: properties.Schema(
+            properties.Schema.STRING,
+            _('DEPRECATED: use "image" instead.')
+        ),
+        IMAGE: properties.Schema(
+            properties.Schema.STRING,
+            _('If specified, the name or ID of the image to create the '
+              'volume from.')
+        ),
+        SOURCE_VOLID: properties.Schema(
+            properties.Schema.STRING,
+            _('If specified, the volume to use as source.')
+        ),
     }
 
     attributes_schema = {
@@ -377,32 +429,30 @@ class CinderVolume(Volume):
                       'not.'),
     }
 
-    _restore_property = 'backup_id'
-
     _volume_creating_status = ['creating', 'restoring-backup', 'downloading']
 
     def _display_name(self):
-        name = self.properties['name']
+        name = self.properties[self.NAME]
         if name:
             return name
         return super(CinderVolume, self)._display_name()
 
     def _display_description(self):
-        return self.properties['description']
+        return self.properties[self.DESCRIPTION]
 
     def _create_arguments(self):
         arguments = {
-            'size': self.properties['size'],
-            'availability_zone': self.properties['availability_zone']
+            'size': self.properties[self.SIZE],
+            'availability_zone': self.properties[self.AVAILABILITY_ZONE]
         }
-        if self.properties.get('image'):
+        if self.properties.get(self.IMAGE):
             arguments['imageRef'] = nova_utils.get_image_id(
-                self.nova(), self.properties['image'])
-        elif self.properties.get('imageRef'):
-            arguments['imageRef'] = self.properties['imageRef']
+                self.nova(), self.properties[self.IMAGE])
+        elif self.properties.get(self.IMAGE_REF):
+            arguments['imageRef'] = self.properties[self.IMAGE_REF]
 
-        optionals = ['snapshot_id', 'volume_type', 'source_volid',
-                     'metadata']
+        optionals = (self.SNAPSHOT_ID, self.VOLUME_TYPE, self.SOURCE_VOLID,
+                     self.METADATA)
         arguments.update((prop, self.properties[prop]) for prop in optionals
                          if self.properties[prop])
         return arguments
@@ -416,23 +466,30 @@ class CinderVolume(Volume):
 
 class CinderVolumeAttachment(VolumeAttachment):
 
-    properties_schema = {
-        'instance_uuid': {
-            'Type': 'String', 'Required': True,
-            'Description': _('The ID of the server to which the '
-                             'volume attaches.')},
-        'volume_id': {
-            'Type': 'String', 'Required': True,
-            'Description': _('The ID of the volume to be attached.')},
-        'mountpoint': {
-            'Type': 'String', 'Required': True,
-            'Description': _('The location where the volume is exposed on '
-                             'the instance.')}
-    }
+    PROPERTIES = (
+        INSTANCE_ID, VOLUME_ID, DEVICE,
+    ) = (
+        'instance_uuid', 'volume_id', 'mountpoint',
+    )
 
-    _instance_property = 'instance_uuid'
-    _volume_property = 'volume_id'
-    _device_property = 'mountpoint'
+    properties_schema = {
+        INSTANCE_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('The ID of the server to which the volume attaches.'),
+            required=True
+        ),
+        VOLUME_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('The ID of the volume to be attached.'),
+            required=True
+        ),
+        DEVICE: properties.Schema(
+            properties.Schema.STRING,
+            _('The location where the volume is exposed on the instance. This '
+              'assignment may not be honored and it is advised that the path '
+              '/dev/disk/by-id/virtio-<VolumeId> be used instead.')
+        ),
+    }
 
 
 def resource_mapping():

@@ -60,6 +60,8 @@ class ResourceController(object):
     WSGI controller for Resources in Heat v1 API
     Implements the API actions
     """
+    # Define request scope (must match what is in policy.json)
+    REQUEST_SCOPE = 'resource'
 
     def __init__(self, options):
         self.options = options
@@ -79,7 +81,7 @@ class ResourceController(object):
     @util.identified_stack
     def show(self, req, identity, resource_name):
         """
-        Gets detailed information for a stack
+        Gets detailed information for a resource
         """
 
         res = self.engine.describe_stack_resource(req.context,
@@ -91,7 +93,7 @@ class ResourceController(object):
     @util.identified_stack
     def metadata(self, req, identity, resource_name):
         """
-        Gets detailed information for a stack
+        Gets metadata information for a resource
         """
 
         res = self.engine.describe_stack_resource(req.context,

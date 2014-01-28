@@ -12,12 +12,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import uuid
 
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import environment
 from heat.engine import resource
-from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
@@ -94,7 +94,7 @@ class CloudDBInstanceTest(HeatTestCase):
                              environment.Environment({'InstanceName': 'Test',
                                                       'FlavorRef': '1GB',
                                                       'VolumeSize': '30'}),
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         if inject_property_error:
             # database name given in users list is not a valid database
@@ -122,8 +122,8 @@ class CloudDBInstanceTest(HeatTestCase):
 
     def test_clouddbinstance(self):
         instance = self._setup_test_clouddbinstance('dbinstance')
-        self.assertEqual(instance.hostname, None)
-        self.assertEqual(instance.href, None)
+        self.assertIsNone(instance.hostname)
+        self.assertIsNone(instance.href)
 
     def test_clouddbinstance_create(self):
         instance = self._setup_test_clouddbinstance('dbinstance_create')
@@ -169,14 +169,13 @@ class CloudDBInstanceTest(HeatTestCase):
                            volume=30).AndReturn(fakedbinstance)
         self.m.ReplayAll()
         instance.handle_create()
-        self.assertEqual(instance._resolve_attribute('invalid-attrib'), None)
+        self.assertIsNone(instance._resolve_attribute('invalid-attrib'))
         self.m.VerifyAll()
 
     def test_clouddbinstance_delete(self):
         instance = self._setup_test_clouddbinstance('dbinstance_delete')
         fake_client = self.m.CreateMockAnything()
-        cloud_db = instance.cloud_db().AndReturn(fake_client)
-        fakedbinstance = FakeDBInstance()
+        instance.cloud_db().AndReturn(fake_client)
         fake_client.delete(1234).AndReturn(None)
         self.m.ReplayAll()
         instance.handle_delete()
@@ -188,7 +187,7 @@ class CloudDBInstanceTest(HeatTestCase):
             inject_property_error=False)
         self.m.ReplayAll()
         ret = instance.validate()
-        self.assertEqual(ret, None)
+        self.assertIsNone(ret)
         self.m.VerifyAll()
 
     def test_clouddbinstance_param_validation_fail(self):
@@ -196,5 +195,5 @@ class CloudDBInstanceTest(HeatTestCase):
                                                     inject_property_error=True)
         self.m.ReplayAll()
         ret = instance.validate()
-        self.assertTrue('Error' in ret)
+        self.assertIn('Error', ret)
         self.m.VerifyAll()

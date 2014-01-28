@@ -73,6 +73,8 @@ class EventController(object):
     WSGI controller for Events in Heat v1 API
     Implements the API actions
     """
+    # Define request scope (must match what is in policy.json)
+    REQUEST_SCOPE = 'events'
 
     def __init__(self, options):
         self.options = options
@@ -90,7 +92,7 @@ class EventController(object):
     @util.identified_stack
     def index(self, req, identity, resource_name=None):
         """
-        Lists summary information for all resources
+        Lists summary information for all events
         """
 
         if resource_name is None:
@@ -108,7 +110,7 @@ class EventController(object):
     @util.identified_stack
     def show(self, req, identity, resource_name, event_id):
         """
-        Gets detailed information for a stack
+        Gets detailed information for an event
         """
 
         def event_match(ev):

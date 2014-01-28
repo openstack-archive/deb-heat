@@ -13,6 +13,7 @@
 #    under the License.
 
 import copy
+import uuid
 
 import mox
 
@@ -70,7 +71,7 @@ class InstancesTest(HeatTestCase):
         template = parser.Template(t)
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment({'KeyName': 'test'}),
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
         return (t, stack)
 
     def _setup_test_instance(self, return_server, name, image_id=None,
@@ -94,7 +95,12 @@ class InstancesTest(HeatTestCase):
             server_userdata = nova_utils.build_userdata(
                 instance,
                 instance.t['Properties']['UserData'])
-            instance.mime_string = server_userdata
+            self.m.StubOutWithMock(nova_utils, 'build_userdata')
+            nova_utils.build_userdata(
+                instance,
+                instance.t['Properties']['UserData']).AndReturn(
+                    server_userdata)
+
             self.m.StubOutWithMock(self.fc.servers, 'create')
             self.fc.servers.create(
                 image=1, flavor=1, key_name='test',
@@ -258,15 +264,12 @@ class InstancesTest(HeatTestCase):
         return_server.get()
         self.m.ReplayAll()
 
-        try:
-            instance.check_create_complete(
-                (return_server, self.FakeVolumeAttach()))
-        except exception.Error as e:
-            self.assertEqual(
-                'Creation of server sample-server2 failed: Unknown (500)',
-                str(e))
-        else:
-            self.fail('Error not raised')
+        e = self.assertRaises(
+            exception.Error, instance.check_create_complete,
+            (return_server, self.FakeVolumeAttach()))
+        self.assertEqual(
+            'Creation of server sample-server2 failed: Unknown (500)',
+            str(e))
 
         self.m.VerifyAll()
 
@@ -286,7 +289,7 @@ class InstancesTest(HeatTestCase):
         uuidutils.is_uuid_like('1').AndReturn(True)
         self.m.ReplayAll()
 
-        self.assertEqual(instance.validate(), None)
+        self.assertIsNone(instance.validate())
 
         self.m.VerifyAll()
 
@@ -305,7 +308,7 @@ class InstancesTest(HeatTestCase):
         mox.Replay(get)
 
         scheduler.TaskRunner(instance.delete)()
-        self.assertTrue(instance.resource_id is None)
+        self.assertIsNone(instance.resource_id)
         self.assertEqual(instance.state, (instance.DELETE, instance.COMPLETE))
         self.m.VerifyAll()
 
@@ -635,8 +638,8 @@ class InstancesTest(HeatTestCase):
         instance = self._create_test_instance(return_server,
                                               'build_nics')
 
-        self.assertEqual(None, instance._build_nics([]))
-        self.assertEqual(None, instance._build_nics(None))
+        self.assertIsNone(instance._build_nics([]))
+        self.assertIsNone(instance._build_nics(None))
         self.assertEqual([
             {'port-id': 'id3'}, {'port-id': 'id1'}, {'port-id': 'id2'}],
             instance._build_nics([

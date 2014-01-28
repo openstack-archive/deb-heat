@@ -1,6 +1,16 @@
 [DEFAULT]
 
 #
+# Options defined in heat.api.middleware.ssl
+#
+
+# The HTTP Header that will be used to determine which the
+# original request protocol scheme was, even if it was removed
+# by an SSL terminator proxy. (string value)
+#secure_proxy_ssl_header=X-Forwarded-Proto
+
+
+#
 # Options defined in heat.common.config
 #
 
@@ -41,6 +51,10 @@
 # events will be deleted when this is reached. Set to 0 for
 # unlimited events per stack. (integer value)
 #max_events_per_stack=1000
+
+# RPC timeout for the engine liveness check that is used for
+# stack locking. (integer value)
+#engine_life_check_timeout=2
 
 # Name of the engine node. This can be an opaque identifier.It
 # is not necessarily a hostname, FQDN, or IP address. (string
@@ -113,6 +127,15 @@
 
 
 #
+# Options defined in heat.engine.resources.loadbalancer
+#
+
+# Custom template for the built-in loadbalancer nested stack
+# (string value)
+#loadbalancer_template=<None>
+
+
+#
 # Options defined in heat.openstack.common.db.sqlalchemy.session
 #
 
@@ -166,7 +189,7 @@
 
 # format string to use for log messages with context (string
 # value)
-#logging_context_format_string=%(asctime)s.%(msecs)03d %(process)d %(levelname)s %(name)s [%(request_id)s %(user)s %(tenant)s] %(instance)s%(message)s
+#logging_context_format_string=%(asctime)s.%(msecs)03d %(process)d %(levelname)s %(name)s [%(request_id)s %(user_identity)s] %(instance)s%(message)s
 
 # format string to use for log messages without context
 # (string value)
@@ -181,7 +204,7 @@
 #logging_exception_prefix=%(asctime)s.%(msecs)03d %(process)d TRACE %(name)s %(instance)s
 
 # list of logger=LEVEL pairs (list value)
-#default_log_levels=amqplib=WARN,sqlalchemy=WARN,boto=WARN,suds=INFO,keystone=INFO,eventlet.wsgi.server=WARN
+#default_log_levels=amqp=WARN,amqplib=WARN,boto=WARN,keystone=INFO,qpid=WARN,sqlalchemy=WARN,suds=INFO,iso8601=WARN
 
 # publish error events (boolean value)
 #publish_errors=false
@@ -197,12 +220,13 @@
 # it like this (string value)
 #instance_uuid_format="[instance: %(uuid)s] "
 
-# If this option is specified, the logging configuration file
-# specified is used and overrides any other logging options
-# specified. Please see the Python logging module
-# documentation for details on logging configuration files.
-# (string value)
-#log_config=<None>
+# The name of logging configuration file. It does not disable
+# existing loggers, but just appends specified logging
+# configuration to any other existing logging options. Please
+# see the Python logging module documentation for details on
+# logging configuration files. (string value)
+# Deprecated group/name - [DEFAULT]/log_config
+#log_config_append=<None>
 
 # DEPRECATED. A logging.Formatter log message format string
 # which may use any of the available logging.LogRecord
@@ -217,10 +241,12 @@
 
 # (Optional) Name of log file to output to. If no default is
 # set, logging will go to stdout. (string value)
+# Deprecated group/name - [DEFAULT]/logfile
 #log_file=<None>
 
 # (Optional) The base directory used for relative --log-file
 # paths (string value)
+# Deprecated group/name - [DEFAULT]/logdir
 #log_dir=<None>
 
 # Use syslog for logging. (boolean value)
@@ -259,7 +285,7 @@
 # Options defined in heat.openstack.common.notifier.rpc_notifier
 #
 
-# AMQP topic used for openstack notifications (list value)
+# AMQP topic used for OpenStack notifications (list value)
 #notification_topics=notifications
 
 
@@ -297,16 +323,16 @@
 # by impl_zmq. (integer value)
 #rpc_cast_timeout=30
 
-# Modules of exceptions that are permitted to be recreatedupon
-# receiving exception data from an rpc call. (list value)
-#allowed_rpc_exception_modules=heat.openstack.common.exception,heat.common.exception,nova.exception,cinder.exception,exceptions
+# Modules of exceptions that are permitted to be recreated
+# upon receiving exception data from an rpc call. (list value)
+#allowed_rpc_exception_modules=nova.exception,cinder.exception,exceptions
 
 # If passed, use a fake RabbitMQ provider (boolean value)
 #fake_rabbit=false
 
 # AMQP exchange to connect to if using RabbitMQ or Qpid
 # (string value)
-#control_exchange=openstack
+#control_exchange=heat
 
 
 #
@@ -314,6 +340,7 @@
 #
 
 # Use durable queues in amqp. (boolean value)
+# Deprecated group/name - [DEFAULT]/rabbit_durable_queues
 #amqp_durable_queues=false
 
 # Auto-delete queues in amqp. (boolean value)
@@ -465,7 +492,22 @@
 #matchmaker_heartbeat_ttl=600
 
 
-[clients_swift]
+[auth_password]
+
+#
+# Options defined in heat.common.config
+#
+
+# Allow orchestration of multiple clouds (boolean value)
+#multi_cloud=false
+
+# Allowed keystone endpoints for auth_uri when multi_cloud is
+# enabled. At least one endpoint needs to be specified. (list
+# value)
+#allowed_auth_uris=
+
+
+[clients]
 
 #
 # Options defined in heat.common.config
@@ -487,114 +529,26 @@
 #insecure=false
 
 
-[auth_password]
+[clients_ceilometer]
 
 #
 # Options defined in heat.common.config
 #
 
-# Allow orchestration of multiple clouds (boolean value)
-#multi_cloud=false
-
-# Allowed keystone endpoints for auth_uri when multi_cloud is
-# enabled. At least one endpoint needs to be specified. (list
+# Optional CA cert file to use in SSL connections (string
 # value)
-#allowed_auth_uris=
-
-
-[ssl]
-
-#
-# Options defined in heat.openstack.common.sslutils
-#
-
-# CA certificate file to use to verify connecting clients
-# (string value)
 #ca_file=<None>
 
-# Certificate file to use when starting the server securely
-# (string value)
+# Optional PEM-formatted certificate chain file (string value)
 #cert_file=<None>
 
-# Private key file to use when starting the server securely
+# Optional PEM-formatted file that contains the private key
 # (string value)
 #key_file=<None>
 
-
-[database]
-
-#
-# Options defined in heat.openstack.common.db.api
-#
-
-# The backend to use for db (string value)
-#backend=sqlalchemy
-
-# Enable the experimental use of thread pooling for all DB API
-# calls (boolean value)
-#use_tpool=false
-
-
-#
-# Options defined in heat.openstack.common.db.sqlalchemy.session
-#
-
-# The SQLAlchemy connection string used to connect to the
-# database (string value)
-#connection=sqlite:////heat/openstack/common/db/$sqlite_db
-
-# The SQLAlchemy connection string used to connect to the
-# slave database (string value)
-#slave_connection=
-
-# timeout before idle sql connections are reaped (integer
-# value)
-#idle_timeout=3600
-
-# Minimum number of SQL connections to keep open in a pool
-# (integer value)
-#min_pool_size=1
-
-# Maximum number of SQL connections to keep open in a pool
-# (integer value)
-#max_pool_size=<None>
-
-# maximum db connection retries during startup. (setting -1
-# implies an infinite retry count) (integer value)
-#max_retries=10
-
-# interval between retries of opening a sql connection
-# (integer value)
-#retry_interval=10
-
-# If set, use this value for max_overflow with sqlalchemy
-# (integer value)
-#max_overflow=<None>
-
-# Verbosity of SQL debugging information. 0=None,
-# 100=Everything (integer value)
-#connection_debug=0
-
-# Add python stack traces to SQL as comment strings (boolean
-# value)
-#connection_trace=false
-
-# If set, use this value for pool_timeout with sqlalchemy
-# (integer value)
-#pool_timeout=<None>
-
-
-[paste_deploy]
-
-#
-# Options defined in heat.common.config
-#
-
-# The flavor to use (string value)
-#flavor=<None>
-
-# The API paste config file to use (string value)
-#api_paste_config=api-paste.ini
+# If set then the server's certificate will not be verified
+# (boolean value)
+#insecure=false
 
 
 [clients_cinder]
@@ -619,7 +573,55 @@
 #insecure=false
 
 
-[clients]
+[clients_heat]
+
+#
+# Options defined in heat.common.config
+#
+
+# Optional CA cert file to use in SSL connections (string
+# value)
+#ca_file=<None>
+
+# Optional PEM-formatted certificate chain file (string value)
+#cert_file=<None>
+
+# Optional PEM-formatted file that contains the private key
+# (string value)
+#key_file=<None>
+
+# If set then the server's certificate will not be verified
+# (boolean value)
+#insecure=false
+
+# Optional heat url in format like
+# http://0.0.0.0:8004/v1/%(tenant_id)s. (string value)
+#url=<None>
+
+
+[clients_keystone]
+
+#
+# Options defined in heat.common.config
+#
+
+# Optional CA cert file to use in SSL connections (string
+# value)
+#ca_file=<None>
+
+# Optional PEM-formatted certificate chain file (string value)
+#cert_file=<None>
+
+# Optional PEM-formatted file that contains the private key
+# (string value)
+#key_file=<None>
+
+# If set then the server's certificate will not be verified
+# (boolean value)
+#insecure=false
+
+
+[clients_neutron]
 
 #
 # Options defined in heat.common.config
@@ -663,17 +665,7 @@
 #insecure=false
 
 
-[matchmaker_ring]
-
-#
-# Options defined in heat.openstack.common.rpc.matchmaker_ring
-#
-
-# Matchmaker ring file (JSON) (string value)
-#ringfile=/etc/oslo/matchmaker_ring.json
-
-
-[clients_ceilometer]
+[clients_swift]
 
 #
 # Options defined in heat.common.config
@@ -695,14 +687,109 @@
 #insecure=false
 
 
-[rpc_notifier2]
+[clients_trove]
 
 #
-# Options defined in heat.openstack.common.notifier.rpc_notifier2
+# Options defined in heat.common.config
 #
 
-# AMQP topic(s) used for openstack notifications (list value)
-#topics=notifications
+# Optional CA cert file to use in SSL connections (string
+# value)
+#ca_file=<None>
+
+# Optional PEM-formatted certificate chain file (string value)
+#cert_file=<None>
+
+# Optional PEM-formatted file that contains the private key
+# (string value)
+#key_file=<None>
+
+# If set then the server's certificate will not be verified
+# (boolean value)
+#insecure=false
+
+
+[database]
+
+#
+# Options defined in heat.openstack.common.db.api
+#
+
+# The backend to use for db (string value)
+# Deprecated group/name - [DEFAULT]/db_backend
+#backend=sqlalchemy
+
+# Enable the experimental use of thread pooling for all DB API
+# calls (boolean value)
+# Deprecated group/name - [DEFAULT]/dbapi_use_tpool
+#use_tpool=false
+
+
+#
+# Options defined in heat.openstack.common.db.sqlalchemy.session
+#
+
+# The SQLAlchemy connection string used to connect to the
+# database (string value)
+# Deprecated group/name - [DEFAULT]/sql_connection
+# Deprecated group/name - [DATABASE]/sql_connection
+# Deprecated group/name - [sql]/connection
+#connection=sqlite:////heat/openstack/common/db/$sqlite_db
+
+# The SQLAlchemy connection string used to connect to the
+# slave database (string value)
+#slave_connection=
+
+# timeout before idle sql connections are reaped (integer
+# value)
+# Deprecated group/name - [DEFAULT]/sql_idle_timeout
+# Deprecated group/name - [DATABASE]/sql_idle_timeout
+#idle_timeout=3600
+
+# Minimum number of SQL connections to keep open in a pool
+# (integer value)
+# Deprecated group/name - [DEFAULT]/sql_min_pool_size
+# Deprecated group/name - [DATABASE]/sql_min_pool_size
+#min_pool_size=1
+
+# Maximum number of SQL connections to keep open in a pool
+# (integer value)
+# Deprecated group/name - [DEFAULT]/sql_max_pool_size
+# Deprecated group/name - [DATABASE]/sql_max_pool_size
+#max_pool_size=<None>
+
+# maximum db connection retries during startup. (setting -1
+# implies an infinite retry count) (integer value)
+# Deprecated group/name - [DEFAULT]/sql_max_retries
+# Deprecated group/name - [DATABASE]/sql_max_retries
+#max_retries=10
+
+# interval between retries of opening a sql connection
+# (integer value)
+# Deprecated group/name - [DEFAULT]/sql_retry_interval
+# Deprecated group/name - [DATABASE]/reconnect_interval
+#retry_interval=10
+
+# If set, use this value for max_overflow with sqlalchemy
+# (integer value)
+# Deprecated group/name - [DEFAULT]/sql_max_overflow
+# Deprecated group/name - [DATABASE]/sqlalchemy_max_overflow
+#max_overflow=<None>
+
+# Verbosity of SQL debugging information. 0=None,
+# 100=Everything (integer value)
+# Deprecated group/name - [DEFAULT]/sql_connection_debug
+#connection_debug=0
+
+# Add python stack traces to SQL as comment strings (boolean
+# value)
+# Deprecated group/name - [DEFAULT]/sql_connection_trace
+#connection_trace=false
+
+# If set, use this value for pool_timeout with sqlalchemy
+# (integer value)
+# Deprecated group/name - [DATABASE]/sqlalchemy_pool_timeout
+#pool_timeout=<None>
 
 
 [ec2authtoken]
@@ -721,35 +808,6 @@
 # enabled. At least one endpoint needs to be specified. (list
 # value)
 #allowed_auth_uris=
-
-
-[heat_api_cloudwatch]
-
-#
-# Options defined in heat.common.wsgi
-#
-
-# Address to bind the server.  Useful when selecting a
-# particular network interface. (string value)
-#bind_host=0.0.0.0
-
-# The port on which the server will listen. (integer value)
-#bind_port=8003
-
-# Number of backlog requests to configure the socket with
-# (integer value)
-#backlog=4096
-
-# Location of the SSL Certificate File to use for SSL mode
-# (string value)
-#cert_file=<None>
-
-# Location of the SSL Key File to use for enabling SSL mode
-# (string value)
-#key_file=<None>
-
-# Number of workers for Heat service (integer value)
-#workers=0
 
 
 [heat_api]
@@ -793,6 +851,35 @@
 
 # The port on which the server will listen. (integer value)
 #bind_port=8000
+
+# Number of backlog requests to configure the socket with
+# (integer value)
+#backlog=4096
+
+# Location of the SSL Certificate File to use for SSL mode
+# (string value)
+#cert_file=<None>
+
+# Location of the SSL Key File to use for enabling SSL mode
+# (string value)
+#key_file=<None>
+
+# Number of workers for Heat service (integer value)
+#workers=0
+
+
+[heat_api_cloudwatch]
+
+#
+# Options defined in heat.common.wsgi
+#
+
+# Address to bind the server.  Useful when selecting a
+# particular network interface. (string value)
+#bind_host=0.0.0.0
+
+# The port on which the server will listen. (integer value)
+#bind_port=8003
 
 # Number of backlog requests to configure the socket with
 # (integer value)
@@ -896,6 +983,7 @@
 
 # If defined, the memcache server(s) to use for caching (list
 # value)
+# Deprecated group/name - [DEFAULT]/memcache_servers
 #memcached_servers=<None>
 
 # In order to prevent excessive requests and validations, the
@@ -922,27 +1010,11 @@
 # value)
 #memcache_secret_key=<None>
 
-
-[clients_neutron]
-
-#
-# Options defined in heat.common.config
-#
-
-# Optional CA cert file to use in SSL connections (string
-# value)
-#ca_file=<None>
-
-# Optional PEM-formatted certificate chain file (string value)
-#cert_file=<None>
-
-# Optional PEM-formatted file that contains the private key
-# (string value)
-#key_file=<None>
-
-# If set then the server's certificate will not be verified
-# (boolean value)
-#insecure=false
+# (optional) indicate whether to set the X-Service-Catalog
+# header. If False, middleware will not ask for service
+# catalog on token validation and will not set the X-Service-
+# Catalog header. (boolean value)
+#include_service_catalog=true
 
 
 [matchmaker_redis]
@@ -961,26 +1033,28 @@
 #password=<None>
 
 
-[clients_keystone]
+[matchmaker_ring]
+
+#
+# Options defined in heat.openstack.common.rpc.matchmaker_ring
+#
+
+# Matchmaker ring file (JSON) (string value)
+# Deprecated group/name - [DEFAULT]/matchmaker_ringfile
+#ringfile=/etc/oslo/matchmaker_ring.json
+
+
+[paste_deploy]
 
 #
 # Options defined in heat.common.config
 #
 
-# Optional CA cert file to use in SSL connections (string
-# value)
-#ca_file=<None>
+# The flavor to use (string value)
+#flavor=<None>
 
-# Optional PEM-formatted certificate chain file (string value)
-#cert_file=<None>
-
-# Optional PEM-formatted file that contains the private key
-# (string value)
-#key_file=<None>
-
-# If set then the server's certificate will not be verified
-# (boolean value)
-#insecure=false
+# The API paste config file to use (string value)
+#api_paste_config=api-paste.ini
 
 
 [revision]
@@ -994,5 +1068,34 @@
 # different file and add it as another config option (string
 # value)
 #heat_revision=unknown
+
+
+[rpc_notifier2]
+
+#
+# Options defined in heat.openstack.common.notifier.rpc_notifier2
+#
+
+# AMQP topic(s) used for OpenStack notifications (list value)
+#topics=notifications
+
+
+[ssl]
+
+#
+# Options defined in heat.openstack.common.sslutils
+#
+
+# CA certificate file to use to verify connecting clients
+# (string value)
+#ca_file=<None>
+
+# Certificate file to use when starting the server securely
+# (string value)
+#cert_file=<None>
+
+# Private key file to use when starting the server securely
+# (string value)
+#key_file=<None>
 
 

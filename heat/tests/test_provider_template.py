@@ -13,7 +13,10 @@
 #    under the License.
 
 import os
+import uuid
 import json
+
+import testscenarios
 
 from heat.common import exception
 from heat.common import urlfetch
@@ -24,14 +27,14 @@ from heat.engine import parser
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine import resources
-from heat.engine import scheduler
 from heat.engine.resources import template_resource
-
-from heat.openstack.common import uuidutils
 
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
+
+
+load_tests = testscenarios.load_tests_apply_scenarios
 
 
 class MyCloudResource(generic_rsrc.GenericResource):
@@ -119,7 +122,7 @@ class ProviderTemplateTest(HeatTestCase):
                   {'DummyResource': 'test_resource.template'}})
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template({}, files=files), env=env,
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         map_prop_val = {
             "key1": "val1",
@@ -177,7 +180,7 @@ class ProviderTemplateTest(HeatTestCase):
                   {'DummyResource': 'test_resource.template'}})
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template({}, files=files), env=env,
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         json_snippet = {
             "Type": "DummyResource",
@@ -185,7 +188,7 @@ class ProviderTemplateTest(HeatTestCase):
 
         temp_res = template_resource.TemplateResource('test_t_res',
                                                       json_snippet, stack)
-        self.assertEqual(None, temp_res.validate())
+        self.assertIsNone(temp_res.validate())
 
     def test_attributes_missing(self):
         provider = {
@@ -209,7 +212,7 @@ class ProviderTemplateTest(HeatTestCase):
                   {'DummyResource': 'test_resource.template'}})
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template({}, files=files), env=env,
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         temp_res = template_resource.TemplateResource('test_t_res',
                                                       json_snippet, stack)
@@ -244,11 +247,11 @@ class ProviderTemplateTest(HeatTestCase):
                   {'DummyResource': 'test_resource.template'}})
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template({}, files=files), env=env,
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         temp_res = template_resource.TemplateResource('test_t_res',
                                                       json_snippet, stack)
-        self.assertEqual(None, temp_res.validate())
+        self.assertIsNone(temp_res.validate())
 
     def test_properties_missing(self):
         provider = {
@@ -274,7 +277,7 @@ class ProviderTemplateTest(HeatTestCase):
                   {'DummyResource': 'test_resource.template'}})
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template({}, files=files), env=env,
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         temp_res = template_resource.TemplateResource('test_t_res',
                                                       json_snippet, stack)
@@ -306,7 +309,7 @@ class ProviderTemplateTest(HeatTestCase):
                   {'DummyResource': 'test_resource.template'}})
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template({}, files=files), env=env,
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         temp_res = template_resource.TemplateResource('test_t_res',
                                                       json_snippet, stack)
@@ -339,7 +342,7 @@ class ProviderTemplateTest(HeatTestCase):
                   {'DummyResource': 'test_resource.template'}})
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template({}, files=files), env=env,
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         temp_res = template_resource.TemplateResource('test_t_res',
                                                       json_snippet, stack)
@@ -389,7 +392,7 @@ class ProviderTemplateTest(HeatTestCase):
             }
         }
         stack = parser.Stack(None, 'test_stack', parser.Template({}),
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
         templ_resource = resource.Resource("test_templ_resource", json_snippet,
                                            stack)
         self.m.VerifyAll()
@@ -412,7 +415,7 @@ class ProviderTemplateTest(HeatTestCase):
                    {'Test::Frodo': test_templ_name}})
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template({}),
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         minimal_temp = json.dumps({'Parameters': {}, 'Resources': {}})
         self.m.StubOutWithMock(urlfetch, "get")
@@ -424,7 +427,7 @@ class ProviderTemplateTest(HeatTestCase):
         temp_res = template_resource.TemplateResource('test_t_res',
                                                       {"Type": 'Test::Frodo'},
                                                       stack)
-        self.assertEqual(None, temp_res.validate())
+        self.assertIsNone(temp_res.validate())
         self.m.VerifyAll()
 
     def test_user_template_not_retrieved_by_file(self):
@@ -436,7 +439,7 @@ class ProviderTemplateTest(HeatTestCase):
                   {'Test::Flippy': test_templ_name}})
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template({}), env=env,
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         temp_res = template_resource.TemplateResource('test_t_res',
                                                       {"Type": 'Test::Flippy'},
@@ -456,7 +459,7 @@ class ProviderTemplateTest(HeatTestCase):
                    {'Test::Frodo': test_templ_name}})
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template({}),
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         self.m.StubOutWithMock(urlfetch, "get")
         urlfetch.get(test_templ_name,
@@ -482,7 +485,7 @@ class ProviderTemplateTest(HeatTestCase):
                   {'Test::Flippy': test_templ_name}})
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template({}), env=env,
-                             stack_id=uuidutils.generate_uuid())
+                             stack_id=str(uuid.uuid4()))
 
         self.m.StubOutWithMock(urlfetch, "get")
         urlfetch.get(test_templ_name,
@@ -495,72 +498,183 @@ class ProviderTemplateTest(HeatTestCase):
         self.assertRaises(exception.StackValidationFailed, temp_res.validate)
         self.m.VerifyAll()
 
-    def create_stack(self, template):
-        t = template_format.parse(template)
-        stack = self.parse_stack(t)
+    def test_user_template_retrieve_fail_ext(self):
+        # make sure that a TemplateResource defined in the user environment
+        # fails gracefully if the template file is the wrong extension
+        # we should be able to create the TemplateResource object, but
+        # validation should fail, when the second attempt to access it is
+        # made in validate()
+        env = environment.Environment()
+        test_templ_name = 'http://heatr/letter_to_granny.docx'
+        env.load({'resource_registry':
+                  {'Test::Flippy': test_templ_name}})
+        stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                             parser.Template({}), env=env,
+                             stack_id=str(uuid.uuid4()))
+
+        self.m.ReplayAll()
+
+        temp_res = template_resource.TemplateResource('test_t_res',
+                                                      {"Type": 'Test::Flippy'},
+                                                      stack)
+        self.assertRaises(exception.StackValidationFailed, temp_res.validate)
+        self.m.VerifyAll()
+
+
+class ProviderTemplateUpdateTest(HeatTestCase):
+    main_template = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Resources:
+  the_nested:
+    Type: the.yaml
+    Properties:
+      one: my_name
+
+Outputs:
+  identifier:
+    Value: {Ref: the_nested}
+  value:
+    Value: {'Fn::GetAtt': [the_nested, the_str]}
+'''
+
+    main_template_2 = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Resources:
+  the_nested:
+    Type: the.yaml
+    Properties:
+      one: updated_name
+
+Outputs:
+  identifier:
+    Value: {Ref: the_nested}
+  value:
+    Value: {'Fn::GetAtt': [the_nested, the_str]}
+'''
+
+    initial_tmpl = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Parameters:
+  one:
+    Default: foo
+    Type: String
+Resources:
+  NestedResource:
+    Type: OS::Heat::RandomString
+    Properties:
+      salt: {Ref: one}
+Outputs:
+  the_str:
+    Value: {'Fn::GetAtt': [NestedResource, value]}
+'''
+    prop_change_tmpl = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Parameters:
+  one:
+    Default: yikes
+    Type: String
+  two:
+    Default: foo
+    Type: String
+Resources:
+  NestedResource:
+    Type: OS::Heat::RandomString
+    Properties:
+      salt: {Ref: one}
+Outputs:
+  the_str:
+    Value: {'Fn::GetAtt': [NestedResource, value]}
+'''
+    attr_change_tmpl = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Parameters:
+  one:
+    Default: foo
+    Type: String
+Resources:
+  NestedResource:
+    Type: OS::Heat::RandomString
+    Properties:
+      salt: {Ref: one}
+Outputs:
+  the_str:
+    Value: {'Fn::GetAtt': [NestedResource, value]}
+  something_else:
+    Value: just_a_string
+'''
+    content_change_tmpl = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Parameters:
+  one:
+    Default: foo
+    Type: String
+Resources:
+  NestedResource:
+    Type: OS::Heat::RandomString
+    Properties:
+      salt: yum
+Outputs:
+  the_str:
+    Value: {'Fn::GetAtt': [NestedResource, value]}
+'''
+
+    EXPECTED = (REPLACE, UPDATE, NOCHANGE) = ('replace', 'update', 'nochange')
+    scenarios = [
+        ('no_changes', dict(template=main_template,
+                            provider=initial_tmpl,
+                            expect=NOCHANGE)),
+        ('main_tmpl_change', dict(template=main_template_2,
+                                  provider=initial_tmpl,
+                                  expect=UPDATE)),
+        ('provider_change', dict(template=main_template,
+                                 provider=content_change_tmpl,
+                                 expect=UPDATE)),
+        ('provider_props_change', dict(template=main_template,
+                                       provider=prop_change_tmpl,
+                                       expect=REPLACE)),
+        ('provider_attr_change', dict(template=main_template,
+                                      provider=attr_change_tmpl,
+                                      expect=REPLACE)),
+    ]
+
+    def setUp(self):
+        super(ProviderTemplateUpdateTest, self).setUp()
+        utils.setup_dummy_db()
+        self.ctx = utils.dummy_context('test_username', 'aaaa', 'password')
+
+    def create_stack(self):
+        t = template_format.parse(self.main_template)
+        tmpl = parser.Template(t, files={'the.yaml': self.initial_tmpl})
+        stack = parser.Stack(self.ctx, utils.random_name(), tmpl)
+        stack.store()
         stack.create()
         self.assertEqual(stack.state, (stack.CREATE, stack.COMPLETE))
         return stack
 
-    def parse_stack(self, t):
-        ctx = utils.dummy_context('test_username', 'aaaa', 'password')
-        stack_name = 'test_stack'
-        tmpl = parser.Template(t)
-        stack = parser.Stack(ctx, stack_name, tmpl)
-        stack.store()
-        return stack
-
-    def test_template_resource_update(self):
-        # assertion: updating a template resource is never destructive
-        #            as it defers to the nested stack to determine if anything
-        #            needs to be replaced.
-
-        utils.setup_dummy_db()
-        resource._register_class('GenericResource',
-                                 generic_rsrc.GenericResource)
-
-        templ_resource_name = 'http://server.test/the.yaml'
-        test_template = '''
-HeatTemplateFormatVersion: '2012-12-12'
-Resources:
-  the_nested:
-    Type: %s
-    Properties:
-      one: myname
-''' % templ_resource_name
-
-        self.m.StubOutWithMock(urlfetch, "get")
-        urlfetch.get(templ_resource_name,
-                     allowed_schemes=('http',
-                                      'https')).MultipleTimes().\
-            AndReturn('''
-HeatTemplateFormatVersion: '2012-12-12'
-Parameters:
-  one:
-    Type: String
-Resources:
-  NestedResource:
-    Type: GenericResource
-Outputs:
-  Foo:
-    Value: {Ref: one}
-''')
-
-        self.m.ReplayAll()
-
-        stack = self.create_stack(test_template)
-        templ_resource = stack['the_nested']
-        self.assertEqual('myname', templ_resource.FnGetAtt('Foo'))
-
-        update_snippet = {
-            "Type": templ_resource_name,
-            "Properties": {
-                "one": "yourname"
-            }
-        }
-        # test that update() does NOT raise UpdateReplace.
-        updater = scheduler.TaskRunner(templ_resource.update, update_snippet)
-        self.assertEqual(None, updater())
-        self.assertEqual('yourname', templ_resource.FnGetAtt('Foo'))
-
+    @utils.stack_delete_after
+    def test_template_resource_update_template_schema(self):
+        stack = self.create_stack()
+        self.stack = stack
+        initial_id = stack.output('identifier')
+        initial_val = stack.output('value')
+        tmpl = parser.Template(template_format.parse(self.template),
+                               files={'the.yaml': self.provider})
+        updated_stack = parser.Stack(self.ctx, stack.name, tmpl)
+        stack.update(updated_stack)
+        self.assertEqual(stack.state, ('UPDATE', 'COMPLETE'))
+        if self.expect == self.REPLACE:
+            self.assertNotEqual(initial_id,
+                                stack.output('identifier'))
+            self.assertNotEqual(initial_val,
+                                stack.output('value'))
+        elif self.expect == self.NOCHANGE:
+            self.assertEqual(initial_id,
+                             stack.output('identifier'))
+            self.assertEqual(initial_val,
+                             stack.output('value'))
+        else:
+            self.assertEqual(initial_id,
+                             stack.output('identifier'))
+            self.assertNotEqual(initial_val,
+                                stack.output('value'))
         self.m.VerifyAll()

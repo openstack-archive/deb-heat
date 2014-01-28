@@ -49,13 +49,13 @@ class EnvironmentTest(common.HeatTestCase):
         self.assertEqual(new_env, env.user_env_as_dict())
 
     def test_global_registry(self):
-        self.g_env.register_class('CloudX::Compute::Server',
+        self.g_env.register_class('CloudX::Nova::Server',
                                   generic_resource.GenericResource)
         new_env = {u'parameters': {u'a': u'ff', u'b': u'ss'},
                    u'resource_registry': {u'OS::*': 'CloudX::*'}}
         env = environment.Environment(new_env)
-        self.assertEqual('CloudX::Compute::Server',
-                         env.get_resource_info('OS::Compute::Server',
+        self.assertEqual('CloudX::Nova::Server',
+                         env.get_resource_info('OS::Nova::Server',
                                                'my_db_server').name)
 
     def test_map_one_resource_type(self):
@@ -97,14 +97,53 @@ class EnvironmentTest(common.HeatTestCase):
             u'OS::Networking::FloatingIP': 'ip.yaml'}}}}
 
         env = environment.Environment()
-        self.assertEqual(None,
-                         env.get_resource_info('OS::Networking::FloatingIP',
-                                               'my_fip'))
+        self.assertIsNone(env.get_resource_info('OS::Networking::FloatingIP',
+                                                'my_fip'))
 
         env.load(new_env)
         self.assertEqual('ip.yaml',
                          env.get_resource_info('OS::Networking::FloatingIP',
                                                'my_fip').value)
+
+
+class EnvironmentDuplicateTest(common.HeatTestCase):
+
+    scenarios = [
+        ('same', dict(resource_type='test.yaml',
+                      expected_equal=True)),
+        ('diff_temp', dict(resource_type='not.yaml',
+                           expected_equal=False)),
+        ('diff_map', dict(resource_type='OS::SomethingElse',
+                          expected_equal=False)),
+        ('diff_path', dict(resource_type='a/test.yaml',
+                           expected_equal=False)),
+    ]
+
+    def test_env_load(self):
+        env_initial = {u'resource_registry': {
+            u'OS::Test::Dummy': 'test.yaml'}}
+
+        env = environment.Environment()
+        env.load(env_initial)
+        info = env.get_resource_info('OS::Test::Dummy', 'something')
+        replace_log = 'Changing %s from %s to %s' % ('OS::Test::Dummy',
+                                                     'test.yaml',
+                                                     self.resource_type)
+        self.assertNotIn(replace_log, self.logger.output)
+        env_test = {u'resource_registry': {
+            u'OS::Test::Dummy': self.resource_type}}
+        env.load(env_test)
+
+        if self.expected_equal:
+            # should return exactly the same object.
+            self.assertIs(info, env.get_resource_info('OS::Test::Dummy',
+                                                      'my_fip'))
+            self.assertNotIn(replace_log, self.logger.output)
+        else:
+            self.assertIn(replace_log, self.logger.output)
+            self.assertNotEqual(info,
+                                env.get_resource_info('OS::Test::Dummy',
+                                                      'my_fip'))
 
 
 class GlobalEnvLoadingTest(common.HeatTestCase):
@@ -222,8 +261,7 @@ class GlobalEnvLoadingTest(common.HeatTestCase):
         resources._load_all(g_env)
 
         # 3. assert our resource is in now gone.
-        self.assertEqual(None,
-                         g_env.get_resource_info('OS::Nova::Server'))
+        self.assertIsNone(g_env.get_resource_info('OS::Nova::Server'))
 
         # 4. make sure we haven't removed something we shouldn't have
         self.assertEqual(resources.instance.Instance,
@@ -248,8 +286,7 @@ class GlobalEnvLoadingTest(common.HeatTestCase):
         resources._load_all(g_env)
 
         # 3. assert our resources are now gone.
-        self.assertEqual(None,
-                         g_env.get_resource_info('AWS::EC2::Instance'))
+        self.assertIsNone(g_env.get_resource_info('AWS::EC2::Instance'))
 
         # 4. make sure we haven't removed something we shouldn't have
         self.assertEqual(resources.server.Server,
