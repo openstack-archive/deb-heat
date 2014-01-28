@@ -4,7 +4,7 @@ heat (2014.1~b2-1) experimental; urgency=low
   * Added new (build)-depends python-heatclient (>= 0.2.3).
   * Now building the sphinx doc in a heat-doc package.
 
- -- Thomas Goirand <zigo@debian.org>  Mon, 09 Dec 2013 22:01:07 +0800
+ -- Thomas Goirand <zigo@debian.org>  Tue, 28 Jan 2014 16:51:59 +0800
 
 heat (2013.2.1-2) unstable; urgency=low
 
