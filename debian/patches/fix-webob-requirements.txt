@@ -1,0 +1,16 @@
+Description: Fix WebOb version in requirements.txt
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: no
+Last-Update: 2014-02-03
+
+--- heat-2013.2.1.orig/requirements.txt
++++ heat-2013.2.1/requirements.txt
+@@ -14,7 +14,7 @@ python-novaclient>=2.15.0
+ PasteDeploy>=1.5.0
+ Routes>=1.12.3
+ SQLAlchemy>=0.7.8,<=0.7.99
+-WebOb>=1.2.3,<1.3
++WebOb>=1.2.3
+ python-keystoneclient>=0.3.2
+ python-swiftclient>=1.5
+ python-neutronclient>=2.3.0,<3
