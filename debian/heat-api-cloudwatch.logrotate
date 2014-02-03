@@ -1,4 +1,12 @@
 /var/log/heat/api-cloudwatch.log {
     daily
     missingok
+    compress
+    postrotate
+        if dpkg-vendor --derives-from ubuntu ; then
+            service heat-api-cloudwatch restart >/dev/null 2>&1 || true
+        else
+            invoke-rc.d heat-api-cloudwatch restart >/dev/null 2>&1 || true
+        fi
+    endscript
 }
