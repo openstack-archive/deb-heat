@@ -14,7 +14,7 @@ endif
 override_dh_clean:
 	dh_clean
 	rm -rf heat.egg-info
-	rm -rf doc/build
+	rm -rf doc/build .coverage .testrepository
 	find . -iname '*.pyc' -delete
 	rm -f run_tests.err.log
 	rm -f \
