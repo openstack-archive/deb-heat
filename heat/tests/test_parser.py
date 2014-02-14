@@ -15,6 +15,10 @@
 import json
 import time
 
+from keystoneclient import exceptions as kc_exceptions
+
+from oslo.config import cfg
+
 from heat.engine import environment
 from heat.common import exception
 from heat.common import template_format
@@ -239,9 +243,12 @@ Mappings:
                           data)
 
     def test_select_from_list_out_of_bound(self):
-        data = {"Fn::Select": ["3", ["foo", "bar"]]}
-        self.assertRaises(IndexError, parser.Template.resolve_select,
-                          data)
+        data = {"Fn::Select": ["0", ["foo", "bar"]]}
+        self.assertEqual(parser.Template.resolve_select(data), "foo")
+        data = {"Fn::Select": ["1", ["foo", "bar"]]}
+        self.assertEqual(parser.Template.resolve_select(data), "bar")
+        data = {"Fn::Select": ["2", ["foo", "bar"]]}
+        self.assertEqual(parser.Template.resolve_select(data), "")
 
     def test_select_from_dict(self):
         data = {"Fn::Select": ["red", {"red": "robin", "re": "foo"}]}
@@ -258,8 +265,7 @@ Mappings:
 
     def test_select_from_dict_not_existing(self):
         data = {"Fn::Select": ["green", {"red": "robin", "re": "foo"}]}
-        self.assertRaises(KeyError, parser.Template.resolve_select,
-                          data)
+        self.assertEqual(parser.Template.resolve_select(data), "")
 
     def test_select_from_serialized_json_map(self):
         js = json.dumps({"red": "robin", "re": "foo"})
@@ -287,6 +293,14 @@ Mappings:
         join3 = {"Fn::Select": ["foo", {"foo": "bar"}, ""]}
         self.assertRaises(ValueError, parser.Template.resolve_select,
                           join3)
+
+    def test_select_empty_string(self):
+        data = {"Fn::Select": ["0", '']}
+        self.assertEqual(parser.Template.resolve_select(data), "")
+        data = {"Fn::Select": ["1", '']}
+        self.assertEqual(parser.Template.resolve_select(data), "")
+        data = {"Fn::Select": ["one", '']}
+        self.assertEqual(parser.Template.resolve_select(data), "")
 
     def test_join_reduce(self):
         join = {"Fn::Join": [" ", ["foo", "bar", "baz", {'Ref': 'baz'},
@@ -782,6 +796,57 @@ class StackTest(HeatTestCase):
         self.assertEqual(db_s, None)
         self.assertEqual(self.stack.state,
                          (parser.Stack.DELETE, parser.Stack.COMPLETE))
+
+    @utils.stack_delete_after
+    def test_delete_trust(self):
+        cfg.CONF.set_override('deferred_auth_method', 'trusts')
+
+        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
+            FakeKeystoneClient())
+        self.m.ReplayAll()
+
+        self.stack = parser.Stack(
+            self.ctx, 'delete_trust', template.Template({}))
+        stack_id = self.stack.store()
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertNotEqual(db_s, None)
+
+        self.stack.delete()
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertEqual(db_s, None)
+        self.assertEqual(self.stack.state,
+                         (parser.Stack.DELETE, parser.Stack.COMPLETE))
+
+    @utils.stack_delete_after
+    def test_delete_trust_fail(self):
+        cfg.CONF.set_override('deferred_auth_method', 'trusts')
+
+        class FakeKeystoneClientFail(FakeKeystoneClient):
+            def delete_trust(self, trust_id):
+                raise kc_exceptions.Forbidden("Denied!")
+
+        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
+            FakeKeystoneClientFail())
+        self.m.ReplayAll()
+
+        self.stack = parser.Stack(
+            self.ctx, 'delete_trust', template.Template({}))
+        stack_id = self.stack.store()
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertIsNotNone(db_s)
+
+        self.stack.delete()
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertIsNotNone(db_s)
+        self.assertEqual(self.stack.state,
+                         (parser.Stack.DELETE, parser.Stack.FAILED))
+        self.assertIn('Error deleting trust', self.stack.status_reason)
 
     @utils.stack_delete_after
     def test_suspend_resume(self):
@@ -1788,6 +1853,27 @@ class StackTest(HeatTestCase):
             self.assertIn(r, required_by)
 
     @utils.stack_delete_after
+    def test_resource_multi_required_by(self):
+        tmpl = {'Resources': {'AResource': {'Type': 'GenericResourceType'},
+                              'BResource': {'Type': 'GenericResourceType'},
+                              'CResource': {'Type': 'GenericResourceType'},
+                              'DResource': {'Type': 'GenericResourceType',
+                                            'DependsOn': ['AResource',
+                                                          'BResource',
+                                                          'CResource']}}}
+
+        self.stack = parser.Stack(self.ctx, 'depends_test_stack',
+                                  template.Template(tmpl))
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual(self.stack.state,
+                         (parser.Stack.CREATE, parser.Stack.COMPLETE))
+
+        for r in ['AResource', 'BResource', 'CResource']:
+            self.assertEqual(['DResource'],
+                             self.stack[r].required_by())
+
+    @utils.stack_delete_after
     def test_store_saves_owner(self):
         """
         The owner_id attribute of Store is saved to the database when stored.
@@ -1814,6 +1900,47 @@ class StackTest(HeatTestCase):
         db_stack = db_api.stack_get(self.ctx, self.stack.id)
         user_creds_id = db_stack.user_creds_id
         self.assertIsNotNone(user_creds_id)
+
+        # should've stored the username/password in the context
+        user_creds = db_api.user_creds_get(user_creds_id)
+        self.assertEqual(self.ctx.username, user_creds.get('username'))
+        self.assertEqual(self.ctx.password, user_creds.get('password'))
+        self.assertIsNone(user_creds.get('trust_id'))
+        self.assertIsNone(user_creds.get('trustor_user_id'))
+
+        # Store again, ID should not change
+        self.stack.store()
+        self.assertEqual(user_creds_id, db_stack.user_creds_id)
+
+    @utils.stack_delete_after
+    def test_store_saves_creds_trust(self):
+        """
+        A user_creds entry is created on first stack store
+        """
+        cfg.CONF.set_override('deferred_auth_method', 'trusts')
+
+        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
+            FakeKeystoneClient())
+        self.m.ReplayAll()
+
+        self.stack = parser.Stack(
+            self.ctx, 'creds_stack', template.Template({}))
+        self.stack.store()
+
+        # The store should've created a user_creds row and set user_creds_id
+        db_stack = db_api.stack_get(self.ctx, self.stack.id)
+        user_creds_id = db_stack.user_creds_id
+        self.assertIsNotNone(user_creds_id)
+
+        # should've stored the trust_id and trustor_user_id returned from
+        # FakeKeystoneClient.create_trust_context, username/password should
+        # not have been stored
+        user_creds = db_api.user_creds_get(user_creds_id)
+        self.assertIsNone(user_creds.get('username'))
+        self.assertIsNone(user_creds.get('password'))
+        self.assertEqual('atrust', user_creds.get('trust_id'))
+        self.assertEqual('auser123', user_creds.get('trustor_user_id'))
 
         # Store again, ID should not change
         self.stack.store()

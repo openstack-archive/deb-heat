@@ -120,6 +120,10 @@ class Resource(object):
     # throughout its lifecycle
     requires_deferred_auth = False
 
+    # Limit to apply to physical_resource_name() size reduction algorithm.
+    # If set to None no limit will be applied.
+    physical_resource_name_limit = 255
+
     def __new__(cls, name, json, stack):
         '''Create a new Resource of the appropriate class for its type.'''
 
@@ -280,16 +284,22 @@ class Resource(object):
                 if key in ('DependsOn', 'Ref', 'Fn::GetAtt', 'get_attr',
                            'get_resource'):
                     if key in ('Fn::GetAtt', 'get_attr'):
-                        value, att = value
+                        res_name, att = value
+                        res_list = [res_name]
+                    elif key == 'DependsOn' and isinstance(value, list):
+                        res_list = value
+                    else:
+                        res_list = [value]
 
-                    try:
-                        target = self.stack.resources[value]
-                    except KeyError:
-                        raise exception.InvalidTemplateReference(
-                            resource=value,
-                            key=path)
-                    if key == 'DependsOn' or target.strict_dependency:
-                        deps += (self, target)
+                    for res in res_list:
+                        try:
+                            target = self.stack[res]
+                        except KeyError:
+                            raise exception.InvalidTemplateReference(
+                                resource=res,
+                                key=path)
+                        if key == 'DependsOn' or target.strict_dependency:
+                            deps += (self, target)
                 else:
                     self._add_dependencies(deps, '%s.%s' % (path, key), value)
         elif isinstance(fragment, list):
@@ -479,9 +489,37 @@ class Resource(object):
         if self.id is None:
             return None
 
-        return '%s-%s-%s' % (self.stack.name,
+        name = '%s-%s-%s' % (self.stack.name,
                              self.name,
                              short_id.get_id(self.id))
+
+        if self.physical_resource_name_limit:
+            name = self.reduce_physical_resource_name(
+                name, self.physical_resource_name_limit)
+        return name
+
+    @staticmethod
+    def reduce_physical_resource_name(name, limit):
+        '''
+        Reduce length of physical resource name to a limit.
+
+        The reduced name will consist of the following:
+        * the first 2 characters of the name
+        * a hyphen
+        * the end of the name, truncated on the left to bring
+          the name length within the limit
+        :param name: The name to reduce the length of
+        :param limit:
+        :returns: A name whose length is less than or equal to the limit
+        '''
+        if len(name) <= limit:
+            return name
+
+        if limit < 4:
+            raise ValueError(_('limit cannot be less than 4'))
+
+        postfix_length = limit - 3
+        return name[0:2] + '-' + name[-postfix_length:]
 
     def validate(self):
         logger.info('Validating %s' % str(self))
