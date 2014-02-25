@@ -1,0 +1,16 @@
+Description: Removes version from SQLA in requirements.txt
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: no
+Last-Update: 2014-02-26
+
+--- heat-2013.2.2.orig/requirements.txt
++++ heat-2013.2.2/requirements.txt
+@@ -13,7 +13,7 @@ sqlalchemy-migrate>=0.7.2
+ python-novaclient>=2.15.0
+ PasteDeploy>=1.5.0
+ Routes>=1.12.3
+-SQLAlchemy>=0.7.8,<=0.7.99
++SQLAlchemy
+ WebOb>=1.2.3
+ python-keystoneclient>=0.3.2
+ python-swiftclient>=1.5

@@ -1,6 +1,7 @@
 heat (2013.2.2-3) unstable; urgency=medium
 
   * Rebuilt with SQLAlchemy 0.9.x.
+  * Removes SQLA version in requirements.txt.
 
  -- Thomas Goirand <zigo@debian.org>  Tue, 25 Feb 2014 16:11:23 +0000
 
