@@ -1,3 +1,9 @@
+heat (2013.2.2-3) UNRELEASED; urgency=low
+
+  * Updates da.po thanks to Joe Dalton (Closes: #739795).
+
+ -- Thomas Goirand <zigo@debian.org>  Sun, 02 Mar 2014 17:02:32 +0800
+
 heat (2013.2.2-2) unstable; urgency=medium
 
   * Rebuilt using openstack-pkg-tools >= 9~.
