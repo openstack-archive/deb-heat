@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -78,13 +77,21 @@ class FakeClient(object):
 
 class FakeKeystoneClient(object):
     def __init__(self, username='test_user', password='apassword',
-                 user_id='1234', access='4567', secret='8901'):
+                 user_id='1234', access='4567', secret='8901',
+                 credential_id='abcdxyz'):
         self.username = username
         self.password = password
         self.user_id = user_id
         self.access = access
         self.secret = secret
-        self.creds = None
+        self.credential_id = credential_id
+
+        class FakeCred(object):
+            id = self.credential_id
+            access = self.access
+            secret = self.secret
+        self.creds = FakeCred()
+
         self.auth_token = 'abcd1234'
 
     def create_stack_user(self, username, password=''):
@@ -105,11 +112,6 @@ class FakeKeystoneClient(object):
 
     def create_ec2_keypair(self, user_id):
         if user_id == self.user_id:
-            if not self.creds:
-                class FakeCred(object):
-                    access = self.access
-                    secret = self.secret
-                self.creds = FakeCred()
             return self.creds
 
     def delete_ec2_keypair(self, user_id, access):
@@ -136,3 +138,18 @@ class FakeKeystoneClient(object):
 
     def delete_trust(self, trust_id):
         pass
+
+    def delete_stack_domain_project(self, project_id):
+        pass
+
+    def create_stack_domain_project(self, stack_name):
+        return 'aprojectid'
+
+    def create_stack_domain_user(self, username, project_id, password=None):
+        return self.user_id
+
+    def delete_stack_domain_user(self, user_id, project_id):
+        pass
+
+    def create_stack_domain_user_keypair(self, user_id, project_id):
+        return self.creds

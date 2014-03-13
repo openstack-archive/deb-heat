@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -15,12 +14,13 @@
 
 from heat.common import exception
 from heat.db import api as db_api
-from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 
 from heat.openstack.common import log as logging
+
+import keystoneclient.exceptions as kc_exception
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,8 @@ class User(resource.Resource):
             except KeyError:
                 logger.error(_("Policy %(policy)s does not exist in stack "
                              "%(stack)s") % {
-                             'policy': policy, 'stack': self.stack.name})
+                                 'policy': policy,
+                                 'stack': self.stack.name})
                 return False
 
             if not callable(getattr(policy_rsrc, 'access_allowed', None)):
@@ -120,7 +121,7 @@ class User(resource.Resource):
             return
         try:
             self.keystone().delete_stack_user(self.resource_id)
-        except clients.hkc.kc.exceptions.NotFound:
+        except kc_exception.NotFound:
             pass
 
     def handle_suspend(self):
@@ -139,11 +140,6 @@ class User(resource.Resource):
 
     def FnGetRefId(self):
         return unicode(self.physical_resource_name())
-
-    def FnGetAtt(self, key):
-        #TODO(asalkeld) Implement Arn attribute
-        raise exception.InvalidTemplateAttribute(
-            resource=self.name, key=key)
 
     def access_allowed(self, resource_name):
         policies = (self.properties[self.POLICIES] or [])
@@ -186,6 +182,11 @@ class AccessKey(resource.Resource):
         ),
     }
 
+    attributes_schema = {
+        'UserName': _('Username associated with the AccessKey.'),
+        'SecretAccessKey': _('Keypair secret key.'),
+    }
+
     def __init__(self, name, json_snippet, stack):
         super(AccessKey, self).__init__(name, json_snippet, stack)
         self._secret = None
@@ -226,6 +227,10 @@ class AccessKey(resource.Resource):
         # SecretAccessKey attribute
         db_api.resource_data_set(self, 'secret_key', kp.secret,
                                  redact=True)
+        # Also store the credential ID as this should be used to manage
+        # the credential rather than the access key via v3/credentials
+        db_api.resource_data_set(self, 'credential_id', kp.id,
+                                 redact=True)
 
     def handle_delete(self):
         self._secret = None
@@ -240,7 +245,7 @@ class AccessKey(resource.Resource):
         if user_id:
             try:
                 self.keystone().delete_ec2_keypair(user_id, self.resource_id)
-            except clients.hkc.kc.exceptions.NotFound:
+            except kc_exception.NotFound:
                 pass
 
         self.resource_id_set(None)
@@ -253,8 +258,8 @@ class AccessKey(resource.Resource):
             if not self.resource_id:
                 logger.warn(_('could not get secret for %(username)s '
                             'Error:%(msg)s') % {
-                            'username': self.properties[self.USER_NAME],
-                            'msg': "resource_id not yet set"})
+                                'username': self.properties[self.USER_NAME],
+                                'msg': "resource_id not yet set"})
             else:
                 # First try to retrieve the secret from resource_data, but
                 # for backwards compatibility, fall back to requesting from
@@ -270,31 +275,23 @@ class AccessKey(resource.Resource):
                         # Store the key in resource_data
                         db_api.resource_data_set(self, 'secret_key',
                                                  kp.secret, redact=True)
+                        # And the ID of the v3 credential
+                        db_api.resource_data_set(self, 'credential_id',
+                                                 kp.id, redact=True)
                     except Exception as ex:
-                        logger.warn(_('could not get secret for %(username)s '
-                                      'Error:%(msg)s') % {
-                                    'username':
-                                    self.properties[self.USER_NAME],
-                                    'msg': str(ex)})
+                        logger.warn(
+                            _('could not get secret for %(username)s '
+                              'Error:%(msg)s') % {
+                                  'username': self.properties[self.USER_NAME],
+                                  'msg': str(ex)})
 
         return self._secret or '000-000-000'
 
-    def FnGetAtt(self, key):
-        res = None
-        log_res = None
-        if key == 'UserName':
-            res = self.properties[self.USER_NAME]
-            log_res = res
-        elif key == 'SecretAccessKey':
-            res = self._secret_accesskey()
-            log_res = "<SANITIZED>"
-        else:
-            raise exception.InvalidTemplateAttribute(
-                resource=self.physical_resource_name(), key=key)
-
-        logger.info('%s.GetAtt(%s) == %s' % (self.physical_resource_name(),
-                                             key, log_res))
-        return unicode(res)
+    def _resolve_attribute(self, name):
+        if name == 'UserName':
+            return self.properties[self.USER_NAME]
+        elif name == 'SecretAccessKey':
+            return self._secret_accesskey()
 
     def _register_access_key(self):
 

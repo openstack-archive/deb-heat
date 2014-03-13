@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -15,9 +14,9 @@
 
 import requests
 from requests import exceptions
-import cStringIO
 
 from oslo.config import cfg
+from six.moves import cStringIO
 
 from heat.common import urlfetch
 from heat.tests.common import HeatTestCase
@@ -53,7 +52,7 @@ class UrlFetchTest(HeatTestCase):
         url = 'file:///etc/profile'
 
         self.m.StubOutWithMock(urlutils, 'urlopen')
-        urlutils.urlopen(url).AndReturn(cStringIO.StringIO(data))
+        urlutils.urlopen(url).AndReturn(cStringIO(data))
         self.m.ReplayAll()
 
         self.assertEqual(data, urlfetch.get(url, allowed_schemes=['file']))
@@ -75,7 +74,7 @@ class UrlFetchTest(HeatTestCase):
         response = Response(data)
         requests.get(url, stream=True).AndReturn(response)
         self.m.ReplayAll()
-        self.assertEqual(urlfetch.get(url), data)
+        self.assertEqual(data, urlfetch.get(url))
         self.m.VerifyAll()
 
     def test_https_scheme(self):
@@ -84,7 +83,7 @@ class UrlFetchTest(HeatTestCase):
         response = Response(data)
         requests.get(url, stream=True).AndReturn(response)
         self.m.ReplayAll()
-        self.assertEqual(urlfetch.get(url), data)
+        self.assertEqual(data, urlfetch.get(url))
         self.m.VerifyAll()
 
     def test_http_error(self):

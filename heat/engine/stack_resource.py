@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -21,7 +20,6 @@ from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
-from heat.engine import template as tmpl
 
 from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
@@ -73,8 +71,64 @@ class StackResource(resource.Resource):
 
         return self._nested
 
+    def child_template(self):
+        '''
+        Default implementation to get the child template.
+
+        Resources that inherit from StackResource should override this method
+        with specific details about the template used by them.
+        '''
+        raise NotImplementedError()
+
+    def child_params(self):
+        '''
+        Default implementation to get the child params.
+
+        Resources that inherit from StackResource should override this method
+        with specific details about the parameters used by them.
+        '''
+        raise NotImplementedError()
+
+    def preview(self):
+        '''
+        Preview a StackResource as resources within a Stack.
+
+        This method overrides the original Resource.preview to return a preview
+        of all the resources contained in this Stack.  For this to be possible,
+        the specific resources need to override both ``child_template`` and
+        ``child_params`` with specific information to allow the stack to be
+        parsed correctly. If any of these methods is missing, the entire
+        StackResource will be returned as if it were a regular Resource.
+        '''
+        try:
+            template = parser.Template(self.child_template())
+            params = self.child_params()
+        except NotImplementedError:
+            not_implemented_msg = _("Preview of '%s' not yet implemented")
+            logger.warning(not_implemented_msg % self.__class__.__name__)
+            return self
+
+        self._validate_nested_resources(template)
+        name = "%s-%s" % (self.stack.name, self.name)
+        nested = parser.Stack(self.context,
+                              name,
+                              template,
+                              environment.Environment(params),
+                              disable_rollback=True,
+                              parent_resource=self,
+                              owner_id=self.stack.id)
+
+        return nested.preview_resources()
+
+    def _validate_nested_resources(self, template):
+        total_resources = (len(template[template.RESOURCES]) +
+                           self.stack.root_stack.total_resources())
+        if (total_resources > cfg.CONF.max_resources_per_stack):
+            message = exception.StackResourceLimitExceeded.msg_fmt
+            raise exception.RequestLimitExceeded(message=message)
+
     def create_with_template(self, child_template, user_params,
-                             timeout_mins=None):
+                             timeout_mins=None, adopt_data=None):
         '''
         Handle the creation of the nested stack from a given JSON template.
         '''
@@ -83,11 +137,7 @@ class StackResource(resource.Resource):
                 cfg.CONF.max_nested_stack_depth
             raise exception.RequestLimitExceeded(message=msg)
         template = parser.Template(child_template)
-        if ((len(template[tmpl.RESOURCES]) +
-             self.stack.root_stack.total_resources() >
-             cfg.CONF.max_resources_per_stack)):
-            raise exception.RequestLimitExceeded(
-                message=exception.StackResourceLimitExceeded.msg_fmt)
+        self._validate_nested_resources(template)
         self._outputs_to_attribs(child_template)
 
         # Note we disable rollback for nested stacks, since they
@@ -99,14 +149,19 @@ class StackResource(resource.Resource):
                               timeout_mins=timeout_mins,
                               disable_rollback=True,
                               parent_resource=self,
-                              owner_id=self.stack.id)
+                              owner_id=self.stack.id,
+                              adopt_stack_data=adopt_data)
         nested.validate()
         self._nested = nested
         nested_id = self._nested.store()
         self.resource_id_set(nested_id)
 
+        action = self._nested.CREATE
+        if adopt_data:
+            action = self._nested.ADOPT
+
         stack_creator = scheduler.TaskRunner(self._nested.stack_task,
-                                             action=self._nested.CREATE)
+                                             action=action)
         stack_creator.start(timeout=self._nested.timeout_secs())
         return stack_creator
 
@@ -133,7 +188,7 @@ class StackResource(resource.Resource):
             raise exception.Error(_('Cannot update %s, stack not created')
                                   % self.name)
         res_diff = (
-            len(template[tmpl.RESOURCES]) - len(nested_stack.resources))
+            len(template[template.RESOURCES]) - len(nested_stack.resources))
         new_size = nested_stack.root_stack.total_resources() + res_diff
         if new_size > cfg.CONF.max_resources_per_stack:
             raise exception.RequestLimitExceeded(
@@ -149,6 +204,7 @@ class StackResource(resource.Resource):
                              disable_rollback=True,
                              parent_resource=self,
                              owner_id=self.stack.id)
+        stack.parameters.set_stack_id(nested_stack.identifier())
         stack.validate()
 
         if not hasattr(type(self), 'attributes_schema'):
@@ -169,7 +225,7 @@ class StackResource(resource.Resource):
         nested_stack = self.nested()
         if nested_stack.state != (nested_stack.UPDATE,
                                   nested_stack.COMPLETE):
-            raise exception.Error(_("Nested stack update failed: %s") %
+            raise exception.Error(_("Nested stack UPDATE failed: %s") %
                                   nested_stack.status_reason)
         return True
 

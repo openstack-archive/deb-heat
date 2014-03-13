@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -32,11 +31,15 @@ class WaitConditionHandle(signal_responder.SignalResponder):
     '''
     the main point of this class is to :
     have no dependancies (so the instance can reference it)
-    generate a unique url (to be returned in the refernce)
+    generate a unique url (to be returned in the reference)
     then the cfn-signal will use this url to post to and
     WaitCondition will poll it to see if has been written to.
     '''
     properties_schema = {}
+
+    def handle_create(self):
+        super(WaitConditionHandle, self).handle_create()
+        self.resource_id_set(self._get_user_id())
 
     def FnGetRefId(self):
         '''
@@ -113,6 +116,19 @@ WAIT_STATUSES = (
 )
 
 
+class UpdateWaitConditionHandle(WaitConditionHandle):
+    '''
+    This works identically to a regular WaitConditionHandle, except that
+    on update it clears all signals received and changes the handle. Using
+    this handle means that you must setup the signal senders to send their
+    signals again any time the update handle changes. This allows us to roll
+    out new configurations and be confident that they are rolled out once
+    UPDATE COMPLETE is reached.
+    '''
+    def update(self, after, before=None, prev_resource=None):
+        raise resource.UpdateReplace(self.name)
+
+
 class WaitConditionFailure(Exception):
     def __init__(self, wait_condition, handle):
         reasons = handle.get_status_reason(STATUS_FAILURE)
@@ -122,12 +138,13 @@ class WaitConditionFailure(Exception):
 class WaitConditionTimeout(Exception):
     def __init__(self, wait_condition, handle):
         reasons = handle.get_status_reason(STATUS_SUCCESS)
-        message = (_('%(len)d of %(count)d received') % {
-                   'len': len(reasons), 'count':
-                   wait_condition.properties[wait_condition.COUNT]})
+        vals = {'len': len(reasons),
+                'count': wait_condition.properties[wait_condition.COUNT]}
         if reasons:
-            message += ' - %s' % reasons
-
+            vals['reasons'] = reasons
+            message = (_('%(len)d of %(count)d received - %(reasons)s') % vals)
+        else:
+            message = (_('%(len)d of %(count)d received') % vals)
         super(WaitConditionTimeout, self).__init__(message)
 
 
@@ -235,7 +252,7 @@ class WaitCondition(resource.Resource):
         if prop_diff:
             self.properties = properties.Properties(
                 self.properties_schema, json_snippet.get('Properties', {}),
-                self.stack.resolve_runtime_data, self.name)
+                self.stack.resolve_runtime_data, self.name, self.context)
 
         handle_res_name = self._get_handle_resource_name()
         handle = self.stack[handle_res_name]
@@ -266,7 +283,10 @@ class WaitCondition(resource.Resource):
             raise exception.InvalidTemplateAttribute(resource=self.name,
                                                      key=key)
 
-        logger.debug('%s.GetAtt(%s) == %s' % (self.name, key, res))
+        logger.debug(_('%(name)s.GetAtt(%(key)s) == %(res)s') %
+                     {'name': self.name,
+                      'key': key,
+                      'res': res})
         return unicode(json.dumps(res))
 
 
@@ -274,4 +294,5 @@ def resource_mapping():
     return {
         'AWS::CloudFormation::WaitCondition': WaitCondition,
         'AWS::CloudFormation::WaitConditionHandle': WaitConditionHandle,
+        'OS::Heat::UpdateWaitConditionHandle': UpdateWaitConditionHandle,
     }

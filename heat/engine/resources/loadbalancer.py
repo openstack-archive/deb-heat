@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -201,7 +200,7 @@ loadbalancer_opts = [
     cfg.StrOpt('loadbalancer_template',
                default=None,
                help='Custom template for the built-in '
-                    'loadbalancer nested stack')]
+                    'loadbalancer nested stack.')]
 cfg.CONF.register_opts(loadbalancer_opts)
 
 
@@ -344,16 +343,18 @@ class LoadBalancer(stack_resource.StackResource):
     }
 
     attributes_schema = {
-        "CanonicalHostedZoneName": ("The name of the hosted zone that is "
-                                    "associated with the LoadBalancer."),
-        "CanonicalHostedZoneNameID": ("The ID of the hosted zone name that is "
-                                      "associated with the LoadBalancer."),
-        "DNSName": "The DNS name for the LoadBalancer.",
-        "SourceSecurityGroup.GroupName": ("The security group that you can use"
-                                          " as part of your inbound rules for "
-                                          "your LoadBalancer's back-end "
-                                          "instances."),
-        "SourceSecurityGroup.OwnerAlias": "Owner of the source security group."
+        "CanonicalHostedZoneName": _("The name of the hosted zone that is "
+                                     "associated with the LoadBalancer."),
+        "CanonicalHostedZoneNameID": _("The ID of the hosted zone name "
+                                       "that is associated with the "
+                                       "LoadBalancer."),
+        "DNSName": _("The DNS name for the LoadBalancer."),
+        "SourceSecurityGroup.GroupName": _("The security group that you can "
+                                           "use as part of your inbound "
+                                           "rules for your LoadBalancer's "
+                                           "back-end instances."),
+        "SourceSecurityGroup.OwnerAlias": _("Owner of the source "
+                                            "security group.")
     }
 
     update_allowed_keys = ('Properties',)
@@ -432,8 +433,30 @@ class LoadBalancer(stack_resource.StackResource):
             contents = lb_template_default
         return template_format.parse(contents)
 
-    def handle_create(self):
+    def child_params(self):
+        params = {}
+
+        # If the owning stack defines KeyName, we use that key for the nested
+        # template, otherwise use no key
+        if 'KeyName' in self.stack.parameters:
+            params['KeyName'] = self.stack.parameters['KeyName']
+
+        return params
+
+    def child_template(self):
         templ = self.get_parsed_template()
+
+        # If the owning stack defines KeyName, we use that key for the nested
+        # template, otherwise use no key
+        if 'KeyName' not in self.stack.parameters:
+            del templ['Resources']['LB_instance']['Properties']['KeyName']
+            del templ['Parameters']['KeyName']
+
+        return templ
+
+    def handle_create(self):
+        templ = self.child_template()
+        params = self.child_params()
 
         if self.properties[self.INSTANCES]:
             md = templ['Resources']['LB_instance']['Metadata']
@@ -441,16 +464,7 @@ class LoadBalancer(stack_resource.StackResource):
             cfg = self._haproxy_config(templ, self.properties[self.INSTANCES])
             files['/etc/haproxy/haproxy.cfg']['content'] = cfg
 
-        # If the owning stack defines KeyName, we use that key for the nested
-        # template, otherwise use no key
-        try:
-            param = {'KeyName': self.stack.parameters['KeyName']}
-        except KeyError:
-            del templ['Resources']['LB_instance']['Properties']['KeyName']
-            del templ['Parameters']['KeyName']
-            param = {}
-
-        return self.create_with_template(templ, param)
+        return self.create_with_template(templ, params)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         '''

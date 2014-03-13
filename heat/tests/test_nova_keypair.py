@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,13 +11,19 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
 import copy
+import mox
 
 from novaclient import exceptions as nova_exceptions
 
+from heat.engine import clients
+from heat.common import exception
 from heat.engine import scheduler
 from heat.engine.resources import nova_keypair
+from heat.engine.resources import nova_utils
 from heat.tests.common import HeatTestCase
+from heat.tests.v1_1 import fakes
 from heat.tests import utils
 
 
@@ -89,7 +94,7 @@ class NovaKeyPairTest(HeatTestCase):
         self.assertEqual("generated test public key",
                          tp_test.FnGetAtt('public_key'))
         self.assertEqual((tp_test.CREATE, tp_test.COMPLETE), tp_test.state)
-        self.assertEqual(created_key.name, tp_test.resource_id)
+        self.assertEqual(tp_test.resource_id, created_key.name)
         self.m.VerifyAll()
 
     def test_delete_key(self):
@@ -127,7 +132,7 @@ class NovaKeyPairTest(HeatTestCase):
         self.assertEqual("test_create_pub",
                          tp_test.FnGetAtt('public_key'))
         self.assertEqual((tp_test.CREATE, tp_test.COMPLETE), tp_test.state)
-        self.assertEqual(created_key.name, tp_test.resource_id)
+        self.assertEqual(tp_test.resource_id, created_key.name)
         self.m.VerifyAll()
 
     def test_save_priv_key(self):
@@ -143,5 +148,44 @@ class NovaKeyPairTest(HeatTestCase):
         self.assertEqual("generated test public key",
                          tp_test.FnGetAtt('public_key'))
         self.assertEqual((tp_test.CREATE, tp_test.COMPLETE), tp_test.state)
-        self.assertEqual(created_key.name, tp_test.resource_id)
+        self.assertEqual(tp_test.resource_id, created_key.name)
+        self.m.VerifyAll()
+
+    def test_validate_okay(self):
+        test_res = self._get_test_resource(self.kp_template)
+        self.m.StubOutWithMock(nova_utils, 'get_keypair')
+        nova_utils.get_keypair(mox.IgnoreArg(), 'key_pair').AndRaise(
+            exception.UserKeyPairMissing(key_name='foo'))
+        self.m.ReplayAll()
+        self.assertIsNone(test_res.validate())
+
+    def test_validate_failure_key_exists(self):
+        test_res = self._get_test_resource(self.kp_template)
+        self.m.StubOutWithMock(nova_utils, 'get_keypair')
+        nova_utils.get_keypair(mox.IgnoreArg(), 'key_pair').AndReturn('foo')
+        self.m.ReplayAll()
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                test_res.validate)
+        self.assertIn('Cannot create KeyPair resource with a name of '
+                      '"key_pair"', str(exc))
+
+
+class KeypairConstraintTest(HeatTestCase):
+
+    def test_validation(self):
+        client = fakes.FakeClient()
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(client)
+        client.keypairs = self.m.CreateMockAnything()
+
+        key = collections.namedtuple("Key", ["name"])
+        key.name = "foo"
+        client.keypairs.list().MultipleTimes().AndReturn([key])
+        self.m.ReplayAll()
+
+        constraint = nova_keypair.KeypairConstraint()
+        self.assertFalse(constraint.validate("bar", None))
+        self.assertTrue(constraint.validate("foo", None))
+        self.assertTrue(constraint.validate("", None))
+
         self.m.VerifyAll()

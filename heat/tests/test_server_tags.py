@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -21,6 +20,7 @@ from heat.tests.v1_1 import fakes
 from heat.engine.resources import instance as instances
 from heat.engine.resources import nova_utils
 from heat.common import template_format
+from heat.engine import clients
 from heat.engine import parser
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
@@ -143,6 +143,8 @@ class ServerTagsTest(HeatTestCase):
 
         self.m.StubOutWithMock(instance, 'nova')
         instance.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
 
         instance.t = instance.stack.resolve_runtime_data(instance.t)
 
@@ -184,7 +186,7 @@ class ServerTagsTest(HeatTestCase):
         instance = self._setup_test_instance(intags=tags, nova_tags=metadata)
         self.m.ReplayAll()
         scheduler.TaskRunner(instance.create)()
-        self.assertEqual(instance.state, (instance.CREATE, instance.COMPLETE))
+        self.assertEqual((instance.CREATE, instance.COMPLETE), instance.state)
         # we are just using mock to verify that the tags get through to the
         # nova call.
         self.m.VerifyAll()
@@ -195,6 +197,8 @@ class ServerTagsTest(HeatTestCase):
 
         self.m.StubOutWithMock(instance, 'nova')
         instance.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
         self.m.StubOutWithMock(self.fc.servers, 'set_meta')
         self.fc.servers.set_meta(self.fc.servers.list()[1],
                                  new_metadata).AndReturn(None)
@@ -202,7 +206,7 @@ class ServerTagsTest(HeatTestCase):
         update_template = copy.deepcopy(instance.t)
         update_template['Properties']['Tags'] = new_tags
         scheduler.TaskRunner(instance.update, update_template)()
-        self.assertEqual(instance.state, (instance.UPDATE, instance.COMPLETE))
+        self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
         self.m.VerifyAll()
 
     def _setup_test_group(self, intags=None, nova_tags=None):
@@ -228,6 +232,8 @@ class ServerTagsTest(HeatTestCase):
 
         self.m.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
 
         group.t = group.stack.resolve_runtime_data(group.t)
 
@@ -279,6 +285,8 @@ class ServerTagsTest(HeatTestCase):
 
         self.m.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
 
         group.t = group.stack.resolve_runtime_data(group.t)
 

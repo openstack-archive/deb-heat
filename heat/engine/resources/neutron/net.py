@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -20,6 +19,7 @@ from heat.engine import properties
 
 if clients.neutronclient is not None:
     import neutronclient.common.exceptions as neutron_exp
+    from neutronclient.neutron import v2_0 as neutronV20
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +148,13 @@ class NetDHCPAgent(neutron.NeutronResource):
     def handle_create(self):
         network_id = self.properties[self.NETWORK_ID]
         dhcp_agent_id = self.properties[self.DHCP_AGENT_ID]
-        self.neutron().add_network_to_dhcp_agent(
-            dhcp_agent_id, {'network_id': network_id})
+        try:
+            self.neutron().add_network_to_dhcp_agent(
+                dhcp_agent_id, {'network_id': network_id})
+        except neutron_exp.NeutronClientException as ex:
+            # if 409 is happened, the agent is already associated.
+            if ex.status_code != 409:
+                raise ex
         self.resource_id_set('%(net)s:%(agt)s' %
                              {'net': network_id, 'agt': dhcp_agent_id})
 
@@ -167,6 +172,25 @@ class NetDHCPAgent(neutron.NeutronResource):
             #  409: the network isn't scheduled by the dhcp_agent
             if ex.status_code not in (404, 409):
                 raise ex
+
+
+class NetworkConstraint(object):
+
+    def validate(self, value, context):
+        try:
+            neutron_client = clients.Clients(context).neutron()
+            neutronV20.find_resourceid_by_name_or_id(
+                neutron_client, 'network', value)
+        except neutron_exp.NeutronClientException:
+            return False
+        else:
+            return True
+
+
+def constraint_mapping():
+    if clients.neutronclient is None:
+        return {}
+    return {'neutron.network': NetworkConstraint}
 
 
 def resource_mapping():

@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 # Copyright 2012, Red Hat, Inc.
 #
@@ -52,7 +51,7 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
                                              stack_name=stack_name))
 
     def list_stacks(self, ctxt, limit=None, marker=None, sort_keys=None,
-                    sort_dir=None, filters=None):
+                    sort_dir=None, filters=None, tenant_safe=True):
         """
         The list_stacks method returns attributes of all stacks.  It supports
         pagination (``limit`` and ``marker``), sorting (``sort_keys`` and
@@ -64,21 +63,25 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
         :param sort_keys: an array of fields used to sort the list
         :param sort_dir: the direction of the sort ('asc' or 'desc')
         :param filters: a dict with attribute:value to filter the list
+        :param tenant_safe: if true, scope the request by the current tenant
         :returns: a list of stacks
         """
         return self.call(ctxt, self.make_msg('list_stacks', limit=limit,
                          sort_keys=sort_keys, marker=marker,
-                         sort_dir=sort_dir, filters=filters))
+                         sort_dir=sort_dir, filters=filters,
+                         tenant_safe=tenant_safe))
 
-    def count_stacks(self, ctxt, filters=None):
+    def count_stacks(self, ctxt, filters=None, tenant_safe=True):
         """
         Return the number of stacks that match the given filters
         :param ctxt: RPC context.
-        :param filters: a dict of ATTR:VALUE to match agains stacks
+        :param filters: a dict of ATTR:VALUE to match against stacks
+        :param tenant_safe: if true, scope the request by the current tenant
         :returns: a integer representing the number of matched stacks
         """
         return self.call(ctxt, self.make_msg('count_stacks',
-                                             filters=filters))
+                                             filters=filters,
+                                             tenant_safe=tenant_safe))
 
     def show_stack(self, ctxt, stack_identity):
         """
@@ -89,6 +92,25 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
         """
         return self.call(ctxt, self.make_msg('show_stack',
                                              stack_identity=stack_identity))
+
+    def preview_stack(self, ctxt, stack_name, template, params, files, args):
+        """
+        Simulates a new stack using the provided template.
+
+        Note that at this stage the template has already been fetched from the
+        heat-api process if using a template-url.
+
+        :param ctxt: RPC context.
+        :param stack_name: Name of the stack you want to create.
+        :param template: Template of stack you want to create.
+        :param params: Stack Input Params/Environment
+        :param files: files referenced from the environment.
+        :param args: Request parameters/args passed from API
+        """
+        return self.call(ctxt,
+                         self.make_msg('preview_stack', stack_name=stack_name,
+                                       template=template,
+                                       params=params, files=files, args=args))
 
     def create_stack(self, ctxt, stack_name, template, params, files, args):
         """
@@ -350,3 +372,63 @@ class EngineClient(heat.openstack.common.rpc.proxy.RpcProxy):
 
     def get_revision(self, ctxt):
         return self.call(ctxt, self.make_msg('get_revision'))
+
+    def show_software_config(self, cnxt, config_id):
+        return self.call(cnxt, self.make_msg('show_software_config',
+                                             config_id=config_id))
+
+    def create_software_config(self, cnxt, group, name, config,
+                               inputs=[], outputs=[], options={}):
+        return self.call(cnxt, self.make_msg('create_software_config',
+                                             group=group,
+                                             name=name,
+                                             config=config,
+                                             inputs=inputs,
+                                             outputs=outputs,
+                                             options=options))
+
+    def delete_software_config(self, cnxt, config_id):
+        return self.call(cnxt, self.make_msg('delete_software_config',
+                                             config_id=config_id))
+
+    def list_software_deployments(self, cnxt, server_id=None):
+        return self.call(cnxt, self.make_msg('list_software_deployments',
+                                             server_id=server_id))
+
+    def metadata_software_deployments(self, cnxt, server_id):
+        return self.call(cnxt, self.make_msg('metadata_software_deployments',
+                                             server_id=server_id))
+
+    def show_software_deployment(self, cnxt, deployment_id):
+        return self.call(cnxt, self.make_msg('show_software_deployment',
+                                             deployment_id=deployment_id))
+
+    def create_software_deployment(self, cnxt, server_id, config_id=None,
+                                   input_values={}, signal_id=None,
+                                   action='INIT', status='COMPLETE',
+                                   status_reason=''):
+        return self.call(cnxt, self.make_msg('create_software_deployment',
+                                             server_id=server_id,
+                                             config_id=config_id,
+                                             input_values=input_values,
+                                             signal_id=signal_id,
+                                             action=action,
+                                             status=status,
+                                             status_reason=status_reason))
+
+    def update_software_deployment(self, cnxt, deployment_id,
+                                   config_id=None, input_values=None,
+                                   output_values=None, action=None,
+                                   status=None, status_reason=None):
+        return self.call(cnxt, self.make_msg('update_software_deployment',
+                                             deployment_id=deployment_id,
+                                             config_id=config_id,
+                                             input_values=input_values,
+                                             output_values=output_values,
+                                             action=action,
+                                             status=status,
+                                             status_reason=status_reason))
+
+    def delete_software_deployment(self, cnxt, deployment_id):
+        return self.call(cnxt, self.make_msg('delete_software_deployment',
+                                             deployment_id=deployment_id))

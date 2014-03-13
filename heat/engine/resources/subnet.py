@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -40,7 +39,7 @@ class Subnet(resource.Resource):
     properties_schema = {
         AVAILABILITY_ZONE: properties.Schema(
             properties.Schema.STRING,
-            _('Availablity zone in which you want the subnet.')
+            _('Availability zone in which you want the subnet.')
         ),
         CIDR_BLOCK: properties.Schema(
             properties.Schema.STRING,

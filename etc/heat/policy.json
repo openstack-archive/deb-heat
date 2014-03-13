@@ -1,6 +1,7 @@
 {
     "context_is_admin":  "role:admin",
     "deny_stack_user": "not role:heat_stack_user",
+    "deny_everybody": "!",
 
     "cloudformation:ListStacks": "rule:deny_stack_user",
     "cloudformation:CreateStack": "rule:deny_stack_user",
@@ -33,18 +34,31 @@
     "events:show": "rule:deny_stack_user",
     "resource:index": "rule:deny_stack_user",
     "resource:metadata": "",
+    "resource:signal": "",
     "resource:show": "rule:deny_stack_user",
     "stacks:abandon": "rule:deny_stack_user",
     "stacks:create": "rule:deny_stack_user",
     "stacks:delete": "rule:deny_stack_user",
     "stacks:detail": "rule:deny_stack_user",
     "stacks:generate_template": "rule:deny_stack_user",
+    "stacks:global_index": "rule:deny_everybody",
     "stacks:index": "rule:deny_stack_user",
     "stacks:list_resource_types": "rule:deny_stack_user",
     "stacks:lookup": "rule:deny_stack_user",
+    "stacks:preview": "rule:deny_stack_user",
     "stacks:resource_schema": "rule:deny_stack_user",
     "stacks:show": "rule:deny_stack_user",
     "stacks:template": "rule:deny_stack_user",
     "stacks:update": "rule:deny_stack_user",
-    "stacks:validate_template": "rule:deny_stack_user"
+    "stacks:validate_template": "rule:deny_stack_user",
+
+    "software_configs:create": "rule:deny_stack_user",
+    "software_configs:show": "rule:deny_stack_user",
+    "software_configs:delete": "rule:deny_stack_user",
+    "software_deployments:index": "rule:deny_stack_user",
+    "software_deployments:create": "rule:deny_stack_user",
+    "software_deployments:show": "rule:deny_stack_user",
+    "software_deployments:update": "rule:deny_stack_user",
+    "software_deployments:delete": "rule:deny_stack_user",
+    "software_deployments:metadata": ""
 }

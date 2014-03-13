@@ -28,6 +28,7 @@ from heat.common import context
 from heat.common import exception
 from heat.common import template_format
 from heat.engine.resources import instance as instances
+from heat.engine import clients
 from heat.engine import parser
 from heat.engine import scheduler
 from heat.openstack.common import timeutils
@@ -110,6 +111,8 @@ class SqlAlchemyTest(HeatTestCase):
         fc = fakes.FakeClient()
         mocks.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().MultipleTimes().AndReturn(fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
 
         mocks.StubOutWithMock(fc.servers, 'create')
         fc.servers.create(image=744, flavor=3, key_name='test',
@@ -125,6 +128,8 @@ class SqlAlchemyTest(HeatTestCase):
         fc = fakes.FakeClient()
         mocks.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().MultipleTimes().AndReturn(fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
 
         mocks.StubOutWithMock(fc.client, 'get_servers_9999')
         get = fc.client.get_servers_9999
@@ -254,12 +259,12 @@ class SqlAlchemyTest(HeatTestCase):
                                                    stack.id)
         encrypted_key = rs.data[0]['value']
         self.assertNotEqual(encrypted_key, "fake secret")
-        decrypted_key = cs.my_secret
-        self.assertEqual(decrypted_key, "fake secret")
+        # Test private_key property returns decrypted value
+        self.assertEqual("fake secret", cs.my_secret)
 
         #do this twice to verify that the orm does not commit the unencrypted
         #value.
-        self.assertEqual(cs.my_secret, "fake secret")
+        self.assertEqual("fake secret", cs.my_secret)
         scheduler.TaskRunner(cs.destroy)()
 
     def test_resource_data_delete(self):
@@ -360,134 +365,119 @@ class SqlAlchemyTest(HeatTestCase):
         st_db = db_api.stack_get_all(self.ctx)
         self.assertEqual(1, len(st_db))
 
-    def test_stack_get_all_by_tenant(self):
-        stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
-
-        st_db = db_api.stack_get_all_by_tenant(self.ctx)
-        self.assertEqual(3, len(st_db))
-
-        stacks[0].delete()
-        st_db = db_api.stack_get_all_by_tenant(self.ctx)
-        self.assertEqual(2, len(st_db))
-
-        stacks[1].delete()
-        st_db = db_api.stack_get_all_by_tenant(self.ctx)
-        self.assertEqual(1, len(st_db))
-
-    def test_stack_get_all_by_tenant_and_filters(self):
+    def test_stack_get_all_with_filters(self):
         self._setup_test_stack('foo', UUID1)
         self._setup_test_stack('bar', UUID2)
 
         filters = {'name': 'foo'}
-        results = db_api.stack_get_all_by_tenant(self.ctx,
-                                                 filters=filters)
+        results = db_api.stack_get_all(self.ctx,
+                                       filters=filters)
 
         self.assertEqual(1, len(results))
         self.assertEqual('foo', results[0]['name'])
 
-    def test_stack_get_all_by_tenant_filter_matches_in_list(self):
+    def test_stack_get_all_filter_matches_in_list(self):
         self._setup_test_stack('foo', UUID1)
         self._setup_test_stack('bar', UUID2)
 
         filters = {'name': ['bar', 'quux']}
-        results = db_api.stack_get_all_by_tenant(self.ctx,
-                                                 filters=filters)
+        results = db_api.stack_get_all(self.ctx,
+                                       filters=filters)
 
         self.assertEqual(1, len(results))
         self.assertEqual('bar', results[0]['name'])
 
-    def test_stack_get_all_by_tenant_returns_all_if_no_filters(self):
+    def test_stack_get_all_returns_all_if_no_filters(self):
         self._setup_test_stack('foo', UUID1)
         self._setup_test_stack('bar', UUID2)
 
         filters = None
-        results = db_api.stack_get_all_by_tenant(self.ctx,
-                                                 filters=filters)
+        results = db_api.stack_get_all(self.ctx,
+                                       filters=filters)
 
         self.assertEqual(2, len(results))
 
-    def test_stack_get_all_by_tenant_default_sort_keys_and_dir(self):
+    def test_stack_get_all_default_sort_keys_and_dir(self):
         stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
 
-        st_db = db_api.stack_get_all_by_tenant(self.ctx)
+        st_db = db_api.stack_get_all(self.ctx)
         self.assertEqual(3, len(st_db))
         self.assertEqual(stacks[2].id, st_db[0].id)
         self.assertEqual(stacks[1].id, st_db[1].id)
         self.assertEqual(stacks[0].id, st_db[2].id)
 
-    def test_stack_get_all_by_tenant_default_sort_dir(self):
+    def test_stack_get_all_default_sort_dir(self):
         stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
 
-        st_db = db_api.stack_get_all_by_tenant(self.ctx, sort_dir='asc')
+        st_db = db_api.stack_get_all(self.ctx, sort_dir='asc')
         self.assertEqual(3, len(st_db))
         self.assertEqual(stacks[0].id, st_db[0].id)
         self.assertEqual(stacks[1].id, st_db[1].id)
         self.assertEqual(stacks[2].id, st_db[2].id)
 
-    def test_stack_get_all_by_tenant_str_sort_keys(self):
+    def test_stack_get_all_str_sort_keys(self):
         stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
 
-        st_db = db_api.stack_get_all_by_tenant(self.ctx,
-                                               sort_keys='created_at')
+        st_db = db_api.stack_get_all(self.ctx,
+                                     sort_keys='created_at')
         self.assertEqual(3, len(st_db))
         self.assertEqual(stacks[0].id, st_db[0].id)
         self.assertEqual(stacks[1].id, st_db[1].id)
         self.assertEqual(stacks[2].id, st_db[2].id)
 
     @mock.patch.object(db_api.utils, 'paginate_query')
-    def test_stack_get_all_by_tenant_filters_sort_keys(self, mock_paginate):
+    def test_stack_get_all_filters_sort_keys(self, mock_paginate):
         sort_keys = ['name', 'status', 'created_at', 'updated_at', 'username']
-        db_api.stack_get_all_by_tenant(self.ctx,
-                                       sort_keys=sort_keys)
+        db_api.stack_get_all(self.ctx, sort_keys=sort_keys)
 
-        args, _ = mock_paginate.call_args
+        args = mock_paginate.call_args[0]
         used_sort_keys = set(args[3])
         expected_keys = set(['name', 'status', 'created_at',
                              'updated_at', 'id'])
         self.assertEqual(expected_keys, used_sort_keys)
 
-    def test_stack_get_all_by_tenant_marker(self):
+    def test_stack_get_all_marker(self):
         stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
 
-        st_db = db_api.stack_get_all_by_tenant(self.ctx, marker=stacks[1].id)
+        st_db = db_api.stack_get_all(self.ctx, marker=stacks[1].id)
         self.assertEqual(1, len(st_db))
         self.assertEqual(stacks[0].id, st_db[0].id)
 
-    def test_stack_get_all_by_tenant_non_existing_marker(self):
+    def test_stack_get_all_non_existing_marker(self):
         [self._setup_test_stack('stack', x)[1] for x in UUIDs]
 
         uuid = 'this stack doesnt exist'
-        st_db = db_api.stack_get_all_by_tenant(self.ctx, marker=uuid)
+        st_db = db_api.stack_get_all(self.ctx, marker=uuid)
         self.assertEqual(3, len(st_db))
 
-    def test_stack_get_all_by_tenant_doesnt_mutate_sort_keys(self):
+    def test_stack_get_all_doesnt_mutate_sort_keys(self):
         [self._setup_test_stack('stack', x)[1] for x in UUIDs]
         sort_keys = ['id']
 
-        db_api.stack_get_all_by_tenant(self.ctx, sort_keys=sort_keys)
+        db_api.stack_get_all(self.ctx, sort_keys=sort_keys)
         self.assertEqual(['id'], sort_keys)
 
-    def test_stack_count_all_by_tenant(self):
+    def test_stack_count_all(self):
         stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
 
-        st_db = db_api.stack_count_all_by_tenant(self.ctx)
+        st_db = db_api.stack_count_all(self.ctx)
         self.assertEqual(3, st_db)
 
         stacks[0].delete()
-        st_db = db_api.stack_count_all_by_tenant(self.ctx)
+        st_db = db_api.stack_count_all(self.ctx)
         self.assertEqual(2, st_db)
 
         stacks[1].delete()
-        st_db = db_api.stack_count_all_by_tenant(self.ctx)
+        st_db = db_api.stack_count_all(self.ctx)
         self.assertEqual(1, st_db)
 
-    def test_stack_count_all_by_tenant_with_filters(self):
+    def test_stack_count_all_with_filters(self):
         self._setup_test_stack('foo', UUID1)
         self._setup_test_stack('bar', UUID2)
         self._setup_test_stack('bar', UUID3)
         filters = {'name': 'bar'}
 
-        st_db = db_api.stack_count_all_by_tenant(self.ctx, filters=filters)
+        st_db = db_api.stack_count_all(self.ctx, filters=filters)
         self.assertEqual(2, st_db)
 
     def test_event_get_all_by_stack(self):
@@ -575,14 +565,14 @@ class SqlAlchemyTest(HeatTestCase):
         db_creds = db_api.user_creds_create(self.ctx)
         load_creds = db_api.user_creds_get(db_creds.id)
 
-        self.assertEqual(load_creds.get('username'), 'test_username')
-        self.assertEqual(load_creds.get('password'), 'password')
-        self.assertEqual(load_creds.get('tenant'), 'test_tenant')
-        self.assertEqual(load_creds.get('tenant_id'), 'test_tenant_id')
+        self.assertEqual('test_username', load_creds.get('username'))
+        self.assertEqual('password', load_creds.get('password'))
+        self.assertEqual('test_tenant', load_creds.get('tenant'))
+        self.assertEqual('test_tenant_id', load_creds.get('tenant_id'))
         self.assertIsNotNone(load_creds.get('created_at'))
         self.assertIsNone(load_creds.get('updated_at'))
-        self.assertEqual(load_creds.get('auth_url'),
-                         'http://server.test:5000/v2.0')
+        self.assertEqual('http://server.test:5000/v2.0',
+                         load_creds.get('auth_url'))
         self.assertIsNone(load_creds.get('trust_id'))
         self.assertIsNone(load_creds.get('trustor_user_id'))
 
@@ -601,10 +591,10 @@ class SqlAlchemyTest(HeatTestCase):
         self.assertIsNotNone(load_creds.get('created_at'))
         self.assertIsNone(load_creds.get('updated_at'))
         self.assertIsNone(load_creds.get('auth_url'))
-        self.assertEqual(load_creds.get('tenant_id'), 'atenant123')
-        self.assertEqual(load_creds.get('tenant'), 'atenant')
-        self.assertEqual(load_creds.get('trust_id'), 'atrust123')
-        self.assertEqual(load_creds.get('trustor_user_id'), 'atrustor123')
+        self.assertEqual('atenant123', load_creds.get('tenant_id'))
+        self.assertEqual('atenant', load_creds.get('tenant'))
+        self.assertEqual('atrust123', load_creds.get('trust_id'))
+        self.assertEqual('atrustor123', load_creds.get('trustor_user_id'))
 
     def test_user_creds_none(self):
         self.ctx.username = None
@@ -617,11 +607,170 @@ class SqlAlchemyTest(HeatTestCase):
         self.assertIsNone(load_creds.get('password'))
         self.assertIsNone(load_creds.get('trust_id'))
 
+    def test_software_config_create(self):
+        tenant_id = self.ctx.tenant_id
+        config = db_api.software_config_create(
+            self.ctx, {'name': 'config_mysql',
+                       'tenant': tenant_id})
+        self.assertIsNotNone(config)
+        self.assertEqual('config_mysql', config.name)
+        self.assertEqual(tenant_id, config.tenant)
+
+    def test_software_config_get(self):
+        self.assertRaises(
+            exception.NotFound,
+            db_api.software_config_get,
+            self.ctx,
+            str(uuid.uuid4()))
+        conf = ('#!/bin/bash\n'
+                'echo "$bar and $foo"\n')
+        config = {
+            'inputs': [{'name': 'foo'}, {'name': 'bar'}],
+            'outputs': [{'name': 'result'}],
+            'config': conf,
+            'options': {}
+        }
+        tenant_id = self.ctx.tenant_id
+        values = {'name': 'config_mysql',
+                  'tenant': tenant_id,
+                  'group': 'Heat::Shell',
+                  'config': config}
+        config = db_api.software_config_create(
+            self.ctx, values)
+        config_id = config.id
+        config = db_api.software_config_get(self.ctx, config_id)
+        self.assertIsNotNone(config)
+        self.assertEqual('config_mysql', config.name)
+        self.assertEqual(tenant_id, config.tenant)
+        self.assertEqual('Heat::Shell', config.group)
+        self.assertEqual(conf, config.config['config'])
+        self.ctx.tenant_id = None
+        self.assertRaises(
+            exception.NotFound,
+            db_api.software_config_get,
+            self.ctx,
+            config_id)
+
+    def test_software_config_delete(self):
+        tenant_id = self.ctx.tenant_id
+        config = db_api.software_config_create(
+            self.ctx, {'name': 'config_mysql',
+                       'tenant': tenant_id})
+        config_id = config.id
+        db_api.software_config_delete(self.ctx, config_id)
+        err = self.assertRaises(
+            exception.NotFound,
+            db_api.software_config_get,
+            self.ctx,
+            config_id)
+        self.assertIn(config_id, str(err))
+
+        err = self.assertRaises(
+            exception.NotFound, db_api.software_config_delete,
+            self.ctx, config_id)
+        self.assertIn(config_id, str(err))
+
+    def _deployment_values(self):
+        tenant_id = self.ctx.tenant_id
+        config_id = db_api.software_config_create(
+            self.ctx, {'name': 'config_mysql', 'tenant': tenant_id}).id
+        server_id = str(uuid.uuid4())
+        input_values = {'foo': 'fooooo', 'bar': 'baaaaa'}
+        values = {
+            'tenant': tenant_id,
+            'config_id': config_id,
+            'server_id': server_id,
+            'input_values': input_values
+        }
+        return values
+
+    def test_software_deployment_create(self):
+        values = self._deployment_values()
+        deployment = db_api.software_deployment_create(self.ctx, values)
+        self.assertIsNotNone(deployment)
+        self.assertEqual(values['tenant'], deployment.tenant)
+
+    def test_software_deployment_get(self):
+        self.assertRaises(
+            exception.NotFound,
+            db_api.software_deployment_get,
+            self.ctx,
+            str(uuid.uuid4()))
+        values = self._deployment_values()
+        deployment = db_api.software_deployment_create(self.ctx, values)
+        self.assertIsNotNone(deployment)
+        deployment_id = deployment.id
+        deployment = db_api.software_deployment_get(self.ctx, deployment_id)
+        self.assertIsNotNone(deployment)
+        self.assertEqual(values['tenant'], deployment.tenant)
+        self.assertEqual(values['config_id'], deployment.config_id)
+        self.assertEqual(values['server_id'], deployment.server_id)
+        self.assertEqual(values['input_values'], deployment.input_values)
+        self.ctx.tenant_id = None
+        self.assertRaises(
+            exception.NotFound,
+            db_api.software_deployment_get,
+            self.ctx,
+            deployment_id)
+
+    def test_software_deployment_get_all(self):
+        self.assertEqual([], db_api.software_deployment_get_all(self.ctx))
+        values = self._deployment_values()
+        deployment = db_api.software_deployment_create(self.ctx, values)
+        self.assertIsNotNone(deployment)
+        all = db_api.software_deployment_get_all(self.ctx)
+        self.assertEqual(1, len(all))
+        self.assertEqual(deployment, all[0])
+        all = db_api.software_deployment_get_all(
+            self.ctx, server_id=values['server_id'])
+        self.assertEqual(1, len(all))
+        self.assertEqual(deployment, all[0])
+        all = db_api.software_deployment_get_all(
+            self.ctx, server_id=str(uuid.uuid4()))
+        self.assertEqual([], all)
+
+    def test_software_deployment_update(self):
+        deployment_id = str(uuid.uuid4())
+        err = self.assertRaises(exception.NotFound,
+                                db_api.software_deployment_update,
+                                self.ctx, deployment_id, values={})
+        self.assertIn(deployment_id, str(err))
+        values = self._deployment_values()
+        deployment = db_api.software_deployment_create(self.ctx, values)
+        deployment_id = deployment.id
+        values = {'status': 'COMPLETED'}
+        deployment = db_api.software_deployment_update(
+            self.ctx, deployment_id, values)
+        self.assertIsNotNone(deployment)
+        self.assertEqual(values['status'], deployment.status)
+
+    def test_software_deployment_delete(self):
+        deployment_id = str(uuid.uuid4())
+        err = self.assertRaises(exception.NotFound,
+                                db_api.software_deployment_delete,
+                                self.ctx, deployment_id)
+        self.assertIn(deployment_id, str(err))
+        values = self._deployment_values()
+        deployment = db_api.software_deployment_create(self.ctx, values)
+        deployment_id = deployment.id
+        deployment = db_api.software_deployment_get(self.ctx, deployment_id)
+        self.assertIsNotNone(deployment)
+        db_api.software_deployment_delete(self.ctx, deployment_id)
+
+        err = self.assertRaises(
+            exception.NotFound,
+            db_api.software_deployment_get,
+            self.ctx,
+            deployment_id)
+
+        self.assertIn(deployment_id, str(err))
+
 
 def create_raw_template(context, **kwargs):
     t = template_format.parse(wp_template)
     template = {
         'template': t,
+        'files': {'foo': 'bar'}
     }
     template.update(kwargs)
     return db_api.raw_template_create(context, template)
@@ -723,6 +872,7 @@ class DBAPIRawTemplateTest(HeatTestCase):
         tp = create_raw_template(self.ctx, template=t)
         self.assertIsNotNone(tp.id)
         self.assertEqual(t, tp.template)
+        self.assertEqual({'foo': 'bar'}, tp.files)
 
     def test_raw_template_get(self):
         t = template_format.parse(wp_template)
@@ -851,6 +1001,15 @@ class DBAPIStackTest(HeatTestCase):
         stack = db_api.stack_get(self.ctx, UUID1, show_deleted=False)
         self.assertIsNone(stack)
 
+    def test_stack_get_tenant_is_stack_user_project_id(self):
+        stack = create_stack(self.ctx, self.template, self.user_creds,
+                             stack_user_project_id='astackuserproject')
+        self.ctx.tenant_id = 'astackuserproject'
+        ret_stack = db_api.stack_get(self.ctx, stack.id, show_deleted=False)
+        self.assertIsNotNone(ret_stack)
+        self.assertEqual(stack.id, ret_stack.id)
+        self.assertEqual('db_test_stack_name', ret_stack.name)
+
     def test_stack_get_can_return_a_stack_from_different_tenant(self):
         stack = create_stack(self.ctx, self.template, self.user_creds)
         self.ctx.tenant_id = 'abc'
@@ -905,7 +1064,7 @@ class DBAPIStackTest(HeatTestCase):
                                                            parent_stack2.id)
         self.assertEqual(2, len(stack2_children))
 
-    def test_stack_get_all_by_tenant(self):
+    def test_stack_get_all_with_regular_tenant(self):
         values = [
             {'tenant': UUID1},
             {'tenant': UUID1},
@@ -917,25 +1076,60 @@ class DBAPIStackTest(HeatTestCase):
                       **val) for val in values]
 
         self.ctx.tenant_id = UUID1
-        stacks = db_api.stack_get_all_by_tenant(self.ctx)
+        stacks = db_api.stack_get_all(self.ctx)
         self.assertEqual(2, len(stacks))
 
         self.ctx.tenant_id = UUID2
-        stacks = db_api.stack_get_all_by_tenant(self.ctx)
+        stacks = db_api.stack_get_all(self.ctx)
         self.assertEqual(3, len(stacks))
 
         self.ctx.tenant_id = UUID3
-        self.assertEqual([], db_api.stack_get_all_by_tenant(self.ctx))
+        self.assertEqual([], db_api.stack_get_all(self.ctx))
 
-    def test_stack_count_all_by_tenant(self):
+    def test_stack_get_all_with_tenant_safe_false(self):
         values = [
-            {'tenant': self.ctx.tenant_id},
-            {'tenant': self.ctx.tenant_id},
+            {'tenant': UUID1},
+            {'tenant': UUID1},
+            {'tenant': UUID2},
+            {'tenant': UUID2},
+            {'tenant': UUID2},
         ]
         [create_stack(self.ctx, self.template, self.user_creds,
                       **val) for val in values]
 
-        self.assertEqual(2, db_api.stack_count_all_by_tenant(self.ctx))
+        stacks = db_api.stack_get_all(self.ctx, tenant_safe=False)
+        self.assertEqual(5, len(stacks))
+
+    def test_stack_count_all_with_regular_tenant(self):
+        values = [
+            {'tenant': UUID1},
+            {'tenant': UUID1},
+            {'tenant': UUID2},
+            {'tenant': UUID2},
+            {'tenant': UUID2},
+        ]
+        [create_stack(self.ctx, self.template, self.user_creds,
+                      **val) for val in values]
+
+        self.ctx.tenant_id = UUID1
+        self.assertEqual(2, db_api.stack_count_all(self.ctx))
+
+        self.ctx.tenant_id = UUID2
+        self.assertEqual(3, db_api.stack_count_all(self.ctx))
+
+    def test_stack_count_all_with_tenant_safe_false(self):
+        values = [
+            {'tenant': UUID1},
+            {'tenant': UUID1},
+            {'tenant': UUID2},
+            {'tenant': UUID2},
+            {'tenant': UUID2},
+        ]
+        [create_stack(self.ctx, self.template, self.user_creds,
+                      **val) for val in values]
+
+        self.assertEqual(5,
+                         db_api.stack_count_all(self.ctx, tenant_safe=False))
 
     def test_purge_deleted(self):
         now = datetime.now()
@@ -1154,7 +1348,7 @@ class DBAPIResourceDataTest(HeatTestCase):
         self.assertEqual('test_value', val)
 
         vals = db_api.resource_data_get_all(self.resource)
-        self.assertEqual(len(vals), 2)
+        self.assertEqual(2, len(vals))
         self.assertEqual('foo', vals.get('test_resource_key'))
         self.assertEqual('test_value', vals.get('encryped_resource_key'))
 

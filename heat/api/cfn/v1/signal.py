@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -22,13 +21,13 @@ from heat.api.aws import exception
 class SignalController(object):
     def __init__(self, options):
         self.options = options
-        self.engine = rpc_client.EngineClient()
+        self.rpc_client = rpc_client.EngineClient()
 
     def update_waitcondition(self, req, body, arn):
         con = req.context
         identity = identifier.ResourceIdentifier.from_arn(arn)
         try:
-            md = self.engine.metadata_update(
+            md = self.rpc_client.metadata_update(
                 con,
                 stack_identity=dict(identity.stack()),
                 resource_name=identity.resource_name,
@@ -42,7 +41,7 @@ class SignalController(object):
         con = req.context
         identity = identifier.ResourceIdentifier.from_arn(arn)
         try:
-            self.engine.resource_signal(
+            self.rpc_client.resource_signal(
                 con,
                 stack_identity=dict(identity.stack()),
                 resource_name=identity.resource_name,

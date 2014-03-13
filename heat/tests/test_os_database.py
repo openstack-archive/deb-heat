@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -19,9 +18,10 @@ from heat.common import template_format
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine import scheduler
+from heat.engine.clients import troveclient
 from heat.engine.resources import os_database
 from heat.tests.common import HeatTestCase
-from heat.tests.utils import setup_dummy_db
+from heat.tests import utils
 
 
 wp_template = '''
@@ -90,13 +90,13 @@ class OSDBInstanceTest(HeatTestCase):
     def setUp(self):
         super(OSDBInstanceTest, self).setUp()
         self.fc = self.m.CreateMockAnything()
-        setup_dummy_db()
+        utils.setup_dummy_db()
 
     def _setup_test_clouddbinstance(self, name, parsed_t):
         stack_name = '%s_stack' % name
         t = parsed_t
         template = parser.Template(t)
-        stack = parser.Stack(None,
+        stack = parser.Stack(utils.dummy_context(),
                              stack_name,
                              template,
                              environment.Environment({'name': 'test'}),
@@ -140,6 +140,24 @@ class OSDBInstanceTest(HeatTestCase):
         self.assertEqual((instance.CREATE, instance.COMPLETE), instance.state)
         self.m.VerifyAll()
 
+    def test_osdatabase_create_overlimit(self):
+        fake_dbinstance = FakeDBInstance()
+        t = template_format.parse(wp_template)
+        instance = self._setup_test_clouddbinstance('dbinstance_create', t)
+
+        self._stubout_create(instance, fake_dbinstance)
+
+        # Simulate an OverLimit exception
+        self.m.StubOutWithMock(fake_dbinstance, 'get')
+        fake_dbinstance.get().AndRaise(
+            troveclient.exceptions.RequestEntityTooLarge)
+
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.create)()
+        self.assertEqual((instance.CREATE, instance.COMPLETE), instance.state)
+        self.m.VerifyAll()
+
     def test_osdatabase_create_fails(self):
         fake_dbinstance = FakeDBInstance()
         fake_dbinstance.status = 'ERROR'
@@ -162,7 +180,30 @@ class OSDBInstanceTest(HeatTestCase):
         fake_dbinstance.delete().AndReturn(None)
         self.m.StubOutWithMock(fake_dbinstance, 'get')
         fake_dbinstance.get().AndReturn(None)
-        fake_dbinstance.get().AndRaise(os_database.NotFound(404))
+        fake_dbinstance.get().AndRaise(troveclient.exceptions.NotFound(404))
+
+        self.m.ReplayAll()
+        scheduler.TaskRunner(instance.delete)()
+        self.assertIsNone(instance.resource_id)
+        self.m.VerifyAll()
+
+    def test_osdatabase_delete_overlimit(self):
+        fake_dbinstance = FakeDBInstance()
+        t = template_format.parse(wp_template)
+        instance = self._setup_test_clouddbinstance('dbinstance_del', t)
+        self._stubout_create(instance, fake_dbinstance)
+        scheduler.TaskRunner(instance.create)()
+        self.m.StubOutWithMock(self.fc.instances, 'get')
+        self.fc.instances.get(12345).AndReturn(fake_dbinstance)
+        self.m.StubOutWithMock(fake_dbinstance, 'delete')
+        fake_dbinstance.delete().AndReturn(None)
+
+        # Simulate an OverLimit exception
+        self.m.StubOutWithMock(fake_dbinstance, 'get')
+        fake_dbinstance.get().AndRaise(
+            troveclient.exceptions.RequestEntityTooLarge)
+        fake_dbinstance.get().AndReturn(None)
+        fake_dbinstance.get().AndRaise(troveclient.exceptions.NotFound(404))
 
         self.m.ReplayAll()
         scheduler.TaskRunner(instance.delete)()
@@ -189,7 +230,8 @@ class OSDBInstanceTest(HeatTestCase):
         self._stubout_create(instance, fake_dbinstance)
         scheduler.TaskRunner(instance.create)()
         self.m.StubOutWithMock(self.fc.instances, 'get')
-        self.fc.instances.get(12345).AndRaise(os_database.NotFound(404))
+        self.fc.instances.get(12345).AndRaise(
+            troveclient.exceptions.NotFound(404))
 
         self.m.ReplayAll()
         scheduler.TaskRunner(instance.delete)()

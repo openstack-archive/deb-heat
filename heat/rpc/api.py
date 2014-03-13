@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -15,9 +14,9 @@
 ENGINE_TOPIC = 'engine'
 
 PARAM_KEYS = (
-    PARAM_TIMEOUT, PARAM_DISABLE_ROLLBACK
+    PARAM_TIMEOUT, PARAM_DISABLE_ROLLBACK, PARAM_ADOPT_STACK_DATA
 ) = (
-    'timeout_mins', 'disable_rollback'
+    'timeout_mins', 'disable_rollback', 'adopt_stack_data'
 )
 
 STACK_KEYS = (
@@ -51,13 +50,13 @@ RES_KEYS = (
     RES_NAME, RES_PHYSICAL_ID, RES_METADATA,
     RES_ACTION, RES_STATUS, RES_STATUS_DATA,
     RES_TYPE, RES_ID, RES_STACK_ID, RES_STACK_NAME,
-    RES_REQUIRED_BY,
+    RES_REQUIRED_BY, RES_MEMBERS,
 ) = (
     'description', 'updated_time',
     'resource_name', 'physical_resource_id', 'metadata',
     'resource_action', 'resource_status', 'resource_status_reason',
     'resource_type', 'resource_identity', STACK_ID, STACK_NAME,
-    'required_by',
+    'required_by', 'members',
 )
 
 RES_SCHEMA_KEYS = (
@@ -76,7 +75,7 @@ EVENT_KEYS = (
 ) = (
     'event_identity',
     STACK_ID, STACK_NAME,
-    "event_time",
+    'event_time',
     RES_NAME, RES_PHYSICAL_ID, RES_ACTION,
     RES_STATUS, RES_STATUS_DATA, RES_TYPE,
     'resource_properties',
@@ -164,10 +163,58 @@ VALIDATE_PARAM_KEYS = (
     PARAM_TYPE, PARAM_DEFAULT, PARAM_NO_ECHO,
     PARAM_ALLOWED_VALUES, PARAM_ALLOWED_PATTERN, PARAM_MAX_LENGTH,
     PARAM_MIN_LENGTH, PARAM_MAX_VALUE, PARAM_MIN_VALUE,
-    PARAM_DESCRIPTION, PARAM_CONSTRAINT_DESCRIPTION
+    PARAM_DESCRIPTION, PARAM_CONSTRAINT_DESCRIPTION, PARAM_LABEL
 ) = (
     'Type', 'Default', 'NoEcho',
     'AllowedValues', 'AllowedPattern', 'MaxLength',
     'MinLength', 'MaxValue', 'MinValue',
-    'Description', 'ConstraintDescription'
+    'Description', 'ConstraintDescription', 'Label'
+)
+
+VALIDATE_PARAM_TYPES = (
+    PARAM_TYPE_STRING, PARAM_TYPE_NUMBER, PARAM_TYPE_COMMA_DELIMITED_LIST,
+    PARAM_TYPE_JSON
+) = (
+    'String', 'Number', 'CommaDelimitedList',
+    'Json'
+)
+
+SOFTWARE_CONFIG_KEYS = (
+    SOFTWARE_CONFIG_ID,
+    SOFTWARE_CONFIG_NAME,
+    SOFTWARE_CONFIG_GROUP,
+    SOFTWARE_CONFIG_CONFIG,
+    SOFTWARE_CONFIG_INPUTS,
+    SOFTWARE_CONFIG_OUTPUTS,
+    SOFTWARE_CONFIG_OPTIONS,
+) = (
+    'id',
+    'name',
+    'group',
+    'config',
+    'inputs',
+    'outputs',
+    'options',
+)
+
+SOFTWARE_DEPLOYMENT_KEYS = (
+    SOFTWARE_DEPLOYMENT_ID,
+    SOFTWARE_DEPLOYMENT_CONFIG_ID,
+    SOFTWARE_DEPLOYMENT_SERVER_ID,
+    SOFTWARE_DEPLOYMENT_INPUT_VALUES,
+    SOFTWARE_DEPLOYMENT_OUTPUT_VALUES,
+    SOFTWARE_DEPLOYMENT_SIGNAL_ID,
+    SOFTWARE_DEPLOYMENT_ACTION,
+    SOFTWARE_DEPLOYMENT_STATUS,
+    SOFTWARE_DEPLOYMENT_STATUS_REASON
+) = (
+    'id',
+    'config_id',
+    'server_id',
+    'input_values',
+    'output_values',
+    'signal_id',
+    'action',
+    'status',
+    'status_reason'
 )

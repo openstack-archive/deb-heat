@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -26,7 +25,9 @@ from heat.common import template_format
 from heat.engine import parser
 from heat.engine import scheduler
 from heat.engine import service
+from heat.engine.resources import image
 from heat.engine.resources import instance
+from heat.engine.resources import nova_keypair
 from heat.engine.resources import wait_condition as wc
 
 
@@ -147,6 +148,13 @@ class MetadataRefreshTest(HeatTestCase):
 
         self.stack_id = stack.store()
 
+        self.m.StubOutWithMock(nova_keypair.KeypairConstraint, 'validate')
+        nova_keypair.KeypairConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.m.StubOutWithMock(image.ImageConstraint, 'validate')
+        image.ImageConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
         for cookie in (object(), object()):
@@ -169,21 +177,21 @@ class MetadataRefreshTest(HeatTestCase):
         self.m.ReplayAll()
         self.stack.create()
 
-        self.assertEqual(self.stack.state,
-                         (self.stack.CREATE, self.stack.COMPLETE))
+        self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
+                         self.stack.state)
 
         s1 = self.stack['S1']
         s2 = self.stack['S2']
         files = s1.metadata['AWS::CloudFormation::Init']['config']['files']
         cont = files['/tmp/random_file']['content']
         self.assertEqual((s2.CREATE, s2.COMPLETE), s2.state)
-        self.assertEqual(cont, 's2-ip=1.2.3.5')
+        self.assertEqual('s2-ip=1.2.3.5', cont)
 
         s1.metadata_update()
         s2.metadata_update()
         files = s1.metadata['AWS::CloudFormation::Init']['config']['files']
         cont = files['/tmp/random_file']['content']
-        self.assertEqual(cont, 's2-ip=10.0.0.5')
+        self.assertEqual('s2-ip=10.0.0.5', cont)
 
         self.m.VerifyAll()
 
@@ -210,6 +218,13 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
         stack = parser.Stack(ctx, stack_name, template, disable_rollback=True)
 
         self.stack_id = stack.store()
+
+        self.m.StubOutWithMock(nova_keypair.KeypairConstraint, 'validate')
+        nova_keypair.KeypairConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.m.StubOutWithMock(image.ImageConstraint, 'validate')
+        image.ImageConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
 
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
@@ -248,7 +263,7 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
         inst = self.stack['S2']
 
         def check_empty(sleep_time):
-            self.assertEqual(watch.FnGetAtt('Data'), '{}')
+            self.assertEqual('{}', watch.FnGetAtt('Data'))
             self.assertIsNone(inst.metadata['test'])
 
         def update_metadata(id, data, reason):
@@ -269,16 +284,16 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
         self.m.ReplayAll()
         self.stack.create()
 
-        self.assertEqual(self.stack.state,
-                         (self.stack.CREATE, self.stack.COMPLETE))
+        self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
+                         self.stack.state)
 
-        self.assertEqual(watch.FnGetAtt('Data'), '{"123": "foo"}')
-        self.assertEqual(inst.metadata['test'], '{"123": "foo"}')
+        self.assertEqual('{"123": "foo"}', watch.FnGetAtt('Data'))
+        self.assertEqual('{"123": "foo"}', inst.metadata['test'])
 
         update_metadata('456', 'blarg', 'wibble')
-        self.assertEqual(watch.FnGetAtt('Data'),
-                         '{"123": "foo", "456": "blarg"}')
-        self.assertEqual(inst.metadata['test'],
-                         '{"123": "foo", "456": "blarg"}')
+        self.assertEqual('{"123": "foo", "456": "blarg"}',
+                         watch.FnGetAtt('Data'))
+        self.assertEqual('{"123": "foo", "456": "blarg"}',
+                         inst.metadata['test'])
 
         self.m.VerifyAll()

@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -24,9 +23,10 @@ SECTIONS = (PARAMETERS, RESOURCE_REGISTRY) = \
 def parse(env_str):
     '''
     Takes a string and returns a dict containing the parsed structure.
-    This includes determination of whether the string is using the
-    JSON or YAML format.
     '''
+    if env_str is None:
+        return {}
+
     try:
         env = yaml.load(env_str, Loader=yaml_loader)
     except yaml.YAMLError as yea:
@@ -35,6 +35,9 @@ def parse(env_str):
         if env is None:
             env = {}
 
+    if not isinstance(env, dict):
+        raise ValueError(_('The environment is not a valid '
+                           'YAML mapping data type.'))
     for param in env:
         if param not in SECTIONS:
             raise ValueError(_('environment has wrong section "%s"') % param)

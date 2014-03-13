@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -30,9 +29,11 @@ class Port(neutron.NeutronResource):
     PROPERTIES = (
         NETWORK_ID, NAME, VALUE_SPECS, ADMIN_STATE_UP, FIXED_IPS,
         MAC_ADDRESS, DEVICE_ID, SECURITY_GROUPS, ALLOWED_ADDRESS_PAIRS,
+        DEVICE_OWNER,
     ) = (
         'network_id', 'name', 'value_specs', 'admin_state_up', 'fixed_ips',
         'mac_address', 'device_id', 'security_groups', 'allowed_address_pairs',
+        'device_owner',
     )
 
     _FIXED_IP_KEYS = (
@@ -55,7 +56,8 @@ class Port(neutron.NeutronResource):
         ),
         NAME: properties.Schema(
             properties.Schema.STRING,
-            _('A symbolic name for this port.')
+            _('A symbolic name for this port.'),
+            update_allowed=True
         ),
         VALUE_SPECS: properties.Schema(
             properties.Schema.MAP,
@@ -95,7 +97,8 @@ class Port(neutron.NeutronResource):
         ),
         DEVICE_ID: properties.Schema(
             properties.Schema.STRING,
-            _('Device ID of this port.')
+            _('Device ID of this port.'),
+            update_allowed=True
         ),
         SECURITY_GROUPS: properties.Schema(
             properties.Schema.LIST,
@@ -121,6 +124,13 @@ class Port(neutron.NeutronResource):
                     ),
                 },
             )
+        ),
+        DEVICE_OWNER: properties.Schema(
+            properties.Schema.STRING,
+            _('Name of the network owning the port. '
+              'The value is typically network:floatingip '
+              'or network:router_interface or network:dhcp'),
+            update_allowed=True
         ),
     }
 
@@ -162,6 +172,9 @@ class Port(neutron.NeutronResource):
 
         self._prepare_list_properties(props)
 
+        if not props['fixed_ips']:
+            del(props['fixed_ips'])
+
         port = self.neutron().create_port({'port': props})['port']
         self.resource_id_set(port['id'])
 
@@ -181,6 +194,8 @@ class Port(neutron.NeutronResource):
         if props.get(self.SECURITY_GROUPS):
             props[self.SECURITY_GROUPS] = self.get_secgroup_uuids(
                 props.get(self.SECURITY_GROUPS), self.neutron())
+        else:
+            props.pop(self.SECURITY_GROUPS, None)
 
     def _show_resource(self):
         return self.neutron().show_port(

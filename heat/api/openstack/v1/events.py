@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -78,13 +77,12 @@ class EventController(object):
 
     def __init__(self, options):
         self.options = options
-        self.engine = rpc_client.EngineClient()
+        self.rpc_client = rpc_client.EngineClient()
 
     def _event_list(self, req, identity,
                     filter_func=lambda e: True, detail=False):
-        events = self.engine.list_events(req.context,
-                                         identity)
-
+        events = self.rpc_client.list_events(req.context,
+                                             identity)
         keys = None if detail else summary_keys
 
         return [format_event(req, e, keys) for e in events if filter_func(e)]
@@ -129,7 +127,6 @@ def create_resource(options):
     """
     Events resource factory method.
     """
-    # TODO(zaneb) handle XML based on Content-type/Accepts
     deserializer = wsgi.JSONRequestDeserializer()
     serializer = wsgi.JSONResponseSerializer()
     return wsgi.Resource(EventController(options), deserializer, serializer)

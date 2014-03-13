@@ -146,6 +146,7 @@ default value defined as nested elements.
   parameters:
     <param name>:
       type: <string | number | json | comma_delimited_list>
+      label: <human-readable name of the parameter>
       description: <description of the parameter>
       default: <default value for parameter>
       hidden: <true | false>
@@ -158,6 +159,10 @@ param name
 type
     This attribute specifies the type of parameter. Currently supported types
     are *string*, *number*, *comma_delimited_list* or *json*.
+
+label
+    This *optional* attribute allows for giving a human readable name of the
+    parameter.
 
 description
     This *optional* attribute allows for giving a human readable description of
@@ -179,17 +184,19 @@ constraints
     parameter, such as minimum or maximum values for numeric parameters.
 
 The following example shows a minimalistic definition of two parameters. Note
-that the description is actually optional, but is good practice to provide a
-useful description for each parameter.
+that the description and label are actually optional, but is good practice to
+provide a useful description and label for each parameter.
 
 ::
 
   parameters:
     user_name:
       type: string
+      label: User Name
       description: User name to be configured for the application
     port_number:
       type: number
+      label: Port Number
       description: Port number to be configured for the web server
 
 
@@ -238,6 +245,7 @@ presented to the user at deployment time.
   parameters:
     user_name:
       type: string
+      label: User Name
       description: User name to be configured for the application
       constraints:
         - length: { min: 6, max: 8 }
@@ -309,9 +317,10 @@ For example:
   parameters:
     instance_type:
       type: string
+      label: Instance Type
       description: Instance type for compute instances
       constraints:
-        allowed_values:
+        - allowed_values:
           - m1.small
           - m1.medium
           - m1.large
@@ -320,7 +329,7 @@ allowed_pattern
 ~~~~~~~~~~~~~~~
 The *allowed_pattern* constraint applies to parameters of type string and allows
 for specifying a regular expression against which a user provided parameter
-value must evaluate at deployment
+value must evaluate at deployment.
 The syntax of the allowed_pattern constraint is:
 
 ::
@@ -334,10 +343,40 @@ For example:
   parameters:
     user_name:
       type: string
+      label: User Name
       description: User name to be configured for the application
       constraints:
         - allowed_pattern: "[A-Z]+[a-zA-Z0-9]*"
           description: User name must start with an uppercase character
+
+
+custom_constraint
+~~~~~~~~~~~~~~~~~
+The *custom_constraint* constraint adds an extra step of validation, generally
+to check that the specified resource exists in the backend. Custom constraints
+get implemented by plug-ins and can provide any kind of advanced constraint
+validation logic.
+
+The syntax of the custom_constraint constraint is:
+
+::
+
+  custom_constraint: <name>
+
+The *name* specifies the concrete type of custom constraint. It corresponds to
+the name under which the respective validation plugin has been registered with
+the Heat engine.
+
+For example:
+
+::
+
+  parameters:
+    key_name
+      type: string
+      description: SSH key pair
+      constraints:
+        - custom_constraint: nova.keypair
 
 
 .. _hot_spec_resources:
@@ -450,45 +489,79 @@ follows:
 
 ::
 
-  get_param: <parameter name>
+  get_param:
+    - <parameter name>
+    - <key/index 1> (optional)
+    - <key/index 2> (optional)
+    - ...
 
-The *parameter name* of the input parameter to be resolved is given as single
-parameter to this function. A sample use of this function in context of a
-resource definition is shown below.
+parameter name
+    The parameter name is required as it specifies the parameter
+    to be resolved. If the parameter returns a complex data structure
+    such as a list or a map, then subsequent keys or indexes can be specified
+    which navigate the data structure to return the desired value.
+
+A sample use of this function in context of a resource definition
+is shown below.
 
 ::
 
   parameters:
     instance_type:
       type: string
+      label: Instance Type
       description: Instance type to be used.
+    server_data:
+      type: json
 
   resources:
     my_instance:
       type: OS::Nova::Server
       properties:
         flavor: { get_param: instance_type}
+        metadata: { get_param: [ server_data, metadata ] }
+        key_name: { get_param: [ server_data, keys, 0 ] }
 
+
+In this example, if the instance_type/server_data parameters contained
+the following data:
+
+::
+
+   {"instance_type": "m1.tiny",
+   {"server_data": {"metadata": {"foo": "bar"},
+                    "keys": ["a_key","other_key"]}}}
+
+then the value of the property 'flavor' would resolve to "m1.tiny", 'metadata'
+would resolve to {"foo": "bar"} and 'key_name' would resolve to "a_key".
 
 get_attr
 --------
-The *get_attr* function allows for referencing an attribute of a resource. At
+The *get_attr* function allows referencing an attribute of a resource. At
 runtime, it will be resolved to the value of an attribute of a resource instance
 created from the respective resource definition of the template.
 The syntax of the get_attr function is as follows:
 
 ::
 
-  get_attr: [ <resource ID>, <attribute name> ]
+  get_attr:
+    - <resource ID>
+    - <attribute name>
+    - <key/index 1> (optional)
+    - <key/index 2> (optional)
+    - ...
 
 resource ID
-    This parameter specifies the resource the attribute of which shall be
+    This parameter specifies the resource for which the attributes shall be
     resolved. This resource must be defined within the *resources* section of
     the template (see also :ref:`hot_spec_resources`).
 attribute name
-    This parameter specifies the attribute to be resolved.
+    The attribute name is required as it specifies the attribute 
+    to be resolved. If the attribute returns a complex data structure
+    such as a list or a map, then subsequent keys or indexes can be specified
+    which navigate the data structure to return the desired value.
 
-An example of using the get_attr function is shown below:
+Some examples of how to use the get_attr function are shown below:
 
 ::
 
@@ -501,7 +574,18 @@ An example of using the get_attr function is shown below:
     instance_ip:
       description: IP address of the deployed compute instance
       value: { get_attr: [my_instance, first_address] }
+    instance_private_ip:
+      description: Private IP address of the deployed compute instance
+      value: { get_attr: [my_instance, networks, private, 0] }
 
+In this example, if the networks attribute contained the following data:
+
+::
+
+   {"public": ["2001:0db8:0000:0000:0000:ff00:0042:8329", "1.2.3.4"],
+    "private": ["10.0.0.1"]}
+
+then the value of the get_attr function would resolve to "10.0.0.1".
 
 get_resource
 ------------
@@ -570,6 +654,7 @@ like scripts for initializing compute instances as shown in the example below:
   parameters:
     DBRootPassword:
       type: string
+      label: Database Password
       description: Root password for MySQL
       hidden: true
 
@@ -593,3 +678,45 @@ In the example above, one can imagine that MySQL is being configured on a
 compute instance and the root password is going to be set based on a user
 provided parameter. The script for doing this is provided as userdata to the
 compute instance, leveraging the str_replace function.
+
+get_file
+------------
+The *get_file* function allows string content to be substituted into the
+template. It is generally used as a file inclusion mechanism for files
+containing non-heat scripts or configuration files.
+The syntax of the get_file function is as follows:
+
+::
+
+  get_file: <content key>
+
+The *content key* will be used to look up the files dictionary that is
+provided in the REST API call. The *heat* client command from
+python-heatclient is *get_file* aware and will populate the *files* with
+the actual content of fetched paths and URLs. The *heat* client command
+supports relative paths and will transform these to absolute URLs which
+will be used as the *content key* in the files dictionary.
+
+The example below demonstrates *get_file* usage with both relative and
+absolute URLs.
+
+::
+
+  resources:
+    my_instance:
+      type: OS::Nova::Server
+      properties:
+        # general properties ...
+        user_data:
+          get_file: my_instance_user_data.sh
+    my_other_instance:
+      type: OS::Nova::Server
+      properties:
+        # general properties ...
+        user_data:
+          get_file: http://example.com/my_other_instance_user_data.sh
+
+If this template was launched from a local file this would result in
+a *files* dictionary containing entries with keys
+*file:///path/to/my_instance_user_data.sh* and
+*http://example.com/my_other_instance_user_data.sh*.

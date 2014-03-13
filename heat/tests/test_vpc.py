@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -610,7 +609,7 @@ Resources:
             self.assertEqual((stack.CREATE, stack.COMPLETE), stack.state)
             rsrc = stack['the_nic']
             self.assertResourceState(rsrc, 'dddd')
-            self.assertEqual(rsrc.FnGetAtt('PrivateIpAddress'), '10.0.0.100')
+            self.assertEqual('10.0.0.100', rsrc.FnGetAtt('PrivateIpAddress'))
 
             self.assertRaises(resource.UpdateReplace,
                               rsrc.handle_update, {}, {}, {})
@@ -706,7 +705,7 @@ Resources:
     Properties:
       VpcId: {Ref: the_vpc}
   the_association:
-    Type: AWS::EC2::SubnetRouteTableAssocation
+    Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       RouteTableId: {Ref: the_route_table}
       SubnetId: {Ref: the_subnet}
@@ -762,7 +761,7 @@ Resources:
                           attachment.handle_update, {}, {}, {})
 
         route_table = stack['the_route_table']
-        self.assertEqual([route_table], list(attachment._vpc_route_tables()))
+        self.assertEqual(list(attachment._vpc_route_tables()), [route_table])
 
         stack.delete()
         self.m.VerifyAll()
@@ -788,7 +787,7 @@ Resources:
     Properties:
       VpcId: {Ref: the_vpc}
   the_association:
-    Type: AWS::EC2::SubnetRouteTableAssocation
+    Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       RouteTableId: {Ref: the_route_table}
       SubnetId: {Ref: the_subnet}

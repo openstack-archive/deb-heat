@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -23,8 +22,8 @@ from heat.common import plugin_loader
 
 class PluginLoaderTest(testtools.TestCase):
     def test_module_name(self):
-        self.assertEqual(plugin_loader._module_name('foo.bar', 'blarg.wibble'),
-                         'foo.bar.blarg.wibble')
+        self.assertEqual('foo.bar.blarg.wibble',
+                         plugin_loader._module_name('foo.bar', 'blarg.wibble'))
 
     def test_create_subpackage_single_path(self):
         pkg_name = 'heat.engine.test_single_path'
@@ -34,8 +33,8 @@ class PluginLoaderTest(testtools.TestCase):
                                               'test_single_path')
         self.assertIn(pkg_name, sys.modules)
         self.assertEqual(sys.modules[pkg_name], pkg)
-        self.assertEqual(pkg.__path__, ['/tmp'])
-        self.assertEqual(pkg.__name__, pkg_name)
+        self.assertEqual(['/tmp'], pkg.__path__)
+        self.assertEqual(pkg_name, pkg.__name__)
 
     def test_create_subpackage_path_list(self):
         path_list = ['/tmp']
@@ -46,9 +45,9 @@ class PluginLoaderTest(testtools.TestCase):
                                               'test_path_list')
         self.assertIn(pkg_name, sys.modules)
         self.assertEqual(sys.modules[pkg_name], pkg)
-        self.assertEqual(pkg.__path__, path_list)
+        self.assertEqual(path_list, pkg.__path__)
         self.assertNotIn(pkg.__path__, path_list)
-        self.assertEqual(pkg.__name__, pkg_name)
+        self.assertEqual(pkg_name, pkg.__name__)
 
     def test_import_module_existing(self):
         import heat.engine.service

@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -102,7 +101,7 @@ class WatchRuleTest(HeatTestCase):
                                       stack_id=self.stack_id,
                                       last_evaluated=last)
         new_state = self.wr.get_alarm_state()
-        self.assertEqual(new_state, 'NORMAL')
+        self.assertEqual('NORMAL', new_state)
 
         data.append(WatchData(25, now - datetime.timedelta(seconds=250)))
         self.wr = watchrule.WatchRule(context=self.ctx,
@@ -112,7 +111,7 @@ class WatchRuleTest(HeatTestCase):
                                       stack_id=self.stack_id,
                                       last_evaluated=last)
         new_state = self.wr.get_alarm_state()
-        self.assertEqual(new_state, 'ALARM')
+        self.assertEqual('ALARM', new_state)
 
     def test_maximum(self):
         rule = {'EvaluationPeriods': '1',
@@ -136,7 +135,7 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
         self.wr.now = now
         new_state = self.wr.get_alarm_state()
-        self.assertEqual(new_state, 'NORMAL')
+        self.assertEqual('NORMAL', new_state)
 
         data.append(WatchData(35, now - datetime.timedelta(seconds=150)))
         self.wr = watchrule.WatchRule(context=self.ctx,
@@ -147,7 +146,7 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
         self.wr.now = now
         new_state = self.wr.get_alarm_state()
-        self.assertEqual(new_state, 'ALARM')
+        self.assertEqual('ALARM', new_state)
 
     def test_samplecount(self):
 
@@ -172,7 +171,7 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
         self.wr.now = now
         new_state = self.wr.get_alarm_state()
-        self.assertEqual(new_state, 'NORMAL')
+        self.assertEqual('NORMAL', new_state)
 
         # only 3 samples -> ALARM
         data.append(WatchData(1, now - datetime.timedelta(seconds=200)))
@@ -184,7 +183,7 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
         self.wr.now = now
         new_state = self.wr.get_alarm_state()
-        self.assertEqual(new_state, 'ALARM')
+        self.assertEqual('ALARM', new_state)
 
         # only 3 samples (one old) -> NORMAL
         data.pop(0)
@@ -197,7 +196,7 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
         self.wr.now = now
         new_state = self.wr.get_alarm_state()
-        self.assertEqual(new_state, 'NORMAL')
+        self.assertEqual('NORMAL', new_state)
 
     def test_sum(self):
         rule = {'EvaluationPeriods': '1',
@@ -221,7 +220,7 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
         self.wr.now = now
         new_state = self.wr.get_alarm_state()
-        self.assertEqual(new_state, 'NORMAL')
+        self.assertEqual('NORMAL', new_state)
 
         # sum > 100 -> ALARM
         data.append(WatchData(85, now - datetime.timedelta(seconds=150)))
@@ -233,7 +232,7 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
         self.wr.now = now
         new_state = self.wr.get_alarm_state()
-        self.assertEqual(new_state, 'ALARM')
+        self.assertEqual('ALARM', new_state)
 
     def test_ave(self):
         rule = {'EvaluationPeriods': '1',
@@ -256,7 +255,7 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
         self.wr.now = now
         new_state = self.wr.get_alarm_state()
-        self.assertEqual(new_state, 'NORMAL')
+        self.assertEqual('NORMAL', new_state)
 
         data.append(WatchData(195, now - datetime.timedelta(seconds=250)))
         self.wr = watchrule.WatchRule(context=self.ctx,
@@ -267,7 +266,7 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
         self.wr.now = now
         new_state = self.wr.get_alarm_state()
-        self.assertEqual(new_state, 'ALARM')
+        self.assertEqual('ALARM', new_state)
 
     @utils.wr_delete_after
     def test_load(self):
@@ -303,11 +302,11 @@ class WatchRuleTest(HeatTestCase):
         for wn in ('HttpFailureAlarm', 'AnotherWatch'):
             wr = watchrule.WatchRule.load(self.ctx, wn)
             self.assertIsInstance(wr, watchrule.WatchRule)
-            self.assertEqual(wr.name, wn)
-            self.assertEqual(wr.state, 'NORMAL')
-            self.assertEqual(wr.rule, rule)
-            self.assertEqual(wr.timeperiod, datetime.timedelta(
-                             seconds=int(rule['Period'])))
+            self.assertEqual(wn, wr.name)
+            self.assertEqual('NORMAL', wr.state)
+            self.assertEqual(rule, wr.rule)
+            self.assertEqual(datetime.timedelta(seconds=int(rule['Period'])),
+                             wr.timeperiod)
 
     @utils.wr_delete_after
     def test_store(self):
@@ -326,9 +325,9 @@ class WatchRuleTest(HeatTestCase):
 
         dbwr = db_api.watch_rule_get_by_name(self.ctx, 'storetest')
         self.assertIsNotNone(dbwr)
-        self.assertEqual(dbwr.name, 'storetest')
-        self.assertEqual(dbwr.state, watchrule.WatchRule.NODATA)
-        self.assertEqual(dbwr.rule, rule)
+        self.assertEqual('storetest', dbwr.name)
+        self.assertEqual(watchrule.WatchRule.NODATA, dbwr.state)
+        self.assertEqual(rule, dbwr.rule)
 
     @utils.wr_delete_after
     def test_evaluate(self):
@@ -355,8 +354,8 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
 
         actions = self.wr.evaluate()
-        self.assertEqual(self.wr.state, 'NODATA')
-        self.assertEqual(actions, [])
+        self.assertEqual('NODATA', self.wr.state)
+        self.assertEqual([], actions)
 
         # now - last == Period, so should set NORMAL
         last = now - datetime.timedelta(seconds=300)
@@ -369,9 +368,9 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
 
         actions = self.wr.evaluate()
-        self.assertEqual(self.wr.state, 'NORMAL')
-        self.assertEqual(self.wr.last_evaluated, now)
-        self.assertEqual(actions, [])
+        self.assertEqual('NORMAL', self.wr.state)
+        self.assertEqual(now, self.wr.last_evaluated)
+        self.assertEqual([], actions)
 
         # Now data breaches Threshold, so should set ALARM
         last = now - datetime.timedelta(seconds=300)
@@ -384,9 +383,9 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
 
         actions = self.wr.evaluate()
-        self.assertEqual(self.wr.state, 'ALARM')
-        self.assertEqual(self.wr.last_evaluated, now)
-        self.assertEqual(actions, [])
+        self.assertEqual('ALARM', self.wr.state)
+        self.assertEqual(now, self.wr.last_evaluated)
+        self.assertEqual([], actions)
 
     @utils.wr_delete_after
     def test_evaluate_suspend(self):
@@ -415,8 +414,8 @@ class WatchRuleTest(HeatTestCase):
         self.wr.state_set(self.wr.SUSPENDED)
 
         actions = self.wr.evaluate()
-        self.assertEqual(self.wr.state, self.wr.SUSPENDED)
-        self.assertEqual(actions, [])
+        self.assertEqual(self.wr.SUSPENDED, self.wr.state)
+        self.assertEqual([], actions)
 
     @utils.wr_delete_after
     def test_rule_actions_alarm_normal(self):
@@ -442,8 +441,8 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
 
         actions = self.wr.evaluate()
-        self.assertEqual(self.wr.state, 'NORMAL')
-        self.assertEqual(actions, [])
+        self.assertEqual('NORMAL', self.wr.state)
+        self.assertEqual([], actions)
         self.m.VerifyAll()
 
     @utils.wr_delete_after
@@ -470,15 +469,15 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
 
         actions = self.wr.evaluate()
-        self.assertEqual(self.wr.state, 'ALARM')
-        self.assertEqual(actions, ['DummyAction'])
+        self.assertEqual('ALARM', self.wr.state)
+        self.assertEqual(['DummyAction'], actions)
 
         # re-set last_evaluated so the rule will be evaluated again.
         last = now - datetime.timedelta(seconds=300)
         self.wr.last_evaluated = last
         actions = self.wr.evaluate()
-        self.assertEqual(self.wr.state, 'ALARM')
-        self.assertEqual(actions, ['DummyAction'])
+        self.assertEqual('ALARM', self.wr.state)
+        self.assertEqual(['DummyAction'], actions)
         self.m.VerifyAll()
 
     @utils.wr_delete_after
@@ -505,8 +504,8 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
 
         actions = self.wr.evaluate()
-        self.assertEqual(self.wr.state, 'ALARM')
-        self.assertEqual(actions, ['DummyAction', 'DummyAction'])
+        self.assertEqual('ALARM', self.wr.state)
+        self.assertEqual(['DummyAction', 'DummyAction'], actions)
         self.m.VerifyAll()
 
     @utils.wr_delete_after
@@ -532,8 +531,8 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
 
         actions = self.wr.evaluate()
-        self.assertEqual(self.wr.state, 'NODATA')
-        self.assertEqual(actions, [])
+        self.assertEqual('NODATA', self.wr.state)
+        self.assertEqual([], actions)
 
         # Move time forward and add data below threshold so we transition from
         # ALARM -> NORMAL, so evaluate() should output a 'DummyAction'
@@ -546,8 +545,8 @@ class WatchRuleTest(HeatTestCase):
         self.wr.watch_data = [data]
 
         actions = self.wr.evaluate()
-        self.assertEqual(self.wr.state, 'NORMAL')
-        self.assertEqual(actions, ['DummyAction'])
+        self.assertEqual('NORMAL', self.wr.state)
+        self.assertEqual(['DummyAction'], actions)
         self.m.VerifyAll()
 
     @utils.wr_delete_after
@@ -574,8 +573,8 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
 
         actions = self.wr.evaluate()
-        self.assertEqual(self.wr.state, 'ALARM')
-        self.assertEqual(actions, [])
+        self.assertEqual('ALARM', self.wr.state)
+        self.assertEqual([], actions)
 
         # Move time forward and don't add data so we transition from
         # ALARM -> NODATA, so evaluate() should output a 'DummyAction'
@@ -585,8 +584,8 @@ class WatchRuleTest(HeatTestCase):
         self._action_set_stubs(now)
 
         actions = self.wr.evaluate()
-        self.assertEqual(self.wr.state, 'NODATA')
-        self.assertEqual(actions, ['DummyAction'])
+        self.assertEqual('NODATA', self.wr.state)
+        self.assertEqual(['DummyAction'], actions)
         self.m.VerifyAll()
 
     @utils.wr_delete_after
@@ -610,7 +609,7 @@ class WatchRuleTest(HeatTestCase):
         self.wr.create_watch_data(data)
 
         dbwr = db_api.watch_rule_get_by_name(self.ctx, 'create_data_test')
-        self.assertEqual(dbwr.watch_data[0].data, data)
+        self.assertEqual(data, dbwr.watch_data[0].data)
 
         # Note, would be good to write another datapoint and check it
         # but sqlite seems to not interpret the backreference correctly
@@ -641,7 +640,7 @@ class WatchRuleTest(HeatTestCase):
         self.wr.create_watch_data(data)
 
         dbwr = db_api.watch_rule_get_by_name(self.ctx, 'create_data_test')
-        self.assertEqual(dbwr.watch_data, [])
+        self.assertEqual([], dbwr.watch_data)
 
     @utils.wr_delete_after
     def test_create_watch_data_match(self):
@@ -820,11 +819,11 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
 
         watcher.state_set(watcher.SUSPENDED)
-        self.assertEqual(watcher.state, watcher.SUSPENDED)
+        self.assertEqual(watcher.SUSPENDED, watcher.state)
 
         check = watchrule.WatchRule.load(context=self.ctx,
                                          watch_name="testwatch_set_state")
-        self.assertEqual(check.state, watchrule.WatchRule.SUSPENDED)
+        self.assertEqual(watchrule.WatchRule.SUSPENDED, check.state)
 
     def test_set_watch_state(self):
         rule = {'EvaluationPeriods': '1',
@@ -848,13 +847,13 @@ class WatchRuleTest(HeatTestCase):
                                       last_evaluated=last)
 
         actions = self.wr.set_watch_state(watchrule.WatchRule.NODATA)
-        self.assertEqual(actions, [])
+        self.assertEqual([], actions)
 
         actions = self.wr.set_watch_state(watchrule.WatchRule.NORMAL)
-        self.assertEqual(actions, [])
+        self.assertEqual([], actions)
 
         actions = self.wr.set_watch_state(watchrule.WatchRule.ALARM)
-        self.assertEqual(actions, ['DummyAction'])
+        self.assertEqual(['DummyAction'], actions)
         self.m.VerifyAll()
 
     def test_set_watch_state_invalid(self):

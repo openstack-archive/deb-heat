@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -92,6 +91,7 @@ class ProviderTemplateTest(HeatTestCase):
     def test_to_parameters(self):
         """Tests property conversion to parameter values."""
         provider = {
+            'HeatTemplateFormatVersion': '2012-12-12',
             'Parameters': {
                 'Foo': {'Type': 'String'},
                 'AList': {'Type': 'CommaDelimitedList'},
@@ -145,7 +145,7 @@ class ProviderTemplateTest(HeatTestCase):
         temp_res = template_resource.TemplateResource('test_t_res',
                                                       json_snippet, stack)
         temp_res.validate()
-        converted_params = temp_res._to_parameters()
+        converted_params = temp_res.child_params()
         self.assertTrue(converted_params)
         for key in DummyResource.properties_schema:
             self.assertIn(key, converted_params)
@@ -163,6 +163,7 @@ class ProviderTemplateTest(HeatTestCase):
 
     def test_attributes_extra(self):
         provider = {
+            'HeatTemplateFormatVersion': '2012-12-12',
             'Outputs': {
                 'Foo': {'Value': 'bar'},
                 'Blarg': {'Value': 'wibble'},
@@ -221,6 +222,7 @@ class ProviderTemplateTest(HeatTestCase):
 
     def test_properties_normal(self):
         provider = {
+            'HeatTemplateFormatVersion': '2012-12-12',
             'Parameters': {
                 'Foo': {'Type': 'String'},
                 'Blarg': {'Type': 'String', 'Default': 'wibble'},
@@ -356,7 +358,7 @@ class ProviderTemplateTest(HeatTestCase):
             "OS::ResourceType": "some_magic.yaml"}}}}
         env = environment.Environment(env_str)
         cls = env.get_class('OS::ResourceType', 'fred')
-        self.assertEqual(cls, template_resource.TemplateResource)
+        self.assertEqual(template_resource.TemplateResource, cls)
 
     def test_template_as_resource(self):
         """
@@ -391,8 +393,8 @@ class ProviderTemplateTest(HeatTestCase):
                 "LinuxDistribution": "U10"
             }
         }
-        stack = parser.Stack(None, 'test_stack', parser.Template({}),
-                             stack_id=str(uuid.uuid4()))
+        stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                             parser.Template({}), stack_id=str(uuid.uuid4()))
         templ_resource = resource.Resource("test_templ_resource", json_snippet,
                                            stack)
         self.m.VerifyAll()
@@ -417,7 +419,9 @@ class ProviderTemplateTest(HeatTestCase):
                              parser.Template({}),
                              stack_id=str(uuid.uuid4()))
 
-        minimal_temp = json.dumps({'Parameters': {}, 'Resources': {}})
+        minimal_temp = json.dumps({'HeatTemplateFormatVersion': '2012-12-12',
+                                   'Parameters': {},
+                                   'Resources': {}})
         self.m.StubOutWithMock(urlfetch, "get")
         urlfetch.get(test_templ_name,
                      allowed_schemes=('http', 'https',
@@ -648,7 +652,7 @@ Outputs:
         stack = parser.Stack(self.ctx, utils.random_name(), tmpl)
         stack.store()
         stack.create()
-        self.assertEqual(stack.state, (stack.CREATE, stack.COMPLETE))
+        self.assertEqual((stack.CREATE, stack.COMPLETE), stack.state)
         return stack
 
     @utils.stack_delete_after
@@ -661,7 +665,7 @@ Outputs:
                                files={'the.yaml': self.provider})
         updated_stack = parser.Stack(self.ctx, stack.name, tmpl)
         stack.update(updated_stack)
-        self.assertEqual(stack.state, ('UPDATE', 'COMPLETE'))
+        self.assertEqual(('UPDATE', 'COMPLETE'), stack.state)
         if self.expect == self.REPLACE:
             self.assertNotEqual(initial_id,
                                 stack.output('identifier'))

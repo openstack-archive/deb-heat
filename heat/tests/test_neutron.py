@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -24,6 +23,7 @@ from heat.engine import properties
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine.resources.neutron import net
+from heat.engine.resources.neutron import provider_net
 from heat.engine.resources.neutron import subnet
 from heat.engine.resources.neutron import router
 from heat.engine.resources.neutron.neutron import NeutronResource as qr
@@ -103,6 +103,25 @@ neutron_template = '''
       "Properties": {
         "router_id": { "Ref" : "router" },
         "network_id": { "Ref" : "network" }
+      }
+    }
+  }
+}
+'''
+
+provider_network_template = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Template to test Neutron resources",
+  "Resources" : {
+    "provider_network_vlan": {
+      "Type": "OS::Neutron::ProviderNet",
+      "Properties": {
+        "name": "the_provider_network",
+        "network_type": "vlan",
+        "physical_network": "physnet_1",
+        "segmentation_id": "101",
+        "shared": true
       }
     }
   }
@@ -231,7 +250,8 @@ neutron_port_template = '''
         "fixed_ips": [{
           "subnet_id": "sub1234",
           "ip_address": "10.0.3.21"
-        }]
+        }],
+        "device_owner": "network:dhcp"
       }
     }
   }
@@ -257,6 +277,24 @@ neutron_port_with_address_pair_template = '''
   }
 }
 '''
+
+stpna = {
+    "network": {
+        "status": "ACTIVE",
+        "subnets": [],
+        "name": "the_provider_network",
+        "admin_state_up": True,
+        "shared": True,
+        "provider:network_type": "vlan",
+        "provider:physical_network": "physnet_1",
+        "provider:segmentation_id": "101",
+        "tenant_id": "c1210485b2424d48804aad5d39c61b8f",
+        "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+    }
+}
+
+stpnb = copy.deepcopy(stpna)
+stpnb['network']['status'] = "BUILD"
 
 
 class NeutronTest(HeatTestCase):
@@ -454,7 +492,6 @@ class NeutronNetTest(HeatTestCase):
         self.assertEqual('ACTIVE', rsrc.FnGetAtt('status'))
         self.assertRaises(
             exception.InvalidTemplateAttribute, rsrc.FnGetAtt, 'Foo')
-
         update_snippet = {
             "Type": "OS::Neutron::Net",
             "Properties": {
@@ -478,6 +515,38 @@ class NeutronNetTest(HeatTestCase):
             u'9f0df05b-4846-4d3d-971e-a2e1a06b1622',
             {'network_id': u'66a426ef-8b77-4e25-8098-b3a7c0964b93'}
         ).AndReturn(None)
+
+        neutronclient.Client.remove_network_from_dhcp_agent(
+            u'9f0df05b-4846-4d3d-971e-a2e1a06b1622',
+            u'66a426ef-8b77-4e25-8098-b3a7c0964b93'
+        ).AndReturn(None)
+
+        neutronclient.Client.remove_network_from_dhcp_agent(
+            u'9f0df05b-4846-4d3d-971e-a2e1a06b1622',
+            u'66a426ef-8b77-4e25-8098-b3a7c0964b93'
+        ).AndRaise(qe.NeutronClientException(status_code=404))
+
+        self.m.ReplayAll()
+        t = template_format.parse(neutron_dhcp_agent_template)
+        stack = utils.parse_stack(t)
+        rsrc = net.NetDHCPAgent('test_net_dhcp_agent',
+                                t['Resources']['network_dhcp_agent'], stack)
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        self.assertIsNone(scheduler.TaskRunner(rsrc.delete)())
+        rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE, 'to delete again')
+        self.assertIsNone(scheduler.TaskRunner(rsrc.delete)())
+
+        self.m.VerifyAll()
+
+    def test_net_dhcp_agent_create_happens_409(self):
+        clients.OpenStackClients.keystone().AndReturn(
+            fakes.FakeKeystoneClient())
+
+        neutronclient.Client.add_network_to_dhcp_agent(
+            u'9f0df05b-4846-4d3d-971e-a2e1a06b1622',
+            {'network_id': u'66a426ef-8b77-4e25-8098-b3a7c0964b93'}
+        ).AndRaise(qe.NeutronClientException(status_code=409))
 
         neutronclient.Client.remove_network_from_dhcp_agent(
             u'9f0df05b-4846-4d3d-971e-a2e1a06b1622',
@@ -554,6 +623,128 @@ class NeutronNetTest(HeatTestCase):
             str(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
 
+        self.m.VerifyAll()
+
+
+@skipIf(neutronclient is None, 'neutronclient unavailable')
+class NeutronProviderNetTest(HeatTestCase):
+    def setUp(self):
+        super(NeutronProviderNetTest, self).setUp()
+        self.m.StubOutWithMock(neutronclient.Client, 'create_network')
+        self.m.StubOutWithMock(neutronclient.Client, 'show_network')
+        self.m.StubOutWithMock(neutronclient.Client, 'delete_network')
+        self.m.StubOutWithMock(neutronclient.Client, 'update_network')
+        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        utils.setup_dummy_db()
+
+    def create_provider_net(self):
+        clients.OpenStackClients.keystone().AndReturn(
+            fakes.FakeKeystoneClient())
+
+        # Create script
+        neutronclient.Client.create_network({
+            'network': {
+                'name': u'the_provider_network',
+                'admin_state_up': True,
+                'provider:network_type': 'vlan',
+                'provider:physical_network': 'physnet_1',
+                'provider:segmentation_id': '101',
+                'shared': True}
+        }).AndReturn(stpnb)
+
+        neutronclient.Client.show_network(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn(stpnb)
+
+        neutronclient.Client.show_network(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn(stpna)
+
+        t = template_format.parse(provider_network_template)
+        stack = utils.parse_stack(t)
+        rsrc = provider_net.ProviderNet(
+            'provider_net', t['Resources']['provider_network_vlan'], stack)
+
+        return rsrc
+
+    def test_create_provider_net(self):
+        rsrc = self.create_provider_net()
+
+        neutronclient.Client.show_network(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndRaise(qe.NetworkNotFoundClient())
+
+        # Delete script
+        neutronclient.Client.delete_network(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn(None)
+
+        neutronclient.Client.show_network(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn(stpna)
+
+        neutronclient.Client.show_network(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndRaise(qe.NetworkNotFoundClient())
+
+        neutronclient.Client.delete_network(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndRaise(qe.NetworkNotFoundClient())
+
+        self.m.ReplayAll()
+
+        rsrc.validate()
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+
+        ref_id = rsrc.FnGetRefId()
+        self.assertEqual('fc68ea2c-b60b-4b4f-bd82-94ec81110766', ref_id)
+
+        self.assertIsNone(rsrc.FnGetAtt('status'))
+        self.assertEqual('ACTIVE', rsrc.FnGetAtt('status'))
+        self.assertRaises(
+            exception.InvalidTemplateAttribute, rsrc.FnGetAtt, 'Foo')
+
+        self.assertIsNone(scheduler.TaskRunner(rsrc.delete)())
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
+        rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE, 'to delete again')
+        scheduler.TaskRunner(rsrc.delete)()
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
+        self.m.VerifyAll()
+
+    def test_update_provider_net(self):
+        rsrc = self.create_provider_net()
+
+        neutronclient.Client.update_network(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+            {'network': {
+                'shared': True,
+                'name': 'prov_net',
+                'admin_state_up': True,
+                'provider:network_type': 'vlan',
+                'provider:physical_network': 'physnet_1',
+                'provider:segmentation_id': '102'
+            }}).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        rsrc.validate()
+
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+
+        update_snippet = {
+            "Type": "OS::Neutron::ProviderNet",
+            "Properties": {
+                "name": "prov_net",
+                "shared": True,
+                "admin_state_up": True,
+                "network_type": "vlan",
+                "physical_network": "physnet_1",
+                "segmentation_id": "102"
+            }
+        }
+        self.assertIsNone(rsrc.handle_update(update_snippet, {}, {}))
         self.m.VerifyAll()
 
 
@@ -687,7 +878,7 @@ class NeutronSubnetTest(HeatTestCase):
                 "dns_nameservers": ["8.8.8.8", "192.168.1.254"]
             }
         }
-        rsrc.handle_update(update_snippet, {}, {})
+        rsrc.handle_update(stack.resolve_static_data(update_snippet), {}, {})
 
         self.assertIsNone(scheduler.TaskRunner(rsrc.delete)())
         rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE, 'to delete again')
@@ -809,6 +1000,7 @@ class NeutronSubnetTest(HeatTestCase):
 
 @skipIf(neutronclient is None, 'neutronclient unavailable')
 class NeutronRouterTest(HeatTestCase):
+
     @skipIf(router.neutronV20 is None, "Missing Neutron v2_0")
     def setUp(self):
         super(NeutronRouterTest, self).setUp()
@@ -897,7 +1089,6 @@ class NeutronRouterTest(HeatTestCase):
                     "id": "3e46229d-8fce-4733-819a-b5fe630550f8"
                 }
             })
-
         neutronclient.Client.show_router(
             '3e46229d-8fce-4733-819a-b5fe630550f8').AndRaise(
                 qe.NeutronClientException(status_code=404))
@@ -1391,6 +1582,7 @@ class NeutronRouterTest(HeatTestCase):
 
 @skipIf(neutronclient is None, 'neutronclient unavailable')
 class NeutronFloatingIPTest(HeatTestCase):
+
     @skipIf(net.clients.neutronclient is None, "Missing Neutron Client")
     def setUp(self):
         super(NeutronFloatingIPTest, self).setUp()
@@ -1474,7 +1666,6 @@ class NeutronFloatingIPTest(HeatTestCase):
                 {'subnet_id': u'sub1234', 'ip_address': u'10.0.0.10'}
             ],
             'name': utils.PhysName('test_stack', 'port_floating'),
-            'security_groups': [],
             'admin_state_up': True}}
         ).AndReturn({'port': {
             "status": "BUILD",
@@ -1508,8 +1699,10 @@ class NeutronFloatingIPTest(HeatTestCase):
                     'fixed_ips': [
                         {'subnet_id': 'sub1234', 'ip_address': '10.0.0.11'}
                     ],
-                    'security_groups': [],
-                    'admin_state_up': True
+                    'admin_state_up': True,
+                    'name': 'test_port',
+                    'device_id': 'd6b4d3a5-c700-476f-b609-1493dd9dadc2',
+                    'device_owner': 'network:floatingip'
                 }
             }
         ).AndReturn(None)
@@ -1542,7 +1735,10 @@ class NeutronFloatingIPTest(HeatTestCase):
                 "fixed_ips": [{
                     "subnet_id": "sub1234",
                     "ip_address": "10.0.0.11"
-                }]
+                }],
+                "name": "test_port",
+                "device_id": "d6b4d3a5-c700-476f-b609-1493dd9dadc2",
+                'device_owner': 'network:floatingip'
             }
         }
 
@@ -1567,7 +1763,6 @@ class NeutronFloatingIPTest(HeatTestCase):
                 {'subnet_id': u'sub1234', 'ip_address': u'10.0.0.10'}
             ],
             'name': utils.PhysName('test_stack', 'port_floating'),
-            'security_groups': [],
             'admin_state_up': True}}
         ).AndReturn({'port': {
             "status": "BUILD",
@@ -1664,6 +1859,7 @@ class NeutronFloatingIPTest(HeatTestCase):
 
 @skipIf(neutronclient is None, 'neutronclient unavailable')
 class NeutronPortTest(HeatTestCase):
+
     @skipIf(net.clients.neutronclient is None, "Missing Neutron Client")
     def setUp(self):
         super(NeutronPortTest, self).setUp()
@@ -1681,8 +1877,8 @@ class NeutronPortTest(HeatTestCase):
                 {'ip_address': u'10.0.3.21'}
             ],
             'name': utils.PhysName('test_stack', 'port'),
-            'security_groups': [],
-            'admin_state_up': True}}
+            'admin_state_up': True,
+            'device_owner': u'network:dhcp'}}
         ).AndReturn({'port': {
             "status": "BUILD",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
@@ -1714,8 +1910,8 @@ class NeutronPortTest(HeatTestCase):
                 {'subnet_id': u'sub1234'}
             ],
             'name': utils.PhysName('test_stack', 'port'),
-            'security_groups': [],
-            'admin_state_up': True}}
+            'admin_state_up': True,
+            'device_owner': u'network:dhcp'}}
         ).AndReturn({'port': {
             "status": "BUILD",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
@@ -1743,9 +1939,8 @@ class NeutronPortTest(HeatTestCase):
         neutronclient.Client.create_port({'port': {
             'network_id': u'net1234',
             'name': utils.PhysName('test_stack', 'port'),
-            'security_groups': [],
-            'fixed_ips': [],
-            'admin_state_up': True}}
+            'admin_state_up': True,
+            'device_owner': u'network:dhcp'}}
         ).AndReturn({'port': {
             "status": "BUILD",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
@@ -1754,7 +1949,11 @@ class NeutronPortTest(HeatTestCase):
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
         ).AndReturn({'port': {
             "status": "ACTIVE",
-            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766",
+            "fixed_ips": {
+                "subnet_id": "d0e971a6-a6b4-4f4c-8c88-b75e9c120b7e",
+                "ip_address": "10.0.0.2"
+            }
         }})
 
         self.m.ReplayAll()
@@ -1777,8 +1976,6 @@ class NeutronPortTest(HeatTestCase):
                 'mac_address': u'00-B0-D0-86-BB-F7'
             }],
             'name': utils.PhysName('test_stack', 'port'),
-            'security_groups': [],
-            'fixed_ips': [],
             'admin_state_up': True}}
         ).AndReturn({'port': {
             "status": "BUILD",
@@ -1809,8 +2006,6 @@ class NeutronPortTest(HeatTestCase):
                 'ip_address': u'10.0.3.21',
             }],
             'name': utils.PhysName('test_stack', 'port'),
-            'security_groups': [],
-            'fixed_ips': [],
             'admin_state_up': True}}
         ).AndReturn({'port': {
             "status": "BUILD",
@@ -1833,4 +2028,63 @@ class NeutronPortTest(HeatTestCase):
 
         port = stack['port']
         scheduler.TaskRunner(port.create)()
+        self.m.VerifyAll()
+
+    def test_security_groups(self):
+        clients.OpenStackClients.keystone().AndReturn(
+            fakes.FakeKeystoneClient())
+        neutronclient.Client.create_port({'port': {
+            'network_id': u'net1234',
+            'security_groups': ['8a2f582a-e1cd-480f-b85d-b02631c10656',
+                                '024613dc-b489-4478-b46f-ada462738740'],
+            'fixed_ips': [
+                {'subnet_id': u'sub1234', 'ip_address': u'10.0.3.21'}
+            ],
+            'name': utils.PhysName('test_stack', 'port'),
+            'admin_state_up': True,
+            'device_owner': u'network:dhcp'}}
+        ).AndReturn({'port': {
+            "status": "BUILD",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+        }})
+        neutronclient.Client.show_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn({'port': {
+            "status": "ACTIVE",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+        }})
+
+        self.m.ReplayAll()
+
+        t = template_format.parse(neutron_port_template)
+        t['Resources']['port']['Properties']['security_groups'] = [
+            '8a2f582a-e1cd-480f-b85d-b02631c10656',
+            '024613dc-b489-4478-b46f-ada462738740']
+        stack = utils.parse_stack(t)
+
+        port = stack['port']
+        scheduler.TaskRunner(port.create)()
+
+        self.m.VerifyAll()
+
+
+@skipIf(neutronclient is None, 'neutronclient unavailable')
+class NetworkConstraintTest(HeatTestCase):
+
+    def test_validate(self):
+        self.m.StubOutWithMock(clients.OpenStackClients, 'neutron')
+        clients.OpenStackClients.neutron().MultipleTimes().AndReturn(None)
+        self.m.StubOutWithMock(net.neutronV20, 'find_resourceid_by_name_or_id')
+        net.neutronV20.find_resourceid_by_name_or_id(
+            None, 'network', 'foo'
+        ).AndReturn('foo')
+        net.neutronV20.find_resourceid_by_name_or_id(
+            None, 'network', 'bar'
+        ).AndRaise(qe.NeutronClientException(status_code=404))
+        self.m.ReplayAll()
+
+        constraint = net.NetworkConstraint()
+        self.assertTrue(constraint.validate("foo", None))
+        self.assertFalse(constraint.validate("bar", None))
+
         self.m.VerifyAll()

@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,12 +13,21 @@
 #    under the License.
 # -*- coding: utf-8 -*-
 
+import itertools
+
+from heat.engine import environment
+from heat.engine import plugin_manager
 from heat.engine import resources
 from heat.engine import properties
+from heat.engine import support
 from heat.openstack.common.gettextutils import _
 
 from docutils import nodes
 from sphinx.util.compat import Directive
+import pydoc
+
+
+global_env = environment.Environment({}, user_env=False)
 
 
 class resourcepages(nodes.General, nodes.Element):
@@ -44,7 +52,14 @@ class ResourcePages(Directive):
             self.props_schemata = properties.schemata(
                 self.resource_class.properties_schema)
 
-            cls_doc = resource_class.__doc__
+            if resource_class.support_status.status == support.DEPRECATED:
+                sstatus = resource_class.support_status.to_dict()
+                para = nodes.inline(
+                    '', _('%(status)s - %(message)s') % sstatus)
+                warning = nodes.note('', para)
+                section.append(warning)
+
+            cls_doc = pydoc.getdoc(resource_class)
             if cls_doc:
                 para = nodes.paragraph('', cls_doc)
                 section.append(para)
@@ -89,7 +104,8 @@ class ResourcePages(Directive):
         props = []
         for prop_key in sorted(self.props_schemata.keys()):
             prop = self.props_schemata[prop_key]
-            if prop.implemented:
+            if (prop.implemented
+                    and prop.support_status.status == support.SUPPORTED):
                 props.append('%s: %s' % (prop_key,
                                          self._prop_syntax_example(prop)))
 
@@ -110,7 +126,8 @@ resources:
         props = []
         for prop_key in sorted(self.props_schemata.keys()):
             prop = self.props_schemata[prop_key]
-            if prop.implemented:
+            if (prop.implemented
+                    and prop.support_status.status == support.SUPPORTED):
                 props.append('%s: %s' % (prop_key,
                                          self._prop_syntax_example(prop)))
 
@@ -132,7 +149,8 @@ Resources:
         props = []
         for prop_key in sorted(self.props_schemata.keys()):
             prop = self.props_schemata[prop_key]
-            if prop.implemented:
+            if (prop.implemented
+                    and prop.support_status.status == support.SUPPORTED):
                 props.append('"%s": %s' % (prop_key,
                                            self._prop_syntax_example(prop)))
         template = '''{
@@ -150,6 +168,19 @@ Resources:
         block = nodes.literal_block('', template)
         section.append(block)
 
+    @staticmethod
+    def cmp_prop(x, y):
+        x_key, x_prop = x
+        y_key, y_prop = y
+        if x_prop.support_status.status == y_prop.support_status.status:
+            return cmp(x_key, y_key)
+        if x_prop.support_status.status == support.SUPPORTED:
+            return -1
+        if x_prop.support_status.status == support.DEPRECATED:
+            return 1
+        return cmp(x_prop.support_status.status,
+                   y_prop.support_status.status)
+
     def contribute_property(self, prop_list, prop_key, prop):
         prop_item = nodes.definition_list_item(
             '', nodes.term('', prop_key))
@@ -159,6 +190,13 @@ Resources:
 
         definition = nodes.definition()
         prop_item.append(definition)
+
+        if prop.support_status.status != support.SUPPORTED:
+            para = nodes.inline(
+                '',
+                _('%(status)s - %(message)s') % prop.support_status.to_dict())
+            warning = nodes.note('', para)
+            definition.append(warning)
 
         if not prop.implemented:
             para = nodes.inline('', _('Not implemented.'))
@@ -207,9 +245,10 @@ Resources:
         if sub_schema:
             sub_prop_list = nodes.definition_list()
             definition.append(sub_prop_list)
-            for sub_prop_key in sorted(sub_schema.keys()):
-                sub_prop = sub_schema[sub_prop_key]
-                self.contribute_property(sub_prop_list, sub_prop_key, sub_prop)
+            for sub_prop_key, sub_prop in sorted(sub_schema.items(),
+                                                 self.cmp_prop):
+                self.contribute_property(
+                    sub_prop_list, sub_prop_key, sub_prop)
 
     def contribute_properties(self, parent):
         if not self.props_schemata:
@@ -217,8 +256,9 @@ Resources:
         section = self._section(parent, _('Properties'), '%s-props')
         prop_list = nodes.definition_list()
         section.append(prop_list)
-        for prop_key in sorted(self.props_schemata.keys()):
-            prop = self.props_schemata[prop_key]
+
+        for prop_key, prop in sorted(self.props_schemata.items(),
+                                     self.cmp_prop):
             self.contribute_property(prop_list, prop_key, prop)
 
     def contribute_attributes(self, parent):
@@ -243,17 +283,30 @@ Resources:
 
 
 def _all_resources(prefix=None):
-    g_env = resources.global_env()
-    all_resources = g_env.get_types()
-    for resource_type in sorted(all_resources):
-        resource_class = g_env.get_class(resource_type)
-        if not prefix or resource_type.startswith(prefix):
-            yield resource_type, resource_class
+    type_names = sorted(global_env.get_types())
+    if prefix is not None:
+        def prefix_match(name):
+            return name.startswith(prefix)
+
+        type_names = itertools.ifilter(prefix_match, type_names)
+
+    def resource_type(name):
+        return name, global_env.get_class(name)
+
+    return itertools.imap(resource_type, type_names)
+
+
+def _load_all_resources():
+    manager = plugin_manager.PluginManager('heat.engine.resources')
+    resource_mapping = plugin_manager.PluginMapping('resource')
+    res_plugin_mappings = resource_mapping.load_all(manager)
+
+    resources._register_resources(global_env, res_plugin_mappings)
+    environment.read_global_environment(global_env)
 
 
 def setup(app):
-
-    resources.initialise()
+    _load_all_resources()
     app.add_node(resourcepages)
 
     app.add_directive('resourcepages', ResourcePages)

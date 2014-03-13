@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -20,6 +19,8 @@ from heat.api.openstack.v1 import resources
 from heat.api.openstack.v1 import events
 from heat.api.openstack.v1 import actions
 from heat.api.openstack.v1 import build_info
+from heat.api.openstack.v1 import software_configs
+from heat.api.openstack.v1 import software_deployments
 from heat.common import wsgi
 
 from heat.openstack.common import log as logging
@@ -67,6 +68,10 @@ class API(wsgi.Router):
             stack_mapper.connect("stack_create",
                                  "/stacks",
                                  action="create",
+                                 conditions={'method': 'POST'})
+            stack_mapper.connect("stack_preview",
+                                 "/stacks/preview",
+                                 action="preview",
                                  conditions={'method': 'POST'})
             stack_mapper.connect("stack_detail",
                                  "/stacks/detail",
@@ -138,6 +143,10 @@ class API(wsgi.Router):
                                "/resources/{resource_name}/metadata",
                                action="metadata",
                                conditions={'method': 'GET'})
+            res_mapper.connect("resource_signal",
+                               "/resources/{resource_name}/signal",
+                               action="signal",
+                               conditions={'method': 'POST'})
 
         # Events
         events_resource = events.create_resource(conf)
@@ -180,5 +189,64 @@ class API(wsgi.Router):
                                 '/build_info',
                                 action='build_info',
                                 conditions={'method': 'GET'})
+
+        # Software configs
+        software_config_resource = software_configs.create_resource(conf)
+        with mapper.submapper(
+            controller=software_config_resource,
+            path_prefix="/{tenant_id}/software_configs"
+        ) as sc_mapper:
+
+            sc_mapper.connect("software_config_create",
+                              "",
+                              action="create",
+                              conditions={'method': 'POST'})
+
+            sc_mapper.connect("software_config_show",
+                              "/{config_id}",
+                              action="show",
+                              conditions={'method': 'GET'})
+
+            sc_mapper.connect("software_config_delete",
+                              "/{config_id}",
+                              action="delete",
+                              conditions={'method': 'DELETE'})
+
+        # Software deployments
+        sd_resource = software_deployments.create_resource(conf)
+        with mapper.submapper(
+            controller=sd_resource,
+            path_prefix='/{tenant_id}/software_deployments'
+        ) as sa_mapper:
+
+            sa_mapper.connect("software_deployment_index",
+                              "",
+                              action="index",
+                              conditions={'method': 'GET'})
+
+            sa_mapper.connect("software_deployment_metadata",
+                              "/metadata/{server_id}",
+                              action="metadata",
+                              conditions={'method': 'GET'})
+
+            sa_mapper.connect("software_deployment_create",
+                              "",
+                              action="create",
+                              conditions={'method': 'POST'})
+
+            sa_mapper.connect("software_deployment_show",
+                              "/{deployment_id}",
+                              action="show",
+                              conditions={'method': 'GET'})
+
+            sa_mapper.connect("software_deployment_update",
+                              "/{deployment_id}",
+                              action="update",
+                              conditions={'method': 'PUT'})
+
+            sa_mapper.connect("software_deployment_delete",
+                              "/{deployment_id}",
+                              action="delete",
+                              conditions={'method': 'DELETE'})
 
         super(API, self).__init__(mapper)

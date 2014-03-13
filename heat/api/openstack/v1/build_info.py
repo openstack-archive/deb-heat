@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -30,11 +29,11 @@ class BuildInfoController(object):
 
     def __init__(self, options):
         self.options = options
-        self.engine = rpc_client.EngineClient()
+        self.rpc_client = rpc_client.EngineClient()
 
     @util.policy_enforce
     def build_info(self, req):
-        engine_revision = self.engine.get_revision(req.context)
+        engine_revision = self.rpc_client.get_revision(req.context)
         build_info = {
             'api': {'revision': cfg.CONF.revision['heat_revision']},
             'engine': {'revision': engine_revision}

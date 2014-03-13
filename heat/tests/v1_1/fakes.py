@@ -60,7 +60,7 @@ class FakeHTTPClient(base_client.HTTPClient):
                                  (method, url, callback))
 
         # Note the call
-        self.callstack.append((method, url, kwargs.get('body', None)))
+        self.callstack.append((method, url, kwargs.get('body')))
 
         status, body = getattr(self, callback)(**kwargs)
         if hasattr(status, 'items'):
@@ -355,7 +355,8 @@ class FakeHTTPClient(base_client.HTTPClient):
     #
     def get_os_keypairs(self, *kw):
         return (200, {"keypairs": [{'fingerprint': 'FAKE_KEYPAIR',
-                                    'name': 'test'}]})
+                                    'name': 'test',
+                                    'public_key': 'foo'}]})
 
     def get_os_availability_zone(self, *kw):
         return (200, {"availabilityZoneInfo": [{'zoneName': 'nova1'}]})
@@ -373,4 +374,6 @@ class FakeHTTPClient(base_client.HTTPClient):
     # Limits
     #
     def get_limits(self, *kw):
-        return (200, {'limits': {'absolute': {'maxServerMeta': 3}}})
+        return (200, {'limits': {'absolute': {'maxServerMeta': 3,
+                                              'maxPersonalitySize': 10240,
+                                              'maxPersonality': 5}}})

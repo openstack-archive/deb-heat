@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -53,7 +52,7 @@ class Timeout(BaseException):
 
     This allows the task to perform any necessary cleanup, as well as use a
     different exception to notify the controlling task if appropriate. If the
-    task supresses the exception altogether, it will be cancelled but the
+    task suppresses the exception altogether, it will be cancelled but the
     controlling task will not be notified of the timeout.
     """
 

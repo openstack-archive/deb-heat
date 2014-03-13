@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -17,13 +16,15 @@ import functools
 from eventlet import greenpool
 import json
 import sys
+import uuid
 
 import mock
 import mox
 
 from oslo.config import cfg
 
-from heat.engine import environment
+cfg.CONF.import_opt('engine_life_check_timeout', 'heat.common.config')
+
 from heat.common import exception
 from heat.common import urlfetch
 from heat.tests import fakes as test_fakes
@@ -32,7 +33,9 @@ import heat.rpc.api as engine_api
 import heat.db.api as db_api
 from heat.common import identifier
 from heat.common import template_format
+from heat.engine import clients
 from heat.engine import dependencies
+from heat.engine import environment
 from heat.engine import parser
 from heat.engine.resource import _register_class
 from heat.engine import service
@@ -41,9 +44,11 @@ from heat.engine import resource as res
 from heat.engine.resources import instance as instances
 from heat.engine.resources import nova_utils
 from heat.engine import resource as rsrs
+from heat.engine import stack_lock
 from heat.engine import watchrule
 from heat.openstack.common import threadgroup
 from heat.openstack.common.rpc import common as rpc_common
+from heat.openstack.common.rpc import proxy
 from heat.tests.common import HeatTestCase
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
@@ -161,6 +166,31 @@ user_policy_template = '''
 }
 '''
 
+nested_template = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Nested resource",
+  "Parameters" : {},
+  "Resources" : {
+    "ServerGroup": {
+      "Type": "OS::Heat::ResourceGroup",
+      "Properties": {
+        "count": 2,
+        "resource_def": {
+          "type": "AWS::EC2::Instance",
+            "properties": {
+              "KeyName"      : "test",
+              "ImageId"      : "F17-x86_64-gold",
+              "InstanceType" : "m1.large",
+              "UserData"     : "wordpress"
+            }
+        }
+      }
+    }
+  }
+}
+'''
+
 
 def get_wordpress_stack(stack_name, ctx):
     t = template_format.parse(wp_template)
@@ -187,6 +217,8 @@ def setup_mocks(mocks, stack):
     fc = fakes.FakeClient()
     mocks.StubOutWithMock(instances.Instance, 'nova')
     instances.Instance.nova().MultipleTimes().AndReturn(fc)
+    mocks.StubOutWithMock(clients.OpenStackClients, 'nova')
+    clients.OpenStackClients.nova().MultipleTimes().AndReturn(fc)
     setup_keystone_mocks(mocks, stack)
 
     instance = stack['WebServer']
@@ -306,6 +338,57 @@ class StackCreateTest(HeatTestCase):
         self.assertIsNotNone(stack['WebServer'])
         self.assertTrue(stack['WebServer'].resource_id > 0)
         self.assertNotEqual(stack['WebServer'].ipaddress, '0.0.0.0')
+
+    def test_wordpress_single_instance_stack_adopt(self):
+        t = template_format.parse(wp_template)
+        template = parser.Template(t)
+        ctx = utils.dummy_context()
+        adopt_data = {
+            'resources': {
+                'WebServer': {
+                    'resource_id': 'test-res-id'
+                }
+            }
+        }
+        stack = parser.Stack(ctx,
+                             'test_stack',
+                             template,
+                             adopt_stack_data=adopt_data)
+
+        setup_mocks(self.m, stack)
+        self.m.ReplayAll()
+        stack.store()
+        stack.adopt()
+
+        self.assertIsNotNone(stack['WebServer'])
+        self.assertEqual('test-res-id', stack['WebServer'].resource_id)
+        self.assertEqual((stack.ADOPT, stack.COMPLETE), stack.state)
+
+    def test_wordpress_single_instance_stack_adopt_fail(self):
+        t = template_format.parse(wp_template)
+        template = parser.Template(t)
+        ctx = utils.dummy_context()
+        adopt_data = {
+            'resources': {
+                'WebServer1': {
+                    'resource_id': 'test-res-id'
+                }
+            }
+        }
+        stack = parser.Stack(ctx,
+                             'test_stack',
+                             template,
+                             adopt_stack_data=adopt_data)
+
+        setup_mocks(self.m, stack)
+        self.m.ReplayAll()
+        stack.store()
+        stack.adopt()
+        self.assertIsNotNone(stack['WebServer'])
+        expected = ('Resource ADOPT failed: Exception: Resource ID was not'
+                    ' provided.')
+        self.assertEqual(expected, stack.status_reason)
+        self.assertEqual((stack.ADOPT, stack.FAILED), stack.state)
 
     def test_wordpress_single_instance_stack_delete(self):
         ctx = utils.dummy_context()
@@ -544,8 +627,6 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         stack = get_wordpress_stack(stack_name, self.ctx)
         setup_mocks(self.m, stack)
 
-        template = dict(stack.t)
-        template['Parameters']['KeyName']['Default'] = 'test'
         resource = stack['WebServer']
 
         self.m.ReplayAll()
@@ -582,6 +663,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.m.ReplayAll()
 
         self.assertIsNone(self.man.delete_stack(self.ctx, stack.identifier()))
+        self.man.thread_group_mgr.groups[sid].wait()
         self.m.VerifyAll()
 
     def test_stack_delete_nonexist(self):
@@ -593,6 +675,139 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.assertRaises(exception.StackNotFound,
                           self.man.delete_stack,
                           self.ctx, stack.identifier())
+        self.m.VerifyAll()
+
+    def test_stack_delete_acquired_lock(self):
+        stack_name = 'service_delete_test_stack'
+        stack = get_wordpress_stack(stack_name, self.ctx)
+        sid = stack.store()
+
+        st = db_api.stack_get(self.ctx, sid)
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx, stack=st).MultipleTimes().AndReturn(stack)
+        self.man.tg = DummyThreadGroup()
+
+        self.m.StubOutWithMock(stack_lock.StackLock, 'try_acquire')
+        stack_lock.StackLock.try_acquire().AndReturn(self.man.engine_id)
+        self.m.ReplayAll()
+
+        self.assertIsNone(self.man.delete_stack(self.ctx, stack.identifier()))
+        self.man.thread_group_mgr.groups[sid].wait()
+        self.m.VerifyAll()
+
+    def test_stack_delete_current_engine_active_lock(self):
+        stack_name = 'service_delete_test_stack'
+        stack = get_wordpress_stack(stack_name, self.ctx)
+        sid = stack.store()
+
+        # Insert a fake lock into the db
+        db_api.stack_lock_create(stack.id, self.man.engine_id)
+
+        # Create a fake ThreadGroup too
+        self.man.thread_group_mgr.groups[stack.id] = DummyThreadGroup()
+
+        st = db_api.stack_get(self.ctx, sid)
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx, stack=st).MultipleTimes().AndReturn(stack)
+
+        self.m.StubOutWithMock(stack_lock.StackLock, 'try_acquire')
+        stack_lock.StackLock.try_acquire().AndReturn(self.man.engine_id)
+        self.m.ReplayAll()
+
+        self.assertIsNone(self.man.delete_stack(self.ctx, stack.identifier()))
+        self.man.thread_group_mgr.groups[sid].wait()
+        self.m.VerifyAll()
+
+    def test_stack_delete_other_engine_active_lock_failed(self):
+        stack_name = 'service_delete_test_stack'
+        stack = get_wordpress_stack(stack_name, self.ctx)
+        sid = stack.store()
+
+        # Insert a fake lock into the db
+        db_api.stack_lock_create(stack.id, "other-engine-fake-uuid")
+
+        st = db_api.stack_get(self.ctx, sid)
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx, stack=st).AndReturn(stack)
+
+        self.m.StubOutWithMock(stack_lock.StackLock, 'try_acquire')
+        stack_lock.StackLock.try_acquire().AndReturn("other-engine-fake-uuid")
+
+        self.m.StubOutWithMock(stack_lock.StackLock, 'engine_alive')
+        stack_lock.StackLock.engine_alive(self.ctx, "other-engine-fake-uuid")\
+            .AndReturn(True)
+
+        rpc = proxy.RpcProxy("other-engine-fake-uuid", "1.0")
+        msg = rpc.make_msg("stop_stack", stack_identity=mox.IgnoreArg())
+        self.m.StubOutWithMock(proxy.RpcProxy, 'call')
+        proxy.RpcProxy.call(self.ctx, msg, topic='other-engine-fake-uuid',
+                            timeout=cfg.CONF.engine_life_check_timeout)\
+            .AndRaise(rpc_common.Timeout)
+        self.m.ReplayAll()
+
+        self.assertRaises(exception.StopActionFailed,
+                          self.man.delete_stack, self.ctx, stack.identifier())
+        self.m.VerifyAll()
+
+    def test_stack_delete_other_engine_active_lock_succeeded(self):
+        stack_name = 'service_delete_test_stack'
+        stack = get_wordpress_stack(stack_name, self.ctx)
+        sid = stack.store()
+
+        # Insert a fake lock into the db
+        db_api.stack_lock_create(stack.id, "other-engine-fake-uuid")
+
+        st = db_api.stack_get(self.ctx, sid)
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx, stack=st).MultipleTimes().AndReturn(stack)
+
+        self.m.StubOutWithMock(stack_lock.StackLock, 'try_acquire')
+        stack_lock.StackLock.try_acquire().AndReturn("other-engine-fake-uuid")
+
+        self.m.StubOutWithMock(stack_lock.StackLock, 'engine_alive')
+        stack_lock.StackLock.engine_alive(self.ctx, "other-engine-fake-uuid")\
+            .AndReturn(True)
+
+        rpc = proxy.RpcProxy("other-engine-fake-uuid", "1.0")
+        msg = rpc.make_msg("stop_stack", stack_identity=mox.IgnoreArg())
+        self.m.StubOutWithMock(proxy.RpcProxy, 'call')
+        proxy.RpcProxy.call(self.ctx, msg, topic='other-engine-fake-uuid',
+                            timeout=cfg.CONF.engine_life_check_timeout)\
+            .AndReturn(None)
+
+        self.m.StubOutWithMock(stack_lock.StackLock, 'acquire')
+        stack_lock.StackLock.acquire().AndReturn(None)
+        self.m.ReplayAll()
+
+        self.assertIsNone(self.man.delete_stack(self.ctx, stack.identifier()))
+        self.man.thread_group_mgr.groups[sid].wait()
+        self.m.VerifyAll()
+
+    def test_stack_delete_other_dead_engine_active_lock(self):
+        stack_name = 'service_delete_test_stack'
+        stack = get_wordpress_stack(stack_name, self.ctx)
+        sid = stack.store()
+
+        # Insert a fake lock into the db
+        db_api.stack_lock_create(stack.id, "other-engine-fake-uuid")
+
+        st = db_api.stack_get(self.ctx, sid)
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx, stack=st).MultipleTimes().AndReturn(stack)
+
+        self.m.StubOutWithMock(stack_lock.StackLock, 'try_acquire')
+        stack_lock.StackLock.try_acquire().AndReturn("other-engine-fake-uuid")
+
+        self.m.StubOutWithMock(stack_lock.StackLock, 'engine_alive')
+        stack_lock.StackLock.engine_alive(self.ctx, "other-engine-fake-uuid")\
+            .AndReturn(False)
+
+        self.m.StubOutWithMock(stack_lock.StackLock, 'acquire')
+        stack_lock.StackLock.acquire().AndReturn(None)
+        self.m.ReplayAll()
+
+        self.assertIsNone(self.man.delete_stack(self.ctx, stack.identifier()))
+        self.man.thread_group_mgr.groups[sid].wait()
         self.m.VerifyAll()
 
     def test_stack_update(self):
@@ -679,6 +894,141 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.assertIsInstance(result, dict)
         self.assertTrue(result['stack_id'])
         self.assertEqual(3, old_stack.root_stack.total_resources())
+        self.m.VerifyAll()
+
+    def test_stack_update_stack_id_equal(self):
+        stack_name = 'test_stack_update_stack_id_equal'
+        res._register_class('ResourceWithPropsType',
+                            generic_rsrc.ResourceWithProps)
+        tpl = {
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Resources': {
+                'A': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {
+                        'Foo': {'Ref': 'AWS::StackId'}
+                    }
+                }
+            }
+        }
+
+        template = parser.Template(tpl)
+
+        create_stack = parser.Stack(self.ctx, stack_name, template)
+        sid = create_stack.store()
+        create_stack.create()
+        self.assertEqual((create_stack.CREATE, create_stack.COMPLETE),
+                         create_stack.state)
+
+        s = db_api.stack_get(self.ctx, sid)
+
+        old_stack = parser.Stack.load(self.ctx, stack=s)
+
+        self.assertEqual((old_stack.CREATE, old_stack.COMPLETE),
+                         old_stack.state)
+        self.assertEqual(create_stack.identifier().arn(),
+                         old_stack['A'].properties['Foo'])
+
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx, stack=s).AndReturn(old_stack)
+
+        self.m.ReplayAll()
+
+        result = self.man.update_stack(self.ctx, create_stack.identifier(),
+                                       tpl, {}, None, {})
+
+        self.man.thread_group_mgr.groups[sid].wait()
+
+        self.assertEqual((old_stack.UPDATE, old_stack.COMPLETE),
+                         old_stack.state)
+        self.assertEqual(create_stack.identifier(), result)
+        self.assertNotEqual(None, create_stack.identifier().stack_id)
+        self.assertEqual(create_stack.identifier().arn(),
+                         old_stack['A'].properties['Foo'])
+
+        self.assertEqual(create_stack['A'].id, old_stack['A'].id)
+        self.man.thread_group_mgr.groups[sid].wait()
+
+        self.m.VerifyAll()
+
+    def test_nested_stack_update_stack_id_equal(self):
+        stack_name = 'test_stack_update_stack_id_equal'
+        res._register_class('ResourceWithPropsType',
+                            generic_rsrc.ResourceWithProps)
+        tpl = {
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Parameters': {
+                'some_param': {'Type': 'String'}
+            },
+            'Resources': {
+                'nested': {
+                    'Type': 'AWS::CloudFormation::Stack',
+                    'Properties': {
+                        'TemplateURL': 'https://server.test/nested_tpl',
+                        'Parameters': {'some_param': {'Ref': 'some_param'}}
+                    }
+                }
+            }
+        }
+        nested_tpl = {
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Parameters': {
+                'some_param': {'Type': 'String'}
+            },
+            'Resources': {
+                'A': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {
+                        'Foo': {'Ref': 'AWS::StackId'}
+                    }
+                }
+            }
+        }
+
+        self.m.StubOutWithMock(urlfetch, 'get')
+        urlfetch.get('https://server.test/nested_tpl').MultipleTimes().\
+            AndReturn(json.dumps(nested_tpl))
+        mox.Replay(urlfetch.get)
+
+        template = parser.Template(tpl)
+
+        create_env = environment.Environment({'some_param': 'foo'})
+        create_stack = parser.Stack(self.ctx, stack_name, template, create_env)
+        sid = create_stack.store()
+        create_stack.create()
+        self.assertEqual((create_stack.CREATE, create_stack.COMPLETE),
+                         create_stack.state)
+
+        s = db_api.stack_get(self.ctx, sid)
+
+        old_stack = parser.Stack.load(self.ctx, stack=s)
+
+        self.assertEqual((old_stack.CREATE, old_stack.COMPLETE),
+                         old_stack.state)
+
+        old_nested = old_stack['nested'].nested()
+
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx, stack=s).AndReturn(old_stack)
+
+        self.m.ReplayAll()
+
+        result = self.man.update_stack(self.ctx, create_stack.identifier(),
+                                       tpl, {'some_param': 'bar'}, None, {})
+
+        self.man.thread_group_mgr.groups[sid].wait()
+
+        create_nested = create_stack['nested'].nested()
+
+        self.assertEqual((old_nested.UPDATE, old_nested.COMPLETE),
+                         old_nested.state)
+        self.assertEqual(create_stack.identifier(), result)
+        self.assertNotEqual(None, create_stack.identifier().stack_id)
+        self.assertEqual(create_nested.identifier().arn(),
+                         old_nested['A'].properties['Foo'])
+
+        self.assertEqual(create_nested['A'].id, old_nested['A'].id)
+
         self.m.VerifyAll()
 
     def test_stack_update_exceeds_resource_limit(self):
@@ -910,11 +1260,10 @@ class StackServiceSuspendResumeTest(HeatTestCase):
         parser.Stack.load(self.ctx, stack=s).AndReturn(stack)
 
         thread = self.m.CreateMockAnything()
-        thread.link(mox.IgnoreArg()).AndReturn(None)
-        self.m.StubOutWithMock(service.EngineService, '_start_in_thread')
-        service.EngineService._start_in_thread(sid,
-                                               mox.IgnoreArg(),
-                                               stack).AndReturn(thread)
+        thread.link(mox.IgnoreArg(), stack.id).AndReturn(None)
+        self.m.StubOutWithMock(service.ThreadGroupManager, 'start')
+        service.ThreadGroupManager.start(sid, mox.IgnoreArg(),
+                                         stack).AndReturn(thread)
         self.m.ReplayAll()
 
         result = self.man.stack_suspend(self.ctx, stack.identifier())
@@ -929,11 +1278,10 @@ class StackServiceSuspendResumeTest(HeatTestCase):
                           stack=mox.IgnoreArg()).AndReturn(self.stack)
 
         thread = self.m.CreateMockAnything()
-        thread.link(mox.IgnoreArg()).AndReturn(None)
-        self.m.StubOutWithMock(service.EngineService, '_start_in_thread')
-        service.EngineService._start_in_thread(self.stack.id,
-                                               mox.IgnoreArg(),
-                                               self.stack).AndReturn(thread)
+        thread.link(mox.IgnoreArg(), self.stack.id).AndReturn(None)
+        self.m.StubOutWithMock(service.ThreadGroupManager, 'start')
+        service.ThreadGroupManager.start(self.stack.id, mox.IgnoreArg(),
+                                         self.stack).AndReturn(thread)
 
         self.m.ReplayAll()
 
@@ -1054,6 +1402,29 @@ class StackServiceTest(HeatTestCase):
 
         utils.setup_dummy_db()
 
+    @mock.patch.object(service.db_api, 'stack_get_all')
+    @mock.patch.object(service.service.Service, 'start')
+    def test_start_gets_all_stacks(self, mock_super_start, mock_stack_get_all):
+        mock_stack_get_all.return_value = []
+
+        self.eng.start()
+        mock_stack_get_all.assert_called_once_with(mock.ANY, tenant_safe=False)
+
+    @mock.patch.object(service.db_api, 'stack_get_all')
+    @mock.patch.object(service.service.Service, 'start')
+    def test_start_watches_all_stacks(self, mock_super_start, mock_get_all):
+        s1 = mock.Mock(id=1)
+        s2 = mock.Mock(id=2)
+        mock_get_all.return_value = [s1, s2]
+        mock_watch = mock.Mock()
+        self.eng._start_watch_task = mock_watch
+
+        self.eng.start()
+        calls = mock_watch.call_args_list
+        self.assertEqual(2, mock_watch.call_count)
+        self.assertIn(mock.call(1, mock.ANY), calls)
+        self.assertIn(mock.call(2, mock.ANY), calls)
+
     @stack_context('service_identify_test_stack', False)
     def test_stack_identify(self):
         self.m.StubOutWithMock(parser.Stack, 'load')
@@ -1153,12 +1524,12 @@ class StackServiceTest(HeatTestCase):
                              generic_rsrc.GenericResource)
 
         thread = self.m.CreateMockAnything()
-        thread.link(mox.IgnoreArg()).AndReturn(None)
+        thread.link(mox.IgnoreArg(), self.stack.id).AndReturn(None)
 
         def run(stack_id, func, *args):
             func(*args)
             return thread
-        self.eng._start_in_thread = run
+        self.eng.thread_group_mgr.start = run
 
         new_tmpl = {'Resources': {'AResource': {'Type':
                                                 'GenericResourceType'}}}
@@ -1276,18 +1647,63 @@ class StackServiceTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @mock.patch.object(db_api, 'stack_get_all_by_tenant')
-    def test_stack_list_passes_filtering_info(self, mock_stack_get_all_by_t):
-
+    @mock.patch.object(db_api, 'stack_get_all')
+    def test_stack_list_passes_filtering_info(self, mock_stack_get_all):
         filters = {'foo': 'bar'}
         self.eng.list_stacks(self.ctx, filters=filters)
-        mock_stack_get_all_by_t.assert_called_once_with(mock.ANY,
-                                                        mock.ANY,
-                                                        mock.ANY,
-                                                        mock.ANY,
-                                                        mock.ANY,
-                                                        filters
-                                                        )
+        mock_stack_get_all.assert_called_once_with(mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   filters,
+                                                   mock.ANY,
+                                                   )
+
+    @mock.patch.object(db_api, 'stack_get_all')
+    def test_stack_list_tenant_safe_defaults_to_true(self, mock_stack_get_all):
+        self.eng.list_stacks(self.ctx)
+        mock_stack_get_all.assert_called_once_with(mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   True,
+                                                   )
+
+    @mock.patch.object(db_api, 'stack_get_all')
+    def test_stack_list_passes_tenant_safe_info(self, mock_stack_get_all):
+        self.eng.list_stacks(self.ctx, tenant_safe=False)
+        mock_stack_get_all.assert_called_once_with(mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   False,
+                                                   )
+
+    @mock.patch.object(db_api, 'stack_count_all')
+    def test_count_stacks_passes_filter_info(self, mock_stack_count_all):
+        self.eng.count_stacks(self.ctx, filters={'foo': 'bar'})
+        mock_stack_count_all.assert_called_once_with(mock.ANY,
+                                                     filters={'foo': 'bar'},
+                                                     tenant_safe=mock.ANY)
+
+    @mock.patch.object(db_api, 'stack_count_all')
+    def test_count_stacks_tenant_safe_default_true(self, mock_stack_count_all):
+        self.eng.count_stacks(self.ctx)
+        mock_stack_count_all.assert_called_once_with(mock.ANY,
+                                                     filters=mock.ANY,
+                                                     tenant_safe=True)
+
+    @mock.patch.object(db_api, 'stack_count_all')
+    def test_count_stacks_passes_tenant_safe_info(self, mock_stack_count_all):
+        self.eng.count_stacks(self.ctx, tenant_safe=False)
+        mock_stack_count_all.assert_called_once_with(mock.ANY,
+                                                     filters=mock.ANY,
+                                                     tenant_safe=False)
 
     @stack_context('service_abandon_stack')
     def test_abandon_stack(self):
@@ -1507,6 +1923,75 @@ class StackServiceTest(HeatTestCase):
                           self.ctx, self.stack.identifier(), 'foo')
 
         self.m.VerifyAll()
+
+    def test_stack_resource_describe_nested(self):
+        stack = get_stack('service_stack_resource_describe_nested_test_stack',
+                          self.ctx,
+                          nested_template)
+        self.stack = stack
+        stack.store()
+
+        fc = fakes.FakeClient()
+        self.m.StubOutWithMock(instances.Instance, 'nova')
+        instances.Instance.nova().MultipleTimes().AndReturn(fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(fc)
+
+        patcher = mock.patch.object(
+            nova_utils, 'build_userdata', return_value=None)
+        patcher.start()
+        self.m.StubOutWithMock(fc.servers, 'create')
+        fc.servers.create(image=744, flavor=3, key_name='test',
+                          name=utils.PhysName(
+                              utils.PhysName(stack.name, 'ServerGroup'),
+                              '0', 53),
+                          security_groups=None,
+                          userdata=None, scheduler_hints=None,
+                          meta=None, nics=None,
+                          availability_zone=None).InAnyOrder().AndReturn(
+                              fc.servers.list()[1])
+        fc.servers.create(image=744, flavor=3, key_name='test',
+                          name=utils.PhysName(
+                              utils.PhysName(stack.name, 'ServerGroup'),
+                              '1', 53),
+                          security_groups=None,
+                          userdata=None, scheduler_hints=None,
+                          meta=None, nics=None,
+                          availability_zone=None).InAnyOrder().AndReturn(
+                              fc.servers.list()[1])
+
+        self.m.ReplayAll()
+        stack.create()
+
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx,
+                          stack=mox.IgnoreArg()).AndReturn(self.stack)
+        self.m.ReplayAll()
+
+        r = self.eng.describe_stack_resource(self.ctx, self.stack.identifier(),
+                                             'ServerGroup')
+
+        self.assertIn('resource_identity', r)
+        self.assertIn('description', r)
+        self.assertIn('updated_time', r)
+        self.assertIn('stack_identity', r)
+        self.assertIsNotNone(r['stack_identity'])
+        self.assertIn('stack_name', r)
+        self.assertEqual(self.stack.name, r['stack_name'])
+        self.assertIn('metadata', r)
+        self.assertIn('resource_status', r)
+        self.assertIn('resource_status_reason', r)
+        self.assertIn('resource_type', r)
+        self.assertIn('physical_resource_id', r)
+        self.assertIn('resource_name', r)
+        self.assertIn('members', r)
+        self.assertEqual([5678, 5678], r['members'])
+        self.assertEqual('ServerGroup', r['resource_name'])
+
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
+        patcher.stop()
+        self.stack.delete()
 
     @stack_context('service_resources_describe_test_stack')
     def test_stack_resources_describe(self):
@@ -1753,9 +2238,10 @@ class StackServiceTest(HeatTestCase):
 
     @stack_context('periodic_watch_task_not_created')
     def test_periodic_watch_task_not_created(self):
-        self.eng.stg[self.stack.id] = DummyThreadGroup()
+        self.eng.thread_group_mgr.groups[self.stack.id] = DummyThreadGroup()
         self.eng._start_watch_task(self.stack.id, self.ctx)
-        self.assertEqual([], self.eng.stg[self.stack.id].threads)
+        self.assertEqual(
+            [], self.eng.thread_group_mgr.groups[self.stack.id].threads)
 
     def test_periodic_watch_task_created(self):
         stack = get_stack('period_watch_task_created',
@@ -1765,10 +2251,11 @@ class StackServiceTest(HeatTestCase):
         self.m.ReplayAll()
         stack.store()
         stack.create()
-        self.eng.stg[stack.id] = DummyThreadGroup()
+        self.eng.thread_group_mgr.groups[stack.id] = DummyThreadGroup()
         self.eng._start_watch_task(stack.id, self.ctx)
-        self.assertEqual([self.eng._periodic_watcher_task],
-                         self.eng.stg[stack.id].threads)
+        expected = [self.eng._periodic_watcher_task]
+        observed = self.eng.thread_group_mgr.groups[stack.id].threads
+        self.assertEqual(expected, observed)
         self.stack.delete()
 
     def test_periodic_watch_task_created_nested(self):
@@ -1785,10 +2272,10 @@ class StackServiceTest(HeatTestCase):
         self.m.ReplayAll()
         stack.store()
         stack.create()
-        self.eng.stg[stack.id] = DummyThreadGroup()
+        self.eng.thread_group_mgr.groups[stack.id] = DummyThreadGroup()
         self.eng._start_watch_task(stack.id, self.ctx)
         self.assertEqual([self.eng._periodic_watcher_task],
-                         self.eng.stg[stack.id].threads)
+                         self.eng.thread_group_mgr.groups[stack.id].threads)
         self.stack.delete()
 
     @stack_context('service_show_watch_test_stack', False)
@@ -1923,7 +2410,7 @@ class StackServiceTest(HeatTestCase):
 
         # Replace the real stack threadgroup with a dummy one, so we can
         # check the function returned on ALARM is correctly scheduled
-        self.eng.stg[self.stack.id] = DummyThreadGroup()
+        self.eng.thread_group_mgr.groups[self.stack.id] = DummyThreadGroup()
 
         self.m.ReplayAll()
 
@@ -1932,22 +2419,25 @@ class StackServiceTest(HeatTestCase):
                                           watch_name="OverrideAlarm",
                                           state=state)
         self.assertEqual(state, result[engine_api.WATCH_STATE_VALUE])
-        self.assertEqual([], self.eng.stg[self.stack.id].threads)
+        self.assertEqual(
+            [], self.eng.thread_group_mgr.groups[self.stack.id].threads)
 
         state = watchrule.WatchRule.NORMAL
         result = self.eng.set_watch_state(self.ctx,
                                           watch_name="OverrideAlarm",
                                           state=state)
         self.assertEqual(state, result[engine_api.WATCH_STATE_VALUE])
-        self.assertEqual([], self.eng.stg[self.stack.id].threads)
+        self.assertEqual(
+            [], self.eng.thread_group_mgr.groups[self.stack.id].threads)
 
         state = watchrule.WatchRule.ALARM
         result = self.eng.set_watch_state(self.ctx,
                                           watch_name="OverrideAlarm",
                                           state=state)
         self.assertEqual(state, result[engine_api.WATCH_STATE_VALUE])
-        self.assertEqual([DummyAction.signal],
-                         self.eng.stg[self.stack.id].threads)
+        self.assertEqual(
+            [DummyAction.signal],
+            self.eng.thread_group_mgr.groups[self.stack.id].threads)
 
         self.m.VerifyAll()
 
@@ -2034,7 +2524,7 @@ class StackServiceTest(HeatTestCase):
 
         resources = stack.resources
         self.assertIsInstance(resources, dict)
-        self.assertEqual(len(resources), 2)
+        self.assertEqual(2, len(resources))
         self.assertIsInstance(resources.get('foo'),
                               generic_rsrc.GenericResource)
         self.assertIsInstance(resources.get('bar'),
@@ -2042,4 +2532,305 @@ class StackServiceTest(HeatTestCase):
 
         stack_dependencies = stack.dependencies
         self.assertIsInstance(stack_dependencies, dependencies.Dependencies)
-        self.assertEqual(len(stack_dependencies.graph()), 2)
+        self.assertEqual(2, len(stack_dependencies.graph()))
+
+    def _preview_stack(self):
+        res._register_class('GenericResource1', generic_rsrc.GenericResource)
+        res._register_class('GenericResource2', generic_rsrc.GenericResource)
+
+        args = {}
+        params = {}
+        files = None
+        stack_name = 'SampleStack'
+        tpl = {
+            'Description': 'Lorem ipsum.',
+            'Resources': {
+                'SampleResource1': {'Type': 'GenericResource1'},
+                'SampleResource2': {'Type': 'GenericResource2'},
+            }
+        }
+
+        return self.eng.preview_stack(self.ctx, stack_name, tpl,
+                                      params, files, args)
+
+    def test_preview_stack_returns_a_stack(self):
+        stack = self._preview_stack()
+        expected_identity = {'path': '',
+                             'stack_id': 'None',
+                             'stack_name': 'SampleStack',
+                             'tenant': 'stack_service_test_tenant'}
+        self.assertEqual(expected_identity, stack['stack_identity'])
+        self.assertEqual('SampleStack', stack['stack_name'])
+        self.assertEqual('Lorem ipsum.', stack['description'])
+
+    def test_preview_stack_returns_list_of_resources_in_stack(self):
+        stack = self._preview_stack()
+        self.assertIsInstance(stack['resources'], list)
+        self.assertEqual(2, len(stack['resources']))
+
+        resource_types = (r['resource_type'] for r in stack['resources'])
+        self.assertIn('GenericResource1', resource_types)
+        self.assertIn('GenericResource2', resource_types)
+
+        resource_names = (r['resource_name'] for r in stack['resources'])
+        self.assertIn('SampleResource1', resource_names)
+        self.assertIn('SampleResource2', resource_names)
+
+    def test_preview_stack_validates_new_stack(self):
+        exc = exception.StackExists(stack_name='Validation Failed')
+        self.eng._validate_new_stack = mock.Mock(side_effect=exc)
+        self.assertRaises(exception.StackExists, self._preview_stack)
+
+    @mock.patch.object(service.api, 'format_stack_preview', new=mock.Mock())
+    @mock.patch.object(service.parser, 'Stack')
+    def test_preview_stack_checks_stack_validity(self, mock_parser):
+        exc = exception.StackValidationFailed(message='Validation Failed')
+        mock_parsed_stack = mock.Mock()
+        mock_parsed_stack.validate.side_effect = exc
+        mock_parser.return_value = mock_parsed_stack
+        self.assertRaises(exception.StackValidationFailed, self._preview_stack)
+
+    @mock.patch.object(service.db_api, 'stack_get_by_name')
+    def test_validate_new_stack_checks_existing_stack(self, mock_stack_get):
+        mock_stack_get.return_value = 'existing_db_stack'
+        self.assertRaises(exception.StackExists, self.eng._validate_new_stack,
+                          self.ctx, 'test_existing_stack', 'parsed_template')
+
+    @mock.patch.object(service.db_api, 'stack_count_all')
+    def test_validate_new_stack_checks_stack_limit(self, mock_db_count):
+        cfg.CONF.set_override('max_stacks_per_tenant', 99)
+        mock_db_count.return_value = 99
+        template = service.parser.Template({})
+        self.assertRaises(exception.RequestLimitExceeded,
+                          self.eng._validate_new_stack,
+                          self.ctx, 'test_existing_stack', template)
+
+    def test_validate_new_stack_checks_resource_limit(self):
+        cfg.CONF.set_override('max_resources_per_stack', 5)
+        template = {'Resources': [1, 2, 3, 4, 5, 6]}
+        parsed_template = service.parser.Template(template)
+        self.assertRaises(exception.RequestLimitExceeded,
+                          self.eng._validate_new_stack,
+                          self.ctx, 'test_existing_stack', parsed_template)
+
+
+class SoftwareConfigServiceTest(HeatTestCase):
+
+    def setUp(self):
+        super(SoftwareConfigServiceTest, self).setUp()
+        self.ctx = utils.dummy_context()
+
+        self.m.StubOutWithMock(service.EngineListener, 'start')
+        service.EngineListener.start().AndReturn(None)
+        self.m.ReplayAll()
+        self.engine = service.EngineService('a-host', 'a-topic')
+        utils.setup_dummy_db()
+
+    def _create_software_config(
+            self, group='Heat::Shell', name='config_mysql', config=None,
+            inputs=[], outputs=[], options={}):
+        return self.engine.create_software_config(
+            self.ctx, group, name, config, inputs, outputs, options)
+
+    def test_show_software_config(self):
+        config_id = str(uuid.uuid4())
+
+        e = self.assertRaises(rpc_common.ClientException,
+                              self.engine.show_software_config,
+                              self.ctx, config_id)
+        self.assertIs(e._exc_info[0], exception.NotFound)
+
+        config = self._create_software_config()
+        config_id = config['id']
+        self.assertEqual(
+            config, self.engine.show_software_config(self.ctx, config_id))
+
+    def test_create_software_config(self):
+        config = self._create_software_config()
+        self.assertIsNotNone(config)
+        config_id = config['id']
+        config = self._create_software_config()
+        self.assertNotEqual(config_id, config['id'])
+        kwargs = {
+            'group': 'Heat::Chef',
+            'name': 'config_heat',
+            'config': '...',
+            'inputs': [{'name': 'mode'}],
+            'outputs': [{'name': 'endpoint'}],
+            'options': {}
+        }
+        config = self._create_software_config(**kwargs)
+        config_id = config['id']
+        config = self.engine.show_software_config(self.ctx, config_id)
+        self.assertEqual(kwargs['group'], config['group'])
+        self.assertEqual(kwargs['name'], config['name'])
+        self.assertEqual(kwargs['config'], config['config'])
+        self.assertEqual(kwargs['inputs'], config['inputs'])
+        self.assertEqual(kwargs['outputs'], config['outputs'])
+        self.assertEqual(kwargs['options'], config['options'])
+
+    def test_delete_software_config(self):
+        config = self._create_software_config()
+        self.assertIsNotNone(config)
+        config_id = config['id']
+        self.engine.delete_software_config(self.ctx, config_id)
+
+        e = self.assertRaises(rpc_common.ClientException,
+                              self.engine.show_software_config,
+                              self.ctx, config_id)
+        self.assertIs(e._exc_info[0], exception.NotFound)
+
+    def _create_software_deployment(self, config_id=None, input_values={},
+                                    signal_id=None, action='INIT',
+                                    status='COMPLETE', status_reason='',
+                                    config_group=None,
+                                    server_id=str(uuid.uuid4()),
+                                    config_name=None):
+        if config_id is None:
+            config = self._create_software_config(group=config_group,
+                                                  name=config_name)
+            config_id = config['id']
+        return self.engine.create_software_deployment(
+            self.ctx, server_id, config_id, input_values, signal_id,
+            action, status, status_reason)
+
+    def test_list_software_deployments(self):
+        deployment = self._create_software_deployment()
+        deployment_id = deployment['id']
+        self.assertIsNotNone(deployment)
+        deployments = self.engine.list_software_deployments(
+            self.ctx, server_id=None)
+        self.assertIsNotNone(deployments)
+        deployment_ids = [x['id'] for x in deployments]
+        self.assertIn(deployment_id, deployment_ids)
+        self.assertIn(deployment, deployments)
+        deployments = self.engine.list_software_deployments(
+            self.ctx, server_id=str(uuid.uuid4()))
+        self.assertEqual([], deployments)
+
+    def test_metadata_software_deployments(self):
+        server_id = str(uuid.uuid4())
+        d1 = self._create_software_deployment(config_group='mygroup',
+                                              server_id=server_id,
+                                              config_name='02_second')
+        d2 = self._create_software_deployment(config_group='mygroup',
+                                              server_id=server_id,
+                                              config_name='01_first')
+        d3 = self._create_software_deployment(config_group='myothergroup',
+                                              server_id=server_id,
+                                              config_name='03_third')
+        metadata = self.engine.metadata_software_deployments(
+            self.ctx, server_id=server_id)
+        self.assertEqual(3, len(metadata))
+        self.assertEqual('mygroup', metadata[1]['group'])
+        self.assertEqual('mygroup', metadata[0]['group'])
+        self.assertEqual('myothergroup', metadata[2]['group'])
+        self.assertEqual(d1['config_id'], metadata[1]['id'])
+        self.assertEqual(d2['config_id'], metadata[0]['id'])
+        self.assertEqual(d3['config_id'], metadata[2]['id'])
+        self.assertEqual('01_first', metadata[0]['name'])
+        self.assertEqual('02_second', metadata[1]['name'])
+        self.assertEqual('03_third', metadata[2]['name'])
+
+        deployments = self.engine.metadata_software_deployments(
+            self.ctx, server_id=str(uuid.uuid4()))
+        self.assertEqual([], deployments)
+
+    def test_show_software_deployment(self):
+        deployment_id = str(uuid.uuid4())
+        e = self.assertRaises(rpc_common.ClientException,
+                              self.engine.show_software_deployment,
+                              self.ctx, deployment_id)
+        self.assertIs(e._exc_info[0], exception.NotFound)
+
+        deployment = self._create_software_deployment()
+        self.assertIsNotNone(deployment)
+        deployment_id = deployment['id']
+        self.assertEqual(
+            deployment,
+            self.engine.show_software_deployment(self.ctx, deployment_id))
+
+    def test_create_software_deployment(self):
+        kwargs = {
+            'group': 'Heat::Chef',
+            'name': 'config_heat',
+            'config': '...',
+            'inputs': [{'name': 'mode'}],
+            'outputs': [{'name': 'endpoint'}],
+            'options': {}
+        }
+        config = self._create_software_config(**kwargs)
+        config_id = config['id']
+        kwargs = {
+            'config_id': config_id,
+            'input_values': {'mode': 'standalone'},
+            'signal_id': None,
+            'action': 'INIT',
+            'status': 'COMPLETE',
+            'status_reason': ''
+        }
+        deployment = self._create_software_deployment(**kwargs)
+        deployment_id = deployment['id']
+        deployment = self.engine.show_software_deployment(
+            self.ctx, deployment_id)
+        self.assertEqual(deployment_id, deployment['id'])
+        self.assertEqual(kwargs['input_values'], deployment['input_values'])
+
+    def test_update_software_deployment(self):
+        deployment = self._create_software_deployment()
+        self.assertIsNotNone(deployment)
+        deployment_id = deployment['id']
+        deployment_action = deployment['action']
+        self.assertEqual('INIT', deployment_action)
+        config_id = deployment['config_id']
+        self.assertIsNotNone(config_id)
+        updated = self.engine.update_software_deployment(
+            self.ctx, deployment_id=deployment_id, config_id=config_id,
+            input_values={}, output_values={}, action='DEPLOY',
+            status='WAITING', status_reason='')
+        self.assertIsNotNone(updated)
+        self.assertEqual(config_id, updated['config_id'])
+        self.assertEqual('DEPLOY', updated['action'])
+        self.assertEqual('WAITING', updated['status'])
+
+        def check_software_deployment_updated(**kwargs):
+            values = {
+                'config_id': None,
+                'input_values': {},
+                'output_values': {},
+                'action': {},
+                'status': 'WAITING',
+                'status_reason': ''
+            }
+            values.update(kwargs)
+            updated = self.engine.update_software_deployment(
+                self.ctx, deployment_id, **values)
+            for key, value in kwargs.iteritems():
+                self.assertEqual(value, updated[key])
+
+        check_software_deployment_updated(config_id=config_id)
+        check_software_deployment_updated(input_values={'foo': 'fooooo'})
+        check_software_deployment_updated(output_values={'bar': 'baaaaa'})
+        check_software_deployment_updated(action='DEPLOY')
+        check_software_deployment_updated(status='COMPLETE')
+        check_software_deployment_updated(status_reason='Done!')
+
+    def test_delete_software_deployment(self):
+        deployment_id = str(uuid.uuid4())
+        e = self.assertRaises(rpc_common.ClientException,
+                              self.engine.delete_software_deployment,
+                              self.ctx, deployment_id)
+        self.assertIs(e._exc_info[0], exception.NotFound)
+
+        deployment = self._create_software_deployment()
+        self.assertIsNotNone(deployment)
+        deployment_id = deployment['id']
+        deployments = self.engine.list_software_deployments(
+            self.ctx, server_id=None)
+        deployment_ids = [x['id'] for x in deployments]
+        self.assertIn(deployment_id, deployment_ids)
+        self.engine.delete_software_deployment(self.ctx, deployment_id)
+        deployments = self.engine.list_software_deployments(
+            self.ctx, server_id=None)
+        deployment_ids = [x['id'] for x in deployments]
+        self.assertNotIn(deployment_id, deployment_ids)

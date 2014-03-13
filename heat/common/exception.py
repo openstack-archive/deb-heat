@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
@@ -327,3 +326,12 @@ class StackResourceLimitExceeded(HeatException):
 class ActionInProgress(HeatException):
     msg_fmt = _("Stack %(stack_name)s already has an action (%(action)s) "
                 "in progress.")
+
+
+class SoftwareConfigMissing(HeatException):
+    msg_fmt = _("The config (%(software_config_id)s) could not be found.")
+
+
+class StopActionFailed(HeatException):
+    msg_fmt = _("Failed to stop stack (%(stack_name)s) on other engine "
+                "(%(engine_id)s)")

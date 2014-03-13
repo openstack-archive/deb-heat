@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -21,9 +20,11 @@ from heat.engine import environment
 from heat.tests.v1_1 import fakes
 from heat.common import exception
 from heat.common import template_format
+from heat.engine import clients
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
+from heat.engine.resources import image
 from heat.engine.resources import instance as instances
 from heat.engine.resources import network_interface
 from heat.engine.resources import nova_utils
@@ -87,6 +88,8 @@ class InstancesTest(HeatTestCase):
 
         self.m.StubOutWithMock(instance, 'nova')
         instance.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
 
         instance.t = instance.stack.resolve_runtime_data(instance.t)
 
@@ -130,10 +133,10 @@ class InstancesTest(HeatTestCase):
         self.assertTrue(instance.id > 0)
 
         expected_ip = return_server.networks['public'][0]
-        self.assertEqual(instance.FnGetAtt('PublicIp'), expected_ip)
-        self.assertEqual(instance.FnGetAtt('PrivateIp'), expected_ip)
-        self.assertEqual(instance.FnGetAtt('PrivateDnsName'), expected_ip)
-        self.assertEqual(instance.FnGetAtt('PrivateDnsName'), expected_ip)
+        self.assertEqual(expected_ip, instance.FnGetAtt('PublicIp'))
+        self.assertEqual(expected_ip, instance.FnGetAtt('PrivateIp'))
+        self.assertEqual(expected_ip, instance.FnGetAtt('PrivateDnsName'))
+        self.assertEqual(expected_ip, instance.FnGetAtt('PrivateDnsName'))
 
         self.m.VerifyAll()
 
@@ -143,7 +146,7 @@ class InstancesTest(HeatTestCase):
                                              'in_create_imgid',
                                              image_id='1')
         self.m.StubOutWithMock(uuidutils, "is_uuid_like")
-        uuidutils.is_uuid_like('1').AndReturn(True)
+        uuidutils.is_uuid_like('1').MultipleTimes().AndReturn(True)
 
         self.m.ReplayAll()
         scheduler.TaskRunner(instance.create)()
@@ -152,10 +155,10 @@ class InstancesTest(HeatTestCase):
         self.assertTrue(instance.id > 0)
 
         expected_ip = return_server.networks['public'][0]
-        self.assertEqual(instance.FnGetAtt('PublicIp'), expected_ip)
-        self.assertEqual(instance.FnGetAtt('PrivateIp'), expected_ip)
-        self.assertEqual(instance.FnGetAtt('PublicDnsName'), expected_ip)
-        self.assertEqual(instance.FnGetAtt('PrivateDnsName'), expected_ip)
+        self.assertEqual(expected_ip, instance.FnGetAtt('PublicIp'))
+        self.assertEqual(expected_ip, instance.FnGetAtt('PrivateIp'))
+        self.assertEqual(expected_ip, instance.FnGetAtt('PublicDnsName'))
+        self.assertEqual(expected_ip, instance.FnGetAtt('PrivateDnsName'))
 
         self.m.VerifyAll()
 
@@ -168,11 +171,11 @@ class InstancesTest(HeatTestCase):
         instance = instances.Instance('instance_create_image_err',
                                       t['Resources']['WebServer'], stack)
 
-        self.m.StubOutWithMock(instance, 'nova')
-        instance.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
         self.m.ReplayAll()
 
-        self.assertRaises(exception.ImageNotFound, instance.handle_create)
+        self.assertRaises(ValueError, instance.handle_create)
 
         self.m.VerifyAll()
 
@@ -185,16 +188,15 @@ class InstancesTest(HeatTestCase):
         instance = instances.Instance('instance_create_image_err',
                                       t['Resources']['WebServer'], stack)
 
-        self.m.StubOutWithMock(instance, 'nova')
-        instance.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
         self.m.StubOutWithMock(self.fc.client, "get_images_detail")
         self.fc.client.get_images_detail().AndReturn((
             200, {'images': [{'id': 1, 'name': 'CentOS 5.2'},
                              {'id': 4, 'name': 'CentOS 5.2'}]}))
         self.m.ReplayAll()
 
-        self.assertRaises(exception.PhysicalResourceNameAmbiguity,
-                          instance.handle_create)
+        self.assertRaises(ValueError, instance.handle_create)
 
         self.m.VerifyAll()
 
@@ -207,8 +209,8 @@ class InstancesTest(HeatTestCase):
         instance = instances.Instance('instance_create_image_err',
                                       t['Resources']['WebServer'], stack)
 
-        self.m.StubOutWithMock(instance, 'nova')
-        instance.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
         self.m.StubOutWithMock(uuidutils, "is_uuid_like")
         uuidutils.is_uuid_like('1').AndReturn(True)
         self.m.StubOutWithMock(self.fc.client, "get_images_1")
@@ -216,7 +218,7 @@ class InstancesTest(HeatTestCase):
             instances.clients.novaclient.exceptions.NotFound(404))
         self.m.ReplayAll()
 
-        self.assertRaises(exception.ImageNotFound, instance.handle_create)
+        self.assertRaises(ValueError, instance.handle_create)
 
         self.m.VerifyAll()
 
@@ -282,11 +284,11 @@ class InstancesTest(HeatTestCase):
         instance = instances.Instance('instance_create_image_err',
                                       t['Resources']['WebServer'], stack)
 
-        self.m.StubOutWithMock(instance, 'nova')
-        instance.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
 
         self.m.StubOutWithMock(uuidutils, "is_uuid_like")
-        uuidutils.is_uuid_like('1').AndReturn(True)
+        uuidutils.is_uuid_like('1').MultipleTimes().AndReturn(True)
         self.m.ReplayAll()
 
         self.assertIsNone(instance.validate())
@@ -309,7 +311,7 @@ class InstancesTest(HeatTestCase):
 
         scheduler.TaskRunner(instance.delete)()
         self.assertIsNone(instance.resource_id)
-        self.assertEqual(instance.state, (instance.DELETE, instance.COMPLETE))
+        self.assertEqual((instance.DELETE, instance.COMPLETE), instance.state)
         self.m.VerifyAll()
 
     def test_instance_update_metadata(self):
@@ -320,7 +322,7 @@ class InstancesTest(HeatTestCase):
         update_template = copy.deepcopy(instance.t)
         update_template['Metadata'] = {'test': 123}
         scheduler.TaskRunner(instance.update, update_template)()
-        self.assertEqual(instance.metadata, {'test': 123})
+        self.assertEqual({'test': 123}, instance.metadata)
 
     def test_instance_update_instance_type(self):
         """
@@ -350,7 +352,7 @@ class InstancesTest(HeatTestCase):
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.update, update_template)()
-        self.assertEqual(instance.state, (instance.UPDATE, instance.COMPLETE))
+        self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
         self.m.VerifyAll()
 
     def test_instance_update_instance_type_failed(self):
@@ -383,7 +385,7 @@ class InstancesTest(HeatTestCase):
         self.assertEqual(
             "Error: Resizing to 'm1.small' failed, status 'ACTIVE'",
             str(error))
-        self.assertEqual(instance.state, (instance.UPDATE, instance.FAILED))
+        self.assertEqual((instance.UPDATE, instance.FAILED), instance.state)
         self.m.VerifyAll()
 
     def test_instance_update_replace(self):
@@ -401,8 +403,13 @@ class InstancesTest(HeatTestCase):
         instance = self._create_test_instance(return_server,
                                               'in_update2')
 
+        self.m.StubOutWithMock(image.ImageConstraint, "validate")
+        image.ImageConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.m.ReplayAll()
+
         update_template = copy.deepcopy(instance.t)
-        update_template['Properties']['KeyName'] = 'mustreplace'
+        update_template['Properties']['ImageId'] = 'mustreplace'
         updater = scheduler.TaskRunner(instance.update, update_template)
         self.assertRaises(resource.UpdateReplace, updater)
 
@@ -419,7 +426,7 @@ class InstancesTest(HeatTestCase):
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.create)()
-        self.assertEqual(instance.state, (instance.CREATE, instance.COMPLETE))
+        self.assertEqual((instance.CREATE, instance.COMPLETE), instance.state)
 
     def test_instance_status_suspend_immediate(self):
         return_server = self.fc.servers.list()[1]
@@ -438,7 +445,7 @@ class InstancesTest(HeatTestCase):
         mox.Replay(get)
 
         scheduler.TaskRunner(instance.suspend)()
-        self.assertEqual(instance.state, (instance.SUSPEND, instance.COMPLETE))
+        self.assertEqual((instance.SUSPEND, instance.COMPLETE), instance.state)
 
         self.m.VerifyAll()
 
@@ -460,7 +467,7 @@ class InstancesTest(HeatTestCase):
         instance.state_set(instance.SUSPEND, instance.COMPLETE)
 
         scheduler.TaskRunner(instance.resume)()
-        self.assertEqual(instance.state, (instance.RESUME, instance.COMPLETE))
+        self.assertEqual((instance.RESUME, instance.COMPLETE), instance.state)
 
         self.m.VerifyAll()
 
@@ -486,7 +493,7 @@ class InstancesTest(HeatTestCase):
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.suspend)()
-        self.assertEqual(instance.state, (instance.SUSPEND, instance.COMPLETE))
+        self.assertEqual((instance.SUSPEND, instance.COMPLETE), instance.state)
 
         self.m.VerifyAll()
 
@@ -514,7 +521,7 @@ class InstancesTest(HeatTestCase):
         instance.state_set(instance.SUSPEND, instance.COMPLETE)
 
         scheduler.TaskRunner(instance.resume)()
-        self.assertEqual(instance.state, (instance.RESUME, instance.COMPLETE))
+        self.assertEqual((instance.RESUME, instance.COMPLETE), instance.state)
 
         self.m.VerifyAll()
 
@@ -543,7 +550,7 @@ class InstancesTest(HeatTestCase):
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.suspend)()
-        self.assertEqual(instance.state, (instance.SUSPEND, instance.COMPLETE))
+        self.assertEqual((instance.SUSPEND, instance.COMPLETE), instance.state)
 
         self.m.VerifyAll()
 
@@ -575,7 +582,7 @@ class InstancesTest(HeatTestCase):
         instance.state_set(instance.SUSPEND, instance.COMPLETE)
 
         scheduler.TaskRunner(instance.resume)()
-        self.assertEqual(instance.state, (instance.RESUME, instance.COMPLETE))
+        self.assertEqual((instance.RESUME, instance.COMPLETE), instance.state)
 
         self.m.VerifyAll()
 
@@ -629,7 +636,7 @@ class InstancesTest(HeatTestCase):
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.create)()
-        self.assertEqual(instance.state, (instance.CREATE, instance.COMPLETE))
+        self.assertEqual((instance.CREATE, instance.COMPLETE), instance.state)
 
         self.m.VerifyAll()
 
@@ -644,27 +651,28 @@ class InstancesTest(HeatTestCase):
             {'port-id': 'id3'}, {'port-id': 'id1'}, {'port-id': 'id2'}],
             instance._build_nics([
                 'id3', 'id1', 'id2']))
-        self.assertEqual([
-            {'port-id': 'id1'},
-            {'port-id': 'id2'},
-            {'port-id': 'id3'}], instance._build_nics([
+        self.assertEqual(
+            [{'port-id': 'id1'},
+             {'port-id': 'id2'},
+             {'port-id': 'id3'}],
+            instance._build_nics([
                 {'NetworkInterfaceId': 'id3', 'DeviceIndex': '3'},
                 {'NetworkInterfaceId': 'id1', 'DeviceIndex': '1'},
                 {'NetworkInterfaceId': 'id2', 'DeviceIndex': 2},
             ]))
-        self.assertEqual([
-            {'port-id': 'id1'},
-            {'port-id': 'id2'},
-            {'port-id': 'id3'},
-            {'port-id': 'id4'},
-            {'port-id': 'id5'}
-        ], instance._build_nics([
-            {'NetworkInterfaceId': 'id3', 'DeviceIndex': '3'},
-            {'NetworkInterfaceId': 'id1', 'DeviceIndex': '1'},
-            {'NetworkInterfaceId': 'id2', 'DeviceIndex': 2},
-            'id4',
-            'id5'
-        ]))
+        self.assertEqual(
+            [{'port-id': 'id1'},
+             {'port-id': 'id2'},
+             {'port-id': 'id3'},
+             {'port-id': 'id4'},
+             {'port-id': 'id5'}],
+            instance._build_nics([
+                {'NetworkInterfaceId': 'id3', 'DeviceIndex': '3'},
+                {'NetworkInterfaceId': 'id1', 'DeviceIndex': '1'},
+                {'NetworkInterfaceId': 'id2', 'DeviceIndex': 2},
+                'id4',
+                'id5']
+            ))
 
     def test_build_nics_with_security_groups(self):
         """
@@ -813,4 +821,4 @@ class InstancesTest(HeatTestCase):
         instance = self._create_test_instance(return_server,
                                               'wo_ipaddr')
 
-        self.assertEqual(instance.FnGetAtt('PrivateIp'), '0.0.0.0')
+        self.assertEqual('0.0.0.0', instance.FnGetAtt('PrivateIp'))

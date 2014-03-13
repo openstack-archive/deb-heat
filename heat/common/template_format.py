@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -20,6 +19,7 @@ import json
 from oslo.config import cfg
 
 from heat.common import exception
+from heat.openstack.common.gettextutils import _
 
 cfg.CONF.import_opt('max_template_size', 'heat.common.config')
 
@@ -50,18 +50,10 @@ yaml_loader.add_constructor(u'tag:yaml.org,2002:timestamp',
                             _construct_yaml_str)
 
 
-def parse(tmpl_str):
-    '''
-    Takes a string and returns a dict containing the parsed structure.
-    This includes determination of whether the string is using the
-    JSON or YAML format.
-    '''
-    if len(tmpl_str) > cfg.CONF.max_template_size:
-        msg = _('Template exceeds maximum allowed size.')
-        raise exception.RequestLimitExceeded(message=msg)
-    if tmpl_str.startswith('{'):
+def simple_parse(tmpl_str):
+    try:
         tpl = json.loads(tmpl_str)
-    else:
+    except ValueError:
         try:
             tpl = yaml.load(tmpl_str, Loader=yaml_loader)
         except yaml.YAMLError as yea:
@@ -69,26 +61,29 @@ def parse(tmpl_str):
         else:
             if tpl is None:
                 tpl = {}
-            if u'heat_template_version' not in tpl:
-                default_for_missing(tpl, u'HeatTemplateFormatVersion',
-                                    HEAT_VERSIONS)
     return tpl
 
 
-def default_for_missing(tpl, version_param, versions):
+def parse(tmpl_str):
     '''
-    Checks a parsed template for missing version and sections.
-
-    This is currently only applied to YAML templates.
+    Takes a string and returns a dict containing the parsed structure.
+    This includes determination of whether the string is using the
+    JSON or YAML format.
     '''
-    # if version is missing, implicitly use the lastest one
-    if version_param not in tpl:
-        tpl[version_param] = versions[-1]
-
-    # create empty placeholders for any of the main dict sections
-    for param in (u'Parameters', u'Mappings', u'Resources', u'Outputs'):
-        if param not in tpl:
-            tpl[param] = {}
+    if len(tmpl_str) > cfg.CONF.max_template_size:
+        msg = (_('Template exceeds maximum allowed size (%s bytes)') %
+               cfg.CONF.max_template_size)
+        raise exception.RequestLimitExceeded(message=msg)
+    tpl = simple_parse(tmpl_str)
+    if not isinstance(tpl, dict):
+        raise ValueError(_('The template is not a JSON object '
+                           'or YAML mapping.'))
+    # Looking for supported version keys in the loaded template
+    if not ('HeatTemplateFormatVersion' in tpl
+            or 'heat_template_version' in tpl
+            or 'AWSTemplateFormatVersion' in tpl):
+        raise ValueError(_("Template format version not found."))
+    return tpl
 
 
 def convert_json_to_yaml(json_str):

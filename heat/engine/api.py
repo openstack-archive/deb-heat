@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,9 +11,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.common import template_format
 from heat.rpc import api
 from heat.openstack.common import timeutils
-from heat.engine import template
+from heat.engine import constraints as constr
 
 from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
@@ -48,6 +48,16 @@ def extract_args(params):
                                ' %(name)s : %(value)s') %
                              dict(name=api.PARAM_DISABLE_ROLLBACK,
                                   value=disable_rollback))
+
+    adopt_data = params.get(api.PARAM_ADOPT_STACK_DATA)
+    if adopt_data:
+        adopt_data = template_format.simple_parse(adopt_data)
+        if not isinstance(adopt_data, dict):
+            raise ValueError(
+                _('Unexpected adopt data "%s". Adopt data must be a dict.')
+                % adopt_data)
+        kwargs[api.PARAM_ADOPT_STACK_DATA] = adopt_data
+
     return kwargs
 
 
@@ -70,15 +80,16 @@ def format_stack(stack):
     Return a representation of the given stack that matches the API output
     expectations.
     '''
+    updated_time = stack.updated_time and timeutils.isotime(stack.updated_time)
     info = {
         api.STACK_NAME: stack.name,
         api.STACK_ID: dict(stack.identifier()),
         api.STACK_CREATION_TIME: timeutils.isotime(stack.created_time),
-        api.STACK_UPDATED_TIME: timeutils.isotime(stack.updated_time),
+        api.STACK_UPDATED_TIME: updated_time,
         api.STACK_NOTIFICATION_TOPICS: [],  # TODO Not implemented yet
         api.STACK_PARAMETERS: stack.parameters.map(str),
-        api.STACK_DESCRIPTION: stack.t[template.DESCRIPTION],
-        api.STACK_TMPL_DESCRIPTION: stack.t[template.DESCRIPTION],
+        api.STACK_DESCRIPTION: stack.t[stack.t.DESCRIPTION],
+        api.STACK_TMPL_DESCRIPTION: stack.t[stack.t.DESCRIPTION],
         api.STACK_ACTION: stack.action or '',
         api.STACK_STATUS: stack.status or '',
         api.STACK_STATUS_DATA: stack.status_reason,
@@ -119,7 +130,24 @@ def format_stack_resource(resource, detail=True):
         res[api.RES_DESCRIPTION] = resource.parsed_template('Description', '')
         res[api.RES_METADATA] = resource.metadata
 
+    if getattr(resource, 'nested', None) is not None:
+        res[api.RES_MEMBERS] = [r.resource_id for r in
+                                resource.nested().resources.itervalues()]
+
     return res
+
+
+def format_stack_preview(stack):
+    def format_resource(res):
+        if isinstance(res, list):
+            return map(format_resource, res)
+        return format_stack_resource(res)
+
+    fmt_stack = format_stack(stack)
+    fmt_resources = map(format_resource, stack.preview_resources())
+    fmt_stack['resources'] = fmt_resources
+
+    return fmt_stack
 
 
 def format_event(event):
@@ -217,4 +245,99 @@ def format_watch_data(wd):
         api.WATCH_DATA: metric_data
     }
 
+    return result
+
+
+def format_validate_parameter(param):
+    """
+    Format a template parameter for validate template API call
+
+    Formats a template parameter and its schema information from the engine's
+    internal representation (i.e. a Parameter object and its associated
+    Schema object) to a representation expected by the current API (for example
+    to be compatible to CFN syntax).
+    """
+
+    # map of Schema object types to API expected types
+    schema_to_api_types = {
+        param.schema.STRING: api.PARAM_TYPE_STRING,
+        param.schema.NUMBER: api.PARAM_TYPE_NUMBER,
+        param.schema.LIST: api.PARAM_TYPE_COMMA_DELIMITED_LIST,
+        param.schema.MAP: api.PARAM_TYPE_JSON
+    }
+
+    res = {
+        api.PARAM_TYPE: schema_to_api_types.get(param.schema.type,
+                                                param.schema.type),
+        api.PARAM_DESCRIPTION: param.description(),
+        api.PARAM_NO_ECHO: 'true' if param.hidden() else 'false',
+        api.PARAM_LABEL: param.label()
+    }
+
+    if param.has_default():
+        res[api.PARAM_DEFAULT] = param.default()
+
+    constraint_description = []
+
+    # build constraints
+    for c in param.schema.constraints:
+        if isinstance(c, constr.Length):
+            if c.min is not None:
+                res[api.PARAM_MIN_LENGTH] = c.min
+
+            if c.max is not None:
+                res[api.PARAM_MAX_LENGTH] = c.max
+
+        elif isinstance(c, constr.Range):
+            if c.min is not None:
+                res[api.PARAM_MIN_VALUE] = c.min
+
+            if c.max is not None:
+                res[api.PARAM_MAX_VALUE] = c.max
+
+        elif isinstance(c, constr.AllowedValues):
+            res[api.PARAM_ALLOWED_VALUES] = list(c.allowed)
+
+        elif isinstance(c, constr.AllowedPattern):
+            res[api.PARAM_ALLOWED_PATTERN] = c.pattern
+
+        if c.description:
+            constraint_description.append(c.description)
+
+    if constraint_description:
+        res[api.PARAM_CONSTRAINT_DESCRIPTION] = " ".join(
+            constraint_description)
+
+    return res
+
+
+def format_software_config(sc):
+    if sc is None:
+        return
+    result = {
+        api.SOFTWARE_CONFIG_ID: sc.id,
+        api.SOFTWARE_CONFIG_NAME: sc.name,
+        api.SOFTWARE_CONFIG_GROUP: sc.group,
+        api.SOFTWARE_CONFIG_CONFIG: sc.config['config'],
+        api.SOFTWARE_CONFIG_INPUTS: sc.config['inputs'],
+        api.SOFTWARE_CONFIG_OUTPUTS: sc.config['outputs'],
+        api.SOFTWARE_CONFIG_OPTIONS: sc.config['options']
+    }
+    return result
+
+
+def format_software_deployment(sd):
+    if sd is None:
+        return
+    result = {
+        api.SOFTWARE_DEPLOYMENT_ID: sd.id,
+        api.SOFTWARE_DEPLOYMENT_SERVER_ID: sd.server_id,
+        api.SOFTWARE_DEPLOYMENT_INPUT_VALUES: sd.input_values,
+        api.SOFTWARE_DEPLOYMENT_OUTPUT_VALUES: sd.output_values,
+        api.SOFTWARE_DEPLOYMENT_ACTION: sd.action,
+        api.SOFTWARE_DEPLOYMENT_STATUS: sd.status,
+        api.SOFTWARE_DEPLOYMENT_STATUS_REASON: sd.status_reason,
+        api.SOFTWARE_DEPLOYMENT_SIGNAL_ID: sd.signal_id,
+        api.SOFTWARE_DEPLOYMENT_CONFIG_ID: sd.config.id,
+    }
     return result

@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -15,7 +14,7 @@
 
 from heat.common import exception
 from heat.engine import clients
-from heat.engine.resource import SupportStatus
+from heat.engine import support
 from heat.engine.resources.neutron import neutron
 from heat.engine.resources.neutron import subnet
 from heat.engine import properties
@@ -46,6 +45,7 @@ class Router(neutron.NeutronResource):
     properties_schema = {
         NAME: properties.Schema(
             properties.Schema.STRING,
+            _('The name of the router.'),
             update_allowed=True
         ),
         EXTERNAL_GATEWAY: properties.Schema(
@@ -69,11 +69,13 @@ class Router(neutron.NeutronResource):
         ),
         VALUE_SPECS: properties.Schema(
             properties.Schema.MAP,
+            _('Extra parameters to include in the creation request.'),
             default={},
             update_allowed=True
         ),
         ADMIN_STATE_UP: properties.Schema(
             properties.Schema.BOOLEAN,
+            _('The administrative state of the router.'),
             default=True,
             update_allowed=True
         ),
@@ -208,8 +210,8 @@ class RouterInterface(neutron.NeutronResource):
 
 class RouterGateway(neutron.NeutronResource):
 
-    support_status = SupportStatus(
-        SupportStatus.DEPRECATED,
+    support_status = support.SupportStatus(
+        support.DEPRECATED,
         _('RouterGateway resource is deprecated and should not be used. '
           'Instead use the `external_gateway_info` property in the router '
           'resource to set up the gateway.')
@@ -224,10 +226,12 @@ class RouterGateway(neutron.NeutronResource):
     properties_schema = {
         ROUTER_ID: properties.Schema(
             properties.Schema.STRING,
+            _('ID of the router.'),
             required=True
         ),
         NETWORK_ID: properties.Schema(
             properties.Schema.STRING,
+            _('ID of the external network for the gateway.'),
             required=True
         ),
     }

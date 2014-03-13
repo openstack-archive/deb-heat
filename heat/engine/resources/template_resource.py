@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -71,7 +70,7 @@ class TemplateResource(stack_resource.StackResource):
     def _generate_schema(self, props):
         self._parsed_nested = None
         try:
-            tmpl = template.Template(self.parsed_nested())
+            tmpl = template.Template(self.child_template())
         except ValueError as download_error:
             self.validation_exception = download_error
             tmpl = template.Template({})
@@ -80,17 +79,18 @@ class TemplateResource(stack_resource.StackResource):
         self.properties_schema = (properties.Properties
                                   .schema_from_params(tmpl.param_schemata()))
         self.attributes_schema = (attributes.Attributes
-                                  .schema_from_outputs(tmpl[template.OUTPUTS]))
+                                  .schema_from_outputs(tmpl[tmpl.OUTPUTS]))
 
         self.properties = properties.Properties(self.properties_schema,
                                                 props,
                                                 self._resolve_runtime_data,
-                                                self.name)
+                                                self.name,
+                                                self.context)
         self.attributes = attributes.Attributes(self.name,
                                                 self.attributes_schema,
                                                 self._resolve_attribute)
 
-    def _to_parameters(self):
+    def child_params(self):
         '''
         :return: parameter values for our nested stack based on our properties
         '''
@@ -122,7 +122,7 @@ class TemplateResource(stack_resource.StackResource):
 
         return params
 
-    def parsed_nested(self):
+    def child_template(self):
         if not self._parsed_nested:
             self._parsed_nested = template_format.parse(self.template_data())
         return self._parsed_nested
@@ -179,8 +179,8 @@ class TemplateResource(stack_resource.StackResource):
                 # Type mismatch
                 msg = (_("Property %(n)s type mismatch between facade %(type)s"
                        " (%(fs_type)s) and provider (%(ps_type)s)") % {
-                       'n': n, 'type': self.type(),
-                       'fs_type': fs.type, 'ps_type': ps.type})
+                           'n': n, 'type': self.type(),
+                           'fs_type': fs.type, 'ps_type': ps.type})
                 raise exception.StackValidationFailed(message=msg)
 
         for n, ps in self.properties_schema.items():
@@ -188,14 +188,14 @@ class TemplateResource(stack_resource.StackResource):
                 # Required property for template not present in facade
                 msg = (_("Provider requires property %(n)s "
                        "unknown in facade %(type)s") % {
-                       'n': n, 'type': self.type()})
+                           'n': n, 'type': self.type()})
                 raise exception.StackValidationFailed(message=msg)
 
         for attr in facade_cls.attributes_schema:
             if attr not in self.attributes_schema:
                 msg = (_("Attribute %(attr)s for facade %(type)s "
                        "missing in provider") % {
-                       'attr': attr, 'type': self.type()})
+                           'attr': attr, 'type': self.type()})
                 raise exception.StackValidationFailed(message=msg)
 
     def validate(self):
@@ -220,14 +220,19 @@ class TemplateResource(stack_resource.StackResource):
 
         return super(TemplateResource, self).validate()
 
-    def handle_create(self):
+    def handle_adopt(self, resource_data=None):
         return self.create_with_template(self.parsed_nested(),
-                                         self._to_parameters())
+                                         self._to_parameters(),
+                                         adopt_data=resource_data)
+
+    def handle_create(self):
+        return self.create_with_template(self.child_template(),
+                                         self.child_params())
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         self._generate_schema(json_snippet.get('Properties', {}))
-        return self.update_with_template(self.parsed_nested(),
-                                         self._to_parameters())
+        return self.update_with_template(self.child_template(),
+                                         self.child_params())
 
     def handle_delete(self):
         return self.delete_nested()

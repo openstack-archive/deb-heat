@@ -1,5 +1,9 @@
 #!/bin/bash
-setenforce 0
+
+# FIXME(shadower) The `useradd` and `sudoers` lines are a workaround for
+# cloud-init 0.6.3 present in Ubuntu 12.04 LTS:
+# https://bugs.launchpad.net/heat/+bug/1257410
+# Once we drop support for it, we can safely remove them.
 useradd -m @INSTANCE_USER@
 echo -e '@INSTANCE_USER@\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
 

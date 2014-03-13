@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -121,6 +120,9 @@ class UserTest(UserPolicyTestCase):
         self.assertEqual(self.fc.user_id, rsrc.resource_id)
         self.assertEqual(utils.PhysName('test_stack', 'CfnUser'),
                          rsrc.FnGetRefId())
+
+        self.assertRaises(exception.InvalidTemplateAttribute,
+                          rsrc.FnGetAtt, 'Foo')
 
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         self.assertRaises(resource.UpdateReplace,
@@ -299,13 +301,14 @@ class AccessKeyTest(UserPolicyTestCase):
         # Ensure the resource data has been stored correctly
         rs_data = db_api.resource_data_get_all(rsrc)
         self.assertEqual(self.fc.secret, rs_data.get('secret_key'))
-        self.assertEqual(1, len(rs_data.keys()))
+        self.assertEqual(self.fc.credential_id, rs_data.get('credential_id'))
+        self.assertEqual(2, len(rs_data.keys()))
 
         self.assertEqual(utils.PhysName(stack.name, 'CfnUser'),
                          rsrc.FnGetAtt('UserName'))
         rsrc._secret = None
-        self.assertEqual(rsrc.FnGetAtt('SecretAccessKey'),
-                         self.fc.secret)
+        self.assertEqual(self.fc.secret,
+                         rsrc.FnGetAtt('SecretAccessKey'))
 
         self.assertRaises(exception.InvalidTemplateAttribute,
                           rsrc.FnGetAtt, 'Foo')
@@ -332,6 +335,7 @@ class AccessKeyTest(UserPolicyTestCase):
         # Delete the resource data for secret_key, to test that existing
         # stacks which don't have the resource_data stored will continue
         # working via retrieving the keypair from keystone
+        db_api.resource_data_delete(rsrc, 'credential_id')
         db_api.resource_data_delete(rsrc, 'secret_key')
         rs_data = db_api.resource_data_get_all(rsrc)
         self.assertEqual(0, len(rs_data.keys()))
@@ -373,7 +377,7 @@ class AccessKeyTest(UserPolicyTestCase):
 
         t = template_format.parse(user_accesskey_template)
         # Set the resource properties UserName to an unknown user
-        t['Resources']['HostKeys']['Properties']['UserName'] = 'NonExistant'
+        t['Resources']['HostKeys']['Properties']['UserName'] = 'NonExistent'
         stack = utils.parse_stack(t)
         stack['CfnUser'].resource_id = self.fc.user_id
 

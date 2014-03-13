@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -13,6 +12,7 @@
 #    under the License.
 
 
+import mock
 import mox
 import re
 
@@ -138,6 +138,7 @@ class LoadBalancerTest(HeatTestCase):
             limit=instance.Instance.physical_resource_name_limit)
         clients.OpenStackClients.nova(
             "compute").MultipleTimes().AndReturn(self.fc)
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
         self.fc.servers.create(
             flavor=2, image=746, key_name=key_name,
             meta=None, nics=None, name=server_name,
@@ -239,3 +240,41 @@ class LoadBalancerTest(HeatTestCase):
                                t['Resources']['LoadBalancer'],
                                s)
         self.assertRaises(exception.StackValidationFailed, rsrc.validate)
+
+    def setup_loadbalancer(self, include_keyname=True):
+        template = template_format.parse(lb_template)
+        if not include_keyname:
+            del template['Parameters']['KeyName']
+        stack = utils.parse_stack(template)
+
+        resource_name = 'LoadBalancer'
+        lb_json = template['Resources'][resource_name]
+        return lb.LoadBalancer(resource_name, lb_json, stack)
+
+    def test_child_params_without_key_name(self):
+        rsrc = self.setup_loadbalancer(False)
+        self.assertEqual({}, rsrc.child_params())
+
+    def test_child_params_with_key_name(self):
+        rsrc = self.setup_loadbalancer()
+        params = rsrc.child_params()
+        self.assertEqual('test', params['KeyName'])
+
+    def test_child_template_without_key_name(self):
+        rsrc = self.setup_loadbalancer(False)
+        parsed_template = {
+            'Resources': {'LB_instance': {'Properties': {'KeyName': 'foo'}}},
+            'Parameters': {'KeyName': 'foo'}
+        }
+        rsrc.get_parsed_template = mock.Mock(return_value=parsed_template)
+
+        tmpl = rsrc.child_template()
+        self.assertNotIn('KeyName', tmpl['Parameters'])
+        self.assertNotIn('KeyName',
+                         tmpl['Resources']['LB_instance']['Properties'])
+
+    def test_child_template_with_key_name(self):
+        rsrc = self.setup_loadbalancer()
+        rsrc.get_parsed_template = mock.Mock(return_value='foo')
+
+        self.assertEqual('foo', rsrc.child_template())

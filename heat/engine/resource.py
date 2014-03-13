@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,6 +13,7 @@
 #    under the License.
 
 import base64
+import copy
 from datetime import datetime
 
 from heat.engine import event
@@ -24,7 +24,7 @@ from heat.common import identifier
 from heat.common import short_id
 from heat.engine import scheduler
 from heat.engine import resources
-from heat.engine import timestamp
+from heat.engine import support
 # import class to avoid name collisions and ugly aliasing
 from heat.engine.attributes import Attributes
 from heat.engine.properties import Properties
@@ -90,42 +90,16 @@ class Metadata(object):
         rs.update_and_save({'rsrc_metadata': metadata})
 
 
-class SupportStatus(object):
-    SUPPORT_STATUSES = (UNKNOWN, SUPPORTED, PROTOTYPE, DEPRECATED,
-                        UNSUPPORTED) = ('UNKNOWN', 'SUPPORTED', 'PROTOTYPE',
-                                        'DEPRECATED', 'UNSUPPORTED')
-
-    def __init__(self, status=SUPPORTED, message=None, version=None):
-        if status in self.SUPPORT_STATUSES:
-            self.status = status
-            self.message = message
-            self.version = version
-        else:
-            self.status = self.UNKNOWN
-            self.message = _("Specified status is invalid, defaulting to"
-                             " %s") % self.UNKNOWN
-
-            self.version = None
-
-    def to_dict(self):
-            return {'status': self.status,
-                    'message': self.message,
-                    'version': self.version}
-
-
 class Resource(object):
-    ACTIONS = (INIT, CREATE, DELETE, UPDATE, ROLLBACK, SUSPEND, RESUME
+    ACTIONS = (INIT, CREATE, DELETE, UPDATE, ROLLBACK, SUSPEND, RESUME, ADOPT
                ) = ('INIT', 'CREATE', 'DELETE', 'UPDATE', 'ROLLBACK',
-                    'SUSPEND', 'RESUME')
+                    'SUSPEND', 'RESUME', 'ADOPT')
 
     STATUSES = (IN_PROGRESS, FAILED, COMPLETE
                 ) = ('IN_PROGRESS', 'FAILED', 'COMPLETE')
 
     # If True, this resource must be created before it can be referenced.
     strict_dependency = True
-
-    created_time = timestamp.Timestamp(db_api.resource_get, 'created_at')
-    updated_time = timestamp.Timestamp(db_api.resource_get, 'updated_at')
 
     _metadata = Metadata()
 
@@ -149,7 +123,7 @@ class Resource(object):
     # If set to None no limit will be applied.
     physical_resource_name_limit = 255
 
-    support_status = SupportStatus()
+    support_status = support.SupportStatus()
 
     def __new__(cls, name, json, stack):
         '''Create a new Resource of the appropriate class for its type.'''
@@ -171,11 +145,7 @@ class Resource(object):
         self.context = stack.context
         self.name = name
         self.json_snippet = json_snippet
-        self.t = stack.resolve_static_data(json_snippet)
-        self.properties = Properties(self.properties_schema,
-                                     self.t.get('Properties', {}),
-                                     self._resolve_runtime_data,
-                                     self.name)
+        self.reparse()
         self.attributes = Attributes(self.name,
                                      self.attributes_schema,
                                      self._resolve_attribute)
@@ -193,6 +163,8 @@ class Resource(object):
             self.status_reason = resource.status_reason
             self.id = resource.id
             self.data = resource.data
+            self.created_time = resource.created_at
+            self.updated_time = resource.updated_at
         else:
             self.resource_id = None
             # if the stack is being deleted, assume we've already been deleted
@@ -204,6 +176,16 @@ class Resource(object):
             self.status_reason = ''
             self.id = None
             self.data = []
+            self.created_time = None
+            self.updated_time = None
+
+    def reparse(self):
+        self.t = self.stack.resolve_static_data(self.json_snippet)
+        self.properties = Properties(self.properties_schema,
+                                     self.t.get('Properties', {}),
+                                     self._resolve_runtime_data,
+                                     self.name,
+                                     self.context)
 
     def __eq__(self, other):
         '''Allow == comparison of two resources.'''
@@ -352,11 +334,14 @@ class Resource(object):
                         try:
                             target = self.stack[res]
                         except KeyError:
-                            raise exception.InvalidTemplateReference(
-                                resource=res,
-                                key=path)
-                        if key == 'DependsOn' or target.strict_dependency:
-                            deps += (self, target)
+                            if (key != 'Ref' or
+                                    res not in self.stack.parameters):
+                                raise exception.InvalidTemplateReference(
+                                    resource=res,
+                                    key=path)
+                        else:
+                            if key == 'DependsOn' or target.strict_dependency:
+                                deps += (self, target)
                 else:
                     self._add_dependencies(deps, '%s.%s' % (path, key), value)
         elif isinstance(fragment, list):
@@ -364,7 +349,7 @@ class Resource(object):
                 self._add_dependencies(deps, '%s[%d]' % (path, index), item)
 
     def add_dependencies(self, deps):
-        self._add_dependencies(deps, self.name, self.t)
+        self._add_dependencies(deps, self.name, self.json_snippet)
         deps += (self, None)
 
     def required_by(self):
@@ -399,11 +384,11 @@ class Resource(object):
     def heat(self):
         return self.stack.clients.heat()
 
-    def _do_action(self, action, pre_func=None):
+    def _do_action(self, action, pre_func=None, resource_data=None):
         '''
         Perform a transition to a new state via a specified action
         action should be e.g self.CREATE, self.UPDATE etc, we set
-        status based on this, the transistion is handled by calling the
+        status based on this, the transition is handled by calling the
         corresponding handle_* and check_*_complete functions
         Note pre_func is an optional function reference which will
         be called before the handle_<action> function
@@ -428,7 +413,8 @@ class Resource(object):
 
             handle_data = None
             if callable(handle):
-                handle_data = handle()
+                handle_data = (handle(resource_data) if resource_data else
+                               handle())
                 yield
                 if callable(check):
                     while not check(handle_data):
@@ -448,6 +434,14 @@ class Resource(object):
         else:
             self.state_set(action, self.COMPLETE)
 
+    def preview(self):
+        '''
+        Default implementation of Resource.preview.
+
+        This method should be overriden by child classes for specific behavior.
+        '''
+        return self
+
     def create(self):
         '''
         Create the resource. Subclasses should provide a handle_create() method
@@ -462,14 +456,10 @@ class Resource(object):
         logger.info('creating %s' % str(self))
 
         # Re-resolve the template, since if the resource Ref's
-        # the AWS::StackId pseudo parameter, it will change after
+        # the StackId pseudo parameter, it will change after
         # the parser.Stack is stored (which is after the resources
         # are __init__'d, but before they are create()'d)
-        self.t = self.stack.resolve_static_data(self.json_snippet)
-        self.properties = Properties(self.properties_schema,
-                                     self.t.get('Properties', {}),
-                                     self._resolve_runtime_data,
-                                     self.name)
+        self.reparse()
         return self._do_action(action, self.properties.validate)
 
     def set_deletion_policy(self, policy):
@@ -483,9 +473,42 @@ class Resource(object):
             'action': self.action,
             'status': self.status,
             'metadata': self.metadata,
-            'resource_data': dict((r.key, r.value)
-                                  for r in db_api.resource_data_get_all(self))
+            'resource_data': db_api.resource_data_get_all(self)
         }
+
+    def adopt(self, resource_data):
+        '''
+        Adopt the existing resource. Resource subclasses can provide
+        a handle_adopt() method to customise adopt.
+        '''
+        return self._do_action(self.ADOPT, resource_data=resource_data)
+
+    def handle_adopt(self, resource_data=None):
+        resource_id, data, metadata = self._get_resource_info(resource_data)
+
+        if not resource_id:
+            exc = Exception(_('Resource ID was not provided.'))
+            failure = exception.ResourceFailure(exc, self)
+            raise failure
+
+        # set resource id
+        self.resource_id_set(resource_id)
+
+        # save the resource data
+        if data and isinstance(data, dict):
+            for key, value in data.iteritems():
+                db_api.resource_data_set(self, key, value)
+
+        # save the resource metadata
+        self.metadata = metadata
+
+    def _get_resource_info(self, resource_data):
+        if not resource_data:
+            return None, None, None
+
+        return (resource_data.get('resource_id'),
+                resource_data.get('resource_data'),
+                resource_data.get('metadata'))
 
     def update(self, after, before=None, prev_resource=None):
         '''
@@ -508,18 +531,21 @@ class Resource(object):
             return
 
         if (self.action, self.status) in ((self.CREATE, self.IN_PROGRESS),
-                                          (self.UPDATE, self.IN_PROGRESS)):
+                                          (self.UPDATE, self.IN_PROGRESS),
+                                          (self.ADOPT, self.IN_PROGRESS)):
             exc = Exception(_('Resource update already requested'))
             raise exception.ResourceFailure(exc, self, action)
 
         logger.info('updating %s' % str(self))
 
         try:
+            self.updated_time = datetime.utcnow()
             self.state_set(action, self.IN_PROGRESS)
             properties = Properties(self.properties_schema,
                                     after.get('Properties', {}),
                                     self._resolve_runtime_data,
-                                    self.name)
+                                    self.name,
+                                    self.context)
             properties.validate()
             tmpl_diff = self.update_template_diff(after, before)
             prop_diff = self.update_template_diff_properties(after, before)
@@ -539,7 +565,8 @@ class Resource(object):
             self.state_set(action, self.FAILED, str(failure))
             raise failure
         else:
-            self.t = self.stack.resolve_static_data(after)
+            self.json_snippet = copy.deepcopy(after)
+            self.reparse()
             self.state_set(action, self.COMPLETE)
 
     def suspend(self):
@@ -724,9 +751,7 @@ class Resource(object):
 
             new_rs = db_api.resource_create(self.context, rs)
             self.id = new_rs.id
-
-            self.stack.updated_time = datetime.utcnow()
-
+            self.created_time = new_rs.created_at
         except Exception as ex:
             logger.error(_('DB error %s') % str(ex))
 
@@ -753,16 +778,16 @@ class Resource(object):
                                     'status': self.status,
                                     'status_reason': reason,
                                     'stack_id': self.stack.id,
+                                    'updated_at': self.updated_time,
                                     'nova_instance': self.resource_id})
-
-                self.stack.updated_time = datetime.utcnow()
             except Exception as ex:
                 logger.error(_('DB error %s') % str(ex))
 
         # store resource in DB on transition to CREATE_IN_PROGRESS
         # all other transistions (other than to DELETE_COMPLETE)
         # should be handled by the update_and_save above..
-        elif (action, status) == (self.CREATE, self.IN_PROGRESS):
+        elif (action, status) in [(self.CREATE, self.IN_PROGRESS),
+                                  (self.ADOPT, self.IN_PROGRESS)]:
             self._store()
 
     def _resolve_attribute(self, name):

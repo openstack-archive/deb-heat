@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -14,6 +13,7 @@
 
 from heat.engine import resource
 from heat.engine import signal_responder
+from heat.engine import stack_user
 
 from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
@@ -54,17 +54,45 @@ class GenericResource(resource.Resource):
 
 
 class ResourceWithProps(GenericResource):
-        properties_schema = {'Foo': {'Type': 'String'}}
+    properties_schema = {'Foo': {'Type': 'String'}}
+
+
+class ResourceWithComplexAttributes(GenericResource):
+    attributes_schema = {'list': 'A list',
+                         'flat_dict': 'A flat dictionary',
+                         'nested_dict': 'A nested dictionary',
+                         'none': 'A None'
+                         }
+
+    list = ['foo', 'bar']
+    flat_dict = {'key1': 'val1', 'key2': 'val2', 'key3': 'val3'}
+    nested_dict = {'list': [1, 2, 3],
+                   'string': 'abc',
+                   'dict': {'a': 1, 'b': 2, 'c': 3}}
+
+    def _resolve_attribute(self, name):
+        if name == 'list':
+            return self.list
+        if name == 'flat_dict':
+            return self.flat_dict
+        if name == 'nested_dict':
+            return self.nested_dict
+        if name == 'none':
+            return None
 
 
 class ResourceWithRequiredProps(GenericResource):
-        properties_schema = {'Foo': {'Type': 'String',
-                                     'Required': True}}
+    properties_schema = {'Foo': {'Type': 'String',
+                                 'Required': True}}
 
 
 class SignalResource(signal_responder.SignalResponder):
     properties_schema = {}
     attributes_schema = {'AlarmUrl': 'Get a signed webhook'}
+
+    def handle_create(self):
+        super(SignalResource, self).handle_create()
+        self.resource_id_set(self._get_user_id())
 
     def handle_signal(self, details=None):
         logger.warning(_('Signaled resource (Type "%(type)s") %(details)s')
@@ -73,3 +101,12 @@ class SignalResource(signal_responder.SignalResponder):
     def _resolve_attribute(self, name):
         if name == 'AlarmUrl' and self.resource_id is not None:
             return unicode(self._get_signed_url())
+
+
+class StackUserResource(stack_user.StackUser):
+    properties_schema = {}
+    attributes_schema = {}
+
+    def handle_create(self):
+        super(StackUserResource, self).handle_create()
+        self.resource_id_set(self._get_user_id())

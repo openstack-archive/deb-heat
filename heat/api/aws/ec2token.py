@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -38,10 +37,10 @@ logger = logging.getLogger(__name__)
 opts = [
     cfg.StrOpt('auth_uri',
                default=None,
-               help=_("Authentication Endpoint URI")),
+               help=_("Authentication Endpoint URI.")),
     cfg.BoolOpt('multi_cloud',
                 default=False,
-                help=_('Allow orchestration of multiple clouds')),
+                help=_('Allow orchestration of multiple clouds.')),
     cfg.ListOpt('allowed_auth_uris',
                 default=[],
                 help=_('Allowed keystone endpoints for auth_uri when '

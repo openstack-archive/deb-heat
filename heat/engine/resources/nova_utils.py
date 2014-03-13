@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -12,7 +11,7 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-"""Utilities for Resources that use the Openstack Nova API."""
+"""Utilities for Resources that use the OpenStack Nova API."""
 
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -20,6 +19,7 @@ from email.mime.text import MIMEText
 import json
 import os
 import pkgutil
+import six
 
 from oslo.config import cfg
 
@@ -47,6 +47,29 @@ deferred_server_statuses = ['BUILD',
                             'VERIFY_RESIZE']
 
 
+def refresh_server(server):
+    '''
+    Refresh server's attributes and log warnings for non-critical API errors.
+    '''
+    try:
+        server.get()
+    except clients.novaclient.exceptions.OverLimit as exc:
+        msg = _("Server %(name)s (%(id)s) received an OverLimit "
+                "response during server.get(): %(exception)s")
+        logger.warning(msg % {'name': server.name,
+                              'id': server.id,
+                              'exception': str(exc)})
+    except clients.novaclient.exceptions.ClientException as exc:
+        if exc.code == 500:
+            msg = _('Server "%(name)s" (%(id)s) received the following '
+                    'exception during server.get(): %(exception)s')
+            logger.warning(msg % {'name': server.name,
+                                  'id': server.id,
+                                  'exception': str(exc)})
+        else:
+            raise
+
+
 def get_image_id(nova_client, image_identifier):
     '''
     Return an id for the specified image name or identifier.
@@ -56,7 +79,6 @@ def get_image_id(nova_client, image_identifier):
     :returns: the id of the requested :image_identifier:
     :raises: exception.ImageNotFound, exception.PhysicalResourceNameAmbiguity
     '''
-    image_id = None
     if uuidutils.is_uuid_like(image_identifier):
         try:
             image_id = nova_client.images.get(image_identifier).id
@@ -79,12 +101,20 @@ def get_image_id(nova_client, image_identifier):
                         image_identifier)
             raise exception.ImageNotFound(image_name=image_identifier)
         elif len(image_names) > 1:
-            logger.info(_("Mulitple images %s were found in glance with name")
+            logger.info(_("Multiple images %s were found in glance with name")
                         % image_identifier)
             raise exception.PhysicalResourceNameAmbiguity(
                 name=image_identifier)
         image_id = image_names.popitem()[0]
     return image_id
+
+
+def get_ip(server, net_type, ip_version):
+    """Return the server's IP of the given type and version."""
+    if net_type in server.addresses:
+        for ip in server.addresses[net_type]:
+            if ip['version'] == ip_version:
+                return ip['addr']
 
 
 def get_flavor_id(nova_client, flavor):
@@ -215,7 +245,7 @@ def delete_server(server):
         yield
 
         try:
-            server.get()
+            refresh_server(server)
         except clients.novaclient.exceptions.NotFound:
             break
 
@@ -227,15 +257,20 @@ def resize(server, flavor, flavor_id):
     yield check_resize(server, flavor, flavor_id)
 
 
+def rename(server, name):
+    """Update the name for a server."""
+    server.update(name)
+
+
 def check_resize(server, flavor, flavor_id):
     """
     Verify that a resizing server is properly resized.
     If that's the case, confirm the resize, if not raise an error.
     """
-    server.get()
+    refresh_server(server)
     while server.status == 'RESIZE':
         yield
-        server.get()
+        refresh_server(server)
     if server.status == 'VERIFY_RESIZE':
         server.confirm_resize()
     else:
@@ -247,12 +282,7 @@ def check_resize(server, flavor, flavor_id):
 @scheduler.wrappertask
 def rebuild(server, image_id, preserve_ephemeral=False):
     """Rebuild the server and call check_rebuild to verify."""
-    # Only require a newer nova client if the new preserve_ephemeral feature is
-    # actually used.
-    kwargs = {}
-    if preserve_ephemeral:
-        kwargs['preserve_ephemeral'] = True
-    server.rebuild(image_id, **kwargs)
+    server.rebuild(image_id, preserve_ephemeral=preserve_ephemeral)
     yield check_rebuild(server, image_id)
 
 
@@ -261,17 +291,29 @@ def check_rebuild(server, image_id):
     Verify that a rebuilding server is rebuilt.
     Raise error if it ends up in an ERROR state.
     """
-    server.get()
+    refresh_server(server)
     while server.status == 'REBUILD':
         yield
-        server.get()
+        refresh_server(server)
     if server.status == 'ERROR':
         raise exception.Error(
             _("Rebuilding server failed, status '%s'") % server.status)
 
 
+def meta_serialize(metadata):
+    """
+    Serialize non-string metadata values before sending them to
+    Nova.
+    """
+    return dict((key, (value if isinstance(value,
+                                           six.string_types)
+                       else json.dumps(value))
+                 ) for (key, value) in metadata.items())
+
+
 def meta_update(client, server, metadata):
     """Delete/Add the metadata in nova as needed."""
+    metadata = meta_serialize(metadata)
     current_md = server.metadata
     to_del = [key for key in current_md.keys() if key not in metadata]
     if len(to_del) > 0:

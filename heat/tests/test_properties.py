@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -19,6 +18,7 @@ from heat.engine import hot
 from heat.engine import parameters
 from heat.engine import properties
 from heat.engine import resources
+from heat.engine import support
 import testtools
 
 
@@ -320,7 +320,7 @@ class PropertySchemaTest(testtools.TestCase):
                           "m2.xlarge", "m2.2xlarge", "m2.4xlarge",
                           "c1.medium", "c1.xlarge", "cc1.4xlarge"]
         constraint_desc = "Must be a valid EC2 instance type."
-        param = parameters.ParamSchema({
+        param = parameters.Schema.from_dict({
             "Type": "String",
             "Description": description,
             "Default": "m1.large",
@@ -343,9 +343,9 @@ class PropertySchemaTest(testtools.TestCase):
 
     def test_from_string_allowed_pattern(self):
         description = "WebServer EC2 instance type"
-        allowed_pattern = "[A-Za-z0-9]*"
+        allowed_pattern = "[A-Za-z0-9.]*"
         constraint_desc = "Must contain only alphanumeric characters."
-        param = parameters.ParamSchema({
+        param = parameters.Schema.from_dict({
             "Type": "String",
             "Description": description,
             "Default": "m1.large",
@@ -368,9 +368,9 @@ class PropertySchemaTest(testtools.TestCase):
 
     def test_from_string_multi_constraints(self):
         description = "WebServer EC2 instance type"
-        allowed_pattern = "[A-Za-z0-9]*"
+        allowed_pattern = "[A-Za-z0-9.]*"
         constraint_desc = "Must contain only alphanumeric characters."
-        param = parameters.ParamSchema({
+        param = parameters.Schema.from_dict({
             "Type": "String",
             "Description": description,
             "Default": "m1.large",
@@ -396,7 +396,7 @@ class PropertySchemaTest(testtools.TestCase):
         self.assertEqual(constraint_desc, allowed_constraint.description)
 
     def test_from_param_string_min_len(self):
-        param = parameters.ParamSchema({
+        param = parameters.Schema.from_dict({
             "Description": "WebServer EC2 instance type",
             "Type": "String",
             "Default": "m1.large",
@@ -413,7 +413,7 @@ class PropertySchemaTest(testtools.TestCase):
         self.assertIsNone(len_constraint.max)
 
     def test_from_param_string_max_len(self):
-        param = parameters.ParamSchema({
+        param = parameters.Schema.from_dict({
             "Description": "WebServer EC2 instance type",
             "Type": "String",
             "Default": "m1.large",
@@ -430,7 +430,7 @@ class PropertySchemaTest(testtools.TestCase):
         self.assertEqual(11, len_constraint.max)
 
     def test_from_param_string_min_max_len(self):
-        param = parameters.ParamSchema({
+        param = parameters.Schema.from_dict({
             "Description": "WebServer EC2 instance type",
             "Type": "String",
             "Default": "m1.large",
@@ -448,7 +448,7 @@ class PropertySchemaTest(testtools.TestCase):
         self.assertEqual(11, len_constraint.max)
 
     def test_from_param_no_default(self):
-        param = parameters.ParamSchema({
+        param = parameters.Schema.from_dict({
             "Description": "WebServer EC2 instance type",
             "Type": "String",
         })
@@ -460,7 +460,7 @@ class PropertySchemaTest(testtools.TestCase):
 
     def test_from_number_param_min(self):
         default = "42"
-        param = parameters.ParamSchema({
+        param = parameters.Schema.from_dict({
             "Type": "Number",
             "Default": default,
             "MinValue": "10",
@@ -480,7 +480,7 @@ class PropertySchemaTest(testtools.TestCase):
 
     def test_from_number_param_max(self):
         default = "42"
-        param = parameters.ParamSchema({
+        param = parameters.Schema.from_dict({
             "Type": "Number",
             "Default": default,
             "MaxValue": "100",
@@ -500,7 +500,7 @@ class PropertySchemaTest(testtools.TestCase):
 
     def test_from_number_param_min_max(self):
         default = "42"
-        param = parameters.ParamSchema({
+        param = parameters.Schema.from_dict({
             "Type": "Number",
             "Default": default,
             "MinValue": "10",
@@ -522,7 +522,7 @@ class PropertySchemaTest(testtools.TestCase):
     def test_from_number_param_allowed_vals(self):
         default = "42"
         constraint_desc = "The quick brown fox jumps over the lazy dog."
-        param = parameters.ParamSchema({
+        param = parameters.Schema.from_dict({
             "Type": "Number",
             "Default": default,
             "AllowedValues": ["10", "42", "100"],
@@ -542,7 +542,7 @@ class PropertySchemaTest(testtools.TestCase):
         self.assertEqual(constraint_desc, allowed_constraint.description)
 
     def test_from_list_param(self):
-        param = parameters.ParamSchema({
+        param = parameters.Schema.from_dict({
             "Type": "CommaDelimitedList",
             "Default": "foo,bar,baz"
         })
@@ -554,7 +554,7 @@ class PropertySchemaTest(testtools.TestCase):
         self.assertFalse(schema.required)
 
     def test_from_json_param(self):
-        param = parameters.ParamSchema({
+        param = parameters.Schema.from_dict({
             "Type": "Json",
             "Default": {"foo": "bar", "blarg": "wibble"}
         })
@@ -597,11 +597,11 @@ class PropertyTest(testtools.TestCase):
 
     def test_default(self):
         p = properties.Property({'Type': 'String', 'Default': 'wibble'})
-        self.assertEqual(p.default(), 'wibble')
+        self.assertEqual('wibble', p.default())
 
     def test_type(self):
         p = properties.Property({'Type': 'String'})
-        self.assertEqual(p.type(), 'String')
+        self.assertEqual('String', p.type())
 
     def test_bad_type(self):
         self.assertRaises(constraints.InvalidSchemaError,
@@ -616,7 +616,7 @@ class PropertyTest(testtools.TestCase):
         schema = {'Type': 'String',
                   'AllowedPattern': '[a-z]*'}
         p = properties.Property(schema)
-        self.assertEqual(p.validate_data('foo'), 'foo')
+        self.assertEqual('foo', p.validate_data('foo'))
 
     def test_string_pattern_bad_prefix(self):
         schema = {'Type': 'String',
@@ -634,7 +634,7 @@ class PropertyTest(testtools.TestCase):
         schema = {'Type': 'String',
                   'AllowedValues': ['foo', 'bar', 'baz']}
         p = properties.Property(schema)
-        self.assertEqual(p.validate_data('bar'), 'bar')
+        self.assertEqual('bar', p.validate_data('bar'))
 
     def test_string_value_list_bad(self):
         schema = {'Type': 'String',
@@ -646,7 +646,7 @@ class PropertyTest(testtools.TestCase):
         schema = {'Type': 'String',
                   'MaxLength': '5'}
         p = properties.Property(schema)
-        self.assertEqual(p.validate_data('abcd'), 'abcd')
+        self.assertEqual('abcd', p.validate_data('abcd'))
 
     def test_string_exceeded_maxlength(self):
         schema = {'Type': 'String',
@@ -659,13 +659,13 @@ class PropertyTest(testtools.TestCase):
                   'MinLength': '5',
                   'MaxLength': '10'}
         p = properties.Property(schema)
-        self.assertEqual(p.validate_data('abcdef'), 'abcdef')
+        self.assertEqual('abcdef', p.validate_data('abcdef'))
 
     def test_string_minlength_good(self):
         schema = {'Type': 'String',
                   'MinLength': '5'}
         p = properties.Property(schema)
-        self.assertEqual(p.validate_data('abcde'), 'abcde')
+        self.assertEqual('abcde', p.validate_data('abcde'))
 
     def test_string_smaller_than_minlength(self):
         schema = {'Type': 'String',
@@ -678,7 +678,7 @@ class PropertyTest(testtools.TestCase):
                   'MinValue': 3,
                   'MaxValue': 3}
         p = properties.Property(schema)
-        self.assertEqual(p.validate_data(3), 3)
+        self.assertEqual(3, p.validate_data(3))
 
     def test_int_bad(self):
         schema = {'Type': 'Integer'}
@@ -714,7 +714,7 @@ class PropertyTest(testtools.TestCase):
         schema = {'Type': 'Integer',
                   'AllowedValues': [1, 3, 5]}
         p = properties.Property(schema)
-        self.assertEqual(p.validate_data(5), 5)
+        self.assertEqual(5, p.validate_data(5))
 
     def test_integer_value_list_bad(self):
         schema = {'Type': 'Integer',
@@ -727,7 +727,7 @@ class PropertyTest(testtools.TestCase):
                   'MinValue': '3',
                   'MaxValue': '3'}
         p = properties.Property(schema)
-        self.assertEqual(p.validate_data(3), 3)
+        self.assertEqual(3, p.validate_data(3))
 
     def test_numbers_from_strings(self):
         """Numbers can be converted from strings."""
@@ -735,13 +735,13 @@ class PropertyTest(testtools.TestCase):
                   'MinValue': '3',
                   'MaxValue': '3'}
         p = properties.Property(schema)
-        self.assertEqual(p.validate_data('3'), 3)
+        self.assertEqual(3, p.validate_data('3'))
 
     def test_number_value_list_good(self):
         schema = {'Type': 'Number',
                   'AllowedValues': [1, 3, 5]}
         p = properties.Property(schema)
-        self.assertEqual(p.validate_data('5'), 5)
+        self.assertEqual(5, p.validate_data('5'))
 
     def test_number_value_list_bad(self):
         schema = {'Type': 'Number',
@@ -783,7 +783,7 @@ class PropertyTest(testtools.TestCase):
 
     def test_list_good(self):
         p = properties.Property({'Type': 'List'})
-        self.assertEqual(p.validate_data(['foo', 'bar']), ['foo', 'bar'])
+        self.assertEqual(['foo', 'bar'], p.validate_data(['foo', 'bar']))
 
     def test_list_dict(self):
         p = properties.Property({'Type': 'List'})
@@ -793,7 +793,7 @@ class PropertyTest(testtools.TestCase):
         schema = {'Type': 'List',
                   'MaxLength': '3'}
         p = properties.Property(schema)
-        self.assertEqual(p.validate_data(['1', '2']), ['1', '2'])
+        self.assertEqual(['1', '2'], p.validate_data(['1', '2']))
 
     def test_list_exceeded_maxlength(self):
         schema = {'Type': 'List',
@@ -806,13 +806,13 @@ class PropertyTest(testtools.TestCase):
                   'MinLength': '2',
                   'MaxLength': '4'}
         p = properties.Property(schema)
-        self.assertEqual(p.validate_data(['1', '2', '3']), ['1', '2', '3'])
+        self.assertEqual(['1', '2', '3'], p.validate_data(['1', '2', '3']))
 
     def test_list_minlength_good(self):
         schema = {'Type': 'List',
                   'MinLength': '3'}
         p = properties.Property(schema)
-        self.assertEqual(p.validate_data(['1', '2', '3']), ['1', '2', '3'])
+        self.assertEqual(['1', '2', '3'], p.validate_data(['1', '2', '3']))
 
     def test_list_smaller_than_minlength(self):
         schema = {'Type': 'List',
@@ -831,47 +831,60 @@ class PropertyTest(testtools.TestCase):
     def test_map_schema_good(self):
         map_schema = {'valid': {'Type': 'Boolean'}}
         p = properties.Property({'Type': 'Map', 'Schema': map_schema})
-        self.assertEqual(p.validate_data({'valid': 'TRUE'}), {'valid': True})
+        self.assertEqual({'valid': True}, p.validate_data({'valid': 'TRUE'}))
 
     def test_map_schema_bad_data(self):
         map_schema = {'valid': {'Type': 'Boolean'}}
         p = properties.Property({'Type': 'Map', 'Schema': map_schema})
-        self.assertRaises(ValueError, p.validate_data, {'valid': 'fish'})
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               p.validate_data, {'valid': 'fish'})
+        self.assertEqual('Property error : valid "fish" is not '
+                         'a valid boolean', str(ex))
 
     def test_map_schema_missing_data(self):
         map_schema = {'valid': {'Type': 'Boolean'}}
         p = properties.Property({'Type': 'Map', 'Schema': map_schema})
-        self.assertEqual(p.validate_data({}), {'valid': None})
+        self.assertEqual({'valid': None}, p.validate_data({}))
 
     def test_map_schema_missing_required_data(self):
         map_schema = {'valid': {'Type': 'Boolean', 'Required': True}}
         p = properties.Property({'Type': 'Map', 'Schema': map_schema})
-        self.assertRaises(ValueError, p.validate_data, {})
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               p.validate_data, {})
+        self.assertEqual('Property error : Property valid not assigned',
+                         str(ex))
 
     def test_list_schema_good(self):
         map_schema = {'valid': {'Type': 'Boolean'}}
         list_schema = {'Type': 'Map', 'Schema': map_schema}
         p = properties.Property({'Type': 'List', 'Schema': list_schema})
-        self.assertEqual(p.validate_data(
-            [{'valid': 'TRUE'}, {'valid': 'False'}]),
-            [{'valid': True}, {'valid': False}])
+        self.assertEqual([{'valid': True},
+                          {'valid': False}],
+                         p.validate_data([{'valid': 'TRUE'},
+                                          {'valid': 'False'}]))
 
     def test_list_schema_bad_data(self):
         map_schema = {'valid': {'Type': 'Boolean'}}
         list_schema = {'Type': 'Map', 'Schema': map_schema}
         p = properties.Property({'Type': 'List', 'Schema': list_schema})
-        self.assertRaises(ValueError, p.validate_data, [{'valid': 'True'},
-                                                        {'valid': 'fish'}])
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               p.validate_data,
+                               [{'valid': 'True'}, {'valid': 'fish'}])
+        self.assertEqual('Property error : 1 Property error : 1: valid '
+                         '"fish" is not a valid boolean', str(ex))
 
     def test_list_schema_int_good(self):
         list_schema = {'Type': 'Integer'}
         p = properties.Property({'Type': 'List', 'Schema': list_schema})
-        self.assertEqual(p.validate_data([1, 2, 3]), [1, 2, 3])
+        self.assertEqual([1, 2, 3], p.validate_data([1, 2, 3]))
 
     def test_list_schema_int_bad_data(self):
         list_schema = {'Type': 'Integer'}
         p = properties.Property({'Type': 'List', 'Schema': list_schema})
-        self.assertRaises(ValueError, p.validate_data, [42, 'fish'])
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               p.validate_data, [42, 'fish'])
+        self.assertEqual('Property error : 1 Value \'fish\' is not '
+                         'an integer', str(ex))
 
 
 class PropertiesTest(testtools.TestCase):
@@ -896,10 +909,10 @@ class PropertiesTest(testtools.TestCase):
         self.props = properties.Properties(schema, data, double, 'wibble')
 
     def test_integer_good(self):
-        self.assertEqual(self.props['int'], 42)
+        self.assertEqual(42, self.props['int'])
 
     def test_string_good(self):
-        self.assertEqual(self.props['string'], 'foofoo')
+        self.assertEqual('foofoo', self.props['string'])
 
     def test_missing_required(self):
         self.assertRaises(ValueError, self.props.get, 'required_int')
@@ -911,13 +924,13 @@ class PropertiesTest(testtools.TestCase):
         self.assertIsNone(self.props['missing'])
 
     def test_default(self):
-        self.assertEqual(self.props['defaulted'], 1)
+        self.assertEqual(1, self.props['defaulted'])
 
     def test_default_override(self):
-        self.assertEqual(self.props['default_override'], 42)
+        self.assertEqual(42, self.props['default_override'])
 
     def test_bad_key(self):
-        self.assertEqual(self.props.get('foo', 'wibble'), 'wibble')
+        self.assertEqual('wibble', self.props.get('foo', 'wibble'))
 
     def test_none_string(self):
         schema = {'foo': {'Type': 'String'}}
@@ -1096,7 +1109,9 @@ class PropertiesTest(testtools.TestCase):
                 "required": False,
                 'update_allowed': True,
                 "constraints": [
-                    {"length": {"min": 1, "max": 16}},
+                    {"length": {"min": 1, "max": 16},
+                     "description": "must begin with a letter and contain "
+                                    "only alphanumeric characters."},
                     {"allowed_pattern": "[a-zA-Z][a-zA-Z0-9]*",
                      "description": "must begin with a letter and contain "
                                     "only alphanumeric characters."},
@@ -1137,7 +1152,9 @@ class PropertiesTest(testtools.TestCase):
                 "required": False,
                 'update_allowed': True,
                 "constraints": [
-                    {"length": {"min": 1, "max": 41}},
+                    {"length": {"min": 1, "max": 41},
+                     "description": "must contain only alphanumeric "
+                                    "characters."},
                     {"allowed_pattern": "[a-zA-Z0-9]*",
                      "description": "must contain only alphanumeric "
                                     "characters."},
@@ -1156,7 +1173,9 @@ class PropertiesTest(testtools.TestCase):
                 "required": False,
                 'update_allowed': True,
                 "constraints": [
-                    {"length": {"min": 1, "max": 41}},
+                    {"length": {"min": 1, "max": 41},
+                     "description": "must contain only alphanumeric "
+                                    "characters."},
                     {"allowed_pattern": "[a-zA-Z0-9]*",
                      "description": "must contain only alphanumeric "
                                     "characters."},
@@ -1168,14 +1187,16 @@ class PropertiesTest(testtools.TestCase):
                 "required": False,
                 'update_allowed': True,
                 "constraints": [
-                    {"length": {"min": 1, "max": 64}},
+                    {"length": {"min": 1, "max": 64},
+                     "description": "must begin with a letter and contain "
+                                    "only alphanumeric characters."},
                     {"allowed_pattern": "[a-zA-Z][a-zA-Z0-9]*",
                      "description": "must begin with a letter and contain "
                                     "only alphanumeric characters."},
                 ]
             },
         }
-        params = dict((n, parameters.ParamSchema(s)) for n, s
+        params = dict((n, parameters.Schema.from_dict(s)) for n, s
                       in params_snippet.items())
         props_schemata = properties.Properties.schema_from_params(params)
 
@@ -1185,14 +1206,14 @@ class PropertiesTest(testtools.TestCase):
     def test_schema_from_hot_params(self):
         params_snippet = {
             "KeyName": {
-                "Type": "String",
-                "Description": ("Name of an existing EC2 KeyPair to enable "
+                "type": "string",
+                "description": ("Name of an existing EC2 KeyPair to enable "
                                 "SSH access to the instances")
             },
             "InstanceType": {
-                "Default": "m1.large",
-                "Type": "String",
-                "Description": "WebServer EC2 instance type",
+                "default": "m1.large",
+                "type": "string",
+                "description": "WebServer EC2 instance type",
                 "constraints": [
                     {"allowed_values": ["t1.micro", "m1.small", "m1.large",
                                         "m1.xlarge", "m2.xlarge", "m2.2xlarge",
@@ -1202,9 +1223,9 @@ class PropertiesTest(testtools.TestCase):
                 ]
             },
             "LinuxDistribution": {
-                "Default": "F17",
-                "Type": "String",
-                "Description": "Distribution of choice",
+                "default": "F17",
+                "type": "string",
+                "description": "Distribution of choice",
                 "constraints": [
                     {"allowed_values": ["F18", "F17", "U10", "RHEL-6.1",
                                         "RHEL-6.2", "RHEL-6.3"],
@@ -1212,9 +1233,9 @@ class PropertiesTest(testtools.TestCase):
                 ]
             },
             "DBName": {
-                "Type": "String",
-                "Description": "The WordPress database name",
-                "Default": "wordpress",
+                "type": "string",
+                "description": "The WordPress database name",
+                "default": "wordpress",
                 "constraints": [
                     {"length": {"min": 1, "max": 64},
                      "description": "Length must be between 1 and 64"},
@@ -1224,10 +1245,10 @@ class PropertiesTest(testtools.TestCase):
                 ]
             },
             "DBUsername": {
-                "Type": "String",
-                "Description": "The WordPress database admin account username",
-                "Default": "admin",
-                "NoEcho": "true",
+                "type": "string",
+                "description": "The WordPress database admin account username",
+                "default": "admin",
+                "hidden": "true",
                 "constraints": [
                     {"length": {"min": 1, "max": 16},
                      "description": "Length must be between 1 and 16"},
@@ -1237,10 +1258,10 @@ class PropertiesTest(testtools.TestCase):
                 ]
             },
             "DBPassword": {
-                "Type": "String",
-                "Description": "The WordPress database admin account password",
-                "Default": "admin",
-                "NoEcho": "true",
+                "type": "string",
+                "description": "The WordPress database admin account password",
+                "default": "admin",
+                "hidden": "true",
                 "constraints": [
                     {"length": {"min": 1, "max": 41},
                      "description": "Length must be between 1 and 41"},
@@ -1250,10 +1271,10 @@ class PropertiesTest(testtools.TestCase):
                 ]
             },
             "DBRootPassword": {
-                "Type": "String",
-                "Description": "Root password for MySQL",
-                "Default": "admin",
-                "NoEcho": "true",
+                "type": "string",
+                "description": "Root password for MySQL",
+                "default": "admin",
+                "hidden": "true",
                 "constraints": [
                     {"length": {"min": 1, "max": 41},
                      "description": "Length must be between 1 and 41"},
@@ -1348,7 +1369,7 @@ class PropertiesTest(testtools.TestCase):
                 ]
             }
         }
-        params = dict((n, hot.HOTParamSchema(s)) for n, s
+        params = dict((n, hot.HOTParamSchema.from_dict(s)) for n, s
                       in params_snippet.items())
         props_schemata = properties.Properties.schema_from_params(params)
 
@@ -1514,3 +1535,103 @@ class PropertiesValidationTest(testtools.TestCase):
             properties.Properties.schema_to_parameters_and_properties(schema)
         self.assertEqual(param_expected, parameters)
         self.assertEqual(prop_expected, props)
+
+    def test_schema_support_status(self):
+        schema = {
+            'foo_sup': properties.Schema(
+                properties.Schema.STRING,
+                default='foo'
+            ),
+            'bar_dep': properties.Schema(
+                properties.Schema.STRING,
+                default='bar',
+                support_status=support.SupportStatus(
+                    support.DEPRECATED,
+                    'Do not use this ever')
+            )
+        }
+        props = properties.Properties(schema, {})
+        self.assertEqual(props.props['foo_sup'].support_status().status,
+                         support.SUPPORTED)
+        self.assertEqual(props.props['bar_dep'].support_status().status,
+                         support.DEPRECATED)
+        self.assertEqual(props.props['bar_dep'].support_status().message,
+                         'Do not use this ever')
+
+    def test_nested_properties_schema_invalid_property_in_list(self):
+        child_schema = {'Key': {'Type': 'String',
+                                'Required': True},
+                        'Value': {'Type': 'Boolean',
+                                  'Required': True,
+                                  'Default': True}}
+        list_schema = {'Type': 'Map', 'Schema': child_schema}
+        schema = {'foo': {'Type': 'List', 'Schema': list_schema}}
+
+        valid_data = {'foo': [{'Key': 'Test'}]}
+        props = properties.Properties(schema, valid_data)
+        self.assertIsNone(props.validate())
+
+        invalid_data = {'foo': [{'Key': 'Test', 'bar': 'baz'}]}
+        props = properties.Properties(schema, invalid_data)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               props.validate)
+        self.assertEqual('Property error : foo Property error : foo: 0 '
+                         'Unknown Property bar', str(ex))
+
+    def test_nested_properties_schema_invalid_property_in_map(self):
+        child_schema = {'Key': {'Type': 'String',
+                                'Required': True},
+                        'Value': {'Type': 'Boolean',
+                                  'Required': True,
+                                  'Default': True}}
+        map_schema = {'boo': {'Type': 'Map', 'Schema': child_schema}}
+        schema = {'foo': {'Type': 'Map', 'Schema': map_schema}}
+
+        valid_data = {'foo': {'boo': {'Key': 'Test'}}}
+        props = properties.Properties(schema, valid_data)
+        self.assertIsNone(props.validate())
+
+        invalid_data = {'foo': {'boo': {'Key': 'Test', 'bar': 'baz'}}}
+        props = properties.Properties(schema, invalid_data)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               props.validate)
+        self.assertEqual('Property error : foo Property error : foo: boo '
+                         'Unknown Property bar', str(ex))
+
+    def test_more_nested_properties_schema_invalid_property_in_list(self):
+        nested_child_schema = {'Key': {'Type': 'String',
+                                       'Required': True}}
+        child_schema = {'doo': {'Type': 'Map', 'Schema': nested_child_schema}}
+        list_schema = {'Type': 'Map', 'Schema': child_schema}
+        schema = {'foo': {'Type': 'List', 'Schema': list_schema}}
+
+        valid_data = {'foo': [{'doo': {'Key': 'Test'}}]}
+        props = properties.Properties(schema, valid_data)
+        self.assertIsNone(props.validate())
+
+        invalid_data = {'foo': [{'doo': {'Key': 'Test', 'bar': 'baz'}}]}
+        props = properties.Properties(schema, invalid_data)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               props.validate)
+        self.assertEqual('Property error : foo Property error : foo: 0 '
+                         'Property error : 0: doo Unknown Property bar',
+                         str(ex))
+
+    def test_more_nested_properties_schema_invalid_property_in_map(self):
+        nested_child_schema = {'Key': {'Type': 'String',
+                                       'Required': True}}
+        child_schema = {'doo': {'Type': 'Map', 'Schema': nested_child_schema}}
+        map_schema = {'boo': {'Type': 'Map', 'Schema': child_schema}}
+        schema = {'foo': {'Type': 'Map', 'Schema': map_schema}}
+
+        valid_data = {'foo': {'boo': {'doo': {'Key': 'Test'}}}}
+        props = properties.Properties(schema, valid_data)
+        self.assertIsNone(props.validate())
+
+        invalid_data = {'foo': {'boo': {'doo': {'Key': 'Test', 'bar': 'baz'}}}}
+        props = properties.Properties(schema, invalid_data)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               props.validate)
+        self.assertEqual('Property error : foo Property error : foo: boo '
+                         'Property error : boo: doo Unknown Property bar',
+                         str(ex))

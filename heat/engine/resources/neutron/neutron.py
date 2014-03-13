@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -84,7 +83,8 @@ class NeutronResource(resource.Resource):
         p = Properties(self.properties_schema,
                        json_snippet.get('Properties', {}),
                        self._resolve_runtime_data,
-                       self.name)
+                       self.name,
+                       self.context)
         update_props = dict((k, v) for k, v in p.items()
                             if p.props.get(k).schema.update_allowed)
 
@@ -113,9 +113,10 @@ class NeutronResource(resource.Resource):
         if attributes['status'] in ('ACTIVE', 'DOWN'):
             return True
         else:
-            raise exception.Error('%s resource[%s] status[%s]' %
-                                  ('neutron reported unexpected',
-                                   attributes['name'], attributes['status']))
+            raise exception.Error(_('neutron reported unexpected '
+                                    'resource[%(name)s] status[%(status)s]') %
+                                  {'name': attributes['name'],
+                                   'status': attributes['status']})
 
     def _resolve_attribute(self, name):
         try:

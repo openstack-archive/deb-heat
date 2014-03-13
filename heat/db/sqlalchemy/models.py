@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -86,6 +85,7 @@ class RawTemplate(BASE, HeatBase):
     __tablename__ = 'raw_template'
     id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
     template = sqlalchemy.Column(Json)
+    files = sqlalchemy.Column(Json)
 
 
 class Stack(BASE, HeatBase, SoftDelete):
@@ -114,6 +114,13 @@ class Stack(BASE, HeatBase, SoftDelete):
     owner_id = sqlalchemy.Column(sqlalchemy.String(36), nullable=True)
     timeout = sqlalchemy.Column(sqlalchemy.Integer)
     disable_rollback = sqlalchemy.Column(sqlalchemy.Boolean, nullable=False)
+    stack_user_project_id = sqlalchemy.Column(sqlalchemy.String(64),
+                                              nullable=True)
+
+    # Override timestamp column to store the correct value: it should be the
+    # time the create/update call was issued, not the time the DB entry is
+    # created/modified. (bug #1193269)
+    updated_at = sqlalchemy.Column(sqlalchemy.DateTime)
 
 
 class StackLock(BASE, HeatBase):
@@ -152,13 +159,15 @@ class Event(BASE, HeatBase):
 
     __tablename__ = 'event'
 
-    id = sqlalchemy.Column(sqlalchemy.String(36), primary_key=True,
-                           default=lambda: str(uuid.uuid4()))
+    id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
     stack_id = sqlalchemy.Column(sqlalchemy.String(36),
                                  sqlalchemy.ForeignKey('stack.id'),
                                  nullable=False)
     stack = relationship(Stack, backref=backref('events'))
 
+    uuid = sqlalchemy.Column(sqlalchemy.String(36),
+                             default=lambda: str(uuid.uuid4()),
+                             unique=True)
     resource_action = sqlalchemy.Column(sqlalchemy.String(255))
     resource_status = sqlalchemy.Column(sqlalchemy.String(255))
     resource_name = sqlalchemy.Column(sqlalchemy.String(255))
@@ -211,6 +220,11 @@ class Resource(BASE, HeatBase):
                         cascade="all,delete",
                         backref=backref('resource'))
 
+    # Override timestamp column to store the correct value: it should be the
+    # time the create/update call was issued, not the time the DB entry is
+    # created/modified. (bug #1193269)
+    updated_at = sqlalchemy.Column(sqlalchemy.DateTime)
+
 
 class WatchRule(BASE, HeatBase):
     """Represents a watch_rule created by the heat engine."""
@@ -243,3 +257,49 @@ class WatchData(BASE, HeatBase):
         sqlalchemy.ForeignKey('watch_rule.id'),
         nullable=False)
     watch_rule = relationship(WatchRule, backref=backref('watch_data'))
+
+
+class SoftwareConfig(BASE, HeatBase):
+    """
+    Represents a software configuration resource to be applied to
+    one or more servers.
+    """
+
+    __tablename__ = 'software_config'
+
+    id = sqlalchemy.Column('id', sqlalchemy.String(36), primary_key=True,
+                           default=lambda: str(uuid.uuid4()))
+    name = sqlalchemy.Column('name', sqlalchemy.String(255),
+                             nullable=True)
+    group = sqlalchemy.Column('group', sqlalchemy.String(255))
+    config = sqlalchemy.Column('config', Json)
+    tenant = sqlalchemy.Column(
+        'tenant', sqlalchemy.String(256), nullable=False)
+
+
+class SoftwareDeployment(BASE, HeatBase):
+    """
+    Represents applying a software configuration resource to a
+    single server resource.
+    """
+
+    __tablename__ = 'software_deployment'
+
+    id = sqlalchemy.Column('id', sqlalchemy.String(36), primary_key=True,
+                           default=lambda: str(uuid.uuid4()))
+    config_id = sqlalchemy.Column(
+        'config_id',
+        sqlalchemy.String(36),
+        sqlalchemy.ForeignKey('software_config.id'),
+        nullable=False)
+    config = relationship(SoftwareConfig, backref=backref('deployments'))
+    server_id = sqlalchemy.Column('server_id', sqlalchemy.String(36),
+                                  nullable=False)
+    input_values = sqlalchemy.Column('input_values', Json)
+    output_values = sqlalchemy.Column('output_values', Json)
+    signal_id = sqlalchemy.Column(sqlalchemy.String(1024))
+    tenant = sqlalchemy.Column(
+        'tenant', sqlalchemy.String(256), nullable=False)
+    action = sqlalchemy.Column('action', sqlalchemy.String(255))
+    status = sqlalchemy.Column('status', sqlalchemy.String(255))
+    status_reason = sqlalchemy.Column('status_reason', sqlalchemy.String(255))

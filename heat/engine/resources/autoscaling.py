@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,28 +12,36 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import copy
+import functools
+import json
 import math
 
 from heat.engine import environment
+from heat.engine import function
 from heat.engine import resource
 from heat.engine import signal_responder
 
-from heat.common import short_id
 from heat.common import exception
 from heat.common import timeutils as iso8601utils
+from heat.openstack.common import excutils
 from heat.openstack.common import log as logging
 from heat.openstack.common import timeutils
 from heat.engine.properties import Properties
 from heat.engine import constraints
+from heat.engine.notification import autoscaling as notification
 from heat.engine import properties
 from heat.engine import scheduler
 from heat.engine import stack_resource
+from heat.scaling import template
 
 logger = logging.getLogger(__name__)
 
 
 (SCALED_RESOURCE_TYPE,) = ('OS::Heat::ScaledResource',)
+
+
+(EXACT_CAPACITY, CHANGE_IN_CAPACITY, PERCENT_CHANGE_IN_CAPACITY) = (
+    'ExactCapacity', 'ChangeInCapacity', 'PercentChangeInCapacity')
 
 
 class CooldownMixin(object):
@@ -46,7 +53,7 @@ class CooldownMixin(object):
         inprogress = False
         try:
             # Negative values don't make sense, so they are clamped to zero
-            cooldown = max(0, int(self.properties['Cooldown']))
+            cooldown = max(0, self.properties[self.COOLDOWN])
         except TypeError:
             # If not specified, it will be None, same as cooldown == 0
             cooldown = 0
@@ -83,6 +90,14 @@ class InstanceGroup(stack_resource.StackResource):
         'Key', 'Value',
     )
 
+    _ROLLING_UPDATE_SCHEMA_KEYS = (
+        MIN_INSTANCES_IN_SERVICE, MAX_BATCH_SIZE, PAUSE_TIME
+    ) = (
+        'MinInstancesInService', 'MaxBatchSize', 'PauseTime'
+    )
+
+    _UPDATE_POLICY_SCHEMA_KEYS = (ROLLING_UPDATE,) = ('RollingUpdate',)
+
     properties_schema = {
         AVAILABILITY_ZONES: properties.Schema(
             properties.Schema.LIST,
@@ -96,7 +111,7 @@ class InstanceGroup(stack_resource.StackResource):
             update_allowed=True
         ),
         SIZE: properties.Schema(
-            properties.Schema.NUMBER,
+            properties.Schema.INTEGER,
             _('Desired number of instances.'),
             required=True,
             update_allowed=True
@@ -131,15 +146,16 @@ class InstanceGroup(stack_resource.StackResource):
                           "(Heat extension).")
     }
     rolling_update_schema = {
-        'MinInstancesInService': properties.Schema(properties.Schema.NUMBER,
-                                                   default=0),
-        'MaxBatchSize': properties.Schema(properties.Schema.NUMBER, default=1),
-        'PauseTime': properties.Schema(properties.Schema.STRING,
-                                       default='PT0S')
+        MIN_INSTANCES_IN_SERVICE: properties.Schema(properties.Schema.NUMBER,
+                                                    default=0),
+        MAX_BATCH_SIZE: properties.Schema(properties.Schema.NUMBER,
+                                          default=1),
+        PAUSE_TIME: properties.Schema(properties.Schema.STRING,
+                                      default='PT0S')
     }
     update_policy_schema = {
-        'RollingUpdate': properties.Schema(properties.Schema.MAP,
-                                           schema=rolling_update_schema)
+        ROLLING_UPDATE: properties.Schema(properties.Schema.MAP,
+                                          schema=rolling_update_schema)
     }
 
     def __init__(self, name, json_snippet, stack):
@@ -151,7 +167,8 @@ class InstanceGroup(stack_resource.StackResource):
         super(InstanceGroup, self).__init__(name, json_snippet, stack)
         self.update_policy = Properties(self.update_policy_schema,
                                         self.t.get('UpdatePolicy', {}),
-                                        parent_name=self.name)
+                                        parent_name=self.name,
+                                        context=self.context)
 
     def validate(self):
         """
@@ -163,7 +180,7 @@ class InstanceGroup(stack_resource.StackResource):
             self.update_policy.validate()
             policy_name = self.update_policy_schema.keys()[0]
             if self.update_policy[policy_name]:
-                pause_time = self.update_policy[policy_name]['PauseTime']
+                pause_time = self.update_policy[policy_name][self.PAUSE_TIME]
                 if iso8601utils.parse_isoduration(pause_time) > 3600:
                     raise ValueError('Maximum PauseTime is 1 hour.')
 
@@ -196,7 +213,7 @@ class InstanceGroup(stack_resource.StackResource):
 
     def handle_create(self):
         """Create a nested stack and add the initial resources to it."""
-        num_instances = int(self.properties[self.SIZE])
+        num_instances = self.properties[self.SIZE]
         initial_template = self._create_template(num_instances)
         return self.create_with_template(initial_template, self._environment())
 
@@ -222,28 +239,30 @@ class InstanceGroup(stack_resource.StackResource):
                 self.update_policy = Properties(
                     self.update_policy_schema,
                     json_snippet.get('UpdatePolicy', {}),
-                    parent_name=self.name)
+                    parent_name=self.name,
+                    context=self.context)
 
         if prop_diff:
             self.properties = Properties(self.properties_schema,
                                          json_snippet.get('Properties', {}),
                                          self.stack.resolve_runtime_data,
-                                         self.name)
+                                         self.name,
+                                         self.context)
 
             # Replace instances first if launch configuration has changed
-            if (self.update_policy['RollingUpdate'] and
+            if (self.update_policy[self.ROLLING_UPDATE] and
                     self.LAUNCH_CONFIGURATION_NAME in prop_diff):
-                policy = self.update_policy['RollingUpdate']
-                self._replace(int(policy['MinInstancesInService']),
-                              int(policy['MaxBatchSize']),
-                              policy['PauseTime'])
+                policy = self.update_policy[self.ROLLING_UPDATE]
+                self._replace(policy[self.MIN_INSTANCES_IN_SERVICE],
+                              policy[self.MAX_BATCH_SIZE],
+                              policy[self.PAUSE_TIME])
 
             # Get the current capacity, we may need to adjust if
             # Size has changed
             if self.SIZE in prop_diff:
                 inst_list = self.get_instances()
-                if len(inst_list) != int(self.properties[self.SIZE]):
-                    self.resize(int(self.properties[self.SIZE]))
+                if len(inst_list) != self.properties[self.SIZE]:
+                    self.resize(self.properties[self.SIZE])
 
     def _tags(self):
         """
@@ -264,7 +283,7 @@ class InstanceGroup(stack_resource.StackResource):
     def _get_instance_definition(self):
         conf_name = self.properties[self.LAUNCH_CONFIGURATION_NAME]
         conf = self.stack.resource_by_refid(conf_name)
-        instance_definition = copy.deepcopy(conf.t)
+        instance_definition = function.resolve(conf.t)
         instance_definition['Type'] = SCALED_RESOURCE_TYPE
         instance_definition['Properties']['Tags'] = self._tags()
         if self.properties.get('VPCZoneIdentifier'):
@@ -275,30 +294,16 @@ class InstanceGroup(stack_resource.StackResource):
 
     def _create_template(self, num_instances, num_replace=0):
         """
-        Create the template for the nested stack of existing and new instances
+        Create a template to represent autoscaled instances.
 
-        For rolling update, if launch configuration is different, the
-        instance definition should come from the existing instance instead
-        of using the new launch configuration.
+        Also see heat.scaling.template.resource_templates.
         """
-        instances = self.get_instances()[-num_instances:]
         instance_definition = self._get_instance_definition()
-        num_create = num_instances - len(instances)
-        num_replace -= num_create
-
-        def instance_templates(num_replace):
-            for i in range(num_instances):
-                if i < len(instances):
-                    inst = instances[i]
-                    if inst.t != instance_definition and num_replace > 0:
-                        num_replace -= 1
-                        yield inst.name, instance_definition
-                    else:
-                        yield inst.name, inst.t
-                else:
-                    yield short_id.generate_id(), instance_definition
-
-        return {"Resources": dict(instance_templates(num_replace))}
+        old_resources = [(instance.name, instance.t)
+                         for instance in self.get_instances()]
+        templates = template.resource_templates(
+            old_resources, instance_definition, num_instances, num_replace)
+        return {"Resources": dict(templates)}
 
     def _replace(self, min_in_service, batch_size, pause_time):
         """
@@ -306,8 +311,10 @@ class InstanceGroup(stack_resource.StackResource):
         """
         def changing_instances(tmpl):
             instances = self.get_instances()
-            current = set((i.name, str(i.t)) for i in instances)
-            updated = set((k, str(v)) for k, v in tmpl['Resources'].items())
+            serialize_template = functools.partial(json.dumps, sort_keys=True)
+            current = set((i.name, serialize_template(i.t)) for i in instances)
+            updated = set((k, serialize_template(v))
+                          for k, v in tmpl['Resources'].items())
             # includes instances to be updated and deleted
             affected = set(k for k, v in current ^ updated)
             return set(i.FnGetRefId() for i in instances if i.name in affected)
@@ -329,7 +336,7 @@ class InstanceGroup(stack_resource.StackResource):
             raise ValueError('The current UpdatePolicy will result '
                              'in stack update timeout.')
 
-        # effective capacity includes temporary capacity added to accomodate
+        # effective capacity includes temporary capacity added to accommodate
         # the minimum number of instances in service during update
         efft_capacity = max(capacity - efft_bat_sz, efft_min_sz) + efft_bat_sz
 
@@ -390,7 +397,7 @@ class InstanceGroup(stack_resource.StackResource):
                         id_list)
                 else:
                     raise exception.Error(
-                        "Unsupported resource '%s' in LoadBalancerNames" %
+                        _("Unsupported resource '%s' in LoadBalancerNames") %
                         (lb,))
                 resolved_snippet = self.stack.resolve_static_data(
                     lb_resource.json_snippet)
@@ -407,6 +414,13 @@ class InstanceGroup(stack_resource.StackResource):
         if name == 'InstanceList':
             return u','.join(inst.FnGetAtt('PublicIp')
                              for inst in self.get_instances()) or None
+
+    def child_template(self):
+        num_instances = int(self.properties[self.SIZE])
+        return self._create_template(num_instances)
+
+    def child_params(self):
+        return self._environment()
 
 
 class AutoScalingGroup(InstanceGroup, CooldownMixin):
@@ -427,6 +441,18 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
         'Key', 'Value',
     )
 
+    _UPDATE_POLICY_SCHEMA_KEYS = (
+        ROLLING_UPDATE
+    ) = (
+        'AutoScalingRollingUpdate'
+    )
+
+    _ROLLING_UPDATE_SCHEMA_KEYS = (
+        MIN_INSTANCES_IN_SERVICE, MAX_BATCH_SIZE, PAUSE_TIME
+    ) = (
+        'MinInstancesInService', 'MaxBatchSize', 'PauseTime'
+    )
+
     properties_schema = {
         AVAILABILITY_ZONES: properties.Schema(
             properties.Schema.LIST,
@@ -440,24 +466,24 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
             update_allowed=True
         ),
         MAX_SIZE: properties.Schema(
-            properties.Schema.STRING,
+            properties.Schema.INTEGER,
             _('Maximum number of instances in the group.'),
             required=True,
             update_allowed=True
         ),
         MIN_SIZE: properties.Schema(
-            properties.Schema.STRING,
+            properties.Schema.INTEGER,
             _('Minimum number of instances in the group.'),
             required=True,
             update_allowed=True
         ),
         COOLDOWN: properties.Schema(
-            properties.Schema.STRING,
+            properties.Schema.NUMBER,
             _('Cooldown period, in seconds.'),
             update_allowed=True
         ),
         DESIRED_CAPACITY: properties.Schema(
-            properties.Schema.NUMBER,
+            properties.Schema.INTEGER,
             _('Desired initial number of instances.'),
             update_allowed=True
         ),
@@ -502,25 +528,27 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
     }
 
     rolling_update_schema = {
-        'MinInstancesInService': properties.Schema(properties.Schema.NUMBER,
-                                                   default=0),
-        'MaxBatchSize': properties.Schema(properties.Schema.NUMBER, default=1),
-        'PauseTime': properties.Schema(properties.Schema.STRING,
-                                       default='PT0S')
+        MIN_INSTANCES_IN_SERVICE: properties.Schema(properties.Schema.INTEGER,
+                                                    default=0),
+        MAX_BATCH_SIZE: properties.Schema(properties.Schema.INTEGER,
+                                          default=1),
+        PAUSE_TIME: properties.Schema(properties.Schema.STRING,
+                                      default='PT0S')
     }
+
     update_policy_schema = {
-        'AutoScalingRollingUpdate': properties.Schema(properties.Schema.MAP,
-                                                      schema=
-                                                      rolling_update_schema)
+        ROLLING_UPDATE: properties.Schema(
+            properties.Schema.MAP,
+            schema=rolling_update_schema)
     }
 
     update_allowed_keys = ('Properties', 'UpdatePolicy')
 
     def handle_create(self):
         if self.properties[self.DESIRED_CAPACITY]:
-            num_to_create = int(self.properties[self.DESIRED_CAPACITY])
+            num_to_create = self.properties[self.DESIRED_CAPACITY]
         else:
-            num_to_create = int(self.properties[self.MIN_SIZE])
+            num_to_create = self.properties[self.MIN_SIZE]
         initial_template = self._create_template(num_to_create)
         return self.create_with_template(initial_template,
                                          self._environment())
@@ -530,7 +558,7 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
         done = super(AutoScalingGroup, self).check_create_complete(task)
         if done:
             self._cooldown_timestamp(
-                "%s : %s" % ('ExactCapacity', len(self.get_instances())))
+                "%s : %s" % (EXACT_CAPACITY, len(self.get_instances())))
         return done
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
@@ -544,21 +572,23 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
                 self.update_policy = Properties(
                     self.update_policy_schema,
                     json_snippet.get('UpdatePolicy', {}),
-                    parent_name=self.name)
+                    parent_name=self.name,
+                    context=self.context)
 
         if prop_diff:
             self.properties = Properties(self.properties_schema,
                                          json_snippet.get('Properties', {}),
                                          self.stack.resolve_runtime_data,
-                                         self.name)
+                                         self.name,
+                                         self.context)
 
             # Replace instances first if launch configuration has changed
-            if (self.update_policy['AutoScalingRollingUpdate'] and
-                    'LaunchConfigurationName' in prop_diff):
-                policy = self.update_policy['AutoScalingRollingUpdate']
-                self._replace(int(policy['MinInstancesInService']),
-                              int(policy['MaxBatchSize']),
-                              policy['PauseTime'])
+            if (self.update_policy[self.ROLLING_UPDATE] and
+                    self.LAUNCH_CONFIGURATION_NAME in prop_diff):
+                policy = self.update_policy[self.ROLLING_UPDATE]
+                self._replace(policy[self.MIN_INSTANCES_IN_SERVICE],
+                              policy[self.MAX_BATCH_SIZE],
+                              policy[self.PAUSE_TIME])
 
             # Get the current capacity, we may need to adjust if
             # MinSize or MaxSize has changed
@@ -567,33 +597,33 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
             # Figure out if an adjustment is required
             new_capacity = None
             if self.MIN_SIZE in prop_diff:
-                if capacity < int(self.properties[self.MIN_SIZE]):
-                    new_capacity = int(self.properties[self.MIN_SIZE])
+                if capacity < self.properties[self.MIN_SIZE]:
+                    new_capacity = self.properties[self.MIN_SIZE]
             if self.MAX_SIZE in prop_diff:
-                if capacity > int(self.properties[self.MAX_SIZE]):
-                    new_capacity = int(self.properties[self.MAX_SIZE])
+                if capacity > self.properties[self.MAX_SIZE]:
+                    new_capacity = self.properties[self.MAX_SIZE]
             if self.DESIRED_CAPACITY in prop_diff:
                 if self.properties[self.DESIRED_CAPACITY]:
-                    new_capacity = int(self.properties[self.DESIRED_CAPACITY])
+                    new_capacity = self.properties[self.DESIRED_CAPACITY]
 
             if new_capacity is not None:
-                self.adjust(new_capacity, adjustment_type='ExactCapacity')
+                self.adjust(new_capacity, adjustment_type=EXACT_CAPACITY)
 
-    def adjust(self, adjustment, adjustment_type='ChangeInCapacity'):
+    def adjust(self, adjustment, adjustment_type=CHANGE_IN_CAPACITY):
         """
         Adjust the size of the scaling group if the cooldown permits.
         """
         if self._cooldown_inprogress():
             logger.info(_("%(name)s NOT performing scaling adjustment, "
                         "cooldown %(cooldown)s") % {
-                        'name': self.name,
-                        'cooldown': self.properties[self.COOLDOWN]})
+                            'name': self.name,
+                            'cooldown': self.properties[self.COOLDOWN]})
             return
 
         capacity = len(self.get_instances())
-        if adjustment_type == 'ChangeInCapacity':
+        if adjustment_type == CHANGE_IN_CAPACITY:
             new_capacity = capacity + adjustment
-        elif adjustment_type == 'ExactCapacity':
+        elif adjustment_type == EXACT_CAPACITY:
             new_capacity = adjustment
         else:
             # PercentChangeInCapacity
@@ -606,8 +636,8 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
                               else math.ceil(delta))
             new_capacity = capacity + rounded
 
-        upper = int(self.properties[self.MAX_SIZE])
-        lower = int(self.properties[self.MIN_SIZE])
+        upper = self.properties[self.MAX_SIZE]
+        lower = self.properties[self.MIN_SIZE]
 
         if new_capacity > upper:
             if upper > capacity:
@@ -628,11 +658,39 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
             logger.debug(_('no change in capacity %d') % capacity)
             return
 
-        result = self.resize(new_capacity)
+        # send a notification before, on-error and on-success.
+        notif = {
+            'stack': self.stack,
+            'adjustment': adjustment,
+            'adjustment_type': adjustment_type,
+            'capacity': capacity,
+            'groupname': self.FnGetRefId(),
+            'message': _("Start resizing the group %(group)s") % {
+                'group': self.FnGetRefId()},
+            'suffix': 'start',
+        }
+        notification.send(**notif)
+        try:
+            self.resize(new_capacity)
+        except Exception as resize_ex:
+            with excutils.save_and_reraise_exception():
+                try:
+                    notif.update({'suffix': 'error',
+                                  'message': str(resize_ex),
+                                  })
+                    notification.send(**notif)
+                except Exception:
+                    logger.exception(_('Failed sending error notification'))
+        else:
+            notif.update({
+                'suffix': 'end',
+                'capacity': new_capacity,
+                'message': _("End resizing the group %(group)s") % {
+                    'group': notif['groupname']},
+            })
+            notification.send(**notif)
 
         self._cooldown_timestamp("%s : %s" % (adjustment_type, adjustment))
-
-        return result
 
     def _tags(self):
         """Add Identifing Tags to all servers in the group.
@@ -649,6 +707,24 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
         res = super(AutoScalingGroup, self).validate()
         if res:
             return res
+
+        # check validity of group size
+        min_size = self.properties[self.MIN_SIZE]
+        max_size = self.properties[self.MAX_SIZE]
+
+        if max_size < min_size:
+            msg = _("MinSize can not be greater than MaxSize")
+            raise exception.StackValidationFailed(message=msg)
+
+        if min_size < 0:
+            msg = _("The size of AutoScalingGroup can not be less than zero")
+            raise exception.StackValidationFailed(message=msg)
+
+        if self.properties[self.DESIRED_CAPACITY]:
+            desired_capacity = self.properties[self.DESIRED_CAPACITY]
+            if desired_capacity < min_size or desired_capacity > max_size:
+                msg = _("DesiredCapacity must be between MinSize and MaxSize")
+                raise exception.StackValidationFailed(message=msg)
 
         # TODO(pasquier-s): once Neutron is able to assign subnets to
         # availability zones, it will be possible to specify multiple subnets.
@@ -737,6 +813,72 @@ class LaunchConfiguration(resource.Resource):
         return unicode(self.physical_resource_name())
 
 
+class AutoScalingResourceGroup(AutoScalingGroup):
+    """An autoscaling group that can scale arbitrary resources."""
+
+    PROPERTIES = (
+        RESOURCE, MAX_SIZE, MIN_SIZE, COOLDOWN, DESIRED_CAPACITY
+    ) = (
+        'resource', 'max_size', 'min_size', 'cooldown', 'desired_capacity'
+    )
+
+    properties_schema = {
+        RESOURCE: properties.Schema(
+            properties.Schema.MAP,
+            _('Resource definition for the resources in the group, in HOT '
+              'format. The value of this property is the definition of a '
+              'resource just as if it had been declared in the template '
+              'itself.'),
+            required=True
+        ),
+        MAX_SIZE: properties.Schema(
+            properties.Schema.INTEGER,
+            _('Maximum number of resources in the group.'),
+            required=True,
+            update_allowed=True,
+            constraints=[constraints.Range(min=0)],
+        ),
+        MIN_SIZE: properties.Schema(
+            properties.Schema.INTEGER,
+            _('Minimum number of resources in the group.'),
+            required=True,
+            update_allowed=True,
+            constraints=[constraints.Range(min=0)]
+        ),
+        COOLDOWN: properties.Schema(
+            properties.Schema.INTEGER,
+            _('Cooldown period, in seconds.'),
+            update_allowed=True
+        ),
+        DESIRED_CAPACITY: properties.Schema(
+            properties.Schema.INTEGER,
+            _('Desired initial number of resources.'),
+            update_allowed=True
+        ),
+    }
+
+    update_allowed_keys = ('Properties',)
+
+    def _get_instance_definition(self):
+        resource_definition = self.properties[self.RESOURCE]
+        # resolve references within the context of this stack.
+        return self.stack.resolve_runtime_data(resource_definition)
+
+    def _lb_reload(self, exclude=None):
+        """AutoScalingResourceGroup does not maintain load balancer
+        connections, so we just ignore calls to update the LB.
+        """
+        pass
+
+    def _create_template(self, *args, **kwargs):
+        """Use a HOT format for the template in the nested stack."""
+        tpl = super(AutoScalingResourceGroup, self)._create_template(
+            *args, **kwargs)
+        tpl['heat_template_version'] = '2013-05-23'
+        tpl['resources'] = tpl.pop('Resources')
+        return tpl
+
+
 class ScalingPolicy(signal_responder.SignalResponder, CooldownMixin):
     PROPERTIES = (
         AUTO_SCALING_GROUP_NAME, SCALING_ADJUSTMENT, ADJUSTMENT_TYPE,
@@ -745,6 +887,9 @@ class ScalingPolicy(signal_responder.SignalResponder, CooldownMixin):
         'AutoScalingGroupName', 'ScalingAdjustment', 'AdjustmentType',
         'Cooldown',
     )
+
+    EXACT_CAPACITY, CHANGE_IN_CAPACITY, PERCENT_CHANGE_IN_CAPACITY = (
+        'ExactCapacity', 'ChangeInCapacity', 'PercentChangeInCapacity')
 
     properties_schema = {
         AUTO_SCALING_GROUP_NAME: properties.Schema(
@@ -763,9 +908,9 @@ class ScalingPolicy(signal_responder.SignalResponder, CooldownMixin):
             _('Type of adjustment (absolute or percentage).'),
             required=True,
             constraints=[
-                constraints.AllowedValues(['ChangeInCapacity',
-                                           'ExactCapacity',
-                                           'PercentChangeInCapacity']),
+                constraints.AllowedValues([CHANGE_IN_CAPACITY,
+                                           EXACT_CAPACITY,
+                                           PERCENT_CHANGE_IN_CAPACITY]),
             ],
             update_allowed=True
         ),
@@ -783,6 +928,10 @@ class ScalingPolicy(signal_responder.SignalResponder, CooldownMixin):
                       "(Heat extension).")
     }
 
+    def handle_create(self):
+        super(ScalingPolicy, self).handle_create()
+        self.resource_id_set(self._get_user_id())
+
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         """
         If Properties has changed, update self.properties, so we get the new
@@ -792,7 +941,11 @@ class ScalingPolicy(signal_responder.SignalResponder, CooldownMixin):
             self.properties = Properties(self.properties_schema,
                                          json_snippet.get('Properties', {}),
                                          self.stack.resolve_runtime_data,
-                                         self.name)
+                                         self.name,
+                                         self.context)
+
+    def _get_adjustement_type(self):
+        return self.properties[self.ADJUSTMENT_TYPE]
 
     def handle_signal(self, details=None):
         # ceilometer sends details like this:
@@ -817,8 +970,8 @@ class ScalingPolicy(signal_responder.SignalResponder, CooldownMixin):
         if self._cooldown_inprogress():
             logger.info(_("%(name)s NOT performing scaling action, "
                         "cooldown %(cooldown)s") % {
-                        'name': self.name,
-                        'cooldown': self.properties[self.COOLDOWN]})
+                            'name': self.name,
+                            'cooldown': self.properties[self.COOLDOWN]})
             return
 
         asgn_id = self.properties[self.AUTO_SCALING_GROUP_NAME]
@@ -831,10 +984,11 @@ class ScalingPolicy(signal_responder.SignalResponder, CooldownMixin):
 
         logger.info(_('%(name)s Alarm, adjusting Group %(group)s with id '
                     '%(asgn_id)s by %(filter)s') % {
-                    'name': self.name, 'group': group.name, 'asgn_id': asgn_id,
-                    'filter': self.properties[self.SCALING_ADJUSTMENT]})
-        group.adjust(int(self.properties[self.SCALING_ADJUSTMENT]),
-                     self.properties[self.ADJUSTMENT_TYPE])
+                        'name': self.name, 'group': group.name,
+                        'asgn_id': asgn_id,
+                        'filter': self.properties[self.SCALING_ADJUSTMENT]})
+        adjustment_type = self._get_adjustement_type()
+        group.adjust(self.properties[self.SCALING_ADJUSTMENT], adjustment_type)
 
         self._cooldown_timestamp("%s : %s" %
                                  (self.properties[self.ADJUSTMENT_TYPE],
@@ -855,10 +1009,78 @@ class ScalingPolicy(signal_responder.SignalResponder, CooldownMixin):
             return unicode(self.name)
 
 
+class AutoScalingPolicy(ScalingPolicy):
+    """A resource to manage scaling of `OS::Heat::AutoScalingGroup`.
+
+    **Note** while it may incidentally support
+    `AWS::AutoScaling::AutoScalingGroup` for now, please don't use it for that
+    purpose and use `AWS::AutoScaling::ScalingPolicy` instead.
+    """
+    PROPERTIES = (
+        AUTO_SCALING_GROUP_NAME, SCALING_ADJUSTMENT, ADJUSTMENT_TYPE,
+        COOLDOWN,
+    ) = (
+        'auto_scaling_group_id', 'scaling_adjustment', 'adjustment_type',
+        'cooldown',
+    )
+
+    EXACT_CAPACITY, CHANGE_IN_CAPACITY, PERCENT_CHANGE_IN_CAPACITY = (
+        'exact_capacity', 'change_in_capacity', 'percent_change_in_capacity')
+
+    properties_schema = {
+        AUTO_SCALING_GROUP_NAME: properties.Schema(
+            properties.Schema.STRING,
+            _('AutoScaling group ID to apply policy to.'),
+            required=True
+        ),
+        SCALING_ADJUSTMENT: properties.Schema(
+            properties.Schema.NUMBER,
+            _('Size of adjustment.'),
+            required=True,
+            update_allowed=True
+        ),
+        ADJUSTMENT_TYPE: properties.Schema(
+            properties.Schema.STRING,
+            _('Type of adjustment (absolute or percentage).'),
+            required=True,
+            constraints=[
+                constraints.AllowedValues([CHANGE_IN_CAPACITY,
+                                           EXACT_CAPACITY,
+                                           PERCENT_CHANGE_IN_CAPACITY]),
+            ],
+            update_allowed=True
+        ),
+        COOLDOWN: properties.Schema(
+            properties.Schema.NUMBER,
+            _('Cooldown period, in seconds.'),
+            update_allowed=True
+        ),
+    }
+
+    update_allowed_keys = ('Properties',)
+
+    attributes_schema = {
+        "alarm_url": _("A signed url to handle the alarm.")
+    }
+
+    def _get_adjustement_type(self):
+        adjustment_type = self.properties[self.ADJUSTMENT_TYPE]
+        return ''.join([t.capitalize() for t in adjustment_type.split('_')])
+
+    def _resolve_attribute(self, name):
+        if name == 'alarm_url' and self.resource_id is not None:
+            return unicode(self._get_signed_url())
+
+    def FnGetRefId(self):
+        return resource.Resource.FnGetRefId(self)
+
+
 def resource_mapping():
     return {
         'AWS::AutoScaling::LaunchConfiguration': LaunchConfiguration,
         'AWS::AutoScaling::AutoScalingGroup': AutoScalingGroup,
         'AWS::AutoScaling::ScalingPolicy': ScalingPolicy,
         'OS::Heat::InstanceGroup': InstanceGroup,
+        'OS::Heat::AutoScalingGroup': AutoScalingResourceGroup,
+        'OS::Heat::ScalingPolicy': AutoScalingPolicy,
     }

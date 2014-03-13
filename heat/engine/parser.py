@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -15,7 +14,7 @@
 
 import collections
 import copy
-import functools
+from datetime import datetime
 import re
 import six
 
@@ -25,14 +24,13 @@ from heat.engine import environment
 from heat.common import exception
 from heat.engine import dependencies
 from heat.common import identifier
-from heat.engine import notification
+from heat.engine import function
 from heat.engine import resource
 from heat.engine import resources
 from heat.engine import scheduler
-from heat.engine import template
-from heat.engine import timestamp
 from heat.engine import update
-from heat.engine.parameters import Parameters
+from heat.engine.notification import stack as notification
+from heat.engine.parameter_groups import ParameterGroups
 from heat.engine.template import Template
 from heat.engine.clients import Clients
 from heat.db import api as db_api
@@ -45,31 +43,24 @@ from heat.common.exception import StackValidationFailed
 
 logger = logging.getLogger(__name__)
 
-(PARAM_STACK_NAME, PARAM_REGION) = ('AWS::StackName', 'AWS::Region')
-
 
 class Stack(collections.Mapping):
 
-    ACTIONS = (CREATE, DELETE, UPDATE, ROLLBACK, SUSPEND, RESUME
+    ACTIONS = (CREATE, DELETE, UPDATE, ROLLBACK, SUSPEND, RESUME, ADOPT
                ) = ('CREATE', 'DELETE', 'UPDATE', 'ROLLBACK', 'SUSPEND',
-                    'RESUME')
+                    'RESUME', 'ADOPT')
 
     STATUSES = (IN_PROGRESS, FAILED, COMPLETE
                 ) = ('IN_PROGRESS', 'FAILED', 'COMPLETE')
-
-    created_time = timestamp.Timestamp(functools.partial(db_api.stack_get,
-                                                         show_deleted=True),
-                                       'created_at')
-    updated_time = timestamp.Timestamp(functools.partial(db_api.stack_get,
-                                                         show_deleted=True),
-                                       'updated_at')
 
     _zones = None
 
     def __init__(self, context, stack_name, tmpl, env=None,
                  stack_id=None, action=None, status=None,
                  status_reason='', timeout_mins=60, resolve_data=True,
-                 disable_rollback=True, parent_resource=None, owner_id=None):
+                 disable_rollback=True, parent_resource=None, owner_id=None,
+                 adopt_stack_data=None, stack_user_project_id=None,
+                 created_time=None, updated_time=None):
         '''
         Initialise from a context, name, Template object and (optionally)
         Environment object. The database ID may also be initialised, if the
@@ -98,24 +89,29 @@ class Stack(collections.Mapping):
         self._resources = None
         self._dependencies = None
         self._access_allowed_handlers = {}
+        self.adopt_stack_data = adopt_stack_data
+        self.stack_user_project_id = stack_user_project_id
+        self.created_time = created_time
+        self.updated_time = updated_time
 
         resources.initialise()
 
         self.env = env or environment.Environment({})
-        self.parameters = Parameters(self.name, self.t,
-                                     user_params=self.env.params)
+        self.parameters = self.t.parameters(self.identifier(),
+                                            user_params=self.env.params,
+                                            context=context)
 
         self._set_param_stackid()
 
         if resolve_data:
-            self.outputs = self.resolve_static_data(self.t[template.OUTPUTS])
+            self.outputs = self.resolve_static_data(self.t[self.t.OUTPUTS])
         else:
             self.outputs = {}
 
     @property
     def resources(self):
         if self._resources is None:
-            template_resources = self.t[template.RESOURCES]
+            template_resources = self.t[self.t.RESOURCES]
             self._resources = dict((name, resource.Resource(name, data, self))
                                    for (name, data) in
                                    template_resources.items())
@@ -158,16 +154,10 @@ class Stack(collections.Mapping):
     def _set_param_stackid(self):
         '''
         Update self.parameters with the current ARN which is then provided
-        via the Parameters class as the AWS::StackId pseudo parameter
+        via the Parameters class as the StackId pseudo parameter
         '''
-        # This can fail if constructor called without a valid context,
-        # as it is in many tests
-        try:
-            stack_arn = self.identifier().arn()
-        except (AttributeError, ValueError, TypeError):
+        if not self.parameters.set_stack_id(self.identifier()):
             logger.warning(_("Unable to set parameters StackId identifier"))
-        else:
-            self.parameters.set_stack_id(stack_arn)
 
     @staticmethod
     def _get_dependencies(resources):
@@ -194,7 +184,10 @@ class Stack(collections.Mapping):
         stack = cls(context, stack.name, template, env,
                     stack.id, stack.action, stack.status, stack.status_reason,
                     stack.timeout, resolve_data, stack.disable_rollback,
-                    parent_resource, owner_id=stack.owner_id)
+                    parent_resource, owner_id=stack.owner_id,
+                    stack_user_project_id=stack.stack_user_project_id,
+                    created_time=stack.created_at,
+                    updated_time=stack.updated_at)
 
         return stack
 
@@ -203,7 +196,6 @@ class Stack(collections.Mapping):
         Store the stack in the database and return its ID
         If self.id is set, we update the existing stack
         '''
-
         s = {
             'name': self._backup_name() if backup else self.name,
             'raw_template_id': self.t.store(self.context),
@@ -216,6 +208,8 @@ class Stack(collections.Mapping):
             'status_reason': self.status_reason,
             'timeout': self.timeout_mins,
             'disable_rollback': self.disable_rollback,
+            'stack_user_project_id': self.stack_user_project_id,
+            'updated_at': self.updated_time,
         }
         if self.id:
             db_api.stack_update(self.context, self.id, s)
@@ -228,8 +222,10 @@ class Stack(collections.Mapping):
             else:
                 new_creds = db_api.user_creds_create(self.context)
             s['user_creds_id'] = new_creds.id
+
             new_s = db_api.stack_create(self.context, s)
             self.id = new_s.id
+            self.created_time = new_s.created_at
 
         self._set_param_stackid()
 
@@ -262,6 +258,7 @@ class Stack(collections.Mapping):
     def __setitem__(self, key, resource):
         '''Set the resource with the specified name to a specific value.'''
         resource.stack = self
+        resource.reparse()
         self.resources[key] = resource
 
     def __delitem__(self, key):
@@ -291,6 +288,7 @@ class Stack(collections.Mapping):
         '''
         for r in self.values():
             if r.state in (
+                    (r.INIT, r.COMPLETE),
                     (r.CREATE, r.IN_PROGRESS),
                     (r.CREATE, r.COMPLETE),
                     (r.RESUME, r.IN_PROGRESS),
@@ -326,6 +324,10 @@ class Stack(collections.Mapping):
         Validates the template.
         '''
         # TODO(sdake) Should return line number of invalid reference
+
+        # Validate Parameter Groups
+        parameter_groups = ParameterGroups(self.t)
+        parameter_groups.validate()
 
         # Check duplicate names between parameters and resources
         dup_names = set(self.parameters.keys()) & set(self.keys())
@@ -372,10 +374,11 @@ class Stack(collections.Mapping):
             return
 
         stack = db_api.stack_get(self.context, self.id)
-        stack.update_and_save({'action': action,
-                               'status': status,
-                               'status_reason': reason})
-        notification.send(self)
+        if stack is not None:
+            stack.update_and_save({'action': action,
+                                   'status': status,
+                                   'status_reason': reason})
+            notification.send(self)
 
     @property
     def state(self):
@@ -392,6 +395,13 @@ class Stack(collections.Mapping):
 
         return self.timeout_mins * 60
 
+    def preview_resources(self):
+        '''
+        Preview the stack with all of the resources.
+        '''
+        return [resource.preview()
+                for resource in self.resources.itervalues()]
+
     def create(self):
         '''
         Create the stack and all of the resources.
@@ -407,6 +417,13 @@ class Stack(collections.Mapping):
                                        post_func=rollback)
         creator(timeout=self.timeout_secs())
 
+    def _adopt_kwargs(self, resource):
+        data = self.adopt_stack_data
+        if not data or not data.get('resources'):
+            return {'resource_data': None}
+
+        return {'resource_data': data['resources'].get(resource.name)}
+
     @scheduler.wrappertask
     def stack_task(self, action, reverse=False, post_func=None):
         '''
@@ -417,14 +434,18 @@ class Stack(collections.Mapping):
                        'Stack %s started' % action)
 
         stack_status = self.COMPLETE
-        reason = 'Stack %s completed successfully' % action.lower()
+        reason = 'Stack %s completed successfully' % action
 
         def resource_action(r):
             # Find e.g resource.create and call it
             action_l = action.lower()
             handle = getattr(r, '%s' % action_l)
 
-            return handle()
+            # If a local _$action_kwargs function exists, call it to get the
+            # action specific argument list, otherwise an empty arg list
+            handle_kwargs = getattr(self,
+                                    '_%s_kwargs' % action_l, lambda x: {})
+            return handle(**handle_kwargs(r))
 
         action_task = scheduler.DependencyTaskGroup(self.dependencies,
                                                     resource_action,
@@ -434,7 +455,7 @@ class Stack(collections.Mapping):
             yield action_task()
         except exception.ResourceFailure as ex:
             stack_status = self.FAILED
-            reason = 'Resource %s failed: %s' % (action.lower(), str(ex))
+            reason = 'Resource %s failed: %s' % (action, str(ex))
         except scheduler.Timeout:
             stack_status = self.FAILED
             reason = '%s timed out' % action.title()
@@ -466,6 +487,22 @@ class Stack(collections.Mapping):
         else:
             return None
 
+    def adopt(self):
+        '''
+        Adopt a stack (create stack with all the existing resources).
+        '''
+        def rollback():
+            if not self.disable_rollback and self.state == (self.ADOPT,
+                                                            self.FAILED):
+                self.delete(action=self.ROLLBACK)
+
+        creator = scheduler.TaskRunner(
+            self.stack_task,
+            action=self.ADOPT,
+            reverse=False,
+            post_func=rollback)
+        creator(timeout=self.timeout_secs())
+
     def update(self, newstack):
         '''
         Compare the current stack with newstack,
@@ -478,13 +515,15 @@ class Stack(collections.Mapping):
         Update will fail if it exceeds the specified timeout. The default is
         60 minutes, set in the constructor
         '''
+        self.updated_time = datetime.utcnow()
         updater = scheduler.TaskRunner(self.update_task, newstack)
         updater()
 
     @scheduler.wrappertask
     def update_task(self, newstack, action=UPDATE):
         if action not in (self.UPDATE, self.ROLLBACK):
-            logger.error(_("Unexpected action %s passed to update!") % action)
+            logger.error(_("Unexpected action %s passed to update!") %
+                         action)
             self.state_set(self.UPDATE, self.FAILED,
                            "Invalid action %s" % action)
             return
@@ -542,7 +581,7 @@ class Stack(collections.Mapping):
                     return
         else:
             logger.debug(_('Deleting backup stack'))
-            backup_stack.delete()
+            backup_stack.delete(backup=True)
 
         self.state_set(action, stack_status, reason)
 
@@ -551,11 +590,11 @@ class Stack(collections.Mapping):
         # stack resources are stored, even if one is in a failed
         # state (otherwise we won't remove them on delete)
         self.t = newstack.t
-        template_outputs = self.t[template.OUTPUTS]
+        template_outputs = self.t[self.t.OUTPUTS]
         self.outputs = self.resolve_static_data(template_outputs)
         self.store()
 
-    def delete(self, action=DELETE):
+    def delete(self, action=DELETE, backup=False):
         '''
         Delete all of the resources, and then the stack itself.
         The action parameter is used to differentiate between a user
@@ -570,12 +609,13 @@ class Stack(collections.Mapping):
             return
 
         stack_status = self.COMPLETE
-        reason = 'Stack %s completed successfully' % action.lower()
-        self.state_set(action, self.IN_PROGRESS, 'Stack %s started' % action)
+        reason = 'Stack %s completed successfully' % action
+        self.state_set(action, self.IN_PROGRESS, 'Stack %s started' %
+                       action)
 
         backup_stack = self._backup_stack(False)
         if backup_stack is not None:
-            backup_stack.delete()
+            backup_stack.delete(backup=True)
             if backup_stack.status != backup_stack.COMPLETE:
                 errs = backup_stack.status_reason
                 failure = 'Error deleting backup resources: %s' % errs
@@ -590,12 +630,12 @@ class Stack(collections.Mapping):
             scheduler.TaskRunner(action_task)(timeout=self.timeout_secs())
         except exception.ResourceFailure as ex:
             stack_status = self.FAILED
-            reason = 'Resource %s failed: %s' % (action.lower(), str(ex))
+            reason = 'Resource %s failed: %s' % (action, str(ex))
         except scheduler.Timeout:
             stack_status = self.FAILED
             reason = '%s timed out' % action.title()
 
-        if stack_status != self.FAILED:
+        if stack_status != self.FAILED and not backup:
             # If we created a trust, delete it
             stack = db_api.stack_get(self.context, self.id)
             user_creds = db_api.user_creds_get(stack.user_creds_id)
@@ -607,6 +647,16 @@ class Stack(collections.Mapping):
                     logger.exception(ex)
                     stack_status = self.FAILED
                     reason = "Error deleting trust: %s" % str(ex)
+
+            # If the stack has a domain project, delete it
+            if self.stack_user_project_id:
+                try:
+                    self.clients.keystone().delete_stack_domain_project(
+                        project_id=self.stack_user_project_id)
+                except Exception as ex:
+                    logger.exception(ex)
+                    stack_status = self.FAILED
+                    reason = "Error deleting project: %s" % str(ex)
 
         self.state_set(action, stack_status, reason)
 
@@ -690,6 +740,10 @@ class Stack(collections.Mapping):
         for res in self.resources.values():
             res.set_deletion_policy(policy)
 
+    def set_stack_user_project_id(self, project_id):
+        self.stack_user_project_id = project_id
+        self.store()
+
     def get_abandon_data(self):
         return {
             'name': self.name,
@@ -702,58 +756,7 @@ class Stack(collections.Mapping):
         }
 
     def resolve_static_data(self, snippet):
-        return resolve_static_data(self.t, self, self.parameters, snippet)
+        return self.t.parse(self, snippet)
 
     def resolve_runtime_data(self, snippet):
-        return resolve_runtime_data(self.t, self.resources, snippet)
-
-
-def resolve_static_data(template, stack, parameters, snippet):
-    '''
-    Resolve static parameters, map lookups, etc. in a template.
-
-    Example:
-
-    >>> from heat.common import template_format
-    >>> template_str = '# JSON or YAML encoded template'
-    >>> template = Template(template_format.parse(template_str))
-    >>> parameters = Parameters('stack', template, {'KeyName': 'my_key'})
-    >>> resolve_static_data(template, None, parameters, {'Ref': 'KeyName'})
-    'my_key'
-    '''
-    return transform(snippet,
-                     [functools.partial(template.resolve_param_refs,
-                                        parameters=parameters),
-                      functools.partial(template.resolve_availability_zones,
-                                        stack=stack),
-                      functools.partial(template.resolve_resource_facade,
-                                        stack=stack),
-                      template.resolve_find_in_map,
-                      template.reduce_joins])
-
-
-def resolve_runtime_data(template, resources, snippet):
-    return transform(snippet,
-                     [functools.partial(template.resolve_resource_refs,
-                                        resources=resources),
-                      functools.partial(template.resolve_attributes,
-                                        resources=resources),
-                      template.resolve_split,
-                      template.resolve_member_list_to_map,
-                      template.resolve_select,
-                      template.resolve_joins,
-                      template.resolve_replace,
-                      template.resolve_base64])
-
-
-def transform(data, transformations):
-    '''
-    Apply each of the transformation functions in the supplied list to the data
-    in turn.
-    '''
-    def sub_transform(d):
-        return transform(d, transformations)
-
-    for t in transformations:
-        data = t(data, transform=sub_transform)
-    return data
+        return function.resolve(snippet)

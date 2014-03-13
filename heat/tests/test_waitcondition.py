@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -74,6 +73,27 @@ test_template_wc_count = '''
 }
 '''
 
+test_template_update_waitcondition = '''
+{
+  "HeatTemplateFormatVersion" : "2012-12-12",
+  "Description" : "Updatable Wait Condition",
+  "Parameters" : {},
+  "Resources" : {
+    "WaitHandle" : {
+      "Type" : "OS::Heat::UpdateWaitConditionHandle"
+    },
+    "WaitForTheHandle" : {
+      "Type" : "AWS::CloudFormation::WaitCondition",
+      "Properties" : {
+        "Handle" : {"Ref" : "WaitHandle"},
+        "Timeout" : "5",
+        "Count" : "3"
+      }
+    }
+  }
+}
+'''
+
 
 class WaitConditionTest(HeatTestCase):
 
@@ -136,12 +156,12 @@ class WaitConditionTest(HeatTestCase):
         self.stack.create()
 
         rsrc = self.stack['WaitForTheHandle']
-        self.assertEqual(rsrc.state,
-                         (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE),
+                         rsrc.state)
 
         r = db_api.resource_get_by_name_and_stack(None, 'WaitHandle',
                                                   self.stack.id)
-        self.assertEqual(r.name, 'WaitHandle')
+        self.assertEqual('WaitHandle', r.name)
         self.m.VerifyAll()
 
     @utils.stack_delete_after
@@ -156,13 +176,13 @@ class WaitConditionTest(HeatTestCase):
         self.stack.create()
 
         rsrc = self.stack['WaitForTheHandle']
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.FAILED))
+        self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         reason = rsrc.status_reason
         self.assertTrue(reason.startswith('WaitConditionFailure:'))
 
         r = db_api.resource_get_by_name_and_stack(None, 'WaitHandle',
                                                   self.stack.id)
-        self.assertEqual(r.name, 'WaitHandle')
+        self.assertEqual('WaitHandle', r.name)
         self.m.VerifyAll()
 
     @utils.stack_delete_after
@@ -179,12 +199,12 @@ class WaitConditionTest(HeatTestCase):
         self.stack.create()
 
         rsrc = self.stack['WaitForTheHandle']
-        self.assertEqual(rsrc.state,
-                         (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE),
+                         rsrc.state)
 
         r = db_api.resource_get_by_name_and_stack(None, 'WaitHandle',
                                                   self.stack.id)
-        self.assertEqual(r.name, 'WaitHandle')
+        self.assertEqual('WaitHandle', r.name)
         self.m.VerifyAll()
 
     @utils.stack_delete_after
@@ -199,13 +219,13 @@ class WaitConditionTest(HeatTestCase):
         self.stack.create()
 
         rsrc = self.stack['WaitForTheHandle']
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.FAILED))
+        self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         reason = rsrc.status_reason
         self.assertTrue(reason.startswith('WaitConditionFailure:'))
 
         r = db_api.resource_get_by_name_and_stack(None, 'WaitHandle',
                                                   self.stack.id)
-        self.assertEqual(r.name, 'WaitHandle')
+        self.assertEqual('WaitHandle', r.name)
         self.m.VerifyAll()
 
     @utils.stack_delete_after
@@ -234,7 +254,7 @@ class WaitConditionTest(HeatTestCase):
 
         rsrc = self.stack['WaitForTheHandle']
 
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.FAILED))
+        self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         reason = rsrc.status_reason
         self.assertTrue(reason.startswith('WaitConditionTimeout:'))
 
@@ -249,25 +269,25 @@ class WaitConditionTest(HeatTestCase):
         self.stack.create()
 
         rsrc = self.stack['WaitForTheHandle']
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         wc_att = rsrc.FnGetAtt('Data')
-        self.assertEqual(wc_att, unicode({}))
+        self.assertEqual(unicode({}), wc_att)
 
         handle = self.stack['WaitHandle']
-        self.assertEqual(handle.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), handle.state)
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
         handle.metadata_update(new_metadata=test_metadata)
         wc_att = rsrc.FnGetAtt('Data')
-        self.assertEqual(wc_att, '{"123": "foo"}')
+        self.assertEqual('{"123": "foo"}', wc_att)
 
         test_metadata = {'Data': 'dog', 'Reason': 'cat',
                          'Status': 'SUCCESS', 'UniqueId': '456'}
         handle.metadata_update(new_metadata=test_metadata)
         wc_att = rsrc.FnGetAtt('Data')
-        self.assertEqual(wc_att, u'{"123": "foo", "456": "dog"}')
+        self.assertEqual(u'{"123": "foo", "456": "dog"}', wc_att)
         self.m.VerifyAll()
 
     @utils.stack_delete_after
@@ -427,7 +447,7 @@ class WaitConditionHandleTest(HeatTestCase):
         db_api.resource_data_set(rsrc, 'ec2_signed_url', None, False)
 
         rsrc.created_time = created_time
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         expected_url = "".join([
             'http://server.test:8000/v1/waitcondition/',
@@ -451,7 +471,7 @@ class WaitConditionHandleTest(HeatTestCase):
     def test_metadata_update(self):
         self.stack = self.create_stack()
         rsrc = self.stack['WaitHandle']
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
@@ -466,7 +486,7 @@ class WaitConditionHandleTest(HeatTestCase):
     def test_metadata_update_invalid(self):
         self.stack = self.create_stack()
         rsrc = self.stack['WaitHandle']
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         # metadata_update should raise a ValueError if the metadata
         # is missing any of the expected keys
@@ -510,23 +530,23 @@ class WaitConditionHandleTest(HeatTestCase):
     def test_get_status(self):
         self.stack = self.create_stack()
         rsrc = self.stack['WaitHandle']
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         # UnsetStubs, don't want get_status stubbed anymore..
         self.m.VerifyAll()
         self.m.UnsetStubs()
 
-        self.assertEqual(rsrc.get_status(), [])
+        self.assertEqual([], rsrc.get_status())
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
         rsrc.metadata_update(new_metadata=test_metadata)
-        self.assertEqual(rsrc.get_status(), ['SUCCESS'])
+        self.assertEqual(['SUCCESS'], rsrc.get_status())
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '456'}
         rsrc.metadata_update(new_metadata=test_metadata)
-        self.assertEqual(rsrc.get_status(), ['SUCCESS', 'SUCCESS'])
+        self.assertEqual(['SUCCESS', 'SUCCESS'], rsrc.get_status())
 
         # re-stub keystone() with fake client or stack delete fails
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'keystone')
@@ -537,7 +557,7 @@ class WaitConditionHandleTest(HeatTestCase):
     def test_get_status_reason(self):
         self.stack = self.create_stack()
         rsrc = self.stack['WaitHandle']
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
@@ -573,8 +593,10 @@ class WaitConditionUpdateTest(HeatTestCase):
 
     # Note tests creating a stack should be decorated with @stack_delete_after
     # to ensure the stack is properly cleaned up
-    def create_stack(self):
-        temp = template_format.parse(test_template_wc_count)
+    def create_stack(self, tmpl=None):
+        if tmpl is None:
+            tmpl = test_template_wc_count
+        temp = template_format.parse(tmpl)
         template = parser.Template(temp)
         ctx = utils.dummy_context(tenant_id='test_tenant')
         stack = parser.Stack(ctx, 'test_stack', template,
@@ -612,7 +634,7 @@ class WaitConditionUpdateTest(HeatTestCase):
         self.stack.create()
 
         rsrc = self.stack['WaitForTheHandle']
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()
         self.m.UnsetStubs()
@@ -628,7 +650,7 @@ class WaitConditionUpdateTest(HeatTestCase):
         updater = scheduler.TaskRunner(rsrc.update, update_snippet)
         updater()
 
-        self.assertEqual(rsrc.state, (rsrc.UPDATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
 
     @utils.stack_delete_after
     def test_handle_update(self):
@@ -637,7 +659,7 @@ class WaitConditionUpdateTest(HeatTestCase):
         self.stack.create()
 
         rsrc = self.stack['WaitForTheHandle']
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()
         self.m.UnsetStubs()
@@ -653,11 +675,12 @@ class WaitConditionUpdateTest(HeatTestCase):
                               "Timeout": "5",
                               "Count": "5"}}
         prop_diff = {"Count": 5}
-        updater = rsrc.handle_update(update_snippet, {}, prop_diff)
+        parsed_snippet = self.stack.resolve_static_data(update_snippet)
+        updater = rsrc.handle_update(parsed_snippet, {}, prop_diff)
         updater.run_to_completion()
 
         self.assertEqual(5, rsrc.properties['Count'])
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
     @utils.stack_delete_after
     def test_handle_update_restored_from_db(self):
@@ -666,7 +689,7 @@ class WaitConditionUpdateTest(HeatTestCase):
         self.stack.create()
 
         rsrc = self.stack['WaitForTheHandle']
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()
         self.m.UnsetStubs()
@@ -687,11 +710,12 @@ class WaitConditionUpdateTest(HeatTestCase):
                               "Timeout": "5",
                               "Count": "5"}}
         prop_diff = {"Count": 5}
-        updater = rsrc.handle_update(update_snippet, {}, prop_diff)
+        parsed_snippet = self.stack.resolve_static_data(update_snippet)
+        updater = rsrc.handle_update(parsed_snippet, {}, prop_diff)
         updater.run_to_completion()
 
         self.assertEqual(5, rsrc.properties['Count'])
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
     def _metadata_update(self, rsrc, metadata, times=1):
         for time in range(times):
@@ -705,7 +729,7 @@ class WaitConditionUpdateTest(HeatTestCase):
         self.stack.create()
 
         rsrc = self.stack['WaitForTheHandle']
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()
         self.m.UnsetStubs()
@@ -732,9 +756,26 @@ class WaitConditionUpdateTest(HeatTestCase):
                               "Timeout": "5",
                               "Count": "5"}}
         prop_diff = {"Count": 5}
-        updater = rsrc.handle_update(update_snippet, {}, prop_diff)
+        parsed_snippet = self.stack.resolve_static_data(update_snippet)
+        updater = rsrc.handle_update(parsed_snippet, {}, prop_diff)
         self.assertEqual(5, rsrc.properties['Count'])
         self.assertRaises(wc.WaitConditionTimeout, updater.run_to_completion)
 
         self.m.VerifyAll()
         self.m.UnsetStubs()
+
+    @utils.stack_delete_after
+    def test_update_updatehandle(self):
+        self.stack = self.create_stack(test_template_update_waitcondition)
+        self.m.ReplayAll()
+        self.stack.create()
+
+        rsrc = self.stack['WaitForTheHandle']
+        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
+
+        wait_condition_handle = self.stack['WaitHandle']
+        self.assertRaises(
+            resource.UpdateReplace, wait_condition_handle.update, None, None)

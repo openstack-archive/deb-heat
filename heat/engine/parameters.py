@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,8 +13,9 @@
 #    under the License.
 
 import collections
+import itertools
 import json
-import re
+from heat.engine import constraints as constr
 
 from heat.common import exception
 
@@ -23,114 +23,142 @@ from heat.common import exception
 PARAMETER_KEYS = (
     TYPE, DEFAULT, NO_ECHO, ALLOWED_VALUES, ALLOWED_PATTERN,
     MAX_LENGTH, MIN_LENGTH, MAX_VALUE, MIN_VALUE,
-    DESCRIPTION, CONSTRAINT_DESCRIPTION
+    DESCRIPTION, CONSTRAINT_DESCRIPTION, LABEL
 ) = (
     'Type', 'Default', 'NoEcho', 'AllowedValues', 'AllowedPattern',
     'MaxLength', 'MinLength', 'MaxValue', 'MinValue',
-    'Description', 'ConstraintDescription'
-)
-PARAMETER_TYPES = (
-    STRING, NUMBER, COMMA_DELIMITED_LIST, JSON
-) = (
-    'String', 'Number', 'CommaDelimitedList', 'Json'
-)
-PSEUDO_PARAMETERS = (
-    PARAM_STACK_ID, PARAM_STACK_NAME, PARAM_REGION
-) = (
-    'AWS::StackId', 'AWS::StackName', 'AWS::Region'
+    'Description', 'ConstraintDescription', 'Label'
 )
 
 
-class ParamSchema(dict):
+class Schema(constr.Schema):
     '''Parameter schema.'''
 
-    def __init__(self, schema):
-        super(ParamSchema, self).__init__(schema)
+    KEYS = (
+        TYPE, DESCRIPTION, DEFAULT, SCHEMA, CONSTRAINTS, HIDDEN, LABEL
+    ) = (
+        'Type', 'Description', 'Default', 'Schema', 'Constraints', 'NoEcho',
+        'Label'
+    )
 
-    def do_check(self, name, value, keys):
-        for k in keys:
-            check = self.check(k)
-            const = self.get(k)
-            if check is None or const is None:
-                continue
-            check(name, value, const)
+    PARAMETER_KEYS = PARAMETER_KEYS
 
-    def constraints(self):
-        ptype = self[TYPE]
-        keys = {
-            STRING: [ALLOWED_VALUES, ALLOWED_PATTERN, MAX_LENGTH, MIN_LENGTH],
-            NUMBER: [ALLOWED_VALUES, MAX_VALUE, MIN_VALUE],
-            JSON: [MAX_LENGTH, MIN_LENGTH]
-        }.get(ptype)
-        list_keys = {
-            COMMA_DELIMITED_LIST: [ALLOWED_VALUES],
-            JSON: [ALLOWED_VALUES]
-        }.get(ptype)
-        return (keys, list_keys)
+    # For Parameters the type name for Schema.LIST is CommaDelimitedList
+    # and the type name for Schema.MAP is Json
+    TYPES = (
+        STRING, NUMBER, LIST, MAP,
+    ) = (
+        'String', 'Number', 'CommaDelimitedList', 'Json',
+    )
+
+    def __init__(self, data_type, description=None, default=None, schema=None,
+                 constraints=[], hidden=False, context=None, label=None):
+        super(Schema, self).__init__(data_type=data_type,
+                                     description=description,
+                                     default=default,
+                                     schema=schema,
+                                     required=default is None,
+                                     constraints=constraints,
+                                     label=label)
+        self.hidden = hidden
+        self.context = context
+
+    # Schema class validates default value for lists assuming list type. For
+    # comma delimited list string supported in paramaters Schema class, the
+    # default value has to be parsed into a list if necessary so that
+    # validation works.
+    def _validate_default(self):
+        if self.default is not None:
+            default_value = self.default
+            if self.type == self.LIST and not isinstance(self.default, list):
+                try:
+                    default_value = self.default.split(',')
+                except (KeyError, AttributeError) as err:
+                    raise constr.InvalidSchemaError(_('Default must be a '
+                                                      'comma-delimited list '
+                                                      'string: %s') % str(err))
+            try:
+                self.validate_constraints(default_value)
+            except (ValueError, TypeError) as exc:
+                raise constr.InvalidSchemaError(_('Invalid default '
+                                                  '%(default)s (%(exc)s)') %
+                                                dict(default=self.default,
+                                                     exc=exc))
+
+    def set_default(self, default=None):
+        super(Schema, self).set_default(default)
+        self.required = default is None
+
+    @staticmethod
+    def get_num(key, context):
+        val = context.get(key)
+        if val is not None:
+            val = Schema.str_to_num(val)
+        return val
+
+    @staticmethod
+    def _check_dict(schema_dict, allowed_keys, entity):
+        if not isinstance(schema_dict, dict):
+            raise constr.InvalidSchemaError(
+                _("Invalid %s, expected a mapping") % entity)
+        for key in schema_dict:
+            if key not in allowed_keys:
+                raise constr.InvalidSchemaError(
+                    _("Invalid key '%(key)s' for %(entity)s") % {
+                        "key": key, "entity": entity})
+
+    @classmethod
+    def _validate_dict(cls, schema_dict):
+        cls._check_dict(schema_dict, cls.PARAMETER_KEYS, "parameter")
+
+        if cls.TYPE not in schema_dict:
+            raise constr.InvalidSchemaError(_("Missing parameter type"))
+
+    @classmethod
+    def from_dict(cls, schema_dict):
+        """
+        Return a Parameter Schema object from a legacy schema dictionary.
+        """
+        cls._validate_dict(schema_dict)
+
+        def constraints():
+            desc = schema_dict.get(CONSTRAINT_DESCRIPTION)
+
+            if MIN_VALUE in schema_dict or MAX_VALUE in schema_dict:
+                yield constr.Range(Schema.get_num(MIN_VALUE, schema_dict),
+                                   Schema.get_num(MAX_VALUE, schema_dict),
+                                   desc)
+            if MIN_LENGTH in schema_dict or MAX_LENGTH in schema_dict:
+                yield constr.Length(Schema.get_num(MIN_LENGTH, schema_dict),
+                                    Schema.get_num(MAX_LENGTH, schema_dict),
+                                    desc)
+            if ALLOWED_VALUES in schema_dict:
+                yield constr.AllowedValues(schema_dict[ALLOWED_VALUES], desc)
+            if ALLOWED_PATTERN in schema_dict:
+                yield constr.AllowedPattern(schema_dict[ALLOWED_PATTERN], desc)
+
+        # make update_allowed true by default on TemplateResources
+        # as the template should deal with this.
+        return cls(schema_dict[TYPE],
+                   description=schema_dict.get(DESCRIPTION),
+                   default=schema_dict.get(DEFAULT),
+                   constraints=list(constraints()),
+                   hidden=str(schema_dict.get(NO_ECHO,
+                                              'false')).lower() == 'true',
+                   label=schema_dict.get(LABEL))
 
     def validate(self, name, value):
-        (keys, list_keys) = self.constraints()
-        if keys:
-            self.do_check(name, value, keys)
-        if list_keys:
-            values = value
-            for value in values:
-                self.do_check(name, value, list_keys)
+        super(Schema, self).validate_constraints(value, self.context)
 
-    def raise_error(self, name, message, desc=True):
-        if desc:
-            message = self.get(CONSTRAINT_DESCRIPTION) or message
-        raise ValueError('%s %s' % (name, message))
+    def __getitem__(self, key):
+        if key == self.TYPE:
+            return self.type
+        if key == self.HIDDEN:
+            return self.hidden
+        else:
+            return super(Schema, self).__getitem__(key)
 
-    def check_allowed_values(self, name, val, const, desc=None):
-        vals = list(const)
-        if val not in vals:
-            err = '"%s" not in %s "%s"' % (val, ALLOWED_VALUES, vals)
-            self.raise_error(name, desc or err)
-
-    def check_allowed_pattern(self, name, val, p, desc=None):
-        m = re.match(p, val)
-        if m is None or m.end() != len(val):
-            err = '"%s" does not match %s "%s"' % (val, ALLOWED_PATTERN, p)
-            self.raise_error(name, desc or err)
-
-    def check_max_length(self, name, val, const, desc=None):
-        max_len = int(const)
-        val_len = len(val)
-        if val_len > max_len:
-            err = 'length (%d) overflows %s (%d)' % (val_len,
-                                                     MAX_LENGTH, max_len)
-            self.raise_error(name, desc or err)
-
-    def check_min_length(self, name, val, const, desc=None):
-        min_len = int(const)
-        val_len = len(val)
-        if val_len < min_len:
-            err = 'length (%d) underflows %s (%d)' % (val_len,
-                                                      MIN_LENGTH, min_len)
-            self.raise_error(name, desc or err)
-
-    def check_max_value(self, name, val, const, desc=None):
-        max_val = float(const)
-        val = float(val)
-        if val > max_val:
-            err = '%d overflows %s %d' % (val, MAX_VALUE, max_val)
-            self.raise_error(name, desc or err)
-
-    def check_min_value(self, name, val, const, desc=None):
-        min_val = float(const)
-        val = float(val)
-        if val < min_val:
-            err = '%d underflows %s %d' % (val, MIN_VALUE, min_val)
-            self.raise_error(name, desc or err)
-
-    def check(self, const_key):
-        return {ALLOWED_VALUES: self.check_allowed_values,
-                ALLOWED_PATTERN: self.check_allowed_pattern,
-                MAX_LENGTH: self.check_max_length,
-                MIN_LENGTH: self.check_min_length,
-                MAX_VALUE: self.check_max_value,
-                MIN_VALUE: self.check_min_value}.get(const_key)
+        raise KeyError(key)
 
 
 class Parameter(object):
@@ -141,17 +169,20 @@ class Parameter(object):
         if cls is not Parameter:
             return super(Parameter, cls).__new__(cls)
 
-        param_type = schema[TYPE]
-        if param_type == STRING:
+        # Check for fully-fledged Schema objects
+        if not isinstance(schema, Schema):
+            schema = Schema.from_dict(schema)
+
+        if schema.type == schema.STRING:
             ParamClass = StringParam
-        elif param_type == NUMBER:
+        elif schema.type == schema.NUMBER:
             ParamClass = NumberParam
-        elif param_type == COMMA_DELIMITED_LIST:
+        elif schema.type == schema.LIST:
             ParamClass = CommaDelimitedListParam
-        elif param_type == JSON:
+        elif schema.type == schema.MAP:
             ParamClass = JsonParam
         else:
-            raise ValueError(_('Invalid Parameter type "%s"') % param_type)
+            raise ValueError(_('Invalid Parameter type "%s"') % schema.type)
 
         return ParamClass(name, schema, value, validate_value)
 
@@ -182,29 +213,33 @@ class Parameter(object):
 
         raise KeyError(_('Missing parameter %s') % self.name)
 
-    def no_echo(self):
+    def hidden(self):
         '''
         Return whether the parameter should be sanitised in any output to
         the user.
         '''
-        return str(self.schema.get(NO_ECHO, 'false')).lower() == 'true'
+        return self.schema.hidden
 
     def description(self):
         '''Return the description of the parameter.'''
-        return self.schema.get(DESCRIPTION, '')
+        return self.schema.description or ''
+
+    def label(self):
+        '''Return the label or param name.'''
+        return self.schema.label or self.name
 
     def has_default(self):
         '''Return whether the parameter has a default value.'''
-        return DEFAULT in self.schema
+        return self.schema.default is not None
 
     def default(self):
         '''Return the default value of the parameter.'''
-        return self.schema.get(DEFAULT)
+        return self.schema.default
 
     def __str__(self):
         '''Return a string representation of the parameter'''
         value = self.value()
-        if self.no_echo():
+        if self.hidden():
             return '******'
         else:
             return str(value)
@@ -247,6 +282,10 @@ class CommaDelimitedListParam(Parameter, collections.Sequence):
         self.parsed = self.parse(self.user_value or self.default())
 
     def parse(self, value):
+        # only parse when value is not already a list
+        if isinstance(value, list):
+            return value
+
         try:
             if value:
                 return value.split(',')
@@ -313,43 +352,37 @@ class Parameters(collections.Mapping):
     The parameters of a stack, with type checking, defaults &c. specified by
     the stack's template.
     '''
-    def __init__(self, stack_name, tmpl, user_params={}, stack_id=None,
-                 validate_value=True):
+
+    PSEUDO_PARAMETERS = (
+        PARAM_STACK_ID, PARAM_STACK_NAME, PARAM_REGION
+    ) = (
+        'AWS::StackId', 'AWS::StackName', 'AWS::Region'
+    )
+
+    def __init__(self, stack_identifier, tmpl, user_params={},
+                 validate_value=True, context=None):
         '''
         Create the parameter container for a stack from the stack name and
         template, optionally setting the user-supplied parameter values.
         '''
-        def parameters():
-            yield Parameter(PARAM_STACK_ID,
-                            ParamSchema({TYPE: STRING,
-                                         DESCRIPTION: 'Stack ID',
-                                         DEFAULT: str(stack_id)}))
-            if stack_name is not None:
-                yield Parameter(PARAM_STACK_NAME,
-                                ParamSchema({TYPE: STRING,
-                                             DESCRIPTION: 'Stack Name',
-                                             DEFAULT: stack_name}))
-                yield Parameter(PARAM_REGION,
-                                ParamSchema({TYPE: STRING,
-                                             DEFAULT: 'ap-southeast-1',
-                                             ALLOWED_VALUES:
-                                             ['us-east-1',
-                                              'us-west-1',
-                                              'us-west-2',
-                                              'sa-east-1',
-                                              'eu-west-1',
-                                              'ap-southeast-1',
-                                              'ap-northeast-1']}))
-
-            schemata = self.tmpl.param_schemata().iteritems()
-            for name, schema in schemata:
-                value = user_params.get(name)
-                yield Parameter(name, schema, value, validate_value)
+        def user_parameter(schema_item):
+            name, schema = schema_item
+            schema.context = context
+            return Parameter(name, schema,
+                             user_params.get(name),
+                             validate_value)
 
         self.tmpl = tmpl
         self._validate_tmpl_parameters()
         self._validate(user_params)
-        self.params = dict((p.name, p) for p in parameters())
+
+        schemata = self.tmpl.param_schemata()
+        user_parameters = (user_parameter(si) for si in schemata.iteritems())
+        pseudo_parameters = self._pseudo_parameters(stack_identifier)
+
+        self.params = dict((p.name,
+                            p) for p in itertools.chain(pseudo_parameters,
+                                                        user_parameters))
 
     def __contains__(self, key):
         '''Return whether the specified parameter exists.'''
@@ -375,11 +408,14 @@ class Parameters(collections.Mapping):
         return dict((n, func(p))
                     for n, p in self.params.iteritems() if filter_func(p))
 
-    def set_stack_id(self, stack_id):
+    def set_stack_id(self, stack_identifier):
         '''
-        Set the AWS::StackId pseudo parameter value
+        Set the StackId pseudo parameter value
         '''
-        self.params[PARAM_STACK_ID].schema[DEFAULT] = stack_id
+        if stack_identifier is not None:
+            self.params[self.PARAM_STACK_ID].schema.set_default(
+                stack_identifier.arn())
+            return True
 
     def _validate(self, user_params):
         schemata = self.tmpl.param_schemata()
@@ -398,3 +434,28 @@ class Parameters(collections.Mapping):
             for name, attrs in template_params.iteritems():
                 if not isinstance(attrs, dict):
                     raise exception.InvalidTemplateParameter(key=name)
+
+    def _pseudo_parameters(self, stack_identifier):
+        stack_id = stack_identifier.arn() \
+            if stack_identifier is not None else 'None'
+        stack_name = stack_identifier and stack_identifier.stack_name
+
+        yield Parameter(self.PARAM_STACK_ID,
+                        Schema(Schema.STRING, _('Stack ID'),
+                               default=str(stack_id)))
+        if stack_name:
+            yield Parameter(self.PARAM_STACK_NAME,
+                            Schema(Schema.STRING, _('Stack Name'),
+                                   default=stack_name))
+            yield Parameter(self.PARAM_REGION,
+                            Schema(Schema.STRING,
+                                   default='ap-southeast-1',
+                                   constraints=
+                                   [constr.AllowedValues(['us-east-1',
+                                                          'us-west-1',
+                                                          'us-west-2',
+                                                          'sa-east-1',
+                                                          'eu-west-1',
+                                                          'ap-southeast-1',
+                                                          'ap-northeast-1']
+                                                         )]))

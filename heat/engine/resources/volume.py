@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -23,6 +22,7 @@ from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
+from heat.engine import support
 from heat.engine.resources import nova_utils
 from heat.engine import scheduler
 
@@ -106,8 +106,7 @@ class Volume(resource.Resource):
         cinder = self.cinder()
         if backup_id is not None:
             if volume_backups is None:
-                raise exception.Error(
-                    '%s not supported' % self.BACKUP_ID)
+                raise exception.Error(_('Backups not supported.'))
             vol_id = cinder.restores.restore(backup_id).volume_id
 
             vol = cinder.volumes.get(vol_id)
@@ -152,7 +151,7 @@ class Volume(resource.Resource):
                     vol.get()
 
                 if vol.status == 'in-use':
-                    logger.warn(_('cant delete volume when in-use'))
+                    logger.warn(_('can not delete volume when in-use'))
                     raise exception.Error(_('Volume in use'))
 
                 vol.delete()
@@ -370,7 +369,10 @@ class CinderVolume(Volume):
         ),
         SIZE: properties.Schema(
             properties.Schema.NUMBER,
-            _('The size of the volume in GB.')
+            _('The size of the volume in GB.'),
+            constraints=[
+                constraints.Range(min=1),
+            ]
         ),
         SNAPSHOT_ID: properties.Schema(
             properties.Schema.STRING,
@@ -399,12 +401,18 @@ class CinderVolume(Volume):
         ),
         IMAGE_REF: properties.Schema(
             properties.Schema.STRING,
-            _('DEPRECATED: use "image" instead.')
+            _('The ID of the image to create the volume from.'),
+            support_status=support.SupportStatus(
+                support.DEPRECATED,
+                _('Use property %s.') % IMAGE)
         ),
         IMAGE: properties.Schema(
             properties.Schema.STRING,
             _('If specified, the name or ID of the image to create the '
-              'volume from.')
+              'volume from.'),
+            constraints=[
+                constraints.CustomConstraint('glance.image')
+            ]
         ),
         SOURCE_VOLID: properties.Schema(
             properties.Schema.STRING,

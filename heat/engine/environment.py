@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,10 +12,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import glob
 import itertools
+import os.path
+
+from oslo.config import cfg
 
 from heat.openstack.common import log
 from heat.openstack.common.gettextutils import _
+from heat.common import environment_format
 from heat.common import exception
 
 
@@ -235,9 +239,9 @@ class ResourceRegistry(object):
         def is_a_glob(resource_type):
             return resource_type.endswith('*')
         globs = itertools.ifilter(is_a_glob, self._registry.keys())
-        for glob in globs:
-            if self._registry[glob].matches(resource_type):
-                yield self._registry[glob]
+        for pattern in globs:
+            if self._registry[pattern].matches(resource_type):
+                yield self._registry[pattern]
 
     def get_resource_info(self, resource_type, resource_name=None,
                           registry_type=None):
@@ -324,7 +328,7 @@ SECTIONS = (PARAMETERS, RESOURCE_REGISTRY) = \
 class Environment(object):
 
     def __init__(self, env=None, user_env=True):
-        """Create an Environment from a dict of varing format.
+        """Create an Environment from a dict of varying format.
         1) old-school flat parameters
         2) or newer {resource_registry: bla, parameters: foo}
 
@@ -347,6 +351,7 @@ class Environment(object):
         else:
             self.params = dict((k, v) for (k, v) in env.iteritems()
                                if k != RESOURCE_REGISTRY)
+        self.constraints = {}
 
     def load(self, env_snippet):
         self.registry.load(env_snippet.get(RESOURCE_REGISTRY, {}))
@@ -360,6 +365,9 @@ class Environment(object):
     def register_class(self, resource_type, resource_class):
         self.registry.register_class(resource_type, resource_class)
 
+    def register_constraint(self, constraint_name, constraint):
+        self.constraints[constraint_name] = constraint
+
     def get_class(self, resource_type, resource_name=None):
         return self.registry.get_class(resource_type, resource_name)
 
@@ -370,3 +378,35 @@ class Environment(object):
                           registry_type=None):
         return self.registry.get_resource_info(resource_type, resource_name,
                                                registry_type)
+
+    def get_constraint(self, name):
+        return self.constraints.get(name)
+
+
+def read_global_environment(env, env_dir=None):
+    if env_dir is None:
+        cfg.CONF.import_opt('environment_dir', 'heat.common.config')
+        env_dir = cfg.CONF.environment_dir
+
+    try:
+        env_files = glob.glob(os.path.join(env_dir, '*'))
+    except OSError as osex:
+        LOG.error(_('Failed to read %s') % env_dir)
+        LOG.exception(osex)
+        return
+
+    for file_path in env_files:
+        try:
+            with open(file_path) as env_fd:
+                LOG.info(_('Loading %s') % file_path)
+                env_body = environment_format.parse(env_fd.read())
+                environment_format.default_for_missing(env_body)
+                env.load(env_body)
+        except ValueError as vex:
+            LOG.error(_('Failed to parse %(file_path)s') % {
+                      'file_path': file_path})
+            LOG.exception(vex)
+        except IOError as ioex:
+            LOG.error(_('Failed to read %(file_path)s') % {
+                      'file_path': file_path})
+            LOG.exception(ioex)

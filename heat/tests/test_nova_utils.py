@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,9 +13,11 @@
 #    under the License.
 """Tests for :module:'heat.engine.resources.nova_utls'."""
 
+import mock
 import uuid
 
 from heat.common import exception
+from heat.engine import clients
 from heat.engine.resources import nova_utils
 from heat.tests.common import HeatTestCase
 
@@ -50,6 +51,28 @@ class NovaUtilsTests(HeatTestCase):
                           self.nova_client, 'noimage')
         self.m.VerifyAll()
 
+    def test_get_ip(self):
+        my_image = self.m.CreateMockAnything()
+        my_image.addresses = {
+            'public': [{'version': 4,
+                        'addr': '4.5.6.7'},
+                       {'version': 6,
+                        'addr': '2401:1801:7800:0101:c058:dd33:ff18:04e6'}],
+            'private': [{'version': 4,
+                         'addr': '10.13.12.13'}]}
+
+        expected = '4.5.6.7'
+        observed = nova_utils.get_ip(my_image, 'public', 4)
+        self.assertEqual(expected, observed)
+
+        expected = '10.13.12.13'
+        observed = nova_utils.get_ip(my_image, 'private', 4)
+        self.assertEqual(expected, observed)
+
+        expected = '2401:1801:7800:0101:c058:dd33:ff18:04e6'
+        observed = nova_utils.get_ip(my_image, 'public', 6)
+        self.assertEqual(expected, observed)
+
     def test_get_flavor_id(self):
         """Tests the get_flavor_id function."""
         flav_id = str(uuid.uuid4())
@@ -82,6 +105,46 @@ class NovaUtilsTests(HeatTestCase):
                                                         my_key_name))
         self.assertRaises(exception.UserKeyPairMissing, nova_utils.get_keypair,
                           self.nova_client, 'notakey')
+        self.m.VerifyAll()
+
+
+class NovaUtilsRefreshServerTests(HeatTestCase):
+
+    def test_successful_refresh(self):
+        server = self.m.CreateMockAnything()
+        server.get().AndReturn(None)
+        self.m.ReplayAll()
+
+        self.assertIsNone(nova_utils.refresh_server(server))
+        self.m.VerifyAll()
+
+    def test_overlimit_error(self):
+        server = mock.Mock()
+        server.get.side_effect = clients.novaclient.exceptions.OverLimit(
+            413, "limit reached")
+        self.assertIsNone(nova_utils.refresh_server(server))
+
+    def test_500_error(self):
+        server = self.m.CreateMockAnything()
+        msg = ("ClientException: The server has either erred or is "
+               "incapable of performing the requested operation.")
+        server.get().AndRaise(
+            clients.novaclient.exceptions.ClientException(500, msg))
+        self.m.ReplayAll()
+
+        self.assertIsNone(nova_utils.refresh_server(server))
+        self.m.VerifyAll()
+
+    def test_unhandled_exception(self):
+        server = self.m.CreateMockAnything()
+        msg = ("ClientException: The server has either erred or is "
+               "incapable of performing the requested operation.")
+        server.get().AndRaise(
+            clients.novaclient.exceptions.ClientException(501, msg))
+        self.m.ReplayAll()
+
+        self.assertRaises(clients.novaclient.exceptions.ClientException,
+                          nova_utils.refresh_server, server)
         self.m.VerifyAll()
 
 
@@ -126,3 +189,46 @@ class NovaUtilsUserdataTests(HeatTestCase):
         self.assertIn("[Boto]", data)
         self.assertIn(self.expect, data)
         self.m.VerifyAll()
+
+
+class NovaUtilsMetadataTests(HeatTestCase):
+
+    def test_serialize_string(self):
+        original = {'test_key': 'simple string value'}
+        self.assertEqual(original, nova_utils.meta_serialize(original))
+
+    def test_serialize_int(self):
+        original = {'test_key': 123}
+        expected = {'test_key': '123'}
+        self.assertEqual(expected, nova_utils.meta_serialize(original))
+
+    def test_serialize_list(self):
+        original = {'test_key': [1, 2, 3]}
+        expected = {'test_key': '[1, 2, 3]'}
+        self.assertEqual(expected, nova_utils.meta_serialize(original))
+
+    def test_serialize_dict(self):
+        original = {'test_key': {'a': 'b', 'c': 'd'}}
+        expected = {'test_key': '{"a": "b", "c": "d"}'}
+        self.assertEqual(expected, nova_utils.meta_serialize(original))
+
+    def test_serialize_none(self):
+        original = {'test_key': None}
+        expected = {'test_key': 'null'}
+        self.assertEqual(expected, nova_utils.meta_serialize(original))
+
+    def test_serialize_combined(self):
+        original = {
+            'test_key_1': 123,
+            'test_key_2': 'a string',
+            'test_key_3': {'a': 'b'},
+            'test_key_4': None,
+        }
+        expected = {
+            'test_key_1': '123',
+            'test_key_2': 'a string',
+            'test_key_3': '{"a": "b"}',
+            'test_key_4': 'null',
+        }
+
+        self.assertEqual(expected, nova_utils.meta_serialize(original))

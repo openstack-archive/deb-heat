@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 # Copyright 2013 OpenStack Foundation
 #
@@ -17,7 +16,6 @@
 
 from keystoneclient.v2_0 import client as keystone_client
 from keystoneclient.exceptions import Unauthorized
-from oslo.config import cfg
 import webob
 
 from heat.common.auth_password import KeystonePasswordAuthProtocol
@@ -87,15 +85,18 @@ class KeystonePasswordAuthProtocolTest(HeatTestCase):
         self.response_headers = dict(headers)
 
     def test_valid_request(self):
-        self.m.StubOutClassWithMocks(keystone_client, 'Client')
-        mock_client = keystone_client.Client(
+        mock_client = self.m.CreateMock(keystone_client.Client)
+        self.m.StubOutWithMock(keystone_client, 'Client')
+        keystone_client.Client(
             username='user_name1', password='goodpassword',
-            tenant_id='tenant_id1', auth_url=self.config['auth_uri'])
+            tenant_id='tenant_id1',
+            auth_url=self.config['auth_uri']).AndReturn(mock_client)
         mock_client.auth_ref = TOKEN_RESPONSE
         self.m.ReplayAll()
         req = webob.Request.blank('/tenant_id1/')
         req.headers['X_AUTH_USER'] = 'user_name1'
         req.headers['X_AUTH_KEY'] = 'goodpassword'
+        req.headers['X_AUTH_URL'] = self.config['auth_uri']
         self.middleware(req.environ, self._start_fake_response)
         self.m.VerifyAll()
 
@@ -110,69 +111,12 @@ class KeystonePasswordAuthProtocolTest(HeatTestCase):
         req = webob.Request.blank('/tenant_id1/')
         req.headers['X_AUTH_USER'] = 'user_name1'
         req.headers['X_AUTH_KEY'] = 'badpassword'
+        req.headers['X_AUTH_URL'] = self.config['auth_uri']
         self.middleware(req.environ, self._start_fake_response)
         self.m.VerifyAll()
-        self.assertEqual(self.response_status, 401)
+        self.assertEqual(401, self.response_status)
 
     def test_request_with_no_tenant_in_url_or_auth_headers(self):
         req = webob.Request.blank('/')
         self.middleware(req.environ, self._start_fake_response)
-        self.assertEqual(self.response_status, 401)
-
-    def test_multi_cloud(self):
-        allowed_auth_uris = ['http://multicloud.test.com:5000/v2.0']
-        cfg.CONF.set_override('multi_cloud', True, group='auth_password')
-        auth_url = 'http://multicloud.test.com:5000/v2.0'
-        cfg.CONF.set_override('allowed_auth_uris',
-                              allowed_auth_uris,
-                              group='auth_password')
-        self.app = FakeApp(
-            expected_env={'HTTP_X_AUTH_URL': auth_url})
-        self.middleware = KeystonePasswordAuthProtocol(self.app, self.config)
-
-        self.m.StubOutClassWithMocks(keystone_client, 'Client')
-        mock_client = keystone_client.Client(
-            username='user_name1', password='goodpassword',
-            tenant_id='tenant_id1', auth_url=auth_url)
-        mock_client.auth_ref = TOKEN_RESPONSE
-        self.m.ReplayAll()
-        req = webob.Request.blank('/tenant_id1/')
-        req.headers['X_AUTH_USER'] = 'user_name1'
-        req.headers['X_AUTH_KEY'] = 'goodpassword'
-        req.headers['X_AUTH_URL'] = auth_url
-        self.middleware(req.environ, self._start_fake_response)
-        self.m.VerifyAll()
-
-    def test_multi_cloud_empty_allowed_uris(self):
-        cfg.CONF.set_override('multi_cloud', True, group='auth_password')
-        auth_url = 'http://multicloud.test.com:5000/v2.0'
-        cfg.CONF.set_override('allowed_auth_uris',
-                              [],
-                              group='auth_password')
-        req = webob.Request.blank('/tenant_id1/')
-        req.headers['X_AUTH_USER'] = 'user_name1'
-        req.headers['X_AUTH_KEY'] = 'goodpassword'
-        req.headers['X_AUTH_URL'] = auth_url
-        self.middleware(req.environ, self._start_fake_response)
-        self.assertEqual(self.response_status, 401)
-
-    def test_multi_cloud_target_not_allowed(self):
-        cfg.CONF.set_override('multi_cloud', True, group='auth_password')
-        auth_url = 'http://multicloud.test.com:5000/v2.0'
-        cfg.CONF.set_override('allowed_auth_uris',
-                              ['http://some.other.url:5000/v2.0'],
-                              group='auth_password')
-        req = webob.Request.blank('/tenant_id1/')
-        req.headers['X_AUTH_USER'] = 'user_name1'
-        req.headers['X_AUTH_KEY'] = 'goodpassword'
-        req.headers['X_AUTH_URL'] = auth_url
-        self.middleware(req.environ, self._start_fake_response)
-        self.assertEqual(self.response_status, 401)
-
-    def test_multi_cloud_no_auth_url(self):
-        cfg.CONF.set_override('multi_cloud', True, group='auth_password')
-        req = webob.Request.blank('/tenant_id1/')
-        req.headers['X_AUTH_USER'] = 'user_name1'
-        req.headers['X_AUTH_KEY'] = 'goodpassword'
-        self.middleware(req.environ, self._start_fake_response)
-        self.assertEqual(self.response_status, 400)
+        self.assertEqual(401, self.response_status)

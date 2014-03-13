@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -36,6 +35,8 @@ import heat.api.openstack.v1.resources as resources
 import heat.api.openstack.v1.events as events
 import heat.api.openstack.v1.actions as actions
 import heat.api.openstack.v1.build_info as build_info
+import heat.api.openstack.v1.software_configs as software_configs
+import heat.api.openstack.v1.software_deployments as software_deployments
 from heat.tests import utils
 
 import heat.api.middleware.fault as fault
@@ -64,10 +65,14 @@ def to_remote_error(error):
 class InstantiationDataTest(HeatTestCase):
 
     def test_format_parse(self):
-        data = {"key1": ["val1[0]", "val1[1]"], "key2": "val2"}
-        json_repr = '{ "key1": [ "val1[0]", "val1[1]" ], "key2": "val2" }'
+        data = {"AWSTemplateFormatVersion": "2010-09-09",
+                "key1": ["val1[0]", "val1[1]"],
+                "key2": "val2"}
+        json_repr = '{"AWSTemplateFormatVersion" : "2010-09-09",' \
+                    '"key1": [ "val1[0]", "val1[1]" ], ' \
+                    '"key2": "val2" }'
         parsed = stacks.InstantiationData.format_parse(json_repr, 'foo')
-        self.assertEqual(parsed, data)
+        self.assertEqual(data, parsed)
 
     def test_format_parse_invalid(self):
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -77,6 +82,7 @@ class InstantiationDataTest(HeatTestCase):
     def test_format_parse_invalid_message(self):
         # make sure the parser error gets through to the caller.
         bad_temp = '''
+heat_template_version: '2013-05-23'
 parameters:
   KeyName:
      type: string
@@ -86,12 +92,12 @@ parameters:
         parse_ex = self.assertRaises(webob.exc.HTTPBadRequest,
                                      stacks.InstantiationData.format_parse,
                                      bad_temp, 'foo')
-        self.assertIn('line 3, column 3', str(parse_ex))
+        self.assertIn('line 4, column 3', str(parse_ex))
 
     def test_stack_name(self):
         body = {'stack_name': 'wibble'}
         data = stacks.InstantiationData(body)
-        self.assertEqual(data.stack_name(), 'wibble')
+        self.assertEqual('wibble', data.stack_name())
 
     def test_stack_name_missing(self):
         body = {'not the stack_name': 'wibble'}
@@ -102,32 +108,32 @@ parameters:
         template = {'foo': 'bar', 'blarg': 'wibble'}
         body = {'template': template}
         data = stacks.InstantiationData(body)
-        self.assertEqual(data.template(), template)
+        self.assertEqual(template, data.template())
 
     def test_template_string_json(self):
-        template = '{"foo": "bar", "blarg": "wibble"}'
+        template = '{"heat_template_version": "2013-05-23",' \
+                   '"foo": "bar", "blarg": "wibble"}'
         body = {'template': template}
         data = stacks.InstantiationData(body)
-        self.assertEqual(data.template(), json.loads(template))
+        self.assertEqual(json.loads(template), data.template())
 
     def test_template_string_yaml(self):
-        template = '''foo: bar
+        template = '''HeatTemplateFormatVersion: 2012-12-12
+foo: bar
 blarg: wibble
 '''
         parsed = {u'HeatTemplateFormatVersion': u'2012-12-12',
-                  u'Mappings': {},
-                  u'Outputs': {},
-                  u'Parameters': {},
-                  u'Resources': {},
                   u'blarg': u'wibble',
                   u'foo': u'bar'}
 
         body = {'template': template}
         data = stacks.InstantiationData(body)
-        self.assertEqual(data.template(), parsed)
+        self.assertEqual(parsed, data.template())
 
     def test_template_url(self):
-        template = {'foo': 'bar', 'blarg': 'wibble'}
+        template = {'heat_template_version': '2013-05-23',
+                    'foo': 'bar',
+                    'blarg': 'wibble'}
         url = 'http://example.com/template'
         body = {'template_url': url}
         data = stacks.InstantiationData(body)
@@ -136,7 +142,7 @@ blarg: wibble
         urlfetch.get(url).AndReturn(json.dumps(template))
         self.m.ReplayAll()
 
-        self.assertEqual(data.template(), template)
+        self.assertEqual(template, data.template())
         self.m.VerifyAll()
 
     def test_template_priority(self):
@@ -148,7 +154,7 @@ blarg: wibble
         self.m.StubOutWithMock(urlfetch, 'get')
         self.m.ReplayAll()
 
-        self.assertEqual(data.template(), template)
+        self.assertEqual(template, data.template())
         self.m.VerifyAll()
 
     def test_template_missing(self):
@@ -162,13 +168,13 @@ blarg: wibble
         body = {'parameters': params,
                 'resource_registry': {}}
         data = stacks.InstantiationData(body)
-        self.assertEqual(data.environment(), body)
+        self.assertEqual(body, data.environment())
 
     def test_environment_only_params(self):
         env = {'parameters': {'foo': 'bar', 'blarg': 'wibble'}}
         body = {'environment': env}
         data = stacks.InstantiationData(body)
-        self.assertEqual(data.environment(), env)
+        self.assertEqual(env, data.environment())
 
     def test_environment_and_parameters(self):
         body = {'parameters': {'foo': 'bar'},
@@ -177,7 +183,7 @@ blarg: wibble
                                  'foo': 'bar'},
                   'resource_registry': {}}
         data = stacks.InstantiationData(body)
-        self.assertEqual(data.environment(), expect)
+        self.assertEqual(expect, data.environment())
 
     def test_parameters_override_environment(self):
         # This tests that the cli parameters will override
@@ -191,7 +197,7 @@ blarg: wibble
                                  'tester': 'Yes'},
                   'resource_registry': {}}
         data = stacks.InstantiationData(body)
-        self.assertEqual(data.environment(), expect)
+        self.assertEqual(expect, data.environment())
 
     def test_environment_bad_format(self):
         env = {'somethingnotsupported': {'blarg': 'wibble'}}
@@ -203,9 +209,8 @@ blarg: wibble
         env = {'foo': 'bar', 'blarg': 'wibble'}
         body = {'not the environment': env}
         data = stacks.InstantiationData(body)
-        self.assertEqual(data.environment(),
-                         {'parameters': {},
-                          'resource_registry': {}})
+        self.assertEqual({'parameters': {}, 'resource_registry': {}},
+                         data.environment())
 
     def test_args(self):
         body = {
@@ -217,7 +222,7 @@ blarg: wibble
             'timeout_mins': 60,
         }
         data = stacks.InstantiationData(body)
-        self.assertEqual(data.args(), {'timeout_mins': 60})
+        self.assertEqual({'timeout_mins': 60}, data.args())
 
 
 class ControllerTest(object):
@@ -369,14 +374,14 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                 }
             ]
         }
-        self.assertEqual(result, expected)
+        self.assertEqual(expected, result)
         default_args = {'limit': None, 'sort_keys': None, 'marker': None,
-                        'sort_dir': None, 'filters': {}}
+                        'sort_dir': None, 'filters': None, 'tenant_safe': True}
         mock_call.assert_called_once_with(req.context, self.topic,
                                           {'namespace': None,
-                                          'method': 'list_stacks',
-                                          'args': default_args,
-                                          'version': self.api_version},
+                                           'method': 'list_stacks',
+                                           'args': default_args,
+                                           'version': self.api_version},
                                           None)
 
     @mock.patch.object(rpc, 'call')
@@ -396,12 +401,13 @@ class StackControllerTest(ControllerTest, HeatTestCase):
 
         rpc_call_args, _ = mock_call.call_args
         engine_args = rpc_call_args[2]['args']
-        self.assertEqual(5, len(engine_args))
+        self.assertEqual(6, len(engine_args))
         self.assertIn('limit', engine_args)
         self.assertIn('sort_keys', engine_args)
         self.assertIn('marker', engine_args)
         self.assertIn('sort_dir', engine_args)
         self.assertIn('filters', engine_args)
+        self.assertIn('tenant_safe', engine_args)
         self.assertNotIn('balrog', engine_args)
 
     @mock.patch.object(rpc, 'call')
@@ -432,7 +438,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self._mock_enforce_setup(mock_enforce, 'index', True)
         params = {'with_count': 'True'}
         req = self._get('/stacks', params=params)
-        engine = self.controller.engine
+        engine = self.controller.rpc_client
 
         engine.list_stacks = mock.Mock(return_value=[])
         engine.count_stacks = mock.Mock(return_value=0)
@@ -445,7 +451,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self._mock_enforce_setup(mock_enforce, 'index', True)
         params = {'with_count': ''}
         req = self._get('/stacks', params=params)
-        engine = self.controller.engine
+        engine = self.controller.rpc_client
 
         engine.list_stacks = mock.Mock(return_value=[])
         engine.count_stacks = mock.Mock()
@@ -460,13 +466,38 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self._mock_enforce_setup(mock_enforce, 'index', True)
         params = {'with_count': 'Truthy'}
         req = self._get('/stacks', params=params)
-        engine = self.controller.engine
+        engine = self.controller.rpc_client
 
         engine.list_stacks = mock.Mock(return_value=[])
         mock_count_stacks.side_effect = AttributeError("Should not exist")
 
         result = self.controller.index(req, tenant_id=self.tenant)
         self.assertNotIn('count', result)
+
+    def test_index_enforces_global_index_if_global_tenant(self, mock_enforce):
+        params = {'global_tenant': 'True'}
+        req = self._get('/stacks', params=params)
+        rpc_client = self.controller.rpc_client
+
+        rpc_client.list_stacks = mock.Mock(return_value=[])
+        rpc_client.count_stacks = mock.Mock()
+
+        self.controller.index(req, tenant_id=self.tenant)
+        mock_enforce.assert_called_with(action='global_index',
+                                        scope=self.controller.REQUEST_SCOPE,
+                                        context=self.context)
+
+    def test_global_index_sets_tenant_safe_to_false(self, mock_enforce):
+        rpc_client = self.controller.rpc_client
+        rpc_client.list_stacks = mock.Mock(return_value=[])
+        rpc_client.count_stacks = mock.Mock()
+
+        params = {'global_tenant': 'True'}
+        req = self._get('/stacks', params=params)
+        self.controller.index(req, tenant_id=self.tenant)
+        rpc_client.list_stacks.assert_called_once_with(mock.ANY,
+                                                       filters=mock.ANY,
+                                                       tenant_safe=False)
 
     @mock.patch.object(rpc, 'call')
     def test_detail(self, mock_call, mock_enforce):
@@ -521,14 +552,14 @@ class StackControllerTest(ControllerTest, HeatTestCase):
             ]
         }
 
-        self.assertEqual(result, expected)
+        self.assertEqual(expected, result)
         default_args = {'limit': None, 'sort_keys': None, 'marker': None,
-                        'sort_dir': None, 'filters': None}
+                        'sort_dir': None, 'filters': None, 'tenant_safe': True}
         mock_call.assert_called_once_with(req.context, self.topic,
                                           {'namespace': None,
-                                          'method': 'list_stacks',
-                                          'args': default_args,
-                                          'version': self.api_version},
+                                           'method': 'list_stacks',
+                                           'args': default_args,
+                                           'version': self.api_version},
                                           None)
 
     @mock.patch.object(rpc, 'call')
@@ -542,13 +573,13 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        self.controller.index,
                                        req, tenant_id=self.tenant)
 
-        self.assertEqual(resp.json['code'], 400)
-        self.assertEqual(resp.json['error']['type'], 'AttributeError')
+        self.assertEqual(400, resp.json['code'])
+        self.assertEqual('AttributeError', resp.json['error']['type'])
         mock_call.assert_called_once_with(req.context, self.topic,
                                           {'namespace': None,
-                                          'method': 'list_stacks',
-                                          'args': mock.ANY,
-                                          'version': self.api_version},
+                                           'method': 'list_stacks',
+                                           'args': mock.ANY,
+                                           'version': self.api_version},
                                           None)
 
     def test_index_err_denied_policy(self, mock_enforce):
@@ -574,13 +605,13 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        self.controller.index,
                                        req, tenant_id=self.tenant)
 
-        self.assertEqual(resp.json['code'], 500)
-        self.assertEqual(resp.json['error']['type'], 'Exception')
+        self.assertEqual(500, resp.json['code'])
+        self.assertEqual('Exception', resp.json['error']['type'])
         mock_call.assert_called_once_with(req.context, self.topic,
                                           {'namespace': None,
-                                          'method': 'list_stacks',
-                                          'args': mock.ANY,
-                                          'version': self.api_version},
+                                           'method': 'list_stacks',
+                                           'args': mock.ANY,
+                                           'version': self.api_version},
                                           None)
 
     def test_create(self, mock_enforce):
@@ -616,7 +647,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         expected = {'stack':
                     {'id': '1',
                      'links': [{'href': self._url(identity), 'rel': 'self'}]}}
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
         self.m.VerifyAll()
 
@@ -653,7 +684,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         expected = {'stack':
                     {'id': '1',
                      'links': [{'href': self._url(identity), 'rel': 'self'}]}}
-        self.assertEqual(result, expected)
+        self.assertEqual(expected, result)
 
         self.m.VerifyAll()
 
@@ -710,22 +741,22 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        self.controller.create,
                                        req, tenant_id=self.tenant, body=body)
 
-        self.assertEqual(resp.json['code'], 400)
-        self.assertEqual(resp.json['error']['type'], 'AttributeError')
+        self.assertEqual(400, resp.json['code'])
+        self.assertEqual('AttributeError', resp.json['error']['type'])
 
         resp = request_with_middleware(fault.FaultWrapper,
                                        self.controller.create,
                                        req, tenant_id=self.tenant, body=body)
 
-        self.assertEqual(resp.json['code'], 400)
-        self.assertEqual(resp.json['error']['type'], 'UnknownUserParameter')
+        self.assertEqual(400, resp.json['code'])
+        self.assertEqual('UnknownUserParameter', resp.json['error']['type'])
 
         resp = request_with_middleware(fault.FaultWrapper,
                                        self.controller.create,
                                        req, tenant_id=self.tenant, body=body)
 
-        self.assertEqual(resp.json['code'], 400)
-        self.assertEqual(resp.json['error']['type'], 'UserParameterMissing')
+        self.assertEqual(400, resp.json['code'])
+        self.assertEqual('UserParameterMissing', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_create_err_existing(self, mock_enforce):
@@ -759,8 +790,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        self.controller.create,
                                        req, tenant_id=self.tenant, body=body)
 
-        self.assertEqual(resp.json['code'], 409)
-        self.assertEqual(resp.json['error']['type'], 'StackExists')
+        self.assertEqual(409, resp.json['code'])
+        self.assertEqual('StackExists', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_create_err_denied_policy(self, mock_enforce):
@@ -813,8 +844,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        self.controller.create,
                                        req, tenant_id=self.tenant, body=body)
 
-        self.assertEqual(resp.json['code'], 400)
-        self.assertEqual(resp.json['error']['type'], 'StackValidationFailed')
+        self.assertEqual(400, resp.json['code'])
+        self.assertEqual('StackValidationFailed', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_create_err_stack_bad_reqest(self, mock_enforce):
@@ -835,9 +866,22 @@ class StackControllerTest(ControllerTest, HeatTestCase):
 
         # When HTTP disguised exceptions reach the fault app, they are
         # converted into regular responses, just like non-HTTP exceptions
-        self.assertEqual(resp.json['code'], 400)
-        self.assertEqual(resp.json['error']['type'], 'HTTPBadRequest')
+        self.assertEqual(400, resp.json['code'])
+        self.assertEqual('HTTPBadRequest', resp.json['error']['type'])
         self.assertIsNotNone(resp.json['error']['traceback'])
+
+    @mock.patch.object(rpc, 'call')
+    @mock.patch.object(stacks.stacks_view, 'format_stack')
+    def test_preview_stack(self, mock_format, mock_call, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'preview', True)
+        body = {'stack_name': 'foo', 'template': {}}
+        req = self._get('/stacks/preview', params={})
+        mock_call.return_value = {}
+        mock_format.return_value = 'formatted_stack'
+
+        result = self.controller.preview(req, tenant_id=self.tenant, body=body)
+
+        self.assertEqual({'stack': 'formatted_stack'}, result)
 
     def test_lookup(self, mock_enforce):
         self._mock_enforce_setup(mock_enforce, 'lookup', True)
@@ -858,7 +902,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         found = self.assertRaises(
             webob.exc.HTTPFound, self.controller.lookup, req,
             tenant_id=identity.tenant, stack_name=identity.stack_name)
-        self.assertEqual(found.location, self._url(identity))
+        self.assertEqual(self._url(identity), found.location)
 
         self.m.VerifyAll()
 
@@ -873,7 +917,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         found = self.assertRaises(
             webob.exc.HTTPFound, self.controller.lookup,
             req, tenant_id=identity.tenant, stack_name=identity.arn())
-        self.assertEqual(found.location, self._url(identity))
+        self.assertEqual(self._url(identity), found.location)
 
         self.m.VerifyAll()
 
@@ -899,8 +943,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        req, tenant_id=self.tenant,
                                        stack_name=stack_name)
 
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'StackNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('StackNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_lookup_err_policy(self, mock_enforce):
@@ -933,12 +977,14 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                  None).AndReturn(identity)
 
         self.m.ReplayAll()
+
         found = self.assertRaises(
             webob.exc.HTTPFound, self.controller.lookup, req,
             tenant_id=identity.tenant, stack_name=identity.stack_name,
             path='resources')
-        self.assertEqual(found.location,
-                         self._url(identity) + '/resources')
+        self.assertEqual(self._url(identity) + '/resources',
+                         found.location)
+
         self.m.VerifyAll()
 
     def test_lookup_resource_nonexistent(self, mock_enforce):
@@ -964,8 +1010,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        stack_name=stack_name,
                                        path='resources')
 
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'StackNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('StackNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_lookup_resource_err_denied_policy(self, mock_enforce):
@@ -1051,7 +1097,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                 u'timeout_mins': 60,
             }
         }
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
         self.m.VerifyAll()
 
     def test_show_notfound(self, mock_enforce):
@@ -1076,8 +1122,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        stack_name=identity.stack_name,
                                        stack_id=identity.stack_id)
 
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'StackNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('StackNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_show_invalidtenant(self, mock_enforce):
@@ -1093,7 +1139,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        stack_name=identity.stack_name,
                                        stack_id=identity.stack_id)
 
-        self.assertEqual(resp.status_int, 403)
+        self.assertEqual(403, resp.status_int)
         self.assertIn('403 Forbidden', str(resp))
         self.m.VerifyAll()
 
@@ -1131,7 +1177,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                             stack_name=identity.stack_name,
                                             stack_id=identity.stack_id)
 
-        self.assertEqual(response, template)
+        self.assertEqual(template, response)
         self.m.VerifyAll()
 
     def test_get_template_err_denied_policy(self, mock_enforce):
@@ -1173,8 +1219,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        stack_name=identity.stack_name,
                                        stack_id=identity.stack_id)
 
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'StackNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('StackNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_update(self, mock_enforce):
@@ -1247,8 +1293,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        stack_id=identity.stack_id,
                                        body=body)
 
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'StackNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('StackNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_update_err_denied_policy(self, mock_enforce):
@@ -1373,8 +1419,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        stack_name=identity.stack_name,
                                        stack_id=identity.stack_id)
 
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'StackNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('StackNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_validate_template(self, mock_enforce):
@@ -1407,7 +1453,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         response = self.controller.validate_template(req,
                                                      tenant_id=self.tenant,
                                                      body=body)
-        self.assertEqual(response, engine_response)
+        self.assertEqual(engine_response, response)
         self.m.VerifyAll()
 
     def test_validate_template_error(self, mock_enforce):
@@ -1464,7 +1510,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.m.ReplayAll()
         response = self.controller.list_resource_types(req,
                                                        tenant_id=self.tenant)
-        self.assertEqual(response, {'resource_types': engine_response})
+        self.assertEqual({'resource_types': engine_response}, response)
         self.m.VerifyAll()
 
     def test_list_resource_types_error(self, mock_enforce):
@@ -1484,8 +1530,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         resp = request_with_middleware(fault.FaultWrapper,
                                        self.controller.list_resource_types,
                                        req, tenant_id=self.tenant)
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'ResourceTypeNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('ResourceTypeNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_list_resource_types_err_denied_policy(self, mock_enforce):
@@ -1524,7 +1570,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         response = self.controller.resource_schema(req,
                                                    tenant_id=self.tenant,
                                                    type_name=type_name)
-        self.assertEqual(response, engine_response)
+        self.assertEqual(engine_response, response)
         self.m.VerifyAll()
 
     def test_resource_schema_nonexist(self, mock_enforce):
@@ -1546,8 +1592,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        self.controller.resource_schema,
                                        req, tenant_id=self.tenant,
                                        type_name=type_name)
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'ResourceTypeNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('ResourceTypeNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_resource_schema_err_denied_policy(self, mock_enforce):
@@ -1597,8 +1643,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        self.controller.generate_template,
                                        req, tenant_id=self.tenant,
                                        type_name='NOT_FOUND')
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'ResourceTypeNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('ResourceTypeNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_generate_template_err_denied_policy(self, mock_enforce):
@@ -1625,9 +1671,9 @@ class StackSerializerTest(HeatTestCase):
                    'links': [{'href': 'location', "rel": "self"}]}}
         response = webob.Response()
         response = self.serializer.create(response, result)
-        self.assertEqual(response.status_int, 201)
-        self.assertEqual(response.headers['Location'], 'location')
-        self.assertEqual(response.headers['Content-Type'], 'application/json')
+        self.assertEqual(201, response.status_int)
+        self.assertEqual('location', response.headers['Location'])
+        self.assertEqual('application/json', response.headers['Content-Type'])
 
 
 @mock.patch.object(policy.Enforcer, 'enforce')
@@ -1699,7 +1745,7 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
                            u'a3455d8c-9f88-404d-a85b-5315293e67de',
                            u'resource_type': u'AWS::EC2::Instance'}]}
 
-        self.assertEqual(result, expected)
+        self.assertEqual(expected, result)
         self.m.VerifyAll()
 
     def test_index_nonexist(self, mock_enforce):
@@ -1725,8 +1771,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
                                        stack_name=stack_identity.stack_name,
                                        stack_id=stack_identity.stack_id)
 
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'StackNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('StackNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_index_denied_policy(self, mock_enforce):
@@ -1805,7 +1851,7 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
             }
         }
 
-        self.assertEqual(result, expected)
+        self.assertEqual(expected, result)
         self.m.VerifyAll()
 
     def test_show_nonexist(self, mock_enforce):
@@ -1836,8 +1882,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
                                        stack_id=stack_identity.stack_id,
                                        resource_name=res_name)
 
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'StackNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('StackNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_show_nonexist_resource(self, mock_enforce):
@@ -1868,8 +1914,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
                                        stack_id=stack_identity.stack_id,
                                        resource_name=res_name)
 
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'ResourceNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('ResourceNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_show_uncreated_resource(self, mock_enforce):
@@ -1900,8 +1946,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
                                        stack_id=stack_identity.stack_id,
                                        resource_name=res_name)
 
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'ResourceNotAvailable')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('ResourceNotAvailable', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_show_err_denied_policy(self, mock_enforce):
@@ -1922,6 +1968,71 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
                                        resource_name=res_name)
         self.assertEqual(403, resp.status_int)
         self.assertIn('403 Forbidden', str(resp))
+
+    def test_show_nested(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
+        res_name = 'ServerGroup'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'nested_resource', '6')
+        res_identity = identifier.ResourceIdentifier(resource_name=res_name,
+                                                     **stack_identity)
+
+        req = self._get(stack_identity._tenant_path())
+
+        engine_resp = {
+            u'description': u'',
+            u'resource_identity': dict(res_identity),
+            u'stack_name': stack_identity.stack_name,
+            u'resource_name': res_name,
+            u'resource_status_reason': None,
+            u'updated_time': u'2012-07-23T13:06:00Z',
+            u'stack_identity': dict(stack_identity),
+            u'resource_action': u'CREATE',
+            u'resource_status': u'COMPLETE',
+            u'physical_resource_id':
+            u'a3455d8c-9f88-404d-a85b-5315293e67de',
+            u'resource_type': u'OS::Heat::ResourceGroup',
+            u'metadata': {u'ensureRunning': u'true'},
+            u'members': [u'2bf47h48-45u4-4z47-371h-j2k4v236l562',
+                         u'a3455d8c-9f88-404d-a85b-5315293e67de']
+        }
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'describe_stack_resource',
+                  'args': {'stack_identity': stack_identity,
+                           'resource_name': res_name},
+                  'version': self.api_version},
+                 None).AndReturn(engine_resp)
+        self.m.ReplayAll()
+
+        result = self.controller.show(req, tenant_id=self.tenant,
+                                      stack_name=stack_identity.stack_name,
+                                      stack_id=stack_identity.stack_id,
+                                      resource_name=res_name)
+
+        expected = {
+            'resource': {
+                'links': [
+                    {'href': self._url(res_identity), 'rel': 'self'},
+                    {'href': self._url(stack_identity), 'rel': 'stack'},
+                ],
+                u'description': u'',
+                u'resource_name': res_name,
+                u'logical_resource_id': res_name,
+                u'resource_status_reason': None,
+                u'updated_time': u'2012-07-23T13:06:00Z',
+                u'resource_status': u'CREATE_COMPLETE',
+                u'physical_resource_id':
+                u'a3455d8c-9f88-404d-a85b-5315293e67de',
+                u'resource_type': u'OS::Heat::ResourceGroup',
+                u'members': [u'2bf47h48-45u4-4z47-371h-j2k4v236l562',
+                             u'a3455d8c-9f88-404d-a85b-5315293e67de']
+            }
+        }
+
+        self.assertEqual(result, expected)
+        self.m.VerifyAll()
 
     def test_metadata_show(self, mock_enforce):
         self._mock_enforce_setup(mock_enforce, 'metadata', True)
@@ -1965,7 +2076,7 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
 
         expected = {'metadata': {u'ensureRunning': u'true'}}
 
-        self.assertEqual(result, expected)
+        self.assertEqual(expected, result)
         self.m.VerifyAll()
 
     def test_metadata_show_nonexist(self, mock_enforce):
@@ -1996,8 +2107,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
                                        stack_id=stack_identity.stack_id,
                                        resource_name=res_name)
 
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'StackNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('StackNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_metadata_show_nonexist_resource(self, mock_enforce):
@@ -2028,8 +2139,8 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
                                        stack_id=stack_identity.stack_id,
                                        resource_name=res_name)
 
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'ResourceNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('ResourceNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_metadata_show_err_denied_policy(self, mock_enforce):
@@ -2050,6 +2161,34 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
                                        resource_name=res_name)
         self.assertEqual(403, resp.status_int)
         self.assertIn('403 Forbidden', str(resp))
+
+    def test_signal(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'signal', True)
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '6')
+
+        req = self._get(stack_identity._tenant_path())
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'resource_signal',
+                  'args': {'stack_identity': stack_identity,
+                           'resource_name': res_name,
+                           'details': 'Signal content'},
+                  'version': self.api_version},
+                 None)
+        self.m.ReplayAll()
+
+        result = self.controller.signal(req, tenant_id=self.tenant,
+                                        stack_name=stack_identity.stack_name,
+                                        stack_id=stack_identity.stack_id,
+                                        resource_name=res_name,
+                                        body="Signal content")
+
+        self.assertIsNone(result)
+        self.m.VerifyAll()
 
 
 @mock.patch.object(policy.Enforcer, 'enforce')
@@ -2151,7 +2290,7 @@ class EventControllerTest(ControllerTest, HeatTestCase):
             ]
         }
 
-        self.assertEqual(result, expected)
+        self.assertEqual(expected, result)
         self.m.VerifyAll()
 
     def test_stack_index_event_id_integer(self, mock_enforce):
@@ -2220,7 +2359,7 @@ class EventControllerTest(ControllerTest, HeatTestCase):
             ]
         }
 
-        self.assertEqual(result, expected)
+        self.assertEqual(expected, result)
         self.m.VerifyAll()
 
     def test_index_stack_nonexist(self, mock_enforce):
@@ -2246,8 +2385,8 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                                        stack_name=stack_identity.stack_name,
                                        stack_id=stack_identity.stack_id)
 
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'StackNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('StackNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_index_err_denied_policy(self, mock_enforce):
@@ -2396,7 +2535,7 @@ class EventControllerTest(ControllerTest, HeatTestCase):
             }
         }
 
-        self.assertEqual(result, expected)
+        self.assertEqual(expected, result)
         self.m.VerifyAll()
 
     def test_show_nonexist_event_id_integer(self, mock_enforce):
@@ -2526,8 +2665,8 @@ class EventControllerTest(ControllerTest, HeatTestCase):
                                        resource_name=res_name,
                                        event_id=event_id)
 
-        self.assertEqual(resp.json['code'], 404)
-        self.assertEqual(resp.json['error']['type'], 'StackNotFound')
+        self.assertEqual(404, resp.json['code'])
+        self.assertEqual('StackNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_show_err_denied_policy(self, mock_enforce):
@@ -2625,6 +2764,15 @@ class RoutesTest(HeatTestCase):
             '/aaaa/stacks',
             'POST',
             'create',
+            'StackController',
+            {
+                'tenant_id': 'aaaa'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/preview',
+            'POST',
+            'preview',
             'StackController',
             {
                 'tenant_id': 'aaaa'
@@ -2808,6 +2956,18 @@ class RoutesTest(HeatTestCase):
                 'stack_id': 'bbbb',
                 'resource_name': 'cccc'
             })
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/bbbb/resources/cccc/signal',
+            'POST',
+            'signal',
+            'ResourceController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'stack_id': 'bbbb',
+                'resource_name': 'cccc'
+            })
 
     def test_events(self):
         self.assertRoute(
@@ -2845,6 +3005,87 @@ class RoutesTest(HeatTestCase):
                 'stack_id': 'bbbb',
                 'resource_name': 'cccc',
                 'event_id': 'dddd'
+            })
+
+    def test_software_configs(self):
+        self.assertRoute(
+            self.m,
+            '/aaaa/software_configs',
+            'POST',
+            'create',
+            'SoftwareConfigController',
+            {
+                'tenant_id': 'aaaa'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/software_configs/bbbb',
+            'GET',
+            'show',
+            'SoftwareConfigController',
+            {
+                'tenant_id': 'aaaa',
+                'config_id': 'bbbb'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/software_configs/bbbb',
+            'DELETE',
+            'delete',
+            'SoftwareConfigController',
+            {
+                'tenant_id': 'aaaa',
+                'config_id': 'bbbb'
+            })
+
+    def test_software_deployments(self):
+        self.assertRoute(
+            self.m,
+            '/aaaa/software_deployments',
+            'GET',
+            'index',
+            'SoftwareDeploymentController',
+            {
+                'tenant_id': 'aaaa'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/software_deployments',
+            'POST',
+            'create',
+            'SoftwareDeploymentController',
+            {
+                'tenant_id': 'aaaa'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/software_deployments/bbbb',
+            'GET',
+            'show',
+            'SoftwareDeploymentController',
+            {
+                'tenant_id': 'aaaa',
+                'deployment_id': 'bbbb'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/software_deployments/bbbb',
+            'PUT',
+            'update',
+            'SoftwareDeploymentController',
+            {
+                'tenant_id': 'aaaa',
+                'deployment_id': 'bbbb'
+            })
+        self.assertRoute(
+            self.m,
+            '/aaaa/software_deployments/bbbb',
+            'DELETE',
+            'delete',
+            'SoftwareDeploymentController',
+            {
+                'tenant_id': 'aaaa',
+                'deployment_id': 'bbbb'
             })
 
     def test_build_info(self):
@@ -2998,8 +3239,8 @@ class ActionControllerTest(ControllerTest, HeatTestCase):
                                        stack_id=stack_identity.stack_id,
                                        body=body)
 
-        self.assertEqual(resp.json['code'], 400)
-        self.assertEqual(resp.json['error']['type'], 'AttributeError')
+        self.assertEqual(400, resp.json['code'])
+        self.assertEqual('AttributeError', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_action_err_denied_policy(self, mock_enforce):
@@ -3050,7 +3291,7 @@ class BuildInfoControllerTest(ControllerTest, HeatTestCase):
     def test_theres_a_default_api_build_revision(self, mock_enforce):
         self._mock_enforce_setup(mock_enforce, 'build_info', True)
         req = self._get('/build_info')
-        self.controller.engine = mock.Mock()
+        self.controller.rpc_client = mock.Mock()
 
         response = self.controller.build_info(req, tenant_id=self.tenant)
         self.assertIn('api', response)
@@ -3064,7 +3305,7 @@ class BuildInfoControllerTest(ControllerTest, HeatTestCase):
         req = self._get('/build_info')
         mock_engine = mock.Mock()
         mock_engine.get_revision.return_value = 'engine_revision'
-        self.controller.engine = mock_engine
+        self.controller.rpc_client = mock_engine
         mock_conf.revision = {'heat_revision': 'test'}
 
         response = self.controller.build_info(req, tenant_id=self.tenant)
@@ -3075,7 +3316,7 @@ class BuildInfoControllerTest(ControllerTest, HeatTestCase):
         req = self._get('/build_info')
         mock_engine = mock.Mock()
         mock_engine.get_revision.return_value = 'engine_revision'
-        self.controller.engine = mock_engine
+        self.controller.rpc_client = mock_engine
 
         response = self.controller.build_info(req, tenant_id=self.tenant)
         self.assertIn('engine', response)
@@ -3091,3 +3332,242 @@ class BuildInfoControllerTest(ControllerTest, HeatTestCase):
                                        req, tenant_id=self.tenant)
         self.assertEqual(403, resp.status_int)
         self.assertIn('403 Forbidden', str(resp))
+
+
+class SoftwareConfigControllerTest(ControllerTest, HeatTestCase):
+
+    def setUp(self):
+        super(SoftwareConfigControllerTest, self).setUp()
+        self.controller = software_configs.SoftwareConfigController({})
+
+    def test_default(self):
+        self.assertRaises(
+            webob.exc.HTTPNotFound, self.controller.default, None)
+
+    @mock.patch.object(policy.Enforcer, 'enforce')
+    def test_show(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show')
+        config_id = 'a45559cd-8736-4375-bc39-d6a7bb62ade2'
+        req = self._get('/software_configs/%s' % config_id)
+        return_value = {
+            'id': config_id,
+            'name': 'config_mysql',
+            'group': 'Heat::Shell',
+            'config': '#!/bin/bash',
+            'inputs': [],
+            'ouputs': [],
+            'options': []}
+
+        expected = {'software_config': return_value}
+        with mock.patch.object(
+                self.controller.rpc_client,
+                'show_software_config',
+                return_value=return_value):
+            resp = self.controller.show(
+                req, config_id=config_id, tenant_id=self.tenant)
+            self.assertEqual(expected, resp)
+
+    @mock.patch.object(policy.Enforcer, 'enforce')
+    def test_create(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'create')
+        body = {
+            'name': 'config_mysql',
+            'group': 'Heat::Shell',
+            'config': '#!/bin/bash',
+            'inputs': [],
+            'ouputs': [],
+            'options': []}
+        return_value = body.copy()
+        config_id = 'a45559cd-8736-4375-bc39-d6a7bb62ade2'
+        return_value['id'] = config_id
+        req = self._post('/software_configs', json.dumps(body))
+
+        expected = {'software_config': return_value}
+        with mock.patch.object(
+                self.controller.rpc_client,
+                'create_software_config',
+                return_value=return_value):
+            resp = self.controller.create(
+                req, body=body, tenant_id=self.tenant)
+            self.assertEqual(expected, resp)
+
+    @mock.patch.object(policy.Enforcer, 'enforce')
+    def test_delete(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'delete')
+        config_id = 'a45559cd-8736-4375-bc39-d6a7bb62ade2'
+        req = self._delete('/software_configs/%s' % config_id)
+        return_value = None
+        with mock.patch.object(
+                self.controller.rpc_client,
+                'delete_software_config',
+                return_value=return_value):
+            self.assertRaises(
+                webob.exc.HTTPNoContent, self.controller.delete,
+                req, config_id=config_id, tenant_id=self.tenant)
+
+    @mock.patch.object(policy.Enforcer, 'enforce')
+    def test_delete_error(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'delete')
+        config_id = 'a45559cd-8736-4375-bc39-d6a7bb62ade2'
+        req = self._delete('/software_configs/%s' % config_id)
+        return_value = {'Error': 'something wrong'}
+        with mock.patch.object(
+                self.controller.rpc_client,
+                'delete_software_config',
+                return_value=return_value):
+            self.assertRaises(
+                webob.exc.HTTPBadRequest, self.controller.delete,
+                req, config_id=config_id, tenant_id=self.tenant)
+
+
+class SoftwareDeploymentControllerTest(ControllerTest, HeatTestCase):
+
+    def setUp(self):
+        super(SoftwareDeploymentControllerTest, self).setUp()
+        self.controller = software_deployments.SoftwareDeploymentController({})
+
+    def test_default(self):
+        self.assertRaises(
+            webob.exc.HTTPNotFound, self.controller.default, None)
+
+    @mock.patch.object(policy.Enforcer, 'enforce')
+    def test_index(self, mock_enforce):
+        self._mock_enforce_setup(
+            mock_enforce, 'index', expected_request_count=2)
+        req = self._get('/software_deployments')
+        return_value = []
+        with mock.patch.object(
+                self.controller.rpc_client,
+                'list_software_deployments',
+                return_value=return_value) as mock_call:
+            resp = self.controller.index(req, tenant_id=self.tenant)
+            self.assertEqual(
+                {'software_deployments': []}, resp)
+            whitelist = mock_call.call_args[1]
+            self.assertEqual({}, whitelist)
+        server_id = 'fb322564-7927-473d-8aad-68ae7fbf2abf'
+        req = self._get('/software_deployments', {'server_id': server_id})
+        with mock.patch.object(
+                self.controller.rpc_client,
+                'list_software_deployments',
+                return_value=return_value) as mock_call:
+            resp = self.controller.index(req, tenant_id=self.tenant)
+            self.assertEqual(
+                {'software_deployments': []}, resp)
+            whitelist = mock_call.call_args[1]
+            self.assertEqual({'server_id': server_id}, whitelist)
+
+    @mock.patch.object(policy.Enforcer, 'enforce')
+    def test_show(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show')
+        deployment_id = '38eccf10-97e5-4ae8-9d37-b577c9801750'
+        config_id = 'd00ba4aa-db33-42e1-92f4-2a6469260107'
+        server_id = 'fb322564-7927-473d-8aad-68ae7fbf2abf'
+        req = self._get('/software_deployments/%s' % deployment_id)
+        return_value = {
+            'id': deployment_id,
+            'server_id': server_id,
+            'input_values': {},
+            'output_values': {},
+            'action': 'INIT',
+            'status': 'COMPLETE',
+            'status_reason': None,
+            'signal_id': None,
+            'config_id': config_id,
+            'config': '#!/bin/bash',
+            'name': 'config_mysql',
+            'group': 'Heat::Shell',
+            'inputs': [],
+            'outputs': [],
+            'options': []}
+
+        expected = {'software_deployment': return_value}
+        with mock.patch.object(
+                self.controller.rpc_client,
+                'show_software_deployment',
+                return_value=return_value):
+            resp = self.controller.show(
+                req, deployment_id=config_id, tenant_id=self.tenant)
+            self.assertEqual(expected, resp)
+
+    @mock.patch.object(policy.Enforcer, 'enforce')
+    def test_create(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'create')
+        config_id = 'd00ba4aa-db33-42e1-92f4-2a6469260107'
+        server_id = 'fb322564-7927-473d-8aad-68ae7fbf2abf'
+        body = {
+            'server_id': server_id,
+            'input_values': {},
+            'action': 'INIT',
+            'status': 'COMPLETE',
+            'status_reason': None,
+            'signal_id': None,
+            'config_id': config_id}
+        return_value = body.copy()
+        deployment_id = 'a45559cd-8736-4375-bc39-d6a7bb62ade2'
+        return_value['id'] = deployment_id
+        req = self._post('/software_deployments', json.dumps(body))
+
+        expected = {'software_deployment': return_value}
+        with mock.patch.object(
+                self.controller.rpc_client,
+                'create_software_deployment',
+                return_value=return_value):
+            resp = self.controller.create(
+                req, body=body, tenant_id=self.tenant)
+            self.assertEqual(expected, resp)
+
+    @mock.patch.object(policy.Enforcer, 'enforce')
+    def test_update(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'update')
+        config_id = 'd00ba4aa-db33-42e1-92f4-2a6469260107'
+        server_id = 'fb322564-7927-473d-8aad-68ae7fbf2abf'
+        body = {
+            'input_values': {},
+            'action': 'INIT',
+            'status': 'COMPLETE',
+            'status_reason': None,
+            'signal_id': None,
+            'config_id': config_id}
+        return_value = body.copy()
+        deployment_id = 'a45559cd-8736-4375-bc39-d6a7bb62ade2'
+        return_value['id'] = deployment_id
+        req = self._put('/software_deployments/%s', json.dumps(body))
+        return_value['server_id'] = server_id
+        expected = {'software_deployment': return_value}
+        with mock.patch.object(
+                self.controller.rpc_client,
+                'update_software_deployment',
+                return_value=return_value):
+            resp = self.controller.update(
+                req, deployment_id=deployment_id,
+                body=body, tenant_id=self.tenant)
+            self.assertEqual(expected, resp)
+
+    @mock.patch.object(policy.Enforcer, 'enforce')
+    def test_delete(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'delete')
+        deployment_id = 'a45559cd-8736-4375-bc39-d6a7bb62ade2'
+        req = self._delete('/software_deployments/%s' % deployment_id)
+        return_value = None
+        with mock.patch.object(
+                self.controller.rpc_client,
+                'delete_software_deployment',
+                return_value=return_value):
+            self.assertRaises(
+                webob.exc.HTTPNoContent, self.controller.delete,
+                req, deployment_id=deployment_id, tenant_id=self.tenant)
+
+    @mock.patch.object(policy.Enforcer, 'enforce')
+    def test_delete_error(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'delete')
+        deployment_id = 'a45559cd-8736-4375-bc39-d6a7bb62ade2'
+        req = self._delete('/software_deployments/%s' % deployment_id)
+        return_value = {'Error': 'something wrong'}
+        with mock.patch.object(
+                self.controller.rpc_client,
+                'delete_software_deployment',
+                return_value=return_value):
+            self.assertRaises(
+                webob.exc.HTTPBadRequest, self.controller.delete,
+                req, deployment_id=deployment_id, tenant_id=self.tenant)

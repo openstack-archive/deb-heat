@@ -12,6 +12,7 @@
 
 from heat.common import exception
 from heat.db import api as db_api
+from heat.engine.clients import Clients
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources import nova_utils
@@ -119,6 +120,40 @@ class KeyPair(resource.Resource):
         attr_fn = {'private_key': self.private_key,
                    'public_key': self.public_key}
         return unicode(attr_fn[key])
+
+    def FnGetRefId(self):
+        return self.resource_id
+
+    def validate(self):
+        super(KeyPair, self).validate()
+        name = self.properties[self.NAME]
+        try:
+            nova_utils.get_keypair(self.nova(), name)
+        except exception.UserKeyPairMissing:
+            pass
+        else:
+            msg = _('Cannot create KeyPair resource with a name of "%s" (a '
+                    'keypair with that name already exists)') % name
+            raise exception.StackValidationFailed(message=msg)
+
+
+class KeypairConstraint(object):
+
+    def validate(self, value, context):
+        if not value:
+            # Don't validate empty key, which can happen when you use a KeyPair
+            # resource
+            return True
+        try:
+            nova_utils.get_keypair(Clients(context).nova(), value)
+        except exception.UserKeyPairMissing:
+            return False
+        else:
+            return True
+
+
+def constraint_mapping():
+    return {'nova.keypair': KeypairConstraint}
 
 
 def resource_mapping():

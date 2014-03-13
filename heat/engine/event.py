@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -27,7 +26,7 @@ class Event(object):
 
     def __init__(self, context, stack, action, status, reason,
                  physical_resource_id, resource_properties, resource_name,
-                 resource_type, timestamp=None, id=None):
+                 resource_type, uuid=None, timestamp=None, id=None):
         '''
         Initialise from a context, stack, and event information. The timestamp
         and database ID may also be initialised if the event is already in the
@@ -45,6 +44,7 @@ class Event(object):
             self.resource_properties = dict(resource_properties)
         except ValueError as ex:
             self.resource_properties = {'Error': str(ex)}
+        self.uuid = uuid
         self.timestamp = timestamp
         self.id = id
 
@@ -65,7 +65,7 @@ class Event(object):
         return cls(context, st, ev.resource_action, ev.resource_status,
                    ev.resource_status_reason, ev.physical_resource_id,
                    ev.resource_properties, ev.resource_name,
-                   ev.resource_type, ev.created_at, ev.id)
+                   ev.resource_type, ev.uuid, ev.created_at, ev.id)
 
     def store(self):
         '''Store the Event in the database.'''
@@ -80,6 +80,9 @@ class Event(object):
             'resource_properties': self.resource_properties,
         }
 
+        if self.uuid is not None:
+            ev['uuid'] = self.uuid
+
         if self.timestamp is not None:
             ev['created_at'] = self.timestamp
 
@@ -92,10 +95,10 @@ class Event(object):
 
     def identifier(self):
         '''Return a unique identifier for the event.'''
-        if self.id is None:
+        if self.uuid is None:
             return None
 
         res_id = identifier.ResourceIdentifier(
             resource_name=self.resource_name, **self.stack.identifier())
 
-        return identifier.EventIdentifier(event_id=str(self.id), **res_id)
+        return identifier.EventIdentifier(event_id=str(self.uuid), **res_id)

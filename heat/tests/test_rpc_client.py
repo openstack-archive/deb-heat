@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 # Copyright 2012, Red Hat, Inc.
 #
@@ -71,7 +70,7 @@ class EngineRpcAPITestCase(testtools.TestCase):
 
             retval = getattr(rpcapi, method)(ctxt, **kwargs)
 
-            self.assertEqual(retval, expected_retval)
+            self.assertEqual(expected_retval, retval)
             expected_args = [ctxt, expected_topic, expected_msg,
                              mock.ANY]
             actual_args, _ = mock_rpc_method.call_args
@@ -88,9 +87,17 @@ class EngineRpcAPITestCase(testtools.TestCase):
             'sort_keys': mock.ANY,
             'marker': mock.ANY,
             'sort_dir': mock.ANY,
-            'filters': mock.ANY
+            'filters': mock.ANY,
+            'tenant_safe': mock.ANY,
         }
         self._test_engine_api('list_stacks', 'call', **default_args)
+
+    def test_count_stacks(self):
+        default_args = {
+            'filters': mock.ANY,
+            'tenant_safe': mock.ANY,
+        }
+        self._test_engine_api('count_stacks', 'call', **default_args)
 
     def test_identify_stack(self):
         self._test_engine_api('identify_stack', 'call',
@@ -98,6 +105,13 @@ class EngineRpcAPITestCase(testtools.TestCase):
 
     def test_show_stack(self):
         self._test_engine_api('show_stack', 'call', stack_identity='wordpress')
+
+    def test_preview_stack(self):
+        self._test_engine_api('preview_stack', 'call', stack_name='wordpress',
+                              template={u'Foo': u'bar'},
+                              params={u'InstanceType': u'm1.xlarge'},
+                              files={u'a_file': u'the contents'},
+                              args={'timeout_mins': u'30'})
 
     def test_create_stack(self):
         self._test_engine_api('create_stack', 'call', stack_name='wordpress',
@@ -198,3 +212,57 @@ class EngineRpcAPITestCase(testtools.TestCase):
     def test_set_watch_state(self):
         self._test_engine_api('set_watch_state', 'call',
                               watch_name='watch1', state="xyz")
+
+    def test_show_software_config(self):
+        self._test_engine_api('show_software_config', 'call',
+                              config_id='cda89008-6ea6-4057-b83d-ccde8f0b48c9')
+
+    def test_create_software_config(self):
+        self._test_engine_api('create_software_config', 'call',
+                              group='Heat::Shell',
+                              name='config_mysql',
+                              config='#!/bin/bash',
+                              inputs=[],
+                              outputs=[],
+                              options={})
+
+    def test_delete_software_config(self):
+        self._test_engine_api('delete_software_config', 'call',
+                              config_id='cda89008-6ea6-4057-b83d-ccde8f0b48c9')
+
+    def test_list_software_deployments(self):
+        self._test_engine_api('list_software_deployments', 'call',
+                              server_id=None)
+        self._test_engine_api('list_software_deployments', 'call',
+                              server_id='9dc13236-d342-451f-a885-1c82420ba5ed')
+
+    def test_show_software_deployment(self):
+        deployment_id = '86729f02-4648-44d8-af44-d0ec65b6abc9'
+        self._test_engine_api('show_software_deployment', 'call',
+                              deployment_id=deployment_id)
+
+    def test_create_software_deployment(self):
+        self._test_engine_api('create_software_deployment', 'call',
+                              server_id='9f1f0e00-05d2-4ca5-8602-95021f19c9d0',
+                              config_id='48e8ade1-9196-42d5-89a2-f709fde42632',
+                              input_values={},
+                              signal_id=None,
+                              action='INIT',
+                              status='COMPLETE',
+                              status_reason=None)
+
+    def test_update_software_deployment(self):
+        deployment_id = '86729f02-4648-44d8-af44-d0ec65b6abc9'
+        self._test_engine_api('update_software_deployment', 'call',
+                              deployment_id=deployment_id,
+                              config_id='48e8ade1-9196-42d5-89a2-f709fde42632',
+                              input_values={},
+                              output_values={},
+                              action='DEPLOYED',
+                              status='COMPLETE',
+                              status_reason=None)
+
+    def test_delete_software_deployment(self):
+        deployment_id = '86729f02-4648-44d8-af44-d0ec65b6abc9'
+        self._test_engine_api('delete_software_deployment', 'call',
+                              deployment_id=deployment_id)

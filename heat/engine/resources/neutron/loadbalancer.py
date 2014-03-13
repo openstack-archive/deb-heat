@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -294,9 +293,12 @@ class Pool(neutron.NeutronResource):
             return res
 
         session_p = self.properties[self.VIP].get(self.VIP_SESSION_PERSISTENCE)
-        persistence_type = session_p[self.VIP_SESSION_PERSISTENCE_TYPE]
+        if session_p is None:
+            # session persistence is not configured, skip validation
+            return
 
-        if session_p is not None and persistence_type == 'APP_COOKIE':
+        persistence_type = session_p[self.VIP_SESSION_PERSISTENCE_TYPE]
+        if persistence_type == 'APP_COOKIE':
             if session_p.get(self.VIP_SESSION_PERSISTENCE_COOKIE_NAME):
                 return
 
@@ -321,6 +323,12 @@ class Pool(neutron.NeutronResource):
         vip_arguments = self.prepare_properties(
             vip_properties,
             '%s.vip' % (self.name,))
+
+        session_p = vip_arguments.get(self.VIP_SESSION_PERSISTENCE)
+        if session_p is not None:
+            prepared_props = self.prepare_properties(session_p, None)
+            vip_arguments['session_persistence'] = prepared_props
+
         vip_arguments['protocol'] = self.properties[self.PROTOCOL]
         vip_arguments['subnet_id'] = self.properties[self.SUBNET_ID]
         vip_arguments['pool_id'] = pool['id']
@@ -343,11 +351,15 @@ class Pool(neutron.NeutronResource):
             elif vip_attributes['status'] == 'ACTIVE':
                 return True
             raise exception.Error(
-                'neutron reported unexpected vip resource[%s] status[%s]' %
-                (vip_attributes['name'], vip_attributes['status']))
+                _('neutron reported unexpected vip resource[%(name)s] '
+                  'status[%(status)s]') %
+                {'name': vip_attributes['name'],
+                 'status': vip_attributes['status']})
         raise exception.Error(
-            'neutron report unexpected pool resource[%s] status[%s]' %
-            (attributes['name'], attributes['status']))
+            _('neutron reported unexpected pool resource[%(name)s] '
+              'status[%(status)s]') %
+            {'name': attributes['name'],
+             'status': attributes['status']})
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:

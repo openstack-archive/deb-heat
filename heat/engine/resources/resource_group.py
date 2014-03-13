@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -155,6 +154,13 @@ class ResourceGroup(stack_resource.StackResource):
                          for k in range(count))
         child_template['resources'] = resources
         return child_template
+
+    def child_template(self):
+        count = self.properties[self.COUNT]
+        return self._assemble_nested(count)
+
+    def child_params(self):
+        return {}
 
 
 def resource_mapping():

@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -108,7 +107,7 @@ class RouteTable(resource.Resource):
                 raise ex
 
 
-class SubnetRouteTableAssocation(resource.Resource):
+class SubnetRouteTableAssociation(resource.Resource):
 
     PROPERTIES = (
         ROUTE_TABLE_ID, SUBNET_ID,
@@ -186,5 +185,5 @@ def resource_mapping():
 
     return {
         'AWS::EC2::RouteTable': RouteTable,
-        'AWS::EC2::SubnetRouteTableAssocation': SubnetRouteTableAssocation,
+        'AWS::EC2::SubnetRouteTableAssociation': SubnetRouteTableAssociation,
     }

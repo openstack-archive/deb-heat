@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -33,7 +32,7 @@ from heat.openstack.common.db import api as db_api
 db_opts = [
     cfg.StrOpt('db_backend',
                default='sqlalchemy',
-               help='The backend to use for db')]
+               help='The backend to use for db.')]
 
 CONF = cfg.CONF
 CONF.register_opts(db_opts)
@@ -121,23 +120,18 @@ def stack_get_by_name(context, stack_name):
 
 
 def stack_get_all(context, limit=None, sort_keys=None, marker=None,
-                  sort_dir=None, filters=None):
+                  sort_dir=None, filters=None, tenant_safe=True):
     return IMPL.stack_get_all(context, limit, sort_keys,
-                              marker, sort_dir, filters)
+                              marker, sort_dir, filters, tenant_safe)
 
 
 def stack_get_all_by_owner_id(context, owner_id):
     return IMPL.stack_get_all_by_owner_id(context, owner_id)
 
 
-def stack_get_all_by_tenant(context, limit=None, sort_keys=None,
-                            marker=None, sort_dir=None, filters=None):
-    return IMPL.stack_get_all_by_tenant(context, limit, sort_keys,
-                                        marker, sort_dir, filters)
-
-
-def stack_count_all_by_tenant(context, filters=None):
-    return IMPL.stack_count_all_by_tenant(context, filters=filters)
+def stack_count_all(context, filters=None, tenant_safe=True):
+    return IMPL.stack_count_all(context, filters=filters,
+                                tenant_safe=tenant_safe)
 
 
 def stack_create(context, values):
@@ -230,6 +224,38 @@ def watch_data_create(context, values):
 
 def watch_data_get_all(context):
     return IMPL.watch_data_get_all(context)
+
+
+def software_config_create(context, values):
+    return IMPL.software_config_create(context, values)
+
+
+def software_config_get(context, config_id):
+    return IMPL.software_config_get(context, config_id)
+
+
+def software_config_delete(context, config_id):
+    return IMPL.software_config_delete(context, config_id)
+
+
+def software_deployment_create(context, values):
+    return IMPL.software_deployment_create(context, values)
+
+
+def software_deployment_get(context, deployment_id):
+    return IMPL.software_deployment_get(context, deployment_id)
+
+
+def software_deployment_get_all(context, server_id=None):
+    return IMPL.software_deployment_get_all(context, server_id)
+
+
+def software_deployment_update(context, deployment_id, values):
+    return IMPL.software_deployment_update(context, deployment_id, values)
+
+
+def software_deployment_delete(context, deployment_id):
+    return IMPL.software_deployment_delete(context, deployment_id)
 
 
 def db_sync(version=None):

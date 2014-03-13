@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -50,6 +49,8 @@ class CfnStackControllerTest(HeatTestCase):
         cfg.CONF.set_default('host', 'host')
         self.topic = rpc_api.ENGINE_TOPIC
         self.api_version = '1.0'
+        self.template = {u'AWSTemplateFormatVersion': u'2010-09-09',
+                         u'Foo': u'bar'}
 
         # Create WSGI controller instance
         class DummyConfig():
@@ -93,7 +94,7 @@ class CfnStackControllerTest(HeatTestCase):
         })
         expected = {'StackName': 'Foo',
                     'StackId': 'arn:openstack:heat::t:stacks/Foo/123'}
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_enforce_ok(self):
         params = {'Action': 'ListStacks'}
@@ -155,9 +156,9 @@ class CfnStackControllerTest(HeatTestCase):
                        u'CreationTime': u'2012-07-09T09:12:45Z',
                        u'StackName': u'wordpress',
                        u'StackStatus': u'CREATE_COMPLETE'}]}}}
-        self.assertEqual(result, expected)
+        self.assertEqual(expected, result)
         default_args = {'limit': None, 'sort_keys': None, 'marker': None,
-                        'sort_dir': None, 'filters': None}
+                        'sort_dir': None, 'filters': None, 'tenant_safe': True}
         mock_call.assert_called_once_with(dummy_req.context, self.topic,
                                           {'namespace': None,
                                            'method': 'list_stacks',
@@ -204,6 +205,54 @@ class CfnStackControllerTest(HeatTestCase):
                                            'args': mock.ANY,
                                            'version': self.api_version},
                                           None)
+
+    def test_describe_last_updated_time(self):
+        params = {'Action': 'DescribeStacks'}
+        dummy_req = self._dummy_GET_request(params)
+        self._stub_enforce(dummy_req, 'DescribeStacks')
+
+        engine_resp = [{u'updated_time': '1970-01-01',
+                        u'parameters': {},
+                        u'stack_action': u'CREATE',
+                        u'stack_status': u'COMPLETE'}]
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(dummy_req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'show_stack',
+                  'args': {'stack_identity': None},
+                  'version': self.api_version}, None).AndReturn(engine_resp)
+
+        self.m.ReplayAll()
+
+        response = self.controller.describe(dummy_req)
+        result = response['DescribeStacksResponse']['DescribeStacksResult']
+        stack = result['Stacks'][0]
+        self.assertEqual('1970-01-01', stack['LastUpdatedTime'])
+
+    def test_describe_no_last_updated_time(self):
+        params = {'Action': 'DescribeStacks'}
+        dummy_req = self._dummy_GET_request(params)
+        self._stub_enforce(dummy_req, 'DescribeStacks')
+
+        engine_resp = [{u'updated_time': None,
+                        u'parameters': {},
+                        u'stack_action': u'CREATE',
+                        u'stack_status': u'COMPLETE'}]
+
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(dummy_req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'show_stack',
+                  'args': {'stack_identity': None},
+                  'version': self.api_version}, None).AndReturn(engine_resp)
+
+        self.m.ReplayAll()
+
+        response = self.controller.describe(dummy_req)
+        result = response['DescribeStacksResponse']['DescribeStacksResult']
+        stack = result['Stacks'][0]
+        self.assertNotIn('LastUpdatedTime', stack)
 
     def test_describe(self):
         # Format a dummy GET request to pass into the WSGI handler
@@ -292,7 +341,7 @@ class CfnStackControllerTest(HeatTestCase):
                         'DisableRollback': 'true',
                         'LastUpdatedTime': u'2012-07-09T09:13:11Z'}]}}}
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_describe_arn(self):
         # Format a dummy GET request to pass into the WSGI handler
@@ -377,7 +426,7 @@ class CfnStackControllerTest(HeatTestCase):
                         'DisableRollback': 'true',
                         'LastUpdatedTime': u'2012-07-09T09:13:11Z'}]}}}
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_describe_arn_invalidtenant(self):
         # Format a dummy GET request to pass into the WSGI handler
@@ -457,15 +506,14 @@ class CfnStackControllerTest(HeatTestCase):
         dummy_req = self._dummy_GET_request(params)
         result = self.controller._get_template(dummy_req)
         expected = "abcdef"
-        self.assertEqual(result, expected)
+        self.assertEqual(expected, result)
 
     # TODO(shardy) : test the _get_template TemplateUrl case
 
     def test_create(self):
         # Format a dummy request
         stack_name = "wordpress"
-        template = {u'Foo': u'bar'}
-        json_template = json.dumps(template)
+        json_template = json.dumps(self.template)
         params = {'Action': 'CreateStack', 'StackName': stack_name,
                   'TemplateBody': '%s' % json_template,
                   'TimeoutInMinutes': 30,
@@ -488,7 +536,7 @@ class CfnStackControllerTest(HeatTestCase):
                  {'namespace': None,
                   'method': 'create_stack',
                   'args': {'stack_name': stack_name,
-                           'template': template,
+                           'template': self.template,
                            'params': engine_parms,
                            'files': {},
                            'args': engine_args},
@@ -506,13 +554,12 @@ class CfnStackControllerTest(HeatTestCase):
             }
         }
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_create_rollback(self):
         # Format a dummy request
         stack_name = "wordpress"
-        template = {u'Foo': u'bar'}
-        json_template = json.dumps(template)
+        json_template = json.dumps(self.template)
         params = {'Action': 'CreateStack', 'StackName': stack_name,
                   'TemplateBody': '%s' % json_template,
                   'TimeoutInMinutes': 30,
@@ -535,7 +582,7 @@ class CfnStackControllerTest(HeatTestCase):
                  {'namespace': None,
                   'method': 'create_stack',
                   'args': {'stack_name': stack_name,
-                           'template': template,
+                           'template': self.template,
                            'params': engine_parms,
                            'files': {},
                            'args': engine_args},
@@ -553,13 +600,12 @@ class CfnStackControllerTest(HeatTestCase):
             }
         }
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_create_onfailure_true(self):
         # Format a dummy request
         stack_name = "wordpress"
-        template = {u'Foo': u'bar'}
-        json_template = json.dumps(template)
+        json_template = json.dumps(self.template)
         params = {'Action': 'CreateStack', 'StackName': stack_name,
                   'TemplateBody': '%s' % json_template,
                   'TimeoutInMinutes': 30,
@@ -582,7 +628,7 @@ class CfnStackControllerTest(HeatTestCase):
                  {'namespace': None,
                   'method': 'create_stack',
                   'args': {'stack_name': stack_name,
-                           'template': template,
+                           'template': self.template,
                            'params': engine_parms,
                            'files': {},
                            'args': engine_args},
@@ -600,13 +646,12 @@ class CfnStackControllerTest(HeatTestCase):
             }
         }
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_create_onfailure_false_delete(self):
         # Format a dummy request
         stack_name = "wordpress"
-        template = {u'Foo': u'bar'}
-        json_template = json.dumps(template)
+        json_template = json.dumps(self.template)
         params = {'Action': 'CreateStack', 'StackName': stack_name,
                   'TemplateBody': '%s' % json_template,
                   'TimeoutInMinutes': 30,
@@ -629,7 +674,7 @@ class CfnStackControllerTest(HeatTestCase):
                  {'namespace': None,
                   'method': 'create_stack',
                   'args': {'stack_name': stack_name,
-                           'template': template,
+                           'template': self.template,
                            'params': engine_parms,
                            'files': {},
                            'args': engine_args},
@@ -647,13 +692,12 @@ class CfnStackControllerTest(HeatTestCase):
             }
         }
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_create_onfailure_false_rollback(self):
         # Format a dummy request
         stack_name = "wordpress"
-        template = {u'Foo': u'bar'}
-        json_template = json.dumps(template)
+        json_template = json.dumps(self.template)
         params = {'Action': 'CreateStack', 'StackName': stack_name,
                   'TemplateBody': '%s' % json_template,
                   'TimeoutInMinutes': 30,
@@ -676,7 +720,7 @@ class CfnStackControllerTest(HeatTestCase):
                  {'namespace': None,
                   'method': 'create_stack',
                   'args': {'stack_name': stack_name,
-                           'template': template,
+                           'template': self.template,
                            'params': engine_parms,
                            'files': {},
                            'args': engine_args},
@@ -694,13 +738,12 @@ class CfnStackControllerTest(HeatTestCase):
             }
         }
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_create_onfailure_err(self):
         # Format a dummy request
         stack_name = "wordpress"
-        template = {u'Foo': u'bar'}
-        json_template = json.dumps(template)
+        json_template = json.dumps(self.template)
         params = {'Action': 'CreateStack', 'StackName': stack_name,
                   'TemplateBody': '%s' % json_template,
                   'TimeoutInMinutes': 30,
@@ -739,8 +782,7 @@ class CfnStackControllerTest(HeatTestCase):
     def test_create_err_rpcerr(self):
         # Format a dummy request
         stack_name = "wordpress"
-        template = {u'Foo': u'bar'}
-        json_template = json.dumps(template)
+        json_template = json.dumps(self.template)
         params = {'Action': 'CreateStack', 'StackName': stack_name,
                   'TemplateBody': '%s' % json_template,
                   'TimeoutInMinutes': 30,
@@ -762,7 +804,7 @@ class CfnStackControllerTest(HeatTestCase):
                  {'namespace': None,
                   'method': 'create_stack',
                   'args': {'stack_name': stack_name,
-                           'template': template,
+                           'template': self.template,
                            'params': engine_parms,
                            'files': {},
                            'args': engine_args},
@@ -775,7 +817,7 @@ class CfnStackControllerTest(HeatTestCase):
                  {'namespace': None,
                   'method': 'create_stack',
                   'args': {'stack_name': stack_name,
-                           'template': template,
+                           'template': self.template,
                            'params': engine_parms,
                            'files': {},
                            'args': engine_args},
@@ -788,7 +830,7 @@ class CfnStackControllerTest(HeatTestCase):
                  {'namespace': None,
                   'method': 'create_stack',
                   'args': {'stack_name': stack_name,
-                           'template': template,
+                           'template': self.template,
                            'params': engine_parms,
                            'files': {},
                            'args': engine_args},
@@ -809,8 +851,7 @@ class CfnStackControllerTest(HeatTestCase):
     def test_create_err_exists(self):
         # Format a dummy request
         stack_name = "wordpress"
-        template = {u'Foo': u'bar'}
-        json_template = json.dumps(template)
+        json_template = json.dumps(self.template)
         params = {'Action': 'CreateStack', 'StackName': stack_name,
                   'TemplateBody': '%s' % json_template,
                   'TimeoutInMinutes': 30,
@@ -829,7 +870,7 @@ class CfnStackControllerTest(HeatTestCase):
                  {'namespace': None,
                   'method': 'create_stack',
                   'args': {'stack_name': stack_name,
-                           'template': template,
+                           'template': self.template,
                            'params': engine_parms,
                            'files': {},
                            'args': engine_args},
@@ -845,8 +886,7 @@ class CfnStackControllerTest(HeatTestCase):
     def test_create_err_engine(self):
         # Format a dummy request
         stack_name = "wordpress"
-        template = {u'Foo': u'bar'}
-        json_template = json.dumps(template)
+        json_template = json.dumps(self.template)
         params = {'Action': 'CreateStack', 'StackName': stack_name,
                   'TemplateBody': '%s' % json_template,
                   'TimeoutInMinutes': 30,
@@ -864,7 +904,7 @@ class CfnStackControllerTest(HeatTestCase):
                  {'namespace': None,
                   'method': 'create_stack',
                   'args': {'stack_name': stack_name,
-                           'template': template,
+                           'template': self.template,
                            'params': engine_parms,
                            'files': {},
                            'args': engine_args},
@@ -881,8 +921,7 @@ class CfnStackControllerTest(HeatTestCase):
     def test_update(self):
         # Format a dummy request
         stack_name = "wordpress"
-        template = {u'Foo': u'bar'}
-        json_template = json.dumps(template)
+        json_template = json.dumps(self.template)
         params = {'Action': 'UpdateStack', 'StackName': stack_name,
                   'TemplateBody': '%s' % json_template,
                   'Parameters.member.1.ParameterKey': 'InstanceType',
@@ -906,7 +945,7 @@ class CfnStackControllerTest(HeatTestCase):
                  {'namespace': None,
                   'method': 'update_stack',
                   'args': {'stack_identity': identity,
-                           'template': template,
+                           'template': self.template,
                            'params': engine_parms,
                            'files': {},
                            'args': engine_args},
@@ -925,12 +964,11 @@ class CfnStackControllerTest(HeatTestCase):
             }
         }
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_update_bad_name(self):
         stack_name = "wibble"
-        template = {u'Foo': u'bar'}
-        json_template = json.dumps(template)
+        json_template = json.dumps(self.template)
         params = {'Action': 'UpdateStack', 'StackName': stack_name,
                   'TemplateBody': '%s' % json_template,
                   'Parameters.member.1.ParameterKey': 'InstanceType',
@@ -961,13 +999,12 @@ class CfnStackControllerTest(HeatTestCase):
         # Format a dummy request
         stack_name = "wordpress"
         identity = dict(identifier.HeatIdentifier('t', stack_name, '6'))
-        template = {u'Foo': u'bar'}
         params = {'Action': 'GetTemplate', 'StackName': stack_name}
         dummy_req = self._dummy_GET_request(params)
         self._stub_enforce(dummy_req, 'GetTemplate')
 
         # Stub out the RPC call to the engine with a pre-canned response
-        engine_resp = template
+        engine_resp = self.template
 
         self.m.StubOutWithMock(rpc, 'call')
         rpc.call(dummy_req.context, self.topic,
@@ -987,9 +1024,9 @@ class CfnStackControllerTest(HeatTestCase):
 
         expected = {'GetTemplateResponse':
                     {'GetTemplateResult':
-                     {'TemplateBody': template}}}
+                     {'TemplateBody': self.template}}}
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_get_template_err_rpcerr(self):
         stack_name = "wordpress"
@@ -1092,12 +1129,10 @@ class CfnStackControllerTest(HeatTestCase):
     def test_bad_resources_in_template(self):
         # Format a dummy request
         json_template = {
-            'template': {
-                'AWSTemplateFormatVersion': '2010-09-09',
-                'Resources': {
-                    'Type': 'AWS: : EC2: : Instance',
-                },
-            }
+            'AWSTemplateFormatVersion': '2010-09-09',
+            'Resources': {
+                'Type': 'AWS: : EC2: : Instance',
+            },
         }
         params = {'Action': 'ValidateTemplate',
                   'TemplateBody': '%s' % json.dumps(json_template)}
@@ -1151,7 +1186,7 @@ class CfnStackControllerTest(HeatTestCase):
 
         expected = {'DeleteStackResponse': {'DeleteStackResult': ''}}
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_delete_err_rpcerr(self):
         stack_name = "wordpress"
@@ -1270,7 +1305,7 @@ class CfnStackControllerTest(HeatTestCase):
                         'ResourceStatusReason': u'state changed',
                         'LogicalResourceId': u'WikiDatabase'}]}}}
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_events_list_err_rpcerr(self):
         stack_name = "wordpress"
@@ -1389,7 +1424,7 @@ class CfnStackControllerTest(HeatTestCase):
                        'Metadata': {u'wordpress': []},
                        'LogicalResourceId': u'WikiDatabase'}}}}
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_describe_stack_resource_nonexistent_stack(self):
         # Format a dummy request
@@ -1515,7 +1550,7 @@ class CfnStackControllerTest(HeatTestCase):
                         u'a3455d8c-9f88-404d-a85b-5315293e67de',
                         'LogicalResourceId': u'WikiDatabase'}]}}}
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_describe_stack_resources_bad_name(self):
         stack_name = "wibble"
@@ -1608,7 +1643,7 @@ class CfnStackControllerTest(HeatTestCase):
                         u'a3455d8c-9f88-404d-a85b-5315293e67de',
                         'LogicalResourceId': u'WikiDatabase'}]}}}
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_describe_stack_resources_physical_not_found(self):
         # Format a dummy request
@@ -1705,7 +1740,7 @@ class CfnStackControllerTest(HeatTestCase):
                        u'a3455d8c-9f88-404d-a85b-5315293e67de',
                        'LogicalResourceId': u'WikiDatabase'}]}}}
 
-        self.assertEqual(response, expected)
+        self.assertEqual(expected, response)
 
     def test_list_stack_resources_bad_name(self):
         stack_name = "wibble"

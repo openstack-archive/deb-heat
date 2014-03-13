@@ -14,23 +14,25 @@
 # Options defined in heat.common.config
 #
 
-# The default user for new instances (string value)
+# The default user for new instances. (string value)
 #instance_user=ec2-user
 
-# Driver to use for controlling instances (string value)
+# Driver to use for controlling instances. (string value)
 #instance_driver=heat.engine.nova
 
-# List of directories to search for Plugins (list value)
+# List of directories to search for plug-ins. (list value)
 #plugin_dirs=/usr/lib64/heat,/usr/lib/heat
 
-# The directory to search for environment files (string value)
+# The directory to search for environment files. (string
+# value)
 #environment_dir=/etc/heat/environment.d
 
-# Select deferred auth method, stored password or trusts
+# Select deferred auth method, stored password or trusts.
 # (string value)
 #deferred_auth_method=password
 
-# Subset of trustor roles to be delegated to heat (list value)
+# Subset of trustor roles to be delegated to heat. (list
+# value)
 #trusts_delegated_roles=heat_stack_owner
 
 # Maximum resources allowed per top-level stack. (integer
@@ -56,32 +58,58 @@
 # stack locking. (integer value)
 #engine_life_check_timeout=2
 
-# Name of the engine node. This can be an opaque identifier.It
-# is not necessarily a hostname, FQDN, or IP address. (string
-# value)
+# onready allows you to send a notification when the heat
+# processes are ready to serve.  This is either a module with
+# the notify() method or a shell command.  To enable
+# notifications with systemd, one may use the 'systemd-notify
+# --ready' shell command or the 'heat.common.systemd'
+# notification module. (string value)
+#onready=<None>
+
+# Name of the engine node. This can be an opaque identifier.
+# It is not necessarily a hostname, FQDN, or IP address.
+# (string value)
 #host=heat
 
-# seconds between running periodic tasks (integer value)
+# Seconds between running periodic tasks. (integer value)
 #periodic_interval=60
 
-# URL of the Heat metadata server (string value)
+# URL of the Heat metadata server. (string value)
 #heat_metadata_server_url=
 
-# URL of the Heat waitcondition server (string value)
+# URL of the Heat waitcondition server. (string value)
 #heat_waitcondition_server_url=
 
-# URL of the Heat cloudwatch server (string value)
+# URL of the Heat CloudWatch server. (string value)
 #heat_watch_server_url=
 
-# Instance connection to cfn/cw API via https (string value)
+# Instance connection to CFN/CW API via https. (string value)
 #instance_connection_is_secure=0
 
-# Instance connection to cfn/cw API validate certs if ssl
-# (string value)
+# Instance connection to CFN/CW API validate certs if SSL is
+# used. (string value)
 #instance_connection_https_validate_certificates=1
 
-# Keystone role for heat template-defined users (string value)
+# Default region name used to get services endpoints. (string
+# value)
+#region_name_for_services=<None>
+
+# Keystone role for heat template-defined users. (string
+# value)
 #heat_stack_user_role=heat_stack_user
+
+# Keystone domain ID which contains heat template-defined
+# users. (string value)
+#stack_user_domain=<None>
+
+# Keystone username, a user with roles sufficient to
+# manageusers and projects in the stack_user_domain. (string
+# value)
+#stack_domain_admin=<None>
+
+# Keystone password for stack_domain_admin user. (string
+# value)
+#stack_domain_admin_password=<None>
 
 # Maximum raw byte size of any template. (integer value)
 #max_template_size=524288
@@ -95,9 +123,18 @@
 # Options defined in heat.common.crypt
 #
 
-# Encryption key used for authentication info in database
+# Encryption key used for authentication info in database.
 # (string value)
 #auth_encryption_key=notgood but just long enough i think
+
+
+#
+# Options defined in heat.common.heat_keystoneclient
+#
+
+# Fully qualified class name to use as a keystone backend.
+# (string value)
+#keystone_backend=heat.common.heat_keystoneclient.KeystoneClientV3
 
 
 #
@@ -113,7 +150,7 @@
 # Options defined in heat.db.api
 #
 
-# The backend to use for db (string value)
+# The backend to use for db. (string value)
 #db_backend=sqlalchemy
 
 
@@ -130,7 +167,7 @@
 # Options defined in heat.engine.resources.loadbalancer
 #
 
-# Custom template for the built-in loadbalancer nested stack
+# Custom template for the built-in loadbalancer nested stack.
 # (string value)
 #loadbalancer_template=<None>
 
@@ -204,7 +241,7 @@
 #logging_exception_prefix=%(asctime)s.%(msecs)03d %(process)d TRACE %(name)s %(instance)s
 
 # list of logger=LEVEL pairs (list value)
-#default_log_levels=amqp=WARN,amqplib=WARN,boto=WARN,keystone=INFO,qpid=WARN,sqlalchemy=WARN,suds=INFO,iso8601=WARN
+#default_log_levels=amqp=WARN,amqplib=WARN,boto=WARN,qpid=WARN,sqlalchemy=WARN,suds=INFO,iso8601=WARN
 
 # publish error events (boolean value)
 #publish_errors=false
@@ -498,7 +535,7 @@
 # Options defined in heat.common.config
 #
 
-# Allow orchestration of multiple clouds (boolean value)
+# Allow orchestration of multiple clouds. (boolean value)
 #multi_cloud=false
 
 # Allowed keystone endpoints for auth_uri when multi_cloud is
@@ -513,18 +550,23 @@
 # Options defined in heat.common.config
 #
 
-# Optional CA cert file to use in SSL connections (string
+# Type of endpoint in Identity service catalog to use for
+# communication with the OpenStack service. (string value)
+#endpoint_type=publicURL
+
+# Optional CA cert file to use in SSL connections. (string
 # value)
 #ca_file=<None>
 
-# Optional PEM-formatted certificate chain file (string value)
+# Optional PEM-formatted certificate chain file. (string
+# value)
 #cert_file=<None>
 
-# Optional PEM-formatted file that contains the private key
+# Optional PEM-formatted file that contains the private key.
 # (string value)
 #key_file=<None>
 
-# If set then the server's certificate will not be verified
+# If set, then the server's certificate will not be verified.
 # (boolean value)
 #insecure=false
 
@@ -535,18 +577,23 @@
 # Options defined in heat.common.config
 #
 
-# Optional CA cert file to use in SSL connections (string
+# Type of endpoint in Identity service catalog to use for
+# communication with the OpenStack service. (string value)
+#endpoint_type=publicURL
+
+# Optional CA cert file to use in SSL connections. (string
 # value)
 #ca_file=<None>
 
-# Optional PEM-formatted certificate chain file (string value)
+# Optional PEM-formatted certificate chain file. (string
+# value)
 #cert_file=<None>
 
-# Optional PEM-formatted file that contains the private key
+# Optional PEM-formatted file that contains the private key.
 # (string value)
 #key_file=<None>
 
-# If set then the server's certificate will not be verified
+# If set, then the server's certificate will not be verified.
 # (boolean value)
 #insecure=false
 
@@ -557,18 +604,23 @@
 # Options defined in heat.common.config
 #
 
-# Optional CA cert file to use in SSL connections (string
+# Type of endpoint in Identity service catalog to use for
+# communication with the OpenStack service. (string value)
+#endpoint_type=publicURL
+
+# Optional CA cert file to use in SSL connections. (string
 # value)
 #ca_file=<None>
 
-# Optional PEM-formatted certificate chain file (string value)
+# Optional PEM-formatted certificate chain file. (string
+# value)
 #cert_file=<None>
 
-# Optional PEM-formatted file that contains the private key
+# Optional PEM-formatted file that contains the private key.
 # (string value)
 #key_file=<None>
 
-# If set then the server's certificate will not be verified
+# If set, then the server's certificate will not be verified.
 # (boolean value)
 #insecure=false
 
@@ -579,18 +631,23 @@
 # Options defined in heat.common.config
 #
 
-# Optional CA cert file to use in SSL connections (string
+# Type of endpoint in Identity service catalog to use for
+# communication with the OpenStack service. (string value)
+#endpoint_type=publicURL
+
+# Optional CA cert file to use in SSL connections. (string
 # value)
 #ca_file=<None>
 
-# Optional PEM-formatted certificate chain file (string value)
+# Optional PEM-formatted certificate chain file. (string
+# value)
 #cert_file=<None>
 
-# Optional PEM-formatted file that contains the private key
+# Optional PEM-formatted file that contains the private key.
 # (string value)
 #key_file=<None>
 
-# If set then the server's certificate will not be verified
+# If set, then the server's certificate will not be verified.
 # (boolean value)
 #insecure=false
 
@@ -605,18 +662,23 @@
 # Options defined in heat.common.config
 #
 
-# Optional CA cert file to use in SSL connections (string
+# Type of endpoint in Identity service catalog to use for
+# communication with the OpenStack service. (string value)
+#endpoint_type=publicURL
+
+# Optional CA cert file to use in SSL connections. (string
 # value)
 #ca_file=<None>
 
-# Optional PEM-formatted certificate chain file (string value)
+# Optional PEM-formatted certificate chain file. (string
+# value)
 #cert_file=<None>
 
-# Optional PEM-formatted file that contains the private key
+# Optional PEM-formatted file that contains the private key.
 # (string value)
 #key_file=<None>
 
-# If set then the server's certificate will not be verified
+# If set, then the server's certificate will not be verified.
 # (boolean value)
 #insecure=false
 
@@ -627,18 +689,23 @@
 # Options defined in heat.common.config
 #
 
-# Optional CA cert file to use in SSL connections (string
+# Type of endpoint in Identity service catalog to use for
+# communication with the OpenStack service. (string value)
+#endpoint_type=publicURL
+
+# Optional CA cert file to use in SSL connections. (string
 # value)
 #ca_file=<None>
 
-# Optional PEM-formatted certificate chain file (string value)
+# Optional PEM-formatted certificate chain file. (string
+# value)
 #cert_file=<None>
 
-# Optional PEM-formatted file that contains the private key
+# Optional PEM-formatted file that contains the private key.
 # (string value)
 #key_file=<None>
 
-# If set then the server's certificate will not be verified
+# If set, then the server's certificate will not be verified.
 # (boolean value)
 #insecure=false
 
@@ -649,18 +716,23 @@
 # Options defined in heat.common.config
 #
 
-# Optional CA cert file to use in SSL connections (string
+# Type of endpoint in Identity service catalog to use for
+# communication with the OpenStack service. (string value)
+#endpoint_type=publicURL
+
+# Optional CA cert file to use in SSL connections. (string
 # value)
 #ca_file=<None>
 
-# Optional PEM-formatted certificate chain file (string value)
+# Optional PEM-formatted certificate chain file. (string
+# value)
 #cert_file=<None>
 
-# Optional PEM-formatted file that contains the private key
+# Optional PEM-formatted file that contains the private key.
 # (string value)
 #key_file=<None>
 
-# If set then the server's certificate will not be verified
+# If set, then the server's certificate will not be verified.
 # (boolean value)
 #insecure=false
 
@@ -671,18 +743,23 @@
 # Options defined in heat.common.config
 #
 
-# Optional CA cert file to use in SSL connections (string
+# Type of endpoint in Identity service catalog to use for
+# communication with the OpenStack service. (string value)
+#endpoint_type=publicURL
+
+# Optional CA cert file to use in SSL connections. (string
 # value)
 #ca_file=<None>
 
-# Optional PEM-formatted certificate chain file (string value)
+# Optional PEM-formatted certificate chain file. (string
+# value)
 #cert_file=<None>
 
-# Optional PEM-formatted file that contains the private key
+# Optional PEM-formatted file that contains the private key.
 # (string value)
 #key_file=<None>
 
-# If set then the server's certificate will not be verified
+# If set, then the server's certificate will not be verified.
 # (boolean value)
 #insecure=false
 
@@ -693,18 +770,23 @@
 # Options defined in heat.common.config
 #
 
-# Optional CA cert file to use in SSL connections (string
+# Type of endpoint in Identity service catalog to use for
+# communication with the OpenStack service. (string value)
+#endpoint_type=publicURL
+
+# Optional CA cert file to use in SSL connections. (string
 # value)
 #ca_file=<None>
 
-# Optional PEM-formatted certificate chain file (string value)
+# Optional PEM-formatted certificate chain file. (string
+# value)
 #cert_file=<None>
 
-# Optional PEM-formatted file that contains the private key
+# Optional PEM-formatted file that contains the private key.
 # (string value)
 #key_file=<None>
 
-# If set then the server's certificate will not be verified
+# If set, then the server's certificate will not be verified.
 # (boolean value)
 #insecure=false
 
@@ -718,11 +800,6 @@
 # The backend to use for db (string value)
 # Deprecated group/name - [DEFAULT]/db_backend
 #backend=sqlalchemy
-
-# Enable the experimental use of thread pooling for all DB API
-# calls (boolean value)
-# Deprecated group/name - [DEFAULT]/dbapi_use_tpool
-#use_tpool=false
 
 
 #
@@ -744,6 +821,7 @@
 # value)
 # Deprecated group/name - [DEFAULT]/sql_idle_timeout
 # Deprecated group/name - [DATABASE]/sql_idle_timeout
+# Deprecated group/name - [sql]/idle_timeout
 #idle_timeout=3600
 
 # Minimum number of SQL connections to keep open in a pool
@@ -798,10 +876,10 @@
 # Options defined in heat.api.aws.ec2token
 #
 
-# Authentication Endpoint URI (string value)
+# Authentication Endpoint URI. (string value)
 #auth_uri=<None>
 
-# Allow orchestration of multiple clouds (boolean value)
+# Allow orchestration of multiple clouds. (boolean value)
 #multi_cloud=false
 
 # Allowed keystone endpoints for auth_uri when multi_cloud is
@@ -823,20 +901,26 @@
 # The port on which the server will listen. (integer value)
 #bind_port=8004
 
-# Number of backlog requests to configure the socket with
+# Number of backlog requests to configure the socket with.
 # (integer value)
 #backlog=4096
 
-# Location of the SSL Certificate File to use for SSL mode
+# Location of the SSL Certificate File to use for SSL mode.
 # (string value)
 #cert_file=<None>
 
-# Location of the SSL Key File to use for enabling SSL mode
+# Location of the SSL Key File to use for enabling SSL mode.
 # (string value)
 #key_file=<None>
 
-# Number of workers for Heat service (integer value)
+# Number of workers for Heat service. (integer value)
 #workers=0
+
+# Maximum line size of message headers to be accepted.
+# max_header_line may need to be increased when using large
+# tokens (typically those generated by the Keystone v3 API
+# with big service catalogs (integer value)
+#max_header_line=16384
 
 
 [heat_api_cfn]
@@ -852,20 +936,26 @@
 # The port on which the server will listen. (integer value)
 #bind_port=8000
 
-# Number of backlog requests to configure the socket with
+# Number of backlog requests to configure the socket with.
 # (integer value)
 #backlog=4096
 
-# Location of the SSL Certificate File to use for SSL mode
+# Location of the SSL Certificate File to use for SSL mode.
 # (string value)
 #cert_file=<None>
 
-# Location of the SSL Key File to use for enabling SSL mode
+# Location of the SSL Key File to use for enabling SSL mode.
 # (string value)
 #key_file=<None>
 
-# Number of workers for Heat service (integer value)
+# Number of workers for Heat service. (integer value)
 #workers=0
+
+# Maximum line size of message headers to be accepted.
+# max_header_line may need to be increased when using large
+# tokens (typically those generated by the Keystone v3 API
+# with big service catalogs (integer value)
+#max_header_line=16384
 
 
 [heat_api_cloudwatch]
@@ -881,20 +971,26 @@
 # The port on which the server will listen. (integer value)
 #bind_port=8003
 
-# Number of backlog requests to configure the socket with
+# Number of backlog requests to configure the socket with.
 # (integer value)
 #backlog=4096
 
-# Location of the SSL Certificate File to use for SSL mode
+# Location of the SSL Certificate File to use for SSL mode.
 # (string value)
 #cert_file=<None>
 
-# Location of the SSL Key File to use for enabling SSL mode
+# Location of the SSL Key File to use for enabling SSL mode.
 # (string value)
 #key_file=<None>
 
-# Number of workers for Heat service (integer value)
+# Number of workers for Heat service. (integer value)
 #workers=0
+
+# Maximum line size of message headers to be accepted.
+# max_header_line may need to be increased when using large
+# tokens (typically those generated by the Keystone v3 API
+# with big service catalogs (integer value)
+#max_header_line=16384
 
 
 [keystone_authtoken]
@@ -1016,6 +1112,17 @@
 # Catalog header. (boolean value)
 #include_service_catalog=true
 
+# Used to control the use and type of token binding. Can be
+# set to: "disabled" to not check token binding. "permissive"
+# (default) to validate binding information if the bind type
+# is of a form known to the server and ignore it if not.
+# "strict" like "permissive" but if the bind type is unknown
+# the token will be rejected. "required" any form of token
+# binding is needed to be allowed. Finally the name of a
+# binding method that must be present in tokens. (string
+# value)
+#enforce_token_bind=permissive
+
 
 [matchmaker_redis]
 
@@ -1050,10 +1157,10 @@
 # Options defined in heat.common.config
 #
 
-# The flavor to use (string value)
+# The flavor to use. (string value)
 #flavor=<None>
 
-# The API paste config file to use (string value)
+# The API paste config file to use. (string value)
 #api_paste_config=api-paste.ini
 
 
@@ -1064,8 +1171,8 @@
 #
 
 # Heat build revision. If you would prefer to manage your
-# build revision separately you can move this section to a
-# different file and add it as another config option (string
+# build revision separately, you can move this section to a
+# different file and add it as another config option. (string
 # value)
 #heat_revision=unknown
 

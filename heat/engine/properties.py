@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -17,8 +16,8 @@ import collections
 
 from heat.common import exception
 from heat.engine import parameters
+from heat.engine import support
 from heat.engine import constraints as constr
-from heat.engine import hot
 
 SCHEMA_KEYS = (
     REQUIRED, IMPLEMENTED, DEFAULT, TYPE, SCHEMA,
@@ -52,11 +51,13 @@ class Schema(constr.Schema):
                  default=None, schema=None,
                  required=False, constraints=[],
                  implemented=True,
-                 update_allowed=False):
+                 update_allowed=False,
+                 support_status=support.SupportStatus()):
         super(Schema, self).__init__(data_type, description, default,
                                      schema, required, constraints)
         self.implemented = implemented
         self.update_allowed = update_allowed
+        self.support_status = support_status
 
     @classmethod
     def from_legacy(cls, schema_dict):
@@ -101,7 +102,7 @@ class Schema(constr.Schema):
                 ss = dict((n, cls.from_legacy(sd)) for n, sd in schema_dicts)
             else:
                 raise constr.InvalidSchemaError(_('%(schema)s supplied for '
-                                                  ' for %(type)s %(data)s') %
+                                                  ' %(type)s %(data)s') %
                                                 dict(schema=SCHEMA,
                                                      type=TYPE,
                                                      data=data_type))
@@ -120,74 +121,26 @@ class Schema(constr.Schema):
     @classmethod
     def from_parameter(cls, param):
         """
-        Return a Property Schema corresponding to a parameter.
+        Return a Property Schema corresponding to a Parameter Schema.
 
         Convert a parameter schema from a provider template to a property
         Schema for the corresponding resource facade.
         """
+
+        # map param types to property types
         param_type_map = {
-            parameters.STRING: Schema.STRING,
-            parameters.NUMBER: Schema.NUMBER,
-            parameters.COMMA_DELIMITED_LIST: Schema.LIST,
-            parameters.JSON: Schema.MAP
+            param.STRING: cls.STRING,
+            param.NUMBER: cls.NUMBER,
+            param.LIST: cls.LIST,
+            param.MAP: cls.MAP
         }
-
-        def get_num(key, context=param):
-            val = context.get(key)
-            if val is not None:
-                val = Schema.str_to_num(val)
-            return val
-
-        def constraints():
-            desc = param.get(parameters.CONSTRAINT_DESCRIPTION)
-
-            if parameters.MIN_VALUE in param or parameters.MAX_VALUE in param:
-                yield constr.Range(get_num(parameters.MIN_VALUE),
-                                   get_num(parameters.MAX_VALUE))
-            if (parameters.MIN_LENGTH in param or
-                    parameters.MAX_LENGTH in param):
-                yield constr.Length(get_num(parameters.MIN_LENGTH),
-                                    get_num(parameters.MAX_LENGTH))
-            if parameters.ALLOWED_VALUES in param:
-                yield constr.AllowedValues(param[parameters.ALLOWED_VALUES],
-                                           desc)
-            if parameters.ALLOWED_PATTERN in param:
-                yield constr.AllowedPattern(param[parameters.ALLOWED_PATTERN],
-                                            desc)
-
-        def constraints_hot():
-            constraints = param.get(hot.CONSTRAINTS)
-            if constraints is None:
-                return
-
-            for constraint in constraints:
-                desc = constraint.get(hot.DESCRIPTION)
-                if hot.RANGE in constraint:
-                    const_def = constraint.get(hot.RANGE)
-                    yield constr.Range(get_num(hot.MIN, const_def),
-                                       get_num(hot.MAX, const_def), desc)
-                if hot.LENGTH in constraint:
-                    const_def = constraint.get(hot.LENGTH)
-                    yield constr.Length(get_num(hot.MIN, const_def),
-                                        get_num(hot.MAX, const_def), desc)
-                if hot.ALLOWED_VALUES in constraint:
-                    const_def = constraint.get(hot.ALLOWED_VALUES)
-                    yield constr.AllowedValues(const_def, desc)
-                if hot.ALLOWED_PATTERN in constraint:
-                    const_def = constraint.get(hot.ALLOWED_PATTERN)
-                    yield constr.AllowedPattern(const_def, desc)
-
-        if isinstance(param, hot.HOTParamSchema):
-            constraint_list = list(constraints_hot())
-        else:
-            constraint_list = list(constraints())
 
         # make update_allowed true by default on TemplateResources
         # as the template should deal with this.
-        return cls(param_type_map.get(param[parameters.TYPE], Schema.MAP),
-                   description=param.get(parameters.DESCRIPTION),
-                   required=parameters.DEFAULT not in param,
-                   constraints=constraint_list,
+        return cls(data_type=param_type_map.get(param.type, cls.MAP),
+                   description=param.description,
+                   required=param.required,
+                   constraints=param.constraints,
                    update_allowed=True)
 
     def __getitem__(self, key):
@@ -211,9 +164,10 @@ def schemata(schema_dicts):
 
 class Property(object):
 
-    def __init__(self, schema, name=None):
+    def __init__(self, schema, name=None, context=None):
         self.schema = Schema.from_legacy(schema)
         self.name = name
+        self.context = context
 
     def required(self):
         return self.schema.required
@@ -232,6 +186,9 @@ class Property(object):
 
     def type(self):
         return self.schema.type
+
+    def support_status(self):
+        return self.schema.support_status
 
     def _validate_integer(self, value):
         if value is None:
@@ -261,7 +218,9 @@ class Property(object):
                 keys = list(self.schema.schema)
             schemata = dict((k, self.schema.schema[k]) for k in keys)
             properties = Properties(schemata, dict(child_values),
-                                    parent_name=self.name)
+                                    parent_name=self.name,
+                                    context=self.context)
+            properties.validate()
             return ((k, properties[k]) for k in keys)
         else:
             return child_values
@@ -312,20 +271,23 @@ class Property(object):
 
     def validate_data(self, value):
         value = self._validate_data_type(value)
-        self.schema.validate_constraints(value)
+        self.schema.validate_constraints(value, self.context)
         return value
 
 
 class Properties(collections.Mapping):
 
-    def __init__(self, schema, data, resolver=lambda d: d, parent_name=None):
-        self.props = dict((k, Property(s, k)) for k, s in schema.items())
+    def __init__(self, schema, data, resolver=lambda d: d, parent_name=None,
+                 context=None):
+        self.props = dict((k, Property(s, k, context))
+                          for k, s in schema.items())
         self.resolve = resolver
         self.data = data
         if parent_name is None:
             self.error_prefix = ''
         else:
             self.error_prefix = '%s: ' % parent_name
+        self.context = context
 
     @staticmethod
     def schema_from_params(params_snippet):
@@ -362,7 +324,8 @@ class Properties(collections.Mapping):
 
     def __getitem__(self, key):
         if key not in self:
-            raise KeyError(self.error_prefix + _('Invalid Property %s') % key)
+            raise KeyError(_('%(prefix)sInvalid Property %(key)s') %
+                           {'prefix': self.error_prefix, 'key': key})
 
         prop = self.props[key]
 
@@ -373,12 +336,12 @@ class Properties(collections.Mapping):
             # the resolver function could raise any number of exceptions,
             # so handle this generically
             except Exception as e:
-                raise ValueError(self.error_prefix + '%s %s' % (key, str(e)))
+                raise ValueError('%s%s %s' % (self.error_prefix, key, str(e)))
         elif prop.has_default():
             return prop.default()
         elif prop.required():
-            raise ValueError(self.error_prefix +
-                             _('Property %s not assigned') % key)
+            raise ValueError(_('%(prefix)sProperty %(key)s not assigned') %
+                             {'prefix': self.error_prefix, 'key': key})
 
     def __len__(self):
         return len(self.props)
@@ -395,12 +358,12 @@ class Properties(collections.Mapping):
         Return a template parameter definition corresponding to a property.
         """
         param_type_map = {
-            schema.INTEGER: parameters.NUMBER,
-            schema.STRING: parameters.STRING,
-            schema.NUMBER: parameters.NUMBER,
-            schema.BOOLEAN: parameters.STRING,
-            schema.MAP: parameters.JSON,
-            schema.LIST: parameters.COMMA_DELIMITED_LIST,
+            schema.INTEGER: parameters.Schema.NUMBER,
+            schema.STRING: parameters.Schema.STRING,
+            schema.NUMBER: parameters.Schema.NUMBER,
+            schema.BOOLEAN: parameters.Schema.STRING,
+            schema.MAP: parameters.Schema.MAP,
+            schema.LIST: parameters.Schema.LIST,
         }
 
         def param_items():

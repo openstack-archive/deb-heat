@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -152,7 +151,8 @@ class CloudWatchAlarm(resource.Resource):
             self.properties = Properties(self.properties_schema,
                                          json_snippet.get('Properties', {}),
                                          self.stack.resolve_runtime_data,
-                                         self.name)
+                                         self.name,
+                                         self.context)
             loader = watchrule.WatchRule.load
             wr = loader(self.context,
                         watch_name=self.physical_resource_name())

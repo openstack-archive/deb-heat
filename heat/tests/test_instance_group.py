@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -13,10 +12,13 @@
 #    under the License.
 
 import copy
+import mox
 
 from heat.common import exception
 from heat.common import template_format
+from heat.engine.resources import image
 from heat.engine.resources import instance
+from heat.engine.resources import nova_keypair
 from heat.engine import resource
 from heat.engine import resources
 from heat.engine import scheduler
@@ -69,6 +71,12 @@ class InstanceGroupTest(HeatTestCase):
         """
         self.m.StubOutWithMock(parser.Stack, 'validate')
         parser.Stack.validate()
+        self.m.StubOutWithMock(nova_keypair.KeypairConstraint, 'validate')
+        nova_keypair.KeypairConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.m.StubOutWithMock(image.ImageConstraint, 'validate')
+        image.ImageConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
 
         self.m.StubOutWithMock(instance_class, 'handle_create')
         self.m.StubOutWithMock(instance_class, 'check_create_complete')
@@ -153,6 +161,12 @@ class InstanceGroupTest(HeatTestCase):
         instance.Instance.handle_create().AndRaise(not_found)
         self.m.StubOutWithMock(parser.Stack, 'validate')
         parser.Stack.validate()
+        self.m.StubOutWithMock(nova_keypair.KeypairConstraint, 'validate')
+        nova_keypair.KeypairConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.m.StubOutWithMock(image.ImageConstraint, 'validate')
+        image.ImageConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
 
         self.m.ReplayAll()
 
@@ -209,6 +223,12 @@ class InstanceGroupTest(HeatTestCase):
 
         self.m.StubOutWithMock(parser.Stack, 'validate')
         parser.Stack.validate()
+        self.m.StubOutWithMock(nova_keypair.KeypairConstraint, 'validate')
+        nova_keypair.KeypairConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.m.StubOutWithMock(image.ImageConstraint, 'validate')
+        image.ImageConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         instance.Instance.handle_create().AndRaise(Exception)
 
@@ -222,7 +242,7 @@ class InstanceGroupTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
 
         # The failed inner resource remains
-        self.assertEqual(len(rsrc.nested().resources), 1)
+        self.assertEqual(1, len(rsrc.nested().resources))
         child_resource = rsrc.nested().resources.values()[0]
         self.assertEqual((child_resource.CREATE, child_resource.FAILED),
                          child_resource.state)
@@ -242,7 +262,7 @@ class InstanceGroupTest(HeatTestCase):
         self.m.ReplayAll()
         self.create_resource(t, stack, 'JobServerConfig')
         rsrc = self.create_resource(t, stack, 'JobServerGroup')
-        self.assertEqual(len(rsrc.nested().resources), 1)
+        self.assertEqual(1, len(rsrc.nested().resources))
         succeeded_instance = rsrc.nested().resources.values()[0]
 
         self.m.VerifyAll()
@@ -250,6 +270,12 @@ class InstanceGroupTest(HeatTestCase):
 
         self.m.StubOutWithMock(parser.Stack, 'validate')
         parser.Stack.validate()
+        self.m.StubOutWithMock(nova_keypair.KeypairConstraint, 'validate')
+        nova_keypair.KeypairConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.m.StubOutWithMock(image.ImageConstraint, 'validate')
+        image.ImageConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         instance.Instance.handle_create().AndRaise(Exception)
 
@@ -263,7 +289,7 @@ class InstanceGroupTest(HeatTestCase):
         self.assertEqual((rsrc.UPDATE, rsrc.FAILED), rsrc.state)
 
         # The failed inner resource remains
-        self.assertEqual(len(rsrc.nested().resources), 2)
+        self.assertEqual(2, len(rsrc.nested().resources))
         child_resource = [r for r in rsrc.nested().resources.values()
                           if r.name != succeeded_instance.name][0]
         self.assertEqual((child_resource.CREATE, child_resource.FAILED),

@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -269,8 +268,11 @@ def stack_get(context, stack_id, show_deleted=False, tenant_safe=True):
     if result is None or result.deleted_at is not None and not deleted_ok:
         return None
 
+    # One exception to normal project scoping is users created by the
+    # stacks in the stack_user_project_id (in the heat stack user domain)
     if (tenant_safe and result is not None and context is not None and
-            result.tenant != context.tenant_id):
+        context.tenant_id not in (result.tenant,
+                                  result.stack_user_project_id)):
         return None
 
     return result
@@ -312,7 +314,6 @@ def _paginate_query(context, query, model, limit=None, sort_keys=None,
     model_marker = None
     if marker:
         model_marker = model_query(context, model).get(marker)
-
     try:
         query = utils.paginate_query(query, model, limit, sort_keys,
                                      model_marker, sort_dir)
@@ -322,30 +323,19 @@ def _paginate_query(context, query, model, limit=None, sort_keys=None,
     return query
 
 
-def _query_stack_get_all_by_tenant(context):
-    query = _query_stack_get_all(context).\
-        filter_by(tenant=context.tenant_id)
-
-    return query
-
-
-def _query_stack_get_all(context):
+def _query_stack_get_all(context, tenant_safe=True):
     query = soft_delete_aware_query(context, models.Stack).\
         filter_by(owner_id=None)
+
+    if tenant_safe:
+        query = query.filter_by(tenant=context.tenant_id)
 
     return query
 
 
 def stack_get_all(context, limit=None, sort_keys=None, marker=None,
-                  sort_dir=None, filters=None):
-    query = _query_stack_get_all(context)
-    return _filter_and_page_query(context, query, limit, sort_keys,
-                                  marker, sort_dir, filters).all()
-
-
-def stack_get_all_by_tenant(context, limit=None, sort_keys=None, marker=None,
-                            sort_dir=None, filters=None):
-    query = _query_stack_get_all_by_tenant(context)
+                  sort_dir=None, filters=None, tenant_safe=True):
+    query = _query_stack_get_all(context, tenant_safe)
     return _filter_and_page_query(context, query, limit, sort_keys,
                                   marker, sort_dir, filters).all()
 
@@ -366,8 +356,8 @@ def _filter_and_page_query(context, query, limit=None, sort_keys=None,
                            whitelisted_sort_keys, marker, sort_dir)
 
 
-def stack_count_all_by_tenant(context, filters=None):
-    query = _query_stack_get_all_by_tenant(context)
+def stack_count_all(context, filters=None, tenant_safe=True):
+    query = _query_stack_get_all(context, tenant_safe=tenant_safe)
     query = db_filters.exact_filter(query, models.Stack, filters)
     return query.count()
 
@@ -385,8 +375,8 @@ def stack_update(context, stack_id, values):
     if not stack:
         raise exception.NotFound(_('Attempt to update a stack with id: '
                                  '%(id)s %(msg)s') % {
-                                 'id': stack_id,
-                                 'msg': 'that does not exist'})
+                                     'id': stack_id,
+                                     'msg': 'that does not exist'})
 
     stack.update(values)
     stack.save(_session(context))
@@ -397,8 +387,8 @@ def stack_delete(context, stack_id):
     if not s:
         raise exception.NotFound(_('Attempt to delete a stack with id: '
                                  '%(id)s %(msg)s') % {
-                                 'id': stack_id,
-                                 'msg': 'that does not exist'})
+                                     'id': stack_id,
+                                     'msg': 'that does not exist'})
 
     session = Session.object_session(s)
 
@@ -582,8 +572,8 @@ def watch_rule_update(context, watch_id, values):
     if not wr:
         raise exception.NotFound(_('Attempt to update a watch with id: '
                                  '%(id)s %(msg)s') % {
-                                 'id': watch_id,
-                                 'msg': 'that does not exist'})
+                                     'id': watch_id,
+                                     'msg': 'that does not exist'})
 
     wr.update(values)
     wr.save(_session(context))
@@ -594,8 +584,8 @@ def watch_rule_delete(context, watch_id):
     if not wr:
         raise exception.NotFound(_('Attempt to delete watch_rule: '
                                  '%(id)s %(msg)s') % {
-                                 'id': watch_id,
-                                 'msg': 'that does not exist'})
+                                     'id': watch_id,
+                                     'msg': 'that does not exist'})
     session = Session.object_session(wr)
 
     for d in wr.watch_data:
@@ -615,6 +605,74 @@ def watch_data_create(context, values):
 def watch_data_get_all(context):
     results = model_query(context, models.WatchData).all()
     return results
+
+
+def software_config_create(context, values):
+    obj_ref = models.SoftwareConfig()
+    obj_ref.update(values)
+    obj_ref.save(_session(context))
+    return obj_ref
+
+
+def software_config_get(context, config_id):
+    result = model_query(context, models.SoftwareConfig).get(config_id)
+    if (result is not None and context is not None and
+            result.tenant != context.tenant_id):
+        result = None
+
+    if not result:
+        raise exception.NotFound(_('Software config with id %s not found') %
+                                 config_id)
+    return result
+
+
+def software_config_delete(context, config_id):
+    config = software_config_get(context, config_id)
+    session = Session.object_session(config)
+    session.delete(config)
+    session.flush()
+
+
+def software_deployment_create(context, values):
+    obj_ref = models.SoftwareDeployment()
+    obj_ref.update(values)
+    obj_ref.save(_session(context))
+    return obj_ref
+
+
+def software_deployment_get(context, deployment_id):
+    result = model_query(context, models.SoftwareDeployment).get(deployment_id)
+    if (result is not None and context is not None and
+            result.tenant != context.tenant_id):
+        result = None
+
+    if not result:
+        raise exception.NotFound(_('Deployment with id %s not found') %
+                                 deployment_id)
+    return result
+
+
+def software_deployment_get_all(context, server_id=None):
+    query = model_query(context, models.SoftwareDeployment).\
+        filter_by(tenant=context.tenant_id).\
+        order_by(models.SoftwareDeployment.created_at)
+    if server_id:
+        query = query.filter_by(server_id=server_id)
+    return query.all()
+
+
+def software_deployment_update(context, deployment_id, values):
+    deployment = software_deployment_get(context, deployment_id)
+    deployment.update(values)
+    deployment.save(_session(context))
+    return deployment
+
+
+def software_deployment_delete(context, deployment_id):
+    deployment = software_deployment_get(context, deployment_id)
+    session = Session.object_session(deployment)
+    session.delete(deployment)
+    session.flush()
 
 
 def purge_deleted(age, granularity='days'):

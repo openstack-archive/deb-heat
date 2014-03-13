@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 # All Rights Reserved.
 #
@@ -71,7 +70,7 @@ def add_command_parsers(subparsers):
 
 command_opt = cfg.SubCommandOpt('command',
                                 title='Commands',
-                                help='Available commands',
+                                help='Show available commands.',
                                 handler=add_command_parsers)
 
 

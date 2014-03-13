@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,8 +11,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import uuid
+import mock
 import mox
+import uuid
 
 from heat.common import template_format
 from heat.common import exception
@@ -22,7 +22,6 @@ from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import stack_resource
-from heat.engine import template
 from heat.tests.common import HeatTestCase
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
@@ -35,6 +34,7 @@ ws_res_snippet = {"Type": "some_magic_type",
 
 param_template = '''
 {
+  "AWSTemplateFormatVersion" : "2010-09-09",
   "Parameters" : {
     "KeyName" : {
       "Description" : "KeyName",
@@ -54,6 +54,7 @@ param_template = '''
 
 simple_template = '''
 {
+  "AWSTemplateFormatVersion" : "2010-09-09",
   "Parameters" : {},
   "Resources" : {
     "WebServer": {
@@ -70,16 +71,29 @@ class MyStackResource(stack_resource.StackResource,
     def physical_resource_name(self):
         return "cb2f2b28-a663-4683-802c-4b40c916e1ff"
 
-    def set_template(self, nested_tempalte, params):
-        self.nested_tempalte = nested_tempalte
+    def set_template(self, nested_template, params):
+        self.nested_template = nested_template
         self.nested_params = params
 
     def handle_create(self):
-        return self.create_with_template(self.nested_tempalte,
+        return self.create_with_template(self.nested_template,
                                          self.nested_params)
+
+    def handle_adopt(self, resource_data):
+        return self.create_with_template(self.nested_template,
+                                         self.nested_params,
+                                         adopt_data=resource_data)
 
     def handle_delete(self):
         self.delete_nested()
+
+
+class MyImplementedStackResource(MyStackResource):
+    def child_template(self):
+        return self.nested_template
+
+    def child_params(self):
+        return self.nested_params
 
 
 class StackResourceTest(HeatTestCase):
@@ -91,7 +105,7 @@ class StackResourceTest(HeatTestCase):
                                  MyStackResource)
         resource._register_class('GenericResource',
                                  generic_rsrc.GenericResource)
-        t = parser.Template({template.RESOURCES:
+        t = parser.Template({'Resources':
                              {"provider_resource": ws_res_snippet}})
         self.parent_stack = parser.Stack(utils.dummy_context(), 'test_stack',
                                          t, stack_id=str(uuid.uuid4()))
@@ -101,12 +115,105 @@ class StackResourceTest(HeatTestCase):
         self.templ = template_format.parse(param_template)
         self.simple_template = template_format.parse(simple_template)
 
+    def test_child_template_defaults_to_not_implemented(self):
+        self.assertRaises(NotImplementedError,
+                          self.parent_resource.child_template)
+
+    def test_child_params_defaults_to_not_implemented(self):
+        self.assertRaises(NotImplementedError,
+                          self.parent_resource.child_params)
+
+    def test_preview_defaults_to_stack_resource_itself(self):
+        preview = self.parent_resource.preview()
+        self.assertIsInstance(preview, stack_resource.StackResource)
+
+    @mock.patch.object(stack_resource.environment, 'Environment')
+    @mock.patch.object(stack_resource.parser, 'Template')
+    @mock.patch.object(stack_resource.parser, 'Stack')
+    def test_preview_with_implemented_child_resource(self, mock_stack_class,
+                                                     mock_template_class,
+                                                     mock_env_class):
+        nested_stack = mock.Mock()
+        mock_stack_class.return_value = nested_stack
+        nested_stack.preview_resources.return_value = 'preview_nested_stack'
+        mock_template_class.return_value = 'parsed_template'
+        mock_env_class.return_value = 'environment'
+        template = template_format.parse(param_template)
+        parent_resource = MyImplementedStackResource('test',
+                                                     ws_res_snippet,
+                                                     self.parent_stack)
+        params = {'KeyName': 'test'}
+        parent_resource.set_template(template, params)
+        validation_mock = mock.Mock(return_value=None)
+        parent_resource._validate_nested_resources = validation_mock
+
+        result = parent_resource.preview()
+        mock_env_class.assert_called_once_with(params)
+        mock_template_class.assert_called_once_with(template)
+        self.assertEqual('preview_nested_stack', result)
+        mock_stack_class.assert_called_once_with(
+            mock.ANY,
+            'test_stack-test',
+            'parsed_template',
+            'environment',
+            disable_rollback=mock.ANY,
+            parent_resource=parent_resource,
+            owner_id=mock.ANY
+        )
+
+    def test_preview_validates_nested_resources(self):
+        stack_resource = MyImplementedStackResource('test',
+                                                    ws_res_snippet,
+                                                    self.parent_stack)
+        stack_resource.child_template = mock.Mock(return_value={})
+        stack_resource.child_params = mock.Mock()
+        exc = exception.RequestLimitExceeded(message='Validation Failed')
+        validation_mock = mock.Mock(side_effect=exc)
+        stack_resource._validate_nested_resources = validation_mock
+
+        self.assertRaises(exception.RequestLimitExceeded,
+                          stack_resource.preview)
+
+    def test__validate_nested_resources_checks_num_of_resources(self):
+        stack_resource.cfg.CONF.set_override('max_resources_per_stack', 2)
+        tmpl = {'Resources': [1]}
+        template = stack_resource.parser.Template(tmpl)
+        root_resources = mock.Mock(return_value=2)
+        self.parent_resource.stack.root_stack.total_resources = root_resources
+
+        self.assertRaises(exception.RequestLimitExceeded,
+                          self.parent_resource._validate_nested_resources,
+                          template)
+
     @utils.stack_delete_after
     def test_create_with_template_ok(self):
         self.parent_resource.create_with_template(self.templ,
                                                   {"KeyName": "key"})
         self.stack = self.parent_resource.nested()
 
+        self.assertEqual(self.parent_resource, self.stack.parent_resource)
+        self.assertEqual("cb2f2b28-a663-4683-802c-4b40c916e1ff",
+                         self.stack.name)
+        self.assertEqual(self.templ, self.stack.t.t)
+        self.assertEqual(self.stack.id, self.parent_resource.resource_id)
+
+    @utils.stack_delete_after
+    def test_adopt_with_template_ok(self):
+        adopt_data = {
+            "resources": {
+                "WebServer": {
+                    "resource_id": "test-res-id"
+                }
+            }
+        }
+        self.parent_resource.create_with_template(self.templ,
+                                                  {"KeyName": "key"},
+                                                  adopt_data=adopt_data)
+        self.stack = self.parent_resource.nested()
+
+        self.assertEqual(self.stack.ADOPT, self.stack.action)
+        self.assertEqual('test-res-id',
+                         self.stack.resources['WebServer'].resource_id)
         self.assertEqual(self.parent_resource, self.stack.parent_resource)
         self.assertEqual("cb2f2b28-a663-4683-802c-4b40c916e1ff",
                          self.stack.name)
@@ -188,14 +295,14 @@ class StackResourceTest(HeatTestCase):
         updater.run_to_completion()
         self.assertIs(True,
                       self.parent_resource.check_update_complete(updater))
-        self.assertEqual(self.stack.state, ('UPDATE', 'COMPLETE'))
-        self.assertEqual(set(self.stack.keys()),
-                         set(["WebServer", "WebServer2"]))
+        self.assertEqual(('UPDATE', 'COMPLETE'), self.stack.state)
+        self.assertEqual(set(["WebServer", "WebServer2"]),
+                         set(self.stack.keys()))
 
         # The stack's owner_id is maintained.
         saved_stack = parser.Stack.load(
             self.parent_stack.context, self.stack.id)
-        self.assertEqual(saved_stack.owner_id, self.parent_stack.id)
+        self.assertEqual(self.parent_stack.id, saved_stack.owner_id)
 
     @utils.stack_delete_after
     def test_update_with_template_state_err(self):
@@ -227,7 +334,7 @@ class StackResourceTest(HeatTestCase):
         ex = self.assertRaises(exception.Error,
                                self.parent_resource.check_update_complete,
                                updater)
-        self.assertEqual('Nested stack update failed: ', str(ex))
+        self.assertEqual('Nested stack UPDATE failed: ', str(ex))
 
         self.m.VerifyAll()
 
@@ -342,8 +449,8 @@ class StackResourceTest(HeatTestCase):
         parser.Stack(ctx, phy_id, templ, env, timeout_mins=None,
                      disable_rollback=True,
                      parent_resource=self.parent_resource,
-                     owner_id=self.parent_stack.id)\
-            .AndReturn(self.stack)
+                     owner_id=self.parent_stack.id,
+                     adopt_stack_data=None).AndReturn(self.stack)
 
         st_set = self.stack.state_set
         self.m.StubOutWithMock(self.stack, 'state_set')
@@ -351,7 +458,7 @@ class StackResourceTest(HeatTestCase):
                              "Stack CREATE started").WithSideEffects(st_set)
 
         self.stack.state_set(self.stack.CREATE, self.stack.COMPLETE,
-                             "Stack create completed successfully")
+                             "Stack CREATE completed successfully")
         self.m.ReplayAll()
 
         self.assertRaises(exception.ResourceFailure,
@@ -381,7 +488,7 @@ class StackResourceTest(HeatTestCase):
                              "Stack SUSPEND started").WithSideEffects(st_set)
 
         self.stack.state_set(parser.Stack.SUSPEND, parser.Stack.COMPLETE,
-                             "Stack suspend completed successfully")
+                             "Stack SUSPEND completed successfully")
         self.m.ReplayAll()
 
         self.assertRaises(exception.ResourceFailure,
@@ -413,7 +520,7 @@ class StackResourceTest(HeatTestCase):
                              "Stack RESUME started").WithSideEffects(st_set)
 
         self.stack.state_set(parser.Stack.RESUME, parser.Stack.COMPLETE,
-                             "Stack resume completed successfully")
+                             "Stack RESUME completed successfully")
         self.m.ReplayAll()
 
         self.assertRaises(exception.ResourceFailure,

@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -62,6 +61,10 @@ class Restarter(signal_responder.SignalResponder):
                 return resource
         return None
 
+    def handle_create(self):
+        super(Restarter, self).handle_create()
+        self.resource_id_set(self._get_user_id())
+
     def handle_signal(self, details=None):
         if details is None:
             alarm_state = 'alarm'
@@ -77,8 +80,9 @@ class Restarter(signal_responder.SignalResponder):
         victim = self._find_resource(self.properties[self.INSTANCE_ID])
         if victim is None:
             logger.info(_('%(name)s Alarm, can not find instance '
-                        '%(instance)s') % {'name': self.name,
-                        'instance': self.properties[self.INSTANCE_ID]})
+                        '%(instance)s') % {
+                            'name': self.name,
+                            'instance': self.properties[self.INSTANCE_ID]})
             return
 
         logger.info(_('%(name)s Alarm, restarting resource: %(victim)s') % {
@@ -134,6 +138,9 @@ class Instance(resource.Resource):
         IMAGE_ID: properties.Schema(
             properties.Schema.STRING,
             _('Glance image ID or name.'),
+            constraints=[
+                constraints.CustomConstraint('glance.image')
+            ],
             required=True
         ),
         # AWS does not require InstanceType but Heat does because the nova
@@ -146,7 +153,10 @@ class Instance(resource.Resource):
         ),
         KEY_NAME: properties.Schema(
             properties.Schema.STRING,
-            _('Optional Nova keypair name.')
+            _('Optional Nova keypair name.'),
+            constraints=[
+                constraints.CustomConstraint("nova.keypair")
+            ]
         ),
         AVAILABILITY_ZONE: properties.Schema(
             properties.Schema.STRING,
@@ -326,7 +336,10 @@ class Instance(resource.Resource):
                       'PrivateDnsName']:
             res = self._ipaddress()
 
-        logger.info('%s._resolve_attribute(%s) == %s' % (self.name, name, res))
+        logger.info(_('%(name)s._resolve_attribute(%(attname)s) == %(res)s'),
+                    {'name': self.name,
+                     'attname': name,
+                     'res': res})
         return unicode(res) if res else None
 
     def _build_nics(self, network_interfaces,
@@ -397,11 +410,6 @@ class Instance(resource.Resource):
         flavor = self.properties[self.INSTANCE_TYPE]
         availability_zone = self.properties[self.AVAILABILITY_ZONE]
 
-        key_name = self.properties[self.KEY_NAME]
-        if key_name:
-            # confirm keypair exists
-            nova_utils.get_keypair(self.nova(), key_name)
-
         image_name = self.properties[self.IMAGE_ID]
 
         image_id = nova_utils.get_image_id(self.nova(), image_name)
@@ -425,7 +433,7 @@ class Instance(resource.Resource):
                 name=self.physical_resource_name(),
                 image=image_id,
                 flavor=flavor_id,
-                key_name=key_name,
+                key_name=self.properties[self.KEY_NAME],
                 security_groups=security_groups,
                 userdata=nova_utils.build_userdata(self, userdata),
                 meta=self._get_nova_metadata(self.properties),
@@ -463,7 +471,7 @@ class Instance(resource.Resource):
 
     def _check_active(self, server):
         if server.status != 'ACTIVE':
-            server.get()
+            nova_utils.refresh_server(server)
 
         if server.status == 'ACTIVE':
             return True
@@ -539,20 +547,12 @@ class Instance(resource.Resource):
         if res:
             return res
 
-        # check validity of key
-        key_name = self.properties.get(self.KEY_NAME)
-        if key_name:
-            nova_utils.get_keypair(self.nova(), key_name)
-
         # check validity of security groups vs. network interfaces
         security_groups = self._get_security_groups()
         if security_groups and self.properties.get(self.NETWORK_INTERFACES):
             raise exception.ResourcePropertyConflict(
                 '/'.join([self.SECURITY_GROUPS, self.SECURITY_GROUP_IDS]),
                 self.NETWORK_INTERFACES)
-
-        # make sure the image exists.
-        nova_utils.get_image_id(self.nova(), self.properties[self.IMAGE_ID])
 
     @scheduler.wrappertask
     def _delete_server(self, server):
@@ -567,7 +567,7 @@ class Instance(resource.Resource):
             yield
 
             try:
-                server.get()
+                nova_utils.refresh_server(server)
                 if server.status == "DELETED":
                     self.resource_id_set(None)
                     break
@@ -650,9 +650,11 @@ class Instance(resource.Resource):
                 if server.status == 'SUSPENDED':
                     return True
 
-                server.get()
-                logger.debug("%s check_suspend_complete status = %s" %
-                             (self.name, server.status))
+                nova_utils.refresh_server(server)
+                logger.debug(_("%(name)s check_suspend_complete "
+                               "status = %(status)s"),
+                             {'name': self.name,
+                              'status': server.status})
                 if server.status in list(nova_utils.deferred_server_statuses +
                                          ['ACTIVE']):
                     return server.status == 'SUSPENDED'
