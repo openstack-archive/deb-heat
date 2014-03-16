@@ -8,7 +8,12 @@ export OSLO_PACKAGE_VERSION=$(VERSION)
 
 ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 override_dh_auto_test:
-	./run_tests.sh || true
+	set -e && set -x && \
+		TEMP_REZ=`mktemp -t` && \
+		python setup.py testr --slowest --testr-args='--subunit  ' \
+			| tee $$TEMP_REZ | subunit2pyunit && \
+		cat $$TEMP_REZ | subunit-stats && \
+		rm -f $$TEMP_REZ
 endif
 
 override_dh_clean:
