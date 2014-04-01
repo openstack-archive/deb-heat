@@ -10,15 +10,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from novaclient.v1_1 import client as novaclient
+
 from heat.common import template_format
+from heat.engine import clients
 from heat.engine.resources.nova_floatingip import NovaFloatingIp
 from heat.engine.resources.nova_floatingip import NovaFloatingIpAssociation
-from heat.engine import clients
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
-
-from novaclient.v1_1 import client as novaclient
 
 
 floating_ip_template = '''
@@ -156,7 +156,14 @@ class NovaFloatingIPTest(HeatTestCase):
 
         self.novaclient.servers.get(
             '67dc62f9-efde-4c8b-94af-013e00f5dc57').AndReturn('server')
-        self.novaclient.servers.remove_floating_ip('server', '1')
+        self.novaclient.floating_ips.get('1').AndReturn(
+            self._make_obj(**{
+                'id': '1',
+                'ip': '11.0.0.1',
+                'pool': 'public'
+            })
+        )
+        self.novaclient.servers.remove_floating_ip('server', '11.0.0.1')
 
         self.m.ReplayAll()
 

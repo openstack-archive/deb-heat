@@ -13,18 +13,19 @@
 
 import copy
 import uuid
+
 import mox
 
-from heat.engine import environment
-from heat.tests.v1_1 import fakes
-from heat.engine.resources import instance as instances
-from heat.engine.resources import nova_utils
 from heat.common import template_format
 from heat.engine import clients
+from heat.engine import environment
 from heat.engine import parser
+from heat.engine.resources import instance as instances
+from heat.engine.resources import nova_utils
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
+from heat.tests.v1_1 import fakes
 
 
 instance_template = '''
@@ -151,11 +152,13 @@ class ServerTagsTest(HeatTestCase):
         # need to resolve the template functions
         server_userdata = nova_utils.build_userdata(
             instance,
-            instance.t['Properties']['UserData'])
+            instance.t['Properties']['UserData'],
+            'ec2-user')
         self.m.StubOutWithMock(nova_utils, 'build_userdata')
         nova_utils.build_userdata(
             instance,
-            instance.t['Properties']['UserData']).AndReturn(server_userdata)
+            instance.t['Properties']['UserData'],
+            'ec2-user').AndReturn(server_userdata)
 
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(

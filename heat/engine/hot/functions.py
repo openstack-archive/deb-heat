@@ -35,6 +35,11 @@ class GetParam(function.Function):
           - ...
     '''
 
+    def __init__(self, stack, fn_name, args):
+        super(GetParam, self).__init__(stack, fn_name, args)
+
+        self.parameters = self.stack.parameters
+
     def result(self):
         args = function.resolve(self.args)
 
@@ -57,7 +62,7 @@ class GetParam(function.Function):
                             self.fn_name)
 
         try:
-            parameter = self.stack.parameters[param_name]
+            parameter = self.parameters[param_name]
         except KeyError:
             raise exception.UserParameterMissing(key=param_name)
 
@@ -109,7 +114,7 @@ class GetAtt(cfn_funcs.GetAtt):
     def result(self):
         attribute = super(GetAtt, self).result()
         if attribute is None:
-            return ''
+            return None
 
         path_components = function.resolve(self._path_components)
 
@@ -127,7 +132,7 @@ class GetAtt(cfn_funcs.GetAtt):
         try:
             return reduce(get_path_component, path_components, attribute)
         except (KeyError, IndexError, TypeError):
-            return ''
+            return None
 
 
 class Replace(cfn_funcs.Replace):

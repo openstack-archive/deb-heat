@@ -17,8 +17,8 @@ import mock
 
 from heat.common import exception
 from heat.engine import resource
-from heat.engine import scheduler
 from heat.engine.resources import resource_group
+from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import generic_resource
 from heat.tests import utils
@@ -133,6 +133,14 @@ class ResourceGroupTest(common.HeatTestCase):
         self.assertEqual(expect, resg._assemble_nested(1))
         expect['resources']["0"]['properties'] = {"Foo": None}
         self.assertEqual(expect, resg._assemble_nested(1, include_all=True))
+
+    def test_assemble_no_properties(self):
+        templ = copy.deepcopy(template)
+        res_def = templ["resources"]["group1"]["properties"]['resource_def']
+        del res_def['properties']
+        stack = utils.parse_stack(templ)
+        resg = stack.resources['group1']
+        self.assertIsNone(resg.validate())
 
     def test_invalid_res_type(self):
         """Test that error raised for unknown resource type."""

@@ -12,34 +12,31 @@
 #    under the License.
 
 import json
-import mock
 
+import mock
 from oslo.config import cfg
 import webob.exc
 
-from heat.common import identifier
-from heat.openstack.common import rpc
-
+import heat.api.middleware.fault as fault
+import heat.api.openstack.v1 as api_v1
+import heat.api.openstack.v1.actions as actions
+import heat.api.openstack.v1.build_info as build_info
+import heat.api.openstack.v1.events as events
+import heat.api.openstack.v1.resources as resources
+import heat.api.openstack.v1.software_configs as software_configs
+import heat.api.openstack.v1.software_deployments as software_deployments
+import heat.api.openstack.v1.stacks as stacks
 from heat.common import exception as heat_exc
+from heat.common import identifier
 from heat.common import policy
-from heat.common.wsgi import Request
 from heat.common import urlfetch
+from heat.common.wsgi import Request
+from heat.openstack.common import rpc
 from heat.openstack.common.rpc import common as rpc_common
 from heat.rpc import api as rpc_api
 from heat.rpc import client as rpc_client
 from heat.tests.common import HeatTestCase
-
-import heat.api.openstack.v1 as api_v1
-import heat.api.openstack.v1.stacks as stacks
-import heat.api.openstack.v1.resources as resources
-import heat.api.openstack.v1.events as events
-import heat.api.openstack.v1.actions as actions
-import heat.api.openstack.v1.build_info as build_info
-import heat.api.openstack.v1.software_configs as software_configs
-import heat.api.openstack.v1.software_deployments as software_deployments
 from heat.tests import utils
-
-import heat.api.middleware.fault as fault
 
 
 def request_with_middleware(middleware, func, req, *args, **kwargs):
@@ -1969,71 +1966,6 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(403, resp.status_int)
         self.assertIn('403 Forbidden', str(resp))
 
-    def test_show_nested(self, mock_enforce):
-        self._mock_enforce_setup(mock_enforce, 'show', True)
-        res_name = 'ServerGroup'
-        stack_identity = identifier.HeatIdentifier(self.tenant,
-                                                   'nested_resource', '6')
-        res_identity = identifier.ResourceIdentifier(resource_name=res_name,
-                                                     **stack_identity)
-
-        req = self._get(stack_identity._tenant_path())
-
-        engine_resp = {
-            u'description': u'',
-            u'resource_identity': dict(res_identity),
-            u'stack_name': stack_identity.stack_name,
-            u'resource_name': res_name,
-            u'resource_status_reason': None,
-            u'updated_time': u'2012-07-23T13:06:00Z',
-            u'stack_identity': dict(stack_identity),
-            u'resource_action': u'CREATE',
-            u'resource_status': u'COMPLETE',
-            u'physical_resource_id':
-            u'a3455d8c-9f88-404d-a85b-5315293e67de',
-            u'resource_type': u'OS::Heat::ResourceGroup',
-            u'metadata': {u'ensureRunning': u'true'},
-            u'members': [u'2bf47h48-45u4-4z47-371h-j2k4v236l562',
-                         u'a3455d8c-9f88-404d-a85b-5315293e67de']
-        }
-        self.m.StubOutWithMock(rpc, 'call')
-        rpc.call(req.context, self.topic,
-                 {'namespace': None,
-                  'method': 'describe_stack_resource',
-                  'args': {'stack_identity': stack_identity,
-                           'resource_name': res_name},
-                  'version': self.api_version},
-                 None).AndReturn(engine_resp)
-        self.m.ReplayAll()
-
-        result = self.controller.show(req, tenant_id=self.tenant,
-                                      stack_name=stack_identity.stack_name,
-                                      stack_id=stack_identity.stack_id,
-                                      resource_name=res_name)
-
-        expected = {
-            'resource': {
-                'links': [
-                    {'href': self._url(res_identity), 'rel': 'self'},
-                    {'href': self._url(stack_identity), 'rel': 'stack'},
-                ],
-                u'description': u'',
-                u'resource_name': res_name,
-                u'logical_resource_id': res_name,
-                u'resource_status_reason': None,
-                u'updated_time': u'2012-07-23T13:06:00Z',
-                u'resource_status': u'CREATE_COMPLETE',
-                u'physical_resource_id':
-                u'a3455d8c-9f88-404d-a85b-5315293e67de',
-                u'resource_type': u'OS::Heat::ResourceGroup',
-                u'members': [u'2bf47h48-45u4-4z47-371h-j2k4v236l562',
-                             u'a3455d8c-9f88-404d-a85b-5315293e67de']
-            }
-        }
-
-        self.assertEqual(result, expected)
-        self.m.VerifyAll()
-
     def test_metadata_show(self, mock_enforce):
         self._mock_enforce_setup(mock_enforce, 'metadata', True)
         res_name = 'WikiDatabase'
@@ -3472,7 +3404,6 @@ class SoftwareDeploymentControllerTest(ControllerTest, HeatTestCase):
             'action': 'INIT',
             'status': 'COMPLETE',
             'status_reason': None,
-            'signal_id': None,
             'config_id': config_id,
             'config': '#!/bin/bash',
             'name': 'config_mysql',
@@ -3501,7 +3432,6 @@ class SoftwareDeploymentControllerTest(ControllerTest, HeatTestCase):
             'action': 'INIT',
             'status': 'COMPLETE',
             'status_reason': None,
-            'signal_id': None,
             'config_id': config_id}
         return_value = body.copy()
         deployment_id = 'a45559cd-8736-4375-bc39-d6a7bb62ade2'
@@ -3527,7 +3457,6 @@ class SoftwareDeploymentControllerTest(ControllerTest, HeatTestCase):
             'action': 'INIT',
             'status': 'COMPLETE',
             'status_reason': None,
-            'signal_id': None,
             'config_id': config_id}
         return_value = body.copy()
         deployment_id = 'a45559cd-8736-4375-bc39-d6a7bb62ade2'

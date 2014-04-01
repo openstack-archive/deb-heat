@@ -14,16 +14,15 @@
 
 from heat.common import exception
 from heat.engine import clients
-from heat.engine import support
+from heat.engine import properties
 from heat.engine.resources.neutron import neutron
 from heat.engine.resources.neutron import subnet
-from heat.engine import properties
+from heat.engine import support
+from heat.openstack.common import log as logging
 
 if clients.neutronclient is not None:
     from neutronclient.common.exceptions import NeutronClientException
     from neutronclient.neutron import v2_0 as neutronV20
-
-from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +31,10 @@ class Router(neutron.NeutronResource):
 
     PROPERTIES = (
         NAME, EXTERNAL_GATEWAY, VALUE_SPECS, ADMIN_STATE_UP,
+        L3_AGENT_ID,
     ) = (
         'name', 'external_gateway_info', 'value_specs', 'admin_state_up',
+        'l3_agent_id',
     )
 
     _EXTERNAL_GATEWAY_KEYS = (
@@ -79,6 +80,13 @@ class Router(neutron.NeutronResource):
             default=True,
             update_allowed=True
         ),
+        L3_AGENT_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('ID of the L3 agent. NOTE: The default policy setting in '
+              'Neutron restricts usage of this property to administrative '
+              'users only.'),
+            update_allowed=True
+        ),
     }
 
     attributes_schema = {
@@ -91,6 +99,17 @@ class Router(neutron.NeutronResource):
     }
 
     update_allowed_keys = ('Properties',)
+
+    def add_dependencies(self, deps):
+        super(Router, self).add_dependencies(deps)
+        external_gw = self.properties.get(self.EXTERNAL_GATEWAY)
+        if external_gw:
+            external_gw_net = external_gw.get(self.EXTERNAL_GATEWAY_NETWORK)
+            for res in self.stack.itervalues():
+                if res.has_interface('OS::Neutron::Subnet'):
+                    subnet_net = res.properties.get(subnet.Subnet.NETWORK_ID)
+                    if subnet_net == external_gw_net:
+                        deps += (self, res)
 
     def prepare_properties(self, properties, name):
         props = super(Router, self).prepare_properties(properties, name)
@@ -106,8 +125,14 @@ class Router(neutron.NeutronResource):
         props = self.prepare_properties(
             self.properties,
             self.physical_resource_name())
+
+        l3_agent_id = props.pop(self.L3_AGENT_ID, None)
+
         router = self.neutron().create_router({'router': props})['router']
         self.resource_id_set(router['id'])
+
+        if l3_agent_id:
+            self._replace_agent(l3_agent_id)
 
     def _show_resource(self):
         return self.neutron().show_router(
@@ -128,8 +153,26 @@ class Router(neutron.NeutronResource):
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         props = self.prepare_update_properties(json_snippet)
-        self.neutron().update_router(
-            self.resource_id, {'router': props})
+
+        l3_agent_id = props.pop(self.L3_AGENT_ID, None)
+
+        if self.L3_AGENT_ID in prop_diff:
+            self._replace_agent(l3_agent_id)
+            del prop_diff[self.L3_AGENT_ID]
+
+        if len(prop_diff) > 0:
+            self.neutron().update_router(
+                self.resource_id, {'router': props})
+
+    def _replace_agent(self, l3_agent_id=None):
+        ret = self.neutron().list_l3_agent_hosting_routers(
+            self.resource_id)
+        for agent in ret['agents']:
+            self.neutron().remove_router_from_l3_agent(
+                agent['id'], self.resource_id)
+        if l3_agent_id:
+            self.neutron().add_router_to_l3_agent(
+                l3_agent_id, {'router_id': self.resource_id})
 
 
 class RouterInterface(neutron.NeutronResource):
@@ -155,16 +198,6 @@ class RouterInterface(neutron.NeutronResource):
             _('The port id, either subnet_id or port_id should be specified.')
         ),
     }
-
-    def add_dependencies(self, deps):
-        super(RouterInterface, self).add_dependencies(deps)
-        # depend on any RouterL3agents in this template with the same router_id
-        # as this router_id.
-        for resource in self.stack.itervalues():
-            if (resource.has_interface('OS::Neutron::RouterL3Agent') and
-                resource.properties.get(RouterL3Agent.ROUTER_ID) ==
-                    self.properties.get(self.ROUTER_ID)):
-                        deps += (self, resource)
 
     def validate(self):
         '''
@@ -252,12 +285,6 @@ class RouterGateway(neutron.NeutronResource):
                   resource.properties.get(subnet.Subnet.NETWORK_ID) ==
                     self.properties.get(self.NETWORK_ID)):
                         deps += (self, resource)
-            # depend on any RouterL3agents in this template with the same
-            # router_id as this router_id.
-            elif (resource.has_interface('OS::Neutron::RouterL3Agent') and
-                  resource.properties.get(RouterL3Agent.ROUTER_ID) ==
-                    self.properties.get(self.ROUTER_ID)):
-                        deps += (self, resource)
 
     def handle_create(self):
         router_id = self.properties.get(self.ROUTER_ID)
@@ -281,55 +308,6 @@ class RouterGateway(neutron.NeutronResource):
             self._handle_not_found_exception(ex)
 
 
-class RouterL3Agent(neutron.NeutronResource):
-    PROPERTIES = (
-        ROUTER_ID, L3_AGENT_ID,
-    ) = (
-        'router_id', 'l3_agent_id',
-    )
-
-    properties_schema = {
-        ROUTER_ID: properties.Schema(
-            properties.Schema.STRING,
-            _('The ID of the router you want to be scheduled by the '
-              'l3_agent. Note that the default policy setting in Neutron '
-              'restricts usage of this property to administrative users '
-              'only.'),
-            required=True
-        ),
-        L3_AGENT_ID: properties.Schema(
-            properties.Schema.STRING,
-            _('The ID of the l3-agent to schedule the router. Note that the '
-              'default policy setting in Neutron restricts usage of this '
-              'property to administrative users only.'),
-            required=True
-        ),
-    }
-
-    def handle_create(self):
-        router_id = self.properties[self.ROUTER_ID]
-        l3_agent_id = self.properties[self.L3_AGENT_ID]
-        self.neutron().add_router_to_l3_agent(
-            l3_agent_id, {'router_id': router_id})
-        self.resource_id_set('%(rtr)s:%(agt)s' %
-                             {'rtr': router_id, 'agt': l3_agent_id})
-
-    def handle_delete(self):
-        if not self.resource_id:
-            return
-        client = self.neutron()
-        router_id, l3_agent_id = self.resource_id.split(':')
-        try:
-            client.remove_router_from_l3_agent(
-                l3_agent_id, router_id)
-        except NeutronClientException as ex:
-            # assume 2 patterns about status_code following:
-            #  404: the router or agent is already gone
-            #  409: the router isn't scheduled by the l3_agent
-            if ex.status_code not in (404, 409):
-                raise ex
-
-
 def resource_mapping():
     if clients.neutronclient is None:
         return {}
@@ -338,5 +316,4 @@ def resource_mapping():
         'OS::Neutron::Router': Router,
         'OS::Neutron::RouterInterface': RouterInterface,
         'OS::Neutron::RouterGateway': RouterGateway,
-        'OS::Neutron::RouterL3Agent': RouterL3Agent,
     }

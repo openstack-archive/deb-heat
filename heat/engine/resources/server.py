@@ -13,26 +13,30 @@
 #    under the License.
 
 from oslo.config import cfg
-
-cfg.CONF.import_opt('instance_user', 'heat.common.config')
+import uuid
 
 from heat.common import exception
+from heat.db import api as db_api
 from heat.engine import clients
-from heat.engine import scheduler
-from heat.engine.resources import nova_utils
-from heat.engine.resources.software_config import software_config as sc
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
+from heat.engine.resources.neutron import subnet
+from heat.engine.resources import nova_utils
+from heat.engine.resources.software_config import software_config as sc
+from heat.engine import scheduler
+from heat.engine import stack_user
 from heat.engine import support
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 from heat.openstack.common import uuidutils
 
+cfg.CONF.import_opt('instance_user', 'heat.common.config')
+
 logger = logging.getLogger(__name__)
 
 
-class Server(resource.Resource):
+class Server(stack_user.StackUser):
 
     PROPERTIES = (
         NAME, IMAGE, BLOCK_DEVICE_MAPPING, FLAVOR,
@@ -40,14 +44,14 @@ class Server(resource.Resource):
         ADMIN_USER, AVAILABILITY_ZONE, SECURITY_GROUPS, NETWORKS,
         SCHEDULER_HINTS, METADATA, USER_DATA_FORMAT, USER_DATA,
         RESERVATION_ID, CONFIG_DRIVE, DISK_CONFIG, PERSONALITY,
-        ADMIN_PASS,
+        ADMIN_PASS, SOFTWARE_CONFIG_TRANSPORT
     ) = (
         'name', 'image', 'block_device_mapping', 'flavor',
         'flavor_update_policy', 'image_update_policy', 'key_name',
         'admin_user', 'availability_zone', 'security_groups', 'networks',
         'scheduler_hints', 'metadata', 'user_data_format', 'user_data',
         'reservation_id', 'config_drive', 'diskConfig', 'personality',
-        'admin_pass',
+        'admin_pass', 'software_config_transport'
     )
 
     _BLOCK_DEVICE_MAPPING_KEYS = (
@@ -69,9 +73,15 @@ class Server(resource.Resource):
     )
 
     _SOFTWARE_CONFIG_FORMATS = (
-        HEAT_CFNTOOLS, RAW
+        HEAT_CFNTOOLS, RAW, SOFTWARE_CONFIG
     ) = (
-        'HEAT_CFNTOOLS', 'RAW'
+        'HEAT_CFNTOOLS', 'RAW', 'SOFTWARE_CONFIG'
+    )
+
+    _SOFTWARE_CONFIG_TRANSPORTS = (
+        POLL_SERVER_CFN, POLL_SERVER_HEAT
+    ) = (
+        'POLL_SERVER_CFN', 'POLL_SERVER_HEAT'
     )
 
     properties_schema = {
@@ -162,8 +172,12 @@ class Server(resource.Resource):
         ),
         ADMIN_USER: properties.Schema(
             properties.Schema.STRING,
-            _('Name of the administrative user to use on the server.'),
-            default=cfg.CONF.instance_user
+            _('Name of the administrative user to use on the server. '
+              'This property will be removed from Juno in favor of the '
+              'default cloud-init user set up for each image (e.g. "ubuntu" '
+              'for Ubuntu 12.04+, "fedora" for Fedora 19+ and "cloud-user" '
+              'for CentOS/RHEL 6.5).'),
+            support_status=support.SupportStatus(status=support.DEPRECATED)
         ),
         AVAILABILITY_ZONE: properties.Schema(
             properties.Schema.STRING,
@@ -171,7 +185,9 @@ class Server(resource.Resource):
         ),
         SECURITY_GROUPS: properties.Schema(
             properties.Schema.LIST,
-            _('List of security group names or IDs.'),
+            _('List of security group names or IDs. Cannot be used if '
+              'neutron ports are associated with this server; assign '
+              'security groups to the ports instead.'),
             default=[]
         ),
         NETWORKS: properties.Schema(
@@ -203,7 +219,8 @@ class Server(resource.Resource):
                           'server.')
                     ),
                 },
-            )
+            ),
+            update_allowed=True
         ),
         SCHEDULER_HINTS: properties.Schema(
             properties.Schema.MAP,
@@ -222,11 +239,27 @@ class Server(resource.Resource):
             properties.Schema.STRING,
             _('How the user_data should be formatted for the server. For '
               'HEAT_CFNTOOLS, the user_data is bundled as part of the '
-              'heat-cfntools cloud-init boot configuration data. For RAW, '
-              'the user_data is passed to Nova unmodified.'),
+              'heat-cfntools cloud-init boot configuration data. For RAW '
+              'the user_data is passed to Nova unmodified. '
+              'For SOFTWARE_CONFIG user_data is bundled as part of the '
+              'software config data, and metadata is derived from any '
+              'associated SoftwareDeployment resources.'),
             default=HEAT_CFNTOOLS,
             constraints=[
                 constraints.AllowedValues(_SOFTWARE_CONFIG_FORMATS),
+            ]
+        ),
+        SOFTWARE_CONFIG_TRANSPORT: properties.Schema(
+            properties.Schema.STRING,
+            _('How the server should receive the metadata required for '
+              'software configuration. POLL_SERVER_CFN will allow calls to '
+              'the cfn API action DescribeStackResource authenticated with '
+              'the provided keypair. POLL_SERVER_HEAT will allow calls to '
+              'the Heat API resource-show using the provided keystone '
+              'credentials.'),
+            default=POLL_SERVER_CFN,
+            constraints=[
+                constraints.AllowedValues(_SOFTWARE_CONFIG_TRANSPORTS),
             ]
         ),
         USER_DATA: properties.Schema(
@@ -291,6 +324,8 @@ class Server(resource.Resource):
 
     def __init__(self, name, json_snippet, stack):
         super(Server, self).__init__(name, json_snippet, stack)
+        if self.user_data_software_config():
+            self._register_access_key()
 
     def physical_resource_name(self):
         name = self.properties.get(self.NAME)
@@ -307,27 +342,151 @@ class Server(resource.Resource):
         # This method is overridden by the derived CloudServer resource
         return self.properties.get(self.KEY_NAME)
 
+    @staticmethod
+    def _get_deployments_metadata(heatclient, server_id):
+        return heatclient.software_deployments.metadata(
+            server_id=server_id)
+
+    def _build_deployments_metadata(self):
+        meta = {}
+        if self.transport_poll_server_heat():
+            meta['os-collect-config'] = {'heat_server_poll': {
+                'username': self._get_user_id(),
+                'password': self.password,
+                'auth_url': self.context.auth_url,
+                'project_id': self.stack.stack_user_project_id}
+            }
+        elif self.transport_poll_server_cfn():
+            meta['os-collect-config'] = {'cfn': {
+                'metadata_url': '%s/v1/' % cfg.CONF.heat_metadata_server_url,
+                'access_key_id': self.access_key,
+                'secret_access_key': self.secret_key,
+                'stack_name': self.stack.name,
+                'path': '%s.Metadata' % self.name}
+            }
+
+        # cannot query the deployments if the nova server does
+        # not exist yet
+        if not self.resource_id:
+            return meta
+
+        meta['deployments'] = self._get_deployments_metadata(
+            self.heat(), self.resource_id)
+
+        return meta
+
+    def _register_access_key(self):
+        '''
+        Access is limited to this resource, which created the keypair
+        '''
+        def access_allowed(resource_name):
+            return resource_name == self.name
+
+        if self.transport_poll_server_cfn():
+            self.stack.register_access_allowed_handler(
+                self.access_key, access_allowed)
+        elif self.transport_poll_server_heat():
+            self.stack.register_access_allowed_handler(
+                self._get_user_id(), access_allowed)
+
+    def _create_transport_credentials(self):
+        if self.transport_poll_server_cfn():
+            self._create_user()
+            self._create_keypair()
+
+        elif self.transport_poll_server_heat():
+            self.password = uuid.uuid4().hex
+            self._create_user()
+
+        self._register_access_key()
+
+    @property
+    def access_key(self):
+        try:
+            return db_api.resource_data_get(self, 'access_key')
+        except exception.NotFound:
+            pass
+
+    @property
+    def secret_key(self):
+        try:
+            return db_api.resource_data_get(self, 'secret_key')
+        except exception.NotFound:
+            pass
+
+    @property
+    def password(self):
+        try:
+            return db_api.resource_data_get(self, 'password')
+        except exception.NotFound:
+            pass
+
+    @password.setter
+    def password(self, password):
+        try:
+            if password is None:
+                db_api.resource_data_delete(self, 'password')
+            else:
+                db_api.resource_data_set(self, 'password', password, True)
+        except exception.NotFound:
+            pass
+
+    @property
+    def metadata(self):
+        if self.user_data_software_config():
+            return self._build_deployments_metadata()
+        else:
+            return self._metadata
+
+    @metadata.setter
+    def metadata(self, metadata):
+        if not self.user_data_software_config():
+            self._metadata = metadata
+
     def user_data_raw(self):
-        return self.properties.get(self.USER_DATA_FORMAT) == 'RAW'
+        return self.properties.get(self.USER_DATA_FORMAT) == self.RAW
+
+    def user_data_software_config(self):
+        return self.properties.get(
+            self.USER_DATA_FORMAT) == self.SOFTWARE_CONFIG
+
+    def transport_poll_server_cfn(self):
+        return self.properties.get(
+            self.SOFTWARE_CONFIG_TRANSPORT) == self.POLL_SERVER_CFN
+
+    def transport_poll_server_heat(self):
+        return self.properties.get(
+            self.SOFTWARE_CONFIG_TRANSPORT) == self.POLL_SERVER_HEAT
 
     def handle_create(self):
         security_groups = self.properties.get(self.SECURITY_GROUPS)
 
         user_data_format = self.properties.get(self.USER_DATA_FORMAT)
         ud_content = self.properties.get(self.USER_DATA)
-        if self.user_data_raw() and uuidutils.is_uuid_like(ud_content):
-            # attempt to load the userdata from software config
-            try:
-                ud_content = sc.SoftwareConfig.get_software_config(
-                    self.heat(), ud_content)
-            except exception.SoftwareConfigMissing:
-                # no config was found, so do not modify the user_data
-                pass
+        if self.user_data_software_config() or self.user_data_raw():
+            if uuidutils.is_uuid_like(ud_content):
+                # attempt to load the userdata from software config
+                try:
+                    ud_content = sc.SoftwareConfig.get_software_config(
+                        self.heat(), ud_content)
+                except exception.SoftwareConfigMissing:
+                    # no config was found, so do not modify the user_data
+                    pass
+
+        if self.user_data_software_config():
+            self._create_transport_credentials()
+
+        if self.properties[self.ADMIN_USER]:
+            instance_user = self.properties[self.ADMIN_USER]
+        elif cfg.CONF.instance_user:
+            instance_user = cfg.CONF.instance_user
+        else:
+            instance_user = None
 
         userdata = nova_utils.build_userdata(
             self,
             ud_content,
-            instance_user=self.properties[self.ADMIN_USER],
+            instance_user=instance_user,
             user_data_format=user_data_format)
 
         flavor = self.properties[self.FLAVOR]
@@ -460,7 +619,12 @@ class Server(resource.Resource):
         if name == 'first_address':
             return nova_utils.server_to_ipaddress(
                 self.nova(), self.resource_id) or ''
-        server = self.nova().servers.get(self.resource_id)
+        try:
+            server = self.nova().servers.get(self.resource_id)
+        except clients.novaclient.exceptions.NotFound as ex:
+            logger.warn(_('Instance (%(server)s) not found: %(ex)s') % {
+                        'server': self.resource_id, 'ex': str(ex)})
+            return ''
         if name == 'addresses':
             return server.addresses
         if name == 'networks':
@@ -473,6 +637,72 @@ class Server(resource.Resource):
             return server.accessIPv6
         if name == 'show':
             return server._info
+
+    def add_dependencies(self, deps):
+        super(Server, self).add_dependencies(deps)
+        # Depend on any Subnet in this template with the same
+        # network_id as the networks attached to this server.
+        # It is not known which subnet a server might be assigned
+        # to so all subnets in a network should be created before
+        # the servers in that network.
+        for res in self.stack.itervalues():
+            if (res.has_interface('OS::Neutron::Subnet')):
+                subnet_net = res.properties.get(subnet.Subnet.NETWORK_ID)
+                for net in self.properties.get(self.NETWORKS):
+                    # we do not need to worry about NETWORK_ID values which are
+                    # names instead of UUIDs since these were not created
+                    # by this stack
+                    net_id = (net.get(self.NETWORK_ID) or
+                              net.get(self.NETWORK_UUID))
+                    if net_id and net_id == subnet_net:
+                        deps += (self, res)
+                        break
+
+    def _get_network_matches(self, old_networks, new_networks):
+        # make new_networks similar on old_networks
+        for net in new_networks:
+            for key in ('port', 'network', 'fixed_ip'):
+                net.setdefault(key)
+        # find matches and remove them from old and new networks
+        not_updated_networks = []
+        for net in old_networks:
+            net.pop('uuid', None)
+            if net in new_networks:
+                new_networks.remove(net)
+                not_updated_networks.append(net)
+        for net in not_updated_networks:
+            old_networks.remove(net)
+        return not_updated_networks
+
+    def update_networks_matching_iface_port(self, nets, interfaces):
+
+        def find_equal(port, net_id, ip, nets):
+            for net in nets:
+                if (net.get('port') == port or
+                        (net.get('fixed_ip') == ip and
+                            net.get('network') == net_id)):
+                    return net
+
+        def find_poor_net(net_id, nets):
+            for net in nets:
+                if net == {'port': None, 'network': net_id, 'fixed_ip': None}:
+                    return net
+
+        for iface in interfaces:
+            # get interface properties
+            props = {'port': iface.port_id,
+                     'net_id': iface.net_id,
+                     'ip': iface.fixed_ips[0]['ip_address'],
+                     'nets': nets}
+            # try to match by port or network_id with fixed_ip
+            net = find_equal(**props)
+            if net is not None:
+                net['port'] = props['port']
+                continue
+            # find poor net that has only network_id
+            net = find_poor_net(props['net_id'], nets)
+            if net is not None:
+                net['port'] = props['port']
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if 'Metadata' in tmpl_diff:
@@ -525,6 +755,69 @@ class Server(resource.Resource):
             if not server:
                 server = self.nova().servers.get(self.resource_id)
             nova_utils.rename(server, prop_diff[self.NAME])
+
+        if self.NETWORKS in prop_diff:
+            new_networks = prop_diff.get(self.NETWORKS)
+            attach_first_free_port = False
+            if not new_networks:
+                new_networks = []
+                attach_first_free_port = True
+            old_networks = self.properties.get(self.NETWORKS)
+
+            if not server:
+                server = self.nova().servers.get(self.resource_id)
+            interfaces = server.interface_list()
+
+            # if old networks is None, it means that the server got first
+            # free port. so we should detach this interface.
+            if old_networks is None:
+                for iface in interfaces:
+                    checker = scheduler.TaskRunner(server.interface_detach,
+                                                   iface.port_id)
+                    checkers.append(checker)
+            # if we have any information in networks field, we should:
+            # 1. find similar networks, if they exist
+            # 2. remove these networks from new_networks and old_networks
+            #    lists
+            # 3. detach unmatched networks, which were present in old_networks
+            # 4. attach unmatched networks, which were present in new_networks
+            else:
+                # remove not updated networks from old and new networks lists,
+                # also get list these networks
+                not_updated_networks = \
+                    self._get_network_matches(old_networks, new_networks)
+
+                self.update_networks_matching_iface_port(
+                    old_networks + not_updated_networks, interfaces)
+
+                # according to nova interface-detach command detached port
+                # will be deleted
+                for net in old_networks:
+                    checker = scheduler.TaskRunner(server.interface_detach,
+                                                   net.get('port'))
+                    checkers.append(checker)
+
+            # attach section similar for both variants that
+            # were mentioned above
+
+            for net in new_networks:
+                if net.get('port'):
+                    checker = scheduler.TaskRunner(server.interface_attach,
+                                                   net['port'], None, None)
+                    checkers.append(checker)
+                elif net.get('network'):
+                    checker = scheduler.TaskRunner(server.interface_attach,
+                                                   None, net['network'],
+                                                   net.get('fixed_ip'))
+                    checkers.append(checker)
+
+            # if new_networks is None, we should attach first free port,
+            # according to similar behavior during instance creation
+            if attach_first_free_port:
+                checker = scheduler.TaskRunner(server.interface_attach,
+                                               None, None, None)
+                checkers.append(checker)
+
         # Optimization: make sure the first task is started before
         # check_update_complete.
         if checkers:
@@ -580,10 +873,15 @@ class Server(resource.Resource):
             msg = _('Neither image nor bootable volume is specified for'
                     ' instance %s') % self.name
             raise exception.StackValidationFailed(message=msg)
+
         # network properties 'uuid' and 'network' shouldn't be used
         # both at once for all networks
         networks = self.properties.get(self.NETWORKS) or []
+        # record if any networks include explicit ports
+        networks_with_port = False
         for network in networks:
+            networks_with_port = networks_with_port or \
+                network.get(self.NETWORK_PORT)
             if network.get(self.NETWORK_UUID) and network.get(self.NETWORK_ID):
                 msg = _('Properties "%(uuid)s" and "%(id)s" are both set '
                         'to the network "%(network)s" for the server '
@@ -609,6 +907,13 @@ class Server(resource.Resource):
         personality = self._personality()
         if metadata is not None or personality is not None:
             limits = nova_utils.absolute_limits(self.nova())
+
+        # if 'security_groups' present for the server and explict 'port'
+        # in one or more entries in 'networks', raise validation error
+        if networks_with_port and self.properties.get(self.SECURITY_GROUPS):
+            raise exception.ResourcePropertyConflict(
+                self.SECURITY_GROUPS,
+                "/".join([self.NETWORKS, self.NETWORK_PORT]))
 
         # verify that the number of metadata entries is not greater
         # than the maximum number allowed in the provider's absolute
@@ -643,6 +948,9 @@ class Server(resource.Resource):
         '''
         if self.resource_id is None:
             return
+
+        if self.user_data_software_config():
+            self._delete_user()
 
         try:
             server = self.nova().servers.get(self.resource_id)

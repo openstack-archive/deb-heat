@@ -17,24 +17,94 @@ import collections
 import functools
 
 from heat.db import api as db_api
+from heat.common import exception
+from heat.engine import plugin_manager
+
+
+__all__ = ['Template']
+
+
+DEFAULT_VERSION = ('HeatTemplateFormatVersion', '2012-12-12')
+
+_template_classes = None
+
+
+class TemplatePluginManager(object):
+    '''A Descriptor class for caching PluginManagers.
+
+    Keeps a cache of PluginManagers with the search directories corresponding
+    to the package containing the owner class.
+    '''
+
+    def __init__(self):
+        self.plugin_managers = {}
+
+    @staticmethod
+    def package_name(obj_class):
+        '''Return the package containing the given class.'''
+        module_name = obj_class.__module__
+        return module_name.rsplit('.', 1)[0]
+
+    def __get__(self, obj, obj_class):
+        '''Get a PluginManager for a class.'''
+        pkg = self.package_name(obj_class)
+        if pkg not in self.plugin_managers:
+            self.plugin_managers[pkg] = plugin_manager.PluginManager(pkg)
+
+        return self.plugin_managers[pkg]
+
+
+def get_version(template_data, available_versions):
+    version_keys = set(key for key, version in available_versions)
+    candidate_keys = set(k for k, v in template_data.iteritems() if
+                         isinstance(v, basestring))
+
+    keys_present = version_keys & candidate_keys
+    if not keys_present:
+        return DEFAULT_VERSION
+
+    if len(keys_present) > 1:
+        explanation = _('Ambiguous versions (%s)') % ', '.join(keys_present)
+        raise exception.InvalidTemplateVersion(explanation=explanation)
+
+    version_key = keys_present.pop()
+    return version_key, template_data[version_key]
+
+
+def get_template_class(plugin_mgr, template_data):
+    global _template_classes
+
+    if _template_classes is None:
+        tmpl_mapping = plugin_manager.PluginMapping('template')
+        _template_classes = dict(tmpl_mapping.load_all(plugin_mgr))
+
+    available_versions = _template_classes.keys()
+    version = get_version(template_data, available_versions)
+    try:
+        return _template_classes[version]
+    except KeyError:
+        msg_data = {'version': ': '.join(version),
+                    'available': ', '.join(v for vk, v in available_versions)}
+        explanation = _('Unknown version (%(version)s). '
+                        'Should be one of: %(available)s') % msg_data
+        raise exception.InvalidTemplateVersion(explanation=explanation)
 
 
 class Template(collections.Mapping):
     '''A stack template.'''
 
+    _plugins = TemplatePluginManager()
+    _functionmaps = {}
+
     def __new__(cls, template, *args, **kwargs):
         '''Create a new Template of the appropriate class.'''
 
-        if cls == Template:
-            # deferred module imports to avoid circular dependency
-            if 'heat_template_version' in template:
-                from heat.engine import hot
-                return hot.HOTemplate(template, *args, **kwargs)
-            else:
-                from heat.engine.cfn import template as cfn
-                return cfn.CfnTemplate(template, *args, **kwargs)
+        if cls != Template:
+            TemplateClass = cls
+        else:
+            TemplateClass = get_template_class(cls._plugins, template)
 
-        return super(Template, cls).__new__(cls)
+        return super(Template, cls).__new__(TemplateClass)
 
     def __init__(self, template, template_id=None, files=None):
         '''
@@ -44,6 +114,7 @@ class Template(collections.Mapping):
         self.t = template
         self.files = files or {}
         self.maps = self[self.MAPPINGS]
+        self.version = get_version(self.t, _template_classes.keys())
 
     @classmethod
     def load(cls, context, template_id):
@@ -82,23 +153,31 @@ class Template(collections.Mapping):
         '''Return a parameters.Parameters object for the stack.'''
         pass
 
-    @abc.abstractmethod
     def functions(self):
         '''Return a dict of template functions keyed by name.'''
-        pass
+        if self.version not in self._functionmaps:
+            mappings = plugin_manager.PluginMapping('function', *self.version)
+            funcs = dict(mappings.load_all(self._plugins))
+            self._functionmaps[self.version] = funcs
+
+        return self._functionmaps[self.version]
 
     def parse(self, stack, snippet):
-        parse = functools.partial(self.parse, stack)
+        return parse(self.functions(), stack, snippet)
 
-        if isinstance(snippet, collections.Mapping):
-            if len(snippet) == 1:
-                fn_name, args = next(snippet.iteritems())
-                Func = self.functions().get(fn_name)
-                if Func is not None:
-                    return Func(stack, fn_name, parse(args))
-            return dict((k, parse(v)) for k, v in snippet.iteritems())
-        elif (not isinstance(snippet, basestring) and
-              isinstance(snippet, collections.Iterable)):
-            return [parse(v) for v in snippet]
-        else:
-            return snippet
+
+def parse(functions, stack, snippet):
+    recurse = functools.partial(parse, functions, stack)
+
+    if isinstance(snippet, collections.Mapping):
+        if len(snippet) == 1:
+            fn_name, args = next(snippet.iteritems())
+            Func = functions.get(fn_name)
+            if Func is not None:
+                return Func(stack, fn_name, recurse(args))
+        return dict((k, recurse(v)) for k, v in snippet.iteritems())
+    elif (not isinstance(snippet, basestring) and
+          isinstance(snippet, collections.Iterable)):
+        return [recurse(v) for v in snippet]
+    else:
+        return snippet

@@ -13,21 +13,22 @@
 
 import collections
 
-from heat.engine import clients
+from neutronclient.common.exceptions import NeutronClientException
+from neutronclient.v2_0 import client as neutronclient
+from novaclient.v1_1 import security_group_rules as nova_sgr
+from novaclient.v1_1 import security_groups as nova_sg
+
 from heat.common import exception
 from heat.common import template_format
+from heat.engine import clients
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
 from heat.tests.fakes import FakeKeystoneClient
-from heat.tests.v1_1 import fakes
 from heat.tests import utils
+from heat.tests.v1_1 import fakes
 
-from novaclient.v1_1 import security_groups as nova_sg
-from novaclient.v1_1 import security_group_rules as nova_sgr
-from neutronclient.common.exceptions import NeutronClientException
-from neutronclient.v2_0 import client as neutronclient
 
 NovaSG = collections.namedtuple('NovaSG',
                                 ' '.join([
@@ -58,6 +59,28 @@ Resources:
           CidrIp : 0.0.0.0/0
         - IpProtocol: tcp
           SourceSecurityGroupName: test
+        - IpProtocol: icmp
+          SourceSecurityGroupId: "1"
+'''
+
+    test_template_nova_bad_source_group = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Resources:
+  the_sg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: HTTP and SSH access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: "22"
+          ToPort: "22"
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort : "80"
+          ToPort : "80"
+          CidrIp : 0.0.0.0/0
+        - IpProtocol: tcp
+          SourceSecurityGroupName: thisdoesnotexist
         - IpProtocol: icmp
           SourceSecurityGroupId: "1"
 '''
@@ -240,6 +263,77 @@ Resources:
         self.assertRaises(resource.UpdateReplace, sg.handle_update, {}, {}, {})
 
         self.assertResourceState(sg, utils.PhysName('test_stack', 'the_sg'))
+
+        stack.delete()
+        self.m.VerifyAll()
+
+    @utils.stack_delete_after
+    def test_security_group_nova_bad_source_group(self):
+        #create script
+        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        nova_sg.SecurityGroupManager.list().AndReturn([NovaSG(
+            id=1,
+            name='test',
+            description='FAKE_SECURITY_GROUP',
+            rules=[],
+        )])
+        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        sg_name = utils.PhysName('test_stack', 'the_sg')
+        nova_sg.SecurityGroupManager.create(
+            sg_name,
+            'HTTP and SSH access').AndReturn(NovaSG(
+                id=2,
+                name=sg_name,
+                description='HTTP and SSH access',
+                rules=[]))
+
+        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        nova_sgr.SecurityGroupRuleManager.create(
+            2, 'tcp', '22', '22', '0.0.0.0/0', None).AndReturn(None)
+        nova_sgr.SecurityGroupRuleManager.create(
+            2, 'tcp', '80', '80', '0.0.0.0/0', None).AndReturn(None)
+
+        # delete script
+        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        nova_sg.SecurityGroupManager.get(2).AndReturn(NovaSG(
+            id=2,
+            name=sg_name,
+            description='HTTP and SSH access',
+            rules=[{
+                "from_port": '22',
+                "group": {},
+                "ip_protocol": "tcp",
+                "to_port": '22',
+                "parent_group_id": 2,
+                "ip_range": {
+                    "cidr": "0.0.0.0/0"
+                },
+                'id': 130
+            }, {
+                'from_port': '80',
+                'group': {},
+                'ip_protocol': 'tcp',
+                'to_port': '80',
+                'parent_group_id': 2,
+                'ip_range': {
+                    'cidr': '0.0.0.0/0'
+                },
+                'id': 131
+            }]
+        ))
+        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        nova_sgr.SecurityGroupRuleManager.delete(130).AndReturn(None)
+        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        nova_sgr.SecurityGroupRuleManager.delete(131).AndReturn(None)
+        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        nova_sg.SecurityGroupManager.delete(2).AndReturn(None)
+
+        self.m.ReplayAll()
+        stack = self.create_stack(self.test_template_nova_bad_source_group)
+
+        sg = stack['the_sg']
+        self.assertEqual(sg.FAILED, sg.status)
+        self.assertIn('not found', sg.status_reason)
 
         stack.delete()
         self.m.VerifyAll()

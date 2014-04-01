@@ -19,11 +19,10 @@ from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.neutron import neutron
+from heat.openstack.common import log as logging
 
 if clients.neutronclient is not None:
     from neutronclient.common.exceptions import NeutronClientException
-
-from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +61,7 @@ class NetworkGateway(neutron.NeutronResource):
             description=_('Device info for this network gateway.'),
             required=True,
             constraints=[constraints.Length(min=1)],
+            update_allowed=True,
             schema=properties.Schema(
                 properties.Schema.MAP,
                 schema={
@@ -101,7 +101,6 @@ class NetworkGateway(neutron.NeutronResource):
                             'L2 segmentation strategy on the external '
                             'side of the network gateway.'),
                         default='flat',
-                        required=True,
                         constraints=[constraints.AllowedValues(
                             ('flat', 'vlan'))]
                     ),
@@ -190,6 +189,14 @@ class NetworkGateway(neutron.NeutronResource):
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         props = self.prepare_update_properties(json_snippet)
         connections = props.pop(self.CONNECTIONS)
+
+        if self.DEVICES in prop_diff:
+            self.handle_delete()
+            self.properties.data.update(props)
+            self.handle_create()
+            return
+        else:
+            props.pop(self.DEVICES, None)
 
         if self.NAME in prop_diff:
             self.neutron().update_network_gateway(

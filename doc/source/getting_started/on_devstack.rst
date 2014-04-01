@@ -19,16 +19,16 @@ These instructions assume you already have a working DevStack installation which
 
 Configure DevStack to enable Heat
 ---------------------------------
-Adding the following line to your `localrc` file will enable the heat services::
-
-    ENABLED_SERVICES+=,heat,h-api,h-api-cfn,h-api-cw,h-eng
+Heat is configured by default on devstack for Icehouse or newer
+versions of OpenStack.
 
 It would also be useful to automatically download and register
-a VM image that Heat can launch::
+a VM image that Heat can launch. To do that add the following to your
+devstack `localrc`::
 
-    IMAGE_URLS+=",http://fedorapeople.org/groups/heat/prebuilt-jeos-images/F17-x86_64-cfntools.qcow2,http://fedorapeople.org/groups/heat/prebuilt-jeos-images/F17-i386-cfntools.qcow2"
+    IMAGE_URLS+=",http://cloud.fedoraproject.org/fedora-20.x86_64.qcow2"
 
-URLs for any of [http://fedorapeople.org/groups/heat/prebuilt-jeos-images/ these prebuilt JEOS images] can be specified.
+URLs for any cloud image may be specified, but fedora images from F20 contain the heat-cfntools package which is required for some heat functionality.
 
 That is all the configuration that is required. When you run `./stack.sh` the Heat processes will be launched in `screen` with the labels prefixed with `h-`.
 

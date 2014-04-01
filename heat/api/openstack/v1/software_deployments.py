@@ -71,8 +71,8 @@ class SoftwareDeploymentController(object):
         Create a new software deployment
         """
         create_data = dict((k, body.get(k)) for k in (
-            'config_id', 'server_id', 'input_values', 'signal_id',
-            'action', 'status', 'status_reason'))
+            'config_id', 'server_id', 'input_values',
+            'action', 'status', 'status_reason', 'stack_user_project_id'))
 
         sd = self.rpc_client.create_software_deployment(req.context,
                                                         **create_data)

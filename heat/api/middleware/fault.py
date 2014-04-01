@@ -21,8 +21,9 @@ Cinder's faultwrapper
 """
 
 import traceback
-import webob
+
 from oslo.config import cfg
+import webob
 
 cfg.CONF.import_opt('debug', 'heat.openstack.common.log')
 
@@ -71,6 +72,7 @@ class FaultWrapper(wsgi.Middleware):
         'StackExists': webob.exc.HTTPConflict,
         'StackValidationFailed': webob.exc.HTTPBadRequest,
         'InvalidTemplateReference': webob.exc.HTTPBadRequest,
+        'InvalidTemplateVersion': webob.exc.HTTPBadRequest,
         'UnknownUserParameter': webob.exc.HTTPBadRequest,
         'RevertFailed': webob.exc.HTTPInternalServerError,
         'StopActionFailed': webob.exc.HTTPInternalServerError,

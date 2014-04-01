@@ -41,7 +41,7 @@ class StackUser(resource.Resource):
         # Check for stack user project, create if not yet set
         if not self.stack.stack_user_project_id:
             project_id = self.keystone().create_stack_domain_project(
-                stack_name=self.stack.name)
+                self.stack.id)
             self.stack.set_stack_user_project_id(project_id)
 
         # Create a keystone user in the stack domain project
@@ -94,6 +94,24 @@ class StackUser(resource.Resource):
             except exception.NotFound:
                 pass
 
+    def handle_suspend(self):
+        user_id = self._get_user_id()
+        try:
+            self.keystone().disable_stack_domain_user(
+                user_id=user_id, project_id=self.stack.stack_user_project_id)
+        except ValueError:
+            # FIXME(shardy): This is a legacy path for backwards compatibility
+            self.keystone().disable_stack_user(user_id=user_id)
+
+    def handle_resume(self):
+        user_id = self._get_user_id()
+        try:
+            self.keystone().enable_stack_domain_user(
+                user_id=user_id, project_id=self.stack.stack_user_project_id)
+        except ValueError:
+            # FIXME(shardy): This is a legacy path for backwards compatibility
+            self.keystone().enable_stack_user(user_id=user_id)
+
     def _create_keypair(self):
         # Subclasses may optionally call this in handle_create to create
         # an ec2 keypair associated with the user, the resulting keys are
@@ -112,3 +130,26 @@ class StackUser(resource.Resource):
             db_api.resource_data_set(self, 'secret_key', kp.secret,
                                      redact=True)
         return kp
+
+    def _delete_keypair(self):
+        # Subclasses may optionally call this to delete a keypair created
+        # via _create_keypair
+        user_id = self._get_user_id()
+        try:
+            credential_id = db_api.resource_data_get(self, 'credential_id')
+        except exception.NotFound:
+            return
+
+        try:
+            self.keystone().delete_stack_domain_user_keypair(
+                user_id=user_id, project_id=self.stack.stack_user_project_id,
+                credential_id=credential_id)
+        except ValueError:
+            self.keystone().delete_ec2_keypair(
+                user_id=user_id, credential_id=credential_id)
+
+        for data_key in ('access_key', 'secret_key', 'credential_id'):
+            try:
+                db_api.resource_data_delete(self, data_key)
+            except exception.NotFound:
+                pass

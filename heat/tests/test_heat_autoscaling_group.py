@@ -17,18 +17,14 @@ from oslo.config import cfg
 
 from heat.common import exception
 from heat.common import template_format
-
 from heat.engine import clients
 from heat.engine import resource
 from heat.engine import scheduler
-
 from heat.openstack.common import timeutils
-
-from heat.tests import fakes
-from heat.tests import utils
-from heat.tests import generic_resource
-
 from heat.tests.common import HeatTestCase
+from heat.tests import fakes
+from heat.tests import generic_resource
+from heat.tests import utils
 
 
 class AutoScalingGroupTest(HeatTestCase):
@@ -301,6 +297,16 @@ class HeatScalingGroupWithCFNScalingPolicyTest(HeatTestCase):
         self.assertEqual(1, len(group.get_instances()))
         scale_up.signal()
         self.assertEqual(2, len(group.get_instances()))
+
+    def test_no_instance_list(self):
+        """
+        The InstanceList attribute is not inherited from
+        AutoScalingResourceGroup's superclasses.
+        """
+        stack = self.create_stack(self.parsed)
+        group = stack['my-group']
+        self.assertRaises(exception.InvalidTemplateAttribute,
+                          group.FnGetAtt, 'InstanceList')
 
 
 class ScalingPolicyTest(HeatTestCase):

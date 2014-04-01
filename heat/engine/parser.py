@@ -60,7 +60,8 @@ class Stack(collections.Mapping):
                  status_reason='', timeout_mins=60, resolve_data=True,
                  disable_rollback=True, parent_resource=None, owner_id=None,
                  adopt_stack_data=None, stack_user_project_id=None,
-                 created_time=None, updated_time=None):
+                 created_time=None, updated_time=None,
+                 user_creds_id=None, tenant_id=None):
         '''
         Initialise from a context, name, Template object and (optionally)
         Environment object. The database ID may also be initialised, if the
@@ -93,6 +94,11 @@ class Stack(collections.Mapping):
         self.stack_user_project_id = stack_user_project_id
         self.created_time = created_time
         self.updated_time = updated_time
+        self.user_creds_id = user_creds_id
+
+        # This will use the provided tenant ID when loading the stack
+        # from the DB or get it from the context for new stacks.
+        self.tenant_id = tenant_id or self.context.tenant_id
 
         resources.initialise()
 
@@ -187,7 +193,8 @@ class Stack(collections.Mapping):
                     parent_resource, owner_id=stack.owner_id,
                     stack_user_project_id=stack.stack_user_project_id,
                     created_time=stack.created_at,
-                    updated_time=stack.updated_at)
+                    updated_time=stack.updated_at,
+                    user_creds_id=stack.user_creds_id, tenant_id=stack.tenant)
 
         return stack
 
@@ -202,7 +209,7 @@ class Stack(collections.Mapping):
             'parameters': self.env.user_env_as_dict(),
             'owner_id': self.owner_id,
             'username': self.context.username,
-            'tenant': self.context.tenant_id,
+            'tenant': self.tenant_id,
             'action': self.action,
             'status': self.status,
             'status_reason': self.status_reason,
@@ -210,6 +217,7 @@ class Stack(collections.Mapping):
             'disable_rollback': self.disable_rollback,
             'stack_user_project_id': self.stack_user_project_id,
             'updated_at': self.updated_time,
+            'user_creds_id': self.user_creds_id
         }
         if self.id:
             db_api.stack_update(self.context, self.id, s)
@@ -222,6 +230,7 @@ class Stack(collections.Mapping):
             else:
                 new_creds = db_api.user_creds_create(self.context)
             s['user_creds_id'] = new_creds.id
+            self.user_creds_id = new_creds.id
 
             new_s = db_api.stack_create(self.context, s)
             self.id = new_s.id
@@ -238,8 +247,7 @@ class Stack(collections.Mapping):
         '''
         Return an identifier for this stack.
         '''
-        return identifier.HeatIdentifier(self.context.tenant_id,
-                                         self.name, self.id)
+        return identifier.HeatIdentifier(self.tenant_id, self.name, self.id)
 
     def __iter__(self):
         '''
@@ -267,7 +275,10 @@ class Stack(collections.Mapping):
 
     def __contains__(self, key):
         '''Determine whether the stack contains the specified resource.'''
-        return key in self.resources
+        if self._resources is not None:
+            return key in self.resources
+        else:
+            return key in self.t[self.t.RESOURCES]
 
     def __eq__(self, other):
         '''
@@ -550,6 +561,7 @@ class Stack(collections.Mapping):
             self.env = newstack.env
             self.parameters = newstack.parameters
             self.t.files = newstack.t.files
+            self.disable_rollback = newstack.disable_rollback
             self._set_param_stackid()
 
             try:
@@ -636,17 +648,24 @@ class Stack(collections.Mapping):
             reason = '%s timed out' % action.title()
 
         if stack_status != self.FAILED and not backup:
-            # If we created a trust, delete it
-            stack = db_api.stack_get(self.context, self.id)
-            user_creds = db_api.user_creds_get(stack.user_creds_id)
-            trust_id = user_creds.get('trust_id')
-            if trust_id:
-                try:
-                    self.clients.keystone().delete_trust(trust_id)
-                except Exception as ex:
-                    logger.exception(ex)
-                    stack_status = self.FAILED
-                    reason = "Error deleting trust: %s" % str(ex)
+            # Cleanup stored user_creds so they aren't accessible via
+            # the soft-deleted stack which remains in the DB
+            if self.user_creds_id:
+                user_creds = db_api.user_creds_get(self.user_creds_id)
+                # If we created a trust, delete it
+                trust_id = user_creds.get('trust_id')
+                if trust_id:
+                    try:
+                        self.clients.keystone().delete_trust(trust_id)
+                    except Exception as ex:
+                        logger.exception(ex)
+                        stack_status = self.FAILED
+                        reason = "Error deleting trust: %s" % str(ex)
+
+                # Delete the stored credentials
+                db_api.user_creds_delete(self.context, self.user_creds_id)
+                self.user_creds_id = None
+                self.store()
 
             # If the stack has a domain project, delete it
             if self.stack_user_project_id:
@@ -674,6 +693,11 @@ class Stack(collections.Mapping):
         other than move to SUSPEND_COMPLETE, so the resources must implement
         handle_suspend for this to have any effect.
         '''
+        # No need to suspend if the stack has been suspended
+        if self.state == (self.SUSPEND, self.COMPLETE):
+            logger.info(_('%s is already suspended') % str(self))
+            return
+
         sus_task = scheduler.TaskRunner(self.stack_task,
                                         action=self.SUSPEND,
                                         reverse=True)
@@ -688,6 +712,11 @@ class Stack(collections.Mapping):
         other than move to RESUME_COMPLETE, so the resources must implement
         handle_resume for this to have any effect.
         '''
+        # No need to resume if the stack has been resumed
+        if self.state == (self.RESUME, self.COMPLETE):
+            logger.info(_('%s is already resumed') % str(self))
+            return
+
         sus_task = scheduler.TaskRunner(self.stack_task,
                                         action=self.RESUME,
                                         reverse=False)

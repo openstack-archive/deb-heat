@@ -59,7 +59,10 @@ def request_context(func):
     def wrapped(self, ctx, *args, **kwargs):
         if ctx is not None and not isinstance(ctx, context.RequestContext):
             ctx = context.RequestContext.from_dict(ctx.to_dict())
-        return func(self, ctx, *args, **kwargs)
+        try:
+            return func(self, ctx, *args, **kwargs)
+        except exception.HeatException:
+            raise rpc_common.ClientException()
     return wrapped
 
 
@@ -125,14 +128,14 @@ class ThreadGroupManager(object):
         :param kwargs: Keyword-args to be passed to func
 
         """
-        def release(gt, *args, **kwargs):
+        def release(gt, *args):
             """
             Callback function that will be passed to GreenThread.link().
             """
             lock.release(*args)
 
         try:
-            th = self.start(stack.id, func, *args)
+            th = self.start(stack.id, func, *args, **kwargs)
             th.link(release, stack.id)
         except:
             with excutils.save_and_reraise_exception():
@@ -153,6 +156,88 @@ class ThreadGroupManager(object):
         if stack_id in self.groups:
             self.groups[stack_id].stop()
             del self.groups[stack_id]
+
+
+class StackWatch(object):
+    def __init__(self, thread_group_mgr):
+        self.thread_group_mgr = thread_group_mgr
+
+    def start_watch_task(self, stack_id, cnxt):
+
+        def stack_has_a_watchrule(sid):
+            wrs = db_api.watch_rule_get_all_by_stack(cnxt, sid)
+
+            now = timeutils.utcnow()
+            start_watch_thread = False
+            for wr in wrs:
+                # reset the last_evaluated so we don't fire off alarms when
+                # the engine has not been running.
+                db_api.watch_rule_update(cnxt, wr.id, {'last_evaluated': now})
+
+                if wr.state != rpc_api.WATCH_STATE_CEILOMETER_CONTROLLED:
+                    start_watch_thread = True
+
+            children = db_api.stack_get_all_by_owner_id(cnxt, sid)
+            for child in children:
+                if stack_has_a_watchrule(child.id):
+                    start_watch_thread = True
+
+            return start_watch_thread
+
+        if stack_has_a_watchrule(stack_id):
+            self.thread_group_mgr.add_timer(
+                stack_id,
+                self.periodic_watcher_task,
+                sid=stack_id)
+
+    def check_stack_watches(self, sid):
+        # Retrieve the stored credentials & create context
+        # Require tenant_safe=False to the stack_get to defeat tenant
+        # scoping otherwise we fail to retrieve the stack
+        logger.debug(_("Periodic watcher task for stack %s") % sid)
+        admin_context = context.get_admin_context()
+        stack = db_api.stack_get(admin_context, sid, tenant_safe=False)
+        if not stack:
+            logger.error(_("Unable to retrieve stack %s for periodic task") %
+                         sid)
+            return
+        stack_context = EngineService.load_user_creds(stack.user_creds_id)
+
+        # recurse into any nested stacks.
+        children = db_api.stack_get_all_by_owner_id(admin_context, sid)
+        for child in children:
+            self.check_stack_watches(child.id)
+
+        # Get all watchrules for this stack and evaluate them
+        try:
+            wrs = db_api.watch_rule_get_all_by_stack(stack_context, sid)
+        except Exception as ex:
+            logger.warn(_('periodic_task db error (%(msg)s) %(ex)s') % {
+                        'msg': 'watch rule removed?', 'ex': str(ex)})
+            return
+
+        def run_alarm_action(actions, details):
+            for action in actions:
+                action(details=details)
+
+            stk = parser.Stack.load(stack_context, stack=stack)
+            for res in stk.itervalues():
+                res.metadata_update()
+
+        for wr in wrs:
+            rule = watchrule.WatchRule.load(stack_context, watch=wr)
+            actions = rule.evaluate()
+            if actions:
+                self.thread_group_mgr.start(sid, run_alarm_action, actions,
+                                            rule.get_details())
+
+    def periodic_watcher_task(self, sid):
+        """
+        Periodic task, created for each stack, triggers watch-rule
+        evaluation for all rules defined for the stack
+        sid = stack ID
+        """
+        self.check_stack_watches(sid)
 
 
 class EngineListener(service.Service):
@@ -198,37 +283,11 @@ class EngineService(service.Service):
 
         self.engine_id = stack_lock.StackLock.generate_engine_id()
         self.thread_group_mgr = ThreadGroupManager()
+        self.stack_watch = StackWatch(self.thread_group_mgr)
         self.listener = EngineListener(host, self.engine_id,
                                        self.thread_group_mgr)
         logger.debug(_("Starting listener for engine %s") % self.engine_id)
         self.listener.start()
-
-    def _start_watch_task(self, stack_id, cnxt):
-
-        def stack_has_a_watchrule(sid):
-            wrs = db_api.watch_rule_get_all_by_stack(cnxt, sid)
-
-            now = timeutils.utcnow()
-            start_watch_thread = False
-            for wr in wrs:
-                # reset the last_evaluated so we don't fire off alarms when
-                # the engine has not been running.
-                db_api.watch_rule_update(cnxt, wr.id, {'last_evaluated': now})
-
-                if wr.state != rpc_api.WATCH_STATE_CEILOMETER_CONTROLLED:
-                    start_watch_thread = True
-
-            children = db_api.stack_get_all_by_owner_id(cnxt, sid)
-            for child in children:
-                if stack_has_a_watchrule(child.id):
-                    start_watch_thread = True
-
-            return start_watch_thread
-
-        if stack_has_a_watchrule(stack_id):
-            self.thread_group_mgr.add_timer(stack_id,
-                                            self._periodic_watcher_task,
-                                            sid=stack_id)
 
     def start(self):
         super(EngineService, self).start()
@@ -237,9 +296,18 @@ class EngineService(service.Service):
         admin_context = context.get_admin_context()
         stacks = db_api.stack_get_all(admin_context, tenant_safe=False)
         for s in stacks:
-            self._start_watch_task(s.id, admin_context)
+            self.stack_watch.start_watch_task(s.id, admin_context)
 
-    @rpc_common.client_exceptions(exception.StackNotFound)
+    @staticmethod
+    def load_user_creds(creds_id):
+        user_creds = db_api.user_creds_get(creds_id)
+        stored_context = context.RequestContext.from_dict(user_creds)
+        # heat_keystoneclient populates the context with an auth_token
+        # either via the stored user/password or trust_id, depending
+        # on how deferred_auth_method is configured in the conf file
+        hkc.KeystoneClient(stored_context)
+        return stored_context
+
     @request_context
     def identify_stack(self, cnxt, stack_name):
         """
@@ -251,6 +319,10 @@ class EngineService(service.Service):
         """
         if uuidutils.is_uuid_like(stack_name):
             s = db_api.stack_get(cnxt, stack_name, show_deleted=True)
+            # may be the name is in uuid format, so if get by id returns None,
+            # we should get the info by name again
+            if not s:
+                s = db_api.stack_get_by_name(cnxt, stack_name)
         else:
             s = db_api.stack_get_by_name(cnxt, stack_name)
         if s:
@@ -429,7 +501,7 @@ class EngineService(service.Service):
             if (stack.action in (stack.CREATE, stack.ADOPT)
                     and stack.status == stack.COMPLETE):
                 # Schedule a periodic watcher task for this stack
-                self._start_watch_task(stack.id, cnxt)
+                self.stack_watch.start_watch_task(stack.id, cnxt)
             else:
                 logger.warning(_("Stack create failed, status %s") %
                                stack.status)
@@ -523,7 +595,10 @@ class EngineService(service.Service):
             return webob.exc.HTTPBadRequest(explanation=msg)
 
         tmpl = parser.Template(template)
-        tmpl_resources = tmpl.get('Resources', [])
+        try:
+            tmpl_resources = tmpl['Resources']
+        except KeyError as ex:
+            return {'Error': str(ex)}
 
         if not tmpl_resources:
             return {'Error': 'At least one Resources member must be defined.'}
@@ -801,7 +876,7 @@ class EngineService(service.Service):
         # but this happens because the keystone user associated with the
         # signal doesn't have permission to read the secret key of
         # the user associated with the cfn-credentials file
-        stack_context = self._load_user_creds(s.user_creds_id)
+        stack_context = self.load_user_creds(s.user_creds_id)
         stack = parser.Stack.load(stack_context, stack=s)
 
         if resource_name not in stack:
@@ -884,15 +959,6 @@ class EngineService(service.Service):
         self.thread_group_mgr.start_with_lock(cnxt, stack, self.engine_id,
                                               _stack_resume, stack)
 
-    def _load_user_creds(self, creds_id):
-        user_creds = db_api.user_creds_get(creds_id)
-        stored_context = context.RequestContext.from_dict(user_creds)
-        # heat_keystoneclient populates the context with an auth_token
-        # either via the stored user/password or trust_id, depending
-        # on how deferred_auth_method is configured in the conf file
-        hkc.KeystoneClient(stored_context)
-        return stored_context
-
     @request_context
     def metadata_update(self, cnxt, stack_identity,
                         resource_name, metadata):
@@ -913,7 +979,7 @@ class EngineService(service.Service):
         # but this happens because the keystone user associated with the
         # WaitCondition doesn't have permission to read the secret key of
         # the user associated with the cfn-credentials file
-        stack_context = self._load_user_creds(s.user_creds_id)
+        stack_context = self.load_user_creds(s.user_creds_id)
         refresh_stack = parser.Stack.load(stack_context, stack=s)
 
         # Refresh the metadata for all other resources, since we expect
@@ -925,55 +991,6 @@ class EngineService(service.Service):
                 res.metadata_update()
 
         return resource.metadata
-
-    def _check_stack_watches(self, sid):
-        # Retrieve the stored credentials & create context
-        # Require tenant_safe=False to the stack_get to defeat tenant
-        # scoping otherwise we fail to retrieve the stack
-        logger.debug(_("Periodic watcher task for stack %s") % sid)
-        admin_context = context.get_admin_context()
-        stack = db_api.stack_get(admin_context, sid, tenant_safe=False)
-        if not stack:
-            logger.error(_("Unable to retrieve stack %s for periodic task") %
-                         sid)
-            return
-        stack_context = self._load_user_creds(stack.user_creds_id)
-
-        # recurse into any nested stacks.
-        children = db_api.stack_get_all_by_owner_id(admin_context, sid)
-        for child in children:
-            self._check_stack_watches(child.id)
-
-        # Get all watchrules for this stack and evaluate them
-        try:
-            wrs = db_api.watch_rule_get_all_by_stack(stack_context, sid)
-        except Exception as ex:
-            logger.warn(_('periodic_task db error (%(msg)s) %(ex)s') % {
-                        'msg': 'watch rule removed?', 'ex': str(ex)})
-            return
-
-        def run_alarm_action(actions, details):
-            for action in actions:
-                action(details=details)
-
-            stk = parser.Stack.load(stack_context, stack=stack)
-            for res in stk.itervalues():
-                res.metadata_update()
-
-        for wr in wrs:
-            rule = watchrule.WatchRule.load(stack_context, watch=wr)
-            actions = rule.evaluate()
-            if actions:
-                self.thread_group_mgr.start(sid, run_alarm_action, actions,
-                                            rule.get_details())
-
-    def _periodic_watcher_task(self, sid):
-        """
-        Periodic task, created for each stack, triggers watch-rule
-        evaluation for all rules defined for the stack
-        sid = stack ID
-        """
-        self._check_stack_watches(sid)
 
     @request_context
     def create_watch_data(self, cnxt, watch_name, stats_data):
@@ -1073,7 +1090,6 @@ class EngineService(service.Service):
         result[rpc_api.WATCH_STATE_VALUE] = state
         return result
 
-    @rpc_common.client_exceptions(exception.NotFound)
     @request_context
     def show_software_config(self, cnxt, config_id):
         sc = db_api.software_config_get(cnxt, config_id)
@@ -1095,7 +1111,6 @@ class EngineService(service.Service):
             'tenant': cnxt.tenant_id})
         return api.format_software_config(sc)
 
-    @rpc_common.client_exceptions(exception.NotFound)
     @request_context
     def delete_software_config(self, cnxt, config_id):
         db_api.software_config_delete(cnxt, config_id)
@@ -1117,7 +1132,6 @@ class EngineService(service.Service):
         result = [api.format_software_config(sd.config) for sd in all_sd_s]
         return result
 
-    @rpc_common.client_exceptions(exception.NotFound)
     @request_context
     def show_software_deployment(self, cnxt, deployment_id):
         sd = db_api.software_deployment_get(cnxt, deployment_id)
@@ -1125,20 +1139,20 @@ class EngineService(service.Service):
 
     @request_context
     def create_software_deployment(self, cnxt, server_id, config_id,
-                                   input_values, signal_id, action, status,
-                                   status_reason):
+                                   input_values, action, status,
+                                   status_reason, stack_user_project_id):
+
         sd = db_api.software_deployment_create(cnxt, {
             'config_id': config_id,
             'server_id': server_id,
             'input_values': input_values,
-            'signal_id': signal_id,
             'tenant': cnxt.tenant_id,
+            'stack_user_project_id': stack_user_project_id,
             'action': action,
             'status': status,
             'status_reason': status_reason})
         return api.format_software_deployment(sd)
 
-    @rpc_common.client_exceptions(exception.NotFound)
     @request_context
     def update_software_deployment(self, cnxt, deployment_id, config_id,
                                    input_values, output_values, action,
@@ -1160,7 +1174,6 @@ class EngineService(service.Service):
                                                deployment_id, update_data)
         return api.format_software_deployment(sd)
 
-    @rpc_common.client_exceptions(exception.NotFound)
     @request_context
     def delete_software_deployment(self, cnxt, deployment_id):
         db_api.software_deployment_delete(cnxt, deployment_id)

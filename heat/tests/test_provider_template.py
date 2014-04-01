@@ -11,15 +11,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import json
 import os
 import uuid
-import json
 
 import testscenarios
 
 from heat.common import exception
-from heat.common import urlfetch
 from heat.common import template_format
+from heat.common import urlfetch
 
 from heat.engine import environment
 from heat.engine import parser
@@ -28,8 +28,8 @@ from heat.engine import resource
 from heat.engine import resources
 from heat.engine.resources import template_resource
 
-from heat.tests import generic_resource as generic_rsrc
 from heat.tests.common import HeatTestCase
+from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
 
 
@@ -360,6 +360,26 @@ class ProviderTemplateTest(HeatTestCase):
         cls = env.get_class('OS::ResourceType', 'fred')
         self.assertEqual(template_resource.TemplateResource, cls)
 
+    def test_get_template_resource_class(self):
+        test_templ_name = 'file:///etc/heatr/frodo.yaml'
+        minimal_temp = json.dumps({'HeatTemplateFormatVersion': '2012-12-12',
+                                   'Parameters': {},
+                                   'Resources': {}})
+        self.m.StubOutWithMock(urlfetch, "get")
+        urlfetch.get(test_templ_name,
+                     allowed_schemes=('file',)).AndReturn(minimal_temp)
+        self.m.ReplayAll()
+
+        env_str = {'resource_registry': {'resources': {'fred': {
+            "OS::ResourceType": test_templ_name}}}}
+        env = environment.Environment(env_str)
+        cls = env.get_class('OS::ResourceType', 'fred')
+        self.assertNotEqual(template_resource.TemplateResource, cls)
+        self.assertTrue(issubclass(cls, template_resource.TemplateResource))
+        self.assertTrue(hasattr(cls, "properties_schema"))
+        self.assertTrue(hasattr(cls, "attributes_schema"))
+        self.m.VerifyAll()
+
     def test_template_as_resource(self):
         """
         Test that the resulting resource has the right prop and attrib schema.
@@ -378,6 +398,8 @@ class ProviderTemplateTest(HeatTestCase):
             test_templ = test_templ_file.read()
         self.assertTrue(test_templ, "Empty test template")
         self.m.StubOutWithMock(urlfetch, "get")
+        urlfetch.get(test_templ_name,
+                     allowed_schemes=('file',)).AndRaise(IOError)
         urlfetch.get(test_templ_name,
                      allowed_schemes=('http', 'https')).AndReturn(test_templ)
         parsed_test_templ = template_format.parse(test_templ)
@@ -406,6 +428,20 @@ class ProviderTemplateTest(HeatTestCase):
             self.assertIn(attrib, templ_resource.attributes)
         for k, v in json_snippet.get("Properties").items():
             self.assertEqual(v, templ_resource.properties[k])
+        self.assertEqual(
+            {'WordPress_Single_Instance.yaml':
+             'WordPress_Single_Instance.yaml', 'resources': {}},
+            stack.env.user_env_as_dict()["resource_registry"])
+
+    def test_persisted_unregistered_provider_templates(self):
+        """
+        Test that templates persisted in the database prior to
+        https://review.openstack.org/#/c/79953/1 are registered correctly.
+        """
+        env = {'resource_registry': {'http://example.com/test.template': None,
+                                     'resources': {}}}
+        #A KeyError will be thrown prior to this fix.
+        environment.Environment(env=env)
 
     def test_system_template_retrieve_by_file(self):
         # make sure that a TemplateResource defined in the global environment

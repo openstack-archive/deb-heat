@@ -75,11 +75,16 @@ class ParamRef(function.Function):
         { "Ref" : "<param_name>" }
     '''
 
+    def __init__(self, stack, fn_name, args):
+        super(ParamRef, self).__init__(stack, fn_name, args)
+
+        self.parameters = self.stack.parameters
+
     def result(self):
         param_name = function.resolve(self.args)
 
         try:
-            return self.stack.parameters[param_name]
+            return self.parameters[param_name]
         except (KeyError, ValueError):
             raise exception.UserParameterMissing(key=param_name)
 
@@ -114,7 +119,7 @@ def Ref(stack, fn_name, args):
 
         { "Ref" : "<resource_name>" }
     '''
-    if args in stack.t[stack.t.RESOURCES]:
+    if args in stack:
         RefClass = ResourceRef
     else:
         RefClass = ParamRef
@@ -160,7 +165,7 @@ class GetAtt(function.Function):
 
         r = self._resource()
         if (r.status in (r.IN_PROGRESS, r.COMPLETE) and
-                r.action in (r.CREATE, r.RESUME, r.UPDATE)):
+                r.action in (r.CREATE, r.SUSPEND, r.RESUME, r.UPDATE)):
             return r.FnGetAtt(attribute)
         else:
             return None

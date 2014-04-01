@@ -10,33 +10,32 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import uuid
 from datetime import datetime
 from datetime import timedelta
+import uuid
 
 import fixtures
-from json import loads
 from json import dumps
+from json import loads
 import mock
 import mox
 
-from heat.db.sqlalchemy import api as db_api
-from heat.engine import environment
-from heat.tests.v1_1 import fakes
-from heat.engine.resource import Resource
 from heat.common import context
 from heat.common import exception
 from heat.common import template_format
-from heat.engine.resources import instance as instances
+from heat.db.sqlalchemy import api as db_api
 from heat.engine import clients
+from heat.engine.clients import novaclient
+from heat.engine import environment
 from heat.engine import parser
+from heat.engine.resource import Resource
+from heat.engine.resources import instance as instances
 from heat.engine import scheduler
 from heat.openstack.common import timeutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
+from heat.tests.v1_1 import fakes
 
-
-from heat.engine.clients import novaclient
 
 wp_template = '''
 {
@@ -96,13 +95,15 @@ class SqlAlchemyTest(HeatTestCase):
     def tearDown(self):
         super(SqlAlchemyTest, self).tearDown()
 
-    def _setup_test_stack(self, stack_name, stack_id=None, owner_id=None):
+    def _setup_test_stack(self, stack_name, stack_id=None, owner_id=None,
+                          stack_user_project_id=None):
         t = template_format.parse(wp_template)
         template = parser.Template(t)
         stack_id = stack_id or str(uuid.uuid4())
         stack = parser.Stack(self.ctx, stack_name, template,
                              environment.Environment({'KeyName': 'test'}),
-                             owner_id=owner_id)
+                             owner_id=owner_id,
+                             stack_user_project_id=stack_user_project_id)
         with utils.UUIDStub(stack_id):
             stack.store()
         return (t, stack)
@@ -280,8 +281,17 @@ class SqlAlchemyTest(HeatTestCase):
                           db_api.resource_data_get, rsrc, 'test')
 
     def test_stack_get_by_name(self):
-        stack = self._setup_test_stack('stack', UUID1)[1]
+        stack = self._setup_test_stack('stack', UUID1,
+                                       stack_user_project_id=UUID2)[1]
 
+        st = db_api.stack_get_by_name(self.ctx, 'stack')
+        self.assertEqual(UUID1, st.id)
+
+        self.ctx.tenant_id = UUID3
+        st = db_api.stack_get_by_name(self.ctx, 'stack')
+        self.assertIsNone(st)
+
+        self.ctx.tenant_id = UUID2
         st = db_api.stack_get_by_name(self.ctx, 'stack')
         self.assertEqual(UUID1, st.id)
 
@@ -304,14 +314,27 @@ class SqlAlchemyTest(HeatTestCase):
         self.assertIsNone(result)
 
     def test_stack_get_by_name_and_owner_id(self):
-        stack1 = self._setup_test_stack('stack1', UUID1)[1]
+        stack1 = self._setup_test_stack('stack1', UUID1,
+                                        stack_user_project_id=UUID3)[1]
         stack2 = self._setup_test_stack('stack2', UUID2,
-                                        owner_id=stack1.id)[1]
+                                        owner_id=stack1.id,
+                                        stack_user_project_id=UUID3)[1]
 
         result = db_api.stack_get_by_name_and_owner_id(self.ctx, 'stack2',
                                                        None)
         self.assertIsNone(result)
 
+        result = db_api.stack_get_by_name_and_owner_id(self.ctx, 'stack2',
+                                                       stack1.id)
+
+        self.assertEqual(UUID2, result.id)
+
+        self.ctx.tenant_id = str(uuid.uuid4())
+        result = db_api.stack_get_by_name_and_owner_id(self.ctx, 'stack2',
+                                                       None)
+        self.assertIsNone(result)
+
+        self.ctx.tenant_id = UUID3
         result = db_api.stack_get_by_name_and_owner_id(self.ctx, 'stack2',
                                                        stack1.id)
 
@@ -672,12 +695,14 @@ class SqlAlchemyTest(HeatTestCase):
 
     def _deployment_values(self):
         tenant_id = self.ctx.tenant_id
+        stack_user_project_id = str(uuid.uuid4())
         config_id = db_api.software_config_create(
             self.ctx, {'name': 'config_mysql', 'tenant': tenant_id}).id
         server_id = str(uuid.uuid4())
         input_values = {'foo': 'fooooo', 'bar': 'baaaaa'}
         values = {
             'tenant': tenant_id,
+            'stack_user_project_id': stack_user_project_id,
             'config_id': config_id,
             'server_id': server_id,
             'input_values': input_values
@@ -706,12 +731,22 @@ class SqlAlchemyTest(HeatTestCase):
         self.assertEqual(values['config_id'], deployment.config_id)
         self.assertEqual(values['server_id'], deployment.server_id)
         self.assertEqual(values['input_values'], deployment.input_values)
-        self.ctx.tenant_id = None
+        self.assertEqual(
+            values['stack_user_project_id'], deployment.stack_user_project_id)
+
+        # assert not found with invalid context tenant
+        self.ctx.tenant_id = str(uuid.uuid4())
         self.assertRaises(
             exception.NotFound,
             db_api.software_deployment_get,
             self.ctx,
             deployment_id)
+
+        # assert found with stack_user_project_id context tenant
+        self.ctx.tenant_id = deployment.stack_user_project_id
+        deployment = db_api.software_deployment_get(self.ctx, deployment_id)
+        self.assertIsNotNone(deployment)
+        self.assertEqual(values['tenant'], deployment.tenant)
 
     def test_software_deployment_get_all(self):
         self.assertEqual([], db_api.software_deployment_get_all(self.ctx))
@@ -914,6 +949,22 @@ class DBAPIUserCredsTest(HeatTestCase):
         self.assertEqual(db_api._decrypt(user_creds.password,
                                          user_creds.decrypt_method),
                          ret_user_creds['password'])
+
+    def test_user_creds_get_noexist(self):
+        self.assertIsNone(db_api.user_creds_get(123456))
+
+    def test_user_creds_delete(self):
+        user_creds = create_user_creds(self.ctx)
+        self.assertIsNotNone(user_creds.id)
+        db_api.user_creds_delete(self.ctx, user_creds.id)
+        creds = db_api.user_creds_get(user_creds.id)
+        self.assertIsNone(creds)
+        err = self.assertRaises(
+            exception.NotFound, db_api.user_creds_delete,
+            self.ctx, user_creds.id)
+        exp_msg = ('Attempt to delete user creds with id '
+                   '%s that does not exist' % user_creds.id)
+        self.assertIn(exp_msg, str(err))
 
 
 class DBAPIStackTest(HeatTestCase):

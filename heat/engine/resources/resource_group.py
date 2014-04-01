@@ -14,13 +14,13 @@
 
 import copy
 
+from heat.common import exception
+from heat.engine import constraints
 from heat.engine import parser
 from heat.engine import properties
-from heat.engine import constraints
 from heat.engine import stack_resource
-from heat.common import exception
-
 from heat.openstack.common.gettextutils import _
+
 
 template_template = {
     "heat_template_version": "2013-05-23",
@@ -60,7 +60,6 @@ class ResourceGroup(stack_resource.StackResource):
             properties.Schema.INTEGER,
             _('The number of instances to create.'),
             default=1,
-            required=True,
             constraints=[
                 constraints.Range(min=1),
             ],
@@ -146,6 +145,8 @@ class ResourceGroup(stack_resource.StackResource):
     def _assemble_nested(self, count, include_all=False):
         child_template = copy.deepcopy(template_template)
         resource_def = self.properties[self.RESOURCE_DEF]
+        if resource_def[self.RESOURCE_DEF_PROPERTIES] is None:
+            resource_def[self.RESOURCE_DEF_PROPERTIES] = {}
         if not include_all:
             resource_def_props = resource_def[self.RESOURCE_DEF_PROPERTIES]
             clean = dict((k, v) for k, v in resource_def_props.items() if v)

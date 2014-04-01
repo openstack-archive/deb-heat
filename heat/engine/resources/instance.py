@@ -12,19 +12,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from heat.engine import signal_responder
+from oslo.config import cfg
+
+cfg.CONF.import_opt('instance_user', 'heat.common.config')
+
+from heat.common import exception
 from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
-from heat.engine import scheduler
+from heat.engine.resources.network_interface import NetworkInterface
 from heat.engine.resources.neutron import neutron
 from heat.engine.resources import nova_utils
 from heat.engine.resources import volume
-
-from heat.common import exception
-from heat.engine.resources.network_interface import NetworkInterface
-
+from heat.engine import scheduler
+from heat.engine import signal_responder
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 
@@ -66,6 +68,10 @@ class Restarter(signal_responder.SignalResponder):
         self.resource_id_set(self._get_user_id())
 
     def handle_signal(self, details=None):
+        if self.action in (self.SUSPEND, self.DELETE):
+            msg = _('Cannot signal resource during %s') % self.action
+            raise Exception(msg)
+
         if details is None:
             alarm_state = 'alarm'
         else:
@@ -428,6 +434,14 @@ class Instance(resource.Resource):
                                 subnet_id=self.properties[self.SUBNET_ID])
         server = None
 
+        # FIXME(shadower): the instance_user config option is deprecated. Once
+        # it's gone, we should always use ec2-user for compatibility with
+        # CloudFormation.
+        if cfg.CONF.instance_user:
+            instance_user = cfg.CONF.instance_user
+        else:
+            instance_user = 'ec2-user'
+
         try:
             server = self.nova().servers.create(
                 name=self.physical_resource_name(),
@@ -435,7 +449,8 @@ class Instance(resource.Resource):
                 flavor=flavor_id,
                 key_name=self.properties[self.KEY_NAME],
                 security_groups=security_groups,
-                userdata=nova_utils.build_userdata(self, userdata),
+                userdata=nova_utils.build_userdata(self, userdata,
+                                                   instance_user),
                 meta=self._get_nova_metadata(self.properties),
                 scheduler_hints=scheduler_hints,
                 nics=nics,
@@ -667,7 +682,7 @@ class Instance(resource.Resource):
             else:
                 suspend_runner.step()
         else:
-            return volumes_runner.step()
+            volumes_runner.step()
 
     def handle_resume(self):
         '''

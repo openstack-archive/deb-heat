@@ -10,23 +10,24 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-from heat.common import template_format
+
 from heat.common import exception
 from heat.common import identifier
+from heat.common import template_format
+from heat.engine import constraints
 from heat.engine import environment
 from heat.engine import function
+from heat.engine.hot import parameters as hot_param
+from heat.engine.hot import template as hot_template
+from heat.engine import parameters
 from heat.engine import parser
 from heat.engine import resource
-from heat.engine import hot
 from heat.engine import resources
 from heat.engine import template
-from heat.engine import constraints
-from heat.engine import parameters
-
 from heat.tests.common import HeatTestCase
+from heat.tests import generic_resource as generic_rsrc
 from heat.tests import test_parser
 from heat.tests import utils
-from heat.tests import generic_resource as generic_rsrc
 
 
 hot_tpl_empty = template_format.parse('''
@@ -47,6 +48,19 @@ resources:
     type: ResourceWithComplexAttributesType
 ''')
 
+hot_tpl_mapped_props = template_format.parse('''
+heat_template_version: 2013-05-23
+resources:
+  resource1:
+    type: ResWithComplexPropsAndAttrsType
+  resource2:
+    type: ResWithComplexPropsAndAttrsType
+    properties:
+      a_list: { get_attr: [ resource1, list] }
+      a_string: { get_attr: [ resource1, string ] }
+      a_map: { get_attr: [ resource1, map] }
+''')
+
 
 class HOTemplateTest(HeatTestCase):
     """Test processing of HOT templates."""
@@ -60,7 +74,7 @@ class HOTemplateTest(HeatTestCase):
 
         tmpl = parser.Template(hot_tpl_empty)
         # check if we get the right class
-        self.assertIsInstance(tmpl, hot.HOTemplate)
+        self.assertIsInstance(tmpl, hot_template.HOTemplate)
         # test getting an invalid section
         self.assertNotIn('foobar', tmpl)
 
@@ -69,7 +83,7 @@ class HOTemplateTest(HeatTestCase):
         self.assertEqual({}, tmpl[tmpl.RESOURCES])
         self.assertEqual({}, tmpl[tmpl.OUTPUTS])
 
-    def test_translate_resources(self):
+    def test_translate_resources_good(self):
         """Test translation of resources into internal engine format."""
 
         hot_tpl = template_format.parse('''
@@ -79,15 +93,169 @@ class HOTemplateTest(HeatTestCase):
             type: AWS::EC2::Instance
             properties:
               property1: value1
+            metadata:
+              foo: bar
+            depends_on: dummy
+            deletion_policy: dummy
+            update_policy:
+              foo: bar
         ''')
 
         expected = {'resource1': {'Type': 'AWS::EC2::Instance',
-                                  'Properties': {'property1': 'value1'}}}
+                                  'Properties': {'property1': 'value1'},
+                                  'Metadata': {'foo': 'bar'},
+                                  'DependsOn': 'dummy',
+                                  'DeletionPolicy': 'dummy',
+                                  'UpdatePolicy': {'foo': 'bar'}}}
 
         tmpl = parser.Template(hot_tpl)
         self.assertEqual(expected, tmpl[tmpl.RESOURCES])
 
-    def test_translate_outputs(self):
+    def test_translate_resources_bad_type(self):
+        """Test translation of resources including invalid keyword."""
+
+        hot_tpl = template_format.parse('''
+        heat_template_version: 2013-05-23
+        resources:
+          resource1:
+            Type: AWS::EC2::Instance
+            properties:
+              property1: value1
+            metadata:
+              foo: bar
+            depends_on: dummy
+            deletion_policy: dummy
+            update_policy:
+              foo: bar
+        ''')
+
+        tmpl = parser.Template(hot_tpl)
+        err = self.assertRaises(KeyError, tmpl.__getitem__, tmpl.RESOURCES)
+        self.assertEqual('u\'"Type" is not a valid keyword '
+                         'inside a resource definition\'',
+                         str(err))
+
+    def test_translate_resources_bad_properties(self):
+        """Test translation of resources including invalid keyword."""
+
+        hot_tpl = template_format.parse('''
+        heat_template_version: 2013-05-23
+        resources:
+          resource1:
+            type: AWS::EC2::Instance
+            Properties:
+              property1: value1
+            metadata:
+              foo: bar
+            depends_on: dummy
+            deletion_policy: dummy
+            update_policy:
+              foo: bar
+        ''')
+
+        tmpl = parser.Template(hot_tpl)
+        err = self.assertRaises(KeyError, tmpl.__getitem__, tmpl.RESOURCES)
+        self.assertEqual('u\'"Properties" is not a valid keyword '
+                         'inside a resource definition\'',
+                         str(err))
+
+    def test_translate_resources_bad_metadata(self):
+        """Test translation of resources including invalid keyword."""
+
+        hot_tpl = template_format.parse('''
+        heat_template_version: 2013-05-23
+        resources:
+          resource1:
+            type: AWS::EC2::Instance
+            properties:
+              property1: value1
+            Metadata:
+              foo: bar
+            depends_on: dummy
+            deletion_policy: dummy
+            update_policy:
+              foo: bar
+        ''')
+
+        tmpl = parser.Template(hot_tpl)
+        err = self.assertRaises(KeyError, tmpl.__getitem__, tmpl.RESOURCES)
+        self.assertEqual('u\'"Metadata" is not a valid keyword '
+                         'inside a resource definition\'',
+                         str(err))
+
+    def test_translate_resources_bad_depends_on(self):
+        """Test translation of resources including invalid keyword."""
+
+        hot_tpl = template_format.parse('''
+        heat_template_version: 2013-05-23
+        resources:
+          resource1:
+            type: AWS::EC2::Instance
+            properties:
+              property1: value1
+            metadata:
+              foo: bar
+            DependsOn: dummy
+            deletion_policy: dummy
+            update_policy:
+              foo: bar
+        ''')
+
+        tmpl = parser.Template(hot_tpl)
+        err = self.assertRaises(KeyError, tmpl.__getitem__, tmpl.RESOURCES)
+        self.assertEqual('u\'"DependsOn" is not a valid keyword '
+                         'inside a resource definition\'',
+                         str(err))
+
+    def test_translate_resources_bad_deletion_polciy(self):
+        """Test translation of resources including invalid keyword."""
+
+        hot_tpl = template_format.parse('''
+        heat_template_version: 2013-05-23
+        resources:
+          resource1:
+            type: AWS::EC2::Instance
+            properties:
+              property1: value1
+            metadata:
+              foo: bar
+            depends_on: dummy
+            DeletionPolicy: dummy
+            update_policy:
+              foo: bar
+        ''')
+
+        tmpl = parser.Template(hot_tpl)
+        err = self.assertRaises(KeyError, tmpl.__getitem__, tmpl.RESOURCES)
+        self.assertEqual('u\'"DeletionPolicy" is not a valid keyword '
+                         'inside a resource definition\'',
+                         str(err))
+
+    def test_translate_resources_bad_update_policy(self):
+        """Test translation of resources including invalid keyword."""
+
+        hot_tpl = template_format.parse('''
+        heat_template_version: 2013-05-23
+        resources:
+          resource1:
+            type: AWS::EC2::Instance
+            properties:
+              property1: value1
+            metadata:
+              foo: bar
+            depends_on: dummy
+            deletion_policy: dummy
+            UpdatePolicy:
+              foo: bar
+        ''')
+
+        tmpl = parser.Template(hot_tpl)
+        err = self.assertRaises(KeyError, tmpl.__getitem__, tmpl.RESOURCES)
+        self.assertEqual('u\'"UpdatePolicy" is not a valid keyword '
+                         'inside a resource definition\'',
+                         str(err))
+
+    def test_translate_outputs_good(self):
         """Test translation of outputs into internal engine format."""
 
         hot_tpl = template_format.parse('''
@@ -102,6 +270,36 @@ class HOTemplateTest(HeatTestCase):
 
         tmpl = parser.Template(hot_tpl)
         self.assertEqual(expected, tmpl[tmpl.OUTPUTS])
+
+    def test_translate_outputs_bad_description(self):
+        """Test translation of outputs into internal engine format."""
+
+        hot_tpl = template_format.parse('''
+        heat_template_version: 2013-05-23
+        outputs:
+          output1:
+            Description: output1
+            value: value1
+        ''')
+
+        tmpl = parser.Template(hot_tpl)
+        err = self.assertRaises(KeyError, tmpl.__getitem__, tmpl.OUTPUTS)
+        self.assertIn('Description', str(err))
+
+    def test_translate_outputs_bad_value(self):
+        """Test translation of outputs into internal engine format."""
+
+        hot_tpl = template_format.parse('''
+        heat_template_version: 2013-05-23
+        outputs:
+          output1:
+            description: output1
+            Value: value1
+        ''')
+
+        tmpl = parser.Template(hot_tpl)
+        err = self.assertRaises(KeyError, tmpl.__getitem__, tmpl.OUTPUTS)
+        self.assertIn('Value', str(err))
 
     def test_str_replace(self):
         """Test str_replace function."""
@@ -296,9 +494,8 @@ class HOTemplateTest(HeatTestCase):
 
         tmpl_str = "heat_template_version: this-ain't-valid"
         hot_tmpl = template_format.parse(tmpl_str)
-        exc = self.assertRaises(ValueError, template.Template, hot_tmpl)
-        self.assertIn('"this-ain\'t-valid" is not a valid '
-                      'heat_template_version', str(exc))
+        self.assertRaises(exception.InvalidTemplateVersion,
+                          template.Template, hot_tmpl)
 
     def test_valid_hot_version(self):
         """
@@ -408,12 +605,19 @@ class StackTest(test_parser.StackTest):
                          stack_identifier.stack_id)
         self.m.VerifyAll()
 
+    def test_set_wrong_param(self):
+        tmpl = parser.Template(hot_tpl_empty)
+        stack_id = identifier.HeatIdentifier('', "stack_testit", None)
+        params = tmpl.parameters(None, {})
+        self.assertFalse(params.set_stack_id(None))
+        self.assertTrue(params.set_stack_id(stack_id))
+
     @utils.stack_delete_after
     def test_set_param_id_update(self):
         tmpl = template.Template(
             {'heat_template_version': '2013-05-23',
              'resources': {'AResource': {'type': 'ResourceWithPropsType',
-                           'Metadata': {'Bar': {'get_param': 'OS::stack_id'}},
+                           'metadata': {'Bar': {'get_param': 'OS::stack_id'}},
                            'properties': {'Foo': 'abc'}}}})
         self.stack = parser.Stack(self.ctx, 'update_stack_id_test', tmpl)
         self.stack.store()
@@ -426,7 +630,7 @@ class StackTest(test_parser.StackTest):
         tmpl2 = template.Template(
             {'heat_template_version': '2013-05-23',
              'resources': {'AResource': {'type': 'ResourceWithPropsType',
-                           'Metadata': {'Bar': {'get_param': 'OS::stack_id'}},
+                           'metadata': {'Bar': {'get_param': 'OS::stack_id'}},
                            'properties': {'Foo': 'xyz'}}}})
         updated_stack = parser.Stack(self.ctx, 'updated_stack', tmpl2)
 
@@ -450,6 +654,53 @@ class StackTest(test_parser.StackTest):
         self.assertEqual(newstack.parameters['OS::stack_id'],
                          stack_identifier.stack_id)
 
+    @utils.stack_delete_after
+    def test_update_modify_param_ok_replace(self):
+        tmpl = {
+            'heat_template_version': '2013-05-23',
+            'parameters': {
+                'foo': {'type': 'string'}
+            },
+            'resources': {
+                'AResource': {
+                    'type': 'ResourceWithPropsType',
+                    'properties': {'Foo': {'get_param': 'foo'}}
+                }
+            }
+        }
+
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps,
+                               'update_template_diff')
+
+        self.stack = parser.Stack(self.ctx, 'update_test_stack',
+                                  template.Template(tmpl),
+                                  environment.Environment({'foo': 'abc'}))
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((parser.Stack.CREATE, parser.Stack.COMPLETE),
+                         self.stack.state)
+
+        updated_stack = parser.Stack(self.ctx, 'updated_stack',
+                                     template.Template(tmpl),
+                                     environment.Environment({'foo': 'xyz'}))
+
+        def check_props(*args):
+            self.assertEqual('abc', self.stack['AResource'].properties['Foo'])
+
+        generic_rsrc.ResourceWithProps.update_template_diff(
+            {'Type': 'ResourceWithPropsType',
+             'Properties': {'Foo': 'xyz'}},
+            {'Type': 'ResourceWithPropsType',
+             'Properties': {'Foo': 'abc'}}).WithSideEffects(check_props) \
+                                           .AndRaise(resource.UpdateReplace)
+        self.m.ReplayAll()
+
+        self.stack.update(updated_stack)
+        self.assertEqual((parser.Stack.UPDATE, parser.Stack.COMPLETE),
+                         self.stack.state)
+        self.assertEqual('xyz', self.stack['AResource'].properties['Foo'])
+        self.m.VerifyAll()
+
 
 class StackAttributesTest(HeatTestCase):
     """
@@ -465,6 +716,8 @@ class StackAttributesTest(HeatTestCase):
                                  generic_rsrc.GenericResource)
         resource._register_class('ResourceWithComplexAttributesType',
                                  generic_rsrc.ResourceWithComplexAttributes)
+        resource._register_class('ResWithComplexPropsAndAttrsType',
+                                 generic_rsrc.ResWithComplexPropsAndAttrs)
 
         self.m.ReplayAll()
 
@@ -519,7 +772,7 @@ class StackAttributesTest(HeatTestCase):
                                               'none',
                                               'who_cares']}},
               resource_name='resource1',
-              expected={'Value': ''}))
+              expected={'Value': None}))
     ]
 
     @utils.stack_delete_after
@@ -546,6 +799,35 @@ class StackAttributesTest(HeatTestCase):
             resolved = function.resolve(self.stack.t.parse(self.stack,
                                                            self.snippet))
             self.assertEqual(self.expected, resolved)
+
+
+class StackGetAttrValidationTest(HeatTestCase):
+
+    def setUp(self):
+        super(StackGetAttrValidationTest, self).setUp()
+        self.ctx = utils.dummy_context()
+
+        resource._register_class('GenericResourceType',
+                                 generic_rsrc.GenericResource)
+        resource._register_class('ResWithComplexPropsAndAttrsType',
+                                 generic_rsrc.ResWithComplexPropsAndAttrs)
+
+    def test_validate_props_from_attrs(self):
+        stack = parser.Stack(self.ctx, 'test_props_from_attrs',
+                             template.Template(hot_tpl_mapped_props))
+        stack.resources['resource1'].list = None
+        stack.resources['resource1'].map = None
+        stack.resources['resource1'].string = None
+        try:
+            stack.validate()
+        except exception.StackValidationFailed as exc:
+            self.fail("Validation should have passed: %s" % str(exc))
+        self.assertEqual([],
+                         stack.resources['resource2'].properties['a_list'])
+        self.assertEqual({},
+                         stack.resources['resource2'].properties['a_map'])
+        self.assertEqual('',
+                         stack.resources['resource2'].properties['a_string'])
 
 
 class StackParametersTest(HeatTestCase):
@@ -660,7 +942,7 @@ class HOTParamValidatorTest(HeatTestCase):
         schema = param['db_name']
 
         def v(value):
-            hot.HOTParamSchema.from_dict(schema).validate(name, value)
+            hot_param.HOTParamSchema.from_dict(schema).validate(name, value)
             return True
 
         value = 'wp'
@@ -749,7 +1031,7 @@ class HOTParamValidatorTest(HeatTestCase):
         schema = param['db_port']
 
         def v(value):
-            hot.HOTParamSchema.from_dict(schema).validate(name, value)
+            hot_param.HOTParamSchema.from_dict(schema).validate(name, value)
             return True
 
         value = 29999
@@ -790,7 +1072,7 @@ class HOTParamValidatorTest(HeatTestCase):
         schema = param['param1']
 
         def v(value):
-            hot.HOTParamSchema.from_dict(schema).validate(name, value)
+            hot_param.HOTParamSchema.from_dict(schema).validate(name, value)
             return True
 
         value = "1"
@@ -818,7 +1100,7 @@ class HOTParamValidatorTest(HeatTestCase):
         schema = param['db_port']
 
         err = self.assertRaises(constraints.InvalidSchemaError,
-                                hot.HOTParamSchema.from_dict, schema)
+                                hot_param.HOTParamSchema.from_dict, schema)
         self.assertIn(range_desc, str(err))
 
     def test_validate_schema_wrong_key(self):

@@ -14,7 +14,6 @@
 
 from heat.engine import parameters
 from heat.engine import template
-from heat.engine.cfn import functions
 
 
 class CfnTemplate(template.Template):
@@ -26,10 +25,6 @@ class CfnTemplate(template.Template):
                 'Parameters', 'Resources', 'Outputs')
 
     SECTIONS_NO_DIRECT_ACCESS = set([PARAMETERS, VERSION])
-
-    def __init__(self, template, *args, **kwargs):
-        super(CfnTemplate, self).__init__(template, *args, **kwargs)
-        self.version = self._version()
 
     def __getitem__(self, section):
         '''Get the relevant section in the template.'''
@@ -46,15 +41,6 @@ class CfnTemplate(template.Template):
 
         return self.t.get(section, default)
 
-    def _version(self):
-        for key in ('HeatTemplateFormatVersion', 'AWSTemplateFormatVersion'):
-            if key in self.t:
-                return key, self.t[key]
-
-        # All user templates are forced to include a version string. This is
-        # just a convenient default for unit tests.
-        return 'HeatTemplateFormatVersion', '2012-12-12'
-
     def param_schemata(self):
         params = self.t.get(self.PARAMETERS, {}).iteritems()
         return dict((name, parameters.Schema.from_dict(schema))
@@ -67,5 +53,9 @@ class CfnTemplate(template.Template):
                                      validate_value=validate_value,
                                      context=context)
 
-    def functions(self):
-        return functions.function_mapping(*self.version)
+
+def template_mapping():
+    return {
+        ('HeatTemplateFormatVersion', '2012-12-12'): CfnTemplate,
+        ('AWSTemplateFormatVersion', '2010-09-09'): CfnTemplate,
+    }

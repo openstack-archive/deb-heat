@@ -12,13 +12,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from heat.db import api as db_api
-from heat.engine import resource
-from heat.engine import properties
-from heat.engine import constraints
-
 import random
 import string
+
+from six.moves import xrange
+
+from heat.db import api as db_api
+from heat.engine import constraints
+from heat.engine import properties
+from heat.engine import resource
 
 
 class RandomString(resource.Resource):

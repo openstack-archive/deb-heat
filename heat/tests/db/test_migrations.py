@@ -20,21 +20,21 @@ properly both upgrading and downgrading, and that no data loss occurs
 if possible.
 """
 
+import datetime
 import os
 import shutil
-import sqlalchemy
 import subprocess
 import tempfile
 import uuid
-import datetime
 
 from migrate.versioning import repository
+import sqlalchemy
 
 from heat.db.sqlalchemy import migrate_repo
 from heat.db.sqlalchemy import migration
+from heat.openstack.common.db.sqlalchemy import test_migrations
 from heat.openstack.common import log as logging
 from heat.openstack.common.py3kcompat import urlutils
-from heat.openstack.common.db.sqlalchemy import test_migrations
 
 
 LOG = logging.getLogger(__name__)
@@ -98,6 +98,11 @@ class TestHeatMigrations(test_migrations.BaseMigrationTestCase,
     def assertColumnNotExists(self, engine, table, column):
         t = get_table(engine, table)
         self.assertNotIn(column, t.c)
+
+    def assertColumnIsNullable(self, engine, table, column):
+        t = get_table(engine, table)
+        col = getattr(t.c, column)
+        self.assertTrue(col.nullable)
 
     def assertIndexExists(self, engine, table, index):
         t = get_table(engine, table)
@@ -237,3 +242,9 @@ class TestHeatMigrations(test_migrations.BaseMigrationTestCase,
 
     def _check_038(self, engine, data):
         self.assertColumnNotExists(engine, 'software_config', 'io')
+
+    def _check_039(self, engine, data):
+        self.assertColumnIsNullable(engine, 'stack', 'user_creds_id')
+
+    def _check_040(self, engine, data):
+        self.assertColumnNotExists(engine, 'software_deployment', 'signal_id')

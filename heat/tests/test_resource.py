@@ -11,24 +11,24 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import json
 import itertools
+import json
 import uuid
 
 import mock
 
 from heat.common import exception
+import heat.db.api as db_api
 from heat.engine import dependencies
+from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import template
-from heat.engine import environment
 from heat.openstack.common.gettextutils import _
-import heat.db.api as db_api
 
-from heat.tests import generic_resource as generic_rsrc
 from heat.tests.common import HeatTestCase
+from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
 
 
@@ -83,6 +83,15 @@ class ResourceTest(HeatTestCase):
                                resource.Resource, resource_name,
                                snippet, self.stack)
         self.assertIn(_('Resource "%s" has no type') % resource_name, str(ex))
+
+    def test_resource_wrong_type(self):
+        snippet = {'Type': {}}
+        resource_name = 'aresource'
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               resource.Resource, resource_name,
+                               snippet, self.stack)
+        self.assertIn(_('Resource "%s" type is not a string') % resource_name,
+                      str(ex))
 
     def test_resource_missed_type(self):
         snippet = {'not-a-Type': 'GenericResourceType'}
@@ -999,7 +1008,7 @@ class ResourceDependenciesTest(HeatTestCase):
                 'foo': {'type': 'GenericResourceType'},
                 'bar': {
                     'type': 'ResourceWithPropsType',
-                    'Properties': {
+                    'properties': {
                         'Foo': {'get_attr': ['foo', 'bar']},
                     }
                 }
@@ -1193,6 +1202,26 @@ class ResourceDependenciesTest(HeatTestCase):
                 'bar': {
                     'Type': 'GenericResourceType',
                     'DependsOn': 'foo',
+                }
+            }
+        })
+        stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
+
+        res = stack['bar']
+        res.add_dependencies(self.deps)
+        graph = self.deps.graph()
+
+        self.assertIn(res, graph)
+        self.assertIn(stack['foo'], graph[res])
+
+    def test_dependson_hot(self):
+        tmpl = template.Template({
+            'heat_template_version': '2013-05-23',
+            'resources': {
+                'foo': {'type': 'GenericResourceType'},
+                'bar': {
+                    'type': 'GenericResourceType',
+                    'depends_on': 'foo',
                 }
             }
         })

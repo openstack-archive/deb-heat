@@ -21,8 +21,8 @@ from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
-from .fake_docker_client import FakeDockerClient  # noqa
 from ..resources import docker_container  # noqa
+from .fake_docker_client import FakeDockerClient  # noqa
 
 
 template = '''
@@ -81,7 +81,8 @@ class DockerContainerTest(HeatTestCase):
     def test_resource_attributes(self):
         container = self.create_container('Blog')
         # Test network info attributes
-        self.assertEqual('172.17.42.1', container.FnGetAtt('network_ip'))
+        self.assertEqual('172.17.42.1', container.FnGetAtt('network_gateway'))
+        self.assertEqual('172.17.0.3', container.FnGetAtt('network_ip'))
         self.assertEqual('1080', container.FnGetAtt('network_tcp_ports'))
         self.assertEqual('', container.FnGetAtt('network_udp_ports'))
         # Test logs attributes

@@ -11,19 +11,19 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import json
-import mock
-import uuid
 from datetime import datetime
+import json
+import uuid
 
-import heat.engine.api as api
+import mock
 
-from heat.common import template_format
-from heat.engine import parser
-from heat.engine import parameters
-from heat.engine import resource
-from heat.engine.event import Event
 from heat.common.identifier import EventIdentifier
+from heat.common import template_format
+from heat.engine import api
+from heat.engine.event import Event
+from heat.engine import parameters
+from heat.engine import parser
+from heat.engine import resource
 from heat.rpc import api as rpc_api
 from heat.tests.common import HeatTestCase
 from heat.tests import generic_resource as generic_rsrc
@@ -50,6 +50,11 @@ class EngineApiTest(HeatTestCase):
         p = {'timeout_mins': None}
         args = api.extract_args(p)
         self.assertNotIn('timeout_mins', args)
+
+    def test_timeout_extract_negative(self):
+        p = {'timeout_mins': '-100'}
+        error = self.assertRaises(ValueError, api.extract_args, p)
+        self.assertIn('Invalid timeout value', str(error))
 
     def test_timeout_extract_not_present(self):
         args = api.extract_args({})
@@ -804,7 +809,6 @@ class FormatSoftwareConfigDeploymentTest(HeatTestCase):
         deployment.action = 'INIT'
         deployment.status = 'COMPLETE'
         deployment.status_reason = 'Because'
-        deployment.signal_id = 'http://192.0.2.2/signal'
         return deployment
 
     def test_format_software_config(self):
@@ -827,7 +831,6 @@ class FormatSoftwareConfigDeploymentTest(HeatTestCase):
         self.assertEqual(deployment.server_id, result['server_id'])
         self.assertEqual(deployment.input_values, result['input_values'])
         self.assertEqual(deployment.output_values, result['output_values'])
-        self.assertEqual(deployment.signal_id, result['signal_id'])
         self.assertEqual(deployment.action, result['action'])
         self.assertEqual(deployment.status, result['status'])
         self.assertEqual(deployment.status_reason, result['status_reason'])

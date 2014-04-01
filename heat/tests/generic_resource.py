@@ -14,9 +14,8 @@
 from heat.engine import resource
 from heat.engine import signal_responder
 from heat.engine import stack_user
-
-from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +50,23 @@ class GenericResource(resource.Resource):
     def handle_resume(self):
         logger.warning(_('Resuming generic resource (Type "%s")') %
                        self.type())
+
+
+class ResWithComplexPropsAndAttrs(GenericResource):
+
+    properties_schema = {'a_string': {'Type': 'String'},
+                         'a_list': {'Type': 'List'},
+                         'a_map': {'Type': 'Map'}}
+
+    attributes_schema = {'list': 'A list',
+                         'map': 'A map',
+                         'string': 'A string'}
+
+    def _resolve_attribute(self, name):
+        try:
+            return self.properties["a_%s" % name]
+        except KeyError:
+            return None
 
 
 class ResourceWithProps(GenericResource):
@@ -95,6 +111,10 @@ class SignalResource(signal_responder.SignalResponder):
         self.resource_id_set(self._get_user_id())
 
     def handle_signal(self, details=None):
+        if self.action in (self.SUSPEND, self.DELETE):
+            msg = _('Cannot signal resource during %s') % self.action
+            raise Exception(msg)
+
         logger.warning(_('Signaled resource (Type "%(type)s") %(details)s')
                        % {'type': self.type(), 'details': details})
 

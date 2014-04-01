@@ -246,7 +246,10 @@ def resource_get_all_by_stack(context, stack_id):
 
 def stack_get_by_name_and_owner_id(context, stack_name, owner_id):
     query = soft_delete_aware_query(context, models.Stack).\
-        filter_by(tenant=context.tenant_id).\
+        filter(sqlalchemy.or_(
+            models.Stack.tenant == context.tenant_id,
+            models.Stack.stack_user_project_id == context.tenant_id
+        )).\
         filter_by(name=stack_name).\
         filter_by(owner_id=owner_id)
 
@@ -255,7 +258,10 @@ def stack_get_by_name_and_owner_id(context, stack_name, owner_id):
 
 def stack_get_by_name(context, stack_name):
     query = soft_delete_aware_query(context, models.Stack).\
-        filter_by(tenant=context.tenant_id).\
+        filter(sqlalchemy.or_(
+            models.Stack.tenant == context.tenant_id,
+            models.Stack.stack_user_project_id == context.tenant_id
+        )).\
         filter_by(name=stack_name)
 
     return query.first()
@@ -453,6 +459,8 @@ def user_creds_create(context):
 
 def user_creds_get(user_creds_id):
     db_result = model_query(None, models.UserCreds).get(user_creds_id)
+    if db_result is None:
+        return None
     # Return a dict copy of db results, do not decrypt details into db_result
     # or it can be committed back to the DB in decrypted form
     result = dict(db_result)
@@ -460,6 +468,17 @@ def user_creds_get(user_creds_id):
     result['password'] = _decrypt(result['password'], db_result.decrypt_method)
     result['trust_id'] = _decrypt(result['trust_id'], db_result.decrypt_method)
     return result
+
+
+def user_creds_delete(context, user_creds_id):
+    creds = model_query(context, models.UserCreds).get(user_creds_id)
+    if not creds:
+        raise exception.NotFound(
+            _('Attempt to delete user creds with id '
+              '%(id)s that does not exist') % {'id': user_creds_id})
+    session = Session.object_session(creds)
+    session.delete(creds)
+    session.flush()
 
 
 def event_get(context, event_id):
@@ -643,7 +662,8 @@ def software_deployment_create(context, values):
 def software_deployment_get(context, deployment_id):
     result = model_query(context, models.SoftwareDeployment).get(deployment_id)
     if (result is not None and context is not None and
-            result.tenant != context.tenant_id):
+        context.tenant_id not in (result.tenant,
+                                  result.stack_user_project_id)):
         result = None
 
     if not result:
@@ -653,9 +673,13 @@ def software_deployment_get(context, deployment_id):
 
 
 def software_deployment_get_all(context, server_id=None):
-    query = model_query(context, models.SoftwareDeployment).\
-        filter_by(tenant=context.tenant_id).\
-        order_by(models.SoftwareDeployment.created_at)
+    sd = models.SoftwareDeployment
+    query = model_query(context, sd).\
+        filter(sqlalchemy.or_(
+            sd.tenant == context.tenant_id,
+            sd.stack_user_project_id == context.tenant_id
+        )).\
+        order_by(sd.created_at)
     if server_id:
         query = query.filter_by(server_id=server_id)
     return query.all()

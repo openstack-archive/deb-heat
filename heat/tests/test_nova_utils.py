@@ -135,6 +135,17 @@ class NovaUtilsRefreshServerTests(HeatTestCase):
         self.assertIsNone(nova_utils.refresh_server(server))
         self.m.VerifyAll()
 
+    def test_503_error(self):
+        server = self.m.CreateMockAnything()
+        msg = ("ClientException: The server has either erred or is "
+               "incapable of performing the requested operation.")
+        server.get().AndRaise(
+            clients.novaclient.exceptions.ClientException(503, msg))
+        self.m.ReplayAll()
+
+        self.assertIsNone(nova_utils.refresh_server(server))
+        self.m.VerifyAll()
+
     def test_unhandled_exception(self):
         server = self.m.CreateMockAnything()
         msg = ("ClientException: The server has either erred or is "
@@ -150,17 +161,6 @@ class NovaUtilsRefreshServerTests(HeatTestCase):
 
 class NovaUtilsUserdataTests(HeatTestCase):
 
-    scenarios = [
-        ('no_conf_no_prop', dict(
-            conf_user='ec2-user', instance_user=None, expect='ec2-user')),
-        ('no_conf_prop', dict(
-            conf_user='ec2-user', instance_user='fruity', expect='fruity')),
-        ('conf_no_prop', dict(
-            conf_user='nutty', instance_user=None, expect='nutty')),
-        ('conf_prop', dict(
-            conf_user='nutty', instance_user='fruity', expect='fruity')),
-    ]
-
     def setUp(self):
         super(NovaUtilsUserdataTests, self).setUp()
         self.nova_client = self.m.CreateMockAnything()
@@ -168,17 +168,15 @@ class NovaUtilsUserdataTests(HeatTestCase):
     def test_build_userdata(self):
         """Tests the build_userdata function."""
         resource = self.m.CreateMockAnything()
-        resource.t = {}
+        resource.metadata = {}
         self.m.StubOutWithMock(nova_utils.cfg, 'CONF')
         cnf = nova_utils.cfg.CONF
-        cnf.instance_user = self.conf_user
         cnf.heat_metadata_server_url = 'http://server.test:123'
         cnf.heat_watch_server_url = 'http://server.test:345'
         cnf.instance_connection_is_secure = False
         cnf.instance_connection_https_validate_certificates = False
         self.m.ReplayAll()
-        data = nova_utils.build_userdata(resource,
-                                         instance_user=self.instance_user)
+        data = nova_utils.build_userdata(resource)
         self.assertIn("Content-Type: text/cloud-config;", data)
         self.assertIn("Content-Type: text/cloud-boothook;", data)
         self.assertIn("Content-Type: text/part-handler;", data)
@@ -187,7 +185,38 @@ class NovaUtilsUserdataTests(HeatTestCase):
         self.assertIn("http://server.test:345", data)
         self.assertIn("http://server.test:123", data)
         self.assertIn("[Boto]", data)
-        self.assertIn(self.expect, data)
+        self.m.VerifyAll()
+
+    def test_build_userdata_without_instance_user(self):
+        """Don't add a custom instance user when not requested."""
+        resource = self.m.CreateMockAnything()
+        resource.metadata = {}
+        self.m.StubOutWithMock(nova_utils.cfg, 'CONF')
+        cnf = nova_utils.cfg.CONF
+        cnf.instance_user = 'config_instance_user'
+        cnf.heat_metadata_server_url = 'http://server.test:123'
+        cnf.heat_watch_server_url = 'http://server.test:345'
+        self.m.ReplayAll()
+        data = nova_utils.build_userdata(resource, instance_user=None)
+        self.assertNotIn('user: ', data)
+        self.assertNotIn('useradd', data)
+        self.assertNotIn('config_instance_user', data)
+        self.m.VerifyAll()
+
+    def test_build_userdata_with_instance_user(self):
+        """Add the custom instance user when requested."""
+        resource = self.m.CreateMockAnything()
+        resource.metadata = {}
+        self.m.StubOutWithMock(nova_utils.cfg, 'CONF')
+        cnf = nova_utils.cfg.CONF
+        cnf.instance_user = 'config_instance_user'
+        cnf.heat_metadata_server_url = 'http://server.test:123'
+        cnf.heat_watch_server_url = 'http://server.test:345'
+        self.m.ReplayAll()
+        data = nova_utils.build_userdata(resource,
+                                         instance_user="custominstanceuser")
+        self.assertNotIn('config_instance_user', data)
+        self.assertIn("custominstanceuser", data)
         self.m.VerifyAll()
 
 

@@ -18,12 +18,13 @@ from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
-from heat.engine import scheduler
-from heat.engine.resources import nova_utils
 from heat.engine.resources.neutron import neutron
+from heat.engine.resources import nova_utils
+from heat.engine import scheduler
 
 if clients.neutronclient is not None:
     from neutronclient.common.exceptions import NeutronClientException
+    from neutronclient.neutron import v2_0 as neutronV20
 
 
 class HealthMonitor(neutron.NeutronResource):
@@ -157,11 +158,13 @@ class Pool(neutron.NeutronResource):
     )
 
     _VIP_KEYS = (
-        VIP_NAME, VIP_DESCRIPTION, VIP_ADDRESS, VIP_CONNECTION_LIMIT,
-        VIP_PROTOCOL_PORT, VIP_SESSION_PERSISTENCE, VIP_ADMIN_STATE_UP,
+        VIP_NAME, VIP_DESCRIPTION, VIP_SUBNET, VIP_ADDRESS,
+        VIP_CONNECTION_LIMIT, VIP_PROTOCOL_PORT,
+        VIP_SESSION_PERSISTENCE, VIP_ADMIN_STATE_UP,
     ) = (
-        'name', 'description', 'address', 'connection_limit',
-        'protocol_port', 'session_persistence', 'admin_state_up',
+        'name', 'description', 'subnet', 'address',
+        'connection_limit', 'protocol_port',
+        'session_persistence', 'admin_state_up',
     )
 
     _VIP_SESSION_PERSISTENCE_KEYS = (
@@ -181,7 +184,8 @@ class Pool(neutron.NeutronResource):
         ),
         SUBNET_ID: properties.Schema(
             properties.Schema.STRING,
-            _('The subnet on which the members of the pool will be located.'),
+            _('The subnet for the port on which the members '
+              'of the pool will be connected.'),
             required=True
         ),
         LB_METHOD: properties.Schema(
@@ -221,6 +225,10 @@ class Pool(neutron.NeutronResource):
                 VIP_DESCRIPTION: properties.Schema(
                     properties.Schema.STRING,
                     _('Description of the vip.')
+                ),
+                VIP_SUBNET: properties.Schema(
+                    properties.Schema.STRING,
+                    _('Subnet of the vip.')
                 ),
                 VIP_ADDRESS: properties.Schema(
                     properties.Schema.STRING,
@@ -268,6 +276,7 @@ class Pool(neutron.NeutronResource):
         MONITORS: properties.Schema(
             properties.Schema.LIST,
             _('List of health monitors associated with the pool.'),
+            default=[],
             update_allowed=True
         ),
     }
@@ -278,8 +287,8 @@ class Pool(neutron.NeutronResource):
         'admin_state_up': _('The administrative state of this pool.'),
         'name': _('Name of the pool.'),
         'protocol': _('Protocol to balance.'),
-        'subnet_id': _('The subnet on which the members of the pool '
-                       'will be located.'),
+        'subnet_id': _('The subnet for the port on which the members '
+                       'of the pool will be connected.'),
         'lb_method': _('The algorithm used to distribute load between the '
                        'members of the pool.'),
         'description': _('Description of the pool.'),
@@ -311,7 +320,7 @@ class Pool(neutron.NeutronResource):
             self.properties,
             self.physical_resource_name())
         vip_properties = properties.pop(self.VIP)
-        monitors = properties.pop(self.MONITORS, [])
+        monitors = properties.pop(self.MONITORS)
         client = self.neutron()
         pool = client.create_pool({'pool': properties})['pool']
         self.resource_id_set(pool['id'])
@@ -330,7 +339,16 @@ class Pool(neutron.NeutronResource):
             vip_arguments['session_persistence'] = prepared_props
 
         vip_arguments['protocol'] = self.properties[self.PROTOCOL]
-        vip_arguments['subnet_id'] = self.properties[self.SUBNET_ID]
+
+        if vip_arguments.get(self.VIP_SUBNET) is None:
+            vip_arguments['subnet_id'] = self.properties[self.SUBNET_ID]
+        else:
+            vip_arguments[
+                'subnet_id'] = neutronV20.find_resourceid_by_name_or_id(
+                    self.neutron(),
+                    'subnet',
+                    vip_arguments.pop(self.VIP_SUBNET))
+
         vip_arguments['pool_id'] = pool['id']
         vip = client.create_vip({'vip': vip_arguments})['vip']
 
@@ -366,10 +384,10 @@ class Pool(neutron.NeutronResource):
             client = self.neutron()
             monitors = set(prop_diff.pop(self.MONITORS, []))
             if monitors:
-                old_monitors = set(self.t['Properties'][self.MONITORS])
+                old_monitors = set(self.properties[self.MONITORS])
                 for monitor in old_monitors - monitors:
-                    client.disassociate_health_monitor(
-                        self.resource_id, {'health_monitor': {'id': monitor}})
+                    client.disassociate_health_monitor(self.resource_id,
+                                                       monitor)
                 for monitor in monitors - old_monitors:
                     client.associate_health_monitor(
                         self.resource_id, {'health_monitor': {'id': monitor}})

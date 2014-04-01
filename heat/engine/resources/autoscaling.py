@@ -16,22 +16,21 @@ import functools
 import json
 import math
 
-from heat.engine import environment
-from heat.engine import function
-from heat.engine import resource
-from heat.engine import signal_responder
-
 from heat.common import exception
 from heat.common import timeutils as iso8601utils
+from heat.engine import constraints
+from heat.engine import environment
+from heat.engine import function
+from heat.engine.notification import autoscaling as notification
+from heat.engine import properties
+from heat.engine.properties import Properties
+from heat.engine import resource
+from heat.engine import scheduler
+from heat.engine import signal_responder
+from heat.engine import stack_resource
 from heat.openstack.common import excutils
 from heat.openstack.common import log as logging
 from heat.openstack.common import timeutils
-from heat.engine.properties import Properties
-from heat.engine import constraints
-from heat.engine.notification import autoscaling as notification
-from heat.engine import properties
-from heat.engine import scheduler
-from heat.engine import stack_resource
 from heat.scaling import template
 
 logger = logging.getLogger(__name__)
@@ -292,6 +291,11 @@ class InstanceGroup(stack_resource.StackResource):
         # resolve references within the context of this stack.
         return self.stack.resolve_runtime_data(instance_definition)
 
+    def _get_instance_templates(self):
+        """Get templates for resource instances."""
+        return [(instance.name, instance.t)
+                for instance in self.get_instances()]
+
     def _create_template(self, num_instances, num_replace=0):
         """
         Create a template to represent autoscaled instances.
@@ -299,8 +303,7 @@ class InstanceGroup(stack_resource.StackResource):
         Also see heat.scaling.template.resource_templates.
         """
         instance_definition = self._get_instance_definition()
-        old_resources = [(instance.name, instance.t)
-                         for instance in self.get_instances()]
+        old_resources = self._get_instance_templates()
         templates = template.resource_templates(
             old_resources, instance_definition, num_instances, num_replace)
         return {"Resources": dict(templates)}
@@ -859,6 +862,10 @@ class AutoScalingResourceGroup(AutoScalingGroup):
 
     update_allowed_keys = ('Properties',)
 
+    # Override the InstanceGroup attributes_schema; we don't want any
+    # attributes.
+    attributes_schema = {}
+
     def _get_instance_definition(self):
         resource_definition = self.properties[self.RESOURCE]
         # resolve references within the context of this stack.
@@ -869,6 +876,34 @@ class AutoScalingResourceGroup(AutoScalingGroup):
         connections, so we just ignore calls to update the LB.
         """
         pass
+
+    def _get_instance_templates(self):
+        """
+        Get templates for resource instances in HOT format.
+
+        AutoScalingResourceGroup uses HOT as template format for scaled
+        resources. Templates for existing resources use CFN syntax and
+        have to be converted to HOT since those templates get used for
+        generating scaled resource templates.
+        """
+        CFN_TO_HOT_ATTRS = {'Type': 'type',
+                            'Properties': 'properties',
+                            'Metadata': 'metadata',
+                            'DependsOn': 'depends_on',
+                            'DeletionPolicy': 'deletion_policy',
+                            'UpdatePolicy': 'update_policy'}
+
+        def to_hot(template):
+            hot_template = {}
+
+            for attr, attr_value in template.iteritems():
+                hot_attr = CFN_TO_HOT_ATTRS.get(attr, attr)
+                hot_template[hot_attr] = attr_value
+
+            return hot_template
+
+        return [(instance.name, to_hot(instance.t))
+                for instance in self.get_instances()]
 
     def _create_template(self, *args, **kwargs):
         """Use a HOT format for the template in the nested stack."""
@@ -948,6 +983,10 @@ class ScalingPolicy(signal_responder.SignalResponder, CooldownMixin):
         return self.properties[self.ADJUSTMENT_TYPE]
 
     def handle_signal(self, details=None):
+        if self.action in (self.SUSPEND, self.DELETE):
+            msg = _('Cannot signal resource during %s') % self.action
+            raise Exception(msg)
+
         # ceilometer sends details like this:
         # {u'alarm_id': ID, u'previous': u'ok', u'current': u'alarm',
         #  u'reason': u'...'})

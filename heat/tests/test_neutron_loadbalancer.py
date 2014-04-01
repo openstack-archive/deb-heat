@@ -12,18 +12,19 @@
 #    under the License.
 
 import copy
+import mox
 
 from testtools import skipIf
 
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import clients
-from heat.engine import scheduler
 from heat.engine.resources.neutron import loadbalancer
+from heat.engine import scheduler
 from heat.openstack.common.importutils import try_import
+from heat.tests.common import HeatTestCase
 from heat.tests import fakes
 from heat.tests import utils
-from heat.tests.common import HeatTestCase
 from heat.tests.v1_1 import fakes as nova_fakes
 
 neutronclient = try_import('neutronclient.v2_0.client')
@@ -47,6 +48,27 @@ health_monitor_template = '''
 }
 '''
 
+pool_template_with_vip_subnet = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Template to test load balancer resources",
+  "Parameters" : {},
+  "Resources" : {
+    "pool": {
+      "Type": "OS::Neutron::Pool",
+      "Properties": {
+        "protocol": "HTTP",
+        "subnet_id": "sub123",
+        "lb_method": "ROUND_ROBIN",
+        "vip": {
+          "protocol_port": 80,
+          "subnet": "sub9999"
+        }
+      }
+    }
+  }
+}
+'''
 pool_template = '''
 {
   "AWSTemplateFormatVersion" : "2010-09-09",
@@ -123,6 +145,50 @@ pool_with_session_persistence_template = '''
             "cookie_name": "cookie"
           }
         }
+      }
+    }
+  }
+}
+'''
+
+
+pool_with_health_monitors_template = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Template to test load balancer resources",
+  "Parameters" : {},
+  "Resources" : {
+    "monitor1": {
+      "Type": "OS::Neutron::HealthMonitor",
+      "Properties": {
+        "type": "HTTP",
+        "delay": 3,
+        "max_retries": 5,
+        "timeout": 10
+        }
+    },
+    "monitor2": {
+      "Type": "OS::Neutron::HealthMonitor",
+      "Properties": {
+        "type": "HTTP",
+        "delay": 3,
+        "max_retries": 5,
+        "timeout": 10
+        }
+    },
+    "pool": {
+      "Type": "OS::Neutron::Pool",
+      "Properties": {
+        "protocol": "HTTP",
+        "subnet_id": "sub123",
+        "lb_method": "ROUND_ROBIN",
+        "vip": {
+          "protocol_port": 80
+        },
+        "monitors": [
+          {"Ref": "monitor1"},
+          {"Ref": "monitor2"}
+        ]
       }
     }
   }
@@ -273,12 +339,14 @@ class PoolTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client,
                                'disassociate_health_monitor')
         self.m.StubOutWithMock(neutronclient.Client, 'create_vip')
+        self.m.StubOutWithMock(loadbalancer.neutronV20,
+                               'find_resourceid_by_name_or_id')
         self.m.StubOutWithMock(neutronclient.Client, 'delete_vip')
         self.m.StubOutWithMock(neutronclient.Client, 'show_vip')
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
         utils.setup_dummy_db()
 
-    def create_pool(self):
+    def create_pool(self, with_vip_subnet=False):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
         neutronclient.Client.create_pool({
@@ -287,24 +355,50 @@ class PoolTest(HeatTestCase):
                 'name': utils.PhysName('test_stack', 'pool'),
                 'lb_method': 'ROUND_ROBIN', 'admin_state_up': True}}
         ).AndReturn({'pool': {'id': '5678'}})
-        neutronclient.Client.create_vip({
+
+        stvipvsn = {
             'vip': {
                 'protocol': u'HTTP', 'name': 'pool.vip',
-                'admin_state_up': True, 'subnet_id': u'sub123',
-                'pool_id': '5678', 'protocol_port': 80}}
-        ).AndReturn({'vip': {'id': 'xyz'}})
+                'admin_state_up': True, 'subnet_id': u'sub9999',
+                'pool_id': '5678', 'protocol_port': 80}
+        }
+
+        stvippsn = copy.deepcopy(stvipvsn)
+        stvippsn['vip']['subnet_id'] = 'sub123'
+
+        if with_vip_subnet:
+            neutronclient.Client.create_vip(stvipvsn
+                                            ).AndReturn({'vip': {'id': 'xyz'}})
+            snippet = template_format.parse(pool_template_with_vip_subnet)
+        else:
+            neutronclient.Client.create_vip(stvippsn
+                                            ).AndReturn({'vip': {'id': 'xyz'}})
+            snippet = template_format.parse(pool_template)
+
         neutronclient.Client.show_pool('5678').AndReturn(
             {'pool': {'status': 'ACTIVE'}})
         neutronclient.Client.show_vip('xyz').AndReturn(
             {'vip': {'status': 'ACTIVE'}})
 
-        snippet = template_format.parse(pool_template)
         stack = utils.parse_stack(snippet)
         return loadbalancer.Pool(
             'pool', snippet['Resources']['pool'], stack)
 
     def test_create(self):
         rsrc = self.create_pool()
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        self.m.VerifyAll()
+
+    def test_create_with_vip_subnet(self):
+        loadbalancer.neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnet',
+            'sub9999'
+        ).AndReturn('sub9999')
+
+        rsrc = self.create_pool(with_vip_subnet=True)
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
@@ -471,7 +565,7 @@ class PoolTest(HeatTestCase):
         pool = snippet['Resources']['pool']
         persistence = pool['Properties']['vip']['session_persistence']
 
-        #When persistence type is set to APP_COOKIE, cookie_name is required
+        # When persistence type is set to APP_COOKIE, cookie_name is required
         persistence['type'] = 'APP_COOKIE'
         persistence['cookie_name'] = None
 
@@ -514,12 +608,12 @@ class PoolTest(HeatTestCase):
         pool = snippet['Resources']['pool']
         persistence = pool['Properties']['vip']['session_persistence']
 
-        #change persistence type to HTTP_COOKIE that not require cookie_name
+        # change persistence type to HTTP_COOKIE that not require cookie_name
         persistence['type'] = 'HTTP_COOKIE'
         del persistence['cookie_name']
         resource = loadbalancer.Pool('pool', pool, utils.parse_stack(snippet))
 
-        #assert that properties contain cookie_name property with None value
+        # assert that properties contain cookie_name property with None value
         persistence = resource.properties['vip']['session_persistence']
         self.assertIn('cookie_name', persistence)
         self.assertIsNone(persistence['cookie_name'])
@@ -657,7 +751,7 @@ class PoolTest(HeatTestCase):
         neutronclient.Client.show_vip('xyz').AndReturn(
             {'vip': {'status': 'ACTIVE'}})
         neutronclient.Client.disassociate_health_monitor(
-            '5678', {'health_monitor': {'id': 'mon456'}})
+            '5678', 'mon456')
         neutronclient.Client.associate_health_monitor(
             '5678', {'health_monitor': {'id': 'mon789'}})
 
@@ -870,4 +964,82 @@ class LoadBalancerTest(HeatTestCase):
         scheduler.TaskRunner(rsrc.create)()
         scheduler.TaskRunner(rsrc.delete)()
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
+        self.m.VerifyAll()
+
+
+@skipIf(neutronclient is None, 'neutronclient unavailable')
+class PoolUpdateHealthMonitorsTest(HeatTestCase):
+
+    def setUp(self):
+        super(PoolUpdateHealthMonitorsTest, self).setUp()
+        self.m.StubOutWithMock(neutronclient.Client, 'create_pool')
+        self.m.StubOutWithMock(neutronclient.Client, 'delete_pool')
+        self.m.StubOutWithMock(neutronclient.Client, 'show_pool')
+        self.m.StubOutWithMock(neutronclient.Client, 'update_pool')
+        self.m.StubOutWithMock(neutronclient.Client,
+                               'associate_health_monitor')
+        self.m.StubOutWithMock(neutronclient.Client,
+                               'disassociate_health_monitor')
+        self.m.StubOutWithMock(neutronclient.Client, 'create_health_monitor')
+        self.m.StubOutWithMock(neutronclient.Client, 'delete_health_monitor')
+        self.m.StubOutWithMock(neutronclient.Client, 'show_health_monitor')
+        self.m.StubOutWithMock(neutronclient.Client, 'update_health_monitor')
+        self.m.StubOutWithMock(neutronclient.Client, 'create_vip')
+        self.m.StubOutWithMock(neutronclient.Client, 'delete_vip')
+        self.m.StubOutWithMock(neutronclient.Client, 'show_vip')
+        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        utils.setup_dummy_db()
+
+    @utils.stack_delete_after
+    def test_update_pool_with_references_to_health_monitors(self):
+        clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
+            fakes.FakeKeystoneClient())
+        neutronclient.Client.create_health_monitor({
+            'health_monitor': {
+                'delay': 3, 'max_retries': 5, 'type': u'HTTP',
+                'timeout': 10, 'admin_state_up': True}}
+        ).AndReturn({'health_monitor': {'id': '5555'}})
+
+        neutronclient.Client.create_health_monitor({
+            'health_monitor': {
+                'delay': 3, 'max_retries': 5, 'type': u'HTTP',
+                'timeout': 10, 'admin_state_up': True}}
+        ).AndReturn({'health_monitor': {'id': '6666'}})
+        neutronclient.Client.create_pool({
+            'pool': {
+                'subnet_id': 'sub123', 'protocol': u'HTTP',
+                'name': utils.PhysName('test_stack', 'pool'),
+                'lb_method': 'ROUND_ROBIN', 'admin_state_up': True}}
+        ).AndReturn({'pool': {'id': '5678'}})
+        neutronclient.Client.associate_health_monitor(
+            '5678', {'health_monitor': {'id': '5555'}}).InAnyOrder()
+        neutronclient.Client.associate_health_monitor(
+            '5678', {'health_monitor': {'id': '6666'}}).InAnyOrder()
+        neutronclient.Client.create_vip({
+            'vip': {
+                'protocol': u'HTTP', 'name': 'pool.vip',
+                'admin_state_up': True, 'subnet_id': u'sub123',
+                'pool_id': '5678', 'protocol_port': 80}}
+        ).AndReturn({'vip': {'id': 'xyz'}})
+        neutronclient.Client.show_pool('5678').AndReturn(
+            {'pool': {'status': 'ACTIVE'}})
+        neutronclient.Client.show_vip('xyz').AndReturn(
+            {'vip': {'status': 'ACTIVE'}})
+
+        neutronclient.Client.disassociate_health_monitor(
+            '5678', mox.IsA(unicode))
+
+        self.m.ReplayAll()
+        snippet = template_format.parse(pool_with_health_monitors_template)
+        self.stack = utils.parse_stack(snippet)
+        self.stack.create()
+        self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
+                         self.stack.state)
+
+        snippet['Resources']['pool']['Properties']['monitors'] = [
+            {u'Ref': u'monitor1'}]
+        updated_stack = utils.parse_stack(snippet)
+        self.stack.update(updated_stack)
+        self.assertEqual((self.stack.UPDATE, self.stack.COMPLETE),
+                         self.stack.state)
         self.m.VerifyAll()

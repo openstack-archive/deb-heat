@@ -16,8 +16,8 @@
 
 from heat.engine import properties
 from heat.engine import resource
-from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +130,7 @@ class DockerContainer(resource.Resource):
         'info': _('Container info'),
         'network_info': _('Container network info'),
         'network_ip': _('Container ip address'),
+        'network_gateway': _('Container ip gateway'),
         'network_tcp_ports': _('Container TCP ports'),
         'network_udp_ports': _('Container UDP ports'),
         'logs': _('Container logs'),
@@ -182,6 +183,10 @@ class DockerContainer(resource.Resource):
         if name == 'network_ip':
             client = self.get_client()
             networkinfo = self._container_networkinfo(client, self.resource_id)
+            return networkinfo['IPAddress']
+        if name == 'network_gateway':
+            client = self.get_client()
+            networkinfo = self._container_networkinfo(client, self.resource_id)
             return networkinfo['Gateway']
         if name == 'network_tcp_ports':
             client = self.get_client()
@@ -218,13 +223,16 @@ class DockerContainer(resource.Resource):
             'dns': self.properties['dns'],
             'volumes': self.properties['volumes'],
             'volumes_from': self.properties['volumes_from'],
-            'privileged': self.properties['privileged'],
         }
         client = self.get_client()
         result = client.create_container(**args)
         container_id = result['Id']
         self.resource_id_set(container_id)
-        client.start(container_id)
+
+        kwargs = {}
+        if self.properties['privileged']:
+            kwargs['privileged'] = True
+        client.start(container_id, **kwargs)
         return container_id
 
     def _get_container_status(self, container_id):

@@ -29,13 +29,17 @@ def extract_args(params):
     conversion where appropriate
     '''
     kwargs = {}
-    try:
-        timeout_mins = int(params.get(api.PARAM_TIMEOUT, 0))
-    except (ValueError, TypeError):
-        logger.exception(_('create timeout conversion'))
-    else:
-        if timeout_mins > 0:
-            kwargs[api.PARAM_TIMEOUT] = timeout_mins
+    timeout_mins = params.get(api.PARAM_TIMEOUT)
+    if timeout_mins not in ('0', 0, None):
+        try:
+            timeout = int(timeout_mins)
+        except (ValueError, TypeError):
+            logger.exception(_('Timeout conversion failed'))
+        else:
+            if timeout > 0:
+                kwargs[api.PARAM_TIMEOUT] = timeout
+            else:
+                raise ValueError(_('Invalid timeout value %s') % timeout)
 
     if api.PARAM_DISABLE_ROLLBACK in params:
         disable_rollback = params.get(api.PARAM_DISABLE_ROLLBACK)
@@ -129,10 +133,6 @@ def format_stack_resource(resource, detail=True):
     if detail:
         res[api.RES_DESCRIPTION] = resource.parsed_template('Description', '')
         res[api.RES_METADATA] = resource.metadata
-
-    if getattr(resource, 'nested', None) is not None:
-        res[api.RES_MEMBERS] = [r.resource_id for r in
-                                resource.nested().resources.itervalues()]
 
     return res
 
@@ -337,7 +337,6 @@ def format_software_deployment(sd):
         api.SOFTWARE_DEPLOYMENT_ACTION: sd.action,
         api.SOFTWARE_DEPLOYMENT_STATUS: sd.status,
         api.SOFTWARE_DEPLOYMENT_STATUS_REASON: sd.status_reason,
-        api.SOFTWARE_DEPLOYMENT_SIGNAL_ID: sd.signal_id,
         api.SOFTWARE_DEPLOYMENT_CONFIG_ID: sd.config.id,
     }
     return result

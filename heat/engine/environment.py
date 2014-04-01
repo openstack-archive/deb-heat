@@ -111,10 +111,12 @@ class TemplateResourceInfo(ResourceInfo):
             self.template_name = self.name
         else:
             self.template_name = value
+        self.value = self.template_name
 
     def get_class(self):
         from heat.engine.resources import template_resource
-        return template_resource.TemplateResource
+        return template_resource.generate_class(str(self.name),
+                                                self.template_name)
 
 
 class MapResourceInfo(ResourceInfo):
@@ -197,7 +199,7 @@ class ResourceRegistry(object):
                 LOG.warn(_('Removing %(item)s from %(path)s') % {
                     'item': name,
                     'path': descriptive_path})
-                del registry[name]
+                registry.pop(name, None)
             return
 
         if name in registry and isinstance(registry[name], ResourceInfo):
@@ -286,6 +288,9 @@ class ResourceRegistry(object):
             msg = _('Non-empty resource type is required '
                     'for resource "%s"') % resource_name
             raise exception.StackValidationFailed(message=msg)
+        elif not isinstance(resource_type, basestring):
+            msg = _('Resource "%s" type is not a string') % resource_name
+            raise exception.StackValidationFailed(message=msg)
 
         info = self.get_resource_info(resource_type,
                                       resource_name=resource_name)
@@ -310,15 +315,17 @@ class ResourceRegistry(object):
     def get_types(self, support_status):
         '''Return a list of valid resource types.'''
 
-        def is_plugin(key):
-            return isinstance(self._registry[key], ClassResourceInfo)
+        def is_resource(key):
+            return isinstance(self._registry[key], (ClassResourceInfo,
+                                                    TemplateResourceInfo))
 
         def status_matches(cls):
-            return support_status is None or \
-                cls.value.support_status.status == support_status.encode()
+            return (support_status is None or
+                    cls.get_class().support_status.status ==
+                    support_status.encode())
 
         return [name for name, cls in self._registry.iteritems()
-                if is_plugin(name) and status_matches(cls)]
+                if is_resource(name) and status_matches(cls)]
 
 
 SECTIONS = (PARAMETERS, RESOURCE_REGISTRY) = \

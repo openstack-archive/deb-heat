@@ -12,11 +12,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.common import exception
 from heat.engine import clients
 from heat.engine import properties
 from heat.engine import resource
-
-from heat.common import exception
 from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
@@ -194,11 +193,13 @@ class SecurityGroup(resource.Resource):
                 if i.get(self.RULE_SOURCE_SECURITY_GROUP_ID) is not None:
                     source_group_id = i[self.RULE_SOURCE_SECURITY_GROUP_ID]
                 elif i.get(self.RULE_SOURCE_SECURITY_GROUP_NAME) is not None:
+                    rule_name = i[self.RULE_SOURCE_SECURITY_GROUP_NAME]
                     for group in groups:
-                        rule_name = i[self.RULE_SOURCE_SECURITY_GROUP_NAME]
                         if group.name == rule_name:
                             source_group_id = group.id
                             break
+                    else:
+                        raise SecurityGroupNotFound(group_name=rule_name)
                 try:
                     rules_client.create(
                         sec.id,
@@ -278,6 +279,10 @@ class SecurityGroup(resource.Resource):
                 self.properties[self.VPC_ID] and
                 clients.neutronclient is not None):
             raise exception.EgressRuleNotAllowed()
+
+
+class SecurityGroupNotFound(exception.HeatException):
+    msg_fmt = _('Security Group "%(group_name)s" not found')
 
 
 def resource_mapping():

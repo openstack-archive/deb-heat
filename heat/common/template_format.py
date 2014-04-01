@@ -12,19 +12,17 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import re
-import yaml
+import itertools
 import json
+import re
 
 from oslo.config import cfg
+import yaml
 
 from heat.common import exception
 from heat.openstack.common.gettextutils import _
 
 cfg.CONF.import_opt('max_template_size', 'heat.common.config')
-
-HEAT_VERSIONS = (u'2012-12-12',)
-CFN_VERSIONS = (u'2010-09-09',)
 
 if hasattr(yaml, 'CSafeLoader'):
     yaml_loader = yaml.CSafeLoader
@@ -91,21 +89,18 @@ def convert_json_to_yaml(json_str):
     to an equivalent string containing the Heat YAML format.
     '''
 
-    global key_order
     # Replace AWS format version with Heat format version
     json_str = re.sub('"AWSTemplateFormatVersion"\s*:\s*"[^"]+"\s*,',
                       '', json_str)
 
     # insert a sortable order into the key to preserve file ordering
-    key_order = 0
+    key_order = itertools.count()
 
     def order_key(matchobj):
-        global key_order
         key = '%s"__%05d__order__%s" :' % (
             matchobj.group(1),
-            key_order,
+            next(key_order),
             matchobj.group(2))
-        key_order = key_order + 1
         return key
     key_re = re.compile('^(\s*)"([^"]+)"\s*:', re.M)
     json_str = key_re.sub(order_key, json_str)

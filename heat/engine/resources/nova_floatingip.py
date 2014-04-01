@@ -13,10 +13,9 @@
 from heat.engine import clients
 from heat.engine import properties
 from heat.engine import resource
-
 from heat.openstack.common import excutils
-from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import log as logging
 
 logger = logging.getLogger(__name__)
 
@@ -111,9 +110,9 @@ class NovaFloatingIpAssociation(resource.Resource):
         try:
             server = self.nova().servers.get(self.properties[self.SERVER])
             if server:
-                self.nova().servers.remove_floating_ip(
-                    server, self.properties[self.FLOATING_IP]
-                )
+                fl_ip = self.nova().floating_ips.\
+                    get(self.properties[self.FLOATING_IP])
+                self.nova().servers.remove_floating_ip(server, fl_ip.ip)
         except clients.novaclient.exceptions.NotFound:
             pass
 

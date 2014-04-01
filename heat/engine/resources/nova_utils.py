@@ -13,24 +13,24 @@
 #    under the License.
 """Utilities for Resources that use the OpenStack Nova API."""
 
+import email
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-
 import json
 import os
 import pkgutil
-import six
+import string
 
 from oslo.config import cfg
+import six
 
 from heat.common import exception
 from heat.engine import clients
 from heat.engine import scheduler
-from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
-from heat.openstack.common import uuidutils
+from heat.openstack.common import log as logging
 from heat.openstack.common.py3kcompat import urlutils
-
+from heat.openstack.common import uuidutils
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ def refresh_server(server):
                               'id': server.id,
                               'exception': str(exc)})
     except clients.novaclient.exceptions.ClientException as exc:
-        if exc.code == 500:
+        if exc.code in (500, 503):
             msg = _('Server "%(name)s" (%(id)s) received the following '
                     'exception during server.get(): %(exception)s')
             logger.warning(msg % {'name': server.name,
@@ -176,6 +176,9 @@ def build_userdata(resource, userdata=None, instance_user=None,
     if user_data_format == 'RAW':
         return userdata
 
+    is_cfntools = user_data_format == 'HEAT_CFNTOOLS'
+    is_software_config = user_data_format == 'SOFTWARE_CONFIG'
+
     def make_subpart(content, filename, subtype=None):
         if subtype is None:
             subtype = os.path.splitext(filename)[0]
@@ -185,48 +188,86 @@ def build_userdata(resource, userdata=None, instance_user=None,
         return msg
 
     def read_cloudinit_file(fn):
-        data = pkgutil.get_data('heat', 'cloudinit/%s' % fn)
-        data = data.replace('@INSTANCE_USER@',
-                            instance_user or cfg.CONF.instance_user)
-        return data
+        return pkgutil.get_data('heat', 'cloudinit/%s' % fn)
 
-    attachments = [(read_cloudinit_file('config'), 'cloud-config'),
-                   (read_cloudinit_file('boothook.sh'), 'boothook.sh',
-                    'cloud-boothook'),
+    if instance_user:
+        config_custom_user = 'user: %s' % instance_user
+        # FIXME(shadower): compatibility workaround for cloud-init 0.6.3. We
+        # can drop this once we stop supporting 0.6.3 (which ships with Ubuntu
+        # 12.04 LTS).
+        #
+        # See bug https://bugs.launchpad.net/heat/+bug/1257410
+        boothook_custom_user = r"""useradd -m %s
+echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
+""" % (instance_user, instance_user)
+    else:
+        config_custom_user = ''
+        boothook_custom_user = ''
+
+    cloudinit_config = string.Template(
+        read_cloudinit_file('config')).safe_substitute(
+            add_custom_user=config_custom_user)
+    cloudinit_boothook = string.Template(
+        read_cloudinit_file('boothook.sh')).safe_substitute(
+            add_custom_user=boothook_custom_user)
+
+    attachments = [(cloudinit_config, 'cloud-config'),
+                   (cloudinit_boothook, 'boothook.sh', 'cloud-boothook'),
                    (read_cloudinit_file('part_handler.py'),
-                    'part-handler.py'),
-                   (userdata, 'cfn-userdata', 'x-cfninitdata'),
-                   (read_cloudinit_file('loguserdata.py'),
-                    'loguserdata.py', 'x-shellscript')]
+                    'part-handler.py')]
 
-    if 'Metadata' in resource.t:
-        attachments.append((json.dumps(resource.metadata),
+    if is_cfntools:
+        attachments.append((userdata, 'cfn-userdata', 'x-cfninitdata'))
+    elif is_software_config:
+        # attempt to parse userdata as a multipart message, and if it
+        # is, add each part as an attachment
+        userdata_parts = None
+        try:
+            userdata_parts = email.message_from_string(userdata)
+        except:
+            pass
+        if userdata_parts and userdata_parts.is_multipart():
+            for part in userdata_parts.get_payload():
+                attachments.append((part.get_payload(),
+                                    part.get_filename(),
+                                    part.get_content_subtype()))
+        else:
+            attachments.append((userdata, 'userdata', 'x-shellscript'))
+
+    if is_cfntools:
+        attachments.append((read_cloudinit_file('loguserdata.py'),
+                           'loguserdata.py', 'x-shellscript'))
+
+    metadata = resource.metadata
+    if metadata:
+        attachments.append((json.dumps(metadata),
                             'cfn-init-data', 'x-cfninitdata'))
 
     attachments.append((cfg.CONF.heat_watch_server_url,
                         'cfn-watch-server', 'x-cfninitdata'))
 
-    attachments.append((cfg.CONF.heat_metadata_server_url,
-                        'cfn-metadata-server', 'x-cfninitdata'))
+    if is_cfntools:
+        attachments.append((cfg.CONF.heat_metadata_server_url,
+                            'cfn-metadata-server', 'x-cfninitdata'))
 
-    # Create a boto config which the cfntools on the host use to know
-    # where the cfn and cw API's are to be accessed
-    cfn_url = urlutils.urlparse(cfg.CONF.heat_metadata_server_url)
-    cw_url = urlutils.urlparse(cfg.CONF.heat_watch_server_url)
-    is_secure = cfg.CONF.instance_connection_is_secure
-    vcerts = cfg.CONF.instance_connection_https_validate_certificates
-    boto_cfg = "\n".join(["[Boto]",
-                          "debug = 0",
-                          "is_secure = %s" % is_secure,
-                          "https_validate_certificates = %s" % vcerts,
-                          "cfn_region_name = heat",
-                          "cfn_region_endpoint = %s" %
-                          cfn_url.hostname,
-                          "cloudwatch_region_name = heat",
-                          "cloudwatch_region_endpoint = %s" %
-                          cw_url.hostname])
-    attachments.append((boto_cfg,
-                        'cfn-boto-cfg', 'x-cfninitdata'))
+        # Create a boto config which the cfntools on the host use to know
+        # where the cfn and cw API's are to be accessed
+        cfn_url = urlutils.urlparse(cfg.CONF.heat_metadata_server_url)
+        cw_url = urlutils.urlparse(cfg.CONF.heat_watch_server_url)
+        is_secure = cfg.CONF.instance_connection_is_secure
+        vcerts = cfg.CONF.instance_connection_https_validate_certificates
+        boto_cfg = "\n".join(["[Boto]",
+                              "debug = 0",
+                              "is_secure = %s" % is_secure,
+                              "https_validate_certificates = %s" % vcerts,
+                              "cfn_region_name = heat",
+                              "cfn_region_endpoint = %s" %
+                              cfn_url.hostname,
+                              "cloudwatch_region_name = heat",
+                              "cloudwatch_region_endpoint = %s" %
+                              cw_url.hostname])
+        attachments.append((boto_cfg,
+                            'cfn-boto-cfg', 'x-cfninitdata'))
 
     subparts = [make_subpart(*args) for args in attachments]
     mime_blob = MIMEMultipart(_subparts=subparts)

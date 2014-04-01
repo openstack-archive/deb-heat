@@ -13,27 +13,29 @@
 
 import collections
 import copy
-import mock
-import mox
 import uuid
 
-from heat.engine import environment
-from heat.tests.v1_1 import fakes
+import mock
+import mox
+from novaclient import exceptions
+
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import clients
+from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
-from heat.engine import scheduler
 from heat.engine.resources import image
 from heat.engine.resources import nova_utils
 from heat.engine.resources import server as servers
 from heat.engine.resources.software_config import software_config as sc
-from heat.openstack.common import uuidutils
+from heat.engine import scheduler
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
+from heat.tests import fakes
 from heat.tests import utils
-from novaclient import exceptions
+from heat.tests.v1_1 import fakes as fakes_v1_1
 
 
 wp_template = '''
@@ -65,7 +67,9 @@ wp_template = '''
 class ServersTest(HeatTestCase):
     def setUp(self):
         super(ServersTest, self).setUp()
-        self.fc = fakes.FakeClient()
+        self.fc = fakes_v1_1.FakeClient()
+        self.fkc = fakes.FakeKeystoneClient()
+
         utils.setup_dummy_db()
         self.limits = self.m.CreateMockAnything()
         self.limits.absolute = self._limits_absolute()
@@ -89,7 +93,8 @@ class ServersTest(HeatTestCase):
         template = parser.Template(t)
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment({'key_name': 'test'}),
-                             stack_id=str(uuid.uuid4()))
+                             stack_id=str(uuid.uuid4()),
+                             stack_user_project_id='8888')
         return (t, stack)
 
     def _setup_test_server(self, return_server, name, image_id=None,
@@ -269,8 +274,8 @@ class ServersTest(HeatTestCase):
 
         error = self.assertRaises(ValueError, server.handle_create)
         self.assertEqual(
-            'server_create_image_err: image "CentOS 5.2" does not '
-            'validate glance.image',
+            'server_create_image_err: image Multiple physical resources were '
+            'found with name (CentOS 5.2).',
             str(error))
 
         self.m.VerifyAll()
@@ -449,6 +454,147 @@ class ServersTest(HeatTestCase):
 
         self.m.ReplayAll()
         scheduler.TaskRunner(server.create)()
+        self.m.VerifyAll()
+
+    def test_server_create_software_config(self):
+        return_server = self.fc.servers.list()[1]
+        stack_name = 'software_config_s'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        t['Resources']['WebServer']['Properties']['user_data_format'] = \
+            'SOFTWARE_CONFIG'
+
+        stack.stack_user_project_id = '8888'
+        server = servers.Server('WebServer',
+                                t['Resources']['WebServer'], stack)
+
+        self.m.StubOutWithMock(server, 'nova')
+        self.m.StubOutWithMock(server, 'keystone')
+        self.m.StubOutWithMock(server, 'heat')
+        self.m.StubOutWithMock(server, '_get_deployments_metadata')
+
+        server.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+
+        server.keystone().MultipleTimes().AndReturn(self.fkc)
+        server.heat().MultipleTimes().AndReturn(self.fc)
+        server._get_deployments_metadata(
+            self.fc, 5678).AndReturn({'foo': 'bar'})
+
+        server.t = server.stack.resolve_runtime_data(server.t)
+
+        self.m.StubOutWithMock(self.fc.servers, 'create')
+        self.fc.servers.create(
+            image=744, flavor=3, key_name='test',
+            name=utils.PhysName(stack_name, server.name),
+            security_groups=[],
+            userdata=mox.IgnoreArg(), scheduler_hints=None,
+            meta=None, nics=None, availability_zone=None,
+            block_device_mapping=None, config_drive=None,
+            disk_config=None, reservation_id=None, files={},
+            admin_pass=None).AndReturn(
+                return_server)
+
+        self.m.ReplayAll()
+        scheduler.TaskRunner(server.create)()
+
+        self.assertEqual('4567', server.access_key)
+        self.assertEqual('8901', server.secret_key)
+        self.assertEqual('1234', server._get_user_id())
+
+        self.assertTrue(stack.access_allowed('4567', 'WebServer'))
+        self.assertFalse(stack.access_allowed('45678', 'WebServer'))
+        self.assertFalse(stack.access_allowed('4567', 'wWebServer'))
+
+        self.assertEqual({
+            'os-collect-config': {
+                'cfn': {
+                    'access_key_id': '4567',
+                    'metadata_url': '/v1/',
+                    'path': 'WebServer.Metadata',
+                    'secret_access_key': '8901',
+                    'stack_name': 'software_config_s'
+                }
+            },
+            'deployments': {'foo': 'bar'}
+        }, server.metadata)
+
+        created_server = servers.Server('WebServer',
+                                        t['Resources']['WebServer'], stack)
+        self.assertEqual('4567', created_server.access_key)
+        self.assertTrue(stack.access_allowed('4567', 'WebServer'))
+
+        self.m.VerifyAll()
+
+    def test_server_create_software_config_poll_heat(self):
+        return_server = self.fc.servers.list()[1]
+        stack_name = 'software_config_s'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        props = t['Resources']['WebServer']['Properties']
+        props['user_data_format'] = 'SOFTWARE_CONFIG'
+        props['software_config_transport'] = 'POLL_SERVER_HEAT'
+
+        server = servers.Server('WebServer',
+                                t['Resources']['WebServer'], stack)
+
+        self.m.StubOutWithMock(server, 'nova')
+        self.m.StubOutWithMock(server, 'keystone')
+        self.m.StubOutWithMock(server, 'heat')
+        self.m.StubOutWithMock(server, '_get_deployments_metadata')
+
+        server.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+
+        server.keystone().MultipleTimes().AndReturn(self.fkc)
+        server.heat().MultipleTimes().AndReturn(self.fc)
+        server._get_deployments_metadata(
+            self.fc, 5678).AndReturn({'foo': 'bar'})
+
+        server.t = server.stack.resolve_runtime_data(server.t)
+
+        self.m.StubOutWithMock(self.fc.servers, 'create')
+        self.fc.servers.create(
+            image=744, flavor=3, key_name='test',
+            name=utils.PhysName(stack_name, server.name),
+            security_groups=[],
+            userdata=mox.IgnoreArg(), scheduler_hints=None,
+            meta=None, nics=None, availability_zone=None,
+            block_device_mapping=None, config_drive=None,
+            disk_config=None, reservation_id=None, files={},
+            admin_pass=None).AndReturn(
+                return_server)
+
+        self.m.ReplayAll()
+        scheduler.TaskRunner(server.create)()
+
+        #self.assertEqual('4567', server.access_key)
+        #self.assertEqual('8901', server.secret_key)
+        self.assertEqual('1234', server._get_user_id())
+
+        self.assertTrue(stack.access_allowed('1234', 'WebServer'))
+        self.assertFalse(stack.access_allowed('45678', 'WebServer'))
+        self.assertFalse(stack.access_allowed('4567', 'wWebServer'))
+
+        self.assertEqual({
+            'os-collect-config': {
+                'heat_server_poll': {
+                    'auth_url': 'http://server.test:5000/v2.0',
+                    'password': server.password,
+                    'project_id': '8888',
+                    'username': u'1234'
+                }
+            },
+            'deployments': {'foo': 'bar'}
+        }, server.metadata)
+
+        created_server = servers.Server('WebServer',
+                                        t['Resources']['WebServer'], stack)
+        self.assertEqual('1234', created_server._get_user_id())
+        self.assertTrue(stack.access_allowed('1234', 'WebServer'))
+
         self.m.VerifyAll()
 
     @mock.patch.object(clients.OpenStackClients, 'nova')
@@ -672,6 +818,33 @@ class ServersTest(HeatTestCase):
                         'Use only "network" property.'
                         '') % dict(network=network_name, server=server.name),
                       str(ex))
+        self.m.VerifyAll()
+
+    def test_server_validate_net_security_groups(self):
+        # Test that if network 'ports' are assigned security groups are
+        # not, because they'll be ignored
+        stack_name = 'srv_net_secgroups'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        t['Resources']['WebServer']['Properties']['networks'] = [
+            {'port': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}]
+        t['Resources']['WebServer']['Properties']['security_groups'] = \
+            ['my_security_group']
+
+        server = servers.Server('server_validate_net_security_groups',
+                                t['Resources']['WebServer'], stack)
+
+        self.m.StubOutWithMock(server, 'nova')
+        server.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.ReplayAll()
+
+        error = self.assertRaises(exception.ResourcePropertyConflict,
+                                  server.validate)
+        self.assertEqual("Cannot define the following properties at the same "
+                         "time: security_groups, networks/port.",
+                         str(error))
         self.m.VerifyAll()
 
     def test_server_delete(self):
@@ -1671,6 +1844,507 @@ class ServersTest(HeatTestCase):
         self.assertEqual("The contents of personality file \"/fake/path1\" "
                          "is larger than the maximum allowed personality "
                          "file size (10240 bytes).", str(exc))
+        self.m.VerifyAll()
+
+    def test_resolve_attribute_server_not_found(self):
+        return_server = self.fc.servers.list()[1]
+        server = self._create_test_server(return_server,
+                                          'srv_resolve_attr')
+
+        server.resource_id = 1234
+        self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
+        get = self.fc.client.get_servers_1234
+        get().AndRaise(servers.clients.novaclient.exceptions.NotFound(404))
+        mox.Replay(get)
+        self.m.ReplayAll()
+
+        self.assertEqual(server._resolve_attribute("accessIPv4"), '')
+        self.m.VerifyAll()
+
+    def test_default_instance_user(self):
+        """The default value for instance_user in heat.conf is ec2-user."""
+        return_server = self.fc.servers.list()[1]
+        server = self._setup_test_server(return_server, 'default_user')
+        self.m.StubOutWithMock(nova_utils, 'build_userdata')
+        nova_utils.build_userdata(server,
+                                  'wordpress',
+                                  instance_user='ec2-user',
+                                  user_data_format='HEAT_CFNTOOLS')
+        self.m.ReplayAll()
+        scheduler.TaskRunner(server.create)()
+        self.m.VerifyAll()
+
+    def test_admin_user_property(self):
+        """Test the admin_user property on the server overrides instance_user.
+
+        Launching the instance should call build_userdata with the
+        custom user name. This property is deprecated and will be
+        removed in Juno.
+        """
+        return_server = self.fc.servers.list()[1]
+        stack_name = 'stack_with_custom_admin_user_server'
+        (t, stack) = self._setup_test_stack(stack_name)
+
+        t['Resources']['WebServer']['Properties']['admin_user'] = 'custom_user'
+        server = servers.Server('create_metadata_test_server',
+                                t['Resources']['WebServer'], stack)
+        server.t = server.stack.resolve_runtime_data(server.t)
+        self.m.StubOutWithMock(self.fc.servers, 'create')
+        self.fc.servers.create(
+            image=mox.IgnoreArg(), flavor=mox.IgnoreArg(), key_name='test',
+            name=mox.IgnoreArg(), security_groups=[],
+            userdata=mox.IgnoreArg(), scheduler_hints=None,
+            meta=mox.IgnoreArg(), nics=None, availability_zone=None,
+            block_device_mapping=None, config_drive=None,
+            disk_config=None, reservation_id=None, files={},
+            admin_pass=None).AndReturn(return_server)
+        self.m.StubOutWithMock(server, 'nova')
+        server.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(nova_utils, 'build_userdata')
+        nova_utils.build_userdata(server,
+                                  'wordpress',
+                                  instance_user='custom_user',
+                                  user_data_format='HEAT_CFNTOOLS')
+        self.m.ReplayAll()
+        scheduler.TaskRunner(server.create)()
+        self.m.VerifyAll()
+
+    def test_custom_instance_user(self):
+        """Test instance_user in heat.conf being set to a custom value.
+
+        Launching the instance should call build_userdata with the
+        custom user name.
+
+        This option is deprecated and will be removed in Juno.
+        """
+        return_server = self.fc.servers.list()[1]
+        server = self._setup_test_server(return_server, 'custom_user')
+        self.m.StubOutWithMock(servers.cfg.CONF, 'instance_user')
+        servers.cfg.CONF.instance_user = 'custom_user'
+        self.m.StubOutWithMock(nova_utils, 'build_userdata')
+        nova_utils.build_userdata(server,
+                                  'wordpress',
+                                  instance_user='custom_user',
+                                  user_data_format='HEAT_CFNTOOLS')
+        self.m.ReplayAll()
+        scheduler.TaskRunner(server.create)()
+        self.m.VerifyAll()
+
+    def test_empty_instance_user(self):
+        """Test instance_user in heat.conf being empty.
+
+        Launching the instance should not pass any user to
+        build_userdata. The default cloud-init user set up for the image
+        will be used instead.
+
+        This will the default behaviour in Juno once we remove the
+        instance_user option.
+        """
+        return_server = self.fc.servers.list()[1]
+        server = self._setup_test_server(return_server, 'custom_user')
+        self.m.StubOutWithMock(servers.cfg.CONF, 'instance_user')
+        servers.cfg.CONF.instance_user = ''
+        self.m.StubOutWithMock(nova_utils, 'build_userdata')
+        nova_utils.build_userdata(server,
+                                  'wordpress',
+                                  instance_user=None,
+                                  user_data_format='HEAT_CFNTOOLS')
+        self.m.ReplayAll()
+        scheduler.TaskRunner(server.create)()
+        self.m.VerifyAll()
+
+    def create_old_net(self, port=None, net=None, ip=None):
+        return {'port': port, 'network': net, 'fixed_ip': ip, 'uuid': None}
+
+    def create_fake_iface(self, port, net, ip):
+        class fake_interface():
+            def __init__(self, port_id, net_id, fixed_ip):
+                self.port_id = port_id
+                self.net_id = net_id
+                self.fixed_ips = [{'ip_address': fixed_ip}]
+
+        return fake_interface(port, net, ip)
+
+    def test_get_network_matches_no_matching(self):
+        return_server = self.fc.servers.list()[3]
+        server = self._create_test_server(return_server, 'networks_update')
+
+        for new_nets in ([],
+                         [{'port': '952fd4ae-53b9-4b39-9e5f-8929c553b5ae'}]):
+
+            old_nets = [
+                self.create_old_net(
+                    port='2a60cbaa-3d33-4af6-a9ce-83594ac546fc'),
+                self.create_old_net(
+                    net='f3ef5d2f-d7ba-4b27-af66-58ca0b81e032', ip='1.2.3.4'),
+                self.create_old_net(
+                    net='0da8adbf-a7e2-4c59-a511-96b03d2da0d7')]
+
+            new_nets_copy = copy.deepcopy(new_nets)
+            old_nets_copy = copy.deepcopy(old_nets)
+            for net in old_nets_copy:
+                net.pop('uuid')
+            for net in new_nets_copy:
+                for key in ('port', 'network', 'fixed_ip'):
+                    net[key] = net.get(key)
+
+            matched_nets = server._get_network_matches(old_nets, new_nets)
+            self.assertEqual([], matched_nets)
+            self.assertEqual(old_nets_copy, old_nets)
+            self.assertEqual(new_nets_copy, new_nets)
+
+    def test_get_network_matches_success(self):
+        return_server = self.fc.servers.list()[3]
+        server = self._create_test_server(return_server, 'networks_update')
+
+        old_nets = [
+            self.create_old_net(
+                port='2a60cbaa-3d33-4af6-a9ce-83594ac546fc'),
+            self.create_old_net(
+                net='f3ef5d2f-d7ba-4b27-af66-58ca0b81e032',
+                ip='1.2.3.4'),
+            self.create_old_net(
+                net='0da8adbf-a7e2-4c59-a511-96b03d2da0d7')]
+        new_nets = [
+            {'port': '2a60cbaa-3d33-4af6-a9ce-83594ac546fc'},
+            {'network': 'f3ef5d2f-d7ba-4b27-af66-58ca0b81e032',
+             'fixed_ip': '1.2.3.4'},
+            {'port': '952fd4ae-53b9-4b39-9e5f-8929c553b5ae'}]
+
+        new_nets_copy = copy.deepcopy(new_nets)
+        old_nets_copy = copy.deepcopy(old_nets)
+        for net in old_nets_copy:
+            net.pop('uuid')
+        for net in new_nets_copy:
+            for key in ('port', 'network', 'fixed_ip'):
+                net[key] = net.get(key)
+
+        matched_nets = server._get_network_matches(old_nets, new_nets)
+        self.assertEqual(old_nets_copy[:-1], matched_nets)
+        self.assertEqual([old_nets_copy[2]], old_nets)
+        self.assertEqual([new_nets_copy[2]], new_nets)
+
+    def test_update_networks_matching_iface_port(self):
+        return_server = self.fc.servers.list()[3]
+        server = self._create_test_server(return_server, 'networks_update')
+
+        # old order 0 1 2 3 4 5
+        nets = [
+            {'port': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+             'network': None, 'fixed_ip': None},
+            {'port': None, 'network': 'gggggggg-1111-1111-1111-gggggggggggg',
+             'fixed_ip': '1.2.3.4', },
+            {'port': None, 'network': 'f3ef5d2f-d7ba-4b27-af66-58ca0b81e032',
+             'fixed_ip': None},
+            {'port': 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+             'network': None, 'fixed_ip': None},
+            {'port': None, 'network': 'gggggggg-1111-1111-1111-gggggggggggg',
+             'fixed_ip': '5.6.7.8'},
+            {'port': None, 'network': '0da8adbf-a7e2-4c59-a511-96b03d2da0d7',
+             'fixed_ip': None}]
+        # new order 5 2 3 0 1 4
+        interfaces = [
+            self.create_fake_iface('ffffffff-ffff-ffff-ffff-ffffffffffff',
+                                   nets[5]['network'], '10.0.0.10'),
+            self.create_fake_iface('cccccccc-cccc-cccc-cccc-cccccccccccc',
+                                   nets[2]['network'], '10.0.0.11'),
+            self.create_fake_iface(nets[3]['port'],
+                                   'f3ef5d2f-d7ba-4b27-af66-58ca0b81e032',
+                                   '10.0.0.12'),
+            self.create_fake_iface(nets[0]['port'],
+                                   'gggggggg-1111-1111-1111-gggggggggggg',
+                                   '10.0.0.13'),
+            self.create_fake_iface('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                                   nets[1]['network'], nets[1]['fixed_ip']),
+            self.create_fake_iface('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+                                   nets[4]['network'], nets[4]['fixed_ip'])]
+        # all networks should get port id
+        expected = [
+            {'port': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+             'network': None, 'fixed_ip': None},
+            {'port': 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+             'network': 'gggggggg-1111-1111-1111-gggggggggggg',
+             'fixed_ip': '1.2.3.4'},
+            {'port': 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+             'network': 'f3ef5d2f-d7ba-4b27-af66-58ca0b81e032',
+             'fixed_ip': None},
+            {'port': 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+             'network': None, 'fixed_ip': None},
+            {'port': 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+             'network': 'gggggggg-1111-1111-1111-gggggggggggg',
+             'fixed_ip': '5.6.7.8'},
+            {'port': 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+             'network': '0da8adbf-a7e2-4c59-a511-96b03d2da0d7',
+             'fixed_ip': None}]
+
+        server.update_networks_matching_iface_port(nets, interfaces)
+        self.assertEqual(expected, nets)
+
+    def test_server_update_None_networks_with_port(self):
+        return_server = self.fc.servers.list()[3]
+        return_server.id = 9102
+        server = self._create_test_server(return_server, 'networks_update')
+
+        new_networks = [{'port': '2a60cbaa-3d33-4af6-a9ce-83594ac546fc'}]
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['networks'] = new_networks
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get(9102).MultipleTimes().AndReturn(return_server)
+        # to make sure, that old_networks will be None
+        self.assertFalse(hasattr(server.t['Properties'], 'networks'))
+
+        iface = self.create_fake_iface('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                       '450abbc9-9b6d-4d6f-8c3a-c47ac34100ef',
+                                       '1.2.3.4')
+        self.m.StubOutWithMock(return_server, 'interface_list')
+        return_server.interface_list().AndReturn([iface])
+
+        self.m.StubOutWithMock(return_server, 'interface_detach')
+        return_server.interface_detach(
+            'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa').AndReturn(None)
+
+        self.m.StubOutWithMock(return_server, 'interface_attach')
+        return_server.interface_attach(new_networks[0]['port'],
+                                       None, None).AndReturn(None)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(server.update, update_template)()
+        self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
+        self.m.VerifyAll()
+
+    def test_server_update_None_networks_with_network_id(self):
+        return_server = self.fc.servers.list()[3]
+        return_server.id = 9102
+        server = self._create_test_server(return_server, 'networks_update')
+
+        new_networks = [{'network': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                         'fixed_ip': '1.2.3.4'}]
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['networks'] = new_networks
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get(9102).MultipleTimes().AndReturn(return_server)
+        # to make sure, that old_networks will be None
+        self.assertFalse(hasattr(server.t['Properties'], 'networks'))
+
+        iface = self.create_fake_iface('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                       '450abbc9-9b6d-4d6f-8c3a-c47ac34100ef',
+                                       '1.2.3.4')
+        self.m.StubOutWithMock(return_server, 'interface_list')
+        return_server.interface_list().AndReturn([iface])
+
+        self.m.StubOutWithMock(return_server, 'interface_detach')
+        return_server.interface_detach(
+            'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa').AndReturn(None)
+
+        self.m.StubOutWithMock(return_server, 'interface_attach')
+        return_server.interface_attach(None, new_networks[0]['network'],
+                                       new_networks[0]['fixed_ip']).AndReturn(
+                                           None)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(server.update, update_template)()
+        self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
+        self.m.VerifyAll()
+
+    def test_server_update_empty_networks_with_complex_parameters(self):
+        return_server = self.fc.servers.list()[3]
+        return_server.id = 9102
+        server = self._create_test_server(return_server, 'networks_update')
+
+        new_networks = [{'network': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                         'fixed_ip': '1.2.3.4',
+                         'port': '2a60cbaa-3d33-4af6-a9ce-83594ac546fc'}]
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['networks'] = new_networks
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get(9102).MultipleTimes().AndReturn(return_server)
+        # to make sure, that old_networks will be None
+        self.assertFalse(hasattr(server.t['Properties'], 'networks'))
+
+        iface = self.create_fake_iface('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                       '450abbc9-9b6d-4d6f-8c3a-c47ac34100ef',
+                                       '1.2.3.4')
+        self.m.StubOutWithMock(return_server, 'interface_list')
+        return_server.interface_list().AndReturn([iface])
+
+        self.m.StubOutWithMock(return_server, 'interface_detach')
+        return_server.interface_detach(
+            'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa').AndReturn(None)
+
+        self.m.StubOutWithMock(return_server, 'interface_attach')
+        return_server.interface_attach(
+            new_networks[0]['port'], None, None).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(server.update, update_template)()
+        self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
+        self.m.VerifyAll()
+
+    def test_server_update_networks_with_complex_parameters(self):
+        return_server = self.fc.servers.list()[1]
+        return_server.id = 5678
+        server = self._create_test_server(return_server, 'networks_update')
+
+        old_networks = [
+            {'port': '95e25541-d26a-478d-8f36-ae1c8f6b74dc'},
+            {'network': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+             'fixed_ip': '1.2.3.4'},
+            {'port': '4121f61a-1b2e-4ab0-901e-eade9b1cb09d'},
+            {'network': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+             'fixed_ip': '31.32.33.34'}]
+
+        new_networks = [
+            {'network': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+             'fixed_ip': '1.2.3.4'},
+            {'port': '2a60cbaa-3d33-4af6-a9ce-83594ac546fc'}]
+
+        server.t['Properties']['networks'] = old_networks
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['networks'] = new_networks
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get(5678).MultipleTimes().AndReturn(return_server)
+
+        self.m.StubOutWithMock(return_server, 'interface_list')
+
+        poor_interfaces = [
+            self.create_fake_iface('95e25541-d26a-478d-8f36-ae1c8f6b74dc',
+                                   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                   '11.12.13.14'),
+            self.create_fake_iface('450abbc9-9b6d-4d6f-8c3a-c47ac34100ef',
+                                   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                   '1.2.3.4'),
+            self.create_fake_iface('4121f61a-1b2e-4ab0-901e-eade9b1cb09d',
+                                   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                   '21.22.23.24'),
+            self.create_fake_iface('0907fa82-a024-43c2-9fc5-efa1bccaa74a',
+                                   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                   '31.32.33.34')
+        ]
+
+        return_server.interface_list().AndReturn(poor_interfaces)
+
+        self.m.StubOutWithMock(return_server, 'interface_detach')
+        return_server.interface_detach(
+            poor_interfaces[0].port_id).InAnyOrder().AndReturn(None)
+        return_server.interface_detach(
+            poor_interfaces[2].port_id).InAnyOrder().AndReturn(None)
+        return_server.interface_detach(
+            poor_interfaces[3].port_id).InAnyOrder().AndReturn(None)
+
+        self.m.StubOutWithMock(return_server, 'interface_attach')
+        return_server.interface_attach(
+            new_networks[1]['port'], None, None).AndReturn(None)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(server.update, update_template)()
+        self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
+        self.m.VerifyAll()
+
+    def test_server_update_networks_with_None(self):
+        return_server = self.fc.servers.list()[1]
+        return_server.id = 5678
+        server = self._create_test_server(return_server, 'networks_update')
+
+        old_networks = [
+            {'port': '95e25541-d26a-478d-8f36-ae1c8f6b74dc'},
+            {'port': '4121f61a-1b2e-4ab0-901e-eade9b1cb09d'},
+            {'network': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+             'fixed_ip': '31.32.33.34'}]
+
+        server.t['Properties']['networks'] = old_networks
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['networks'] = None
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get(5678).MultipleTimes().AndReturn(return_server)
+
+        self.m.StubOutWithMock(return_server, 'interface_list')
+
+        poor_interfaces = [
+            self.create_fake_iface('95e25541-d26a-478d-8f36-ae1c8f6b74dc',
+                                   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                   '11.12.13.14'),
+            self.create_fake_iface('4121f61a-1b2e-4ab0-901e-eade9b1cb09d',
+                                   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                   '21.22.23.24'),
+            self.create_fake_iface('0907fa82-a024-43c2-9fc5-efa1bccaa74a',
+                                   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                   '31.32.33.34')
+        ]
+
+        return_server.interface_list().AndReturn(poor_interfaces)
+
+        self.m.StubOutWithMock(return_server, 'interface_detach')
+        return_server.interface_detach(
+            poor_interfaces[0].port_id).InAnyOrder().AndReturn(None)
+        return_server.interface_detach(
+            poor_interfaces[1].port_id).InAnyOrder().AndReturn(None)
+        return_server.interface_detach(
+            poor_interfaces[2].port_id).InAnyOrder().AndReturn(None)
+
+        self.m.StubOutWithMock(return_server, 'interface_attach')
+        return_server.interface_attach(None, None, None).AndReturn(None)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(server.update, update_template)()
+        self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
+        self.m.VerifyAll()
+
+    def test_server_update_networks_with_empty_list(self):
+        return_server = self.fc.servers.list()[1]
+        return_server.id = 5678
+        server = self._create_test_server(return_server, 'networks_update')
+
+        old_networks = [
+            {'port': '95e25541-d26a-478d-8f36-ae1c8f6b74dc'},
+            {'port': '4121f61a-1b2e-4ab0-901e-eade9b1cb09d'},
+            {'network': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+             'fixed_ip': '31.32.33.34'}]
+
+        server.t['Properties']['networks'] = old_networks
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['networks'] = []
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get(5678).MultipleTimes().AndReturn(return_server)
+
+        self.m.StubOutWithMock(return_server, 'interface_list')
+
+        poor_interfaces = [
+            self.create_fake_iface('95e25541-d26a-478d-8f36-ae1c8f6b74dc',
+                                   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                   '11.12.13.14'),
+            self.create_fake_iface('4121f61a-1b2e-4ab0-901e-eade9b1cb09d',
+                                   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                   '21.22.23.24'),
+            self.create_fake_iface('0907fa82-a024-43c2-9fc5-efa1bccaa74a',
+                                   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                   '31.32.33.34')
+        ]
+
+        return_server.interface_list().AndReturn(poor_interfaces)
+
+        self.m.StubOutWithMock(return_server, 'interface_detach')
+        return_server.interface_detach(
+            poor_interfaces[0].port_id).InAnyOrder().AndReturn(None)
+        return_server.interface_detach(
+            poor_interfaces[1].port_id).InAnyOrder().AndReturn(None)
+        return_server.interface_detach(
+            poor_interfaces[2].port_id).InAnyOrder().AndReturn(None)
+
+        self.m.StubOutWithMock(return_server, 'interface_attach')
+        return_server.interface_attach(None, None, None).AndReturn(None)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(server.update, update_template)()
+        self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
         self.m.VerifyAll()
 
 

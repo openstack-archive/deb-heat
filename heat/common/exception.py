@@ -192,6 +192,10 @@ class UnknownUserParameter(HeatException):
     msg_fmt = _("The Parameter (%(key)s) was not defined in template.")
 
 
+class InvalidTemplateVersion(HeatException):
+    msg_fmt = _("The template version is invalid: %(explanation)s")
+
+
 class InvalidTemplateParameter(HeatException):
     msg_fmt = _("The Parameter (%(key)s) has no attributes.")
 
@@ -302,13 +306,16 @@ class EgressRuleNotAllowed(HeatException):
                 "Neutron is used and the 'VpcId' property is set.")
 
 
-class Error(Exception):
-    def __init__(self, message=None):
-        super(Error, self).__init__(message)
+class Error(HeatException):
+    def __init__(self, msg_fmt):
+        self.msg_fmt = msg_fmt
+        super(Error, self).__init__()
 
 
-class NotFound(Error):
-    pass
+class NotFound(HeatException):
+    def __init__(self, msg_fmt):
+        self.msg_fmt = msg_fmt
+        super(NotFound, self).__init__()
 
 
 class InvalidContentType(HeatException):
