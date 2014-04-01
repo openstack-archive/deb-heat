@@ -1,3 +1,9 @@
+heat (2014.1~rc1-1) experimental; urgency=low
+
+  * New upstream release.
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 01 Apr 2014 14:50:26 +0800
+
 heat (2014.1~b3-2) experimental; urgency=low
 
   * Using testr directly instead of run_test.sh.
