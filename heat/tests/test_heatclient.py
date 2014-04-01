@@ -1146,18 +1146,6 @@ class KeystoneClientTest(HeatTestCase):
         self.assertEqual(ctx.tenant_id,
                          heat_ks_client.create_stack_domain_project('astack'))
 
-    def test_create_stack_domain_project_legacy_fallback(self):
-        """Test the create_stack_domain_project function, fallback path."""
-        cfg.CONF.clear_override('stack_user_domain')
-
-        ctx = utils.dummy_context()
-        ctx.trust_id = None
-
-        heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
-        self.assertEqual(ctx.tenant_id,
-                         heat_ks_client.create_stack_domain_project(
-                             stack_name='astack'))
-
     def test_delete_stack_domain_project(self):
 
         """Test the delete_stack_domain_project function."""
