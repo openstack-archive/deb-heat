@@ -24,7 +24,7 @@ if [ "$1" = "configure" ] || [ "$1" = "reconfigure" ] ; then
         pkgos_write_admin_creds ${CONF} keystone_authtoken heat
 	pkgos_register_endpoint_postinst heat heat orchestration "Heat Orchestration API" 8004 /v1/'%(tenant_id)s'
 	# This is the equivalent of db-sync:
-	su heat -c  "python -m heat.db.sync"
+	su heat -c "heat-manage db_sync"
 
         chown -R heat:adm /var/log/heat
         chmod 0750 /var/log/heat
