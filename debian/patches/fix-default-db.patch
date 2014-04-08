@@ -1,0 +1,18 @@
+Description: Sets default DSN
+ The default DSN isn't working for the packaging, so we do that:
+ +connection=sqlite:///var/lib/heat/neutrondb by default.
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: not-needed
+Last-Update: 2014-04-08
+
+--- heat-2014.1~rc1.orig/etc/heat/heat.conf.sample
++++ heat-2014.1~rc1/etc/heat/heat.conf.sample
+@@ -814,7 +814,7 @@
+ # Deprecated group/name - [DEFAULT]/sql_connection
+ # Deprecated group/name - [DATABASE]/sql_connection
+ # Deprecated group/name - [sql]/connection
+-#connection=sqlite:////heat/openstack/common/db/$sqlite_db
++connection=sqlite:///var/lib/heat/neutrondb
+ 
+ # The SQLAlchemy connection string used to connect to the
+ # slave database (string value)
