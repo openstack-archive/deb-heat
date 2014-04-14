@@ -8,17 +8,19 @@ export OSLO_PACKAGE_VERSION=$(VERSION)
 
 ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 override_dh_auto_test:
+	rm -rf .testrepository
+	testr init
 	set -e && set -x && \
 		TEMP_REZ=`mktemp -t` && \
-		python setup.py testr --slowest --testr-args='--subunit  ' \
-			| tee $$TEMP_REZ | subunit2pyunit && \
-		cat $$TEMP_REZ | subunit-stats && \
-		rm -f $$TEMP_REZ
+		PYTHONPATH=$(CURDIR) testr run --subunit | tee $$TEMP_REZ | subunit2pyunit || true ; \
+		cat $$TEMP_REZ | subunit-filter -s --no-passthrough | subunit-stats || true ; \
+		rm -f $$TEMP_REZ ;
+	testr slowest
 endif
 
 override_dh_clean:
 	dh_clean
-	rm -rf heat.egg-info
+	rm -rf heat.egg-info .testrepository
 	rm -rf doc/build
 	find . -iname '*.pyc' -delete
 	rm -f run_tests.err.log
