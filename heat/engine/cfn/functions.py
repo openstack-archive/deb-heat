@@ -165,7 +165,8 @@ class GetAtt(function.Function):
 
         r = self._resource()
         if (r.status in (r.IN_PROGRESS, r.COMPLETE) and
-                r.action in (r.CREATE, r.SUSPEND, r.RESUME, r.UPDATE)):
+                r.action in (r.CREATE, r.ADOPT, r.SUSPEND, r.RESUME,
+                             r.UPDATE)):
             return r.FnGetAtt(attribute)
         else:
             return None
@@ -527,16 +528,11 @@ class ResourceFacade(function.Function):
         if attr == self.METADATA:
             return self.stack.parent_resource.metadata
         elif attr == self.UPDATE_POLICY:
-            return self.stack.parent_resource.t.get(attr, {})
+            up = self.stack.parent_resource.t.get('UpdatePolicy', {})
+            return function.resolve(up)
         elif attr == self.DELETION_POLICY:
-            try:
-                return self.stack.parent_resource.t[attr]
-            except KeyError:
-                # TODO(zaneb): This should have a default!
-                fmt_data = {'fn_name': self.fn_name,
-                            'key': attr}
-                raise KeyError(_('"%(fn_name)s" '
-                                 'key "%(key)s" not found') % fmt_data)
+            dp = self.stack.parent_resource.t.get('DeletionPolicy', 'Delete')
+            return function.resolve(dp)
 
 
 def function_mapping(version_key, version):

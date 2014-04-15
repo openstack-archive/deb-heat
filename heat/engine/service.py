@@ -565,6 +565,8 @@ class EngineService(service.Service):
                 message=exception.StackResourceLimitExceeded.msg_fmt)
         stack_name = current_stack.name
         common_params = api.extract_args(args)
+        common_params.setdefault(rpc_api.PARAM_TIMEOUT,
+                                 current_stack.timeout_mins)
         env = environment.Environment(params)
         updated_stack = parser.Stack(cnxt, stack_name, tmpl,
                                      env, **common_params)
@@ -581,13 +583,14 @@ class EngineService(service.Service):
         return dict(current_stack.identifier())
 
     @request_context
-    def validate_template(self, cnxt, template):
+    def validate_template(self, cnxt, template, params=None):
         """
         The validate_template method uses the stack parser to check
         the validity of a template.
 
         :param cnxt: RPC context.
         :param template: Template of stack you want to create.
+        :param params: Stack Input Params
         """
         logger.info(_('validate_template'))
         if template is None:
@@ -600,8 +603,13 @@ class EngineService(service.Service):
         except KeyError as ex:
             return {'Error': str(ex)}
 
+        # validate overall template (top-level structure)
+        tmpl.validate()
+
         if not tmpl_resources:
             return {'Error': 'At least one Resources member must be defined.'}
+
+        env = environment.Environment(params)
 
         for res in tmpl_resources.values():
             try:
@@ -617,7 +625,7 @@ class EngineService(service.Service):
                         'Resources must contain Resource. '
                         'Found a [%s] instead' % type_res}
 
-            ResourceClass = resource.get_class(res['Type'])
+            ResourceClass = env.get_class(res['Type'])
             if ResourceClass == resources.template_resource.TemplateResource:
                 # we can't validate a TemplateResource unless we instantiate
                 # it as we need to download the template and convert the
@@ -834,8 +842,11 @@ class EngineService(service.Service):
         - The user must map to a User resource defined in the requested stack
         - The user resource must validate OK against any Policy specified
         '''
-        # We're expecting EC2 credentials because all in-instance credentials
-        # are deployed as ec2 keypairs
+        # first check whether access is allowd by context user_id
+        if stack.access_allowed(cnxt.user_id, resource_name):
+            return True
+
+        # fall back to looking for EC2 credentials in the context
         try:
             ec2_creds = json.loads(cnxt.aws_creds).get('ec2Credentials')
         except (TypeError, AttributeError):

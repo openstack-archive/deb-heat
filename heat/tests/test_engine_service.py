@@ -163,6 +163,13 @@ user_policy_template = '''
 }
 '''
 
+server_config_template = '''
+heat_template_version: 2013-05-23
+resources:
+  WebServer:
+    type: OS::Nova::Server
+'''
+
 
 def get_wordpress_stack(stack_name, ctx):
     t = template_format.parse(wp_template)
@@ -813,7 +820,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         parser.Template(template, files=None).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.env).AndReturn(stack)
+                     stack.t, stack.env, timeout_mins=60).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -823,8 +830,9 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         self.m.ReplayAll()
 
+        api_args = {'timeout_mins': 60}
         result = self.man.update_stack(self.ctx, old_stack.identifier(),
-                                       template, params, None, {})
+                                       template, params, None, api_args)
         self.assertEqual(old_stack.identifier(), result)
         self.assertIsInstance(result, dict)
         self.assertTrue(result['stack_id'])
@@ -858,7 +866,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         parser.Template(template, files=None).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.env).AndReturn(stack)
+                     stack.t, stack.env, timeout_mins=60).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -870,8 +878,9 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         cfg.CONF.set_override('max_resources_per_stack', 3)
 
+        api_args = {'timeout_mins': 60}
         result = self.man.update_stack(self.ctx, old_stack.identifier(),
-                                       template, params, None, {})
+                                       template, params, None, api_args)
         self.assertEqual(old_stack.identifier(), result)
         self.assertIsInstance(result, dict)
         self.assertTrue(result['stack_id'])
@@ -1061,7 +1070,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         parser.Template(template, files=None).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.env).AndReturn(stack)
+                     stack.t, stack.env, timeout_mins=60).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndRaise(exception.StackValidationFailed(
@@ -1069,11 +1078,12 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         self.m.ReplayAll()
 
+        api_args = {'timeout_mins': 60}
         ex = self.assertRaises(
             rpc_common.ClientException,
             self.man.update_stack,
             self.ctx, old_stack.identifier(),
-            template, params, None, {})
+            template, params, None, api_args)
         self.assertEqual(ex._exc_info[0], exception.StackValidationFailed)
         self.m.VerifyAll()
 
@@ -1119,14 +1129,16 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         parser.Template(template, files=None).AndReturn(old_stack.t)
         environment.Environment(params).AndReturn(old_stack.env)
         parser.Stack(self.ctx, old_stack.name,
-                     old_stack.t, old_stack.env).AndReturn(old_stack)
+                     old_stack.t, old_stack.env,
+                     timeout_mins=60).AndReturn(old_stack)
 
         self.m.ReplayAll()
 
+        api_args = {'timeout_mins': 60}
         ex = self.assertRaises(rpc_common.ClientException,
                                self.man.update_stack, self.ctx,
                                old_stack.identifier(),
-                               template, params, None, {})
+                               template, params, None, api_args)
         self.assertEqual(ex._exc_info[0], exception.MissingCredentialError)
         self.assertEqual(
             'Missing required credential: X-Auth-Key', str(ex._exc_info[1]))
@@ -1370,6 +1382,31 @@ class StackServiceAuthorizeTest(HeatTestCase):
 
         self.stack.delete()
         self.m.VerifyAll()
+
+    def test_stack_authorize_stack_user_user_id(self):
+        self.ctx = utils.dummy_context(user_id=str(uuid.uuid4()))
+        stack = get_stack('stack_authorize_stack_user',
+                          self.ctx,
+                          server_config_template)
+        self.stack = stack
+
+        def handler(resource_name):
+            return resource_name == 'WebServer'
+
+        self.stack.register_access_allowed_handler(self.ctx.user_id, handler)
+
+        # matching credential_id and resource_name
+        self.assertTrue(self.eng._authorize_stack_user(
+            self.ctx, self.stack, 'WebServer'))
+
+        # not matching resource_name
+        self.assertFalse(self.eng._authorize_stack_user(
+            self.ctx, self.stack, 'NoSuchResource'))
+
+        # not matching credential_id
+        self.ctx.user_id = str(uuid.uuid4())
+        self.assertFalse(self.eng._authorize_stack_user(
+            self.ctx, self.stack, 'WebServer'))
 
 
 class StackServiceTest(HeatTestCase):

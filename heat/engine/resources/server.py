@@ -12,6 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
+
 from oslo.config import cfg
 import uuid
 
@@ -299,8 +301,8 @@ class Server(stack_user.StackUser):
 
     attributes_schema = {
         'show': _('A dict of all server details as returned by the API.'),
-        'addresses': _('A dict of all network addresses as returned by '
-                       'the API.'),
+        'addresses': _('A dict of all network addresses with corresponding'
+                       'port_id.'),
         'networks': _('A dict of assigned network addresses of the form: '
                       '{"public": [ip1, ip2...], "private": [ip3, ip4]}.'),
         'first_address': _('Convenience attribute to fetch the first '
@@ -350,11 +352,13 @@ class Server(stack_user.StackUser):
     def _build_deployments_metadata(self):
         meta = {}
         if self.transport_poll_server_heat():
-            meta['os-collect-config'] = {'heat_server_poll': {
-                'username': self._get_user_id(),
+            meta['os-collect-config'] = {'heat': {
+                'user_id': self._get_user_id(),
                 'password': self.password,
                 'auth_url': self.context.auth_url,
-                'project_id': self.stack.stack_user_project_id}
+                'project_id': self.stack.stack_user_project_id,
+                'stack_id': self.stack.identifier().stack_path(),
+                'resource_name': self.name}
             }
         elif self.transport_poll_server_cfn():
             meta['os-collect-config'] = {'cfn': {
@@ -365,14 +369,13 @@ class Server(stack_user.StackUser):
                 'path': '%s.Metadata' % self.name}
             }
 
+        deployments = []
         # cannot query the deployments if the nova server does
         # not exist yet
-        if not self.resource_id:
-            return meta
-
-        meta['deployments'] = self._get_deployments_metadata(
-            self.heat(), self.resource_id)
-
+        if self.resource_id:
+            deployments = self._get_deployments_metadata(
+                self.heat(), self.resource_id)
+        meta['deployments'] = deployments
         return meta
 
     def _register_access_key(self):
@@ -615,6 +618,18 @@ class Server(stack_user.StackUser):
             nics.append(nic_info)
         return nics
 
+    def _add_port_for_address(self, server):
+        nets = copy.deepcopy(server.addresses)
+        ifaces = server.interface_list()
+        ip_mac_mapping_on_port_id = dict(((iface.fixed_ips[0]['ip_address'],
+                                           iface.mac_addr), iface.port_id)
+                                         for iface in ifaces)
+        for net_name in nets:
+            for addr in nets[net_name]:
+                addr['port'] = ip_mac_mapping_on_port_id.get(
+                    (addr['addr'], addr['OS-EXT-IPS-MAC:mac_addr']))
+        return nets
+
     def _resolve_attribute(self, name):
         if name == 'first_address':
             return nova_utils.server_to_ipaddress(
@@ -626,7 +641,7 @@ class Server(stack_user.StackUser):
                         'server': self.resource_id, 'ex': str(ex)})
             return ''
         if name == 'addresses':
-            return server.addresses
+            return self._add_port_for_address(server)
         if name == 'networks':
             return server.networks
         if name == 'instance_name':

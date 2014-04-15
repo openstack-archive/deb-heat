@@ -133,11 +133,12 @@ def reset_dummy_db():
 
 
 def dummy_context(user='test_username', tenant_id='test_tenant_id',
-                  password='password', roles=[]):
+                  password='password', roles=[], user_id=None):
     return context.RequestContext.from_dict({
         'tenant_id': tenant_id,
         'tenant': 'test_tenant',
         'username': user,
+        'user_id': user_id,
         'password': password,
         'roles': roles,
         'is_admin': False,
@@ -146,11 +147,13 @@ def dummy_context(user='test_username', tenant_id='test_tenant_id',
     })
 
 
-def parse_stack(t, params={}, stack_name='test_stack', stack_id=None):
+def parse_stack(t, params={}, stack_name='test_stack', stack_id=None,
+                timeout_mins=None):
     ctx = dummy_context()
     template = parser.Template(t)
     stack = parser.Stack(ctx, stack_name, template,
-                         environment.Environment(params), stack_id)
+                         environment.Environment(params), stack_id,
+                         timeout_mins=timeout_mins)
     stack.store()
 
     return stack
