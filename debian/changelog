@@ -3,6 +3,7 @@ heat (2014.1~rc2-1) experimental; urgency=low
   * Fixed dbsync for Icehouse (using heat-manage db_sync now).
   * Fixed the connection=sqlite:///var/lib/heat/neutrondb as default in the
     shipped heat.conf.
+  * Fixed (build-)depends for this upstream version.
 
  -- Thomas Goirand <zigo@debian.org>  Mon, 07 Apr 2014 00:58:35 +0800
 
