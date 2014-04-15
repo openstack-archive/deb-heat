@@ -9,7 +9,7 @@ CONF=/etc/heat/heat.conf
 #PKGOS-INCLUDE#
 
 pkgos_var_user_group heat
-pkgos_dbc_read_conf -pkg heat-common ${CONF} DEFAULT sql_connection heat $@
+pkgos_dbc_read_conf -pkg heat-common ${CONF} database connection heat $@
 pkgos_rabbit_read_conf ${CONF} DEFAULT heat
 pkgos_read_admin_creds ${CONF} keystone_authtoken heat
 pkgos_register_endpoint_config heat

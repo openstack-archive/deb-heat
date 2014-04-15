@@ -5,6 +5,7 @@ heat (2014.1~rc2-1) experimental; urgency=low
     shipped heat.conf.
   * Fixed (build-)depends for this upstream version.
   * Removed now useless requirements.txt patch.
+  * Fixed new location of the connection directive in config file.
 
  -- Thomas Goirand <zigo@debian.org>  Mon, 07 Apr 2014 00:58:35 +0800
 
