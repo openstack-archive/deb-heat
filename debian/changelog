@@ -1,5 +1,7 @@
-heat (2014.1~rc2-1) experimental; urgency=low
+heat (2014.1-1) unstable; urgency=medium
 
+  * New upstream release.
+  * Uploading to unstable.
   * Fixed dbsync for Icehouse (using heat-manage db_sync now).
   * Fixed the connection=sqlite:///var/lib/heat/neutrondb as default in the
     shipped heat.conf.
