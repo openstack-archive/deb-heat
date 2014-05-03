@@ -1,3 +1,10 @@
+heat (2014.1-2) medium; urgency=medium
+
+  * Updated Italian debconf translation thanks to Beatrice Torracca
+    <beatricet@libero.it> (Closes: #745389).
+
+ -- Thomas Goirand <zigo@debian.org>  Sat, 03 May 2014 06:41:50 +0000
+
 heat (2014.1-1) unstable; urgency=medium
 
   * New upstream release.
