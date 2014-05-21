@@ -1,6 +1,10 @@
 heat (2014.1-4) unstable; urgency=medium
 
   * Refreshed fix-default-db.patch.
+  * CVE-2014-3801: heat: User's provider templates show up in listing of
+    resource types globally across tenants. Applied upstream patch:
+    Dont_dynamically_create_provider_types_in_the_global_env.patch
+    (Closes: #748824).
 
  -- Thomas Goirand <zigo@debian.org>  Wed, 21 May 2014 16:02:56 +0800
 
