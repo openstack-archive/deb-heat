@@ -5,9 +5,11 @@ Author: Thomas Goirand <zigo@debian.org>
 Forwarded: not-needed
 Last-Update: 2014-04-08
 
---- heat-2014.1~rc1.orig/etc/heat/heat.conf.sample
-+++ heat-2014.1~rc1/etc/heat/heat.conf.sample
-@@ -814,7 +814,7 @@
+Index: heat/etc/heat/heat.conf.sample
+===================================================================
+--- heat.orig/etc/heat/heat.conf.sample	2014-05-21 16:02:38.000000000 +0800
++++ heat/etc/heat/heat.conf.sample	2014-05-21 16:02:42.000000000 +0800
+@@ -818,7 +818,7 @@
  # Deprecated group/name - [DEFAULT]/sql_connection
  # Deprecated group/name - [DATABASE]/sql_connection
  # Deprecated group/name - [sql]/connection
