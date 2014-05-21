@@ -1,4 +1,4 @@
-heat (2014.1-4) unstable; urgency=medium
+heat (2014.1-4) unstable; urgency=high
 
   * Refreshed fix-default-db.patch.
   * CVE-2014-3801: heat: User's provider templates show up in listing of
