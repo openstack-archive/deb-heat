@@ -1,3 +1,15 @@
+heat (2014.1-6) unstable; urgency=medium
+
+  * Switched from restarting daemons to copytruncate in logrotate.
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 29 May 2014 14:12:51 +0800
+
+heat (2014.1-5) unstable; urgency=medium
+
+  * Switched from restarting daemons to copytruncate for logrotate.
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 29 May 2014 14:10:16 +0800
+
 heat (2014.1-4) unstable; urgency=high
 
   * Refreshed fix-default-db.patch.

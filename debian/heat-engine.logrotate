@@ -1,8 +1,8 @@
 /var/log/heat/engine.log {
     daily
     missingok
-    compress
-    postrotate
-        service heat-engine restart >/dev/null 2>&1 || true
-    endscript
+    compress 
+    delaycompress
+    notifempty   
+    copytruncate
 }

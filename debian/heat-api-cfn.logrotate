@@ -2,7 +2,7 @@
     daily
     missingok
     compress
-    postrotate
-        service heat-api-cfn restart >/dev/null 2>&1 || true
-    endscript
+    delaycompress
+    notifempty
+    copytruncate
 }
