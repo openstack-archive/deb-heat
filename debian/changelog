@@ -1,3 +1,9 @@
+heat (2014.1-8) unstable; urgency=medium
+
+  * Now also packaging heat_keystoneclient_v2 in dist-packages/heat/plugins.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 06 Jun 2014 22:56:55 +0800
+
 heat (2014.1-7) unstable; urgency=medium
 
   * Now build-depends on openstack-pkg-tools >= 12~.
