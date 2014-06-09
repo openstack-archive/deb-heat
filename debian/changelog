@@ -3,6 +3,7 @@ heat (2014.1.1-1) unstable; urgency=medium
   * New upstream release.
   * Removed Dont_dynamically_create_provider_types_in_the_global_env.patch
     applied upstream.
+  * Now (build-)depends on python-six >= 1.6.0.
 
  -- Thomas Goirand <zigo@debian.org>  Mon, 09 Jun 2014 22:33:27 +0800
 
