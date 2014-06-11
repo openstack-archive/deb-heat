@@ -1,4 +1,4 @@
-heat (2014.1.1-2) UNRELEASED; urgency=medium
+heat (2014.1.1-2) unstable; urgency=medium
 
   * Updated de.po thanks to Chris Leick <c.leick@vollbio.de> (Closes: #751167).
 
