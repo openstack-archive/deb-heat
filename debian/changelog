@@ -1,3 +1,9 @@
+heat (2014.2~b1-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 01 Jul 2014 00:58:38 +0800
+
 heat (2014.1.1-2) unstable; urgency=medium
 
   * Updated de.po thanks to Chris Leick <c.leick@vollbio.de> (Closes: #751167).
