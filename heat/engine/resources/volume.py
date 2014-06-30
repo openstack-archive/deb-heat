@@ -410,27 +410,6 @@ class VolumeDetachTask(object):
         LOG.info(_("Volume %(vol)s is detached from server %(srv)s")
                  % {'vol': vol.id, 'srv': self.server_id})
 
-        # The next check is needed for immediate reattachment when updating:
-        # as the volume info is taken from cinder, but the detach
-        # request is sent to nova, there might be some time
-        # between cinder marking volume as 'available' and
-        # nova removing attachment from it's own objects, so we
-        # check that nova already knows that the volume is detached
-        def server_has_attachment(server_id, attachment_id):
-            try:
-                server_api.get_server_volume(server_id, attachment_id)
-            except clients.novaclient.exceptions.NotFound:
-                return False
-            return True
-
-        while server_has_attachment(self.server_id, self.attachment_id):
-            logger.info(_("Server %(srv)s still has attachment %(att)s.") %
-                        {'att': self.attachment_id, 'srv': self.server_id})
-            yield
-
-        logger.info(_("Volume %(vol)s is detached from server %(srv)s") %
-                    {'vol': vol.id, 'srv': self.server_id})
-
 
 class VolumeAttachment(resource.Resource):
     PROPERTIES = (
@@ -464,8 +443,6 @@ class VolumeAttachment(resource.Resource):
             ]
         ),
     }
-
-    update_allowed_keys = ('Properties',)
 
     def handle_create(self):
         server_id = self.properties[self.INSTANCE_ID]

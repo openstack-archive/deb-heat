@@ -849,15 +849,6 @@ class Server(stack_user.StackUser):
         if maximum != -1 and count > maximum:
             raise exception.StackValidationFailed(message=msg)
 
-    @staticmethod
-    def _check_maximum(count, maximum, msg):
-        '''
-        Check a count against a maximum, unless maximum is -1 which indicates
-        that there is no limit
-        '''
-        if maximum != -1 and count > maximum:
-            raise exception.StackValidationFailed(message=msg)
-
     def validate(self):
         '''
         Validate any of the provided params

@@ -24,7 +24,6 @@ from heat.engine import resources
 from heat.engine.resources import glance_utils
 from heat.engine import service
 from heat.openstack.common.importutils import try_import
-from heat.openstack.common.rpc import common as rpc_common
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 from heat.tests.v1_1 import fakes

@@ -163,9 +163,6 @@ class StackResource(resource.Resource):
         if timeout_mins is None:
             timeout_mins = self.stack.timeout_mins
 
-        if timeout_mins is None:
-            timeout_mins = self.stack.timeout_mins
-
         # Note we disable rollback for nested stacks, since they
         # should be rolled back by the parent stack on failure
         nested = parser.Stack(self.context,

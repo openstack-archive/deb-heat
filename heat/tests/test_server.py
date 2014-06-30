@@ -655,7 +655,7 @@ class ServersTest(HeatTestCase):
             'os-collect-config': {
                 'heat': {
                     'auth_url': 'http://server.test:5000/v2.0',
-                    'password': None,
+                    'password': server.password,
                     'project_id': '8888',
                     'resource_name': 'WebServer',
                     'stack_id': 'software_config_s/%s' % stack.id,
@@ -671,20 +671,6 @@ class ServersTest(HeatTestCase):
         self.assertEqual('1234', created_server._get_user_id())
         self.assertTrue(stack.access_allowed('1234', 'WebServer'))
 
-        self.m.VerifyAll()
-
-    def test_server_metadata_with_empty_deploy(self):
-        stack_name = 'software_config_s'
-        (t, stack) = self._setup_test_stack(stack_name)
-        props = t['Resources']['WebServer']['Properties']
-        props['user_data_format'] = 'SOFTWARE_CONFIG'
-        server = servers.Server('WebServer',
-                                t['Resources']['WebServer'], stack)
-        self.m.StubOutWithMock(server, 'keystone')
-        server.t = server.stack.resolve_runtime_data(server.t)
-        self.m.ReplayAll()
-        deployments = server.metadata['deployments']
-        self.assertEqual([], deployments)
         self.m.VerifyAll()
 
     @mock.patch.object(clients.OpenStackClients, 'nova')

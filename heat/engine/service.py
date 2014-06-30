@@ -643,8 +643,6 @@ class EngineService(service.Service):
 
         env = environment.Environment(params)
 
-        env = environment.Environment(params)
-
         for res in tmpl_resources.values():
             ResourceClass = env.get_class(res['Type'])
             if ResourceClass == resources.template_resource.TemplateResource:
