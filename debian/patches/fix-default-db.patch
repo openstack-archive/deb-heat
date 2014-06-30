@@ -1,0 +1,17 @@
+Description: Set SQLite as default
+ Set SQLite as default db backend
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: not-needed
+Last-Update: 2014-07-01
+
+--- heat-2014.2~b1.orig/etc/heat/heat.conf.sample
++++ heat-2014.2~b1/etc/heat/heat.conf.sample
+@@ -855,7 +855,7 @@
+ # Deprecated group/name - [DEFAULT]/sql_connection
+ # Deprecated group/name - [DATABASE]/sql_connection
+ # Deprecated group/name - [sql]/connection
+-#connection=<None>
++connection=sqlite:///var/lib/heat/heatdb
+ 
+ # The SQL mode to be used for MySQL sessions. This option,
+ # including the default, overrides any server-set SQL mode. To
