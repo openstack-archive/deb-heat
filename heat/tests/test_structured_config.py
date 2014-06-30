@@ -23,6 +23,7 @@ from heat.tests import utils
 class StructuredConfigTestJSON(HeatTestCase):
 
     template = {
+        'HeatTemplateFormatVersion': '2012-12-12',
         'Resources': {
             'config_mysql': {
                 'Type': 'OS::Heat::StructuredConfig',
@@ -35,7 +36,6 @@ class StructuredConfigTestJSON(HeatTestCase):
 
     def setUp(self):
         super(StructuredConfigTestJSON, self).setUp()
-        utils.setup_dummy_db()
         self.ctx = utils.dummy_context()
         self.properties = {
             'config': {'foo': 'bar'}
@@ -71,6 +71,7 @@ class StructuredConfigTestJSON(HeatTestCase):
 class StructuredDeploymentDerivedTest(HeatTestCase):
 
     template = {
+        'HeatTemplateFormatVersion': '2012-12-12',
         'Resources': {
             'deploy_mysql': {
                 'Type': 'OS::Heat::StructuredDeployment'
@@ -80,7 +81,6 @@ class StructuredDeploymentDerivedTest(HeatTestCase):
 
     def setUp(self):
         super(StructuredDeploymentDerivedTest, self).setUp()
-        utils.setup_dummy_db()
         self.ctx = utils.dummy_context()
         props = {
             'input_values': {'bar': 'baz'},

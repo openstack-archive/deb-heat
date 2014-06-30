@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -29,17 +28,19 @@ from oslo.config import cfg
 
 from heat.openstack.common.db import api as db_api
 
-db_opts = [
-    cfg.StrOpt('db_backend',
-               default='sqlalchemy',
-               help='The backend to use for db.')]
-
 CONF = cfg.CONF
-CONF.register_opts(db_opts)
+CONF.import_opt('backend', 'heat.openstack.common.db.options',
+                group='database')
+
 
 _BACKEND_MAPPING = {'sqlalchemy': 'heat.db.sqlalchemy.api'}
 
-IMPL = db_api.DBAPI(backend_mapping=_BACKEND_MAPPING)
+IMPL = db_api.DBAPI(CONF.database.backend, backend_mapping=_BACKEND_MAPPING,
+                    lazy=True)
+
+
+def get_engine():
+    return IMPL.get_engine()
 
 
 def get_session():
@@ -54,8 +55,8 @@ def raw_template_create(context, values):
     return IMPL.raw_template_create(context, values)
 
 
-def resource_data_get_all(resource):
-    return IMPL.resource_data_get_all(resource)
+def resource_data_get_all(resource, data=None):
+    return IMPL.resource_data_get_all(resource, data)
 
 
 def resource_data_get(resource, key):
@@ -105,9 +106,11 @@ def resource_get_by_physical_resource_id(context, physical_resource_id):
                                                      physical_resource_id)
 
 
-def stack_get(context, stack_id, show_deleted=False, tenant_safe=True):
+def stack_get(context, stack_id, show_deleted=False, tenant_safe=True,
+              eager_load=False):
     return IMPL.stack_get(context, stack_id, show_deleted=show_deleted,
-                          tenant_safe=tenant_safe)
+                          tenant_safe=tenant_safe,
+                          eager_load=eager_load)
 
 
 def stack_get_by_name_and_owner_id(context, stack_name, owner_id):
@@ -120,9 +123,11 @@ def stack_get_by_name(context, stack_name):
 
 
 def stack_get_all(context, limit=None, sort_keys=None, marker=None,
-                  sort_dir=None, filters=None, tenant_safe=True):
+                  sort_dir=None, filters=None, tenant_safe=True,
+                  show_deleted=False):
     return IMPL.stack_get_all(context, limit, sort_keys,
-                              marker, sort_dir, filters, tenant_safe)
+                              marker, sort_dir, filters, tenant_safe,
+                              show_deleted)
 
 
 def stack_get_all_by_owner_id(context, owner_id):
@@ -262,11 +267,27 @@ def software_deployment_delete(context, deployment_id):
     return IMPL.software_deployment_delete(context, deployment_id)
 
 
-def db_sync(version=None):
+def snapshot_create(context, values):
+    return IMPL.snapshot_create(context, values)
+
+
+def snapshot_get(context, snapshot_id):
+    return IMPL.snapshot_get(context, snapshot_id)
+
+
+def snapshot_update(context, snapshot_id, values):
+    return IMPL.snapshot_update(context, snapshot_id, values)
+
+
+def snapshot_delete(context, snapshot_id):
+    return IMPL.snapshot_delete(context, snapshot_id)
+
+
+def db_sync(engine, version=None):
     """Migrate the database to `version` or the most recent version."""
-    return IMPL.db_sync(version=version)
+    return IMPL.db_sync(engine, version=version)
 
 
-def db_version():
+def db_version(engine):
     """Display the current database version."""
-    return IMPL.db_version()
+    return IMPL.db_version(engine)

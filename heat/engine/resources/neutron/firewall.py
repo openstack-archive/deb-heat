@@ -11,16 +11,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.neutron import neutron
-from heat.openstack.common import log as logging
 
 if clients.neutronclient is not None:
     from neutronclient.common.exceptions import NeutronClientException
-
-logger = logging.getLogger(__name__)
 
 
 class Firewall(neutron.NeutronResource):
@@ -32,6 +30,14 @@ class Firewall(neutron.NeutronResource):
         NAME, DESCRIPTION, ADMIN_STATE_UP, FIREWALL_POLICY_ID,
     ) = (
         'name', 'description', 'admin_state_up', 'firewall_policy_id',
+    )
+
+    ATTRIBUTES = (
+        NAME_ATTR, DESCRIPTION_ATTR, ADMIN_STATE_UP_ATTR,
+        FIREWALL_POLICY_ID_ATTR, STATUS, TENANT_ID, SHOW,
+    ) = (
+        'name', 'description', 'admin_state_up',
+        'firewall_policy_id', 'status', 'tenant_id', 'show',
     )
 
     properties_schema = {
@@ -63,17 +69,29 @@ class Firewall(neutron.NeutronResource):
     }
 
     attributes_schema = {
-        'name': _('Name for the firewall.'),
-        'description': _('Description of the firewall.'),
-        'admin_state_up': _('The administrative state of the firewall.'),
-        'firewall_policy_id': _('Unique identifier of the firewall policy '
-                                'used to create the firewall.'),
-        'status': _('The status of the firewall.'),
-        'tenant_id': _('Id of the tenant owning the firewall.'),
-        'show': _('All attributes.'),
+        NAME_ATTR: attributes.Schema(
+            _('Name for the firewall.')
+        ),
+        DESCRIPTION_ATTR: attributes.Schema(
+            _('Description of the firewall.')
+        ),
+        ADMIN_STATE_UP_ATTR: attributes.Schema(
+            _('The administrative state of the firewall.')
+        ),
+        FIREWALL_POLICY_ID_ATTR: attributes.Schema(
+            _('Unique identifier of the firewall policy used to create '
+              'the firewall.')
+        ),
+        STATUS: attributes.Schema(
+            _('The status of the firewall.')
+        ),
+        TENANT_ID: attributes.Schema(
+            _('Id of the tenant owning the firewall.')
+        ),
+        SHOW: attributes.Schema(
+            _('All attributes.')
+        ),
     }
-
-    update_allowed_keys = ('Properties',)
 
     def _show_resource(self):
         return self.neutron().show_firewall(self.resource_id)['firewall']
@@ -112,6 +130,14 @@ class FirewallPolicy(neutron.NeutronResource):
         'name', 'description', 'shared', 'audited', 'firewall_rules',
     )
 
+    ATTRIBUTES = (
+        NAME_ATTR, DESCRIPTION_ATTR, FIREWALL_RULES_ATTR, SHARED_ATTR,
+        AUDITED_ATTR, TENANT_ID,
+    ) = (
+        'name', 'description', 'firewall_rules', 'shared',
+        'audited', 'tenant_id',
+    )
+
     properties_schema = {
         NAME: properties.Schema(
             properties.Schema.STRING,
@@ -148,15 +174,25 @@ class FirewallPolicy(neutron.NeutronResource):
     }
 
     attributes_schema = {
-        'name': _('Name for the firewall policy.'),
-        'description': _('Description of the firewall policy.'),
-        'firewall_rules': _('List of firewall rules in this firewall policy.'),
-        'shared': _('Shared status of this firewall policy.'),
-        'audited': _('Audit status of this firewall policy.'),
-        'tenant_id': _('Id of the tenant owning the firewall policy.')
+        NAME_ATTR: attributes.Schema(
+            _('Name for the firewall policy.')
+        ),
+        DESCRIPTION_ATTR: attributes.Schema(
+            _('Description of the firewall policy.')
+        ),
+        FIREWALL_RULES_ATTR: attributes.Schema(
+            _('List of firewall rules in this firewall policy.')
+        ),
+        SHARED_ATTR: attributes.Schema(
+            _('Shared status of this firewall policy.')
+        ),
+        AUDITED_ATTR: attributes.Schema(
+            _('Audit status of this firewall policy.')
+        ),
+        TENANT_ID: attributes.Schema(
+            _('Id of the tenant owning the firewall policy.')
+        ),
     }
-
-    update_allowed_keys = ('Properties',)
 
     def _show_resource(self):
         return self.neutron().show_firewall_policy(self.resource_id)[
@@ -198,6 +234,18 @@ class FirewallRule(neutron.NeutronResource):
         'name', 'description', 'shared', 'protocol', 'ip_version',
         'source_ip_address', 'destination_ip_address', 'source_port',
         'destination_port', 'action', 'enabled',
+    )
+
+    ATTRIBUTES = (
+        NAME_ATTR, DESCRIPTION_ATTR, FIREWALL_POLICY_ID, SHARED_ATTR,
+        PROTOCOL_ATTR, IP_VERSION_ATTR, SOURCE_IP_ADDRESS_ATTR,
+        DESTINATION_IP_ADDRESS_ATTR, SOURCE_PORT_ATTR, DESTINATION_PORT_ATTR,
+        ACTION_ATTR, ENABLED_ATTR, POSITION, TENANT_ID,
+    ) = (
+        'name', 'description', 'firewall_policy_id', 'shared',
+        'protocol', 'ip_version', 'source_ip_address',
+        'destination_ip_address', 'source_port', 'destination_port',
+        'action', 'enabled', 'position', 'tenant_id',
     )
 
     properties_schema = {
@@ -272,27 +320,50 @@ class FirewallRule(neutron.NeutronResource):
     }
 
     attributes_schema = {
-        'name': _('Name for the firewall rule.'),
-        'description': _('Description of the firewall rule.'),
-        'firewall_policy_id': _('Unique identifier of the firewall policy to '
-                                'which this firewall rule belongs.'),
-        'shared': _('Shared status of this firewall rule.'),
-        'protocol': _('Protocol value for this firewall rule.'),
-        'ip_version': _('Ip_version for this firewall rule.'),
-        'source_ip_address': _('Source ip_address for this firewall rule.'),
-        'destination_ip_address': _('Destination ip_address for this '
-                                    'firewall rule.'),
-        'source_port': _('Source port range for this firewall rule.'),
-        'destination_port': _('Destination port range for this firewall '
-                              'rule.'),
-        'action': _('Allow or deny action for this firewall rule.'),
-        'enabled': _('Indicates whether this firewall rule is enabled or '
-                     'not.'),
-        'position': _('Position of the rule within the firewall policy.'),
-        'tenant_id': _('Id of the tenant owning the firewall.')
+        NAME_ATTR: attributes.Schema(
+            _('Name for the firewall rule.')
+        ),
+        DESCRIPTION_ATTR: attributes.Schema(
+            _('Description of the firewall rule.')
+        ),
+        FIREWALL_POLICY_ID: attributes.Schema(
+            _('Unique identifier of the firewall policy to which this '
+              'firewall rule belongs.')
+        ),
+        SHARED_ATTR: attributes.Schema(
+            _('Shared status of this firewall rule.')
+        ),
+        PROTOCOL_ATTR: attributes.Schema(
+            _('Protocol value for this firewall rule.')
+        ),
+        IP_VERSION_ATTR: attributes.Schema(
+            _('Ip_version for this firewall rule.')
+        ),
+        SOURCE_IP_ADDRESS_ATTR: attributes.Schema(
+            _('Source ip_address for this firewall rule.')
+        ),
+        DESTINATION_IP_ADDRESS_ATTR: attributes.Schema(
+            _('Destination ip_address for this firewall rule.')
+        ),
+        SOURCE_PORT_ATTR: attributes.Schema(
+            _('Source port range for this firewall rule.')
+        ),
+        DESTINATION_PORT_ATTR: attributes.Schema(
+            _('Destination port range for this firewall rule.')
+        ),
+        ACTION_ATTR: attributes.Schema(
+            _('Allow or deny action for this firewall rule.')
+        ),
+        ENABLED_ATTR: attributes.Schema(
+            _('Indicates whether this firewall rule is enabled or not.')
+        ),
+        POSITION: attributes.Schema(
+            _('Position of the rule within the firewall policy.')
+        ),
+        TENANT_ID: attributes.Schema(
+            _('Id of the tenant owning the firewall.')
+        ),
     }
-
-    update_allowed_keys = ('Properties',)
 
     def _show_resource(self):
         return self.neutron().show_firewall_rule(

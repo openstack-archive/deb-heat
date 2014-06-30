@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -18,9 +17,6 @@ from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources.neutron import neutron
-from heat.openstack.common import log as logging
-
-logger = logging.getLogger(__name__)
 
 
 class VPC(resource.Resource):

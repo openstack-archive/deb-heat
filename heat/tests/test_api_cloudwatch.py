@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -339,7 +339,7 @@ class WatchControllerTest(HeatTestCase):
     def test_list_metrics_filter_namespace(self):
 
         # Add a Namespace filter and change the engine response so
-        # we should get two reponses
+        # we should get two responses
         params = {'Action': 'ListMetrics',
                   'Namespace': 'atestnamespace/foo'}
         dummy_req = self._dummy_GET_request(params)

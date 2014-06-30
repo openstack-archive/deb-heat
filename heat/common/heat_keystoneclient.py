@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,7 +11,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+"""Keystone Client functionality for use by resources."""
+
 from collections import namedtuple
+import copy
 import json
 import uuid
 
@@ -26,7 +28,7 @@ from heat.openstack.common.gettextutils import _
 from heat.openstack.common import importutils
 from heat.openstack.common import log as logging
 
-logger = logging.getLogger('heat.common.keystoneclient')
+LOG = logging.getLogger('heat.common.keystoneclient')
 
 AccessKey = namedtuple('AccessKey', ['id', 'access', 'secret'])
 
@@ -41,13 +43,14 @@ cfg.CONF.register_opts(keystone_opts)
 
 
 class KeystoneClientV3(object):
-    """
-    Wrap keystone client so we can encapsulate logic used in resources
+
+    """Wrap keystone client so we can encapsulate logic used in resources.
+
     Note this is intended to be initialized from a resource on a per-session
     basis, so the session context is passed in on initialization
     Also note that a copy of this is created every resource as self.keystone()
     via the code in engine/client.py, so there should not be any need to
-    directly instantiate instances of this class inside resources themselves
+    directly instantiate instances of this class inside resources themselves.
     """
 
     def __init__(self, context):
@@ -96,9 +99,9 @@ class KeystoneClientV3(object):
                                       ' stack_domain_admin and'
                                       ' stack_domain_admin_password'))
         else:
-            logger.warning(_('stack_user_domain ID not set in heat.conf '
-                           'falling back to using default'))
-        logger.debug(_('Using stack domain %s') % self.stack_domain_id)
+            LOG.warning(_('stack_user_domain ID not set in heat.conf '
+                          'falling back to using default'))
+        LOG.debug('Using stack domain %s' % self.stack_domain_id)
 
     @property
     def client(self):
@@ -117,7 +120,7 @@ class KeystoneClientV3(object):
             if c.authenticate():
                 self._admin_client = c
             else:
-                logger.error("Admin client authentication failed")
+                LOG.error(_("Admin client authentication failed"))
                 raise exception.AuthorizationFailure()
         return self._admin_client
 
@@ -133,7 +136,7 @@ class KeystoneClientV3(object):
             if c.authenticate(domain_id=self.stack_domain_id):
                 self._domain_admin_client = c
             else:
-                logger.error("Domain admin client authentication failed")
+                LOG.error(_("Domain admin client authentication failed"))
                 raise exception.AuthorizationFailure()
         return self._domain_admin_client
 
@@ -150,6 +153,21 @@ class KeystoneClientV3(object):
             kwargs.update(self._service_admin_creds())
             kwargs['trust_id'] = self.context.trust_id
             kwargs.pop('project_name')
+        elif self.context.auth_token_info is not None:
+            # The auth_ref version must be set according to the token version
+            if 'access' in self.context.auth_token_info:
+                kwargs['auth_ref'] = copy.deepcopy(
+                    self.context.auth_token_info['access'])
+                kwargs['auth_ref']['version'] = 'v2.0'
+                kwargs['auth_ref']['token']['id'] = self.context.auth_token
+            elif 'token' in self.context.auth_token_info:
+                kwargs['auth_ref'] = copy.deepcopy(
+                    self.context.auth_token_info['token'])
+                kwargs['auth_ref']['version'] = 'v3'
+                kwargs['auth_ref']['auth_token'] = self.context.auth_token
+            else:
+                LOG.error("Unknown version in auth_token_info")
+                raise exception.AuthorizationFailure('Unknown token version')
         elif self.context.auth_token is not None:
             kwargs['token'] = self.context.auth_token
             kwargs['project_id'] = self.context.tenant_id
@@ -158,25 +176,30 @@ class KeystoneClientV3(object):
             kwargs['password'] = self.context.password
             kwargs['project_id'] = self.context.tenant_id
         else:
-            logger.error(_("Keystone v3 API connection failed, no password "
-                         "trust or auth_token!"))
+            LOG.error(_("Keystone v3 API connection failed, no password "
+                        "trust or auth_token!"))
             raise exception.AuthorizationFailure()
         kwargs.update(self._ssl_options())
         client = kc_v3.Client(**kwargs)
-        client.authenticate()
+
+        # If auth_ref has already be specified via auth_token_info, don't
+        # authenticate as we want to reuse, rather than request a new token
+        if 'auth_ref' not in kwargs:
+            client.authenticate()
+
         # If we are authenticating with a trust set the context auth_token
         # with the trust scoped token
         if 'trust_id' in kwargs:
             # Sanity check
             if not client.auth_ref.trust_scoped:
-                logger.error(_("trust token re-scoping failed!"))
+                LOG.error(_("trust token re-scoping failed!"))
                 raise exception.AuthorizationFailure()
             # All OK so update the context with the token
             self.context.auth_token = client.auth_ref.auth_token
             self.context.auth_url = kwargs.get('auth_url')
             # Sanity check that impersonation is effective
             if self.context.trustor_user_id != client.auth_ref.user_id:
-                logger.error("Trust impersonation failed")
+                LOG.error(_("Trust impersonation failed"))
                 raise exception.AuthorizationFailure()
 
         return client
@@ -218,13 +241,14 @@ class KeystoneClientV3(object):
             return getattr(cfg.CONF.clients, option)
 
     def create_trust_context(self):
-        """
-        Create a trust using the trustor identity in the current context,
-        with the trustee as the heat service user and return a context
-        containing the new trust_id.
+        """Create a trust using the trustor identity in the current context.
+
+        The trust is created with the trustee as the heat service user.
 
         If the current context already contains a trust_id, we do nothing
         and return the current context.
+
+        Returns a context containing the new trust_id.
         """
         if self.context.trust_id:
             return self.context
@@ -249,9 +273,7 @@ class KeystoneClientV3(object):
         return trust_context
 
     def delete_trust(self, trust_id):
-        """
-        Delete the specified trust.
-        """
+        """Delete the specified trust."""
         try:
             self.client.trusts.delete(trust_id)
         except kc_exception.NotFound:
@@ -259,8 +281,8 @@ class KeystoneClientV3(object):
 
     def _get_username(self, username):
         if(len(username) > 64):
-            logger.warning(_("Truncating the username %s to the last 64 "
-                           "characters.") % username)
+            LOG.warning(_("Truncating the username %s to the last 64 "
+                          "characters.") % username)
         #get the last 64 characters of the username
         return username[-64:]
 
@@ -275,11 +297,13 @@ class KeystoneClientV3(object):
             return stack_user_role[0].id
 
     def create_stack_user(self, username, password=''):
-        """
-        Create a user defined as part of a stack, either via template
-        or created internally by a resource.  This user will be added to
-        the heat_stack_user_role as defined in the config
-        Returns the keystone ID of the resulting user
+        """Create a user defined as part of a stack.
+
+        The user is defined either via template or created internally by a
+        resource.  This user will be added to the heat_stack_user_role as
+        defined in the config.
+
+        Returns the keystone ID of the resulting user.
         """
         # FIXME(shardy): There's duplicated logic between here and
         # create_stack_domain user, but this function is expected to
@@ -293,35 +317,36 @@ class KeystoneClientV3(object):
                 name=self._get_username(username), password=password,
                 default_project=self.context.tenant_id)
             # Add user to heat_stack_user_role
-            logger.debug(_("Adding user %(user)s to role %(role)s") % {
-                         'user': user.id, 'role': role_id})
+            LOG.debug("Adding user %(user)s to role %(role)s" % {
+                      'user': user.id, 'role': role_id})
             self.client.roles.grant(role=role_id, user=user.id,
                                     project=self.context.tenant_id)
         else:
-            logger.error(_("Failed to add user %(user)s to role %(role)s, "
-                         "check role exists!") % {
-                             'user': username,
-                             'role': cfg.CONF.heat_stack_user_role})
+            LOG.error(_("Failed to add user %(user)s to role %(role)s, "
+                        "check role exists!") % {
+                      'user': username,
+                      'role': cfg.CONF.heat_stack_user_role})
             raise exception.Error(_("Can't find role %s")
                                   % cfg.CONF.heat_stack_user_role)
 
         return user.id
 
     def create_stack_domain_user(self, username, project_id, password=None):
-        """
-        Create a user defined as part of a stack, either via template
-        or created internally by a resource.  This user will be added to
-        the heat_stack_user_role as defined in the config, and created in
-        the specified project (which is expected to be in the stack_domain.
-        Returns the keystone ID of the resulting user
+        """Create a domain user defined as part of a stack.
+
+        The user is defined either via template or created internally by a
+        resource.  This user will be added to the heat_stack_user_role as
+        defined in the config, and created in the specified project (which is
+        expected to be in the stack_domain).
+
+        Returns the keystone ID of the resulting user.
         """
         if not self.stack_domain_id:
             # FIXME(shardy): Legacy fallback for folks using old heat.conf
             # files which lack domain configuration
-            logger.warning(_('Falling back to legacy non-domain user create, '
-                             'configure domain in heat.conf'))
+            LOG.warning(_('Falling back to legacy non-domain user create, '
+                          'configure domain in heat.conf'))
             return self.create_stack_user(username=username, password=password)
-
         # We add the new user to a special keystone role
         # This role is designed to allow easier differentiation of the
         # heat-generated "stack users" which will generally have credentials
@@ -334,13 +359,14 @@ class KeystoneClientV3(object):
                 name=self._get_username(username), password=password,
                 default_project=project_id, domain=self.stack_domain_id)
             # Add to stack user role
-            logger.debug(_("Adding user %(user)s to role %(role)s") % {
-                         'user': user.id, 'role': role_id})
+            LOG.debug("Adding user %(user)s to role %(role)s" % {
+                      'user': user.id, 'role': role_id})
             self.domain_admin_client.roles.grant(role=role_id, user=user.id,
                                                  project=project_id)
         else:
-            logger.error(_("Failed to add user %(user)s to role %(role)s, "
-                         "check role exists!") % {'user': username,
+            LOG.error(_("Failed to add user %(user)s to role %(role)s, "
+                        "check role exists!")
+                      % {'user': username,
                          'role': cfg.CONF.heat_stack_user_role})
             raise exception.Error(_("Can't find role %s")
                                   % cfg.CONF.heat_stack_user_role)
@@ -348,7 +374,7 @@ class KeystoneClientV3(object):
         return user.id
 
     def _check_stack_domain_user(self, user_id, project_id, action):
-        # Sanity check that domain/project is correct
+        """Sanity check that domain/project is correct."""
         user = self.domain_admin_client.users.get(user_id)
         if user.domain_id != self.stack_domain_id:
             raise ValueError(_('User %s in invalid domain') % action)
@@ -359,8 +385,8 @@ class KeystoneClientV3(object):
         if not self.stack_domain_id:
             # FIXME(shardy): Legacy fallback for folks using old heat.conf
             # files which lack domain configuration
-            logger.warning(_('Falling back to legacy non-domain user delete, '
-                             'configure domain in heat.conf'))
+            LOG.warning(_('Falling back to legacy non-domain user delete, '
+                          'configure domain in heat.conf'))
             return self.delete_stack_user(user_id)
 
         try:
@@ -376,12 +402,12 @@ class KeystoneClientV3(object):
             pass
 
     def create_stack_domain_project(self, stack_id):
-        '''Creates a project in the heat stack-user domain.'''
+        """Create a project in the heat stack-user domain."""
         if not self.stack_domain_id:
             # FIXME(shardy): Legacy fallback for folks using old heat.conf
             # files which lack domain configuration
-            logger.warning(_('Falling back to legacy non-domain project, '
-                             'configure domain in heat.conf'))
+            LOG.warning(_('Falling back to legacy non-domain project, '
+                          'configure domain in heat.conf'))
             return self.context.tenant_id
         # Note we use the tenant ID not name to ensure uniqueness in a multi-
         # domain environment (where the tenant name may not be globally unique)
@@ -397,8 +423,8 @@ class KeystoneClientV3(object):
         if not self.stack_domain_id:
             # FIXME(shardy): Legacy fallback for folks using old heat.conf
             # files which lack domain configuration
-            logger.warning(_('Falling back to legacy non-domain project, '
-                             'configure domain in heat.conf'))
+            LOG.warning(_('Falling back to legacy non-domain project, '
+                          'configure domain in heat.conf'))
             return
         try:
             self.domain_admin_client.projects.delete(project=project_id)
@@ -406,7 +432,7 @@ class KeystoneClientV3(object):
             pass
 
     def _find_ec2_keypair(self, access, user_id=None):
-        '''Lookup an ec2 keypair by access ID.'''
+        """Lookup an ec2 keypair by access ID."""
         # FIXME(shardy): add filtering for user_id when keystoneclient
         # extensible-crud-manager-operations bp lands
         credentials = self.client.credentials.list()
@@ -419,7 +445,7 @@ class KeystoneClientV3(object):
 
     def delete_ec2_keypair(self, credential_id=None, access=None,
                            user_id=None):
-        '''Delete credential containing ec2 keypair.'''
+        """Delete credential containing ec2 keypair."""
         if credential_id:
             try:
                 self.client.credentials.delete(credential_id)
@@ -433,12 +459,12 @@ class KeystoneClientV3(object):
             raise ValueError("Must specify either credential_id or access")
 
     def get_ec2_keypair(self, credential_id=None, access=None, user_id=None):
-        '''Get an ec2 keypair via v3/credentials, by id or access.'''
+        """Get an ec2 keypair via v3/credentials, by id or access."""
         # Note v3/credentials does not support filtering by access
         # because it's stored in the credential blob, so we expect
         # all resources to pass credential_id except where backwards
-        # compatibility is required (resource only has acccess stored)
-        # then we'll have to to a brute-force lookup locally
+        # compatibility is required (resource only has access stored)
+        # then we'll have to do a brute-force lookup locally
         if credential_id:
             cred = self.client.credentials.get(credential_id)
             ec2_creds = json.loads(cred.blob)
@@ -471,8 +497,8 @@ class KeystoneClientV3(object):
         if not self.stack_domain_id:
             # FIXME(shardy): Legacy fallback for folks using old heat.conf
             # files which lack domain configuration
-            logger.warning(_('Falling back to legacy non-domain keypair, '
-                             'configure domain in heat.conf'))
+            LOG.warning(_('Falling back to legacy non-domain keypair, '
+                          'configure domain in heat.conf'))
             return self.create_ec2_keypair(user_id)
         data_blob = {'access': uuid.uuid4().hex,
                      'secret': uuid.uuid4().hex}
@@ -488,8 +514,8 @@ class KeystoneClientV3(object):
         if not self.stack_domain_id:
             # FIXME(shardy): Legacy fallback for folks using old heat.conf
             # files which lack domain configuration
-            logger.warning(_('Falling back to legacy non-domain keypair, '
-                             'configure domain in heat.conf'))
+            LOG.warning(_('Falling back to legacy non-domain keypair, '
+                          'configure domain in heat.conf'))
             return self.delete_ec2_keypair(credential_id=credential_id)
         self._check_stack_domain_user(user_id, project_id, 'delete_keypair')
         try:
@@ -507,8 +533,8 @@ class KeystoneClientV3(object):
         if not self.stack_domain_id:
             # FIXME(shardy): Legacy fallback for folks using old heat.conf
             # files which lack domain configuration
-            logger.warning(_('Falling back to legacy non-domain disable, '
-                             'configure domain in heat.conf'))
+            LOG.warning(_('Falling back to legacy non-domain disable, '
+                          'configure domain in heat.conf'))
             return self.disable_stack_user(user_id)
         self._check_stack_domain_user(user_id, project_id, 'disable')
         self.domain_admin_client.users.update(user=user_id, enabled=False)
@@ -517,8 +543,8 @@ class KeystoneClientV3(object):
         if not self.stack_domain_id:
             # FIXME(shardy): Legacy fallback for folks using old heat.conf
             # files which lack domain configuration
-            logger.warning(_('Falling back to legacy non-domain enable, '
-                             'configure domain in heat.conf'))
+            LOG.warning(_('Falling back to legacy non-domain enable, '
+                          'configure domain in heat.conf'))
             return self.enable_stack_user(user_id)
         self._check_stack_domain_user(user_id, project_id, 'enable')
         self.domain_admin_client.users.update(user=user_id, enabled=True)
@@ -534,10 +560,13 @@ class KeystoneClientV3(object):
 
 
 class KeystoneClient(object):
-    """
+
+    """Keystone Auth Client.
+
     Delay choosing the backend client module until the client's class
     needs to be initialized.
     """
+
     def __new__(cls, context):
         if cfg.CONF.keystone_backend == _default_keystone_backend:
             return KeystoneClientV3(context)

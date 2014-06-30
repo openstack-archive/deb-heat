@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -13,26 +12,28 @@
 #    under the License.
 
 import base64
-import copy
 from datetime import datetime
 
-from heat.engine import event
+import six
+
 from heat.common import exception
-from heat.openstack.common import excutils
-from heat.db import api as db_api
 from heat.common import identifier
 from heat.common import short_id
-from heat.engine import scheduler
-from heat.engine import resources
-from heat.engine import support
-# import class to avoid name collisions and ugly aliasing
+from heat.db import api as db_api
 from heat.engine.attributes import Attributes
+from heat.engine import environment
+from heat.engine import event
+from heat.engine import function
 from heat.engine.properties import Properties
-
-from heat.openstack.common import log as logging
+from heat.engine import resources
+from heat.engine import rsrc_defn
+from heat.engine import scheduler
+from heat.engine import support
+from heat.openstack.common import excutils
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import log as logging
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 DELETION_POLICY = (DELETE, RETAIN, SNAPSHOT) = ('Delete', 'Retain', 'Snapshot')
 
@@ -55,7 +56,6 @@ class UpdateReplace(Exception):
     '''
     Raised when resource update requires replacement
     '''
-    _message = _("The Resource %s requires replacement.")
 
     def __init__(self, resource_name='Unknown',
                  message=_("The Resource %s requires replacement.")):
@@ -64,30 +64,6 @@ class UpdateReplace(Exception):
         except TypeError:
             msg = message
         super(Exception, self).__init__(msg)
-
-
-class Metadata(object):
-    '''
-    A descriptor for accessing the metadata of a resource while ensuring the
-    most up-to-date data is always obtained from the database.
-    '''
-
-    def __get__(self, resource, resource_class):
-        '''Return the metadata for the owning resource.'''
-        if resource is None:
-            return None
-        if resource.id is None:
-            return resource.parsed_template('Metadata')
-        rs = db_api.resource_get(resource.stack.context, resource.id)
-        rs.refresh(attrs=['rsrc_metadata'])
-        return rs.rsrc_metadata
-
-    def __set__(self, resource, metadata):
-        '''Update the metadata for the owning resource.'''
-        if resource.id is None:
-            raise exception.ResourceNotAvailable(resource_name=resource.name)
-        rs = db_api.resource_get(resource.stack.context, resource.id)
-        rs.update_and_save({'rsrc_metadata': metadata})
 
 
 class Resource(object):
@@ -100,12 +76,6 @@ class Resource(object):
 
     # If True, this resource must be created before it can be referenced.
     strict_dependency = True
-
-    _metadata = Metadata()
-
-    # Resource implementation set this to the subset of template keys
-    # which are supported for handle_update, used by update_template_diff
-    update_allowed_keys = ()
 
     # Resource implementation set this to the subset of resource properties
     # supported for handle_update, used by update_template_diff_properties
@@ -125,36 +95,62 @@ class Resource(object):
 
     support_status = support.SupportStatus()
 
-    def __new__(cls, name, json, stack):
+    def __new__(cls, name, definition, stack):
         '''Create a new Resource of the appropriate class for its type.'''
+
+        assert isinstance(definition, rsrc_defn.ResourceDefinition)
 
         if cls != Resource:
             # Call is already for a subclass, so pass it through
-            return super(Resource, cls).__new__(cls)
+            ResourceClass = cls
+        else:
+            from heat.engine.resources import template_resource
+            # Select the correct subclass to instantiate.
 
-        # Select the correct subclass to instantiate
-        ResourceClass = stack.env.get_class(json.get('Type'),
-                                            resource_name=name)
-        return ResourceClass(name, json, stack)
+            # Note: If the current stack is an implementation of
+            # a resource type (a TemplateResource mapped in the environment)
+            # then don't infinitely recurse by creating a child stack
+            # of the same type. Instead get the next match which will get
+            # us closer to a concrete class.
+            def get_ancestor_template_resources():
+                """Return an ancestory list (TemplateResources only)."""
+                parent = stack.parent_resource
+                while parent is not None:
+                    if isinstance(parent, template_resource.TemplateResource):
+                        yield parent.template_name
+                    parent = parent.stack.parent_resource
 
-    def __init__(self, name, json_snippet, stack):
+            ancestor_list = set(get_ancestor_template_resources())
+
+            def accept_class(res_info):
+                if not isinstance(res_info, environment.TemplateResourceInfo):
+                    return True
+                return res_info.template_name not in ancestor_list
+
+            registry = stack.env.registry
+            ResourceClass = registry.get_class(definition.resource_type,
+                                               resource_name=name,
+                                               accept_fn=accept_class)
+            assert issubclass(ResourceClass, Resource)
+
+        return super(Resource, cls).__new__(ResourceClass)
+
+    def __init__(self, name, definition, stack):
         if '/' in name:
             raise ValueError(_('Resource name may not contain "/"'))
 
         self.stack = stack
         self.context = stack.context
         self.name = name
-        self.json_snippet = json_snippet
+        self.t = definition
         self.reparse()
         self.attributes = Attributes(self.name,
                                      self.attributes_schema,
                                      self._resolve_attribute)
 
-        if stack.id:
-            resource = db_api.resource_get_by_name_and_stack(self.context,
-                                                             name, stack.id)
-        else:
-            resource = None
+        self.abandon_in_progress = False
+
+        resource = stack.db_resource_get(name)
 
         if resource:
             self.resource_id = resource.nova_instance
@@ -162,7 +158,11 @@ class Resource(object):
             self.status = resource.status
             self.status_reason = resource.status_reason
             self.id = resource.id
-            self.data = resource.data
+            try:
+                self._data = db_api.resource_data_get_all(self, resource.data)
+            except exception.NotFound:
+                self._data = {}
+            self._rsrc_metadata = resource.rsrc_metadata
             self.created_time = resource.created_at
             self.updated_time = resource.updated_at
         else:
@@ -175,15 +175,15 @@ class Resource(object):
             self.status = self.COMPLETE
             self.status_reason = ''
             self.id = None
-            self.data = []
+            self._data = {}
+            self._rsrc_metadata = None
             self.created_time = None
             self.updated_time = None
 
     def reparse(self):
-        self.t = self.stack.resolve_static_data(self.json_snippet)
         self.properties = Properties(self.properties_schema,
                                      self.t.get('Properties', {}),
-                                     self._resolve_runtime_data,
+                                     function.resolve,
                                      self.name,
                                      self.context)
 
@@ -203,19 +203,27 @@ class Resource(object):
             return result
         return not result
 
-    @property
-    def metadata(self):
-        return self._metadata
+    def metadata_get(self, refresh=False):
+        if refresh:
+            self._rsrc_metadata = None
+        if self.id is None:
+            return self.parsed_template('Metadata')
+        if self._rsrc_metadata is not None:
+            return self._rsrc_metadata
+        rs = db_api.resource_get(self.stack.context, self.id)
+        rs.refresh(attrs=['rsrc_metadata'])
+        self._rsrc_metadata = rs.rsrc_metadata
+        return rs.rsrc_metadata
 
-    @metadata.setter
-    def metadata(self, metadata):
-        self._metadata = metadata
+    def metadata_set(self, metadata):
+        if self.id is None:
+            raise exception.ResourceNotAvailable(resource_name=self.name)
+        rs = db_api.resource_get(self.stack.context, self.id)
+        rs.update_and_save({'rsrc_metadata': metadata})
+        self._rsrc_metadata = metadata
 
     def type(self):
         return self.t['Type']
-
-    def _resolve_runtime_data(self, snippet):
-        return self.stack.resolve_runtime_data(snippet)
 
     def has_interface(self, resource_type):
         """Check to see if this resource is either mapped to resource_type
@@ -252,18 +260,14 @@ class Resource(object):
             template = self.t
         else:
             template = self.t.get(section, default)
-        return self._resolve_runtime_data(template)
+        return function.resolve(template)
 
     def update_template_diff(self, after, before):
         '''
         Returns the difference between the before and after json snippets. If
         something has been removed in after which exists in before we set it to
-        None. If any keys have changed which are not in update_allowed_keys,
-        raises UpdateReplace if the differing keys are not in
-        update_allowed_keys
+        None.
         '''
-        update_allowed_set = set(self.update_allowed_keys)
-
         # Create a set containing the keys in both current and update template
         template_keys = set(before.keys())
         template_keys.update(set(after.keys()))
@@ -272,41 +276,28 @@ class Resource(object):
         changed_keys_set = set([k for k in template_keys
                                 if before.get(k) != after.get(k)])
 
-        if not changed_keys_set.issubset(update_allowed_set):
-            raise UpdateReplace(self.name)
-
         return dict((k, after.get(k)) for k in changed_keys_set)
 
-    def update_template_diff_properties(self, after, before):
+    def update_template_diff_properties(self, after_props, before_props):
         '''
-        Returns the changed Properties between the before and after json
-        snippets. If a property has been removed in after which exists in
-        before we set it to None. If any properties have changed which are not
-        in update_allowed_properties, raises UpdateReplace if the modified
-        properties are not in the update_allowed_properties
+        Returns the changed Properties between the before and after properties.
+        If any properties have changed which are not in
+        update_allowed_properties, raises UpdateReplace.
         '''
         update_allowed_set = set(self.update_allowed_properties)
         for (psk, psv) in self.properties.props.iteritems():
             if psv.update_allowed():
                 update_allowed_set.add(psk)
 
-        # Create a set containing the keys in both current and update template
-        current_properties = before.get('Properties', {})
-
-        template_properties = set(current_properties.keys())
-        updated_properties = after.get('Properties', {})
-        template_properties.update(set(updated_properties.keys()))
-
         # Create a set of keys which differ (or are missing/added)
-        changed_properties_set = set(k for k in template_properties
-                                     if current_properties.get(k) !=
-                                     updated_properties.get(k))
+        changed_properties_set = set(k for k in after_props
+                                     if before_props.get(k) !=
+                                     after_props.get(k))
 
         if not changed_properties_set.issubset(update_allowed_set):
             raise UpdateReplace(self.name)
 
-        return dict((k, updated_properties.get(k))
-                    for k in changed_properties_set)
+        return dict((k, after_props.get(k)) for k in changed_properties_set)
 
     def __str__(self):
         if self.stack.id:
@@ -317,39 +308,9 @@ class Resource(object):
                                    str(self.stack))
         return '%s "%s"' % (self.__class__.__name__, self.name)
 
-    def _add_dependencies(self, deps, path, fragment):
-        if isinstance(fragment, dict):
-            for key, value in fragment.items():
-                if key in ('DependsOn', 'Ref', 'Fn::GetAtt', 'get_attr',
-                           'get_resource'):
-                    if key in ('Fn::GetAtt', 'get_attr'):
-                        res_name = value[0]
-                        res_list = [res_name]
-                    elif key == 'DependsOn' and isinstance(value, list):
-                        res_list = value
-                    else:
-                        res_list = [value]
-
-                    for res in res_list:
-                        try:
-                            target = self.stack[res]
-                        except KeyError:
-                            if (key != 'Ref' or
-                                    res not in self.stack.parameters):
-                                raise exception.InvalidTemplateReference(
-                                    resource=res,
-                                    key=path)
-                        else:
-                            if key == 'DependsOn' or target.strict_dependency:
-                                deps += (self, target)
-                else:
-                    self._add_dependencies(deps, '%s.%s' % (path, key), value)
-        elif isinstance(fragment, list):
-            for index, item in enumerate(fragment):
-                self._add_dependencies(deps, '%s[%d]' % (path, index), item)
-
     def add_dependencies(self, deps):
-        self._add_dependencies(deps, self.name, self.json_snippet)
+        for dep in self.t.dependencies(self.stack):
+            deps += (self, dep)
         deps += (self, None)
 
     def required_by(self):
@@ -383,6 +344,9 @@ class Resource(object):
 
     def heat(self):
         return self.stack.clients.heat()
+
+    def glance(self):
+        return self.stack.clients.glance()
 
     def _do_action(self, action, pre_func=None, resource_data=None):
         '''
@@ -420,9 +384,9 @@ class Resource(object):
                     while not check(handle_data):
                         yield
         except Exception as ex:
-            logger.exception('%s : %s' % (action, str(self)))
+            LOG.exception('%s : %s' % (action, str(self)))  # noqa
             failure = exception.ResourceFailure(ex, self, action)
-            self.state_set(action, self.FAILED, str(failure))
+            self.state_set(action, self.FAILED, six.text_type(failure))
             raise failure
         except:
             with excutils.save_and_reraise_exception():
@@ -430,7 +394,7 @@ class Resource(object):
                     self.state_set(action, self.FAILED,
                                    '%s aborted' % action)
                 except Exception:
-                    logger.exception(_('Error marking resource as failed'))
+                    LOG.exception(_('Error marking resource as failed'))
         else:
             self.state_set(action, self.COMPLETE)
 
@@ -438,7 +402,8 @@ class Resource(object):
         '''
         Default implementation of Resource.preview.
 
-        This method should be overriden by child classes for specific behavior.
+        This method should be overridden by child classes for specific
+        behavior.
         '''
         return self
 
@@ -453,7 +418,7 @@ class Resource(object):
                                   % str(self.state))
             raise exception.ResourceFailure(exc, self, action)
 
-        logger.info('creating %s' % str(self))
+        LOG.info(_('creating %s') % str(self))
 
         # Re-resolve the template, since if the resource Ref's
         # the StackId pseudo parameter, it will change after
@@ -462,18 +427,16 @@ class Resource(object):
         self.reparse()
         return self._do_action(action, self.properties.validate)
 
-    def set_deletion_policy(self, policy):
-        self.t['DeletionPolicy'] = policy
-
-    def get_abandon_data(self):
+    def prepare_abandon(self):
+        self.abandon_in_progress = True
         return {
             'name': self.name,
             'resource_id': self.resource_id,
             'type': self.type(),
             'action': self.action,
             'status': self.status,
-            'metadata': self.metadata,
-            'resource_data': db_api.resource_data_get_all(self)
+            'metadata': self.metadata_get(refresh=True),
+            'resource_data': self.data()
         }
 
     def adopt(self, resource_data):
@@ -497,10 +460,10 @@ class Resource(object):
         # save the resource data
         if data and isinstance(data, dict):
             for key, value in data.iteritems():
-                db_api.resource_data_set(self, key, value)
+                self.data_set(key, value)
 
         # save the resource metadata
-        self.metadata = metadata
+        self.metadata_set(metadata)
 
     def _get_resource_info(self, resource_data):
         if not resource_data:
@@ -536,19 +499,26 @@ class Resource(object):
             exc = Exception(_('Resource update already requested'))
             raise exception.ResourceFailure(exc, self, action)
 
-        logger.info('updating %s' % str(self))
+        LOG.info(_('updating %s') % str(self))
 
         try:
             self.updated_time = datetime.utcnow()
             self.state_set(action, self.IN_PROGRESS)
-            properties = Properties(self.properties_schema,
-                                    after.get('Properties', {}),
-                                    self._resolve_runtime_data,
-                                    self.name,
-                                    self.context)
-            properties.validate()
-            tmpl_diff = self.update_template_diff(after, before)
-            prop_diff = self.update_template_diff_properties(after, before)
+            before_properties = Properties(self.properties_schema,
+                                           before.get('Properties', {}),
+                                           function.resolve,
+                                           self.name,
+                                           self.context)
+            after_properties = Properties(self.properties_schema,
+                                          after.get('Properties', {}),
+                                          function.resolve,
+                                          self.name,
+                                          self.context)
+            after_properties.validate()
+            tmpl_diff = self.update_template_diff(function.resolve(after),
+                                                  before)
+            prop_diff = self.update_template_diff_properties(after_properties,
+                                                             before_properties)
             if callable(getattr(self, 'handle_update', None)):
                 handle_data = self.handle_update(after, tmpl_diff, prop_diff)
                 yield
@@ -557,15 +527,16 @@ class Resource(object):
                         yield
         except UpdateReplace:
             with excutils.save_and_reraise_exception():
-                logger.debug(_("Resource %s update requires replacement") %
-                             self.name)
+                LOG.debug("Resource %s update requires replacement" %
+                          self.name)
         except Exception as ex:
-            logger.exception('update %s : %s' % (str(self), str(ex)))
+            LOG.exception(_('update %(resource)s : %(err)s') %
+                          {'resource': str(self), 'err': ex})
             failure = exception.ResourceFailure(ex, self, action)
-            self.state_set(action, self.FAILED, str(failure))
+            self.state_set(action, self.FAILED, six.text_type(failure))
             raise failure
         else:
-            self.json_snippet = copy.deepcopy(after)
+            self.t = after
             self.reparse()
             self.state_set(action, self.COMPLETE)
 
@@ -582,7 +553,7 @@ class Resource(object):
                                   % str(self.state))
             raise exception.ResourceFailure(exc, self, action)
 
-        logger.info(_('suspending %s') % str(self))
+        LOG.info(_('suspending %s') % str(self))
         return self._do_action(action)
 
     def resume(self):
@@ -598,7 +569,7 @@ class Resource(object):
                                   % str(self.state))
             raise exception.ResourceFailure(exc, self, action)
 
-        logger.info(_('resuming %s') % str(self))
+        LOG.info(_('resuming %s') % str(self))
         return self._do_action(action)
 
     def physical_resource_name(self):
@@ -640,8 +611,9 @@ class Resource(object):
         return name[0:2] + '-' + name[-postfix_length:]
 
     def validate(self):
-        logger.info(_('Validating %s') % str(self))
+        LOG.info(_('Validating %s') % str(self))
 
+        function.validate(self.t)
         self.validate_deletion_policy(self.t)
         return self.properties.validate()
 
@@ -671,12 +643,15 @@ class Resource(object):
 
         initial_state = self.state
 
-        logger.info(_('deleting %s') % str(self))
+        LOG.info(_('deleting %s') % str(self))
 
         try:
             self.state_set(action, self.IN_PROGRESS)
 
-            deletion_policy = self.t.get('DeletionPolicy', DELETE)
+            if self.abandon_in_progress:
+                deletion_policy = RETAIN
+            else:
+                deletion_policy = self.t.get('DeletionPolicy', DELETE)
             handle_data = None
             if deletion_policy == DELETE:
                 if callable(getattr(self, 'handle_delete', None)):
@@ -693,9 +668,9 @@ class Resource(object):
                     yield
 
         except Exception as ex:
-            logger.exception(_('Delete %s'), str(self))
+            LOG.exception(_('Delete %s') % str(self))
             failure = exception.ResourceFailure(ex, self, self.action)
-            self.state_set(action, self.FAILED, str(failure))
+            self.state_set(action, self.FAILED, six.text_type(failure))
             raise failure
         except:
             with excutils.save_and_reraise_exception():
@@ -703,8 +678,7 @@ class Resource(object):
                     self.state_set(action, self.FAILED,
                                    'Deletion aborted')
                 except Exception:
-                    logger.exception(_('Error marking resource deletion '
-                                     'failed'))
+                    LOG.exception(_('Error marking resource deletion failed'))
         else:
             self.state_set(action, self.COMPLETE)
 
@@ -734,11 +708,11 @@ class Resource(object):
                 rs = db_api.resource_get(self.context, self.id)
                 rs.update_and_save({'nova_instance': self.resource_id})
             except Exception as ex:
-                logger.warn(_('db error %s') % str(ex))
+                LOG.warn(_('db error %s') % ex)
 
     def _store(self):
         '''Create the resource in the database.'''
-        metadata = self.metadata
+        metadata = self.metadata_get()
         try:
             rs = {'action': self.action,
                   'status': self.status,
@@ -752,8 +726,9 @@ class Resource(object):
             new_rs = db_api.resource_create(self.context, rs)
             self.id = new_rs.id
             self.created_time = new_rs.created_at
+            self._rsrc_metadata = metadata
         except Exception as ex:
-            logger.error(_('DB error %s') % str(ex))
+            LOG.error(_('DB error %s') % ex)
 
     def _add_event(self, action, status, reason):
         '''Add a state change event to the database.'''
@@ -761,10 +736,7 @@ class Resource(object):
                          self.resource_id, self.properties,
                          self.name, self.type())
 
-        try:
-            ev.store()
-        except Exception as ex:
-            logger.error(_('DB error %s') % str(ex))
+        ev.store()
 
     def _store_or_update(self, action, status, reason):
         self.action = action
@@ -781,10 +753,10 @@ class Resource(object):
                                     'updated_at': self.updated_time,
                                     'nova_instance': self.resource_id})
             except Exception as ex:
-                logger.error(_('DB error %s') % str(ex))
+                LOG.error(_('DB error %s') % ex)
 
         # store resource in DB on transition to CREATE_IN_PROGRESS
-        # all other transistions (other than to DELETE_COMPLETE)
+        # all other transitions (other than to DELETE_COMPLETE)
         # should be handled by the update_and_save above..
         elif (action, status) in [(self.CREATE, self.IN_PROGRESS),
                                   (self.ADOPT, self.IN_PROGRESS)]:
@@ -821,6 +793,8 @@ class Resource(object):
 
         if new_state != old_state:
             self._add_event(action, status, reason)
+
+        self.stack.reset_resource_attributes()
 
     @property
     def state(self):
@@ -899,21 +873,22 @@ class Resource(object):
             self._add_event('signal', self.status, get_string_details())
             self.handle_signal(details)
         except Exception as ex:
-            logger.exception(_('signal %(name)s : %(msg)s') %
-                             {'name': str(self), 'msg': str(ex)})
+            LOG.exception(_('signal %(name)s : %(msg)s') % {'name': str(self),
+                                                            'msg': ex})
             failure = exception.ResourceFailure(ex, self)
             raise failure
 
     def handle_update(self, json_snippet=None, tmpl_diff=None, prop_diff=None):
-        raise UpdateReplace(self.name)
+        if prop_diff:
+            raise UpdateReplace(self.name)
 
     def metadata_update(self, new_metadata=None):
         '''
         No-op for resources which don't explicitly override this method
         '''
         if new_metadata:
-            logger.warning(_("Resource %s does not implement metadata update")
-                           % self.name)
+            LOG.warning(_("Resource %s does not implement metadata update")
+                        % self.name)
 
     @classmethod
     def resource_to_template(cls, resource_type):
@@ -939,3 +914,41 @@ class Resource(object):
             },
             'Outputs': Attributes.as_outputs(resource_name, cls)
         }
+
+    def data(self):
+        '''
+        Resource data for this resource
+
+        Use methods data_set and data_delete to modify the resource data
+        for this resource.
+
+        :returns: a dict representing the resource data for this resource.
+        '''
+        if self._data is None and self.id:
+            try:
+                self._data = db_api.resource_data_get_all(self)
+            except exception.NotFound:
+                pass
+
+        return self._data or {}
+
+    def data_set(self, key, value, redact=False):
+        '''Save resource's key/value pair to database.'''
+        db_api.resource_data_set(self, key, value, redact)
+        # force fetch all resource data from the database again
+        self._data = None
+
+    def data_delete(self, key):
+        '''
+        Remove a resource_data element associated to a resource.
+
+        :returns: True if the key existed to delete
+        '''
+        try:
+            db_api.resource_data_delete(self, key)
+        except exception.NotFound:
+            return False
+        else:
+            # force fetch all resource data from the database again
+            self._data = None
+            return True

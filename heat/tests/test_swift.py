@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -17,7 +17,6 @@ from testtools import skipIf
 
 from heat.common import template_format
 from heat.engine import clients
-from heat.engine import resource
 from heat.engine.resources import swift
 from heat.engine import scheduler
 from heat.openstack.common.importutils import try_import
@@ -80,12 +79,11 @@ class swiftTest(HeatTestCase):
         self.m.StubOutWithMock(swiftclient.Connection, 'get_auth')
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
 
-        utils.setup_dummy_db()
-
     def create_resource(self, t, stack, resource_name):
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = swift.SwiftContainer(
             'test_resource',
-            t['Resources'][resource_name],
+            resource_defns[resource_name],
             stack)
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
@@ -96,9 +94,10 @@ class swiftTest(HeatTestCase):
         t = template_format.parse(swift_template)
         t['Resources']['SwiftContainer']['Properties']['name'] = 'the_name'
         stack = utils.parse_stack(t)
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = swift.SwiftContainer(
             'test_resource',
-            t['Resources']['SwiftContainer'],
+            resource_defns['SwiftContainer'],
             stack)
 
         self.assertEqual('the_name', rsrc.physical_resource_name())
@@ -158,9 +157,6 @@ class swiftTest(HeatTestCase):
 
         self.assertRaises(swift.exception.InvalidTemplateAttribute,
                           rsrc.FnGetAtt, 'Foo')
-
-        self.assertRaises(resource.UpdateReplace,
-                          rsrc.handle_update, {}, {}, {})
 
         scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
@@ -295,4 +291,4 @@ class swiftTest(HeatTestCase):
         scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
-        self.assertEqual({}, rsrc.metadata)
+        self.assertEqual({}, rsrc.metadata_get())

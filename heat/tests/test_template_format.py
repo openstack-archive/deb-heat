@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -14,6 +14,7 @@
 import os
 
 import mock
+import six
 import testtools
 import yaml
 
@@ -83,7 +84,7 @@ class YamlMinimalTest(HeatTestCase):
         parse_ex = self.assertRaises(ValueError,
                                      template_format.parse,
                                      tmpl_str)
-        self.assertIn(msg_str, str(parse_ex))
+        self.assertIn(msg_str, six.text_type(parse_ex))
 
     def test_long_yaml(self):
         template = {'HeatTemplateFormatVersion': '2012-12-12'}
@@ -159,7 +160,6 @@ class JsonYamlResolvedCompareTest(HeatTestCase):
         super(JsonYamlResolvedCompareTest, self).setUp()
         self.longMessage = True
         self.maxDiff = None
-        utils.setup_dummy_db()
 
     def load_template(self, file_name):
         filepath = os.path.join(os.path.dirname(os.path.realpath(__file__)),
@@ -172,8 +172,8 @@ class JsonYamlResolvedCompareTest(HeatTestCase):
     def compare_stacks(self, json_file, yaml_file, parameters):
         t1 = self.load_template(json_file)
         t2 = self.load_template(yaml_file)
-        del(t2[u'HeatTemplateFormatVersion'])
         del(t1[u'AWSTemplateFormatVersion'])
+        t1[u'HeatTemplateFormatVersion'] = t2[u'HeatTemplateFormatVersion']
         stack1 = utils.parse_stack(t1, parameters)
         stack2 = utils.parse_stack(t2, parameters)
 

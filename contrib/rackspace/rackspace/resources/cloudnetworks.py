@@ -1,3 +1,4 @@
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -13,6 +14,7 @@
 import netaddr
 
 from heat.common import exception
+from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
@@ -33,7 +35,7 @@ else:
     def resource_mapping():
         return {'Rackspace::Cloud::Network': CloudNetwork}
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class CloudNetwork(resource.Resource):
@@ -48,6 +50,12 @@ class CloudNetwork(resource.Resource):
         LABEL, CIDR
     ) = (
         "label", "cidr"
+    )
+
+    ATTRIBUTES = (
+        CIDR_ATTR, LABEL_ATTR,
+    ) = (
+        'cidr', 'label',
     )
 
     properties_schema = {
@@ -68,8 +76,12 @@ class CloudNetwork(resource.Resource):
     }
 
     attributes_schema = {
-        "cidr": _("The CIDR for an isolated private network."),
-        "label": _("The name of the network.")
+        CIDR_ATTR: attributes.Schema(
+            _("The CIDR for an isolated private network.")
+        ),
+        LABEL_ATTR: attributes.Schema(
+            _("The name of the network.")
+        ),
     }
 
     def __init__(self, name, json_snippet, stack):
@@ -81,8 +93,8 @@ class CloudNetwork(resource.Resource):
             try:
                 self._network = self.cloud_networks().get(self.resource_id)
             except NotFound:
-                logger.warn(_("Could not find network %s but resource id "
-                              "is set.") % self.resource_id)
+                LOG.warn(_("Could not find network %s but resource id is set.")
+                         % self.resource_id)
         return self._network
 
     def cloud_networks(self):

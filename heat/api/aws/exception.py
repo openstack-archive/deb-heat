@@ -1,4 +1,4 @@
-
+#
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
 #
@@ -16,9 +16,10 @@
 
 """Heat API exception subclasses - maps API response errors to AWS Errors"""
 
+import six
 import webob.exc
 
-from heat.common import wsgi
+from heat.common import serializers
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common.rpc import common as rpc_common
 
@@ -27,7 +28,7 @@ class HeatAPIException(webob.exc.HTTPError):
     '''
     Subclass webob HTTPError so we can correctly serialize the wsgi response
     into the http response body, using the format specified by the request.
-    Note this should not be used directly, instead use of of the subclasses
+    Note this should not be used directly, instead use the subclasses
     defined below which map to AWS API errors
     '''
     code = 400
@@ -44,7 +45,7 @@ class HeatAPIException(webob.exc.HTTPError):
         paste pipeline.  We serialize in XML by default (as AWS does)
         '''
         webob.exc.HTTPError.__init__(self, detail=detail)
-        serializer = wsgi.XMLResponseSerializer()
+        serializer = serializers.XMLResponseSerializer()
         serializer.default(self, self.get_unserialized_body())
 
     def get_unserialized_body(self):
@@ -293,13 +294,13 @@ def map_remote_error(ex):
             ex_type = ex_type[:-len(rpc_common._REMOTE_POSTFIX)]
 
         if ex_type in inval_param_errors:
-            return HeatInvalidParameterValueError(detail=str(ex))
+            return HeatInvalidParameterValueError(detail=six.text_type(ex))
         elif ex_type in denied_errors:
-            return HeatAccessDeniedError(detail=str(ex))
+            return HeatAccessDeniedError(detail=six.text_type(ex))
         elif ex_type in already_exists_errors:
-            return AlreadyExistsError(detail=str(ex))
+            return AlreadyExistsError(detail=six.text_type(ex))
         elif ex_type in invalid_action_errors:
-            return HeatActionInProgressError(detail=str(ex))
+            return HeatActionInProgressError(detail=six.text_type(ex))
         else:
             # Map everything else to internal server error for now
-            return HeatInternalFailureError(detail=str(ex))
+            return HeatInternalFailureError(detail=six.text_type(ex))

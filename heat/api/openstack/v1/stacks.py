@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -22,6 +21,8 @@ from heat.api.openstack.v1 import util
 from heat.api.openstack.v1.views import stacks_view
 from heat.common import environment_format
 from heat.common import identifier
+from heat.common import param_utils
+from heat.common import serializers
 from heat.common import template_format
 from heat.common import urlfetch
 from heat.common import wsgi
@@ -29,7 +30,7 @@ from heat.openstack.common import log as logging
 from heat.rpc import api as engine_api
 from heat.rpc import client as rpc_client
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class InstantiationData(object):
@@ -93,11 +94,11 @@ class InstantiationData(object):
                 return template_data
         elif self.PARAM_TEMPLATE_URL in self.data:
             url = self.data[self.PARAM_TEMPLATE_URL]
-            logger.debug('TemplateUrl %s' % url)
+            LOG.debug('TemplateUrl %s' % url)
             try:
                 template_data = urlfetch.get(url)
             except IOError as ex:
-                err_reason = _('Could not retrieve template: %s') % str(ex)
+                err_reason = _('Could not retrieve template: %s') % ex
                 raise exc.HTTPBadRequest(err_reason)
         else:
             raise exc.HTTPBadRequest(_("No template specified"))
@@ -154,15 +155,21 @@ class StackController(object):
         filter_whitelist = {
             'status': 'mixed',
             'name': 'mixed',
+            'action': 'mixed',
         }
         whitelist = {
             'limit': 'single',
             'marker': 'single',
             'sort_dir': 'single',
             'sort_keys': 'multi',
+            'show_deleted': 'single',
         }
         params = util.get_allowed_params(req.params, whitelist)
         filter_params = util.get_allowed_params(req.params, filter_whitelist)
+
+        if engine_api.PARAM_SHOW_DELETED in params:
+            params[engine_api.PARAM_SHOW_DELETED] = param_utils.extract_bool(
+                params[engine_api.PARAM_SHOW_DELETED])
 
         if not filter_params:
             filter_params = None
@@ -181,7 +188,7 @@ class StackController(object):
                                                      filters=filter_params,
                                                      tenant_safe=tenant_safe)
             except AttributeError as exc:
-                logger.warning("Old Engine Version: %s" % str(exc))
+                LOG.warning(_("Old Engine Version: %s") % exc)
 
         return stacks_view.collection(req, stacks=stacks, count=count,
                                       tenant_safe=tenant_safe)
@@ -379,7 +386,7 @@ class StackController(object):
         return self.rpc_client.generate_template(req.context, type_name)
 
 
-class StackSerializer(wsgi.JSONResponseSerializer):
+class StackSerializer(serializers.JSONResponseSerializer):
     """Handles serialization of specific controller method responses."""
 
     def _populate_response_header(self, response, location, status):

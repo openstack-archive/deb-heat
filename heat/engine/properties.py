@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -14,10 +13,12 @@
 
 import collections
 
+import six
+
 from heat.common import exception
+from heat.engine import constraints as constr
 from heat.engine import parameters
 from heat.engine import support
-from heat.engine import constraints as constr
 
 SCHEMA_KEYS = (
     REQUIRED, IMPLEMENTED, DEFAULT, TYPE, SCHEMA,
@@ -58,6 +59,8 @@ class Schema(constr.Schema):
         self.implemented = implemented
         self.update_allowed = update_allowed
         self.support_status = support_status
+        # validate structural correctness of schema itself
+        self.validate()
 
     @classmethod
     def from_legacy(cls, schema_dict):
@@ -309,7 +312,7 @@ class Properties(collections.Mapping):
                 try:
                     self[key]
                 except ValueError as e:
-                    msg = _("Property error : %s") % str(e)
+                    msg = _("Property error : %s") % e
                     raise exception.StackValidationFailed(message=msg)
 
             # are there unimplemented Properties
@@ -336,7 +339,8 @@ class Properties(collections.Mapping):
             # the resolver function could raise any number of exceptions,
             # so handle this generically
             except Exception as e:
-                raise ValueError('%s%s %s' % (self.error_prefix, key, str(e)))
+                raise ValueError('%s%s %s' % (self.error_prefix, key,
+                                              six.text_type(e)))
         elif prop.has_default():
             return prop.default()
         elif prop.required():

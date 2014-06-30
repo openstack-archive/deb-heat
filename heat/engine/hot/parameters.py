@@ -15,11 +15,6 @@
 from heat.engine import constraints as constr
 from heat.engine import parameters
 
-from heat.openstack.common import log as logging
-
-
-logger = logging.getLogger(__name__)
-
 
 PARAM_CONSTRAINTS = (
     CONSTRAINTS, DESCRIPTION, LENGTH, RANGE, MIN, MAX,
@@ -44,19 +39,23 @@ class HOTParamSchema(parameters.Schema):
     # For Parameters the type name for Schema.LIST is comma_delimited_list
     # and the type name for Schema.MAP is json
     TYPES = (
-        STRING, NUMBER, LIST, MAP,
+        STRING, NUMBER, LIST, MAP, BOOLEAN,
     ) = (
-        'string', 'number', 'comma_delimited_list', 'json',
+        'string', 'number', 'comma_delimited_list', 'json', 'boolean',
     )
 
     PARAMETER_KEYS = KEYS
 
     @classmethod
-    def from_dict(cls, schema_dict):
+    def from_dict(cls, param_name, schema_dict):
         """
         Return a Parameter Schema object from a legacy schema dictionary.
+
+        :param param_name: name of the parameter owning the schema; used
+               for more verbose logging
+        :type  param_name: str
         """
-        cls._validate_dict(schema_dict)
+        cls._validate_dict(param_name, schema_dict)
 
         def constraints():
             constraints = schema_dict.get(CONSTRAINTS)
@@ -65,7 +64,8 @@ class HOTParamSchema(parameters.Schema):
 
             if not isinstance(constraints, list):
                 raise constr.InvalidSchemaError(
-                    _("Invalid parameter constraints, expected a list"))
+                    _("Invalid parameter constraints for parameter %s, "
+                      "expected a list") % param_name)
 
             valid_keys = (DESCRIPTION, LENGTH, RANGE, ALLOWED_VALUES,
                           ALLOWED_PATTERN, CUSTOM_CONSTRAINT)

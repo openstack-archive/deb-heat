@@ -1,3 +1,4 @@
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -18,19 +19,20 @@ from heat.openstack.common.db.sqlalchemy import migration as oslo_migration
 INIT_VERSION = 14
 
 
-def db_sync(version=None):
+def db_sync(engine, version=None):
     path = os.path.join(os.path.abspath(os.path.dirname(__file__)),
                         'migrate_repo')
-    return oslo_migration.db_sync(path, version, init_version=INIT_VERSION)
+    return oslo_migration.db_sync(engine, path, version,
+                                  init_version=INIT_VERSION)
 
 
-def db_version():
+def db_version(engine):
     path = os.path.join(os.path.abspath(os.path.dirname(__file__)),
                         'migrate_repo')
-    return oslo_migration.db_version(path, INIT_VERSION)
+    return oslo_migration.db_version(engine, path, INIT_VERSION)
 
 
-def db_version_control(version=None):
+def db_version_control(engine, version=None):
     path = os.path.join(os.path.abspath(os.path.dirname(__file__)),
                         'migrate_repo')
-    return oslo_migration.db_version_control(path, version)
+    return oslo_migration.db_version_control(engine, path, version)

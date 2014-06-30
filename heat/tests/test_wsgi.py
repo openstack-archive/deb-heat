@@ -1,4 +1,4 @@
-
+#
 # Copyright 2010-2011 OpenStack Foundation
 # All Rights Reserved.
 #
@@ -15,12 +15,13 @@
 #    under the License.
 
 
-import datetime
 import json
+
 from oslo.config import cfg
 import stubout
 import webob
 
+from heat.api.aws import exception as aws_exception
 from heat.common import exception
 from heat.common import wsgi
 from heat.tests.common import HeatTestCase
@@ -230,6 +231,9 @@ class ResourceExceptionHandlingTest(HeatTestCase):
         ('client_exceptions', dict(
             exception=exception.StackResourceLimitExceeded,
             exception_catch=exception.StackResourceLimitExceeded)),
+        ('aws_exception', dict(
+            exception=aws_exception.HeatAccessDeniedError,
+            exception_catch=aws_exception.HeatAccessDeniedError)),
         ('webob_bad_request', dict(
             exception=webob.exc.HTTPBadRequest,
             exception_catch=exception.HTTPExceptionDisguise)),
@@ -255,39 +259,7 @@ class ResourceExceptionHandlingTest(HeatTestCase):
                                  None)
         e = self.assertRaises(self.exception_catch, resource, request)
         e = e.exc if hasattr(e, 'exc') else e
-        self.assertNotIn(str(e), self.logger.output)
-
-
-class JSONResponseSerializerTest(HeatTestCase):
-
-    def test_to_json(self):
-        fixture = {"key": "value"}
-        expected = '{"key": "value"}'
-        actual = wsgi.JSONResponseSerializer().to_json(fixture)
-        self.assertEqual(expected, actual)
-
-    def test_to_json_with_date_format_value(self):
-        fixture = {"date": datetime.datetime(1, 3, 8, 2)}
-        expected = '{"date": "0001-03-08T02:00:00"}'
-        actual = wsgi.JSONResponseSerializer().to_json(fixture)
-        self.assertEqual(expected, actual)
-
-    def test_to_json_with_more_deep_format(self):
-        fixture = {"is_public": True, "name": [{"name1": "test"}]}
-        expected = '{"is_public": true, "name": [{"name1": "test"}]}'
-        actual = wsgi.JSONResponseSerializer().to_json(fixture)
-        self.assertEqual(expected, actual)
-
-    def test_default(self):
-        fixture = {"key": "value"}
-        response = webob.Response()
-        wsgi.JSONResponseSerializer().default(response, fixture)
-        self.assertEqual(200, response.status_int)
-        content_types = filter(lambda h: h[0] == 'Content-Type',
-                               response.headerlist)
-        self.assertEqual(1, len(content_types))
-        self.assertEqual('application/json', response.content_type)
-        self.assertEqual('{"key": "value"}', response.body)
+        self.assertNotIn(str(e), self.LOG.output)
 
 
 class JSONRequestDeserializerTest(HeatTestCase):

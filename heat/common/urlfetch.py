@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,44 +11,47 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-'''
-Utility for fetching a resource (e.g. a template) from a URL.
-'''
+"""Utility for fetching a resource (e.g. a template) from a URL."""
 
 from oslo.config import cfg
 import requests
 from requests import exceptions
 
+from six.moves import urllib
+
+from heat.common import exception
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
-from heat.openstack.common.py3kcompat import urlutils
 
 cfg.CONF.import_opt('max_template_size', 'heat.common.config')
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
+
+
+class URLFetchError(exception.Error, IOError):
+    pass
 
 
 def get(url, allowed_schemes=('http', 'https')):
-    '''
-    Get the data at the specifier URL.
+    """Get the data at the specified URL.
 
     The URL must use the http: or https: schemes.
     The file: scheme is also supported if you override
     the allowed_schemes argument.
     Raise an IOError if getting the data fails.
-    '''
-    logger.info(_('Fetching data from %s') % url)
+    """
+    LOG.info(_('Fetching data from %s') % url)
 
-    components = urlutils.urlparse(url)
+    components = urllib.parse.urlparse(url)
 
     if components.scheme not in allowed_schemes:
-        raise IOError(_('Invalid URL scheme %s') % components.scheme)
+        raise URLFetchError(_('Invalid URL scheme %s') % components.scheme)
 
     if components.scheme == 'file':
         try:
-            return urlutils.urlopen(url).read()
-        except urlutils.URLError as uex:
-            raise IOError(_('Failed to retrieve template: %s') % str(uex))
+            return urllib.request.urlopen(url).read()
+        except urllib.error.URLError as uex:
+            raise URLFetchError(_('Failed to retrieve template: %s') % uex)
 
     try:
         resp = requests.get(url, stream=True)
@@ -68,9 +70,9 @@ def get(url, allowed_schemes=('http', 'https')):
         for chunk in reader:
             result += chunk
             if len(result) > cfg.CONF.max_template_size:
-                raise IOError("Template exceeds maximum allowed size (%s "
-                              "bytes)" % cfg.CONF.max_template_size)
+                raise URLFetchError("Template exceeds maximum allowed size (%s"
+                                    " bytes)" % cfg.CONF.max_template_size)
         return result
 
     except exceptions.RequestException as ex:
-        raise IOError(_('Failed to retrieve template: %s') % str(ex))
+        raise URLFetchError(_('Failed to retrieve template: %s') % ex)

@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -16,9 +15,6 @@ from heat.common import exception
 from heat.engine import clients
 from heat.engine import properties
 from heat.engine import resource
-from heat.openstack.common import log as logging
-
-logger = logging.getLogger(__name__)
 
 
 class SecurityGroup(resource.Resource):

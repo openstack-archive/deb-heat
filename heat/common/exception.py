@@ -1,4 +1,4 @@
-
+#
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
 #
@@ -19,20 +19,22 @@
 import functools
 import sys
 
+import six
+from six.moves.urllib import parse as urlparse
+
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
-from heat.openstack.common.py3kcompat import urlutils
 
 
 _FATAL_EXCEPTION_FORMAT_ERRORS = False
 
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class RedirectException(Exception):
     def __init__(self, url):
-        self.url = urlutils.urlparse(url)
+        self.url = urlparse.urlparse(url)
 
 
 class KeystoneError(Exception):
@@ -110,18 +112,21 @@ class HeatException(Exception):
             exc_info = sys.exc_info()
             #kwargs doesn't match a variable in the message
             #log the issue and the kwargs
-            logger.exception(_('Exception in string format operation'))
+            LOG.exception(_('Exception in string format operation'))
             for name, value in kwargs.iteritems():
-                logger.error("%s: %s" % (name, value))
+                LOG.error("%s: %s" % (name, value))  # noqa
 
             if _FATAL_EXCEPTION_FORMAT_ERRORS:
                 raise exc_info[0], exc_info[1], exc_info[2]
 
     def __str__(self):
-        return str(self.message)
+        return unicode(self.message).encode('UTF-8')
 
     def __unicode__(self):
         return unicode(self.message)
+
+    def __deepcopy__(self, memo):
+        return self.__class__(**self.kwargs)
 
 
 class MissingCredentialError(HeatException):
@@ -153,7 +158,7 @@ class Forbidden(HeatException):
     msg_fmt = _("You are not authorized to complete this action.")
 
 
-#NOTE(bcwaldon): here for backwards-compatability, need to deprecate.
+#NOTE(bcwaldon): here for backwards-compatibility, need to deprecate.
 class NotAuthorized(Forbidden):
     msg_fmt = _("You are not authorized to complete this action.")
 
@@ -280,7 +285,7 @@ class ResourceFailure(HeatException):
         self.action = action
         exc_type = type(exception).__name__
         super(ResourceFailure, self).__init__(exc_type=exc_type,
-                                              message=str(exception))
+                                              message=six.text_type(exception))
 
 
 class NotSupported(HeatException):

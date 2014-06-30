@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -21,18 +20,18 @@ import os
 import pkgutil
 import string
 
+from novaclient import exceptions as nova_exceptions
 from oslo.config import cfg
 import six
+from six.moves.urllib import parse as urlparse
 
 from heat.common import exception
 from heat.engine import clients
 from heat.engine import scheduler
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
-from heat.openstack.common.py3kcompat import urlutils
-from heat.openstack.common import uuidutils
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 deferred_server_statuses = ['BUILD',
@@ -56,58 +55,19 @@ def refresh_server(server):
     except clients.novaclient.exceptions.OverLimit as exc:
         msg = _("Server %(name)s (%(id)s) received an OverLimit "
                 "response during server.get(): %(exception)s")
-        logger.warning(msg % {'name': server.name,
-                              'id': server.id,
-                              'exception': str(exc)})
+        LOG.warning(msg % {'name': server.name,
+                           'id': server.id,
+                           'exception': exc})
     except clients.novaclient.exceptions.ClientException as exc:
         if ((getattr(exc, 'http_status', getattr(exc, 'code', None)) in
              (500, 503))):
             msg = _('Server "%(name)s" (%(id)s) received the following '
                     'exception during server.get(): %(exception)s')
-            logger.warning(msg % {'name': server.name,
-                                  'id': server.id,
-                                  'exception': str(exc)})
+            LOG.warning(msg % {'name': server.name,
+                               'id': server.id,
+                               'exception': exc})
         else:
             raise
-
-
-def get_image_id(nova_client, image_identifier):
-    '''
-    Return an id for the specified image name or identifier.
-
-    :param nova_client: the nova client to use
-    :param image_identifier: image name or a UUID-like identifier
-    :returns: the id of the requested :image_identifier:
-    :raises: exception.ImageNotFound, exception.PhysicalResourceNameAmbiguity
-    '''
-    if uuidutils.is_uuid_like(image_identifier):
-        try:
-            image_id = nova_client.images.get(image_identifier).id
-        except clients.novaclient.exceptions.NotFound:
-            logger.info(_("Image %s was not found in glance")
-                        % image_identifier)
-            raise exception.ImageNotFound(image_name=image_identifier)
-    else:
-        try:
-            image_list = nova_client.images.list()
-        except clients.novaclient.exceptions.ClientException as ex:
-            raise exception.Error(
-                message=(_("Error retrieving image list from nova: %s") %
-                         str(ex)))
-        image_names = dict(
-            (o.id, o.name)
-            for o in image_list if o.name == image_identifier)
-        if len(image_names) == 0:
-            logger.info(_("Image %s was not found in glance") %
-                        image_identifier)
-            raise exception.ImageNotFound(image_name=image_identifier)
-        elif len(image_names) > 1:
-            logger.info(_("Multiple images %s were found in glance with name")
-                        % image_identifier)
-            raise exception.PhysicalResourceNameAmbiguity(
-                name=image_identifier)
-        image_id = image_names.popitem()[0]
-    return image_id
 
 
 def get_ip(server, net_type, ip_version):
@@ -151,10 +111,10 @@ def get_keypair(nova_client, key_name):
     :returns: the keypair (name, public_key) for :key_name:
     :raises: exception.UserKeyPairMissing
     '''
-    for keypair in nova_client.keypairs.list():
-        if keypair.name == key_name:
-            return keypair
-    raise exception.UserKeyPairMissing(key_name=key_name)
+    try:
+        return nova_client.keypairs.get(key_name)
+    except nova_exceptions.NotFound:
+        raise exception.UserKeyPairMissing(key_name=key_name)
 
 
 def build_userdata(resource, userdata=None, instance_user=None,
@@ -239,7 +199,7 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
         attachments.append((read_cloudinit_file('loguserdata.py'),
                            'loguserdata.py', 'x-shellscript'))
 
-    metadata = resource.metadata
+    metadata = resource.metadata_get()
     if metadata:
         attachments.append((json.dumps(metadata),
                             'cfn-init-data', 'x-cfninitdata'))
@@ -253,8 +213,8 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
 
         # Create a boto config which the cfntools on the host use to know
         # where the cfn and cw API's are to be accessed
-        cfn_url = urlutils.urlparse(cfg.CONF.heat_metadata_server_url)
-        cw_url = urlutils.urlparse(cfg.CONF.heat_watch_server_url)
+        cfn_url = urlparse.urlparse(cfg.CONF.heat_metadata_server_url)
+        cw_url = urlparse.urlparse(cfg.CONF.heat_watch_server_url)
         is_secure = cfg.CONF.instance_connection_is_secure
         vcerts = cfg.CONF.instance_connection_https_validate_certificates
         boto_cfg = "\n".join(["[Boto]",
@@ -371,8 +331,8 @@ def server_to_ipaddress(client, server):
     try:
         server = client.servers.get(server)
     except clients.novaclient.exceptions.NotFound as ex:
-        logger.warn(_('Instance (%(server)s) not found: %(ex)s') % {
-                    'server': server, 'ex': str(ex)})
+        LOG.warn(_('Instance (%(server)s) not found: %(ex)s')
+                 % {'server': server, 'ex': ex})
     else:
         for n in server.networks:
             if len(server.networks[n]) > 0:

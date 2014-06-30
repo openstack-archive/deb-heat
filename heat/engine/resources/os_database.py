@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -13,6 +12,7 @@
 #    under the License.
 
 from heat.common import exception
+from heat.engine import attributes
 from heat.engine.clients import troveclient
 from heat.engine import constraints
 from heat.engine import properties
@@ -21,7 +21,7 @@ from heat.engine.resources import nova_utils
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class OSDBInstance(resource.Resource):
@@ -47,6 +47,12 @@ class OSDBInstance(resource.Resource):
         USER_NAME, USER_PASSWORD, USER_HOST, USER_DATABASES,
     ) = (
         'name', 'password', 'host', 'databases',
+    )
+
+    ATTRIBUTES = (
+        HOSTNAME, HREF,
+    ) = (
+        'hostname', 'href',
     )
 
     properties_schema = {
@@ -163,8 +169,12 @@ class OSDBInstance(resource.Resource):
     }
 
     attributes_schema = {
-        "hostname": _("Hostname of the instance"),
-        "href": _("Api endpoint reference of the instance")
+        HOSTNAME: attributes.Schema(
+            _("Hostname of the instance")
+        ),
+        HREF: attributes.Schema(
+            _("Api endpoint reference of the instance")
+        ),
     }
 
     def __init__(self, name, json_snippet, stack):
@@ -225,9 +235,9 @@ class OSDBInstance(resource.Resource):
         except troveclient.exceptions.RequestEntityTooLarge as exc:
             msg = _("Stack %(name)s (%(id)s) received an OverLimit "
                     "response during instance.get(): %(exception)s")
-            logger.warning(msg % {'name': self.stack.name,
-                                  'id': self.stack.id,
-                                  'exception': str(exc)})
+            LOG.warning(msg % {'name': self.stack.name,
+                               'id': self.stack.id,
+                               'exception': exc})
 
     def check_create_complete(self, instance):
         '''
@@ -243,9 +253,9 @@ class OSDBInstance(resource.Resource):
 
         msg = _("Database instance %(database)s created (flavor:%(flavor)s, "
                 "volume:%(volume)s)")
-        logger.info(msg % ({'database': self.dbinstancename,
-                            'flavor': self.flavor,
-                            'volume': self.volume}))
+        LOG.info(msg % ({'database': self.dbinstancename,
+                         'flavor': self.flavor,
+                         'volume': self.volume}))
         return True
 
     def handle_delete(self):
@@ -259,8 +269,7 @@ class OSDBInstance(resource.Resource):
         try:
             instance = self.trove().instances.get(self.resource_id)
         except troveclient.exceptions.NotFound:
-            logger.debug(_("Database instance %s not found.") %
-                         self.resource_id)
+            LOG.debug("Database instance %s not found." % self.resource_id)
             self.resource_id_set(None)
         else:
             instance.delete()
@@ -322,15 +331,15 @@ class OSDBInstance(resource.Resource):
             else:
                 for link in self.dbinstance.links:
                     if link['rel'] == 'self':
-                        self._href = link['href']
+                        self._href = link[self.HREF]
                         break
 
         return self._href
 
     def _resolve_attribute(self, name):
-        if name == 'hostname':
+        if name == self.HOSTNAME:
             return self.dbinstance.hostname
-        elif name == 'href':
+        elif name == self.HREF:
             return self.href()
 
 

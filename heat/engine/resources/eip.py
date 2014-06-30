@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -13,6 +12,7 @@
 #    under the License.
 
 from heat.common import exception
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
@@ -22,7 +22,7 @@ from heat.openstack.common import excutils
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class ElasticIp(resource.Resource):
@@ -30,6 +30,12 @@ class ElasticIp(resource.Resource):
         DOMAIN, INSTANCE_ID,
     ) = (
         'Domain', 'InstanceId',
+    )
+
+    ATTRIBUTES = (
+        ALLOCATION_ID,
+    ) = (
+        'AllocationId',
     )
 
     properties_schema = {
@@ -48,9 +54,11 @@ class ElasticIp(resource.Resource):
     }
 
     attributes_schema = {
-        'AllocationId': _('ID that AWS assigns to represent the allocation of'
-                          ' the address for use with Amazon VPC. Returned only'
-                          ' for VPC elastic IP addresses.')
+        ALLOCATION_ID: attributes.Schema(
+            _('ID that AWS assigns to represent the allocation of the address '
+              'for use with Amazon VPC. Returned only for VPC elastic IP '
+              'addresses.')
+        ),
     }
 
     def __init__(self, name, json_snippet, stack):
@@ -65,14 +73,14 @@ class ElasticIp(resource.Resource):
                     ips = self.neutron().show_floatingip(self.resource_id)
                 except ne as e:
                     if e.status_code == 404:
-                        logger.warn(_("Floating IPs not found: %s") % str(e))
+                        LOG.warn(_("Floating IPs not found: %s") % e)
                 else:
                     self.ipaddress = ips['floatingip']['floating_ip_address']
             else:
                 try:
                     ips = self.nova().floating_ips.get(self.resource_id)
                 except clients.novaclient.exceptions.NotFound as ex:
-                    logger.warn(_("Floating IPs not found: %s") % str(ex))
+                    LOG.warn(_("Floating IPs not found: %s") % ex)
                 else:
                     self.ipaddress = ips.ip
         return self.ipaddress or ''
@@ -89,7 +97,7 @@ class ElasticIp(resource.Resource):
                 'floatingip': props})['floatingip']
             self.ipaddress = ips['floating_ip_address']
             self.resource_id_set(ips['id'])
-            logger.info(_('ElasticIp create %s') % str(ips))
+            LOG.info(_('ElasticIp create %s') % str(ips))
         else:
             if self.properties[self.DOMAIN]:
                 raise exception.Error(_('Domain property can not be set on '
@@ -101,12 +109,12 @@ class ElasticIp(resource.Resource):
                 with excutils.save_and_reraise_exception():
                     msg = _("No default floating IP pool configured. "
                             "Set 'default_floating_pool' in nova.conf.")
-                    logger.error(msg)
+                    LOG.error(msg)
 
             if ips:
                 self.ipaddress = ips.ip
                 self.resource_id_set(ips.id)
-                logger.info(_('ElasticIp create %s') % str(ips))
+                LOG.info(_('ElasticIp create %s') % str(ips))
 
         instance_id = self.properties[self.INSTANCE_ID]
         if instance_id:
@@ -142,7 +150,7 @@ class ElasticIp(resource.Resource):
         return unicode(self._ipaddress())
 
     def _resolve_attribute(self, name):
-        if name == 'AllocationId':
+        if name == self.ALLOCATION_ID:
             return unicode(self.resource_id)
 
 
@@ -185,16 +193,15 @@ class ElasticIpAssociation(resource.Resource):
 
         if self.properties[self.EIP]:
             if not self.properties[self.INSTANCE_ID]:
-                logger.warn(_('Skipping association, InstanceId not '
-                            'specified'))
+                LOG.warn(_('Skipping association, InstanceId not specified'))
                 return
             server = self.nova().servers.get(self.properties[self.INSTANCE_ID])
             server.add_floating_ip(self.properties[self.EIP])
             self.resource_id_set(self.properties[self.EIP])
-            logger.debug(_('ElasticIpAssociation '
-                           '%(instance)s.add_floating_ip(%(eip)s)'),
-                         {'instance': self.properties[self.INSTANCE_ID],
-                          'eip': self.properties[self.EIP]})
+            LOG.debug('ElasticIpAssociation '
+                      '%(instance)s.add_floating_ip(%(eip)s)',
+                      {'instance': self.properties[self.INSTANCE_ID],
+                       'eip': self.properties[self.EIP]})
         elif self.properties[self.ALLOCATION_ID]:
             assert clients.neutronclient, "Neutron required for VPC operations"
             port_id = None
@@ -208,7 +215,7 @@ class ElasticIpAssociation(resource.Resource):
                 port_rsrc = ports['ports'][0]
                 port_id = port_rsrc['id']
             else:
-                logger.warn(_('Skipping association, resource not specified'))
+                LOG.warn(_('Skipping association, resource not specified'))
                 return
 
             float_id = self.properties[self.ALLOCATION_ID]

@@ -1,4 +1,4 @@
-
+#
 # Copyright 2013 NTT Corp.
 # All Rights Reserved.
 #
@@ -15,16 +15,16 @@
 #    limitations under the License.
 
 from heat.common import exception
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.neutron import neutron
-from heat.openstack.common import log as logging
+from heat.engine.resources.neutron import neutron_utils
+from heat.engine import support
 
 if clients.neutronclient is not None:
     from neutronclient.common.exceptions import NeutronClientException
-
-logger = logging.getLogger(__name__)
 
 
 class NetworkGateway(neutron.NeutronResource):
@@ -38,6 +38,12 @@ class NetworkGateway(neutron.NeutronResource):
         'name', 'devices', 'connections',
     )
 
+    ATTRIBUTES = (
+        DEFAULT, SHOW,
+    ) = (
+        'default', 'show',
+    )
+
     _DEVICES_KEYS = (
         ID, INTERFACE_NAME,
     ) = (
@@ -45,9 +51,9 @@ class NetworkGateway(neutron.NeutronResource):
     )
 
     _CONNECTIONS_KEYS = (
-        NETWORK_ID, SEGMENTATION_TYPE, SEGMENTATION_ID,
+        NETWORK_ID, NETWORK, SEGMENTATION_TYPE, SEGMENTATION_ID,
     ) = (
-        'network_id', 'segmentation_type', 'segmentation_id',
+        'network_id', 'network', 'segmentation_type', 'segmentation_id',
     )
 
     properties_schema = {
@@ -90,10 +96,17 @@ class NetworkGateway(neutron.NeutronResource):
                 schema={
                     NETWORK_ID: properties.Schema(
                         properties.Schema.STRING,
+                        support_status=support.SupportStatus(
+                            support.DEPRECATED,
+                            _('Use property %s.') % NETWORK),
+                        required=False
+                    ),
+                    NETWORK: properties.Schema(
+                        properties.Schema.STRING,
                         description=_(
-                            'The id of internal network to connect on '
+                            'The internal network to connect on '
                             'the network gateway.'),
-                        required=True
+                        required=False
                     ),
                     SEGMENTATION_TYPE: properties.Schema(
                         properties.Schema.STRING,
@@ -118,11 +131,13 @@ class NetworkGateway(neutron.NeutronResource):
     }
 
     attributes_schema = {
-        "default": _("A boolean value of default flag."),
-        "show": _("All attributes.")
+        DEFAULT: attributes.Schema(
+            _("A boolean value of default flag.")
+        ),
+        SHOW: attributes.Schema(
+            _("All attributes.")
+        ),
     }
-
-    update_allowed_keys = ('Properties',)
 
     def _show_resource(self):
         return self.neutron().show_network_gateway(
@@ -136,6 +151,8 @@ class NetworkGateway(neutron.NeutronResource):
         connections = self.properties[self.CONNECTIONS]
 
         for connection in connections:
+            self._validate_depr_property_required(
+                connection, self.NETWORK, self.NETWORK_ID)
             segmentation_type = connection[self.SEGMENTATION_TYPE]
             segmentation_id = connection.get(self.SEGMENTATION_ID)
 
@@ -159,6 +176,10 @@ class NetworkGateway(neutron.NeutronResource):
             {'network_gateway': props})['network_gateway']
 
         for connection in connections:
+            neutron_utils.resolve_network(
+                self.neutron(), connection, self.NETWORK, 'network_id')
+            if self.NETWORK in connection.keys():
+                connection.pop(self.NETWORK)
             self.neutron().connect_network_gateway(
                 ret['id'], connection
             )
@@ -173,6 +194,10 @@ class NetworkGateway(neutron.NeutronResource):
         connections = self.properties[self.CONNECTIONS]
         for connection in connections:
             try:
+                neutron_utils.resolve_network(
+                    self.neutron(), connection, self.NETWORK, 'network_id')
+                if self.NETWORK in connection.keys():
+                    connection.pop(self.NETWORK)
                 client.disconnect_network_gateway(
                     self.resource_id, connection
                 )
@@ -205,12 +230,20 @@ class NetworkGateway(neutron.NeutronResource):
         if self.CONNECTIONS in prop_diff:
             for connection in self.properties[self.CONNECTIONS]:
                 try:
+                    neutron_utils.resolve_network(
+                        self.neutron(), connection, self.NETWORK, 'network_id')
+                    if self.NETWORK in connection.keys():
+                        connection.pop(self.NETWORK)
                     self.neutron().disconnect_network_gateway(
                         self.resource_id, connection
                     )
                 except NeutronClientException as ex:
                     self._handle_not_found_exception(ex)
             for connection in connections:
+                neutron_utils.resolve_network(
+                    self.neutron(), connection, self.NETWORK, 'network_id')
+                if self.NETWORK in connection.keys():
+                    connection.pop(self.NETWORK)
                 self.neutron().connect_network_gateway(
                     self.resource_id, connection
                 )

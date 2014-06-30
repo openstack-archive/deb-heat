@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -13,12 +13,18 @@
 
 import copy
 
-from heat.tests.common import HeatTestCase
-
 from heat.engine import function
+from heat.tests.common import HeatTestCase
 
 
 class TestFunction(function.Function):
+    def validate(self):
+        if len(self.args) < 2:
+            raise Exception(_('Need more arguments'))
+
+    def dependencies(self, path):
+        return ['foo', 'bar']
+
     def result(self):
         return 'wibble'
 
@@ -80,3 +86,59 @@ class ResolveTest(HeatTestCase):
         self.assertEqual(['foo', {'bar': ['baz', {'blarg': 'wibble'}]}],
                          result)
         self.assertIsNot(result, snippet)
+
+
+class ValidateTest(HeatTestCase):
+    def setUp(self):
+        super(ValidateTest, self).setUp()
+        self.func = TestFunction(None, 'foo', ['bar', 'baz'])
+
+    def test_validate_func(self):
+        self.assertIsNone(function.validate(self.func))
+        self.func = TestFunction(None, 'foo', ['bar'])
+        ex = self.assertRaises(Exception, function.validate, self.func)
+        self.assertEqual('Need more arguments', str(ex))
+
+    def test_validate_dict(self):
+        snippet = {'foo': 'bar', 'blarg': self.func}
+        function.validate(snippet)
+
+        self.func = TestFunction(None, 'foo', ['bar'])
+        snippet = {'foo': 'bar', 'blarg': self.func}
+        ex = self.assertRaises(Exception, function.validate, snippet)
+        self.assertEqual('Need more arguments', str(ex))
+
+    def test_validate_list(self):
+        snippet = ['foo', 'bar', 'baz', 'blarg', self.func]
+        function.validate(snippet)
+
+        self.func = TestFunction(None, 'foo', ['bar'])
+        snippet = {'foo': 'bar', 'blarg': self.func}
+        ex = self.assertRaises(Exception, function.validate, snippet)
+        self.assertEqual('Need more arguments', str(ex))
+
+    def test_validate_all(self):
+        snippet = ['foo', {'bar': ['baz', {'blarg': self.func}]}]
+        function.validate(snippet)
+
+        self.func = TestFunction(None, 'foo', ['bar'])
+        snippet = {'foo': 'bar', 'blarg': self.func}
+        ex = self.assertRaises(Exception, function.validate, snippet)
+        self.assertEqual('Need more arguments', str(ex))
+
+
+class DependenciesTest(HeatTestCase):
+    func = TestFunction(None, 'test', None)
+
+    scenarios = [
+        ('function', dict(snippet=func)),
+        ('nested_map', dict(snippet={'wibble': func})),
+        ('nested_list', dict(snippet=['wibble', func])),
+        ('deep_nested', dict(snippet=[{'wibble': ['wibble', func]}])),
+    ]
+
+    def test_dependencies(self):
+        deps = list(function.dependencies(self.snippet))
+        self.assertIn('foo', deps)
+        self.assertIn('bar', deps)
+        self.assertEqual(2, len(deps))

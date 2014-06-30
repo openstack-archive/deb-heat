@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -20,6 +20,7 @@ from heat.common import exception
 from heat.common import template_format
 from heat.engine import clients
 from heat.engine.resources.neutron import loadbalancer
+from heat.engine.resources.neutron import neutron_utils
 from heat.engine import scheduler
 from heat.openstack.common.importutils import try_import
 from heat.tests.common import HeatTestCase
@@ -58,7 +59,7 @@ pool_template_with_vip_subnet = '''
       "Type": "OS::Neutron::Pool",
       "Properties": {
         "protocol": "HTTP",
-        "subnet_id": "sub123",
+        "subnet": "sub123",
         "lb_method": "ROUND_ROBIN",
         "vip": {
           "protocol_port": 80,
@@ -69,7 +70,8 @@ pool_template_with_vip_subnet = '''
   }
 }
 '''
-pool_template = '''
+
+pool_template_deprecated = '''
 {
   "AWSTemplateFormatVersion" : "2010-09-09",
   "Description" : "Template to test load balancer resources",
@@ -89,6 +91,28 @@ pool_template = '''
   }
 }
 '''
+
+pool_template = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Template to test load balancer resources",
+  "Parameters" : {},
+  "Resources" : {
+    "pool": {
+      "Type": "OS::Neutron::Pool",
+      "Properties": {
+        "protocol": "HTTP",
+        "subnet": "sub123",
+        "lb_method": "ROUND_ROBIN",
+        "vip": {
+          "protocol_port": 80
+        }
+      }
+    }
+  }
+}
+'''
+
 
 member_template = '''
 {
@@ -136,7 +160,7 @@ pool_with_session_persistence_template = '''
       "Type": "OS::Neutron::Pool",
       "Properties": {
         "protocol": "HTTP",
-        "subnet_id": "sub123",
+        "subnet": "sub123",
         "lb_method": "ROUND_ROBIN",
         "vip": {
           "protocol_port": 80,
@@ -206,7 +230,6 @@ class HealthMonitorTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'show_health_monitor')
         self.m.StubOutWithMock(neutronclient.Client, 'update_health_monitor')
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        utils.setup_dummy_db()
 
     def create_health_monitor(self):
         clients.OpenStackClients.keystone().AndReturn(
@@ -219,8 +242,9 @@ class HealthMonitorTest(HeatTestCase):
 
         snippet = template_format.parse(health_monitor_template)
         stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
         return loadbalancer.HealthMonitor(
-            'monitor', snippet['Resources']['monitor'], stack)
+            'monitor', resource_defns['monitor'], stack)
 
     def test_create(self):
         rsrc = self.create_health_monitor()
@@ -241,8 +265,9 @@ class HealthMonitorTest(HeatTestCase):
 
         snippet = template_format.parse(health_monitor_template)
         stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = loadbalancer.HealthMonitor(
-            'monitor', snippet['Resources']['monitor'], stack)
+            'monitor', resource_defns['monitor'], stack)
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
@@ -339,14 +364,13 @@ class PoolTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client,
                                'disassociate_health_monitor')
         self.m.StubOutWithMock(neutronclient.Client, 'create_vip')
-        self.m.StubOutWithMock(loadbalancer.neutronV20,
+        self.m.StubOutWithMock(neutron_utils.neutronV20,
                                'find_resourceid_by_name_or_id')
         self.m.StubOutWithMock(neutronclient.Client, 'delete_vip')
         self.m.StubOutWithMock(neutronclient.Client, 'show_vip')
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        utils.setup_dummy_db()
 
-    def create_pool(self, with_vip_subnet=False):
+    def create_pool(self, resolve_neutron=True, with_vip_subnet=False):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
         neutronclient.Client.create_pool({
@@ -355,7 +379,10 @@ class PoolTest(HeatTestCase):
                 'name': utils.PhysName('test_stack', 'pool'),
                 'lb_method': 'ROUND_ROBIN', 'admin_state_up': True}}
         ).AndReturn({'pool': {'id': '5678'}})
-
+        neutronclient.Client.show_pool('5678').AndReturn(
+            {'pool': {'status': 'ACTIVE'}})
+        neutronclient.Client.show_vip('xyz').AndReturn(
+            {'vip': {'status': 'ACTIVE'}})
         stvipvsn = {
             'vip': {
                 'protocol': u'HTTP', 'name': 'pool.vip',
@@ -366,38 +393,53 @@ class PoolTest(HeatTestCase):
         stvippsn = copy.deepcopy(stvipvsn)
         stvippsn['vip']['subnet_id'] = 'sub123'
 
-        if with_vip_subnet:
+        if resolve_neutron and with_vip_subnet:
+            neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+                mox.IsA(neutronclient.Client),
+                'subnet',
+                'sub123'
+            ).AndReturn('sub123')
+            neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+                mox.IsA(neutronclient.Client),
+                'subnet',
+                'sub9999'
+            ).AndReturn('sub9999')
+            snippet = template_format.parse(pool_template_with_vip_subnet)
             neutronclient.Client.create_vip(stvipvsn
                                             ).AndReturn({'vip': {'id': 'xyz'}})
-            snippet = template_format.parse(pool_template_with_vip_subnet)
-        else:
+
+        elif resolve_neutron and not with_vip_subnet:
+            neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+                mox.IsA(neutronclient.Client),
+                'subnet',
+                'sub123'
+            ).AndReturn('sub123')
+            snippet = template_format.parse(pool_template)
             neutronclient.Client.create_vip(stvippsn
                                             ).AndReturn({'vip': {'id': 'xyz'}})
-            snippet = template_format.parse(pool_template)
-
-        neutronclient.Client.show_pool('5678').AndReturn(
-            {'pool': {'status': 'ACTIVE'}})
-        neutronclient.Client.show_vip('xyz').AndReturn(
-            {'vip': {'status': 'ACTIVE'}})
-
+        else:
+            snippet = template_format.parse(pool_template_deprecated)
+            neutronclient.Client.create_vip(stvippsn
+                                            ).AndReturn({'vip': {'id': 'xyz'}})
         stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
         return loadbalancer.Pool(
-            'pool', snippet['Resources']['pool'], stack)
+            'pool', resource_defns['pool'], stack)
 
     def test_create(self):
-        rsrc = self.create_pool()
+        self._test_create()
+
+    def test_create_deprecated(self):
+        self._test_create(resolve_neutron=False, with_vip_subnet=False)
+
+    def _test_create(self, resolve_neutron=True, with_vip_subnet=False):
+        rsrc = self.create_pool(resolve_neutron, with_vip_subnet)
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
     def test_create_with_vip_subnet(self):
-        loadbalancer.neutronV20.find_resourceid_by_name_or_id(
-            mox.IsA(neutronclient.Client),
-            'subnet',
-            'sub9999'
-        ).AndReturn('sub9999')
-
         rsrc = self.create_pool(with_vip_subnet=True)
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -407,6 +449,12 @@ class PoolTest(HeatTestCase):
     def test_create_pending(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
+        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnet',
+            'sub123'
+        ).AndReturn('sub123')
+
         neutronclient.Client.create_pool({
             'pool': {
                 'subnet_id': 'sub123', 'protocol': u'HTTP',
@@ -430,8 +478,9 @@ class PoolTest(HeatTestCase):
 
         snippet = template_format.parse(pool_template)
         stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = loadbalancer.Pool(
-            'pool', snippet['Resources']['pool'], stack)
+            'pool', resource_defns['pool'], stack)
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
@@ -440,6 +489,12 @@ class PoolTest(HeatTestCase):
     def test_create_failed_unexpected_status(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
+        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnet',
+            'sub123'
+        ).AndReturn('sub123')
+
         neutronclient.Client.create_pool({
             'pool': {
                 'subnet_id': 'sub123', 'protocol': u'HTTP',
@@ -457,8 +512,9 @@ class PoolTest(HeatTestCase):
 
         snippet = template_format.parse(pool_template)
         stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = loadbalancer.Pool(
-            'pool', snippet['Resources']['pool'], stack)
+            'pool', resource_defns['pool'], stack)
         self.m.ReplayAll()
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
@@ -472,6 +528,12 @@ class PoolTest(HeatTestCase):
     def test_create_failed_unexpected_vip_status(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
+        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnet',
+            'sub123'
+        ).AndReturn('sub123')
+
         neutronclient.Client.create_pool({
             'pool': {
                 'subnet_id': 'sub123', 'protocol': u'HTTP',
@@ -491,8 +553,9 @@ class PoolTest(HeatTestCase):
 
         snippet = template_format.parse(pool_template)
         stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = loadbalancer.Pool(
-            'pool', snippet['Resources']['pool'], stack)
+            'pool', resource_defns['pool'], stack)
         self.m.ReplayAll()
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
@@ -506,6 +569,12 @@ class PoolTest(HeatTestCase):
     def test_create_failed(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
+        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnet',
+            'sub123'
+        ).AndReturn('sub123')
+
         neutronclient.Client.create_pool({
             'pool': {
                 'subnet_id': 'sub123', 'protocol': u'HTTP',
@@ -516,8 +585,9 @@ class PoolTest(HeatTestCase):
 
         snippet = template_format.parse(pool_template)
         stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = loadbalancer.Pool(
-            'pool', snippet['Resources']['pool'], stack)
+            'pool', resource_defns['pool'], stack)
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
@@ -529,6 +599,11 @@ class PoolTest(HeatTestCase):
     def test_create_with_session_persistence(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
+        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnet',
+            'sub123'
+        ).AndReturn('sub123')
         neutronclient.Client.create_pool({
             'pool': {
                 'subnet_id': 'sub123', 'protocol': u'HTTP',
@@ -551,8 +626,9 @@ class PoolTest(HeatTestCase):
 
         snippet = template_format.parse(pool_with_session_persistence_template)
         stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = loadbalancer.Pool(
-            'pool', snippet['Resources']['pool'], stack)
+            'pool', resource_defns['pool'], stack)
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
@@ -569,7 +645,9 @@ class PoolTest(HeatTestCase):
         persistence['type'] = 'APP_COOKIE'
         persistence['cookie_name'] = None
 
-        resource = loadbalancer.Pool('pool', pool, utils.parse_stack(snippet))
+        stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
+        resource = loadbalancer.Pool('pool', resource_defns['pool'], stack)
 
         error = self.assertRaises(exception.StackValidationFailed,
                                   resource.validate)
@@ -577,15 +655,22 @@ class PoolTest(HeatTestCase):
 
     def test_validation_not_failing_without_session_persistence(self):
         snippet = template_format.parse(pool_template)
-        pool = snippet['Resources']['pool']
 
-        resource = loadbalancer.Pool('pool', pool, utils.parse_stack(snippet))
+        stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
+        resource = loadbalancer.Pool('pool', resource_defns['pool'], stack)
 
         self.assertIsNone(resource.validate())
 
     def test_properties_are_prepared_for_session_persistence(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
+        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnet',
+            'sub123'
+        ).AndReturn('sub123')
+
         neutronclient.Client.create_pool({
             'pool': {
                 'subnet_id': 'sub123', 'protocol': u'HTTP',
@@ -611,7 +696,10 @@ class PoolTest(HeatTestCase):
         # change persistence type to HTTP_COOKIE that not require cookie_name
         persistence['type'] = 'HTTP_COOKIE'
         del persistence['cookie_name']
-        resource = loadbalancer.Pool('pool', pool, utils.parse_stack(snippet))
+
+        stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
+        resource = loadbalancer.Pool('pool', resource_defns['pool'], stack)
 
         # assert that properties contain cookie_name property with None value
         persistence = resource.properties['vip']['session_persistence']
@@ -730,6 +818,11 @@ class PoolTest(HeatTestCase):
     def test_update_monitors(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
+        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnet',
+            'sub123'
+        ).AndReturn('sub123')
         neutronclient.Client.create_pool({
             'pool': {
                 'subnet_id': 'sub123', 'protocol': u'HTTP',
@@ -759,8 +852,8 @@ class PoolTest(HeatTestCase):
         stack = utils.parse_stack(snippet)
         snippet['Resources']['pool']['Properties']['monitors'] = [
             'mon123', 'mon456']
-        rsrc = loadbalancer.Pool(
-            'pool', snippet['Resources']['pool'], stack)
+        resource_defns = stack.t.resource_definitions(stack)
+        rsrc = loadbalancer.Pool('pool', resource_defns['pool'], stack)
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
 
@@ -782,7 +875,6 @@ class PoolMemberTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'update_member')
         self.m.StubOutWithMock(neutronclient.Client, 'show_member')
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        utils.setup_dummy_db()
 
     def create_member(self):
         clients.OpenStackClients.keystone().AndReturn(
@@ -794,8 +886,9 @@ class PoolMemberTest(HeatTestCase):
         ).AndReturn({'member': {'id': 'member5678'}})
         snippet = template_format.parse(member_template)
         stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
         return loadbalancer.PoolMember(
-            'member', snippet['Resources']['member'], stack)
+            'member', resource_defns['member'], stack)
 
     def test_create(self):
         rsrc = self.create_member()
@@ -819,8 +912,9 @@ class PoolMemberTest(HeatTestCase):
         snippet['Resources']['member']['Properties']['admin_state_up'] = False
         snippet['Resources']['member']['Properties']['weight'] = 100
         stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = loadbalancer.PoolMember(
-            'member', snippet['Resources']['member'], stack)
+            'member', resource_defns['member'], stack)
 
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -887,7 +981,6 @@ class LoadBalancerTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'delete_member')
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
         self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
-        utils.setup_dummy_db()
 
     def create_load_balancer(self):
         clients.OpenStackClients.keystone().AndReturn(
@@ -901,8 +994,9 @@ class LoadBalancerTest(HeatTestCase):
         ).AndReturn({'member': {'id': 'member5678'}})
         snippet = template_format.parse(lb_template)
         stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
         return loadbalancer.LoadBalancer(
-            'lb', snippet['Resources']['lb'], stack)
+            'lb', resource_defns['lb'], stack)
 
     def test_create(self):
         rsrc = self.create_load_balancer()
@@ -988,10 +1082,8 @@ class PoolUpdateHealthMonitorsTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'delete_vip')
         self.m.StubOutWithMock(neutronclient.Client, 'show_vip')
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        utils.setup_dummy_db()
 
-    @utils.stack_delete_after
-    def test_update_pool_with_references_to_health_monitors(self):
+    def _create_pool_with_health_monitors(self):
         clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
             fakes.FakeKeystoneClient())
         neutronclient.Client.create_health_monitor({
@@ -1026,6 +1118,9 @@ class PoolUpdateHealthMonitorsTest(HeatTestCase):
         neutronclient.Client.show_vip('xyz').AndReturn(
             {'vip': {'status': 'ACTIVE'}})
 
+    def test_update_pool_with_references_to_health_monitors(self):
+        self._create_pool_with_health_monitors()
+
         neutronclient.Client.disassociate_health_monitor(
             '5678', mox.IsA(unicode))
 
@@ -1038,6 +1133,50 @@ class PoolUpdateHealthMonitorsTest(HeatTestCase):
 
         snippet['Resources']['pool']['Properties']['monitors'] = [
             {u'Ref': u'monitor1'}]
+        updated_stack = utils.parse_stack(snippet)
+        self.stack.update(updated_stack)
+        self.assertEqual((self.stack.UPDATE, self.stack.COMPLETE),
+                         self.stack.state)
+        self.m.VerifyAll()
+
+    def test_update_pool_with_empty_list_of_health_monitors(self):
+        self._create_pool_with_health_monitors()
+
+        neutronclient.Client.disassociate_health_monitor(
+            '5678', '5555').InAnyOrder()
+        neutronclient.Client.disassociate_health_monitor(
+            '5678', '6666').InAnyOrder()
+
+        self.m.ReplayAll()
+        snippet = template_format.parse(pool_with_health_monitors_template)
+        self.stack = utils.parse_stack(snippet)
+        self.stack.create()
+        self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
+                         self.stack.state)
+
+        snippet['Resources']['pool']['Properties']['monitors'] = []
+        updated_stack = utils.parse_stack(snippet)
+        self.stack.update(updated_stack)
+        self.assertEqual((self.stack.UPDATE, self.stack.COMPLETE),
+                         self.stack.state)
+        self.m.VerifyAll()
+
+    def test_update_pool_without_health_monitors(self):
+        self._create_pool_with_health_monitors()
+
+        neutronclient.Client.disassociate_health_monitor(
+            '5678', '5555').InAnyOrder()
+        neutronclient.Client.disassociate_health_monitor(
+            '5678', '6666').InAnyOrder()
+
+        self.m.ReplayAll()
+        snippet = template_format.parse(pool_with_health_monitors_template)
+        self.stack = utils.parse_stack(snippet)
+        self.stack.create()
+        self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
+                         self.stack.state)
+
+        snippet['Resources']['pool']['Properties'].pop('monitors')
         updated_stack = utils.parse_stack(snippet)
         self.stack.update(updated_stack)
         self.assertEqual((self.stack.UPDATE, self.stack.COMPLETE),

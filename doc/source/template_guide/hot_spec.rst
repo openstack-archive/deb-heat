@@ -27,10 +27,13 @@ at :ref:`hot_guide`.
 Status
 ------
 
-HOT support is still under development and needs more work to provide access to
-all functionality currently available via the CFN compatible template interface.
-This specification will be updated periodically whenever new features get
-implemented for HOT.
+HOT is considered reliable, supported, and standardized as of our
+Icehouse (April 2014) release.  The Heat core team may make improvements
+to the standard, which very likely would be backward compatible.  The template
+format is also versioned.  In our Juno release, Heat will support multiple
+different versions of the HOT specification if there is a need driven by the
+introduction of new features.
+
 
 ------------------
 Template Structure
@@ -77,8 +80,9 @@ parameters
 
 resources
     This section contains the declaration of the single resources of the
-    template. This section is mandatory and at least one resource must be
-    defined in any HOT template.
+    template. This section with at least one resource should be defined in any
+    HOT template, or the template would not really do anything when being
+    instantiated.
 
 outputs
     This section allows for specifying output parameters available to users once
@@ -145,7 +149,7 @@ default value defined as nested elements.
 
   parameters:
     <param name>:
-      type: <string | number | json | comma_delimited_list>
+      type: <string | number | json | comma_delimited_list | boolean>
       label: <human-readable name of the parameter>
       description: <description of the parameter>
       default: <default value for parameter>
@@ -158,7 +162,7 @@ param name
 
 type
     This attribute specifies the type of parameter. Currently supported types
-    are *string*, *number*, *comma_delimited_list* or *json*.
+    are *string*, *number*, *comma_delimited_list*, *json*, or *boolean*.
 
 label
     This *optional* attribute allows for giving a human readable name of the
@@ -378,6 +382,16 @@ For example:
       constraints:
         - custom_constraint: nova.keypair
 
+.. _hot_spec_pseudo_parameters
+
+Pseudo Parameters
+-----------------
+
+In addition to parameters defined by a template author, Heat also creates two
+parameters for every stack that allow referential access to the stack's name
+and identifier. These parameters are named ``OS::stack_name`` for the stack
+name and ``OS::stack_id`` for the stack identifier. These values are accessible
+via the `get_param`_ intrinsic function just like user-defined parameters.
 
 .. _hot_spec_resources:
 

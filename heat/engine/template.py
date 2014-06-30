@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -16,15 +15,15 @@ import abc
 import collections
 import functools
 
-from heat.db import api as db_api
 from heat.common import exception
+from heat.db import api as db_api
 from heat.engine import plugin_manager
+from heat.openstack.common import log as logging
 
+LOG = logging.getLogger(__name__)
 
 __all__ = ['Template']
 
-
-DEFAULT_VERSION = ('HeatTemplateFormatVersion', '2012-12-12')
 
 _template_classes = None
 
@@ -60,14 +59,15 @@ def get_version(template_data, available_versions):
                          isinstance(v, basestring))
 
     keys_present = version_keys & candidate_keys
-    if not keys_present:
-        return DEFAULT_VERSION
 
     if len(keys_present) > 1:
         explanation = _('Ambiguous versions (%s)') % ', '.join(keys_present)
         raise exception.InvalidTemplateVersion(explanation=explanation)
-
-    version_key = keys_present.pop()
+    try:
+        version_key = keys_present.pop()
+    except KeyError:
+        explanation = _('Template version was not provided')
+        raise exception.InvalidTemplateVersion(explanation=explanation)
     return version_key, template_data[version_key]
 
 
@@ -80,13 +80,21 @@ def get_template_class(plugin_mgr, template_data):
 
     available_versions = _template_classes.keys()
     version = get_version(template_data, available_versions)
+    version_type = version[0]
     try:
         return _template_classes[version]
     except KeyError:
+        av_list = [v for k, v in available_versions if k == version_type]
         msg_data = {'version': ': '.join(version),
-                    'available': ', '.join(v for vk, v in available_versions)}
-        explanation = _('Unknown version (%(version)s). '
-                        'Should be one of: %(available)s') % msg_data
+                    'version_type': version_type,
+                    'available': ', '.join(v for v in av_list)}
+
+        if len(av_list) > 1:
+            explanation = _('"%(version)s". "%(version_type)s" '
+                            'should be one of: %(available)s') % msg_data
+        else:
+            explanation = _('"%(version)s". "%(version_type)s" '
+                            'should be: %(available)s') % msg_data
         raise exception.InvalidTemplateVersion(explanation=explanation)
 
 
@@ -117,9 +125,10 @@ class Template(collections.Mapping):
         self.version = get_version(self.t, _template_classes.keys())
 
     @classmethod
-    def load(cls, context, template_id):
+    def load(cls, context, template_id, t=None):
         '''Retrieve a Template with the given ID from the database.'''
-        t = db_api.raw_template_get(context, template_id)
+        if t is None:
+            t = db_api.raw_template_get(context, template_id)
         return cls(t.template, template_id=template_id, files=t.files)
 
     def store(self, context=None):
@@ -148,9 +157,22 @@ class Template(collections.Mapping):
         pass
 
     @abc.abstractmethod
-    def parameters(self, stack_identifier, user_params, validate_value=True,
-                   context=None):
+    def parameters(self, stack_identifier, user_params):
         '''Return a parameters.Parameters object for the stack.'''
+        pass
+
+    @abc.abstractmethod
+    def resource_definitions(self, stack):
+        '''Return a dictionary of ResourceDefinition objects.'''
+        pass
+
+    @abc.abstractmethod
+    def add_resource(self, definition, name=None):
+        '''Add a resource to the template.
+
+        The resource is passed as a ResourceDefinition object. If no name is
+        specified, the name from the ResourceDefinition should be used.
+        '''
         pass
 
     def functions(self):
@@ -168,14 +190,38 @@ class Template(collections.Mapping):
     def validate(self):
         '''Validate the template.
 
-        Only validates the top-level sections of the template. Syntax inside
-        sections is not checked here but in code parts that are responsible
-        for working with the respective sections.
+        Validates the top-level sections of the template as well as syntax
+        inside select sections. Some sections are not checked here but in
+        code parts that are responsible for working with the respective
+        sections (e.g. parameters are check by parameters schema class).
+
         '''
 
+        # check top-level sections
         for k in self.t.keys():
             if k not in self.SECTIONS:
                 raise exception.InvalidTemplateSection(section=k)
+
+        # check resources
+        tmpl_resources = self[self.RESOURCES]
+        if not tmpl_resources:
+            LOG.warn(_('Template does not contain any resources, so '
+                       'the template would not really do anything when '
+                       'being instantiated.'))
+
+        for res in tmpl_resources.values():
+            try:
+                if not res.get('Type'):
+                    message = _('Every Resource object must '
+                                'contain a Type member.')
+                    raise exception.StackValidationFailed(message=message)
+            except AttributeError:
+                type_res = type(res)
+                if isinstance(res, unicode):
+                    type_res = "string"
+                message = _('Resources must contain Resource. '
+                            'Found a [%s] instead') % type_res
+                raise exception.StackValidationFailed(message=message)
 
 
 def parse(functions, stack, snippet):

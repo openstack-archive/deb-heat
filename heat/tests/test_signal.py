@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -18,15 +18,12 @@ from oslo.config import cfg
 
 from heat.common import exception
 from heat.common import template_format
-
 from heat.db import api as db_api
-
 from heat.engine import clients
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import stack_user
-
 from heat.tests.common import HeatTestCase
 from heat.tests import fakes
 from heat.tests import generic_resource
@@ -50,7 +47,6 @@ class SignalTest(HeatTestCase):
 
     def setUp(self):
         super(SignalTest, self).setUp()
-        utils.setup_dummy_db()
 
         resource._register_class('SignalResourceType',
                                  generic_resource.SignalResource)
@@ -65,7 +61,6 @@ class SignalTest(HeatTestCase):
 
     def tearDown(self):
         super(SignalTest, self).tearDown()
-        utils.reset_dummy_db()
 
     # Note tests creating a stack should be decorated with @stack_delete_after
     # to ensure the stack is properly cleaned up
@@ -90,7 +85,6 @@ class SignalTest(HeatTestCase):
 
         return stack
 
-    @utils.stack_delete_after
     def test_handle_create_fail_keypair_raise(self):
         self.stack = self.create_stack(stack_name='create_fail_keypair')
 
@@ -108,7 +102,6 @@ class SignalTest(HeatTestCase):
         self.assertIsNone(rsrc.resource_id)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_resource_data(self):
         self.stack = self.create_stack(stack_name='resource_data_test',
                                        stub=False)
@@ -136,7 +129,6 @@ class SignalTest(HeatTestCase):
         self.assertEqual(4, len(rs_data.keys()))
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_get_user_id(self):
         self.stack = self.create_stack(stack_name='resource_data_test',
                                        stub=False)
@@ -166,7 +158,6 @@ class SignalTest(HeatTestCase):
         self.assertEqual('1234', rsrc._get_user_id())
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_FnGetAtt_Alarm_Url(self):
         self.stack = self.create_stack()
 
@@ -193,7 +184,6 @@ class SignalTest(HeatTestCase):
         self.assertEqual(expected_url, rsrc.FnGetAtt('AlarmUrl'))
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_FnGetAtt_Alarm_Url_is_cached(self):
         self.stack = self.create_stack()
 
@@ -208,7 +198,6 @@ class SignalTest(HeatTestCase):
         self.assertEqual(first_url, second_url)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_FnGetAtt_delete(self):
         self.stack = self.create_stack()
 
@@ -226,7 +215,6 @@ class SignalTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_delete_not_found(self):
         self.stack = self.create_stack(stack_name='test_delete_not_found',
                                        stub=False)
@@ -250,7 +238,6 @@ class SignalTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_signal(self):
         test_d = {'Data': 'foo', 'Reason': 'bar',
                   'Status': 'SUCCESS', 'UniqueId': '123'}
@@ -273,7 +260,6 @@ class SignalTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_signal_different_reason_types(self):
         self.stack = self.create_stack()
         self.stack.create()
@@ -339,7 +325,6 @@ class SignalTest(HeatTestCase):
 
         self.m.ReplayAll()
 
-    @utils.stack_delete_after
     def test_signal_wrong_resource(self):
         # assert that we get the correct exception when calling a
         # resource.signal() that does not have a handle_signal()
@@ -357,7 +342,6 @@ class SignalTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_signal_reception_wrong_state(self):
         # assert that we get the correct exception when calling a
         # resource.signal() that is in having a destructive action.
@@ -377,7 +361,6 @@ class SignalTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_signal_reception_failed_call(self):
         # assert that we get the correct exception from resource.signal()
         # when resource.handle_signal() raises an exception.

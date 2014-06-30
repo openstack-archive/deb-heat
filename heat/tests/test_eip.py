@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -18,7 +18,6 @@ from heat.common import exception
 from heat.common import template_format
 from heat.engine import clients
 from heat.engine import parser
-from heat.engine import resource
 from heat.engine.resources import eip
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
@@ -154,15 +153,15 @@ class EIPTest(HeatTestCase):
         self.m.StubOutWithMock(eip.ElasticIp, 'nova')
         self.m.StubOutWithMock(eip.ElasticIpAssociation, 'nova')
         self.m.StubOutWithMock(self.fc.servers, 'get')
-        utils.setup_dummy_db()
 
     def tearDown(self):
         super(EIPTest, self).tearDown()
         force_networking('neutron')
 
     def create_eip(self, t, stack, resource_name):
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = eip.ElasticIp(resource_name,
-                             t['Resources'][resource_name],
+                             resource_defns[resource_name],
                              stack)
         self.assertIsNone(rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
@@ -170,8 +169,9 @@ class EIPTest(HeatTestCase):
         return rsrc
 
     def create_association(self, t, stack, resource_name):
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = eip.ElasticIpAssociation(resource_name,
-                                        t['Resources'][resource_name],
+                                        resource_defns[resource_name],
                                         stack)
         self.assertIsNone(rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
@@ -196,9 +196,6 @@ class EIPTest(HeatTestCase):
             self.assertEqual('11.0.0.1', rsrc.FnGetRefId())
 
             self.assertEqual('1', rsrc.FnGetAtt('AllocationId'))
-
-            self.assertRaises(resource.UpdateReplace,
-                              rsrc.handle_update, {}, {}, {})
 
             self.assertRaises(exception.InvalidTemplateAttribute,
                               rsrc.FnGetAtt, 'Foo')
@@ -250,8 +247,9 @@ class EIPTest(HeatTestCase):
         t = template_format.parse(eip_template)
         stack = utils.parse_stack(t)
         resource_name = 'IPAddress'
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = eip.ElasticIp(resource_name,
-                             t['Resources'][resource_name],
+                             resource_defns[resource_name],
                              stack)
 
         self.assertRaises(clients.novaclient.exceptions.NotFound,
@@ -269,8 +267,9 @@ class EIPTest(HeatTestCase):
         t = template_format.parse(eip_template)
         stack = utils.parse_stack(t)
         resource_name = 'IPAddress'
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = eip.ElasticIp(resource_name,
-                             t['Resources'][resource_name],
+                             resource_defns[resource_name],
                              stack)
         rsrc.resource_id = 'fake_id'
         rsrc.handle_delete()
@@ -308,8 +307,6 @@ class AllocTest(HeatTestCase):
                                'remove_gateway_router')
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
 
-        utils.setup_dummy_db()
-
     def mock_show_network(self):
         vpc_name = utils.PhysName('test_stack', 'the_vpc')
         clients.neutronclient.Client.show_network(
@@ -325,8 +322,9 @@ class AllocTest(HeatTestCase):
         }})
 
     def create_eip(self, t, stack, resource_name):
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = eip.ElasticIp(resource_name,
-                             t['Resources'][resource_name],
+                             resource_defns[resource_name],
                              stack)
         self.assertIsNone(rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
@@ -334,8 +332,9 @@ class AllocTest(HeatTestCase):
         return rsrc
 
     def create_association(self, t, stack, resource_name):
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = eip.ElasticIpAssociation(resource_name,
-                                        t['Resources'][resource_name],
+                                        resource_defns[resource_name],
                                         stack)
         self.assertIsNone(rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
@@ -491,9 +490,6 @@ class AllocTest(HeatTestCase):
             self.assertEqual('11.0.0.1', rsrc.FnGetRefId())
 
             self.assertEqual('1', rsrc.FnGetAtt('AllocationId'))
-
-            self.assertRaises(resource.UpdateReplace,
-                              rsrc.handle_update, {}, {}, {})
 
             self.assertRaises(exception.InvalidTemplateAttribute,
                               rsrc.FnGetAtt, 'Foo')

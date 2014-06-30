@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -17,12 +16,10 @@ from requests import exceptions
 from heat.common import exception
 from heat.common import template_format
 from heat.common import urlfetch
+from heat.engine import function
 from heat.engine import properties
 from heat.engine.properties import Properties
 from heat.engine import stack_resource
-from heat.openstack.common import log as logging
-
-logger = logging.getLogger(__name__)
 
 
 class NestedStack(stack_resource.StackResource):
@@ -56,8 +53,6 @@ class NestedStack(stack_resource.StackResource):
             update_allowed=True
         ),
     }
-
-    update_allowed_keys = ('Properties',)
 
     def child_template(self):
         try:
@@ -102,7 +97,7 @@ class NestedStack(stack_resource.StackResource):
         # Nested stack template may be changed even if the prop_diff is empty.
         self.properties = Properties(self.properties_schema,
                                      json_snippet.get('Properties', {}),
-                                     self.stack.resolve_runtime_data,
+                                     function.resolve,
                                      self.name,
                                      self.context)
 

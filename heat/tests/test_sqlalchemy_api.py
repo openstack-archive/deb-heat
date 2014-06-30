@@ -1,3 +1,4 @@
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -12,11 +13,11 @@
 
 from datetime import datetime
 from datetime import timedelta
+from json import dumps
+from json import loads
 import uuid
 
 import fixtures
-from json import dumps
-from json import loads
 import mock
 import mox
 
@@ -29,6 +30,7 @@ from heat.engine.clients import novaclient
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine.resource import Resource
+from heat.engine.resources import glance_utils
 from heat.engine.resources import instance as instances
 from heat.engine import scheduler
 from heat.openstack.common import timeutils
@@ -81,19 +83,26 @@ class MyResource(Resource):
 
     @my_secret.setter
     def my_secret(self, my_secret):
-        db_api.resource_data_set(self, 'my_secret', my_secret, True)
+        self.data_set('my_secret', my_secret, True)
 
 
 class SqlAlchemyTest(HeatTestCase):
     def setUp(self):
         super(SqlAlchemyTest, self).setUp()
         self.fc = fakes.FakeClient()
-        utils.setup_dummy_db()
-        utils.reset_dummy_db()
         self.ctx = utils.dummy_context()
 
     def tearDown(self):
         super(SqlAlchemyTest, self).tearDown()
+
+    def _mock_get_image_id_success(self, imageId_input, imageId):
+        g_cli_mock = self.m.CreateMockAnything()
+        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
+        clients.OpenStackClients.glance().MultipleTimes().AndReturn(
+            g_cli_mock)
+        self.m.StubOutWithMock(glance_utils, 'get_image_id')
+        glance_utils.get_image_id(g_cli_mock, imageId_input).MultipleTimes().\
+            AndReturn(imageId)
 
     def _setup_test_stack(self, stack_name, stack_id=None, owner_id=None,
                           stack_user_project_id=None):
@@ -106,7 +115,7 @@ class SqlAlchemyTest(HeatTestCase):
                              stack_user_project_id=stack_user_project_id)
         with utils.UUIDStub(stack_id):
             stack.store()
-        return (t, stack)
+        return (template, stack)
 
     def _mock_create(self, mocks):
         fc = fakes.FakeClient()
@@ -114,6 +123,7 @@ class SqlAlchemyTest(HeatTestCase):
         instances.Instance.nova().MultipleTimes().AndReturn(fc)
         self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
         clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+        self._mock_get_image_id_success('F17-x86_64-gold', 744)
 
         mocks.StubOutWithMock(fc.servers, 'create')
         fc.servers.create(image=744, flavor=3, key_name='test',
@@ -129,9 +139,6 @@ class SqlAlchemyTest(HeatTestCase):
         fc = fakes.FakeClient()
         mocks.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().MultipleTimes().AndReturn(fc)
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
-        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
-
         mocks.StubOutWithMock(fc.client, 'get_servers_9999')
         get = fc.client.get_servers_9999
         get().MultipleTimes().AndRaise(novaclient.exceptions.NotFound(404))
@@ -246,9 +253,10 @@ class SqlAlchemyTest(HeatTestCase):
 
     def test_encryption(self):
         stack_name = 'test_encryption'
-        (t, stack) = self._setup_test_stack(stack_name)
+        (tmpl, stack) = self._setup_test_stack(stack_name)
+        resource_defns = tmpl.resource_definitions(stack)
         cs = MyResource('cs_encryption',
-                        t['Resources']['WebServer'],
+                        resource_defns['WebServer'],
                         stack)
 
         # This gives the fake cloud server an id and created_time attribute
@@ -274,7 +282,7 @@ class SqlAlchemyTest(HeatTestCase):
         self.m.ReplayAll()
         stack.create()
         rsrc = stack['WebServer']
-        db_api.resource_data_set(rsrc, 'test', 'test_data')
+        rsrc.data_set('test', 'test_data')
         self.assertEqual('test_data', db_api.resource_data_get(rsrc, 'test'))
         db_api.resource_data_delete(rsrc, 'test')
         self.assertRaises(exception.NotFound,
@@ -387,6 +395,19 @@ class SqlAlchemyTest(HeatTestCase):
         stacks[1].delete()
         st_db = db_api.stack_get_all(self.ctx)
         self.assertEqual(1, len(st_db))
+
+    def test_stack_get_all_show_deleted(self):
+        stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
+
+        st_db = db_api.stack_get_all(self.ctx)
+        self.assertEqual(3, len(st_db))
+
+        stacks[0].delete()
+        st_db = db_api.stack_get_all(self.ctx)
+        self.assertEqual(2, len(st_db))
+
+        st_db = db_api.stack_get_all(self.ctx, show_deleted=True)
+        self.assertEqual(3, len(st_db))
 
     def test_stack_get_all_with_filters(self):
         self._setup_test_stack('foo', UUID1)
@@ -800,6 +821,110 @@ class SqlAlchemyTest(HeatTestCase):
 
         self.assertIn(deployment_id, str(err))
 
+    def test_snapshot_create(self):
+        template = create_raw_template(self.ctx)
+        user_creds = create_user_creds(self.ctx)
+        stack = create_stack(self.ctx, template, user_creds)
+        values = {'tenant': self.ctx.tenant_id, 'status': 'IN_PROGRESS',
+                  'stack_id': stack.id}
+        snapshot = db_api.snapshot_create(self.ctx, values)
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(values['tenant'], snapshot.tenant)
+
+    def test_snapshot_create_with_name(self):
+        template = create_raw_template(self.ctx)
+        user_creds = create_user_creds(self.ctx)
+        stack = create_stack(self.ctx, template, user_creds)
+        values = {'tenant': self.ctx.tenant_id, 'status': 'IN_PROGRESS',
+                  'stack_id': stack.id, 'name': 'snap1'}
+        snapshot = db_api.snapshot_create(self.ctx, values)
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(values['tenant'], snapshot.tenant)
+        self.assertEqual('snap1', snapshot.name)
+
+    def test_snapshot_get_not_found(self):
+        self.assertRaises(
+            exception.NotFound,
+            db_api.snapshot_get,
+            self.ctx,
+            str(uuid.uuid4()))
+
+    def test_snapshot_get(self):
+        template = create_raw_template(self.ctx)
+        user_creds = create_user_creds(self.ctx)
+        stack = create_stack(self.ctx, template, user_creds)
+        values = {'tenant': self.ctx.tenant_id, 'status': 'IN_PROGRESS',
+                  'stack_id': stack.id}
+        snapshot = db_api.snapshot_create(self.ctx, values)
+        self.assertIsNotNone(snapshot)
+        snapshot_id = snapshot.id
+        snapshot = db_api.snapshot_get(self.ctx, snapshot_id)
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(values['tenant'], snapshot.tenant)
+        self.assertEqual(values['status'], snapshot.status)
+        self.assertIsNotNone(snapshot.created_at)
+
+    def test_snapshot_get_not_found_invalid_tenant(self):
+        template = create_raw_template(self.ctx)
+        user_creds = create_user_creds(self.ctx)
+        stack = create_stack(self.ctx, template, user_creds)
+        values = {'tenant': self.ctx.tenant_id, 'status': 'IN_PROGRESS',
+                  'stack_id': stack.id}
+        snapshot = db_api.snapshot_create(self.ctx, values)
+        self.ctx.tenant_id = str(uuid.uuid4())
+        self.assertRaises(
+            exception.NotFound,
+            db_api.snapshot_get,
+            self.ctx,
+            snapshot.id)
+
+    def test_snapshot_update_not_found(self):
+        snapshot_id = str(uuid.uuid4())
+        err = self.assertRaises(exception.NotFound,
+                                db_api.snapshot_update,
+                                self.ctx, snapshot_id, values={})
+        self.assertIn(snapshot_id, str(err))
+
+    def test_snapshot_update(self):
+        template = create_raw_template(self.ctx)
+        user_creds = create_user_creds(self.ctx)
+        stack = create_stack(self.ctx, template, user_creds)
+        values = {'tenant': self.ctx.tenant_id, 'status': 'IN_PROGRESS',
+                  'stack_id': stack.id}
+        snapshot = db_api.snapshot_create(self.ctx, values)
+        snapshot_id = snapshot.id
+        values = {'status': 'COMPLETED'}
+        snapshot = db_api.snapshot_update(self.ctx, snapshot_id, values)
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(values['status'], snapshot.status)
+
+    def test_snapshot_delete_not_found(self):
+        snapshot_id = str(uuid.uuid4())
+        err = self.assertRaises(exception.NotFound,
+                                db_api.snapshot_delete,
+                                self.ctx, snapshot_id)
+        self.assertIn(snapshot_id, str(err))
+
+    def test_snapshot_delete(self):
+        template = create_raw_template(self.ctx)
+        user_creds = create_user_creds(self.ctx)
+        stack = create_stack(self.ctx, template, user_creds)
+        values = {'tenant': self.ctx.tenant_id, 'status': 'IN_PROGRESS',
+                  'stack_id': stack.id}
+        snapshot = db_api.snapshot_create(self.ctx, values)
+        snapshot_id = snapshot.id
+        snapshot = db_api.snapshot_get(self.ctx, snapshot_id)
+        self.assertIsNotNone(snapshot)
+        db_api.snapshot_delete(self.ctx, snapshot_id)
+
+        err = self.assertRaises(
+            exception.NotFound,
+            db_api.snapshot_get,
+            self.ctx,
+            snapshot_id)
+
+        self.assertIn(snapshot_id, str(err))
+
 
 def create_raw_template(context, **kwargs):
     t = template_format.parse(wp_template)
@@ -900,7 +1025,6 @@ class DBAPIRawTemplateTest(HeatTestCase):
     def setUp(self):
         super(DBAPIRawTemplateTest, self).setUp()
         self.ctx = utils.dummy_context()
-        utils.setup_dummy_db()
 
     def test_raw_template_create(self):
         t = template_format.parse(wp_template)
@@ -921,7 +1045,6 @@ class DBAPIUserCredsTest(HeatTestCase):
     def setUp(self):
         super(DBAPIUserCredsTest, self).setUp()
         self.ctx = utils.dummy_context()
-        utils.setup_dummy_db()
 
     def test_user_creds_create_trust(self):
         user_creds = create_user_creds(self.ctx, trust_id='test_trust_id',
@@ -971,8 +1094,6 @@ class DBAPIStackTest(HeatTestCase):
     def setUp(self):
         super(DBAPIStackTest, self).setUp()
         self.ctx = utils.dummy_context()
-        utils.setup_dummy_db()
-        utils.reset_dummy_db()
         self.template = create_raw_template(self.ctx)
         self.user_creds = create_user_creds(self.ctx)
 
@@ -1231,8 +1352,6 @@ class DBAPIResourceTest(HeatTestCase):
     def setUp(self):
         super(DBAPIResourceTest, self).setUp()
         self.ctx = utils.dummy_context()
-        utils.setup_dummy_db()
-        utils.reset_dummy_db()
         self.template = create_raw_template(self.ctx)
         self.user_creds = create_user_creds(self.ctx)
         self.stack = create_stack(self.ctx, self.template, self.user_creds)
@@ -1306,8 +1425,10 @@ class DBAPIResourceTest(HeatTestCase):
         ]
         [create_resource(self.ctx, self.stack, **val) for val in values]
 
-        stacks = db_api.resource_get_all_by_stack(self.ctx, self.stack.id)
-        self.assertEqual(2, len(stacks))
+        resources = db_api.resource_get_all_by_stack(self.ctx, self.stack.id)
+        self.assertEqual(2, len(resources))
+        self.assertEqual('res1', resources.get('res1').name)
+        self.assertEqual('res2', resources.get('res2').name)
 
         self.assertRaises(exception.NotFound, db_api.resource_get_all_by_stack,
                           self.ctx, self.stack2.id)
@@ -1323,8 +1444,6 @@ class DBAPIStackLockTest(HeatTestCase):
     def setUp(self):
         super(DBAPIStackLockTest, self).setUp()
         self.ctx = utils.dummy_context()
-        utils.setup_dummy_db()
-        utils.reset_dummy_db()
         self.template = create_raw_template(self.ctx)
         self.user_creds = create_user_creds(self.ctx)
         self.stack = create_stack(self.ctx, self.template, self.user_creds)
@@ -1385,8 +1504,6 @@ class DBAPIResourceDataTest(HeatTestCase):
     def setUp(self):
         super(DBAPIResourceDataTest, self).setUp()
         self.ctx = utils.dummy_context()
-        utils.setup_dummy_db()
-        utils.reset_dummy_db()
         self.template = create_raw_template(self.ctx)
         self.user_creds = create_user_creds(self.ctx)
         self.stack = create_stack(self.ctx, self.template, self.user_creds)
@@ -1409,7 +1526,14 @@ class DBAPIResourceDataTest(HeatTestCase):
         val = db_api.resource_data_get(self.resource, 'encryped_resource_key')
         self.assertEqual('test_value', val)
 
+        # get all by querying for data
         vals = db_api.resource_data_get_all(self.resource)
+        self.assertEqual(2, len(vals))
+        self.assertEqual('foo', vals.get('test_resource_key'))
+        self.assertEqual('test_value', vals.get('encryped_resource_key'))
+
+        # get all by using associated resource data
+        vals = db_api.resource_data_get_all(None, self.resource.data)
         self.assertEqual(2, len(vals))
         self.assertEqual('foo', vals.get('test_resource_key'))
         self.assertEqual('test_value', vals.get('encryped_resource_key'))
@@ -1431,8 +1555,6 @@ class DBAPIEventTest(HeatTestCase):
     def setUp(self):
         super(DBAPIEventTest, self).setUp()
         self.ctx = utils.dummy_context()
-        utils.setup_dummy_db()
-        utils.reset_dummy_db()
         self.template = create_raw_template(self.ctx)
         self.user_creds = create_user_creds(self.ctx)
 
@@ -1532,8 +1654,6 @@ class DBAPIWatchRuleTest(HeatTestCase):
     def setUp(self):
         super(DBAPIWatchRuleTest, self).setUp()
         self.ctx = utils.dummy_context()
-        utils.setup_dummy_db()
-        utils.reset_dummy_db()
         self.template = create_raw_template(self.ctx)
         self.user_creds = create_user_creds(self.ctx)
         self.stack = create_stack(self.ctx, self.template, self.user_creds)
@@ -1614,8 +1734,6 @@ class DBAPIWatchDataTest(HeatTestCase):
     def setUp(self):
         super(DBAPIWatchDataTest, self).setUp()
         self.ctx = utils.dummy_context()
-        utils.setup_dummy_db()
-        utils.reset_dummy_db()
         self.template = create_raw_template(self.ctx)
         self.user_creds = create_user_creds(self.ctx)
         self.stack = create_stack(self.ctx, self.template, self.user_creds)

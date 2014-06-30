@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -15,13 +14,14 @@
 import heatclient.exc as heat_exp
 
 from heat.common import exception
+from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class SoftwareConfig(resource.Resource):
@@ -56,6 +56,12 @@ class SoftwareConfig(resource.Resource):
         NAME, DESCRIPTION, TYPE, DEFAULT, ERROR_OUTPUT
     ) = (
         'name', 'description', 'type', 'default', 'error_output'
+    )
+
+    ATTRIBUTES = (
+        CONFIG_ATTR,
+    ) = (
+        'config',
     )
 
     input_schema = {
@@ -141,7 +147,9 @@ class SoftwareConfig(resource.Resource):
     }
 
     attributes_schema = {
-        "config": _("The config value of the software config.")
+        CONFIG_ATTR: attributes.Schema(
+            _("The config value of the software config.")
+        ),
     }
 
     def handle_create(self):
@@ -159,15 +167,15 @@ class SoftwareConfig(resource.Resource):
         try:
             self.heat().software_configs.delete(self.resource_id)
         except heat_exp.HTTPNotFound:
-            logger.debug(
-                _('Software config %s is not found.') % self.resource_id)
+            LOG.debug(
+                'Software config %s is not found.' % self.resource_id)
 
     def _resolve_attribute(self, name):
         '''
         "config" returns the config value of the software config. If the
          software config does not exist, returns an empty string.
         '''
-        if name == self.CONFIG and self.resource_id:
+        if name == self.CONFIG_ATTR and self.resource_id:
             try:
                 return self.get_software_config(self.heat(), self.resource_id)
             except exception.SoftwareConfigMissing:

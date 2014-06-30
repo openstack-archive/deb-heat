@@ -1,4 +1,4 @@
-# -*- encoding: utf-8 -*-
+# -*- coding: utf-8 -*-
 #
 # Copyright © 2013 Unitedstack Inc.
 #
@@ -25,15 +25,14 @@ import traceback
 from oslo.config import cfg
 import webob
 
-cfg.CONF.import_opt('debug', 'heat.openstack.common.log')
 
 from heat.common import exception
-from heat.openstack.common import log as logging
-import heat.openstack.common.rpc.common as rpc_common
-
+from heat.common import serializers
 from heat.common import wsgi
+from heat.openstack.common.rpc import common as rpc_common
 
-logger = logging.getLogger(__name__)
+
+cfg.CONF.import_opt('debug', 'heat.openstack.common.log')
 
 
 class Fault(object):
@@ -44,9 +43,9 @@ class Fault(object):
     @webob.dec.wsgify(RequestClass=wsgi.Request)
     def __call__(self, req):
         if req.content_type == 'application/xml':
-            serializer = wsgi.XMLResponseSerializer()
+            serializer = serializers.XMLResponseSerializer()
         else:
-            serializer = wsgi.JSONResponseSerializer()
+            serializer = serializers.JSONResponseSerializer()
         resp = webob.Response(request=req)
         default_webob_exc = webob.exc.HTTPInternalServerError()
         resp.status_code = self.error.get('code', default_webob_exc.code)
@@ -118,6 +117,9 @@ class FaultWrapper(wsgi.Middleware):
         else:
             msg_trace = traceback.format_exc()
             message = full_message
+
+        if isinstance(ex, exception.HeatException):
+            message = ex.message
 
         if cfg.CONF.debug and not trace:
             trace = msg_trace

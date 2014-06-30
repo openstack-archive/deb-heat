@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,14 +11,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from six.moves.urllib import parse as urlparse
+
 from heat.common import exception
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import properties
 from heat.engine import resource
 from heat.openstack.common import log as logging
-from heat.openstack.common.py3kcompat import urlutils
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class SwiftContainer(resource.Resource):
@@ -29,6 +30,14 @@ class SwiftContainer(resource.Resource):
     ) = (
         'name', 'X-Container-Read', 'X-Container-Write', 'X-Container-Meta',
         'X-Account-Meta'
+    )
+
+    ATTRIBUTES = (
+        DOMAIN_NAME, WEBSITE_URL, ROOT_URL, OBJECT_COUNT, BYTES_USED,
+        HEAD_CONTAINER,
+    ) = (
+        'DomainName', 'WebsiteURL', 'RootURL', 'ObjectCount', 'BytesUsed',
+        'HeadContainer',
     )
 
     properties_schema = {
@@ -64,12 +73,24 @@ class SwiftContainer(resource.Resource):
     }
 
     attributes_schema = {
-        'DomainName': _('The host from the container URL.'),
-        'WebsiteURL': _('The URL of the container.'),
-        'RootURL': _('The parent URL of the container.'),
-        'ObjectCount': _('The number of objects stored in the container.'),
-        'BytesUsed': _('The number of bytes stored in the container.'),
-        'HeadContainer': _('A map containing all headers for the container.')
+        DOMAIN_NAME: attributes.Schema(
+            _('The host from the container URL.')
+        ),
+        WEBSITE_URL: attributes.Schema(
+            _('The URL of the container.')
+        ),
+        ROOT_URL: attributes.Schema(
+            _('The parent URL of the container.')
+        ),
+        OBJECT_COUNT: attributes.Schema(
+            _('The number of objects stored in the container.')
+        ),
+        BYTES_USED: attributes.Schema(
+            _('The number of bytes stored in the container.')
+        ),
+        HEAD_CONTAINER: attributes.Schema(
+            _('A map containing all headers for the container.')
+        ),
     }
 
     def physical_resource_name(self):
@@ -105,12 +126,12 @@ class SwiftContainer(resource.Resource):
             if self.properties.get(key) is not None:
                 container_headers[key] = self.properties[key]
 
-        logger.debug(_('SwiftContainer create container %(container)s with '
-                     'container headers %(container_headers)s and '
-                     'account headers %(account_headers)s') % {
-                         'container': container,
-                         'account_headers': account_headers,
-                         'container_headers': container_headers})
+        LOG.debug('SwiftContainer create container %(container)s with '
+                  'container headers %(container_headers)s and '
+                  'account headers %(account_headers)s'
+                  % {'container': container,
+                     'account_headers': account_headers,
+                     'container_headers': container_headers})
 
         self.swift().put_container(container, container_headers)
 
@@ -121,39 +142,38 @@ class SwiftContainer(resource.Resource):
 
     def handle_delete(self):
         """Perform specified delete policy."""
-        logger.debug(_('SwiftContainer delete container %s') %
-                     self.resource_id)
+        LOG.debug('SwiftContainer delete container %s' % self.resource_id)
         if self.resource_id is not None:
             try:
                 self.swift().delete_container(self.resource_id)
             except clients.swiftclient.ClientException as ex:
-                logger.warn(_("Delete container failed: %s") % str(ex))
+                LOG.warn(_("Delete container failed: %s") % ex)
 
     def FnGetRefId(self):
         return unicode(self.resource_id)
 
     def FnGetAtt(self, key):
-        parsed = list(urlutils.urlparse(self.swift().url))
-        if key == 'DomainName':
+        parsed = list(urlparse.urlparse(self.swift().url))
+        if key == self.DOMAIN_NAME:
             return parsed[1].split(':')[0]
-        elif key == 'WebsiteURL':
+        elif key == self.WEBSITE_URL:
             return '%s://%s%s/%s' % (parsed[0], parsed[1], parsed[2],
                                      self.resource_id)
-        elif key == 'RootURL':
+        elif key == self.ROOT_URL:
             return '%s://%s%s' % (parsed[0], parsed[1], parsed[2])
         elif self.resource_id and key in (
-                'ObjectCount', 'BytesUsed', 'HeadContainer'):
+                self.OBJECT_COUNT, self.BYTES_USED, self.HEAD_CONTAINER):
             try:
                 headers = self.swift().head_container(self.resource_id)
             except clients.swiftclient.ClientException as ex:
-                logger.warn(_("Head container failed: %s") % str(ex))
+                LOG.warn(_("Head container failed: %s") % ex)
                 return None
             else:
-                if key == 'ObjectCount':
+                if key == self.OBJECT_COUNT:
                     return headers['x-container-object-count']
-                elif key == 'BytesUsed':
+                elif key == self.BYTES_USED:
                     return headers['x-container-bytes-used']
-                elif key == 'HeadContainer':
+                elif key == self.HEAD_CONTAINER:
                     return headers
         else:
             raise exception.InvalidTemplateAttribute(resource=self.name,

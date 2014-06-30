@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -32,7 +31,7 @@ from heat.openstack.common import log as logging
 from heat.rpc import api as engine_api
 from heat.rpc import client as rpc_client
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class StackController(object):
@@ -247,15 +246,15 @@ class StackController(object):
         Get template file contents, either from local file or URL
         """
         if 'TemplateBody' in req.params:
-            logger.debug('TemplateBody ...')
+            LOG.debug('TemplateBody ...')
             return req.params['TemplateBody']
         elif 'TemplateUrl' in req.params:
             url = req.params['TemplateUrl']
-            logger.debug('TemplateUrl %s' % url)
+            LOG.debug('TemplateUrl %s' % url)
             try:
                 return urlfetch.get(url)
             except IOError as exc:
-                msg = _('Failed to fetch template: %s') % str(exc)
+                msg = _('Failed to fetch template: %s') % exc
                 raise exception.HeatInvalidParameterValueError(detail=msg)
 
         return None
@@ -422,7 +421,7 @@ class StackController(object):
             msg = _("The Template must be a JSON or YAML document.")
             return exception.HeatInvalidParameterValueError(detail=msg)
 
-        logger.info('validate_template')
+        LOG.info(_('validate_template'))
 
         def format_validate_parameter(key, value):
             """

@@ -12,6 +12,7 @@
 #    under the License.
 
 from heat.common import exception
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
@@ -26,6 +27,13 @@ class ProviderNet(net.Net):
         'name', 'network_type', 'physical_network',
         'segmentation_id', 'admin_state_up', 'shared',
     )
+
+    ATTRIBUTES = (
+        STATUS, SUBNETS, SHOW,
+    ) = (
+        'status', 'subnets', 'show',
+    )
+
     properties_schema = {
         NAME: net.Net.properties_schema[NAME],
         PROVIDER_NETWORK_TYPE: properties.Schema(
@@ -60,12 +68,16 @@ class ProviderNet(net.Net):
         ),
     }
 
-    update_allowed_keys = ('Properties',)
-
     attributes_schema = {
-        "status": _("The status of the network."),
-        "subnets": _("Subnets of this network."),
-        "show": _("All attributes."),
+        STATUS: attributes.Schema(
+            _("The status of the network.")
+        ),
+        SUBNETS: attributes.Schema(
+            _("Subnets of this network.")
+        ),
+        SHOW: attributes.Schema(
+            _("All attributes.")
+        ),
     }
 
     def validate(self):

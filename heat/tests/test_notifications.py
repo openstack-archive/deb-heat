@@ -1,3 +1,4 @@
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -12,7 +13,6 @@
 
 import mock
 from oslo.config import cfg
-
 
 from heat.common import exception
 from heat.common import template_format
@@ -41,7 +41,6 @@ class NotificationTest(common.HeatTestCase):
 
     def setUp(self):
         super(NotificationTest, self).setUp()
-        utils.setup_dummy_db()
 
         cfg.CONF.import_opt('notification_driver',
                             'heat.openstack.common.notifier.api')
@@ -53,7 +52,8 @@ class NotificationTest(common.HeatTestCase):
                                  generic_resource.ResourceWithProps)
 
     def create_test_stack(self):
-        test_template = {'Parameters': {'Foo': {'Type': 'String'},
+        test_template = {'HeatTemplateFormatVersion': '2012-12-12',
+                         'Parameters': {'Foo': {'Type': 'String'},
                                         'Pass': {'Type': 'String',
                                                  'NoEcho': True}},
                          'Resources':
@@ -109,7 +109,6 @@ class NotificationTest(common.HeatTestCase):
                        'stack_name': self.stack_name,
                        'state': '%s_COMPLETE' % action.upper()})]
 
-    @utils.stack_delete_after
     def test_create_stack(self):
         with mock.patch('heat.openstack.common.notifier.api.notify') \
                 as mock_notify:
@@ -120,7 +119,6 @@ class NotificationTest(common.HeatTestCase):
             self.assertEqual(self.expected['create'],
                              mock_notify.call_args_list)
 
-    @utils.stack_delete_after
     def test_create_and_suspend_stack(self):
         with mock.patch('heat.openstack.common.notifier.api.notify') \
                 as mock_notify:
@@ -137,7 +135,6 @@ class NotificationTest(common.HeatTestCase):
             expected = self.expected['create'] + self.expected['suspend']
             self.assertEqual(expected, mock_notify.call_args_list)
 
-    @utils.stack_delete_after
     def test_create_and_delete_stack(self):
         with mock.patch('heat.openstack.common.notifier.api.notify') \
                 as mock_notify:
@@ -159,7 +156,6 @@ class ScaleNotificationTest(common.HeatTestCase):
 
     def setUp(self):
         super(ScaleNotificationTest, self).setUp()
-        utils.setup_dummy_db()
 
         cfg.CONF.import_opt('notification_driver',
                             'heat.openstack.common.notifier.api')
@@ -272,7 +268,6 @@ class ScaleNotificationTest(common.HeatTestCase):
 
         return expected
 
-    @utils.stack_delete_after
     def test_scale_success(self):
         with mock.patch('heat.engine.notification.stack.send'):
             with mock.patch('heat.openstack.common.notifier.api.notify') \
@@ -298,7 +293,6 @@ class ScaleNotificationTest(common.HeatTestCase):
                 self.assertEqual(1, len(group.get_instance_names()))
                 mock_notify.assert_has_calls(expected)
 
-    @utils.stack_delete_after
     def test_scaleup_failure(self):
         with mock.patch('heat.engine.notification.stack.send'):
             with mock.patch('heat.openstack.common.notifier.api.notify') \

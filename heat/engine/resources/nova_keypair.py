@@ -1,3 +1,4 @@
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -13,15 +14,12 @@
 from novaclient import exceptions as nova_exceptions
 
 from heat.common import exception
-from heat.db import api as db_api
-from heat.engine.clients import Clients
+from heat.engine import attributes
+from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources import nova_utils
 from heat.openstack.common.gettextutils import _
-from heat.openstack.common import log as logging
-
-logger = logging.getLogger(__name__)
 
 
 class KeyPair(resource.Resource):
@@ -42,6 +40,12 @@ class KeyPair(resource.Resource):
         NAME, SAVE_PRIVATE_KEY, PUBLIC_KEY,
     ) = (
         'name', 'save_private_key', 'public_key',
+    )
+
+    ATTRIBUTES = (
+        PUBLIC_KEY_ATTR, PRIVATE_KEY,
+    ) = (
+        'public_key', 'private_key',
     )
 
     properties_schema = {
@@ -65,26 +69,26 @@ class KeyPair(resource.Resource):
     }
 
     attributes_schema = {
-        'public_key': _('The public key.'),
-        'private_key': _('The private key if it has been saved.')
+        PUBLIC_KEY: attributes.Schema(
+            _('The public key.')
+        ),
+        PRIVATE_KEY: attributes.Schema(
+            _('The private key if it has been saved.'),
+            cache_mode=attributes.Schema.CACHE_NONE
+        ),
     }
 
     def __init__(self, name, json_snippet, stack):
         super(KeyPair, self).__init__(name, json_snippet, stack)
-        self._private_key = None
         self._public_key = None
 
     @property
     def private_key(self):
         """Return the private SSH key for the resource."""
-        if (self._private_key is None and self.id and
-                self.properties[self.SAVE_PRIVATE_KEY]):
-                try:
-                    self._private_key = db_api.resource_data_get(self,
-                                                                 'private_key')
-                except exception.NotFound:
-                    pass
-        return self._private_key or ""
+        if self.properties[self.SAVE_PRIVATE_KEY]:
+            return self.data().get('private_key', '')
+        else:
+            return ''
 
     @property
     def public_key(self):
@@ -104,9 +108,9 @@ class KeyPair(resource.Resource):
                                                   public_key=pub_key)
         if (self.properties[self.SAVE_PRIVATE_KEY] and
                 hasattr(new_keypair, 'private_key')):
-            db_api.resource_data_set(self, 'private_key',
-                                     new_keypair.private_key,
-                                     True)
+            self.data_set('private_key',
+                          new_keypair.private_key,
+                          True)
         self.resource_id_set(new_keypair.id)
 
     def handle_delete(self):
@@ -125,19 +129,17 @@ class KeyPair(resource.Resource):
         return self.resource_id
 
 
-class KeypairConstraint(object):
+class KeypairConstraint(constraints.BaseCustomConstraint):
 
-    def validate(self, value, context):
+    expected_exceptions = (exception.UserKeyPairMissing,)
+
+    def validate_with_client(self, client, value):
         if not value:
             # Don't validate empty key, which can happen when you use a KeyPair
             # resource
             return True
-        try:
-            nova_utils.get_keypair(Clients(context).nova(), value)
-        except exception.UserKeyPairMissing:
-            return False
-        else:
-            return True
+        nova_client = client.nova()
+        nova_utils.get_keypair(nova_client, value)
 
 
 def constraint_mapping():

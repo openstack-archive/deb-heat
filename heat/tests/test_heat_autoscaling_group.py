@@ -12,14 +12,18 @@
 
 import copy
 import datetime
+import itertools
+import mock
 
 from oslo.config import cfg
 
 from heat.common import exception
+from heat.common import short_id
 from heat.common import template_format
 from heat.engine import clients
 from heat.engine import resource
 from heat.engine import scheduler
+from heat.engine import stack_resource
 from heat.openstack.common import timeutils
 from heat.tests.common import HeatTestCase
 from heat.tests import fakes
@@ -46,7 +50,6 @@ class AutoScalingGroupTest(HeatTestCase):
 
     def setUp(self):
         super(AutoScalingGroupTest, self).setUp()
-        utils.setup_dummy_db()
         resource._register_class('ResourceWithProps',
                                  generic_resource.ResourceWithProps)
         cfg.CONF.set_default('heat_waitcondition_server_url',
@@ -87,15 +90,6 @@ class AutoScalingGroupTest(HeatTestCase):
         # trigger adjustment to reduce to 0, there should be no more instances
         rsrc.adjust(-1)
         self.assertEqual(0, len(rsrc.get_instances()))
-
-    def test_scaling_group_update_replace(self):
-        rsrc = self.create_stack(self.parsed)['my-group']
-        self.assertEqual(1, len(rsrc.get_instances()))
-        update_snippet = copy.deepcopy(rsrc.parsed_template())
-        props = update_snippet['Properties']['resource']['properties']
-        props['Foo'] = 'Bar'
-        updater = scheduler.TaskRunner(rsrc.update, update_snippet)
-        self.assertRaises(resource.UpdateReplace, updater)
 
     def test_scaling_group_suspend(self):
         rsrc = self.create_stack(self.parsed)['my-group']
@@ -274,7 +268,6 @@ class HeatScalingGroupWithCFNScalingPolicyTest(HeatTestCase):
 
     def setUp(self):
         super(HeatScalingGroupWithCFNScalingPolicyTest, self).setUp()
-        utils.setup_dummy_db()
         resource._register_class('ResourceWithProps',
                                  generic_resource.ResourceWithProps)
         cfg.CONF.set_default('heat_waitcondition_server_url',
@@ -333,7 +326,6 @@ class ScalingPolicyTest(HeatTestCase):
 
     def setUp(self):
         super(ScalingPolicyTest, self).setUp()
-        utils.setup_dummy_db()
         resource._register_class('ResourceWithProps',
                                  generic_resource.ResourceWithProps)
         self.fc = fakes.FakeKeystoneClient()
@@ -376,7 +368,85 @@ class ScalingPolicyTest(HeatTestCase):
 
         past = timeutils.strtime(timeutils.utcnow() -
                                  datetime.timedelta(seconds=65))
-        policy.metadata = {past: 'ChangeInCapacity : 1'}
+        policy.metadata_set({past: 'ChangeInCapacity : 1'})
 
         policy.signal()
         self.assertEqual(3, len(group.get_instance_names()))
+
+
+class RollingUpdatesTest(HeatTestCase):
+
+    as_template = '''
+        heat_template_version: 2013-05-23
+        description: AutoScaling Test
+        resources:
+          my-group:
+            properties:
+              max_size: 5
+              min_size: 4
+              rolling_updates:
+                min_in_service: 2
+                max_batch_size: 2
+                pause_time: 0
+              resource:
+                type: ResourceWithProps
+                properties:
+                    Foo: hello
+            type: OS::Heat::AutoScalingGroup
+    '''
+
+    def setUp(self):
+        super(RollingUpdatesTest, self).setUp()
+        utils.setup_dummy_db()
+        resource._register_class('ResourceWithProps',
+                                 generic_resource.ResourceWithProps)
+        cfg.CONF.set_default('heat_waitcondition_server_url',
+                             'http://server.test:8000/v1/waitcondition')
+        self.fc = fakes.FakeKeystoneClient()
+        client = self.patchobject(clients.OpenStackClients, "keystone")
+        client.return_value = self.fc
+        self.parsed = template_format.parse(self.as_template)
+        generate_id = self.patchobject(short_id, 'generate_id')
+        generate_id.side_effect = ('id-%d' % (i,)
+                                   for i in itertools.count()).next
+
+    def create_stack(self, t):
+        stack = utils.parse_stack(t)
+        stack.create()
+        self.assertEqual((stack.CREATE, stack.COMPLETE), stack.state)
+        return stack
+
+    def test_rolling_update(self):
+        stack = self.create_stack(self.parsed)
+        rsrc = stack['my-group']
+        created_order = sorted(
+            rsrc.nested().resources,
+            key=lambda name: rsrc.nested().resources[name].created_time)
+        batches = []
+
+        def update_with_template(tmpl, env):
+            # keep track of the new updates to resources _in creation order_.
+            definitions = tmpl.resource_definitions(stack)
+            templates = [definitions[name] for name in created_order]
+            batches.append(templates)
+        patcher = mock.patch.object(
+            stack_resource.StackResource, 'update_with_template',
+            side_effect=update_with_template, wraps=rsrc.update_with_template)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        update_snippet = copy.deepcopy(rsrc.parsed_template())
+        update_snippet['Properties']['resource']['properties']['Foo'] = 'Hi'
+
+        scheduler.TaskRunner(rsrc.update, update_snippet)()
+
+        props_schema = generic_resource.ResourceWithProps.properties_schema
+
+        def get_foos(defns):
+            return [d.properties(props_schema)['Foo'] for d in defns]
+
+        # first batch has 2 new resources
+        self.assertEqual(['Hi', 'Hi', 'hello', 'hello'],
+                         get_foos(batches[0]))
+        # second batch has all new resources.
+        self.assertEqual(['Hi', 'Hi', 'Hi', 'Hi'],
+                         get_foos(batches[1]))

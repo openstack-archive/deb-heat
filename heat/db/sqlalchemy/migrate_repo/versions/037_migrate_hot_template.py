@@ -1,3 +1,4 @@
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -11,12 +12,13 @@
 #    under the License.
 
 import copy
+
 from migrate.versioning import util as migrate_util
 from sqlalchemy.orm import sessionmaker
 
-from heat.openstack.common.gettextutils import _
 from heat.db.sqlalchemy import models
 from heat.engine.hot.parameters import HOTParamSchema
+from heat.openstack.common.gettextutils import _
 
 
 def upgrade(migrate_engine):

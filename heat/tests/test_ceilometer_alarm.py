@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -131,7 +131,6 @@ class FakeCeilometerClient(object):
 class CeilometerAlarmTest(HeatTestCase):
     def setUp(self):
         super(CeilometerAlarmTest, self).setUp()
-        utils.setup_dummy_db()
 
         resource._register_class('SignalResourceType',
                                  generic_resource.SignalResource)
@@ -171,7 +170,6 @@ class CeilometerAlarmTest(HeatTestCase):
         self.fa.alarms.create(**al).AndReturn(FakeCeilometerAlarm())
         return stack
 
-    @utils.stack_delete_after
     def test_mem_alarm_high_update_no_replace(self):
         '''
         Make sure that we can change the update-able properties
@@ -212,7 +210,6 @@ class CeilometerAlarmTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_mem_alarm_high_update_replace(self):
         '''
         Make sure that the Alarm resource IS replaced when non-update-able
@@ -237,7 +234,6 @@ class CeilometerAlarmTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_mem_alarm_suspend_resume(self):
         """
         Make sure that the Alarm resource gets disabled on suspend
@@ -263,7 +259,6 @@ class CeilometerAlarmTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_mem_alarm_high_correct_int_parameters(self):
         self.stack = self.create_stack(not_string_alarm_template)
 
@@ -285,8 +280,9 @@ class CeilometerAlarmTest(HeatTestCase):
             snippet['Resources']['MEMAlarmHigh']['Properties'][p] = '60a'
             stack = utils.parse_stack(snippet)
 
+            resource_defns = stack.t.resource_definitions(stack)
             rsrc = alarm.CeilometerAlarm(
-                'MEMAlarmHigh', snippet['Resources']['MEMAlarmHigh'], stack)
+                'MEMAlarmHigh', resource_defns['MEMAlarmHigh'], stack)
             error = self.assertRaises(exception.StackValidationFailed,
                                       rsrc.validate)
             self.assertEqual(
@@ -299,8 +295,9 @@ class CeilometerAlarmTest(HeatTestCase):
             snippet['Resources']['MEMAlarmHigh']['Properties'][p] = [60]
             stack = utils.parse_stack(snippet)
 
+            resource_defns = stack.t.resource_definitions(stack)
             rsrc = alarm.CeilometerAlarm(
-                'MEMAlarmHigh', snippet['Resources']['MEMAlarmHigh'], stack)
+                'MEMAlarmHigh', resource_defns['MEMAlarmHigh'], stack)
             error = self.assertRaises(exception.StackValidationFailed,
                                       rsrc.validate)
             self.assertEqual(
@@ -312,8 +309,9 @@ class CeilometerAlarmTest(HeatTestCase):
         snippet['Resources']['MEMAlarmHigh']['Properties'].pop('meter_name')
         stack = utils.parse_stack(snippet)
 
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = alarm.CeilometerAlarm(
-            'MEMAlarmHigh', snippet['Resources']['MEMAlarmHigh'], stack)
+            'MEMAlarmHigh', resource_defns['MEMAlarmHigh'], stack)
         error = self.assertRaises(exception.StackValidationFailed,
                                   rsrc.validate)
         self.assertEqual(
@@ -326,9 +324,27 @@ class CeilometerAlarmTest(HeatTestCase):
             snippet['Resources']['MEMAlarmHigh']['Properties'].pop(p)
             stack = utils.parse_stack(snippet)
 
+            resource_defns = stack.t.resource_definitions(stack)
             rsrc = alarm.CeilometerAlarm(
-                'MEMAlarmHigh', snippet['Resources']['MEMAlarmHigh'], stack)
+                'MEMAlarmHigh', resource_defns['MEMAlarmHigh'], stack)
             self.assertIsNone(rsrc.validate())
+
+    def test_delete_alarm_not_found(self):
+        t = template_format.parse(alarm_template)
+
+        self.stack = self.create_stack(template=json.dumps(t))
+        self.m.StubOutWithMock(self.fa.alarms, 'delete')
+        self.fa.alarms.delete('foo').AndRaise(
+            alarm.ceilometerclient_exc.HTTPNotFound())
+
+        self.m.ReplayAll()
+        self.stack.create()
+        rsrc = self.stack['MEMAlarmHigh']
+
+        scheduler.TaskRunner(rsrc.delete)()
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
+
+        self.m.VerifyAll()
 
 
 @testtools.skipIf(ceilometerclient is None, 'ceilometerclient unavailable')
@@ -338,7 +354,6 @@ class CombinationAlarmTest(HeatTestCase):
         super(CombinationAlarmTest, self).setUp()
         self.fc = FakeCeilometerClient()
         self.m.StubOutWithMock(clients.OpenStackClients, 'ceilometer')
-        utils.setup_dummy_db()
 
     def create_alarm(self):
         clients.OpenStackClients.ceilometer().MultipleTimes().AndReturn(
@@ -353,8 +368,9 @@ class CombinationAlarmTest(HeatTestCase):
         ).AndReturn(FakeCeilometerAlarm())
         snippet = template_format.parse(combination_alarm_template)
         stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
         return alarm.CombinationAlarm(
-            'CombinAlarm', snippet['Resources']['CombinAlarm'], stack)
+            'CombinAlarm', resource_defns['CombinAlarm'], stack)
 
     def test_create(self):
         rsrc = self.create_alarm()
@@ -369,8 +385,9 @@ class CombinationAlarmTest(HeatTestCase):
         snippet = template_format.parse(combination_alarm_template)
         snippet['Resources']['CombinAlarm']['Properties']['alarm_ids'] = []
         stack = utils.parse_stack(snippet)
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = alarm.CombinationAlarm(
-            'CombinAlarm', snippet['Resources']['CombinAlarm'], stack)
+            'CombinAlarm', resource_defns['CombinAlarm'], stack)
         error = self.assertRaises(exception.StackValidationFailed,
                                   rsrc.validate)
         self.assertEqual(
@@ -425,6 +442,18 @@ class CombinationAlarmTest(HeatTestCase):
         rsrc = self.create_alarm()
         self.m.StubOutWithMock(self.fc.alarms, 'delete')
         self.fc.alarms.delete('foo')
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+        scheduler.TaskRunner(rsrc.delete)()
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
+
+        self.m.VerifyAll()
+
+    def test_delete_not_found(self):
+        rsrc = self.create_alarm()
+        self.m.StubOutWithMock(self.fc.alarms, 'delete')
+        self.fc.alarms.delete('foo').AndRaise(
+            alarm.ceilometerclient_exc.HTTPNotFound())
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
         scheduler.TaskRunner(rsrc.delete)()

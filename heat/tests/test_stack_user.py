@@ -40,14 +40,12 @@ class StackUserTest(HeatTestCase):
 
     def setUp(self):
         super(StackUserTest, self).setUp()
-        utils.setup_dummy_db()
         resource._register_class('StackUserResourceType',
                                  generic_resource.StackUserResource)
         self.fc = fakes.FakeKeystoneClient()
 
     def tearDown(self):
         super(StackUserTest, self).tearDown()
-        utils.reset_dummy_db()
 
     def _user_create(self, stack_name, project_id, user_id,
                      resource_name='user', create_project=True):
@@ -293,9 +291,9 @@ class StackUserTest(HeatTestCase):
 
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
-        db_api.resource_data_set(rsrc, 'credential_id', 'acredential')
-        db_api.resource_data_set(rsrc, 'access_key', 'access123')
-        db_api.resource_data_set(rsrc, 'secret_key', 'verysecret')
+        rsrc.data_set('credential_id', 'acredential')
+        rsrc.data_set('access_key', 'access123')
+        rsrc.data_set('secret_key', 'verysecret')
         rsrc._delete_keypair()
         rs_data = db_api.resource_data_get_all(rsrc)
         self.assertEqual({'user_id': 'auserdel'}, rs_data)
@@ -325,9 +323,9 @@ class StackUserTest(HeatTestCase):
 
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
-        db_api.resource_data_set(rsrc, 'credential_id', 'acredential')
-        db_api.resource_data_set(rsrc, 'access_key', 'access123')
-        db_api.resource_data_set(rsrc, 'secret_key', 'verysecret')
+        rsrc.data_set('credential_id', 'acredential')
+        rsrc.data_set('access_key', 'access123')
+        rsrc.data_set('secret_key', 'verysecret')
         rsrc._delete_keypair()
         rs_data = db_api.resource_data_get_all(rsrc)
         self.assertEqual({'user_id': 'auserdel'}, rs_data)
@@ -347,7 +345,7 @@ class StackUserTest(HeatTestCase):
 
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
-        db_api.resource_data_set(rsrc, 'credential_id', 'acredential')
+        rsrc.data_set('credential_id', 'acredential')
         rsrc._delete_keypair()
         rs_data = db_api.resource_data_get_all(rsrc)
         self.assertEqual({'user_id': 'auserdel'}, rs_data)

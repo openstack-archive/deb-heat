@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -40,7 +39,7 @@ class LazyPluggable(object):
         return getattr(backend, key)
 
 
-IMPL = LazyPluggable('db_backend',
+IMPL = LazyPluggable('backend',
                      sqlalchemy='heat.db.sqlalchemy.api')
 
 

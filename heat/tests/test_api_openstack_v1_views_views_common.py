@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -12,9 +12,9 @@
 #    under the License.
 
 import mock
+from six.moves.urllib import parse as urlparse
 
 from heat.api.openstack.v1.views import views_common
-from heat.openstack.common.py3kcompat import urlutils
 from heat.tests.common import HeatTestCase
 
 
@@ -73,9 +73,9 @@ class TestViewsCommon(HeatTestCase):
 
         next_link = filter(lambda link: link['rel'] == 'next', links).pop()
         url = next_link['href']
-        query_string = urlutils.urlparse(url).query
+        query_string = urlparse.urlparse(url).query
         params = {}
-        params.update(urlutils.parse_qsl(query_string))
+        params.update(urlparse.parse_qsl(query_string))
         self.assertEqual('2', params['limit'])
         self.assertEqual('bar', params['foo'])
 

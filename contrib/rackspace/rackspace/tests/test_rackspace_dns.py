@@ -1,3 +1,4 @@
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -18,13 +19,10 @@ from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
-from heat.openstack.common import log as logging
 from heat.tests import common
 from heat.tests import utils
 
 from ..resources import cloud_dns  # noqa
-
-logger = logging.getLogger(__name__)
 
 domain_only_template = '''
 {
@@ -79,7 +77,6 @@ class RackspaceDnsTest(common.HeatTestCase):
 
     def setUp(self):
         super(RackspaceDnsTest, self).setUp()
-        utils.setup_dummy_db()
         # Test environment may not have pyrax client library installed and if
         # pyrax is not installed resource class would not be registered.
         # So register resource provider class explicitly for unit testing.
@@ -109,9 +106,8 @@ class RackspaceDnsTest(common.HeatTestCase):
 
         instance = cloud_dns.CloudDns(
             '%s_name' % name,
-            t['Resources']['domain'],
+            template.resource_definitions(stack)['domain'],
             stack)
-        instance.t = instance.stack.resolve_runtime_data(instance.t)
         return instance
 
     def _stubout_create(self, instance, fake_dnsinstance, **create_args):
@@ -140,6 +136,8 @@ class RackspaceDnsTest(common.HeatTestCase):
             fake_records = list()
             mock_domain.list_records().AndReturn(fake_records)
             mock_domain.add_records([{
+                'comment': None,
+                'priority': None,
                 'type': 'A',
                 'name': 'ftp.example.com',
                 'data': '192.0.2.8',

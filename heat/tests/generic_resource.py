@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -11,13 +11,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.engine import attributes
 from heat.engine import resource
 from heat.engine import signal_responder
 from heat.engine import stack_user
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class GenericResource(resource.Resource):
@@ -25,31 +26,31 @@ class GenericResource(resource.Resource):
     Dummy resource for use in tests
     '''
     properties_schema = {}
-    attributes_schema = {'foo': 'A generic attribute',
-                         'Foo': 'Another generic attribute'}
+    attributes_schema = {'foo': attributes.Schema('A generic attribute'),
+                         'Foo': attributes.Schema('Another generic attribute')}
 
     def handle_create(self):
-        logger.warning(_('Creating generic resource (Type "%s")') %
-                       self.type())
+        LOG.warning(_('Creating generic resource (Type "%s")') %
+                    self.type())
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        logger.warning(_('Updating generic resource (Type "%s")') %
-                       self.type())
+        LOG.warning(_('Updating generic resource (Type "%s")') %
+                    self.type())
 
     def handle_delete(self):
-        logger.warning(_('Deleting generic resource (Type "%s")') %
-                       self.type())
+        LOG.warning(_('Deleting generic resource (Type "%s")') %
+                    self.type())
 
     def _resolve_attribute(self, name):
         return self.name
 
     def handle_suspend(self):
-        logger.warning(_('Suspending generic resource (Type "%s")') %
-                       self.type())
+        LOG.warning(_('Suspending generic resource (Type "%s")') %
+                    self.type())
 
     def handle_resume(self):
-        logger.warning(_('Resuming generic resource (Type "%s")') %
-                       self.type())
+        LOG.warning(_('Resuming generic resource (Type "%s")') %
+                    self.type())
 
 
 class ResWithComplexPropsAndAttrs(GenericResource):
@@ -58,9 +59,9 @@ class ResWithComplexPropsAndAttrs(GenericResource):
                          'a_list': {'Type': 'List'},
                          'a_map': {'Type': 'Map'}}
 
-    attributes_schema = {'list': 'A list',
-                         'map': 'A map',
-                         'string': 'A string'}
+    attributes_schema = {'list': attributes.Schema('A list'),
+                         'map': attributes.Schema('A map'),
+                         'string': attributes.Schema('A string')}
 
     def _resolve_attribute(self, name):
         try:
@@ -73,12 +74,27 @@ class ResourceWithProps(GenericResource):
     properties_schema = {'Foo': {'Type': 'String'}}
 
 
+class ResourceWithResourceID(GenericResource):
+    properties_schema = {'ID': {'Type': 'String'}}
+
+    def handle_create(self):
+        super(ResourceWithResourceID, self).handle_create()
+        self.resource_id_set(self.properties.get('ID'))
+
+    def handle_delete(self):
+        self.mox_resource_id(self.resource_id)
+
+    def mox_resource_id(self, resource_id):
+        pass
+
+
 class ResourceWithComplexAttributes(GenericResource):
-    attributes_schema = {'list': 'A list',
-                         'flat_dict': 'A flat dictionary',
-                         'nested_dict': 'A nested dictionary',
-                         'none': 'A None'
-                         }
+    attributes_schema = {
+        'list': attributes.Schema('A list'),
+        'flat_dict': attributes.Schema('A flat dictionary'),
+        'nested_dict': attributes.Schema('A nested dictionary'),
+        'none': attributes.Schema('A None')
+    }
 
     list = ['foo', 'bar']
     flat_dict = {'key1': 'val1', 'key2': 'val2', 'key3': 'val3'}
@@ -104,7 +120,7 @@ class ResourceWithRequiredProps(GenericResource):
 
 class SignalResource(signal_responder.SignalResponder):
     properties_schema = {}
-    attributes_schema = {'AlarmUrl': 'Get a signed webhook'}
+    attributes_schema = {'AlarmUrl': attributes.Schema('Get a signed webhook')}
 
     def handle_create(self):
         super(SignalResource, self).handle_create()
@@ -115,8 +131,8 @@ class SignalResource(signal_responder.SignalResponder):
             msg = _('Cannot signal resource during %s') % self.action
             raise Exception(msg)
 
-        logger.warning(_('Signaled resource (Type "%(type)s") %(details)s')
-                       % {'type': self.type(), 'details': details})
+        LOG.warning(_('Signaled resource (Type "%(type)s") %(details)s')
+                    % {'type': self.type(), 'details': details})
 
     def _resolve_attribute(self, name):
         if name == 'AlarmUrl' and self.resource_id is not None:

@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -14,6 +14,7 @@
 import copy
 import uuid
 
+from glanceclient import exc as glance_exceptions
 import mox
 from neutronclient.v2_0 import client as neutronclient
 
@@ -23,12 +24,12 @@ from heat.engine import clients
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
+from heat.engine.resources import glance_utils
 from heat.engine.resources import image
 from heat.engine.resources import instance as instances
 from heat.engine.resources import network_interface
 from heat.engine.resources import nova_utils
 from heat.engine import scheduler
-from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 from heat.tests.v1_1 import fakes
@@ -52,6 +53,10 @@ wp_template = '''
         "ImageId" : "F17-x86_64-gold",
         "InstanceType"   : "m1.large",
         "KeyName"        : "test",
+        "NovaSchedulerHints" : [{"Key": "foo", "Value": "spam"},
+                                {"Key": "bar", "Value": "eggs"},
+                                {"Key": "foo", "Value": "ham"},
+                                {"Key": "foo", "Value": "baz"}],
         "UserData"       : "wordpress"
       }
     }
@@ -64,7 +69,6 @@ class InstancesTest(HeatTestCase):
     def setUp(self):
         super(InstancesTest, self).setUp()
         self.fc = fakes.FakeClient()
-        utils.setup_dummy_db()
 
     def _setup_test_stack(self, stack_name):
         t = template_format.parse(wp_template)
@@ -72,25 +76,48 @@ class InstancesTest(HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment({'KeyName': 'test'}),
                              stack_id=str(uuid.uuid4()))
-        return (t, stack)
+        return (template, stack)
+
+    def _mock_get_image_id_success(self, imageId_input, imageId):
+        g_cli_mock = self.m.CreateMockAnything()
+        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
+        clients.OpenStackClients.glance().MultipleTimes().AndReturn(
+            g_cli_mock)
+        self.m.StubOutWithMock(glance_utils, 'get_image_id')
+        glance_utils.get_image_id(g_cli_mock, imageId_input).MultipleTimes().\
+            AndReturn(imageId)
+
+    def _mock_get_image_id_fail(self, image_id, exp):
+        g_cli_mock = self.m.CreateMockAnything()
+        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
+        clients.OpenStackClients.glance().MultipleTimes().AndReturn(
+            g_cli_mock)
+        self.m.StubOutWithMock(glance_utils, 'get_image_id')
+        glance_utils.get_image_id(g_cli_mock, image_id).AndRaise(exp)
+
+    def _get_test_template(self, stack_name, image_id=None):
+        (tmpl, stack) = self._setup_test_stack(stack_name)
+
+        tmpl.t['Resources']['WebServer']['Properties']['ImageId'] = \
+            image_id or 'CentOS 5.2'
+        tmpl.t['Resources']['WebServer']['Properties']['InstanceType'] = \
+            '256 MB Server'
+
+        return tmpl, stack
 
     def _setup_test_instance(self, return_server, name, image_id=None,
                              stub_create=True):
         stack_name = '%s_s' % name
-        (t, stack) = self._setup_test_stack(stack_name)
+        tmpl, stack = self._get_test_template(stack_name, image_id)
+        resource_defns = tmpl.resource_definitions(stack)
+        instance = instances.Instance(name, resource_defns['WebServer'], stack)
 
-        t['Resources']['WebServer']['Properties']['ImageId'] = \
-            image_id or 'CentOS 5.2'
-        t['Resources']['WebServer']['Properties']['InstanceType'] = \
-            '256 MB Server'
-        instance = instances.Instance(name, t['Resources']['WebServer'], stack)
+        self._mock_get_image_id_success(image_id or 'CentOS 5.2', 1)
 
         self.m.StubOutWithMock(instance, 'nova')
         instance.nova().MultipleTimes().AndReturn(self.fc)
         self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
         clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
-
-        instance.t = instance.stack.resolve_runtime_data(instance.t)
 
         if stub_create:
             self.m.StubOutWithMock(self.fc.servers, 'create')
@@ -101,7 +128,8 @@ class InstancesTest(HeatTestCase):
                     instance.name,
                     limit=instance.physical_resource_name_limit),
                 security_groups=None,
-                userdata=mox.IgnoreArg(), scheduler_hints=None,
+                userdata=mox.IgnoreArg(),
+                scheduler_hints={'foo': ['spam', 'ham', 'baz'], 'bar': 'eggs'},
                 meta=None, nics=None, availability_zone=None).AndReturn(
                     return_server)
 
@@ -134,8 +162,6 @@ class InstancesTest(HeatTestCase):
         instance = self._setup_test_instance(return_server,
                                              'in_create_imgid',
                                              image_id='1')
-        self.m.StubOutWithMock(uuidutils, "is_uuid_like")
-        uuidutils.is_uuid_like('1').MultipleTimes().AndReturn(True)
 
         self.m.ReplayAll()
         scheduler.TaskRunner(instance.create)()
@@ -153,15 +179,17 @@ class InstancesTest(HeatTestCase):
 
     def test_instance_create_image_name_err(self):
         stack_name = 'test_instance_create_image_name_err_stack'
-        (t, stack) = self._setup_test_stack(stack_name)
+        (tmpl, stack) = self._setup_test_stack(stack_name)
 
         # create an instance with non exist image name
-        t['Resources']['WebServer']['Properties']['ImageId'] = 'Slackware'
+        tmpl.t['Resources']['WebServer']['Properties']['ImageId'] = 'Slackware'
+        resource_defns = tmpl.resource_definitions(stack)
         instance = instances.Instance('instance_create_image_err',
-                                      t['Resources']['WebServer'], stack)
+                                      resource_defns['WebServer'], stack)
 
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
-        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+        g_cli_moc = self.m.CreateMockAnything()
+        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
+        clients.OpenStackClients.glance().MultipleTimes().AndReturn(g_cli_moc)
         self.m.ReplayAll()
 
         self.assertRaises(ValueError, instance.handle_create)
@@ -170,19 +198,19 @@ class InstancesTest(HeatTestCase):
 
     def test_instance_create_duplicate_image_name_err(self):
         stack_name = 'test_instance_create_image_name_err_stack'
-        (t, stack) = self._setup_test_stack(stack_name)
+        (tmpl, stack) = self._setup_test_stack(stack_name)
 
         # create an instance with a non unique image name
-        t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
+        wsp = tmpl.t['Resources']['WebServer']['Properties']
+        wsp['ImageId'] = 'CentOS 5.2'
+        resource_defns = tmpl.resource_definitions(stack)
         instance = instances.Instance('instance_create_image_err',
-                                      t['Resources']['WebServer'], stack)
+                                      resource_defns['WebServer'], stack)
 
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
-        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
-        self.m.StubOutWithMock(self.fc.client, "get_images_detail")
-        self.fc.client.get_images_detail().AndReturn((
-            200, {'images': [{'id': 1, 'name': 'CentOS 5.2'},
-                             {'id': 4, 'name': 'CentOS 5.2'}]}))
+        self._mock_get_image_id_fail('CentOS 5.2',
+                                     exception.PhysicalResourceNameAmbiguity(
+                                         name='CentOS 5.2'))
+
         self.m.ReplayAll()
 
         self.assertRaises(ValueError, instance.handle_create)
@@ -191,20 +219,16 @@ class InstancesTest(HeatTestCase):
 
     def test_instance_create_image_id_err(self):
         stack_name = 'test_instance_create_image_id_err_stack'
-        (t, stack) = self._setup_test_stack(stack_name)
+        (tmpl, stack) = self._setup_test_stack(stack_name)
 
         # create an instance with non exist image Id
-        t['Resources']['WebServer']['Properties']['ImageId'] = '1'
+        tmpl.t['Resources']['WebServer']['Properties']['ImageId'] = '1'
+        resource_defns = tmpl.resource_definitions(stack)
         instance = instances.Instance('instance_create_image_err',
-                                      t['Resources']['WebServer'], stack)
+                                      resource_defns['WebServer'], stack)
 
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
-        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
-        self.m.StubOutWithMock(uuidutils, "is_uuid_like")
-        uuidutils.is_uuid_like('1').AndReturn(True)
-        self.m.StubOutWithMock(self.fc.client, "get_images_1")
-        self.fc.client.get_images_1().AndRaise(
-            instances.clients.novaclient.exceptions.NotFound(404))
+        self._mock_get_image_id_fail('1', glance_exceptions.NotFound(404))
+
         self.m.ReplayAll()
 
         self.assertRaises(ValueError, instance.handle_create)
@@ -266,52 +290,79 @@ class InstancesTest(HeatTestCase):
 
     def test_instance_validate(self):
         stack_name = 'test_instance_validate_stack'
-        (t, stack) = self._setup_test_stack(stack_name)
+        (tmpl, stack) = self._setup_test_stack(stack_name)
 
-        # create an instance with non exist image Id
-        t['Resources']['WebServer']['Properties']['ImageId'] = '1'
-        instance = instances.Instance('instance_create_image_err',
-                                      t['Resources']['WebServer'], stack)
+        tmpl.t['Resources']['WebServer']['Properties']['ImageId'] = '1'
+        resource_defns = tmpl.resource_definitions(stack)
+        instance = instances.Instance('instance_create_image',
+                                      resource_defns['WebServer'], stack)
 
         self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
         clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
 
-        self.m.StubOutWithMock(uuidutils, "is_uuid_like")
-        uuidutils.is_uuid_like('1').MultipleTimes().AndReturn(True)
+        self._mock_get_image_id_success('1', 1)
         self.m.ReplayAll()
 
         self.assertIsNone(instance.validate())
 
         self.m.VerifyAll()
 
-    def test_instance_create_delete(self):
+    def _test_instance_create_delete(self, vm_status='ACTIVE',
+                                     vm_delete_status='NotFound'):
         return_server = self.fc.servers.list()[1]
         instance = self._create_test_instance(return_server,
                                               'in_cr_del')
-        instance.resource_id = 1234
+        instance.resource_id = '1234'
+        instance.status = vm_status
 
         # this makes sure the auto increment worked on instance creation
         self.assertTrue(instance.id > 0)
 
+        d1 = {'server': self.fc.client.get_servers_detail()[1]['servers'][0]}
+        d1['server']['status'] = vm_status
+
         self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
         get = self.fc.client.get_servers_1234
-        get().AndRaise(instances.clients.novaclient.exceptions.NotFound(404))
-        mox.Replay(get)
+        get().AndReturn((200, d1))
+
+        d2 = copy.deepcopy(d1)
+        if vm_delete_status == 'DELETED':
+            d2['server']['status'] = vm_delete_status
+            get().AndReturn((200, d2))
+        else:
+            get().AndRaise(
+                instances.clients.novaclient.exceptions.NotFound(404))
+
+        self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.delete)()
         self.assertIsNone(instance.resource_id)
         self.assertEqual((instance.DELETE, instance.COMPLETE), instance.state)
         self.m.VerifyAll()
 
+    def test_instance_create_delete_notfound(self):
+        self._test_instance_create_delete()
+
+    def test_instance_create_delete(self):
+        self._test_instance_create_delete(vm_delete_status='DELETED')
+
+    def test_instance_create_error_delete_notfound(self):
+        self._test_instance_create_delete(vm_status='ERROR')
+
+    def test_instance_create_error_delete(self):
+        self._test_instance_create_delete(
+            vm_status='ERROR', vm_delete_status='DELETED')
+
     def test_instance_update_metadata(self):
         return_server = self.fc.servers.list()[1]
         instance = self._create_test_instance(return_server,
                                               'ud_md')
 
-        update_template = copy.deepcopy(instance.t)
-        update_template['Metadata'] = {'test': 123}
-        scheduler.TaskRunner(instance.update, update_template)()
-        self.assertEqual({'test': 123}, instance.metadata)
+        ud_tmpl = self._get_test_template('update_stack')[0]
+        ud_tmpl.t['Resources']['WebServer']['Metadata'] = {'test': 123}
+        resource_defns = ud_tmpl.resource_definitions(instance.stack)
+        scheduler.TaskRunner(instance.update, resource_defns['WebServer'])()
+        self.assertEqual({'test': 123}, instance.metadata_get())
 
     def test_instance_update_instance_type(self):
         """
@@ -319,7 +370,7 @@ class InstancesTest(HeatTestCase):
         the change making a resize API call against Nova.
         """
         return_server = self.fc.servers.list()[1]
-        return_server.id = 1234
+        return_server.id = '1234'
         instance = self._create_test_instance(return_server,
                                               'ud_type')
 
@@ -327,7 +378,7 @@ class InstancesTest(HeatTestCase):
         update_template['Properties']['InstanceType'] = 'm1.small'
 
         self.m.StubOutWithMock(self.fc.servers, 'get')
-        self.fc.servers.get(1234).AndReturn(return_server)
+        self.fc.servers.get('1234').AndReturn(return_server)
 
         def activate_status(server):
             server.status = 'VERIFY_RESIZE'
@@ -350,7 +401,7 @@ class InstancesTest(HeatTestCase):
         call failed, so we raise an explicit error.
         """
         return_server = self.fc.servers.list()[1]
-        return_server.id = 1234
+        return_server.id = '1234'
         instance = self._create_test_instance(return_server,
                                               'ud_type_f')
 
@@ -358,7 +409,7 @@ class InstancesTest(HeatTestCase):
         update_template['Properties']['InstanceType'] = 'm1.small'
 
         self.m.StubOutWithMock(self.fc.servers, 'get')
-        self.fc.servers.get(1234).AndReturn(return_server)
+        self.fc.servers.get('1234').AndReturn(return_server)
 
         def activate_status(server):
             server.status = 'ACTIVE'
@@ -377,15 +428,269 @@ class InstancesTest(HeatTestCase):
         self.assertEqual((instance.UPDATE, instance.FAILED), instance.state)
         self.m.VerifyAll()
 
-    def test_instance_update_replace(self):
+    def create_fake_iface(self, port, net, ip):
+        class fake_interface():
+            def __init__(self, port_id, net_id, fixed_ip):
+                self.port_id = port_id
+                self.net_id = net_id
+                self.fixed_ips = [{'ip_address': fixed_ip}]
+
+        return fake_interface(port, net, ip)
+
+    def test_instance_update_network_interfaces(self):
+        """
+        Instance.handle_update supports changing the NetworkInterfaces,
+        and makes the change making a resize API call against Nova.
+        """
         return_server = self.fc.servers.list()[1]
+        return_server.id = '1234'
         instance = self._create_test_instance(return_server,
-                                              'in_update1')
+                                              'ud_network_interfaces')
+        # if new overlaps with old, detach the different ones in old, and
+        # attach the different ones in new
+        old_interfaces = [
+            {'NetworkInterfaceId': 'ea29f957-cd35-4364-98fb-57ce9732c10d',
+             'DeviceIndex': '2'},
+            {'NetworkInterfaceId': 'd1e9c73c-04fe-4e9e-983c-d5ef94cd1a46',
+             'DeviceIndex': '1'}]
+        new_interfaces = [
+            {'NetworkInterfaceId': 'ea29f957-cd35-4364-98fb-57ce9732c10d',
+             'DeviceIndex': '2'},
+            {'NetworkInterfaceId': '34b752ec-14de-416a-8722-9531015e04a5',
+             'DeviceIndex': '3'}]
+
+        instance.t['Properties']['NetworkInterfaces'] = old_interfaces
+        update_template = copy.deepcopy(instance.t)
+        update_template['Properties']['NetworkInterfaces'] = new_interfaces
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get('1234').AndReturn(return_server)
+        self.m.StubOutWithMock(return_server, 'interface_detach')
+        return_server.interface_detach(
+            'd1e9c73c-04fe-4e9e-983c-d5ef94cd1a46').AndReturn(None)
+        self.m.StubOutWithMock(return_server, 'interface_attach')
+        return_server.interface_attach('34b752ec-14de-416a-8722-9531015e04a5',
+                                       None, None).AndReturn(None)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.update, update_template)()
+        self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
+        self.m.VerifyAll()
+
+    def test_instance_update_network_interfaces_old_include_new(self):
+        """
+        Instance.handle_update supports changing the NetworkInterfaces,
+        and makes the change making a resize API call against Nova.
+        """
+        return_server = self.fc.servers.list()[1]
+        return_server.id = '1234'
+        instance = self._create_test_instance(return_server,
+                                              'ud_network_interfaces')
+        # if old include new, just detach the different ones in old
+        old_interfaces = [
+            {'NetworkInterfaceId': 'ea29f957-cd35-4364-98fb-57ce9732c10d',
+             'DeviceIndex': '2'},
+            {'NetworkInterfaceId': 'd1e9c73c-04fe-4e9e-983c-d5ef94cd1a46',
+             'DeviceIndex': '1'}]
+        new_interfaces = [
+            {'NetworkInterfaceId': 'ea29f957-cd35-4364-98fb-57ce9732c10d',
+             'DeviceIndex': '2'}]
+
+        instance.t['Properties']['NetworkInterfaces'] = old_interfaces
+        update_template = copy.deepcopy(instance.t)
+        update_template['Properties']['NetworkInterfaces'] = new_interfaces
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get('1234').AndReturn(return_server)
+        self.m.StubOutWithMock(return_server, 'interface_detach')
+        return_server.interface_detach(
+            'd1e9c73c-04fe-4e9e-983c-d5ef94cd1a46').AndReturn(None)
+
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.update, update_template)()
+        self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
+
+    def test_instance_update_network_interfaces_new_include_old(self):
+        """
+        Instance.handle_update supports changing the NetworkInterfaces,
+        and makes the change making a resize API call against Nova.
+        """
+        return_server = self.fc.servers.list()[1]
+        return_server.id = '1234'
+        instance = self._create_test_instance(return_server,
+                                              'ud_network_interfaces')
+        # if new include old, just attach the different ones in new
+        old_interfaces = [
+            {'NetworkInterfaceId': 'ea29f957-cd35-4364-98fb-57ce9732c10d',
+             'DeviceIndex': '2'}]
+        new_interfaces = [
+            {'NetworkInterfaceId': 'ea29f957-cd35-4364-98fb-57ce9732c10d',
+             'DeviceIndex': '2'},
+            {'NetworkInterfaceId': 'd1e9c73c-04fe-4e9e-983c-d5ef94cd1a46',
+             'DeviceIndex': '1'}]
+
+        instance.t['Properties']['NetworkInterfaces'] = old_interfaces
+        update_template = copy.deepcopy(instance.t)
+        update_template['Properties']['NetworkInterfaces'] = new_interfaces
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get('1234').AndReturn(return_server)
+        self.m.StubOutWithMock(return_server, 'interface_attach')
+        return_server.interface_attach('d1e9c73c-04fe-4e9e-983c-d5ef94cd1a46',
+                                       None, None).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.update, update_template)()
+        self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
+
+    def test_instance_update_network_interfaces_new_old_all_different(self):
+        """
+        Instance.handle_update supports changing the NetworkInterfaces,
+        and makes the change making a resize API call against Nova.
+        """
+        return_server = self.fc.servers.list()[1]
+        return_server.id = '1234'
+        instance = self._create_test_instance(return_server,
+                                              'ud_network_interfaces')
+        # if different, detach the old ones and attach the new ones
+        old_interfaces = [
+            {'NetworkInterfaceId': 'ea29f957-cd35-4364-98fb-57ce9732c10d',
+             'DeviceIndex': '2'}]
+        new_interfaces = [
+            {'NetworkInterfaceId': '34b752ec-14de-416a-8722-9531015e04a5',
+             'DeviceIndex': '3'},
+            {'NetworkInterfaceId': 'd1e9c73c-04fe-4e9e-983c-d5ef94cd1a46',
+             'DeviceIndex': '1'}]
+
+        instance.t['Properties']['NetworkInterfaces'] = old_interfaces
+        update_template = copy.deepcopy(instance.t)
+        update_template['Properties']['NetworkInterfaces'] = new_interfaces
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get('1234').AndReturn(return_server)
+        self.m.StubOutWithMock(return_server, 'interface_detach')
+        return_server.interface_detach(
+            'ea29f957-cd35-4364-98fb-57ce9732c10d').AndReturn(None)
+        self.m.StubOutWithMock(return_server, 'interface_attach')
+        return_server.interface_attach('d1e9c73c-04fe-4e9e-983c-d5ef94cd1a46',
+                                       None, None).AndReturn(None)
+        return_server.interface_attach('34b752ec-14de-416a-8722-9531015e04a5',
+                                       None, None).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.update, update_template)()
+        self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
+
+    def test_instance_update_network_interfaces_no_old(self):
+        """
+        Instance.handle_update supports changing the NetworkInterfaces,
+        and makes the change making a resize API call against Nova.
+        """
+        return_server = self.fc.servers.list()[1]
+        return_server.id = '1234'
+        instance = self._create_test_instance(return_server,
+                                              'ud_network_interfaces')
+        new_interfaces = [
+            {'NetworkInterfaceId': 'ea29f957-cd35-4364-98fb-57ce9732c10d',
+             'DeviceIndex': '2'},
+            {'NetworkInterfaceId': '34b752ec-14de-416a-8722-9531015e04a5',
+             'DeviceIndex': '3'}]
+        iface = self.create_fake_iface('d1e9c73c-04fe-4e9e-983c-d5ef94cd1a46',
+                                       'c4485ba1-283a-4f5f-8868-0cd46cdda52f',
+                                       '10.0.0.4')
 
         update_template = copy.deepcopy(instance.t)
-        update_template['Notallowed'] = {'test': 123}
-        updater = scheduler.TaskRunner(instance.update, update_template)
-        self.assertRaises(resource.UpdateReplace, updater)
+        update_template['Properties']['NetworkInterfaces'] = new_interfaces
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get('1234').AndReturn(return_server)
+        self.m.StubOutWithMock(return_server, 'interface_list')
+        return_server.interface_list().AndReturn([iface])
+        self.m.StubOutWithMock(return_server, 'interface_detach')
+        return_server.interface_detach(
+            'd1e9c73c-04fe-4e9e-983c-d5ef94cd1a46').AndReturn(None)
+        self.m.StubOutWithMock(return_server, 'interface_attach')
+        return_server.interface_attach('ea29f957-cd35-4364-98fb-57ce9732c10d',
+                                       None, None).AndReturn(None)
+        return_server.interface_attach('34b752ec-14de-416a-8722-9531015e04a5',
+                                       None, None).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.update, update_template)()
+        self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
+        self.m.VerifyAll()
+
+    def test_instance_update_network_interfaces_no_old_no_new(self):
+        """
+        Instance.handle_update supports changing the NetworkInterfaces,
+        and makes the change making a resize API call against Nova.
+        """
+        return_server = self.fc.servers.list()[1]
+        return_server.id = '1234'
+        instance = self._create_test_instance(return_server,
+                                              'ud_network_interfaces')
+        iface = self.create_fake_iface('d1e9c73c-04fe-4e9e-983c-d5ef94cd1a46',
+                                       'c4485ba1-283a-4f5f-8868-0cd46cdda52f',
+                                       '10.0.0.4')
+
+        update_template = copy.deepcopy(instance.t)
+        update_template['Properties']['NetworkInterfaces'] = []
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get('1234').AndReturn(return_server)
+        self.m.StubOutWithMock(return_server, 'interface_list')
+        return_server.interface_list().AndReturn([iface])
+        self.m.StubOutWithMock(return_server, 'interface_detach')
+        return_server.interface_detach(
+            'd1e9c73c-04fe-4e9e-983c-d5ef94cd1a46').AndReturn(None)
+        self.m.StubOutWithMock(return_server, 'interface_attach')
+        return_server.interface_attach(None, None, None).AndReturn(None)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.update, update_template)()
+        self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
+        self.m.VerifyAll()
+
+    def test_instance_update_network_interfaces_no_old_new_with_subnet(self):
+        """
+        Instance.handle_update supports changing the NetworkInterfaces,
+        and makes the change making a resize API call against Nova.
+        """
+        return_server = self.fc.servers.list()[1]
+        return_server.id = '1234'
+        instance = self._create_test_instance(return_server,
+                                              'ud_network_interfaces')
+        iface = self.create_fake_iface('d1e9c73c-04fe-4e9e-983c-d5ef94cd1a46',
+                                       'c4485ba1-283a-4f5f-8868-0cd46cdda52f',
+                                       '10.0.0.4')
+        subnet_id = '8c1aaddf-e49e-4f28-93ea-ca9f0b3c6240'
+        nics = [{'port-id': 'ea29f957-cd35-4364-98fb-57ce9732c10d'}]
+        update_template = copy.deepcopy(instance.t)
+        update_template['Properties']['NetworkInterfaces'] = []
+        update_template['Properties']['SubnetId'] = subnet_id
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get('1234').AndReturn(return_server)
+        self.m.StubOutWithMock(return_server, 'interface_list')
+        return_server.interface_list().AndReturn([iface])
+        self.m.StubOutWithMock(return_server, 'interface_detach')
+        return_server.interface_detach(
+            'd1e9c73c-04fe-4e9e-983c-d5ef94cd1a46').AndReturn(None)
+        self.m.StubOutWithMock(instance, '_build_nics')
+        instance._build_nics([], security_groups=None,
+                             subnet_id=subnet_id).AndReturn(nics)
+        self.m.StubOutWithMock(return_server, 'interface_attach')
+        return_server.interface_attach('ea29f957-cd35-4364-98fb-57ce9732c10d',
+                                       None, None).AndReturn(None)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.update, update_template)()
+        self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
+        self.m.VerifyAll()
 
     def test_instance_update_properties(self):
         return_server = self.fc.servers.list()[1]
@@ -406,7 +711,7 @@ class InstancesTest(HeatTestCase):
         return_server = self.fc.servers.list()[0]
         instance = self._setup_test_instance(return_server,
                                              'in_sts_build')
-        instance.resource_id = 1234
+        instance.resource_id = '1234'
 
         # Bind fake get method which Instance.check_create_complete will call
         def activate_status(server):
@@ -422,7 +727,7 @@ class InstancesTest(HeatTestCase):
         instance = self._create_test_instance(return_server,
                                               'in_suspend')
 
-        instance.resource_id = 1234
+        instance.resource_id = '1234'
         self.m.ReplayAll()
 
         # Override the get_servers_1234 handler status to SUSPENDED
@@ -443,7 +748,7 @@ class InstancesTest(HeatTestCase):
         instance = self._create_test_instance(return_server,
                                               'in_resume')
 
-        instance.resource_id = 1234
+        instance.resource_id = '1234'
         self.m.ReplayAll()
 
         # Override the get_servers_1234 handler status to SUSPENDED
@@ -465,7 +770,7 @@ class InstancesTest(HeatTestCase):
         instance = self._create_test_instance(return_server,
                                               'in_suspend_wait')
 
-        instance.resource_id = 1234
+        instance.resource_id = '1234'
         self.m.ReplayAll()
 
         # Override the get_servers_1234 handler status to SUSPENDED, but
@@ -491,7 +796,7 @@ class InstancesTest(HeatTestCase):
         instance = self._create_test_instance(return_server,
                                               'in_resume_wait')
 
-        instance.resource_id = 1234
+        instance.resource_id = '1234'
         self.m.ReplayAll()
 
         # Override the get_servers_1234 handler status to ACTIVE, but
@@ -519,7 +824,7 @@ class InstancesTest(HeatTestCase):
         instance = self._create_test_instance(return_server,
                                               'in_suspend_vol')
 
-        instance.resource_id = 1234
+        instance.resource_id = '1234'
         self.m.ReplayAll()
 
         # Override the get_servers_1234 handler status to SUSPENDED
@@ -548,7 +853,7 @@ class InstancesTest(HeatTestCase):
         instance = self._create_test_instance(return_server,
                                               'in_resume_vol')
 
-        instance.resource_id = 1234
+        instance.resource_id = '1234'
         self.m.ReplayAll()
 
         # Override the get_servers_1234 handler status to ACTIVE
@@ -580,7 +885,7 @@ class InstancesTest(HeatTestCase):
         instance = self._create_test_instance(return_server,
                                               'in_suspend_vol')
 
-        instance.resource_id = 1234
+        instance.resource_id = '1234'
         self.m.ReplayAll()
 
         # Override the get_servers_1234 handler status to SUSPENDED, but keep
@@ -643,7 +948,7 @@ class InstancesTest(HeatTestCase):
         return_server = self.fc.servers.list()[0]
         instance = self._setup_test_instance(return_server,
                                              'in_sts_bld')
-        instance.resource_id = 1234
+        instance.resource_id = '1234'
 
         # Bind fake get method which Instance.check_create_complete will call
         def activate_status(server):

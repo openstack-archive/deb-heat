@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -103,7 +103,6 @@ class DBInstance(resource.Resource):
 class DBInstanceTest(HeatTestCase):
     def setUp(self):
         super(DBInstanceTest, self).setUp()
-        utils.setup_dummy_db()
 
     def test_dbinstance(self):
         """test that the Template is parsable and

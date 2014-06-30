@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,18 +11,19 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import eventlet
 import functools
 import itertools
 import sys
-import types
 from time import time as wallclock
+import types
+
+import eventlet
 
 from heat.openstack.common import excutils
-from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import log as logging
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 # Whether TaskRunner._sleep actually does an eventlet sleep when called.
@@ -60,7 +60,7 @@ class Timeout(BaseException):
         """
         Initialise with the TaskRunner and a timeout period in seconds.
         """
-        message = _('%s Timed out') % task_runner
+        message = _('%s Timed out') % str(task_runner)
         super(Timeout, self).__init__(message)
 
         # Note that we don't attempt to handle leap seconds or large clock
@@ -91,10 +91,11 @@ class ExceptionGroup(Exception):
         self.exceptions = list(exceptions)
 
     def __str__(self):
-        return str(map(str, self.exceptions))
+        return unicode([unicode(ex).encode('utf-8')
+                        for ex in self.exceptions]).encode('utf-8')
 
     def __unicode__(self):
-        return unicode(map(str, self.exceptions))
+        return unicode(map(unicode, self.exceptions))
 
 
 class TaskRunner(object):
@@ -127,7 +128,7 @@ class TaskRunner(object):
     def _sleep(self, wait_time):
         """Sleep for the specified number of seconds."""
         if ENABLE_SLEEP and wait_time is not None:
-            logger.debug(_('%s sleeping') % str(self))
+            LOG.debug('%s sleeping' % str(self))
             eventlet.sleep(wait_time)
 
     def __call__(self, wait_time=1, timeout=None):
@@ -150,7 +151,7 @@ class TaskRunner(object):
         """
         assert self._runner is None, "Task already started"
 
-        logger.debug(_('%s starting') % str(self))
+        LOG.debug('%s starting' % str(self))
 
         if timeout is not None:
             self._timeout = Timeout(self, timeout)
@@ -162,7 +163,7 @@ class TaskRunner(object):
         else:
             self._runner = False
             self._done = True
-            logger.debug(_('%s done (not resumable)') % str(self))
+            LOG.debug('%s done (not resumable)' % str(self))
 
     def step(self):
         """
@@ -173,7 +174,7 @@ class TaskRunner(object):
             assert self._runner is not None, "Task not started"
 
             if self._timeout is not None and self._timeout.expired():
-                logger.info(_('%s timed out') % str(self))
+                LOG.info(_('%s timed out') % str(self))
 
                 try:
                     self._runner.throw(self._timeout)
@@ -183,13 +184,13 @@ class TaskRunner(object):
                     # Clean up in case task swallows exception without exiting
                     self.cancel()
             else:
-                logger.debug(_('%s running') % str(self))
+                LOG.debug('%s running' % str(self))
 
                 try:
                     next(self._runner)
                 except StopIteration:
                     self._done = True
-                    logger.debug(_('%s complete') % str(self))
+                    LOG.debug('%s complete' % str(self))
 
         return self._done
 
@@ -206,7 +207,7 @@ class TaskRunner(object):
     def cancel(self):
         """Cancel the task and mark it as done."""
         if not self.done():
-            logger.debug(_('%s cancelled') % str(self))
+            LOG.debug('%s cancelled' % str(self))
             try:
                 if self.started():
                     self._runner.close()

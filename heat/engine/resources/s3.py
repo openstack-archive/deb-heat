@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,14 +11,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from six.moves.urllib import parse as urlparse
+
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.openstack.common import log as logging
-from heat.openstack.common.py3kcompat import urlutils
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class S3Bucket(resource.Resource):
@@ -42,6 +43,12 @@ class S3Bucket(resource.Resource):
         TAG_KEY, TAG_VALUE,
     ) = (
         'Key', 'Value',
+    )
+
+    ATTRIBUTES = (
+        DOMAIN_NAME, WEBSITE_URL,
+    ) = (
+        'DomainName', 'WebsiteURL',
     )
 
     properties_schema = {
@@ -93,8 +100,12 @@ class S3Bucket(resource.Resource):
     }
 
     attributes_schema = {
-        'DomainName': _('The DNS name of the specified bucket.'),
-        'WebsiteURL': _('The website endpoint for the specified bucket.')
+        DOMAIN_NAME: attributes.Schema(
+            _('The DNS name of the specified bucket.')
+        ),
+        WEBSITE_URL: attributes.Schema(
+            _('The website endpoint for the specified bucket.')
+        ),
     }
 
     def tags_to_headers(self):
@@ -108,9 +119,8 @@ class S3Bucket(resource.Resource):
         """Create a bucket."""
         container = self.physical_resource_name()
         headers = self.tags_to_headers()
-        logger.debug(_('S3Bucket create container %(container)s with headers '
-                     '%(headers)s') % {
-                         'container': container, 'headers': headers})
+        LOG.debug('S3Bucket create container %(container)s with headers '
+                  '%(headers)s' % {'container': container, 'headers': headers})
         if self.properties[self.WEBSITE_CONFIGURATION] is not None:
             sc = self.properties[self.WEBSITE_CONFIGURATION]
             index_doc = sc[self.WEBSITE_CONFIGURATION_INDEX_DOCUMENT]
@@ -140,22 +150,22 @@ class S3Bucket(resource.Resource):
 
     def handle_delete(self):
         """Perform specified delete policy."""
-        logger.debug(_('S3Bucket delete container %s') % self.resource_id)
+        LOG.debug('S3Bucket delete container %s' % self.resource_id)
         if self.resource_id is not None:
             try:
                 self.swift().delete_container(self.resource_id)
             except clients.swiftclient.ClientException as ex:
-                logger.warn(_("Delete container failed: %s") % str(ex))
+                LOG.warn(_("Delete container failed: %s") % ex)
 
     def FnGetRefId(self):
         return unicode(self.resource_id)
 
     def _resolve_attribute(self, name):
         url = self.swift().get_auth()[0]
-        parsed = list(urlutils.urlparse(url))
-        if name == 'DomainName':
+        parsed = list(urlparse.urlparse(url))
+        if name == self.DOMAIN_NAME:
             return parsed[1].split(':')[0]
-        elif name == 'WebsiteURL':
+        elif name == self.WEBSITE_URL:
             return '%s://%s%s/%s' % (parsed[0], parsed[1], parsed[2],
                                      self.resource_id)
 

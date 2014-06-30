@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -17,7 +17,6 @@ from heat.common import exception
 from heat.common import template_format
 from heat.engine import clients
 from heat.engine import parser
-from heat.engine import resource
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
 from heat.tests import fakes
@@ -35,7 +34,6 @@ class VPCTestBase(HeatTestCase):
     @skipIf(neutronclient is None, 'neutronclient unavaialble')
     def setUp(self):
         super(VPCTestBase, self).setUp()
-        utils.setup_dummy_db()
         self.m.StubOutWithMock(neutronclient.Client, 'add_interface_router')
         self.m.StubOutWithMock(neutronclient.Client, 'add_gateway_router')
         self.m.StubOutWithMock(neutronclient.Client, 'create_network')
@@ -67,6 +65,7 @@ class VPCTestBase(HeatTestCase):
     def create_stack(self, template):
         t = template_format.parse(template)
         stack = self.parse_stack(t)
+        self.assertIsNone(stack.validate())
         self.assertIsNone(stack.create())
         return stack
 
@@ -364,8 +363,6 @@ Resources:
         stack = self.create_stack(self.test_template)
         vpc = stack['the_vpc']
         self.assertResourceState(vpc, 'aaaa')
-        self.assertRaises(resource.UpdateReplace,
-                          vpc.handle_update, {}, {}, {})
 
         scheduler.TaskRunner(vpc.delete)()
         self.m.VerifyAll()
@@ -409,8 +406,6 @@ Resources:
         subnet = stack['the_subnet']
         self.assertResourceState(subnet, 'cccc')
 
-        self.assertRaises(resource.UpdateReplace,
-                          subnet.handle_update, {}, {}, {})
         self.assertRaises(
             exception.InvalidTemplateAttribute,
             subnet.FnGetAtt,
@@ -610,10 +605,6 @@ Resources:
             rsrc = stack['the_nic']
             self.assertResourceState(rsrc, 'dddd')
             self.assertEqual('10.0.0.100', rsrc.FnGetAtt('PrivateIpAddress'))
-
-            self.assertRaises(resource.UpdateReplace,
-                              rsrc.handle_update, {}, {}, {})
-
         finally:
             scheduler.TaskRunner(stack.delete)()
 
@@ -640,10 +631,6 @@ Resources:
             self.assertEqual((stack.CREATE, stack.COMPLETE), stack.state)
             rsrc = stack['the_nic']
             self.assertResourceState(rsrc, 'dddd')
-
-            self.assertRaises(resource.UpdateReplace,
-                              rsrc.handle_update, {}, {}, {})
-
         finally:
             stack.delete()
 
@@ -667,15 +654,10 @@ Resources:
         self.m.VerifyAll()
 
     def test_network_interface_error(self):
-        real_exception = self.assertRaises(
-            exception.InvalidTemplateReference,
+        self.assertRaises(
+            exception.StackValidationFailed,
             self.create_stack,
             self.test_template_error)
-        expected_exception = exception.InvalidTemplateReference(
-            resource='INVALID-REF-IN-TEMPLATE',
-            key='the_nic.Properties.GroupSet[0]')
-
-        self.assertEqual(str(expected_exception), str(real_exception))
 
 
 class InternetGatewayTest(VPCTestBase):
@@ -752,13 +734,9 @@ Resources:
 
         gateway = stack['the_gateway']
         self.assertResourceState(gateway, gateway.physical_resource_name())
-        self.assertRaises(resource.UpdateReplace, gateway.handle_update,
-                          {}, {}, {})
 
         attachment = stack['the_attachment']
         self.assertResourceState(attachment, 'the_attachment')
-        self.assertRaises(resource.UpdateReplace,
-                          attachment.handle_update, {}, {}, {})
 
         route_table = stack['the_route_table']
         self.assertEqual(list(attachment._vpc_route_tables()), [route_table])
@@ -810,15 +788,9 @@ Resources:
 
         route_table = stack['the_route_table']
         self.assertResourceState(route_table, 'ffff')
-        self.assertRaises(
-            resource.UpdateReplace,
-            route_table.handle_update, {}, {}, {})
 
         association = stack['the_association']
         self.assertResourceState(association, 'the_association')
-        self.assertRaises(
-            resource.UpdateReplace,
-            association.handle_update, {}, {}, {})
 
         scheduler.TaskRunner(association.delete)()
         scheduler.TaskRunner(route_table.delete)()

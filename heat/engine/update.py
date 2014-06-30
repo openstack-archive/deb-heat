@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,18 +11,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import copy
-
 from heat.db import api as db_api
-
 from heat.engine import dependencies
 from heat.engine import resource
 from heat.engine import scheduler
-
-from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import log as logging
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class StackUpdate(object):
@@ -79,7 +74,7 @@ class StackUpdate(object):
     def _remove_backup_resource(self, prev_res):
         if prev_res.state not in ((prev_res.INIT, prev_res.COMPLETE),
                                   (prev_res.DELETE, prev_res.COMPLETE)):
-            logger.debug(_("Deleting backup resource %s") % prev_res.name)
+            LOG.debug("Deleting backup resource %s" % prev_res.name)
             yield prev_res.destroy()
 
     @staticmethod
@@ -103,18 +98,17 @@ class StackUpdate(object):
                 # Swap in the backup resource if it is in a valid state,
                 # instead of creating a new resource
                 if prev_res.status == prev_res.COMPLETE:
-                    logger.debug(_("Swapping in backup Resource %s") %
-                                 res_name)
+                    LOG.debug("Swapping in backup Resource %s" % res_name)
                     self._exchange_stacks(self.existing_stack[res_name],
                                           prev_res)
                     return
 
-                logger.debug(_("Deleting backup Resource %s") % res_name)
+                LOG.debug("Deleting backup Resource %s" % res_name)
                 yield prev_res.destroy()
 
         # Back up existing resource
         if res_name in self.existing_stack:
-            logger.debug(_("Backing up existing Resource %s") % res_name)
+            LOG.debug("Backing up existing Resource %s" % res_name)
             existing_res = self.existing_stack[res_name]
             self.previous_stack[res_name] = existing_res
             existing_res.state_set(existing_res.UPDATE, existing_res.COMPLETE)
@@ -134,10 +128,10 @@ class StackUpdate(object):
             except resource.UpdateReplace:
                 pass
             else:
-                logger.info(_("Resource %(res_name)s for stack %(stack_name)s"
-                            " updated") % {
-                                'res_name': res_name,
-                                'stack_name': self.existing_stack.name})
+                LOG.info(_("Resource %(res_name)s for stack %(stack_name)s "
+                           "updated")
+                         % {'res_name': res_name,
+                            'stack_name': self.existing_stack.name})
                 return
 
         yield self._create_resource(new_res)
@@ -148,9 +142,8 @@ class StackUpdate(object):
 
         # Note the new resource snippet is resolved in the context
         # of the existing stack (which is the stack being updated)
-        raw_snippet = copy.deepcopy(new_res.t)
-        parsed_snippet = self.existing_stack.resolve_static_data(raw_snippet)
-        new_snippet = self.existing_stack.resolve_runtime_data(parsed_snippet)
+        new_snippet = new_res.t.reparse(self.existing_stack,
+                                        self.existing_stack.t)
 
         return existing_res.update(new_snippet, existing_snippet,
                                    prev_resource=prev_res)

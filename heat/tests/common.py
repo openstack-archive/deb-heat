@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -20,16 +20,39 @@ import time
 import fixtures
 import mox
 from oslo.config import cfg
+from oslotest import mockpatch
 import testscenarios
 import testtools
 
 from heat.engine import environment
 from heat.engine import resources
 from heat.engine import scheduler
-from heat.openstack.common.fixture import mockpatch
+from heat.tests import utils
 
 
-class HeatTestCase(testscenarios.WithScenarios, testtools.TestCase):
+TEST_DEFAULT_LOGLEVELS = {'migrate': logging.WARN}
+
+
+class FakeLogMixin:
+    def setup_logging(self):
+        # Assign default logs to self.LOG so we can still
+        # assert on heat logs.
+        self.LOG = self.useFixture(
+            fixtures.FakeLogger(level=logging.DEBUG))
+        base_list = set([nlog.split('.')[0]
+                         for nlog in logging.Logger.manager.loggerDict])
+        for base in base_list:
+            if base in TEST_DEFAULT_LOGLEVELS:
+                self.useFixture(fixtures.FakeLogger(
+                    level=TEST_DEFAULT_LOGLEVELS[base],
+                    name=base))
+            elif base != 'heat':
+                self.useFixture(fixtures.FakeLogger(
+                    name=base))
+
+
+class HeatTestCase(testscenarios.WithScenarios,
+                   testtools.TestCase, FakeLogMixin):
 
     TIME_STEP = 0.1
 
@@ -37,7 +60,7 @@ class HeatTestCase(testscenarios.WithScenarios, testtools.TestCase):
         super(HeatTestCase, self).setUp()
         self.m = mox.Mox()
         self.addCleanup(self.m.UnsetStubs)
-        self.logger = self.useFixture(fixtures.FakeLogger(level=logging.DEBUG))
+        self.setup_logging()
         scheduler.ENABLE_SLEEP = False
         self.useFixture(fixtures.MonkeyPatch(
             'heat.common.exception._FATAL_EXCEPTION_FORMAT_ERRORS',
@@ -67,6 +90,8 @@ class HeatTestCase(testscenarios.WithScenarios, testtools.TestCase):
             if templ_path not in cur_path:
                 tri.template_name = cur_path.replace('/etc/heat/templates',
                                                      templ_path)
+        utils.setup_dummy_db()
+        self.addCleanup(utils.reset_dummy_db)
 
     def stub_wallclock(self):
         """

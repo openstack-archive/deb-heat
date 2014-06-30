@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,13 +11,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources.neutron import neutron
-from heat.openstack.common import log as logging
-
-logger = logging.getLogger(__name__)
 
 
 class NetworkInterface(resource.Resource):
@@ -35,6 +32,12 @@ class NetworkInterface(resource.Resource):
         TAG_KEY, TAG_VALUE,
     ) = (
         'Key', 'Value',
+    )
+
+    ATTRIBUTES = (
+        PRIVATE_IP_ADDRESS_ATTR,
+    ) = (
+        'PrivateIpAddress',
     )
 
     properties_schema = {
@@ -80,8 +83,11 @@ class NetworkInterface(resource.Resource):
         ),
     }
 
-    attributes_schema = {'PrivateIpAddress': _('Private IP address of the '
-                                               'network interface.')}
+    attributes_schema = {
+        PRIVATE_IP_ADDRESS: attributes.Schema(
+            _('Private IP address of the network interface.')
+        ),
+    }
 
     @staticmethod
     def network_id_from_subnet_id(neutronclient, subnet_id):
@@ -142,7 +148,7 @@ class NetworkInterface(resource.Resource):
         return self.fixed_ip_address
 
     def _resolve_attribute(self, name):
-        if name == 'PrivateIpAddress':
+        if name == self.PRIVATE_IP_ADDRESS:
             return self._get_fixed_ip_address()
 
 

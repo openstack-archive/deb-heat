@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -13,8 +12,10 @@
 #    under the License.
 """Tests for :module:'heat.engine.resources.nova_utls'."""
 
-import mock
 import uuid
+
+import mock
+from novaclient import exceptions as nova_exceptions
 
 from heat.common import exception
 from heat.engine import clients
@@ -31,25 +32,6 @@ class NovaUtilsTests(HeatTestCase):
     def setUp(self):
         super(NovaUtilsTests, self).setUp()
         self.nova_client = self.m.CreateMockAnything()
-
-    def test_get_image_id(self):
-        """Tests the get_image_id function."""
-        my_image = self.m.CreateMockAnything()
-        img_id = str(uuid.uuid4())
-        img_name = 'myfakeimage'
-        my_image.id = img_id
-        my_image.name = img_name
-        self.nova_client.images = self.m.CreateMockAnything()
-        self.nova_client.images.get(img_id).AndReturn(my_image)
-        self.nova_client.images.list().MultipleTimes().AndReturn([my_image])
-        self.m.ReplayAll()
-        self.assertEqual(img_id, nova_utils.get_image_id(self.nova_client,
-                                                         img_id))
-        self.assertEqual(img_id, nova_utils.get_image_id(self.nova_client,
-                                                         'myfakeimage'))
-        self.assertRaises(exception.ImageNotFound, nova_utils.get_image_id,
-                          self.nova_client, 'noimage')
-        self.m.VerifyAll()
 
     def test_get_ip(self):
         my_image = self.m.CreateMockAnything()
@@ -99,7 +81,10 @@ class NovaUtilsTests(HeatTestCase):
         my_key.public_key = my_pub_key
         my_key.name = my_key_name
         self.nova_client.keypairs = self.m.CreateMockAnything()
-        self.nova_client.keypairs.list().MultipleTimes().AndReturn([my_key])
+        self.nova_client.keypairs.get(
+            my_key_name).AndReturn(my_key)
+        self.nova_client.keypairs.get(
+            'notakey').AndRaise(nova_exceptions.NotFound(404))
         self.m.ReplayAll()
         self.assertEqual(my_key, nova_utils.get_keypair(self.nova_client,
                                                         my_key_name))
@@ -168,7 +153,7 @@ class NovaUtilsUserdataTests(HeatTestCase):
     def test_build_userdata(self):
         """Tests the build_userdata function."""
         resource = self.m.CreateMockAnything()
-        resource.metadata = {}
+        resource.metadata_get().AndReturn({})
         self.m.StubOutWithMock(nova_utils.cfg, 'CONF')
         cnf = nova_utils.cfg.CONF
         cnf.heat_metadata_server_url = 'http://server.test:123'
@@ -190,7 +175,7 @@ class NovaUtilsUserdataTests(HeatTestCase):
     def test_build_userdata_without_instance_user(self):
         """Don't add a custom instance user when not requested."""
         resource = self.m.CreateMockAnything()
-        resource.metadata = {}
+        resource.metadata_get().AndReturn({})
         self.m.StubOutWithMock(nova_utils.cfg, 'CONF')
         cnf = nova_utils.cfg.CONF
         cnf.instance_user = 'config_instance_user'
@@ -206,7 +191,7 @@ class NovaUtilsUserdataTests(HeatTestCase):
     def test_build_userdata_with_instance_user(self):
         """Add the custom instance user when requested."""
         resource = self.m.CreateMockAnything()
-        resource.metadata = {}
+        resource.metadata_get().AndReturn(None)
         self.m.StubOutWithMock(nova_utils.cfg, 'CONF')
         cnf = nova_utils.cfg.CONF
         cnf.instance_user = 'config_instance_user'

@@ -1,5 +1,3 @@
-
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -16,7 +14,6 @@
 """
 Routines for configuring Heat
 """
-import copy
 import logging as sys_logging
 import os
 
@@ -24,11 +21,10 @@ from eventlet.green import socket
 from oslo.config import cfg
 
 from heat.common import wsgi
-
 from heat.openstack.common import log as logging
 from heat.openstack.common import rpc
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 paste_deploy_group = cfg.OptGroup('paste_deploy')
 paste_deploy_opts = [
@@ -59,7 +55,6 @@ service_opts = [
                help='Instance connection to CFN/CW API validate certs if SSL '
                     'is used.'),
     cfg.StrOpt('region_name_for_services',
-               default=None,
                help='Default region name used to get services endpoints.'),
     cfg.StrOpt('heat_stack_user_role',
                default="heat_stack_user",
@@ -77,7 +72,10 @@ service_opts = [
                help='Maximum raw byte size of any template.'),
     cfg.IntOpt('max_nested_stack_depth',
                default=3,
-               help='Maximum depth allowed when using nested stacks.')]
+               help='Maximum depth allowed when using nested stacks.'),
+    cfg.IntOpt('num_engine_workers',
+               default=1,
+               help='Number of heat-engine processes to fork and run.')]
 
 engine_opts = [
     cfg.StrOpt('instance_user',
@@ -173,23 +171,10 @@ clients_opts = [
                 help=_("If set, then the server's certificate will not "
                        "be verified."))]
 
-
-def register_clients_opts():
-    cfg.CONF.register_opts(clients_opts, group='clients')
-    for client in ('nova', 'swift', 'neutron', 'cinder',
-                   'ceilometer', 'keystone', 'heat', 'trove'):
-        client_specific_group = 'clients_' + client
-        # register opts copy and put it to globals in order to
-        # generate_sample.sh to work
-        opts_copy = copy.deepcopy(clients_opts)
-        if client == 'heat':
-            opts_copy.append(
-                cfg.StrOpt('url',
-                           help=_('Optional heat url in format like'
-                                  ' http://0.0.0.0:8004/v1/%(tenant_id)s.')))
-        globals()[client_specific_group + '_opts'] = opts_copy
-        cfg.CONF.register_opts(opts_copy, group=client_specific_group)
-
+heat_client_opts = [
+    cfg.StrOpt('url',
+               help=_('Optional heat url in format like'
+                      ' http://0.0.0.0:8004/v1/%(tenant_id)s.'))]
 
 revision_group = cfg.OptGroup('revision')
 revision_opts = [
@@ -200,17 +185,33 @@ revision_opts = [
                       'separately, you can move this section to a different '
                       'file and add it as another config option.'))]
 
-cfg.CONF.register_opts(engine_opts)
-cfg.CONF.register_opts(service_opts)
-cfg.CONF.register_opts(rpc_opts)
-rpc.set_defaults(control_exchange='heat')
+
+def list_opts():
+    yield None, rpc_opts
+    yield None, engine_opts
+    yield None, service_opts
+    yield paste_deploy_group.name, paste_deploy_opts
+    yield auth_password_group.name, auth_password_opts
+    yield revision_group.name, revision_opts
+    yield 'clients', clients_opts
+
+    for client in ('nova', 'swift', 'neutron', 'cinder',
+                   'ceilometer', 'keystone', 'heat', 'glance', 'trove'):
+        client_specific_group = 'clients_' + client
+        yield client_specific_group, clients_opts
+
+    yield 'clients_heat', heat_client_opts
+
+
 cfg.CONF.register_group(paste_deploy_group)
-cfg.CONF.register_opts(paste_deploy_opts, group=paste_deploy_group)
 cfg.CONF.register_group(auth_password_group)
-cfg.CONF.register_opts(auth_password_opts, group=auth_password_group)
 cfg.CONF.register_group(revision_group)
-cfg.CONF.register_opts(revision_opts, group=revision_group)
-register_clients_opts()
+
+for group, opts in list_opts():
+    cfg.CONF.register_opts(opts, group=group)
+
+rpc.set_defaults(control_exchange='heat')
+
 
 # A bit of history:
 # This was added initially by jianingy, then it got added
@@ -224,8 +225,8 @@ cfg.CONF.set_default(name='allowed_rpc_exception_modules',
                      default=allowed_rpc_exception_modules)
 
 if cfg.CONF.instance_user:
-    logger.warn(_('The "instance_user" option in heat.conf is deprecated and '
-                  'will be removed in the Juno release.'))
+    LOG.warn(_('The "instance_user" option in heat.conf is deprecated and '
+               'will be removed in the Juno release.'))
 
 
 def _get_deployment_flavor():

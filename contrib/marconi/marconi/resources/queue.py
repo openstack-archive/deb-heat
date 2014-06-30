@@ -12,14 +12,11 @@
 #    under the License.
 
 from heat.common import exception
+from heat.engine import attributes
 from heat.engine import properties
 from heat.engine import resource
-from heat.openstack.common import log as logging
 
 from .. import clients  # noqa
-
-
-logger = logging.getLogger(__name__)
 
 
 if clients.marconiclient is None:
@@ -40,6 +37,12 @@ class MarconiQueue(resource.Resource):
         'name', 'metadata',
     )
 
+    ATTRIBUTES = (
+        QUEUE_ID, HREF,
+    ) = (
+        'queue_id', 'href',
+    )
+
     properties_schema = {
         NAME: properties.Schema(
             properties.Schema.STRING,
@@ -53,11 +56,14 @@ class MarconiQueue(resource.Resource):
     }
 
     attributes_schema = {
-        "queue_id": _("ID of the queue."),
-        "href": _("The resource href of the queue.")
+        QUEUE_ID: attributes.Schema(
+            _("ID of the queue."),
+            cache_mode=attributes.Schema.CACHE_NONE
+        ),
+        HREF: attributes.Schema(
+            _("The resource href of the queue.")
+        ),
     }
-
-    update_allowed_keys = ('Properties',)
 
     def __init__(self, name, json_snippet, stack):
         super(MarconiQueue, self).__init__(name, json_snippet, stack)
@@ -70,9 +76,7 @@ class MarconiQueue(resource.Resource):
         return self.properties[self.NAME]
 
     def handle_create(self):
-        '''
-        Create a marconi message queue.
-        '''
+        """Create a marconi message queue."""
         queue_name = self.physical_resource_name()
         queue = self.marconi().queue(queue_name, auto_create=False)
         # Marconi client doesn't report an error if an queue with the same
@@ -85,7 +89,7 @@ class MarconiQueue(resource.Resource):
         return queue
 
     def check_create_complete(self, queue):
-        # set metadata of the newly created queue
+        """Set metadata of the newly created queue."""
         if queue.exists():
             metadata = self.properties.get('metadata')
             if metadata:
@@ -97,18 +101,14 @@ class MarconiQueue(resource.Resource):
                               % queue_name)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        '''
-        Update queue metadata.
-        '''
+        """Update queue metadata."""
         if 'metadata' in prop_diff:
             queue = self.marconi().queue(self.resource_id, auto_create=False)
             metadata = prop_diff['metadata']
             queue.metadata(new_meta=metadata)
 
     def handle_delete(self):
-        '''
-        Delete a marconi message queue.
-        '''
+        """Delete a marconi message queue."""
         if not self.resource_id:
             return
 
@@ -124,7 +124,7 @@ class MarconiQueue(resource.Resource):
             return '%s/queues/%s' % (api_endpoint, queue_name)
 
     def _resolve_attribute(self, name):
-        if name == 'queue_id':
+        if name == self.QUEUE_ID:
             return self.resource_id
-        elif name == 'href':
+        elif name == self.HREF:
             return self.href()

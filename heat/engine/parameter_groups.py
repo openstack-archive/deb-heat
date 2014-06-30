@@ -1,3 +1,4 @@
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -9,12 +10,12 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-from heat.openstack.common import log as logging
-from heat.openstack.common.gettextutils import _
 
 from heat.common.exception import StackValidationFailed
+from heat.openstack.common.gettextutils import _
+from heat.openstack.common import log as logging
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 PARAMETER_GROUPS = 'parameter_groups'
 PARAMETERS = 'parameters'
@@ -26,9 +27,9 @@ class ParameterGroups(object):
     '''
     def __init__(self, tmpl):
         self.tmpl = tmpl
-        self.parameters = tmpl.parameters(None, {}, validate_value=False)
-        logger.debug(self.tmpl)
-        logger.debug(self.parameters)
+        self.parameters = tmpl.parameters(None, {})
+        LOG.debug(self.tmpl)
+        LOG.debug(self.parameters)
         self.parameter_names = []
         if self.parameters:
             self.parameter_names = [param for param in self.parameters]
@@ -39,8 +40,8 @@ class ParameterGroups(object):
         Validate that a parameter belongs to only one Parameter Group
         and that each parameter name references a valid parameter.
         '''
-        logger.debug(_('Validating Parameter Groups.'))
-        logger.debug(self.parameter_names)
+        LOG.debug('Validating Parameter Groups.')
+        LOG.debug(self.parameter_names)
         if self.parameter_groups is not None:
             #Loop through groups and validate parameters
             grouped_parameters = []

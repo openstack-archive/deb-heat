@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -15,6 +14,7 @@
 import copy
 
 from heat.common import exception
+from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import parser
 from heat.engine import properties
@@ -55,6 +55,12 @@ class ResourceGroup(stack_resource.StackResource):
         'type', 'properties',
     )
 
+    ATTRIBUTES = (
+        REFS,
+    ) = (
+        'refs',
+    )
+
     properties_schema = {
         COUNT: properties.Schema(
             properties.Schema.INTEGER,
@@ -86,9 +92,10 @@ class ResourceGroup(stack_resource.StackResource):
     }
 
     attributes_schema = {
-        "refs": _("A list of resource IDs for the resources in the group")
+        REFS: attributes.Schema(
+            _("A list of resource IDs for the resources in the group")
+        ),
     }
-    update_allowed_keys = ("Properties",)
 
     def validate(self):
         # validate our basic properties
@@ -96,7 +103,7 @@ class ResourceGroup(stack_resource.StackResource):
         # make sure the nested resource is valid
         test_tmpl = self._assemble_nested(1, include_all=True)
         val_templ = parser.Template(test_tmpl)
-        res_def = val_templ["Resources"]["0"]
+        res_def = val_templ.resource_definitions(self.stack)["0"]
         res_class = self.stack.env.get_class(res_def['Type'])
         res_inst = res_class("%s:resource_def" % self.name, res_def,
                              self.stack)
@@ -137,7 +144,7 @@ class ResourceGroup(stack_resource.StackResource):
                     resource_method = getattr(self.nested()[str(n)], func)
                     yield resource_method(*args)
 
-            method_name, method_call = (("FnGetRefId", []) if "refs" == key
+            method_name, method_call = (("FnGetRefId", []) if self.REFS == key
                                         else ("FnGetAtt", [key]))
             return [val for val in get_aggregated_attr(method_name,
                                                        *method_call)]

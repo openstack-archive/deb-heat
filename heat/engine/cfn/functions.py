@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -13,11 +12,13 @@
 #    under the License.
 
 import collections
+import itertools
 import json
+
+import six
 
 from heat.api.aws import utils as aws_utils
 from heat.common import exception
-
 from heat.engine import function
 
 
@@ -38,7 +39,7 @@ class FindInMap(function.Function):
         try:
             self._mapname, self._mapkey, self._mapvalue = self.args
         except ValueError as ex:
-            raise KeyError(str(ex))
+            raise KeyError(six.text_type(ex))
 
     def result(self):
         mapping = self.stack.t.maps[function.resolve(self._mapname)]
@@ -85,8 +86,9 @@ class ParamRef(function.Function):
 
         try:
             return self.parameters[param_name]
-        except (KeyError, ValueError):
-            raise exception.UserParameterMissing(key=param_name)
+        except KeyError:
+            raise exception.InvalidTemplateReference(resource=param_name,
+                                                     key='unknown')
 
 
 class ResourceRef(function.Function):
@@ -98,10 +100,18 @@ class ResourceRef(function.Function):
         { "Ref" : "<resource_name>" }
     '''
 
-    def _resource(self):
+    def _resource(self, path='unknown'):
         resource_name = function.resolve(self.args)
 
-        return self.stack[resource_name]
+        try:
+            return self.stack[resource_name]
+        except KeyError:
+            raise exception.InvalidTemplateReference(resource=resource_name,
+                                                     key=path)
+
+    def dependencies(self, path):
+        return itertools.chain(super(ResourceRef, self).dependencies(path),
+                               [self._resource(path)])
 
     def result(self):
         return self._resource().FnGetRefId()
@@ -150,15 +160,18 @@ class GetAtt(function.Function):
 
         return resource_name, attribute
 
-    def _resource(self):
+    def _resource(self, path='unknown'):
         resource_name = function.resolve(self._resource_name)
 
         try:
             return self.stack[resource_name]
         except KeyError:
-            raise exception.InvalidTemplateAttribute(
-                resource=resource_name,
-                key=function.resolve(self._attribute))
+            raise exception.InvalidTemplateReference(resource=resource_name,
+                                                     key=path)
+
+    def dependencies(self, path):
+        return itertools.chain(super(GetAtt, self).dependencies(path),
+                               [self._resource(path)])
 
     def result(self):
         attribute = function.resolve(self._attribute)
@@ -342,7 +355,7 @@ class Split(function.Function):
 
 class Replace(function.Function):
     '''
-    A function for performing string subsitutions.
+    A function for performing string substitutions.
 
     Takes the form::
 
@@ -526,7 +539,7 @@ class ResourceFacade(function.Function):
         attr = function.resolve(self.args)
 
         if attr == self.METADATA:
-            return self.stack.parent_resource.metadata
+            return self.stack.parent_resource.metadata_get()
         elif attr == self.UPDATE_POLICY:
             up = self.stack.parent_resource.t.get('UpdatePolicy', {})
             return function.resolve(up)

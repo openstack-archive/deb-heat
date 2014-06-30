@@ -1,3 +1,4 @@
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -10,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
@@ -30,6 +32,12 @@ class MeteringLabel(neutron.NeutronResource):
         'name', 'description',
     )
 
+    ATTRIBUTES = (
+        NAME_ATTR, DESCRIPTION_ATTR,
+    ) = (
+        'name', 'description',
+    )
+
     properties_schema = {
         NAME: properties.Schema(
             properties.Schema.STRING,
@@ -42,8 +50,12 @@ class MeteringLabel(neutron.NeutronResource):
     }
 
     attributes_schema = {
-        'name': _('Name of the metering label.'),
-        'description': _('Description of the metering label.'),
+        NAME_ATTR: attributes.Schema(
+            _('Name of the metering label.')
+        ),
+        DESCRIPTION_ATTR: attributes.Schema(
+            _('Description of the metering label.')
+        ),
     }
 
     def handle_create(self):
@@ -80,6 +92,14 @@ class MeteringRule(neutron.NeutronResource):
         'metering_label_id', 'remote_ip_prefix', 'direction', 'excluded',
     )
 
+    ATTRIBUTES = (
+        DIRECTION_ATTR, EXCLUDED_ATTR, METERING_LABEL_ID_ATTR,
+        REMOTE_IP_PREFIX_ATTR,
+    ) = (
+        'direction', 'excluded', 'metering_label_id',
+        'remote_ip_prefix',
+    )
+
     properties_schema = {
         METERING_LABEL_ID: properties.Schema(
             properties.Schema.STRING,
@@ -110,12 +130,18 @@ class MeteringRule(neutron.NeutronResource):
     }
 
     attributes_schema = {
-        'direction': _('The direction in which metering rule is applied.'),
-        'excluded': _('Exclude state for cidr.'),
-        'metering_label_id': _('The metering label ID to associate with '
-                               'this metering rule..'),
-        'remote_ip_prefix': _('CIDR to be associated with this metering '
-                              'rule.'),
+        DIRECTION_ATTR: attributes.Schema(
+            _('The direction in which metering rule is applied.')
+        ),
+        EXCLUDED_ATTR: attributes.Schema(
+            _('Exclude state for cidr.')
+        ),
+        METERING_LABEL_ID_ATTR: attributes.Schema(
+            _('The metering label ID to associate with this metering rule.')
+        ),
+        REMOTE_IP_PREFIX_ATTR: attributes.Schema(
+            _('CIDR to be associated with this metering rule.')
+        ),
     }
 
     def handle_create(self):

@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -13,18 +12,19 @@
 #    under the License.
 
 from heat.common import exception
-from heat.db import api as db_api
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources.neutron import neutron
+from heat.engine.resources.neutron import neutron_utils
 from heat.engine.resources import nova_utils
 from heat.engine import scheduler
+from heat.engine import support
 
 if clients.neutronclient is not None:
     from neutronclient.common.exceptions import NeutronClientException
-    from neutronclient.neutron import v2_0 as neutronV20
 
 
 class HealthMonitor(neutron.NeutronResource):
@@ -38,6 +38,16 @@ class HealthMonitor(neutron.NeutronResource):
     ) = (
         'delay', 'type', 'max_retries', 'timeout', 'admin_state_up',
         'http_method', 'expected_codes', 'url_path',
+    )
+
+    ATTRIBUTES = (
+        ADMIN_STATE_UP_ATTR, DELAY_ATTR, EXPECTED_CODES_ATTR, HTTP_METHOD_ATTR,
+        MAX_RETRIES_ATTR, TIMEOUT_ATTR, TYPE_ATTR, URL_PATH_ATTR, TENANT_ID,
+        SHOW,
+    ) = (
+        'admin_state_up', 'delay', 'expected_codes', 'http_method',
+        'max_retries', 'timeout', 'type', 'url_path', 'tenant_id',
+        'show',
     )
 
     properties_schema = {
@@ -96,26 +106,42 @@ class HealthMonitor(neutron.NeutronResource):
         ),
     }
 
-    update_allowed_keys = ('Properties',)
-
     attributes_schema = {
-        'admin_state_up': _('The administrative state of this health '
-                            'monitor.'),
-        'delay': _('The minimum time in seconds between regular connections '
-                   'of the member.'),
-        'expected_codes': _('The list of HTTP status codes expected in '
-                            'response from the member to declare it healthy.'),
-        'http_method': _('The HTTP method used for requests by the monitor of '
-                         'type HTTP.'),
-        'max_retries': _('Number of permissible connection failures before '
-                         'changing the member status to INACTIVE.'),
-        'timeout': _('Maximum number of seconds for a monitor to wait for a '
-                     'connection to be established before it times out.'),
-        'type': _('One of predefined health monitor types.'),
-        'url_path': _('The HTTP path used in the HTTP request used by the '
-                      'monitor to test a member health.'),
-        'tenant_id': _('Tenant owning the health monitor.'),
-        'show': _('All attributes.'),
+        ADMIN_STATE_UP_ATTR: attributes.Schema(
+            _('The administrative state of this health monitor.')
+        ),
+        DELAY_ATTR: attributes.Schema(
+            _('The minimum time in seconds between regular connections '
+              'of the member.')
+        ),
+        EXPECTED_CODES_ATTR: attributes.Schema(
+            _('The list of HTTP status codes expected in response '
+              'from the member to declare it healthy.')
+        ),
+        HTTP_METHOD_ATTR: attributes.Schema(
+            _('The HTTP method used for requests by the monitor of type HTTP.')
+        ),
+        MAX_RETRIES_ATTR: attributes.Schema(
+            _('Number of permissible connection failures before changing '
+              'the member status to INACTIVE.')
+        ),
+        TIMEOUT_ATTR: attributes.Schema(
+            _('Maximum number of seconds for a monitor to wait for a '
+              'connection to be established before it times out.')
+        ),
+        TYPE_ATTR: attributes.Schema(
+            _('One of predefined health monitor types.')
+        ),
+        URL_PATH_ATTR: attributes.Schema(
+            _('The HTTP path used in the HTTP request used by the monitor '
+              'to test a member health.')
+        ),
+        TENANT_ID: attributes.Schema(
+            _('Tenant owning the health monitor.')
+        ),
+        SHOW: attributes.Schema(
+            _('All attributes.')
+        ),
     }
 
     def handle_create(self):
@@ -150,10 +176,10 @@ class Pool(neutron.NeutronResource):
     """
 
     PROPERTIES = (
-        PROTOCOL, SUBNET_ID, LB_METHOD, NAME, DESCRIPTION,
+        PROTOCOL, SUBNET_ID, SUBNET, LB_METHOD, NAME, DESCRIPTION,
         ADMIN_STATE_UP, VIP, MONITORS,
     ) = (
-        'protocol', 'subnet_id', 'lb_method', 'name', 'description',
+        'protocol', 'subnet_id', 'subnet', 'lb_method', 'name', 'description',
         'admin_state_up', 'vip', 'monitors',
     )
 
@@ -173,6 +199,14 @@ class Pool(neutron.NeutronResource):
         'type', 'cookie_name',
     )
 
+    ATTRIBUTES = (
+        ADMIN_STATE_UP_ATTR, NAME_ATTR, PROTOCOL_ATTR, SUBNET_ID_ATTR,
+        LB_METHOD_ATTR, DESCRIPTION_ATTR, TENANT_ID, VIP_ATTR,
+    ) = (
+        'admin_state_up', 'name', 'protocol', 'subnet_id',
+        'lb_method', 'description', 'tenant_id', 'vip',
+    )
+
     properties_schema = {
         PROTOCOL: properties.Schema(
             properties.Schema.STRING,
@@ -184,9 +218,16 @@ class Pool(neutron.NeutronResource):
         ),
         SUBNET_ID: properties.Schema(
             properties.Schema.STRING,
+            support_status=support.SupportStatus(
+                support.DEPRECATED,
+                _('Use property %s.') % SUBNET),
+            required=False
+        ),
+        SUBNET: properties.Schema(
+            properties.Schema.STRING,
             _('The subnet for the port on which the members '
               'of the pool will be connected.'),
-            required=True
+            required=False
         ),
         LB_METHOD: properties.Schema(
             properties.Schema.STRING,
@@ -281,26 +322,41 @@ class Pool(neutron.NeutronResource):
         ),
     }
 
-    update_allowed_keys = ('Properties',)
-
     attributes_schema = {
-        'admin_state_up': _('The administrative state of this pool.'),
-        'name': _('Name of the pool.'),
-        'protocol': _('Protocol to balance.'),
-        'subnet_id': _('The subnet for the port on which the members '
-                       'of the pool will be connected.'),
-        'lb_method': _('The algorithm used to distribute load between the '
-                       'members of the pool.'),
-        'description': _('Description of the pool.'),
-        'tenant_id': _('Tenant owning the pool.'),
-        'vip': _('Vip associated with the pool.'),
+        ADMIN_STATE_UP_ATTR: attributes.Schema(
+            _('The administrative state of this pool.')
+        ),
+        NAME_ATTR: attributes.Schema(
+            _('Name of the pool.')
+        ),
+        PROTOCOL_ATTR: attributes.Schema(
+            _('Protocol to balance.')
+        ),
+        SUBNET_ID_ATTR: attributes.Schema(
+            _('The subnet for the port on which the members of the pool '
+              'will be connected.')
+        ),
+        LB_METHOD_ATTR: attributes.Schema(
+            _('The algorithm used to distribute load between the members '
+              'of the pool.')
+        ),
+        DESCRIPTION_ATTR: attributes.Schema(
+            _('Description of the pool.')
+        ),
+        TENANT_ID: attributes.Schema(
+            _('Tenant owning the pool.')
+        ),
+        VIP_ATTR: attributes.Schema(
+            _('Vip associated with the pool.')
+        ),
     }
 
     def validate(self):
         res = super(Pool, self).validate()
         if res:
             return res
-
+        self._validate_depr_property_required(
+            self.properties, self.SUBNET, self.SUBNET_ID)
         session_p = self.properties[self.VIP].get(self.VIP_SESSION_PERSISTENCE)
         if session_p is None:
             # session persistence is not configured, skip validation
@@ -319,6 +375,8 @@ class Pool(neutron.NeutronResource):
         properties = self.prepare_properties(
             self.properties,
             self.physical_resource_name())
+        neutron_utils.resolve_subnet(
+            self.neutron(), properties, self.SUBNET, 'subnet_id')
         vip_properties = properties.pop(self.VIP)
         monitors = properties.pop(self.MONITORS)
         client = self.neutron()
@@ -341,18 +399,16 @@ class Pool(neutron.NeutronResource):
         vip_arguments['protocol'] = self.properties[self.PROTOCOL]
 
         if vip_arguments.get(self.VIP_SUBNET) is None:
-            vip_arguments['subnet_id'] = self.properties[self.SUBNET_ID]
+            vip_arguments['subnet_id'] = properties[self.SUBNET_ID]
         else:
-            vip_arguments[
-                'subnet_id'] = neutronV20.find_resourceid_by_name_or_id(
-                    self.neutron(),
-                    'subnet',
-                    vip_arguments.pop(self.VIP_SUBNET))
+            vip_arguments['subnet_id'] = neutron_utils.resolve_subnet(
+                self.neutron(),
+                vip_arguments, self.VIP_SUBNET, 'subnet_id')
 
         vip_arguments['pool_id'] = pool['id']
         vip = client.create_vip({'vip': vip_arguments})['vip']
 
-        self.metadata = {'vip': vip['id']}
+        self.metadata_set({'vip': vip['id']})
 
     def _show_resource(self):
         return self.neutron().show_pool(self.resource_id)['pool']
@@ -363,7 +419,7 @@ class Pool(neutron.NeutronResource):
             return False
         elif attributes['status'] == 'ACTIVE':
             vip_attributes = self.neutron().show_vip(
-                self.metadata['vip'])['vip']
+                self.metadata_get()['vip'])['vip']
             if vip_attributes['status'] == 'PENDING_CREATE':
                 return False
             elif vip_attributes['status'] == 'ACTIVE':
@@ -382,8 +438,8 @@ class Pool(neutron.NeutronResource):
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
             client = self.neutron()
-            monitors = set(prop_diff.pop(self.MONITORS, []))
-            if monitors:
+            if self.MONITORS in prop_diff:
+                monitors = set(prop_diff.pop(self.MONITORS))
                 old_monitors = set(self.properties[self.MONITORS])
                 for monitor in old_monitors - monitors:
                     client.disassociate_health_monitor(self.resource_id,
@@ -396,8 +452,8 @@ class Pool(neutron.NeutronResource):
                 client.update_pool(self.resource_id, {'pool': prop_diff})
 
     def _resolve_attribute(self, name):
-        if name == 'vip':
-            return self.neutron().show_vip(self.metadata['vip'])['vip']
+        if name == self.VIP_ATTR:
+            return self.neutron().show_vip(self.metadata_get()['vip'])['vip']
         return super(Pool, self)._resolve_attribute(name)
 
     def _confirm_vip_delete(self):
@@ -405,16 +461,16 @@ class Pool(neutron.NeutronResource):
         while True:
             try:
                 yield
-                client.show_vip(self.metadata['vip'])
+                client.show_vip(self.metadata_get()['vip'])
             except NeutronClientException as ex:
                 self._handle_not_found_exception(ex)
                 break
 
     def handle_delete(self):
         checkers = []
-        if self.metadata:
+        if self.metadata_get():
             try:
-                self.neutron().delete_vip(self.metadata['vip'])
+                self.neutron().delete_vip(self.metadata_get()['vip'])
             except NeutronClientException as ex:
                 self._handle_not_found_exception(ex)
             else:
@@ -446,6 +502,14 @@ class PoolMember(neutron.NeutronResource):
         POOL_ID, ADDRESS, PROTOCOL_PORT, WEIGHT, ADMIN_STATE_UP,
     ) = (
         'pool_id', 'address', 'protocol_port', 'weight', 'admin_state_up',
+    )
+
+    ATTRIBUTES = (
+        ADMIN_STATE_UP_ATTR, TENANT_ID, WEIGHT_ATTR, ADDRESS_ATTR,
+        POOL_ID_ATTR, PROTOCOL_PORT_ATTR, SHOW,
+    ) = (
+        'admin_state_up', 'tenant_id', 'weight', 'address',
+        'pool_id', 'protocol_port', 'show',
     )
 
     properties_schema = {
@@ -485,18 +549,29 @@ class PoolMember(neutron.NeutronResource):
     }
 
     attributes_schema = {
-        'admin_state_up': _('The administrative state of this pool '
-                            'member.'),
-        'tenant_id': _('Tenant owning the pool member.'),
-        'weight': _('Weight of the pool member in the pool.'),
-        'address': _('IP address of the pool member.'),
-        'pool_id': _('The ID of the load balancing pool.'),
-        'protocol_port': _('TCP port on which the pool member listens for'
-                           'requests or connections.'),
-        'show': _('All attributes.'),
+        ADMIN_STATE_UP_ATTR: attributes.Schema(
+            _('The administrative state of this pool member.')
+        ),
+        TENANT_ID: attributes.Schema(
+            _('Tenant owning the pool member.')
+        ),
+        WEIGHT_ATTR: attributes.Schema(
+            _('Weight of the pool member in the pool.')
+        ),
+        ADDRESS_ATTR: attributes.Schema(
+            _('IP address of the pool member.')
+        ),
+        POOL_ID_ATTR: attributes.Schema(
+            _('The ID of the load balancing pool.')
+        ),
+        PROTOCOL_PORT_ATTR: attributes.Schema(
+            _('TCP port on which the pool member listens for requests or '
+              'connections.')
+        ),
+        SHOW: attributes.Schema(
+            _('All attributes.')
+        ),
     }
-
-    update_allowed_keys = ('Properties',)
 
     def handle_create(self):
         pool = self.properties[self.POOL_ID]
@@ -568,8 +643,6 @@ class LoadBalancer(resource.Resource):
         ),
     }
 
-    update_allowed_keys = ('Properties',)
-
     def handle_create(self):
         pool = self.properties[self.POOL_ID]
         client = self.neutron()
@@ -583,12 +656,12 @@ class LoadBalancer(resource.Resource):
                     'pool_id': pool,
                     'address': address,
                     'protocol_port': protocol_port}})['member']
-            db_api.resource_data_set(self, member, lb_member['id'])
+            self.data_set(member, lb_member['id'])
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if self.MEMBERS in prop_diff:
             members = set(prop_diff[self.MEMBERS])
-            rd_members = db_api.resource_data_get_all(self)
+            rd_members = self.data()
             old_members = set(rd_members.keys())
             client = self.neutron()
             for member in old_members - members:
@@ -598,7 +671,7 @@ class LoadBalancer(resource.Resource):
                 except NeutronClientException as ex:
                     if ex.status_code != 404:
                         raise ex
-                db_api.resource_data_delete(self, member)
+                self.data_delete(member)
             pool = self.properties[self.POOL_ID]
             nova_client = self.nova()
             protocol_port = self.properties[self.PROTOCOL_PORT]
@@ -609,18 +682,18 @@ class LoadBalancer(resource.Resource):
                         'pool_id': pool,
                         'address': address,
                         'protocol_port': protocol_port}})['member']
-                db_api.resource_data_set(self, member, lb_member['id'])
+                self.data_set(member, lb_member['id'])
 
     def handle_delete(self):
         client = self.neutron()
         for member in self.properties.get(self.MEMBERS):
-            member_id = db_api.resource_data_get(self, member)
+            member_id = self.data().get(member)
             try:
                 client.delete_member(member_id)
             except NeutronClientException as ex:
                 if ex.status_code != 404:
                     raise ex
-            db_api.resource_data_delete(self, member)
+            self.data_delete(member)
 
 
 def resource_mapping():

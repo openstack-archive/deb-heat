@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -26,10 +26,12 @@ class ParameterTest(testtools.TestCase):
 
     def new_parameter(self, name, schema, value=None,
                       validate_value=True):
-        tmpl = template.Template({'Parameters': {name: schema}})
+        tmpl = template.Template({'HeatTemplateFormatVersion': '2012-12-12',
+                                  'Parameters': {name: schema}})
         schema = tmpl.param_schemata()[name]
-        return parameters.Parameter(name, schema, value,
-                                    validate_value)
+        param = parameters.Parameter(name, schema, value)
+        param.validate(validate_value)
+        return param
 
     def test_new_string(self):
         p = self.new_parameter('p', {'Type': 'String'}, validate_value=False)
@@ -123,7 +125,7 @@ class ParameterTest(testtools.TestCase):
         schema = {'Type': 'String',
                   'ConstraintDescription': 'wibble',
                   'MinLength': '4'}
-        err = self.assertRaises(ValueError,
+        err = self.assertRaises(exception.StackValidationFailed,
                                 self.new_parameter, 'p', schema, 'foo')
         self.assertIn('wibble', str(err))
 
@@ -131,7 +133,7 @@ class ParameterTest(testtools.TestCase):
         schema = {'Type': 'String',
                   'ConstraintDescription': 'wibble',
                   'MaxLength': '2'}
-        err = self.assertRaises(ValueError,
+        err = self.assertRaises(exception.StackValidationFailed,
                                 self.new_parameter, 'p', schema, 'foo')
         self.assertIn('wibble', str(err))
 
@@ -145,7 +147,7 @@ class ParameterTest(testtools.TestCase):
         schema = {'Type': 'String',
                   'ConstraintDescription': 'wibble',
                   'AllowedPattern': '[a-z]*'}
-        err = self.assertRaises(ValueError,
+        err = self.assertRaises(exception.StackValidationFailed,
                                 self.new_parameter, 'p', schema, '1foo')
         self.assertIn('wibble', str(err))
 
@@ -153,7 +155,7 @@ class ParameterTest(testtools.TestCase):
         schema = {'Type': 'String',
                   'ConstraintDescription': 'wibble',
                   'AllowedPattern': '[a-z]*'}
-        err = self.assertRaises(ValueError,
+        err = self.assertRaises(exception.StackValidationFailed,
                                 self.new_parameter, 'p', schema, 'foo1')
         self.assertIn('wibble', str(err))
 
@@ -167,7 +169,7 @@ class ParameterTest(testtools.TestCase):
         schema = {'Type': 'String',
                   'ConstraintDescription': 'wibble',
                   'AllowedValues': ['foo', 'bar', 'baz']}
-        err = self.assertRaises(ValueError,
+        err = self.assertRaises(exception.StackValidationFailed,
                                 self.new_parameter, 'p', schema, 'blarg')
         self.assertIn('wibble', str(err))
 
@@ -178,18 +180,25 @@ class ParameterTest(testtools.TestCase):
         p = self.new_parameter('p', schema, '3')
         self.assertEqual(3, p.value())
 
-    def test_number_float_good(self):
+    def test_number_float_good_string(self):
         schema = {'Type': 'Number',
                   'MinValue': '3.0',
                   'MaxValue': '4.0'}
         p = self.new_parameter('p', schema, '3.5')
         self.assertEqual(3.5, p.value())
 
+    def test_number_float_good_number(self):
+        schema = {'Type': 'Number',
+                  'MinValue': '3.0',
+                  'MaxValue': '4.0'}
+        p = self.new_parameter('p', schema, 3.5)
+        self.assertEqual(3.5, p.value())
+
     def test_number_low(self):
         schema = {'Type': 'Number',
                   'ConstraintDescription': 'wibble',
                   'MinValue': '4'}
-        err = self.assertRaises(ValueError,
+        err = self.assertRaises(exception.StackValidationFailed,
                                 self.new_parameter, 'p', schema, '3')
         self.assertIn('wibble', str(err))
 
@@ -197,7 +206,7 @@ class ParameterTest(testtools.TestCase):
         schema = {'Type': 'Number',
                   'ConstraintDescription': 'wibble',
                   'MaxValue': '2'}
-        err = self.assertRaises(ValueError,
+        err = self.assertRaises(exception.StackValidationFailed,
                                 self.new_parameter, 'p', schema, '3')
         self.assertIn('wibble', str(err))
 
@@ -211,9 +220,15 @@ class ParameterTest(testtools.TestCase):
         schema = {'Type': 'Number',
                   'ConstraintDescription': 'wibble',
                   'AllowedValues': ['1', '3', '5']}
-        err = self.assertRaises(ValueError,
+        err = self.assertRaises(exception.StackValidationFailed,
                                 self.new_parameter, 'p', schema, '2')
         self.assertIn('wibble', str(err))
+
+    def test_list_value_list_default_empty(self):
+        schema = {'Type': 'CommaDelimitedList'}
+        schema['Default'] = ''
+        p = self.new_parameter('p', schema)
+        self.assertEqual([''], p.value())
 
     def test_list_value_list_good(self):
         schema = {'Type': 'CommaDelimitedList',
@@ -231,12 +246,13 @@ class ParameterTest(testtools.TestCase):
         schema = {'Type': 'CommaDelimitedList',
                   'ConstraintDescription': 'wibble',
                   'AllowedValues': ['foo', 'bar', 'baz']}
-        err = self.assertRaises(ValueError, self.new_parameter,
-                                'p', schema, 'foo,baz,blarg')
+        err = self.assertRaises(exception.StackValidationFailed,
+                                self.new_parameter, 'p', schema,
+                                'foo,baz,blarg')
         self.assertIn('wibble', str(err))
 
     def test_map_value(self):
-        '''Happy path for value thats already a map.'''
+        '''Happy path for value that's already a map.'''
         schema = {'Type': 'Json'}
         val = {"foo": "bar", "items": [1, 2, 3]}
         p = self.new_parameter('p', schema, val)
@@ -275,7 +291,7 @@ class ParameterTest(testtools.TestCase):
         schema = {'Type': 'Json',
                   'MinLength': 3}
         val = {"foo": "bar", "items": [1, 2, 3]}
-        err = self.assertRaises(ValueError,
+        err = self.assertRaises(exception.StackValidationFailed,
                                 self.new_parameter, 'p', schema, val)
         self.assertIn('out of range', str(err))
 
@@ -284,15 +300,42 @@ class ParameterTest(testtools.TestCase):
         schema = {'Type': 'Json',
                   'MaxLength': 1}
         val = {"foo": "bar", "items": [1, 2, 3]}
-        err = self.assertRaises(ValueError,
+        err = self.assertRaises(exception.StackValidationFailed,
                                 self.new_parameter, 'p', schema, val)
         self.assertIn('out of range', str(err))
+
+    def test_bool_value_true(self):
+        schema = {'Type': 'Boolean'}
+        for val in ('1', 't', 'true', 'on', 'y', 'yes', True, 1):
+            bo = self.new_parameter('bo', schema, val)
+            self.assertEqual(True, bo.value())
+
+    def test_bool_value_false(self):
+        schema = {'Type': 'Boolean'}
+        for val in ('0', 'f', 'false', 'off', 'n', 'no', False, 0):
+            bo = self.new_parameter('bo', schema, val)
+            self.assertEqual(False, bo.value())
+
+    def test_bool_value_invalid(self):
+        schema = {'Type': 'Boolean'}
+        bo = self.new_parameter('bo', schema, 'foo')
+        err = self.assertRaises(ValueError, bo.value)
+        self.assertIn("Unrecognized value 'foo'", unicode(err))
 
     def test_missing_param(self):
         '''Test missing user parameter.'''
         self.assertRaises(exception.UserParameterMissing,
                           self.new_parameter, 'p',
                           {'Type': 'String'})
+
+    def test_param_name_in_error_message(self):
+        schema = {'Type': 'String',
+                  'AllowedPattern': '[a-z]*'}
+        err = self.assertRaises(exception.StackValidationFailed,
+                                self.new_parameter, 'testparam', schema, '234')
+        expected = 'Parameter \'testparam\' is invalid: '\
+            '"234" does not match pattern "[a-z]*"'
+        self.assertEqual(expected, unicode(err))
 
 
 params_schema = json.loads('''{
@@ -309,10 +352,13 @@ params_schema = json.loads('''{
 class ParametersTest(testtools.TestCase):
     def new_parameters(self, stack_name, tmpl, user_params={}, stack_id=None,
                        validate_value=True):
+        tmpl.update({'HeatTemplateFormatVersion': '2012-12-12'})
         tmpl = template.Template(tmpl)
-        return tmpl.parameters(
+        params = tmpl.parameters(
             identifier.HeatIdentifier('', stack_name, stack_id),
-            user_params, validate_value)
+            user_params)
+        params.validate(validate_value)
+        return params
 
     def test_pseudo_params(self):
         stack_name = 'test_stack'
@@ -408,7 +454,7 @@ class ParametersTest(testtools.TestCase):
         params = {'Parameters': {'Foo': {'Type': 'String'},
                                  'NoAttr': 'No attribute.',
                                  'Bar': {'Type': 'Number', 'Default': '1'}}}
-        self.assertRaises(exception.InvalidTemplateParameter,
+        self.assertRaises(constr.InvalidSchemaError,
                           self.new_parameters,
                           'test',
                           params)
@@ -418,11 +464,15 @@ class ParameterSchemaTest(testtools.TestCase):
 
     def test_validate_schema_wrong_key(self):
         error = self.assertRaises(constr.InvalidSchemaError,
-                                  parameters.Schema.from_dict, {"foo": "bar"})
-        self.assertEqual("Invalid key 'foo' for parameter", str(error))
+                                  parameters.Schema.from_dict, 'param_name',
+                                  {"foo": "bar"})
+        self.assertEqual("Invalid key 'foo' for parameter (param_name)",
+                         str(error))
 
     def test_validate_schema_no_type(self):
         error = self.assertRaises(constr.InvalidSchemaError,
                                   parameters.Schema.from_dict,
+                                  'broken',
                                   {"Description": "Hi!"})
-        self.assertEqual("Missing parameter type", str(error))
+        self.assertEqual("Missing parameter type for parameter: broken",
+                         str(error))

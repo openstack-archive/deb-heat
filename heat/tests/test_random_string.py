@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -18,7 +18,6 @@ from heat.common import exception
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine.resources.random_string import RandomString
-
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
@@ -42,8 +41,7 @@ Resources:
 '''
 
     def setUp(self):
-        super(HeatTestCase, self).setUp()
-        utils.setup_dummy_db()
+        super(TestRandomString, self).setUp()
         self.ctx = utils.dummy_context()
 
     def create_stack(self, template):

@@ -78,8 +78,10 @@ class TestTemplateVersion(HeatTestCase):
             'foo': 'bar',
             'Parameters': {}
         }
-        self.assertEqual(('HeatTemplateFormatVersion', '2012-12-12'),
-                         template.get_version(tmpl, self.versions))
+        ex = self.assertRaises(exception.InvalidTemplateVersion,
+                               template.get_version, tmpl, self.versions)
+        self.assertEqual('The template version is invalid: Template version '
+                         'was not provided', str(ex))
 
     def test_ambiguous_version(self):
         tmpl = {
@@ -100,7 +102,11 @@ class TestTemplateValidate(HeatTestCase):
             'Description': 'foo',
             'Parameters': {},
             'Mappings': {},
-            'Resources': {},
+            'Resources': {
+                'server': {
+                    'Type': 'OS::Nova::Server'
+                }
+            },
             'Outputs': {},
         }
 
@@ -114,7 +120,11 @@ class TestTemplateValidate(HeatTestCase):
             'Description': 'foo',
             'Parameters': {},
             'Mappings': {},
-            'Resources': {},
+            'Resources': {
+                'server': {
+                    'Type': 'OS::Nova::Server'
+                }
+            },
             'Outputs': {},
         }
 
@@ -128,7 +138,11 @@ class TestTemplateValidate(HeatTestCase):
             'Description': 'foo',
             'Parameteers': {},
             'Mappings': {},
-            'Resources': {},
+            'Resources': {
+                'server': {
+                    'Type': 'OS::Nova::Server'
+                }
+            },
             'Outputs': {},
         }
 
@@ -142,7 +156,11 @@ class TestTemplateValidate(HeatTestCase):
             'heat_template_version': '2013-05-23',
             'description': 'foo',
             'parameters': {},
-            'resources': {},
+            'resources': {
+                'server': {
+                    'type': 'OS::Nova::Server'
+                }
+            },
             'outputs': {},
         }
 
@@ -155,7 +173,11 @@ class TestTemplateValidate(HeatTestCase):
             'heat_template_version': '2013-05-23',
             'description': 'foo',
             'parameteers': {},
-            'resources': {},
+            'resources': {
+                'server': {
+                    'type': 'OS::Nova::Server'
+                }
+            },
             'outputs': {},
         }
 

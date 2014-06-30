@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,47 +11,24 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo.config import cfg
-
-from heat.openstack.common import importutils
-from heat.openstack.common import log as logging
-from heat.openstack.common.gettextutils import _
-
-logger = logging.getLogger(__name__)
-
-
-from heat.common import heat_keystoneclient as hkc
+from ceilometerclient import client as ceilometerclient
+from cinderclient import client as cinderclient
+from glanceclient import client as glanceclient
 from heatclient import client as heatclient
+from neutronclient.v2_0 import client as neutronclient
 from novaclient import client as novaclient
 from novaclient import shell as novashell
+from oslo.config import cfg
+from swiftclient import client as swiftclient
+from troveclient import client as troveclient
 
-try:
-    from swiftclient import client as swiftclient
-except ImportError:
-    swiftclient = None
-    logger.info(_('swiftclient not available'))
-try:
-    from neutronclient.v2_0 import client as neutronclient
-except ImportError:
-    neutronclient = None
-    logger.info(_('neutronclient not available'))
-try:
-    from cinderclient import client as cinderclient
-except ImportError:
-    cinderclient = None
-    logger.info(_('cinderclient not available'))
+from heat.common import heat_keystoneclient as hkc
+from heat.openstack.common.gettextutils import _
+from heat.openstack.common import importutils
+from heat.openstack.common import log as logging
 
-try:
-    from troveclient import client as troveclient
-except ImportError:
-    troveclient = None
-    logger.info(_('troveclient not available'))
+LOG = logging.getLogger(__name__)
 
-try:
-    from ceilometerclient import client as ceilometerclient
-except ImportError:
-    ceilometerclient = None
-    logger.info(_('ceilometerclient not available'))
 
 _default_backend = "heat.engine.clients.OpenStackClients"
 
@@ -78,6 +54,7 @@ class OpenStackClients(object):
         self._trove = None
         self._ceilometer = None
         self._heat = None
+        self._glance = None
 
     @property
     def auth_token(self):
@@ -100,10 +77,6 @@ class OpenStackClients(object):
             return self._nova[service_type]
 
         con = self.context
-        if self.auth_token is None:
-            logger.error(_("Nova connection failed, no auth_token!"))
-            return None
-
         computeshell = novashell.OpenStackComputeShell()
         extensions = computeshell._discover_extensions("1.1")
 
@@ -131,16 +104,10 @@ class OpenStackClients(object):
         return client
 
     def swift(self):
-        if swiftclient is None:
-            return None
         if self._swift:
             return self._swift
 
         con = self.context
-        if self.auth_token is None:
-            logger.error(_("Swift connection failed, no auth_token!"))
-            return None
-
         endpoint_type = self._get_client_option('swift', 'endpoint_type')
         args = {
             'auth_version': '2.0',
@@ -158,15 +125,36 @@ class OpenStackClients(object):
         self._swift = swiftclient.Connection(**args)
         return self._swift
 
+    def glance(self):
+        if self._glance:
+            return self._glance
+
+        con = self.context
+        endpoint_type = self._get_client_option('glance', 'endpoint_type')
+        endpoint = self.url_for(service_type='image',
+                                endpoint_type=endpoint_type)
+        args = {
+            'auth_url': con.auth_url,
+            'service_type': 'image',
+            'project_id': con.tenant,
+            'token': self.auth_token,
+            'endpoint_type': endpoint_type,
+            'ca_file': self._get_client_option('glance', 'ca_file'),
+            'cert_file': self._get_client_option('glance', 'cert_file'),
+            'key_file': self._get_client_option('glance', 'key_file'),
+            'insecure': self._get_client_option('glance', 'insecure')
+        }
+
+        self._glance = glanceclient.Client('1', endpoint, **args)
+        return self._glance
+
     def neutron(self):
-        if neutronclient is None:
-            return None
         if self._neutron:
             return self._neutron
 
         con = self.context
         if self.auth_token is None:
-            logger.error(_("Neutron connection failed, no auth_token!"))
+            LOG.error(_("Neutron connection failed, no auth_token!"))
             return None
 
         endpoint_type = self._get_client_option('neutron', 'endpoint_type')
@@ -186,16 +174,10 @@ class OpenStackClients(object):
         return self._neutron
 
     def cinder(self):
-        if cinderclient is None:
-            return self.nova('volume')
         if self._cinder:
             return self._cinder
 
         con = self.context
-        if self.auth_token is None:
-            logger.error(_("Cinder connection failed, no auth_token!"))
-            return None
-
         endpoint_type = self._get_client_option('cinder', 'endpoint_type')
         args = {
             'service_type': 'volume',
@@ -217,16 +199,10 @@ class OpenStackClients(object):
         return self._cinder
 
     def trove(self, service_type="database"):
-        if troveclient is None:
-            return None
         if self._trove:
             return self._trove
 
         con = self.context
-        if self.auth_token is None:
-            logger.error(_("Trove connection failed, no auth_token!"))
-            return None
-
         endpoint_type = self._get_client_option('trove', 'endpoint_type')
         args = {
             'service_type': service_type,
@@ -248,16 +224,10 @@ class OpenStackClients(object):
         return self._trove
 
     def ceilometer(self):
-        if ceilometerclient is None:
-            return None
         if self._ceilometer:
             return self._ceilometer
 
-        if self.auth_token is None:
-            logger.error(_("Ceilometer connection failed, no auth_token!"))
-            return None
         con = self.context
-
         endpoint_type = self._get_client_option('ceilometer', 'endpoint_type')
         endpoint = self.url_for(service_type='metering',
                                 endpoint_type=endpoint_type)
@@ -300,10 +270,6 @@ class OpenStackClients(object):
             return self._heat
 
         con = self.context
-        if self.auth_token is None:
-            logger.error(_("Heat connection failed, no auth_token!"))
-            return None
-
         endpoint_type = self._get_client_option('heat', 'endpoint_type')
         args = {
             'auth_url': con.auth_url,

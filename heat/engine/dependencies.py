@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -18,7 +17,6 @@ import itertools
 from six.moves import xrange
 
 from heat.common import exception
-
 from heat.openstack.common.gettextutils import _
 
 

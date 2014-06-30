@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -373,7 +373,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         }
         self.assertEqual(expected, result)
         default_args = {'limit': None, 'sort_keys': None, 'marker': None,
-                        'sort_dir': None, 'filters': None, 'tenant_safe': True}
+                        'sort_dir': None, 'filters': None, 'tenant_safe': True,
+                        'show_deleted': False}
         mock_call.assert_called_once_with(req.context, self.topic,
                                           {'namespace': None,
                                            'method': 'list_stacks',
@@ -398,7 +399,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
 
         rpc_call_args, _ = mock_call.call_args
         engine_args = rpc_call_args[2]['args']
-        self.assertEqual(6, len(engine_args))
+        self.assertEqual(7, len(engine_args))
         self.assertIn('limit', engine_args)
         self.assertIn('sort_keys', engine_args)
         self.assertIn('marker', engine_args)
@@ -413,6 +414,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         params = {
             'status': 'fake status',
             'name': 'fake name',
+            'action': 'fake action',
             'balrog': 'you shall not pass!'
         }
         req = self._get('/stacks', params=params)
@@ -425,9 +427,10 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertIn('filters', engine_args)
 
         filters = engine_args['filters']
-        self.assertEqual(2, len(filters))
+        self.assertEqual(3, len(filters))
         self.assertIn('status', filters)
         self.assertIn('name', filters)
+        self.assertIn('action', filters)
         self.assertNotIn('balrog', filters)
 
     def test_index_returns_stack_count_if_with_count_is_true(
@@ -496,6 +499,32 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                                        filters=mock.ANY,
                                                        tenant_safe=False)
 
+    def test_global_index_show_deleted_false(self, mock_enforce):
+        rpc_client = self.controller.rpc_client
+        rpc_client.list_stacks = mock.Mock(return_value=[])
+        rpc_client.count_stacks = mock.Mock()
+
+        params = {'show_deleted': 'False'}
+        req = self._get('/stacks', params=params)
+        self.controller.index(req, tenant_id=self.tenant)
+        rpc_client.list_stacks.assert_called_once_with(mock.ANY,
+                                                       filters=mock.ANY,
+                                                       tenant_safe=True,
+                                                       show_deleted=False)
+
+    def test_global_index_show_deleted_True(self, mock_enforce):
+        rpc_client = self.controller.rpc_client
+        rpc_client.list_stacks = mock.Mock(return_value=[])
+        rpc_client.count_stacks = mock.Mock()
+
+        params = {'show_deleted': 'True'}
+        req = self._get('/stacks', params=params)
+        self.controller.index(req, tenant_id=self.tenant)
+        rpc_client.list_stacks.assert_called_once_with(mock.ANY,
+                                                       filters=mock.ANY,
+                                                       tenant_safe=True,
+                                                       show_deleted=True)
+
     @mock.patch.object(rpc, 'call')
     def test_detail(self, mock_call, mock_enforce):
         self._mock_enforce_setup(mock_enforce, 'detail', True)
@@ -551,7 +580,8 @@ class StackControllerTest(ControllerTest, HeatTestCase):
 
         self.assertEqual(expected, result)
         default_args = {'limit': None, 'sort_keys': None, 'marker': None,
-                        'sort_dir': None, 'filters': None, 'tenant_safe': True}
+                        'sort_dir': None, 'filters': None, 'tenant_safe': True,
+                        'show_deleted': False}
         mock_call.assert_called_once_with(req.context, self.topic,
                                           {'namespace': None,
                                            'method': 'list_stacks',
@@ -1853,6 +1883,58 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         }
 
         self.assertEqual(expected, result)
+        self.m.VerifyAll()
+
+    def test_show_with_nested_stack(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '6')
+        res_identity = identifier.ResourceIdentifier(resource_name=res_name,
+                                                     **stack_identity)
+        nested_stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                          'nested', 'some_id')
+
+        req = self._get(stack_identity._tenant_path())
+
+        engine_resp = {
+            u'description': u'',
+            u'resource_identity': dict(res_identity),
+            u'stack_name': stack_identity.stack_name,
+            u'resource_name': res_name,
+            u'resource_status_reason': None,
+            u'updated_time': u'2012-07-23T13:06:00Z',
+            u'stack_identity': dict(stack_identity),
+            u'resource_action': u'CREATE',
+            u'resource_status': u'COMPLETE',
+            u'physical_resource_id':
+            u'a3455d8c-9f88-404d-a85b-5315293e67de',
+            u'resource_type': u'AWS::EC2::Instance',
+            u'metadata': {u'ensureRunning': u'true'},
+            u'nested_stack_id': dict(nested_stack_identity)
+        }
+        self.m.StubOutWithMock(rpc, 'call')
+        rpc.call(req.context, self.topic,
+                 {'namespace': None,
+                  'method': 'describe_stack_resource',
+                  'args': {'stack_identity': stack_identity,
+                           'resource_name': res_name},
+                  'version': self.api_version},
+                 None).AndReturn(engine_resp)
+        self.m.ReplayAll()
+
+        result = self.controller.show(req, tenant_id=self.tenant,
+                                      stack_name=stack_identity.stack_name,
+                                      stack_id=stack_identity.stack_id,
+                                      resource_name=res_name)
+
+        expected = [{'href': self._url(res_identity), 'rel': 'self'},
+                    {'href': self._url(stack_identity), 'rel': 'stack'},
+                    {'href': self._url(nested_stack_identity), 'rel': 'nested'}
+                    ]
+
+        self.assertEqual(expected, result['resource']['links'])
+        self.assertIsNone(result.get(rpc_api.RES_NESTED_STACK_ID))
         self.m.VerifyAll()
 
     def test_show_nonexist(self, mock_enforce):
@@ -3514,6 +3596,32 @@ class SoftwareDeploymentControllerTest(ControllerTest, HeatTestCase):
         server_id = 'fb322564-7927-473d-8aad-68ae7fbf2abf'
         body = {
             'input_values': {},
+            'action': 'INIT',
+            'status': 'COMPLETE',
+            'status_reason': None,
+            'config_id': config_id}
+        return_value = body.copy()
+        deployment_id = 'a45559cd-8736-4375-bc39-d6a7bb62ade2'
+        return_value['id'] = deployment_id
+        req = self._put('/software_deployments/%s' % deployment_id,
+                        json.dumps(body))
+        return_value['server_id'] = server_id
+        expected = {'software_deployment': return_value}
+        with mock.patch.object(
+                self.controller.rpc_client,
+                'update_software_deployment',
+                return_value=return_value):
+            resp = self.controller.update(
+                req, deployment_id=deployment_id,
+                body=body, tenant_id=self.tenant)
+            self.assertEqual(expected, resp)
+
+    @mock.patch.object(policy.Enforcer, 'enforce')
+    def test_update_no_input_values(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'update')
+        config_id = 'd00ba4aa-db33-42e1-92f4-2a6469260107'
+        server_id = 'fb322564-7927-473d-8aad-68ae7fbf2abf'
+        body = {
             'action': 'INIT',
             'status': 'COMPLETE',
             'status_reason': None,

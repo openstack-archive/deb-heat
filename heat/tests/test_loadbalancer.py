@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -11,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import re
 
 import mock
@@ -20,7 +21,8 @@ from oslo.config import cfg
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import clients
-from heat.engine.resource import Metadata
+from heat.engine import resource
+from heat.engine.resources import glance_utils
 from heat.engine.resources import instance
 from heat.engine.resources import loadbalancer as lb
 from heat.engine.resources import wait_condition as wc
@@ -105,25 +107,33 @@ class LoadBalancerTest(HeatTestCase):
         self.fc = fakes.FakeClient()
         self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
         self.m.StubOutWithMock(self.fc.servers, 'create')
-        self.m.StubOutWithMock(Metadata, '__set__')
+        self.m.StubOutWithMock(resource.Resource, 'metadata_set')
         self.fkc = test_fakes.FakeKeystoneClient(
             username='test_stack.CfnLBUser')
 
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://server.test:8000/v1/waitcondition')
-        utils.setup_dummy_db()
 
     def create_loadbalancer(self, t, stack, resource_name):
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = lb.LoadBalancer(resource_name,
-                               t['Resources'][resource_name],
+                               resource_defns[resource_name],
                                stack)
         self.assertIsNone(rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
 
-    def _create_stubs(self, key_name='test', stub_meta=True):
+    def _mock_get_image_id_success(self, imageId_input, imageId):
+        g_cli_mock = self.m.CreateMockAnything()
+        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
+        clients.OpenStackClients.glance().MultipleTimes().AndReturn(
+            g_cli_mock)
+        self.m.StubOutWithMock(glance_utils, 'get_image_id')
+        glance_utils.get_image_id(g_cli_mock, imageId_input).\
+            MultipleTimes().AndReturn(imageId)
 
+    def _create_stubs(self, key_name='test', stub_meta=True):
         self.m.StubOutWithMock(stack_user.StackUser, 'keystone')
         stack_user.StackUser.keystone().MultipleTimes().AndReturn(self.fkc)
 
@@ -133,7 +143,8 @@ class LoadBalancerTest(HeatTestCase):
             limit=instance.Instance.physical_resource_name_limit)
         clients.OpenStackClients.nova(
             "compute").MultipleTimes().AndReturn(self.fc)
-        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+        if key_name:
+            clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
         self.fc.servers.create(
             flavor=2, image=746, key_name=key_name,
             meta=None, nics=None, name=server_name,
@@ -141,15 +152,14 @@ class LoadBalancerTest(HeatTestCase):
             security_groups=None, availability_zone=None).AndReturn(
                 self.fc.servers.list()[1])
         if stub_meta:
-            Metadata.__set__(mox.IgnoreArg(),
-                             mox.IgnoreArg()).AndReturn(None)
+            resource.Resource.metadata_set(mox.IgnoreArg()).AndReturn(None)
 
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'get_status')
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS'])
 
     def test_loadbalancer(self):
+        self._mock_get_image_id_success(u'F20-x86_64-cfntools', 746)
         self._create_stubs()
-
         self.m.ReplayAll()
 
         t = template_format.parse(lb_template)
@@ -184,13 +194,14 @@ class LoadBalancerTest(HeatTestCase):
         self.assertRegexpMatches(ha_cfg, 'timeout check 5s')
 
         id_list = []
+        resource_defns = s.t.resource_definitions(s)
         for inst_name in ['WikiServerOne1', 'WikiServerOne2']:
             inst = instance.Instance(inst_name,
-                                     s.t['Resources']['WikiServerOne'],
+                                     resource_defns['WikiServerOne'],
                                      s)
             id_list.append(inst.FnGetRefId())
 
-        rsrc.handle_update(rsrc.json_snippet, {}, {'Instances': id_list})
+        rsrc.handle_update(copy.deepcopy(rsrc.t), {}, {'Instances': id_list})
 
         self.assertEqual('4.5.6.7', rsrc.FnGetAtt('DNSName'))
         self.assertEqual('', rsrc.FnGetAtt('SourceSecurityGroup.GroupName'))
@@ -203,7 +214,9 @@ class LoadBalancerTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_loadbalancer_nokey(self):
+        self._mock_get_image_id_success(u'F20-x86_64-cfntools', 746)
         self._create_stubs(key_name=None, stub_meta=False)
+
         self.m.ReplayAll()
 
         t = template_format.parse(lb_template_nokey)
@@ -231,8 +244,9 @@ class LoadBalancerTest(HeatTestCase):
         s = utils.parse_stack(t)
         s.store()
 
+        resource_defns = s.t.resource_definitions(s)
         rsrc = lb.LoadBalancer('LoadBalancer',
-                               t['Resources']['LoadBalancer'],
+                               resource_defns['LoadBalancer'],
                                s)
         self.assertRaises(exception.StackValidationFailed, rsrc.validate)
 
@@ -243,8 +257,8 @@ class LoadBalancerTest(HeatTestCase):
         stack = utils.parse_stack(template)
 
         resource_name = 'LoadBalancer'
-        lb_json = template['Resources'][resource_name]
-        return lb.LoadBalancer(resource_name, lb_json, stack)
+        lb_defn = stack.t.resource_definitions(stack)[resource_name]
+        return lb.LoadBalancer(resource_name, lb_defn, stack)
 
     def test_child_params_without_key_name(self):
         rsrc = self.setup_loadbalancer(False)

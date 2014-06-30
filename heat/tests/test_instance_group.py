@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -61,7 +61,6 @@ ig_template = '''
 class InstanceGroupTest(HeatTestCase):
     def setUp(self):
         super(InstanceGroupTest, self).setUp()
-        utils.setup_dummy_db()
 
     def _stub_create(self, num, instance_class=instance.Instance):
         """
@@ -296,27 +295,6 @@ class InstanceGroupTest(HeatTestCase):
         self.assertEqual((child_resource.CREATE, child_resource.FAILED),
                          child_resource.state)
 
-        self.m.VerifyAll()
-
-    def test_update_fail_badkey(self):
-        t = template_format.parse(ig_template)
-        properties = t['Resources']['JobServerGroup']['Properties']
-        properties['Size'] = '2'
-        stack = utils.parse_stack(t)
-
-        self._stub_create(2)
-        self.m.ReplayAll()
-        self.create_resource(t, stack, 'JobServerConfig')
-        rsrc = self.create_resource(t, stack, 'JobServerGroup')
-
-        self.m.ReplayAll()
-
-        update_snippet = copy.deepcopy(rsrc.parsed_template())
-        update_snippet['Metadata'] = 'notallowedforupdate'
-        updater = scheduler.TaskRunner(rsrc.update, update_snippet)
-        self.assertRaises(resource.UpdateReplace, updater)
-
-        rsrc.delete()
         self.m.VerifyAll()
 
     def test_update_fail_badprop(self):

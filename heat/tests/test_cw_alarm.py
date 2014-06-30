@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -52,11 +52,11 @@ alarm_template = '''
 class CloudWatchAlarmTest(HeatTestCase):
     def setUp(self):
         super(CloudWatchAlarmTest, self).setUp()
-        utils.setup_dummy_db()
 
     def create_alarm(self, t, stack, resource_name):
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = cloud_watch.CloudWatchAlarm(resource_name,
-                                           t['Resources'][resource_name],
+                                           resource_defns[resource_name],
                                            stack)
         self.assertIsNone(rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()

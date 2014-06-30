@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -16,10 +15,14 @@ import collections
 import numbers
 import re
 
+import six
+
+from heat.common import exception
+from heat.engine import clients
 from heat.engine import resources
 
 
-class InvalidSchemaError(Exception):
+class InvalidSchemaError(exception.Error):
     pass
 
 
@@ -105,7 +108,16 @@ class Schema(collections.Mapping):
             raise InvalidSchemaError(msg)
 
         self.constraints = constraints
-        for c in constraints:
+        self.default = default
+
+    def validate(self, context=None):
+        '''
+        Validates the schema.
+
+        This method checks if the schema itself is valid, and if the
+        default value - if present - complies to the schema's constraints.
+        '''
+        for c in self.constraints:
             if not self._is_valid_constraint(c):
                 err_msg = _('%(name)s constraint '
                             'invalid for %(utype)s') % dict(
@@ -113,13 +125,19 @@ class Schema(collections.Mapping):
                                 utype=self.type)
                 raise InvalidSchemaError(err_msg)
 
-        self.default = default
-        self._validate_default()
+        self._validate_default(context)
+        # validated nested schema(ta)
+        if self.schema:
+            if isinstance(self.schema, AnyIndexDict):
+                self.schema.value.validate(context)
+            else:
+                for nested_schema in self.schema.values():
+                    nested_schema.validate(context)
 
-    def _validate_default(self):
+    def _validate_default(self, context):
         if self.default is not None:
             try:
-                self.validate_constraints(self.default)
+                self.validate_constraints(self.default, context)
             except (ValueError, TypeError) as exc:
                 raise InvalidSchemaError(_('Invalid default '
                                            '%(default)s (%(exc)s)') %
@@ -144,8 +162,11 @@ class Schema(collections.Mapping):
             return float(value)
 
     def validate_constraints(self, value, context=None):
-        for constraint in self.constraints:
-            constraint.validate(value, context)
+        try:
+            for constraint in self.constraints:
+                constraint.validate(value, context)
+        except ValueError as ex:
+            raise exception.StackValidationFailed(message=six.text_type(ex))
 
     def __getitem__(self, key):
         if key == self.TYPE:
@@ -502,3 +523,31 @@ class CustomConstraint(Constraint):
         if not constraint:
             return False
         return constraint.validate(value, context)
+
+
+class BaseCustomConstraint(object):
+    """A base class for validation using API clients.
+
+    It will provide a better error message, and reduce a bit of duplication.
+    Subclass must provide `expected_exceptions` and implement
+    `validate_with_client`.
+    """
+    expected_exceptions = ()
+
+    _error_message = None
+
+    def error(self, value):
+        if self._error_message is None:
+            return _("Error validating value %(value)r") % {"value": value}
+        return _("Error validating value %(value)r: %(message)s") % {
+            "value": value, "message": self._error_message}
+
+    def validate(self, value, context):
+        client = clients.Clients(context)
+        try:
+            self.validate_with_client(client, value)
+        except self.expected_exceptions as e:
+            self._error_message = str(e)
+            return False
+        else:
+            return True

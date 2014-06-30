@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -12,12 +12,14 @@
 #    under the License.
 
 import copy
+import mox
 
 from testtools import skipIf
 
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import clients
+from heat.engine.resources.neutron import neutron_utils
 from heat.engine.resources.neutron import vpnservice
 from heat.engine import scheduler
 from heat.openstack.common.importutils import try_import
@@ -27,6 +29,26 @@ from heat.tests import utils
 
 
 neutronclient = try_import('neutronclient.v2_0.client')
+
+vpnservice_template_deprecated = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Template to test VPN service resource",
+  "Parameters" : {},
+  "Resources" : {
+    "VPNService" : {
+      "Type" : "OS::Neutron::VPNService",
+      "Properties" : {
+        "name" : "VPNService",
+        "description" : "My new VPN service",
+        "admin_state_up" : true,
+        "router_id" : "rou123",
+        "subnet_id" : "sub123"
+      }
+    }
+  }
+}
+'''
 
 vpnservice_template = '''
 {
@@ -41,7 +63,7 @@ vpnservice_template = '''
         "description" : "My new VPN service",
         "admin_state_up" : true,
         "router_id" : "rou123",
-        "subnet_id" : "sub123"
+        "subnet" : "sub123"
       }
     }
   }
@@ -152,39 +174,61 @@ class VPNServiceTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'delete_vpnservice')
         self.m.StubOutWithMock(neutronclient.Client, 'show_vpnservice')
         self.m.StubOutWithMock(neutronclient.Client, 'update_vpnservice')
+        self.m.StubOutWithMock(neutron_utils.neutronV20,
+                               'find_resourceid_by_name_or_id')
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        utils.setup_dummy_db()
 
-    def create_vpnservice(self):
+    def create_vpnservice(self, resolve_neutron=True):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
+        if resolve_neutron:
+            neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+                mox.IsA(neutronclient.Client),
+                'subnet',
+                'sub123'
+            ).AndReturn('sub123')
+            snippet = template_format.parse(vpnservice_template)
+        else:
+            snippet = template_format.parse(vpnservice_template_deprecated)
         neutronclient.Client.create_vpnservice(
             self.VPN_SERVICE_CONF).AndReturn({'vpnservice': {'id': 'vpn123'}})
-        snippet = template_format.parse(vpnservice_template)
+
         self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         return vpnservice.VPNService('vpnservice',
-                                     snippet['Resources']['VPNService'],
+                                     resource_defns['VPNService'],
                                      self.stack)
 
-    @utils.stack_delete_after
+    def test_create_deprecated(self):
+        self._test_create(resolve_neutron=False)
+
     def test_create(self):
-        rsrc = self.create_vpnservice()
+        self._test_create()
+
+    def _test_create(self, resolve_neutron=True):
+        rsrc = self.create_vpnservice(resolve_neutron)
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_create_failed(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
+        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnet',
+            'sub123'
+        ).AndReturn('sub123')
+
         neutronclient.Client.create_vpnservice(self.VPN_SERVICE_CONF).AndRaise(
             vpnservice.NeutronClientException())
         self.m.ReplayAll()
         snippet = template_format.parse(vpnservice_template)
         self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         rsrc = vpnservice.VPNService('vpnservice',
-                                     snippet['Resources']['VPNService'],
+                                     resource_defns['VPNService'],
                                      self.stack)
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
@@ -194,7 +238,6 @@ class VPNServiceTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_delete(self):
         neutronclient.Client.delete_vpnservice('vpn123')
         neutronclient.Client.show_vpnservice('vpn123').AndRaise(
@@ -206,7 +249,6 @@ class VPNServiceTest(HeatTestCase):
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_delete_already_gone(self):
         neutronclient.Client.delete_vpnservice('vpn123').AndRaise(
             vpnservice.NeutronClientException(status_code=404))
@@ -217,7 +259,6 @@ class VPNServiceTest(HeatTestCase):
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_delete_failed(self):
         neutronclient.Client.delete_vpnservice('vpn123').AndRaise(
             vpnservice.NeutronClientException(status_code=400))
@@ -232,7 +273,6 @@ class VPNServiceTest(HeatTestCase):
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_attribute(self):
         rsrc = self.create_vpnservice()
         neutronclient.Client.show_vpnservice('vpn123').MultipleTimes(
@@ -246,7 +286,6 @@ class VPNServiceTest(HeatTestCase):
         self.assertEqual('sub123', rsrc.FnGetAtt('subnet_id'))
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_attribute_failed(self):
         rsrc = self.create_vpnservice()
         self.m.ReplayAll()
@@ -259,7 +298,6 @@ class VPNServiceTest(HeatTestCase):
             str(error))
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_update(self):
         rsrc = self.create_vpnservice()
         neutronclient.Client.update_vpnservice(
@@ -308,7 +346,6 @@ class IPsecSiteConnectionTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client,
                                'update_ipsec_site_connection')
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        utils.setup_dummy_db()
 
     def create_ipsec_site_connection(self):
         clients.OpenStackClients.keystone().AndReturn(
@@ -318,12 +355,12 @@ class IPsecSiteConnectionTest(HeatTestCase):
                 {'ipsec_site_connection': {'id': 'con123'}})
         snippet = template_format.parse(ipsec_site_connection_template)
         self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         return vpnservice.IPsecSiteConnection(
             'ipsec_site_connection',
-            snippet['Resources']['IPsecSiteConnection'],
+            resource_defns['IPsecSiteConnection'],
             self.stack)
 
-    @utils.stack_delete_after
     def test_create(self):
         rsrc = self.create_ipsec_site_connection()
         self.m.ReplayAll()
@@ -331,7 +368,6 @@ class IPsecSiteConnectionTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_create_failed(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
@@ -341,9 +377,10 @@ class IPsecSiteConnectionTest(HeatTestCase):
         self.m.ReplayAll()
         snippet = template_format.parse(ipsec_site_connection_template)
         self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         rsrc = vpnservice.IPsecSiteConnection(
             'ipsec_site_connection',
-            snippet['Resources']['IPsecSiteConnection'],
+            resource_defns['IPsecSiteConnection'],
             self.stack)
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
@@ -353,7 +390,6 @@ class IPsecSiteConnectionTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_delete(self):
         neutronclient.Client.delete_ipsec_site_connection('con123')
         neutronclient.Client.show_ipsec_site_connection('con123').AndRaise(
@@ -365,7 +401,6 @@ class IPsecSiteConnectionTest(HeatTestCase):
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_delete_already_gone(self):
         neutronclient.Client.delete_ipsec_site_connection('con123').AndRaise(
             vpnservice.NeutronClientException(status_code=404))
@@ -376,7 +411,6 @@ class IPsecSiteConnectionTest(HeatTestCase):
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_delete_failed(self):
         neutronclient.Client.delete_ipsec_site_connection('con123').AndRaise(
             vpnservice.NeutronClientException(status_code=400))
@@ -391,7 +425,6 @@ class IPsecSiteConnectionTest(HeatTestCase):
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_attribute(self):
         rsrc = self.create_ipsec_site_connection()
         neutronclient.Client.show_ipsec_site_connection(
@@ -415,7 +448,6 @@ class IPsecSiteConnectionTest(HeatTestCase):
         self.assertEqual('vpn123', rsrc.FnGetAtt('vpnservice_id'))
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_attribute_failed(self):
         rsrc = self.create_ipsec_site_connection()
         self.m.ReplayAll()
@@ -428,7 +460,6 @@ class IPsecSiteConnectionTest(HeatTestCase):
             str(error))
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_update(self):
         rsrc = self.create_ipsec_site_connection()
         neutronclient.Client.update_ipsec_site_connection(
@@ -467,7 +498,6 @@ class IKEPolicyTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'show_ikepolicy')
         self.m.StubOutWithMock(neutronclient.Client, 'update_ikepolicy')
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        utils.setup_dummy_db()
 
     def create_ikepolicy(self):
         clients.OpenStackClients.keystone().AndReturn(
@@ -477,11 +507,11 @@ class IKEPolicyTest(HeatTestCase):
                 {'ikepolicy': {'id': 'ike123'}})
         snippet = template_format.parse(ikepolicy_template)
         self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         return vpnservice.IKEPolicy('ikepolicy',
-                                    snippet['Resources']['IKEPolicy'],
+                                    resource_defns['IKEPolicy'],
                                     self.stack)
 
-    @utils.stack_delete_after
     def test_create(self):
         rsrc = self.create_ikepolicy()
         self.m.ReplayAll()
@@ -489,7 +519,6 @@ class IKEPolicyTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_create_failed(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
@@ -499,9 +528,10 @@ class IKEPolicyTest(HeatTestCase):
         self.m.ReplayAll()
         snippet = template_format.parse(ikepolicy_template)
         self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         rsrc = vpnservice.IKEPolicy(
             'ikepolicy',
-            snippet['Resources']['IKEPolicy'],
+            resource_defns['IKEPolicy'],
             self.stack)
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
@@ -511,7 +541,6 @@ class IKEPolicyTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_delete(self):
         neutronclient.Client.delete_ikepolicy('ike123')
         neutronclient.Client.show_ikepolicy('ike123').AndRaise(
@@ -523,7 +552,6 @@ class IKEPolicyTest(HeatTestCase):
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_delete_already_gone(self):
         neutronclient.Client.delete_ikepolicy('ike123').AndRaise(
             vpnservice.NeutronClientException(status_code=404))
@@ -534,7 +562,6 @@ class IKEPolicyTest(HeatTestCase):
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_delete_failed(self):
         neutronclient.Client.delete_ikepolicy('ike123').AndRaise(
             vpnservice.NeutronClientException(status_code=400))
@@ -549,7 +576,6 @@ class IKEPolicyTest(HeatTestCase):
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_attribute(self):
         rsrc = self.create_ikepolicy()
         neutronclient.Client.show_ikepolicy(
@@ -567,7 +593,6 @@ class IKEPolicyTest(HeatTestCase):
         self.assertEqual('v1', rsrc.FnGetAtt('ike_version'))
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_attribute_failed(self):
         rsrc = self.create_ikepolicy()
         self.m.ReplayAll()
@@ -580,7 +605,6 @@ class IKEPolicyTest(HeatTestCase):
             str(error))
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_update(self):
         rsrc = self.create_ikepolicy()
         neutronclient.Client.update_ikepolicy('ike123',
@@ -620,7 +644,6 @@ class IPsecPolicyTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'show_ipsecpolicy')
         self.m.StubOutWithMock(neutronclient.Client, 'update_ipsecpolicy')
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        utils.setup_dummy_db()
 
     def create_ipsecpolicy(self):
         clients.OpenStackClients.keystone().AndReturn(
@@ -630,11 +653,11 @@ class IPsecPolicyTest(HeatTestCase):
                 {'ipsecpolicy': {'id': 'ips123'}})
         snippet = template_format.parse(ipsecpolicy_template)
         self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         return vpnservice.IPsecPolicy('ipsecpolicy',
-                                      snippet['Resources']['IPsecPolicy'],
+                                      resource_defns['IPsecPolicy'],
                                       self.stack)
 
-    @utils.stack_delete_after
     def test_create(self):
         rsrc = self.create_ipsecpolicy()
         self.m.ReplayAll()
@@ -642,7 +665,6 @@ class IPsecPolicyTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_create_failed(self):
         clients.OpenStackClients.keystone().AndReturn(
             fakes.FakeKeystoneClient())
@@ -652,9 +674,10 @@ class IPsecPolicyTest(HeatTestCase):
         self.m.ReplayAll()
         snippet = template_format.parse(ipsecpolicy_template)
         self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         rsrc = vpnservice.IPsecPolicy(
             'ipsecpolicy',
-            snippet['Resources']['IPsecPolicy'],
+            resource_defns['IPsecPolicy'],
             self.stack)
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
@@ -664,7 +687,6 @@ class IPsecPolicyTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_delete(self):
         neutronclient.Client.delete_ipsecpolicy('ips123')
         neutronclient.Client.show_ipsecpolicy('ips123').AndRaise(
@@ -676,7 +698,6 @@ class IPsecPolicyTest(HeatTestCase):
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_delete_already_gone(self):
         neutronclient.Client.delete_ipsecpolicy('ips123').AndRaise(
             vpnservice.NeutronClientException(status_code=404))
@@ -687,7 +708,6 @@ class IPsecPolicyTest(HeatTestCase):
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_delete_failed(self):
         neutronclient.Client.delete_ipsecpolicy('ips123').AndRaise(
             vpnservice.NeutronClientException(status_code=400))
@@ -702,7 +722,6 @@ class IPsecPolicyTest(HeatTestCase):
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_attribute(self):
         rsrc = self.create_ipsecpolicy()
         neutronclient.Client.show_ipsecpolicy(
@@ -720,7 +739,6 @@ class IPsecPolicyTest(HeatTestCase):
         self.assertEqual('group5', rsrc.FnGetAtt('pfs'))
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_attribute_failed(self):
         rsrc = self.create_ipsecpolicy()
         self.m.ReplayAll()
@@ -733,7 +751,6 @@ class IPsecPolicyTest(HeatTestCase):
             str(error))
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_update(self):
         rsrc = self.create_ipsecpolicy()
         neutronclient.Client.update_ipsecpolicy(

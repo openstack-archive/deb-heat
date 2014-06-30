@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -40,7 +40,6 @@ class NovaKeyPairTest(HeatTestCase):
 
     def setUp(self):
         super(NovaKeyPairTest, self).setUp()
-        utils.setup_dummy_db()
         self.fake_nova = self.m.CreateMockAnything()
         self.fake_keypairs = self.m.CreateMockAnything()
         self.fake_nova.keypairs = self.fake_keypairs
@@ -57,8 +56,8 @@ class NovaKeyPairTest(HeatTestCase):
 
     def _get_test_resource(self, template):
         stack = utils.parse_stack(template)
-        snippet = stack.t['Resources']['kp']
-        kp_res = nova_keypair.KeyPair('kp', snippet, stack)
+        definition = stack.t.resource_definitions(stack)['kp']
+        kp_res = nova_keypair.KeyPair('kp', definition, stack)
         self.m.StubOutWithMock(kp_res, "nova")
         kp_res.nova().MultipleTimes().AndReturn(self.fake_nova)
         return kp_res
@@ -84,7 +83,7 @@ class NovaKeyPairTest(HeatTestCase):
         """Test basic create."""
         key_name = "generate_no_save"
         tp_test, created_key = self._get_mock_kp_for_create(key_name)
-        self.fake_keypairs.list().AndReturn([created_key])
+        self.fake_keypairs.get(key_name).AndReturn(created_key)
         self.m.ReplayAll()
         scheduler.TaskRunner(tp_test.create)()
         self.assertEqual("", tp_test.FnGetAtt('private_key'))
@@ -106,7 +105,7 @@ class NovaKeyPairTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_delete_key_not_found(self):
-        """Test delete non-existant key."""
+        """Test delete non-existent key."""
         test_res = self._get_test_resource(self.kp_template)
         test_res.resource_id = "key_name"
         test_res.state_set(test_res.CREATE, test_res.COMPLETE)
@@ -137,7 +136,7 @@ class NovaKeyPairTest(HeatTestCase):
         key_name = "save_private"
         tp_test, created_key = self._get_mock_kp_for_create(key_name,
                                                             priv_saved=True)
-        self.fake_keypairs.list().AndReturn([created_key])
+        self.fake_keypairs.get(key_name).AndReturn(created_key)
         self.m.ReplayAll()
         scheduler.TaskRunner(tp_test.create)()
         self.assertEqual("private key for save_private",
@@ -159,7 +158,8 @@ class KeypairConstraintTest(HeatTestCase):
 
         key = collections.namedtuple("Key", ["name"])
         key.name = "foo"
-        client.keypairs.list().MultipleTimes().AndReturn([key])
+        client.keypairs.get('bar').AndRaise(nova_exceptions.NotFound(404))
+        client.keypairs.get(key.name).AndReturn(key)
         self.m.ReplayAll()
 
         constraint = nova_keypair.KeypairConstraint()

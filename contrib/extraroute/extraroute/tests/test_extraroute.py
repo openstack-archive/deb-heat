@@ -16,7 +16,7 @@ from testtools import skipIf
 from heat.common import template_format
 from heat.engine import clients
 from heat.engine import resource
-from heat.engine.resources.neutron import router
+from heat.engine.resources.neutron import neutron_utils
 from heat.engine import scheduler
 from heat.openstack.common.importutils import try_import
 from heat.tests.common import HeatTestCase
@@ -60,14 +60,12 @@ neutron_template = '''
 
 @skipIf(neutronclient is None, 'neutronclient unavailable')
 class NeutronExtraRouteTest(HeatTestCase):
-    @skipIf(router.neutronV20 is None, "Missing Neutron v2_0")
+    @skipIf(neutron_utils.neutronV20 is None, "Missing Neutron v2_0")
     def setUp(self):
         super(NeutronExtraRouteTest, self).setUp()
         self.m.StubOutWithMock(neutronclient.Client, 'show_router')
         self.m.StubOutWithMock(neutronclient.Client, 'update_router')
         self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-
-        utils.setup_dummy_db()
 
         resource._register_class("OS::Neutron::ExtraRoute",
                                  extraroute.ExtraRoute)
@@ -76,7 +74,7 @@ class NeutronExtraRouteTest(HeatTestCase):
         t['Resources'][resource_name]['Properties'] = properties
         rsrc = extraroute.ExtraRoute(
             resource_name,
-            t['Resources'][resource_name],
+            stack.t.resource_definitions(stack)[resource_name],
             stack)
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)

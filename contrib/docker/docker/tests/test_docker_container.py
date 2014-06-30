@@ -49,7 +49,6 @@ class DockerContainerTest(HeatTestCase):
 
     def setUp(self):
         super(DockerContainerTest, self).setUp()
-        utils.setup_dummy_db()
         for res_name, res_class in docker_container.resource_mapping().items():
             resource._register_class(res_name, res_class)
 
@@ -57,7 +56,8 @@ class DockerContainerTest(HeatTestCase):
         t = template_format.parse(template)
         stack = utils.parse_stack(t)
         resource = docker_container.DockerContainer(
-            resource_name, t['Resources'][resource_name], stack)
+            resource_name,
+            stack.t.resource_definitions(stack)[resource_name], stack)
         self.m.StubOutWithMock(resource, 'get_client')
         resource.get_client().MultipleTimes().AndReturn(FakeDockerClient())
         self.assertIsNone(resource.validate())

@@ -17,17 +17,21 @@ SQLAlchemy models for heat data.
 import uuid
 
 import sqlalchemy
-
-from sqlalchemy.orm import relationship, backref
 from sqlalchemy.ext.declarative import declarative_base
-from heat.openstack.common import timeutils
-from heat.openstack.common.db.sqlalchemy import models
-from heat.openstack.common.db.sqlalchemy import session
+from sqlalchemy.orm import backref
+from sqlalchemy.orm import relationship
 from sqlalchemy.orm.session import Session
+
 from heat.db.sqlalchemy.types import Json
+from heat.openstack.common.db.sqlalchemy import models
+from heat.openstack.common import timeutils
 
 BASE = declarative_base()
-get_session = session.get_session
+
+
+def get_session():
+    from heat.db.sqlalchemy import api as db_api
+    return db_api.get_session()
 
 
 class HeatBase(models.ModelBase, models.TimestampMixin):
@@ -319,3 +323,21 @@ class SoftwareDeployment(BASE, HeatBase, StateAware):
         'tenant', sqlalchemy.String(256), nullable=False)
     stack_user_project_id = sqlalchemy.Column(sqlalchemy.String(64),
                                               nullable=True)
+
+
+class Snapshot(BASE, HeatBase):
+
+    __tablename__ = 'snapshot'
+
+    id = sqlalchemy.Column('id', sqlalchemy.String(36), primary_key=True,
+                           default=lambda: str(uuid.uuid4()))
+    stack_id = sqlalchemy.Column(sqlalchemy.String(36),
+                                 sqlalchemy.ForeignKey('stack.id'),
+                                 nullable=False)
+    name = sqlalchemy.Column('name', sqlalchemy.String(255), nullable=True)
+    data = sqlalchemy.Column('data', Json)
+    tenant = sqlalchemy.Column(
+        'tenant', sqlalchemy.String(256), nullable=False)
+    status = sqlalchemy.Column('status', sqlalchemy.String(255))
+    status_reason = sqlalchemy.Column('status_reason', sqlalchemy.String(255))
+    stack = relationship(Stack, backref=backref('snapshot'))

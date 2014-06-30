@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -19,6 +19,7 @@ from testtools.matchers import MatchesRegex
 
 from heat.common import exception
 from heat.common import template_format
+from heat.engine import function
 from heat.engine import parser
 from heat.engine.resources import image
 from heat.engine.resources import instance
@@ -160,7 +161,6 @@ class InstanceGroupTest(HeatTestCase):
     def setUp(self):
         super(InstanceGroupTest, self).setUp()
         self.fc = fakes.FakeClient()
-        utils.setup_dummy_db()
 
     def _stub_validate(self):
         self.m.StubOutWithMock(parser.Stack, 'validate')
@@ -218,7 +218,7 @@ class InstanceGroupTest(HeatTestCase):
             server.status = 'VERIFY_RESIZE'
 
         return_server = self.fc.servers.list()[1]
-        return_server.id = 1234
+        return_server.id = '1234'
         return_server.get = activate_status.__get__(return_server)
 
         self.m.StubOutWithMock(self.fc.servers, 'get')
@@ -313,7 +313,7 @@ class InstanceGroupTest(HeatTestCase):
         # get the updated json snippet for the InstanceGroup resource in the
         # context of the current stack
         updated_grp = updated_stack['JobServerGroup']
-        updated_grp_json = current_stack.resolve_runtime_data(updated_grp.t)
+        updated_grp_json = function.resolve(updated_grp.t)
 
         # identify the template difference
         tmpl_diff = updated_grp.update_template_diff(

@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -16,32 +15,31 @@ import collections
 import copy
 from datetime import datetime
 import re
-import six
+import warnings
 
 from oslo.config import cfg
+import six
 
-from heat.engine import environment
 from heat.common import exception
-from heat.engine import dependencies
+from heat.common.exception import StackValidationFailed
 from heat.common import identifier
+from heat.db import api as db_api
+from heat.engine.clients import Clients
+from heat.engine import dependencies
+from heat.engine import environment
 from heat.engine import function
+from heat.engine.notification import stack as notification
+from heat.engine.parameter_groups import ParameterGroups
 from heat.engine import resource
 from heat.engine import resources
 from heat.engine import scheduler
-from heat.engine import update
-from heat.engine.notification import stack as notification
-from heat.engine.parameter_groups import ParameterGroups
 from heat.engine.template import Template
-from heat.engine.clients import Clients
-from heat.db import api as db_api
-
-from heat.openstack.common import log as logging
+from heat.engine import update
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import log as logging
 from heat.openstack.common import strutils
 
-from heat.common.exception import StackValidationFailed
-
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class Stack(collections.Mapping):
@@ -61,7 +59,7 @@ class Stack(collections.Mapping):
                  disable_rollback=True, parent_resource=None, owner_id=None,
                  adopt_stack_data=None, stack_user_project_id=None,
                  created_time=None, updated_time=None,
-                 user_creds_id=None, tenant_id=None):
+                 user_creds_id=None, tenant_id=None, validate_parameters=True):
         '''
         Initialise from a context, name, Template object and (optionally)
         Environment object. The database ID may also be initialised, if the
@@ -90,6 +88,7 @@ class Stack(collections.Mapping):
         self._resources = None
         self._dependencies = None
         self._access_allowed_handlers = {}
+        self._db_resources = None
         self.adopt_stack_data = adopt_stack_data
         self.stack_user_project_id = stack_user_project_id
         self.created_time = created_time
@@ -104,9 +103,9 @@ class Stack(collections.Mapping):
 
         self.env = env or environment.Environment({})
         self.parameters = self.t.parameters(self.identifier(),
-                                            user_params=self.env.params,
-                                            context=context)
-
+                                            user_params=self.env.params)
+        self.parameters.validate(validate_value=validate_parameters,
+                                 context=context)
         self._set_param_stackid()
 
         if resolve_data:
@@ -117,11 +116,24 @@ class Stack(collections.Mapping):
     @property
     def resources(self):
         if self._resources is None:
-            template_resources = self.t[self.t.RESOURCES]
             self._resources = dict((name, resource.Resource(name, data, self))
                                    for (name, data) in
-                                   template_resources.items())
+                                   self.t.resource_definitions(self).items())
+            # There is no need to continue storing the db resources
+            # after resource creation
+            self._db_resources = None
         return self._resources
+
+    def db_resource_get(self, name):
+        if not self.id:
+            return None
+        if self._db_resources is None:
+            try:
+                self._db_resources = db_api.resource_get_all_by_stack(
+                    self.context, self.id)
+            except exception.NotFound:
+                return None
+        return self._db_resources.get(name)
 
     @property
     def dependencies(self):
@@ -163,7 +175,7 @@ class Stack(collections.Mapping):
         via the Parameters class as the StackId pseudo parameter
         '''
         if not self.parameters.set_stack_id(self.identifier()):
-            logger.warning(_("Unable to set parameters StackId identifier"))
+            LOG.warning(_("Unable to set parameters StackId identifier"))
 
     @staticmethod
     def _get_dependencies(resources):
@@ -180,12 +192,14 @@ class Stack(collections.Mapping):
         '''Retrieve a Stack from the database.'''
         if stack is None:
             stack = db_api.stack_get(context, stack_id,
-                                     show_deleted=show_deleted)
+                                     show_deleted=show_deleted,
+                                     eager_load=True)
         if stack is None:
             message = _('No stack exists with id "%s"') % str(stack_id)
             raise exception.NotFound(message)
 
-        template = Template.load(context, stack.raw_template_id)
+        template = Template.load(
+            context, stack.raw_template_id, stack.raw_template)
         env = environment.Environment(stack.parameters)
         stack = cls(context, stack.name, template, env,
                     stack.id, stack.action, stack.status, stack.status_reason,
@@ -194,7 +208,8 @@ class Stack(collections.Mapping):
                     stack_user_project_id=stack.stack_user_project_id,
                     created_time=stack.created_at,
                     updated_time=stack.updated_at,
-                    user_creds_id=stack.user_creds_id, tenant_id=stack.tenant)
+                    user_creds_id=stack.user_creds_id, tenant_id=stack.tenant,
+                    validate_parameters=False)
 
         return stack
 
@@ -265,7 +280,9 @@ class Stack(collections.Mapping):
 
     def __setitem__(self, key, resource):
         '''Set the resource with the specified name to a specific value.'''
+        template = resource.stack.t
         resource.stack = self
+        resource.t = template.resource_definitions(self)[key]
         resource.reparse()
         self.resources[key] = resource
 
@@ -347,22 +364,30 @@ class Stack(collections.Mapping):
         dup_names = set(self.parameters.keys()) & set(self.keys())
 
         if dup_names:
-            logger.debug(_("Duplicate names %s") % dup_names)
+            LOG.debug("Duplicate names %s" % dup_names)
             raise StackValidationFailed(message=_("Duplicate names %s") %
                                         dup_names)
 
         for res in self.dependencies:
             try:
                 result = res.validate()
-            except exception.Error as ex:
-                logger.exception(ex)
+            except exception.HeatException as ex:
+                LOG.exception(ex)
                 raise ex
             except Exception as ex:
-                logger.exception(ex)
+                LOG.exception(ex)
                 raise StackValidationFailed(message=strutils.safe_decode(
                                             six.text_type(ex)))
             if result:
                 raise StackValidationFailed(message=result)
+
+            for val in self.outputs.values():
+                snippet = val.get('Value', '')
+                try:
+                    function.validate(snippet)
+                except Exception as ex:
+                    reason = 'Output validation error: %s' % six.text_type(ex)
+                    raise StackValidationFailed(message=reason)
 
     def requires_deferred_auth(self):
         '''
@@ -392,6 +417,11 @@ class Stack(collections.Mapping):
             stack.update_and_save({'action': action,
                                    'status': status,
                                    'status_reason': reason})
+            msg = _('Stack %(action)s %(status)s (%(name)s): %(reason)s')
+            LOG.info(msg % {'action': action,
+                            'status': status,
+                            'name': self.name,
+                            'reason': reason})
             notification.send(self)
 
     @property
@@ -468,7 +498,7 @@ class Stack(collections.Mapping):
             yield action_task()
         except exception.ResourceFailure as ex:
             stack_status = self.FAILED
-            reason = 'Resource %s failed: %s' % (action, str(ex))
+            reason = 'Resource %s failed: %s' % (action, six.text_type(ex))
         except scheduler.Timeout:
             stack_status = self.FAILED
             reason = '%s timed out' % action.title()
@@ -487,7 +517,7 @@ class Stack(collections.Mapping):
                                                   self._backup_name(),
                                                   owner_id=self.id)
         if s is not None:
-            logger.debug(_('Loaded existing backup stack'))
+            LOG.debug('Loaded existing backup stack')
             return self.load(self.context, stack=s)
         elif create_if_missing:
             templ = Template.load(self.context, self.t.id)
@@ -495,7 +525,7 @@ class Stack(collections.Mapping):
             prev = type(self)(self.context, self.name, templ, self.env,
                               owner_id=self.id)
             prev.store(backup=True)
-            logger.debug(_('Created new backup stack'))
+            LOG.debug('Created new backup stack')
             return prev
         else:
             return None
@@ -535,8 +565,7 @@ class Stack(collections.Mapping):
     @scheduler.wrappertask
     def update_task(self, newstack, action=UPDATE):
         if action not in (self.UPDATE, self.ROLLBACK):
-            logger.error(_("Unexpected action %s passed to update!") %
-                         action)
+            LOG.error(_("Unexpected action %s passed to update!") % action)
             self.state_set(self.UPDATE, self.FAILED,
                            "Invalid action %s" % action)
             return
@@ -544,7 +573,7 @@ class Stack(collections.Mapping):
         if self.status != self.COMPLETE:
             if (action == self.ROLLBACK and
                     self.state == (self.UPDATE, self.IN_PROGRESS)):
-                logger.debug(_("Starting update rollback for %s") % self.name)
+                LOG.debug("Starting update rollback for %s" % self.name)
             else:
                 self.state_set(action, self.FAILED,
                                'State invalid for %s' % action)
@@ -585,7 +614,7 @@ class Stack(collections.Mapping):
             stack_status = self.FAILED
             reason = 'Timed out'
         except exception.ResourceFailure as e:
-            reason = str(e)
+            reason = six.text_type(e)
 
             stack_status = self.FAILED
             if action == self.UPDATE:
@@ -595,10 +624,8 @@ class Stack(collections.Mapping):
                     yield self.update_task(oldstack, action=self.ROLLBACK)
                     return
         else:
-            logger.debug(_('Deleting backup stack'))
+            LOG.debug('Deleting backup stack')
             backup_stack.delete(backup=True)
-
-        self.state_set(action, stack_status, reason)
 
         # flip the template to the newstack values
         # Note we do this on success and failure, so the current
@@ -607,7 +634,15 @@ class Stack(collections.Mapping):
         self.t = newstack.t
         template_outputs = self.t[self.t.OUTPUTS]
         self.outputs = self.resolve_static_data(template_outputs)
+        # Don't use state_set to do only one update query and avoid race
+        # condition with the COMPLETE status
+        self.action = action
+        self.status = stack_status
+        self.status_reason = reason
+
         self.store()
+
+        notification.send(self)
 
     def delete(self, action=DELETE, backup=False):
         '''
@@ -618,7 +653,7 @@ class Stack(collections.Mapping):
         differently.
         '''
         if action not in (self.DELETE, self.ROLLBACK):
-            logger.error(_("Unexpected action %s passed to delete!") % action)
+            LOG.error(_("Unexpected action %s passed to delete!") % action)
             self.state_set(self.DELETE, self.FAILED,
                            "Invalid action %s" % action)
             return
@@ -629,7 +664,40 @@ class Stack(collections.Mapping):
                        action)
 
         backup_stack = self._backup_stack(False)
-        if backup_stack is not None:
+        if backup_stack:
+            for key, backup_resource in backup_stack.resources.items():
+                # If UpdateReplace is failed, we must restore backup_resource
+                # to existing_stack in case of it may have dependencies in
+                # these stacks. current_resource is the resource that just
+                # created and failed, so put into the backup_stack to delete
+                # anyway.
+                backup_resource_id = backup_resource.resource_id
+                current_resource = self.resources[key]
+                current_resource_id = current_resource.resource_id
+                if backup_resource_id:
+                    child_failed = False
+                    for child in self.dependencies[current_resource]:
+                        # If child resource failed to update, current_resource
+                        # should be replaced to resolve dependencies. But this
+                        # is not fundamental solution. If there are update
+                        # failer and success resources in the children, cannot
+                        # delete the stack.
+                        if (child.status == child.FAILED and child.action ==
+                                child.CREATE):
+                            child_failed = True
+                    if (current_resource.status == current_resource.FAILED or
+                            child_failed):
+                        # Stack class owns dependencies as set of resource's
+                        # objects, so we switch members of the resource that is
+                        # needed to delete it.
+                        self.resources[key].resource_id = backup_resource_id
+                        self.resources[
+                            key].properties = backup_resource.properties
+                        backup_stack.resources[
+                            key].resource_id = current_resource_id
+                        backup_stack.resources[
+                            key].properties = current_resource.properties
+
             backup_stack.delete(backup=True)
             if backup_stack.status != backup_stack.COMPLETE:
                 errs = backup_stack.status_reason
@@ -645,7 +713,7 @@ class Stack(collections.Mapping):
             scheduler.TaskRunner(action_task)(timeout=self.timeout_secs())
         except exception.ResourceFailure as ex:
             stack_status = self.FAILED
-            reason = 'Resource %s failed: %s' % (action, str(ex))
+            reason = 'Resource %s failed: %s' % (action, six.text_type(ex))
         except scheduler.Timeout:
             stack_status = self.FAILED
             reason = '%s timed out' % action.title()
@@ -661,9 +729,9 @@ class Stack(collections.Mapping):
                     try:
                         self.clients.keystone().delete_trust(trust_id)
                     except Exception as ex:
-                        logger.exception(ex)
+                        LOG.exception(ex)
                         stack_status = self.FAILED
-                        reason = "Error deleting trust: %s" % str(ex)
+                        reason = "Error deleting trust: %s" % six.text_type(ex)
 
                 # Delete the stored credentials
                 db_api.user_creds_delete(self.context, self.user_creds_id)
@@ -676,9 +744,9 @@ class Stack(collections.Mapping):
                     self.clients.keystone().delete_stack_domain_project(
                         project_id=self.stack_user_project_id)
                 except Exception as ex:
-                    logger.exception(ex)
+                    LOG.exception(ex)
                     stack_status = self.FAILED
-                    reason = "Error deleting project: %s" % str(ex)
+                    reason = "Error deleting project: %s" % six.text_type(ex)
 
         self.state_set(action, stack_status, reason)
 
@@ -698,7 +766,7 @@ class Stack(collections.Mapping):
         '''
         # No need to suspend if the stack has been suspended
         if self.state == (self.SUSPEND, self.COMPLETE):
-            logger.info(_('%s is already suspended') % str(self))
+            LOG.info(_('%s is already suspended') % str(self))
             return
 
         sus_task = scheduler.TaskRunner(self.stack_task,
@@ -717,7 +785,7 @@ class Stack(collections.Mapping):
         '''
         # No need to resume if the stack has been resumed
         if self.state == (self.RESUME, self.COMPLETE):
-            logger.info(_('%s is already resumed') % str(self))
+            LOG.info(_('%s is already resumed') % str(self))
             return
 
         sus_task = scheduler.TaskRunner(self.stack_task,
@@ -730,7 +798,11 @@ class Stack(collections.Mapping):
         Get the value of the specified stack output.
         '''
         value = self.outputs[key].get('Value', '')
-        return self.resolve_runtime_data(value)
+        try:
+            return function.resolve(value)
+        except Exception as ex:
+            self.outputs[key]['error_msg'] = six.text_type(ex)
+            return None
 
     def restart_resource(self, resource_name):
         '''
@@ -745,7 +817,7 @@ class Stack(collections.Mapping):
                 scheduler.TaskRunner(res.destroy)()
             except exception.ResourceFailure as ex:
                 failed = True
-                logger.error(_('delete: %s') % str(ex))
+                LOG.error(_('delete: %s') % ex)
 
         for res in deps:
             if not failed:
@@ -753,7 +825,7 @@ class Stack(collections.Mapping):
                     res.state_reset()
                     scheduler.TaskRunner(res.create)()
                 except exception.ResourceFailure as ex:
-                    logger.exception(_('create'))
+                    LOG.exception(_('create'))
                     failed = True
             else:
                 res.state_set(res.CREATE, res.FAILED,
@@ -768,22 +840,18 @@ class Stack(collections.Mapping):
                 self.clients.nova().availability_zones.list(detailed=False)]
         return self._zones
 
-    def set_deletion_policy(self, policy):
-        for res in self.resources.values():
-            res.set_deletion_policy(policy)
-
     def set_stack_user_project_id(self, project_id):
         self.stack_user_project_id = project_id
         self.store()
 
-    def get_abandon_data(self):
+    def prepare_abandon(self):
         return {
             'name': self.name,
             'id': self.id,
             'action': self.action,
             'status': self.status,
             'template': self.t.t,
-            'resources': dict((res.name, res.get_abandon_data())
+            'resources': dict((res.name, res.prepare_abandon())
                               for res in self.resources.values())
         }
 
@@ -791,4 +859,17 @@ class Stack(collections.Mapping):
         return self.t.parse(self, snippet)
 
     def resolve_runtime_data(self, snippet):
+        """DEPRECATED. Use heat.engine.function.resolve() instead."""
+        warnings.warn('Stack.resolve_runtime_data() is deprecated. '
+                      'Use heat.engine.function.resolve() instead',
+                      DeprecationWarning)
         return function.resolve(snippet)
+
+    def reset_resource_attributes(self):
+        # nothing is cached if no resources exist
+        if not self._resources:
+            return
+        # a change in some resource may have side-effects in the attributes
+        # of other resources, so ensure that attributes are re-calculated
+        for res in self.resources.itervalues():
+            res.attributes.reset_resolved_values()

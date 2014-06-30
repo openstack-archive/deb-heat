@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -11,24 +11,20 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import functools
 import random
 import string
-import sys
 import uuid
 
-from oslo.config import cfg
 import sqlalchemy
 
 from heat.common import context
-from heat.common import exception
 from heat.db import api as db_api
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
-from heat.openstack.common.db.sqlalchemy import session
+from heat.openstack.common.db import options
 
-get_engine = session.get_engine
+get_engine = db_api.get_engine
 
 
 class UUIDStub(object):
@@ -49,75 +45,11 @@ def random_name():
                    for x in range(10))
 
 
-def stack_delete_after(test_fn):
-    """
-    Decorator which calls test class self.stack.delete()
-    to ensure tests clean up their stacks regardless of test success/failure
-    """
-    @functools.wraps(test_fn)
-    def wrapped_test(test_case, *args, **kwargs):
-        def delete_stack():
-            stack = getattr(test_case, 'stack', None)
-            if stack is not None and stack.id is not None:
-                stack.delete()
-
-        try:
-            test_fn(test_case, *args, **kwargs)
-        except:
-            exc_class, exc_val, exc_tb = sys.exc_info()
-            try:
-                delete_stack()
-            finally:
-                raise exc_class, exc_val, exc_tb
-        else:
-            delete_stack()
-
-    return wrapped_test
-
-
-def wr_delete_after(test_fn):
-    """
-    Decorator which calls test class self.wr.destroy()
-    to ensure tests clean up their watchrule regardless of test success/failure
-    Used by tests which create watchrule objects directly to cleanup correctly
-    self.wr can be either a single watchrule, or a list of several watchrules
-    """
-    @functools.wraps(test_fn)
-    def wrapped_test(test_case, *args, **kwargs):
-
-        def delete_wrs():
-            wr = getattr(test_case, 'wr', None)
-            try:
-                for w in wr:
-                    delete_wr(w)
-            except TypeError:
-                delete_wr(wr)
-
-        def delete_wr(w):
-            if w.id is not None:
-                try:
-                    w.destroy()
-                except exception.NotFound:
-                    pass
-        try:
-            test_fn(test_case, *args, **kwargs)
-        except:
-            exc_class, exc_val, exc_tb = sys.exc_info()
-            try:
-                delete_wrs()
-            finally:
-                raise exc_class, exc_val, exc_tb
-        else:
-            delete_wrs()
-
-    return wrapped_test
-
-
 def setup_dummy_db():
-    cfg.CONF.set_default('sqlite_synchronous', False)
-    session.set_defaults(sql_connection="sqlite://", sqlite_db='heat.db')
-    db_api.db_sync()
+    options.cfg.set_defaults(options.database_opts, sqlite_synchronous=False)
+    options.set_defaults(sql_connection="sqlite://", sqlite_db='heat.db')
     engine = get_engine()
+    db_api.db_sync(engine)
     engine.connect()
 
 

@@ -1,3 +1,4 @@
+#
 # Copyright 2014 Red Hat, Inc.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -17,11 +18,12 @@ Startup notification using a shell script or systemd NOTIFY_SOCKET
 style notification
 """
 
+
 from heat.openstack.common import importutils
 from heat.openstack.common import log as logging
 from heat.openstack.common import processutils
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 def startup_notify(notify_param):
@@ -33,6 +35,6 @@ def startup_notify(notify_param):
         try:
             processutils.execute(notify_param, shell=True)
         except Exception as e:
-            logger.error(_('Failed to execute onready command: %s') % str(e))
+            LOG.error(_('Failed to execute onready command: %s') % e)
     else:
         notifier.notify()

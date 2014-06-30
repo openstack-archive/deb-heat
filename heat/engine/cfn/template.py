@@ -12,8 +12,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
+
+from heat.engine import function
 from heat.engine import parameters
+from heat.engine import rsrc_defn
 from heat.engine import template
+
+
+_RESOURCE_KEYS = (
+    RES_TYPE, RES_PROPERTIES, RES_METADATA, RES_DEPENDS_ON,
+    RES_DELETION_POLICY, RES_UPDATE_POLICY, RES_DESCRIPTION,
+) = (
+    'Type', 'Properties', 'Metadata', 'DependsOn',
+    'DeletionPolicy', 'UpdatePolicy', 'Description',
+)
 
 
 class CfnTemplate(template.Template):
@@ -44,15 +57,95 @@ class CfnTemplate(template.Template):
 
     def param_schemata(self):
         params = self.t.get(self.PARAMETERS, {}).iteritems()
-        return dict((name, parameters.Schema.from_dict(schema))
+        return dict((name, parameters.Schema.from_dict(name, schema))
                     for name, schema in params)
 
-    def parameters(self, stack_identifier, user_params, validate_value=True,
-                   context=None):
+    def parameters(self, stack_identifier, user_params):
         return parameters.Parameters(stack_identifier, self,
-                                     user_params=user_params,
-                                     validate_value=validate_value,
-                                     context=context)
+                                     user_params=user_params)
+
+    def resource_definitions(self, stack):
+        def rsrc_defn_item(name, snippet):
+            data = self.parse(stack, snippet)
+
+            def get_check_type(key, valid_types, typename, default=None):
+                if key in data:
+                    field = data[key]
+                    if not isinstance(field, valid_types):
+                        args = {'name': name, 'key': key, 'typename': typename}
+                        msg = _('Resource %(name)s %(key)s type'
+                                'must be %(typename)s') % args
+                        raise TypeError(msg)
+                    return field
+                else:
+                    return default
+
+            resource_type = get_check_type(RES_TYPE, basestring, 'string')
+            if resource_type is None:
+                args = {'name': name, 'type_key': RES_TYPE}
+                msg = _('Resource %(name)s is missing "%(type_key)s"') % args
+                raise KeyError(msg)
+
+            properties = get_check_type(RES_PROPERTIES,
+                                        (collections.Mapping,
+                                         function.Function),
+                                        'object')
+
+            metadata = get_check_type(RES_METADATA,
+                                      (collections.Mapping,
+                                       function.Function),
+                                      'object')
+
+            depends = get_check_type(RES_DEPENDS_ON,
+                                     collections.Sequence,
+                                     'list or string',
+                                     default=[])
+            if isinstance(depends, basestring):
+                depends = [depends]
+
+            deletion_policy = get_check_type(RES_DELETION_POLICY,
+                                             basestring,
+                                             'string')
+
+            update_policy = get_check_type(RES_UPDATE_POLICY,
+                                           (collections.Mapping,
+                                            function.Function),
+                                           'object')
+
+            description = get_check_type(RES_DESCRIPTION,
+                                         basestring,
+                                         'string',
+                                         default='')
+
+            defn = rsrc_defn.ResourceDefinition(name, resource_type,
+                                                properties, metadata,
+                                                depends,
+                                                deletion_policy,
+                                                update_policy,
+                                                description=description)
+            return name, defn
+
+        resources = self.t.get(self.RESOURCES, {}).items()
+        return dict(rsrc_defn_item(name, data) for name, data in resources)
+
+    def add_resource(self, definition, name=None):
+        if name is None:
+            name = definition.name
+        hot_tmpl = definition.render_hot()
+
+        HOT_TO_CFN_ATTRS = {'type': RES_TYPE,
+                            'properties': RES_PROPERTIES,
+                            'metadata': RES_METADATA,
+                            'depends_on': RES_DEPENDS_ON,
+                            'deletion_policy': RES_DELETION_POLICY,
+                            'update_policy': RES_UPDATE_POLICY}
+
+        cfn_tmpl = dict((HOT_TO_CFN_ATTRS[k], v) for k, v in hot_tmpl.items())
+
+        if len(cfn_tmpl.get(RES_DEPENDS_ON, [])) == 1:
+            cfn_tmpl[RES_DEPENDS_ON] = cfn_tmpl[RES_DEPENDS_ON][0]
+
+        self.t.setdefault(self.RESOURCES, {})[name] = cfn_tmpl
 
 
 def template_mapping():

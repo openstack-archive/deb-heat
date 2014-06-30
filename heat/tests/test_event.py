@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -17,6 +17,7 @@ from heat.db import api as db_api
 from heat.engine import event
 from heat.engine import parser
 from heat.engine import resource
+from heat.engine import rsrc_defn
 from heat.engine import template
 from heat.tests.common import HeatTestCase
 from heat.tests import generic_resource as generic_rsrc
@@ -26,6 +27,7 @@ cfg.CONF.import_opt('event_purge_batch_size', 'heat.common.config')
 cfg.CONF.import_opt('max_events_per_stack', 'heat.common.config')
 
 tmpl = {
+    'HeatTemplateFormatVersion': '2012-12-12',
     'Resources': {
         'EventTestResource': {
             'Type': 'ResourceWithRequiredProps',
@@ -41,7 +43,6 @@ class EventTest(HeatTestCase):
         super(EventTest, self).setUp()
         self.username = 'event_test_user'
 
-        utils.setup_dummy_db()
         self.ctx = utils.dummy_context()
 
         self.m.ReplayAll()
@@ -145,10 +146,12 @@ class EventTest(HeatTestCase):
         self.assertIsNone(e.identifier())
 
     def test_badprop(self):
-        tmpl = {'Type': 'ResourceWithRequiredProps',
-                'Properties': {'Foo': False}}
         rname = 'bad_resource'
-        res = generic_rsrc.ResourceWithRequiredProps(rname, tmpl, self.stack)
+        defn = rsrc_defn.ResourceDefinition(rname,
+                                            'ResourceWithRequiredProps',
+                                            {'Foo': False})
+
+        res = generic_rsrc.ResourceWithRequiredProps(rname, defn, self.stack)
         e = event.Event(self.ctx, self.stack, 'TEST', 'IN_PROGRESS', 'Testing',
                         'wibble', res.properties, res.name, res.type())
         self.assertIn('Error', e.resource_properties)

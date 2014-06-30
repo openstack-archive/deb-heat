@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -17,13 +16,13 @@ from __future__ import print_function
 
 import sys
 
+from oslo.config import cfg
+
+from heat.db import migration
 from heat.openstack.common import gettextutils
+from heat.openstack.common import log as logging
 
 gettextutils.install('heat')
-
-from oslo.config import cfg
-from heat.openstack.common import log as logging
-from heat.db import migration
 
 LOG = logging.getLogger(__name__)
 

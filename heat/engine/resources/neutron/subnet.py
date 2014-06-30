@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,26 +11,26 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.neutron import neutron
-from heat.openstack.common import log as logging
+from heat.engine.resources.neutron import neutron_utils
+from heat.engine import support
 
 if clients.neutronclient is not None:
     from neutronclient.common.exceptions import NeutronClientException
-
-logger = logging.getLogger(__name__)
 
 
 class Subnet(neutron.NeutronResource):
 
     PROPERTIES = (
-        NETWORK_ID, CIDR, VALUE_SPECS, NAME, IP_VERSION,
+        NETWORK_ID, NETWORK, CIDR, VALUE_SPECS, NAME, IP_VERSION,
         DNS_NAMESERVERS, GATEWAY_IP, ENABLE_DHCP, ALLOCATION_POOLS,
         TENANT_ID, HOST_ROUTES,
     ) = (
-        'network_id', 'cidr', 'value_specs', 'name', 'ip_version',
+        'network_id', 'network', 'cidr', 'value_specs', 'name', 'ip_version',
         'dns_nameservers', 'gateway_ip', 'enable_dhcp', 'allocation_pools',
         'tenant_id', 'host_routes',
     )
@@ -48,11 +47,28 @@ class Subnet(neutron.NeutronResource):
         'destination', 'nexthop',
     )
 
+    ATTRIBUTES = (
+        NAME_ATTR, NETWORK_ID_ATTR, TENANT_ID_ATTR, ALLOCATION_POOLS_ATTR,
+        GATEWAY_IP_ATTR, HOST_ROUTES_ATTR, IP_VERSION_ATTR, CIDR_ATTR,
+        DNS_NAMESERVERS_ATTR, ENABLE_DHCP_ATTR, SHOW,
+    ) = (
+        'name', 'network_id', 'tenant_id', 'allocation_pools',
+        'gateway_ip', 'host_routes', 'ip_version', 'cidr',
+        'dns_nameservers', 'enable_dhcp', 'show',
+    )
+
     properties_schema = {
         NETWORK_ID: properties.Schema(
             properties.Schema.STRING,
+            support_status=support.SupportStatus(
+                support.DEPRECATED,
+                _('Use property %s.') % NETWORK),
+            required=False
+        ),
+        NETWORK: properties.Schema(
+            properties.Schema.STRING,
             _('The ID of the attached network.'),
-            required=True
+            required=False
         ),
         CIDR: properties.Schema(
             properties.Schema.STRING,
@@ -136,21 +152,40 @@ class Subnet(neutron.NeutronResource):
     }
 
     attributes_schema = {
-        "name": _("Friendly name of the subnet."),
-        "network_id": _("Parent network of the subnet."),
-        "tenant_id": _("Tenant owning the subnet."),
-        "allocation_pools": _("Ip allocation pools and their ranges."),
-        "gateway_ip": _("Ip of the subnet's gateway."),
-        "host_routes": _("Additional routes for this subnet."),
-        "ip_version": _("Ip version for the subnet."),
-        "cidr": _("CIDR block notation for this subnet."),
-        "dns_nameservers": _("List of dns nameservers."),
-        "enable_dhcp": _("'true' if DHCP is enabled for this subnet; 'false' "
-                         "otherwise."),
-        "show": _("All attributes."),
+        NAME_ATTR: attributes.Schema(
+            _("Friendly name of the subnet.")
+        ),
+        NETWORK_ID_ATTR: attributes.Schema(
+            _("Parent network of the subnet.")
+        ),
+        TENANT_ID_ATTR: attributes.Schema(
+            _("Tenant owning the subnet.")
+        ),
+        ALLOCATION_POOLS_ATTR: attributes.Schema(
+            _("Ip allocation pools and their ranges.")
+        ),
+        GATEWAY_IP_ATTR: attributes.Schema(
+            _("Ip of the subnet's gateway.")
+        ),
+        HOST_ROUTES_ATTR: attributes.Schema(
+            _("Additional routes for this subnet.")
+        ),
+        IP_VERSION_ATTR: attributes.Schema(
+            _("Ip version for the subnet.")
+        ),
+        CIDR_ATTR: attributes.Schema(
+            _("CIDR block notation for this subnet.")
+        ),
+        DNS_NAMESERVERS_ATTR: attributes.Schema(
+            _("List of dns nameservers.")
+        ),
+        ENABLE_DHCP_ATTR: attributes.Schema(
+            _("'true' if DHCP is enabled for this subnet; 'false' otherwise.")
+        ),
+        SHOW: attributes.Schema(
+            _("All attributes.")
+        ),
     }
-
-    update_allowed_keys = ('Properties',)
 
     @classmethod
     def _null_gateway_ip(cls, props):
@@ -164,11 +199,17 @@ class Subnet(neutron.NeutronResource):
         if props.get(cls.GATEWAY_IP) == '':
             props[cls.GATEWAY_IP] = None
 
+    def validate(self):
+        super(Subnet, self).validate()
+        self._validate_depr_property_required(self.properties,
+                                              self.NETWORK, self.NETWORK_ID)
+
     def handle_create(self):
         props = self.prepare_properties(
             self.properties,
             self.physical_resource_name())
-
+        neutron_utils.resolve_network(
+            self.neutron(), props, self.NETWORK, 'network_id')
         self._null_gateway_ip(props)
 
         subnet = self.neutron().create_subnet({'subnet': props})['subnet']

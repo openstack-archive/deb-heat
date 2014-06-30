@@ -10,6 +10,21 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+
+import copy
+import itertools
+
+from heat.common import exception
+from heat.engine import attributes
+from heat.engine import constraints
+from heat.engine import function
+from heat.engine import properties
+from heat.engine.properties import Properties
+from heat.engine import resource
+from heat.engine import scheduler
+from heat.openstack.common.gettextutils import _
+from heat.openstack.common import log as logging
+
 try:
     from pyrax.exceptions import NotFound
     PYRAX_INSTALLED = True
@@ -20,19 +35,7 @@ except ImportError:
 
     PYRAX_INSTALLED = False
 
-import copy
-import itertools
-
-from heat.openstack.common import log as logging
-from heat.openstack.common.gettextutils import _
-from heat.engine import scheduler
-from heat.engine import constraints
-from heat.engine import properties
-from heat.engine import resource
-from heat.engine.properties import Properties
-from heat.common import exception
-
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class LoadbalancerBuildError(exception.HeatException):
@@ -40,6 +43,8 @@ class LoadbalancerBuildError(exception.HeatException):
 
 
 class CloudLoadBalancer(resource.Resource):
+
+    """Represents a Rackspace Cloud Loadbalancer."""
 
     PROPERTIES = (
         NAME, NODES, PROTOCOL, ACCESS_LIST, HALF_CLOSED, ALGORITHM,
@@ -109,6 +114,12 @@ class CloudLoadBalancer(resource.Resource):
         'securePort', 'privatekey',
         'certificate', 'intermediateCertificate',
         'secureTrafficOnly',
+    )
+
+    ATTRIBUTES = (
+        PUBLIC_IP,
+    ) = (
+        'PublicIp',
     )
 
     _health_monitor_schema = {
@@ -358,10 +369,10 @@ class CloudLoadBalancer(resource.Resource):
     }
 
     attributes_schema = {
-        'PublicIp': _('Public IP address of the specified '
-                      'instance.')}
-
-    update_allowed_keys = ('Properties',)
+        PUBLIC_IP: attributes.Schema(
+            _('Public IP address of the specified instance.')
+        ),
+    }
 
     def __init__(self, name, json_snippet, stack):
         super(CloudLoadBalancer, self).__init__(name, json_snippet, stack)
@@ -378,7 +389,9 @@ class CloudLoadBalancer(resource.Resource):
             return [function()]
 
     def _alter_properties_for_api(self):
-        """The following properties have usless key/value pairs which must
+        """Set up required, but useless, key/value pairs.
+
+        The following properties have useless key/value pairs which must
         be passed into the api. Set them up to make template definition easier.
         """
         session_persistence = None
@@ -405,8 +418,9 @@ class CloudLoadBalancer(resource.Resource):
             return False
 
     def _configure_post_creation(self, loadbalancer):
-        """Configure all load balancer properties that must be done post
-        creation.
+        """Configure all load balancer properties post creation.
+
+        These properties can only be set after the load balancer is created.
         """
         if self.properties[self.ACCESS_LIST]:
             while not self._check_status(loadbalancer, ['ACTIVE']):
@@ -479,7 +493,7 @@ class CloudLoadBalancer(resource.Resource):
 
         lb_name = (self.properties.get(self.NAME) or
                    self.physical_resource_name())
-        logger.debug(_("Creating loadbalancer: %s") % {lb_name: lb_body})
+        LOG.debug("Creating loadbalancer: %s" % {lb_name: lb_body})
         loadbalancer = self.clb.create(lb_name, **lb_body)
         self.resource_id_set(str(loadbalancer.id))
 
@@ -492,9 +506,7 @@ class CloudLoadBalancer(resource.Resource):
         return self._check_status(loadbalancer, ['ACTIVE'])
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        """
-        Add and remove nodes specified in the prop_diff.
-        """
+        """Add and remove nodes specified in the prop_diff."""
         loadbalancer = self.clb.get(self.resource_id)
         if self.NODES in prop_diff:
             current_nodes = loadbalancer.nodes
@@ -556,18 +568,16 @@ class CloudLoadBalancer(resource.Resource):
                 self.resource_id_set(None)
 
     def _remove_none(self, property_dict):
-        '''
-        Remove values that may be initialized to None and would cause problems
-        during schema validation.
-        '''
+        """Remove None values that would cause schema validation problems.
+
+        These are values that may be initialized to None.
+        """
         return dict((key, value)
                     for (key, value) in property_dict.iteritems()
                     if value)
 
     def validate(self):
-        """
-        Validate any of the provided params
-        """
+        """Validate any of the provided params."""
         res = super(CloudLoadBalancer, self).validate()
         if res:
             return res
@@ -592,7 +602,7 @@ class CloudLoadBalancer(resource.Resource):
             try:
                 Properties(schema,
                            health_monitor,
-                           self.stack.resolve_runtime_data,
+                           function.resolve,
                            self.name).validate()
             except exception.StackValidationFailed as svf:
                 return {'Error': str(svf)}
@@ -611,8 +621,8 @@ class CloudLoadBalancer(resource.Resource):
             raise exception.InvalidTemplateAttribute(resource=self.name,
                                                      key=key)
         function = attribute_function[key]
-        logger.info(_('%(name)s.GetAtt(%(key)s) == %(function)s'),
-                    {'name': self.name, 'key': key, 'function': function})
+        LOG.info(_('%(name)s.GetAtt(%(key)s) == %(function)s'),
+                 {'name': self.name, 'key': key, 'function': function})
         return unicode(function)
 
 

@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -17,6 +16,7 @@ from functools import wraps
 from webob import exc
 
 from heat.common import identifier
+from heat.openstack.common.gettextutils import _
 
 
 def policy_enforce(handler):

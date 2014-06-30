@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -95,7 +95,6 @@ Resources:
         self.m.StubOutWithMock(nova_sg.SecurityGroupManager, 'delete')
         self.m.StubOutWithMock(nova_sg.SecurityGroupManager, 'get')
         self.m.StubOutWithMock(nova_sg.SecurityGroupManager, 'list')
-        utils.setup_dummy_db()
         self.m.StubOutWithMock(neutronclient.Client, 'create_security_group')
         self.m.StubOutWithMock(
             neutronclient.Client, 'create_security_group_rule')
@@ -122,9 +121,8 @@ Resources:
         self.assertIsNone(rsrc.validate())
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         self.assertEqual(ref_id, rsrc.FnGetRefId())
-        self.assertEqual(metadata, dict(rsrc.metadata))
+        self.assertEqual(metadata, dict(rsrc.metadata_get()))
 
-    @utils.stack_delete_after
     def test_security_group(self):
 
         show_created = {'security_group': {
@@ -544,7 +542,6 @@ Resources:
         stack.delete()
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_security_group_exception(self):
         #create script
         clients.OpenStackClients.keystone().AndReturn(
@@ -760,7 +757,6 @@ Resources:
 
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_security_group_validate(self):
         stack = self.create_stack(self.test_template_validate)
         sg = stack['the_sg']

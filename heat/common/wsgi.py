@@ -1,4 +1,4 @@
-
+#
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
 # Copyright 2013 IBM Corp.
@@ -20,7 +20,6 @@
 Utility methods for working with WSGI servers
 """
 
-import datetime
 import errno
 import json
 import logging
@@ -34,15 +33,17 @@ from eventlet.green import socket
 from eventlet.green import ssl
 import eventlet.greenio
 import eventlet.wsgi
-from lxml import etree
 from oslo.config import cfg
 from paste import deploy
 import routes
 import routes.middleware
+import six
 import webob.dec
 import webob.exc
 
+from heat.api.aws import exception as aws_exception
 from heat.common import exception
+from heat.common import serializers
 from heat.openstack.common import gettextutils
 from heat.openstack.common import importutils
 
@@ -61,11 +62,11 @@ api_opts = [
                help=_("Number of backlog requests "
                       "to configure the socket with."),
                deprecated_group='DEFAULT'),
-    cfg.StrOpt('cert_file', default=None,
+    cfg.StrOpt('cert_file',
                help=_("Location of the SSL certificate file "
                       "to use for SSL mode."),
                deprecated_group='DEFAULT'),
-    cfg.StrOpt('key_file', default=None,
+    cfg.StrOpt('key_file',
                help=_("Location of the SSL key file to use "
                       "for enabling SSL mode."),
                deprecated_group='DEFAULT'),
@@ -95,11 +96,11 @@ api_cfn_opts = [
                help=_("Number of backlog requests "
                       "to configure the socket with."),
                deprecated_group='DEFAULT'),
-    cfg.StrOpt('cert_file', default=None,
+    cfg.StrOpt('cert_file',
                help=_("Location of the SSL certificate file "
                       "to use for SSL mode."),
                deprecated_group='DEFAULT'),
-    cfg.StrOpt('key_file', default=None,
+    cfg.StrOpt('key_file',
                help=_("Location of the SSL key file to use "
                       "for enabling SSL mode."),
                deprecated_group='DEFAULT'),
@@ -129,11 +130,11 @@ api_cw_opts = [
                help=_("Number of backlog requests "
                       "to configure the socket with."),
                deprecated_group='DEFAULT'),
-    cfg.StrOpt('cert_file', default=None,
+    cfg.StrOpt('cert_file',
                help=_("Location of the SSL certificate file "
                       "to use for SSL mode."),
                deprecated_group='DEFAULT'),
-    cfg.StrOpt('key_file', default=None,
+    cfg.StrOpt('key_file',
                help=_("Location of the SSL key file to use "
                       "for enabling SSL mode."),
                deprecated_group='DEFAULT'),
@@ -160,15 +161,22 @@ json_size_opt = cfg.IntOpt('max_json_body_size',
 cfg.CONF.register_opt(json_size_opt)
 
 
+def list_opts():
+    yield None, [json_size_opt]
+    yield 'heat_api', api_opts
+    yield 'heat_api_cfn', api_cfn_opts
+    yield 'heat_api_cloudwatch', api_cw_opts
+
+
 class WritableLogger(object):
     """A thin wrapper that responds to `write` and logs."""
 
-    def __init__(self, logger, level=logging.DEBUG):
-        self.logger = logger
+    def __init__(self, LOG, level=logging.DEBUG):
+        self.LOG = LOG
         self.level = level
 
     def write(self, msg):
-        self.logger.log(self.level, msg.strip("\n"))
+        self.LOG.log(self.level, msg.strip("\n"))
 
 
 def get_bind_addr(conf, default_port=None):
@@ -251,7 +259,7 @@ class Server(object):
         """
         def kill_children(*args):
             """Kills the entire process group."""
-            self.logger.error(_('SIGTERM received'))
+            self.LOG.error(_('SIGTERM received'))
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             self.running = False
             os.killpg(0, signal.SIGTERM)
@@ -260,7 +268,7 @@ class Server(object):
             """
             Shuts down the server, but allows running requests to complete
             """
-            self.logger.error(_('SIGHUP received'))
+            self.LOG.error(_('SIGHUP received'))
             signal.signal(signal.SIGHUP, signal.SIG_IGN)
             self.running = False
 
@@ -268,7 +276,7 @@ class Server(object):
         self.application = application
         self.sock = get_socket(conf, default_port)
 
-        self.logger = logging.getLogger('eventlet.wsgi.server')
+        self.LOG = logging.getLogger('eventlet.wsgi.server')
 
         if conf.workers == 0:
             # Useful for profiling, test, debug etc.
@@ -276,7 +284,7 @@ class Server(object):
             self.pool.spawn_n(self._single_run, application, self.sock)
             return
 
-        self.logger.info(_("Starting %d workers") % conf.workers)
+        self.LOG.info(_("Starting %d workers") % conf.workers)
         signal.signal(signal.SIGTERM, kill_children)
         signal.signal(signal.SIGHUP, hup)
         while len(self.children) < conf.workers:
@@ -287,18 +295,18 @@ class Server(object):
             try:
                 pid, status = os.wait()
                 if os.WIFEXITED(status) or os.WIFSIGNALED(status):
-                    self.logger.error(_('Removing dead child %s') % pid)
+                    self.LOG.error(_('Removing dead child %s') % pid)
                     self.children.remove(pid)
                     self.run_child()
             except OSError as err:
                 if err.errno not in (errno.EINTR, errno.ECHILD):
                     raise
             except KeyboardInterrupt:
-                self.logger.info(_('Caught keyboard interrupt. Exiting.'))
+                self.LOG.info(_('Caught keyboard interrupt. Exiting.'))
                 break
         eventlet.greenio.shutdown_safe(self.sock)
         self.sock.close()
-        self.logger.debug(_('Exited'))
+        self.LOG.debug('Exited')
 
     def wait(self):
         """Wait until all servers have completed running."""
@@ -316,10 +324,10 @@ class Server(object):
             signal.signal(signal.SIGHUP, signal.SIG_DFL)
             signal.signal(signal.SIGTERM, signal.SIG_DFL)
             self.run_server()
-            self.logger.info(_('Child %d exiting normally') % os.getpid())
+            self.LOG.info(_('Child %d exiting normally') % os.getpid())
             return
         else:
-            self.logger.info(_('Started child %s') % pid)
+            self.LOG.info(_('Started child %s') % pid)
             self.children.append(pid)
 
     def run_server(self):
@@ -333,7 +341,7 @@ class Server(object):
                                  self.application,
                                  custom_pool=self.pool,
                                  url_length_limit=URL_LENGTH_LIMIT,
-                                 log=WritableLogger(self.logger),
+                                 log=WritableLogger(self.LOG),
                                  debug=cfg.CONF.debug)
         except socket.error as err:
             if err[0] != errno.EINVAL:
@@ -342,11 +350,11 @@ class Server(object):
 
     def _single_run(self, application, sock):
         """Start a WSGI server in a new green thread."""
-        self.logger.info(_("Starting single process server"))
+        self.LOG.info(_("Starting single process server"))
         eventlet.wsgi.server(sock, application,
                              custom_pool=self.pool,
                              url_length_limit=URL_LENGTH_LIMIT,
-                             log=WritableLogger(self.logger))
+                             log=WritableLogger(self.LOG))
 
 
 class Middleware(object):
@@ -556,72 +564,13 @@ class JSONRequestDeserializer(object):
                 raise exception.RequestLimitExceeded(message=msg)
             return json.loads(datastring)
         except ValueError as ex:
-            raise webob.exc.HTTPBadRequest(str(ex))
+            raise webob.exc.HTTPBadRequest(six.text_type(ex))
 
     def default(self, request):
         if self.has_body(request):
             return {'body': self.from_json(request.body)}
         else:
             return {}
-
-
-class JSONResponseSerializer(object):
-
-    def to_json(self, data):
-        def sanitizer(obj):
-            if isinstance(obj, datetime.datetime):
-                return obj.isoformat()
-            return obj
-
-        response = json.dumps(data, default=sanitizer)
-        logging.debug("JSON response : %s" % response)
-        return response
-
-    def default(self, response, result):
-        response.content_type = 'application/json'
-        response.body = self.to_json(result)
-
-
-# Escape XML serialization for these keys, as the AWS API defines them as
-# JSON inside XML when the response format is XML.
-JSON_ONLY_KEYS = ('TemplateBody', 'Metadata')
-
-
-class XMLResponseSerializer(object):
-
-    def object_to_element(self, obj, element):
-        if isinstance(obj, list):
-            for item in obj:
-                subelement = etree.SubElement(element, "member")
-                self.object_to_element(item, subelement)
-        elif isinstance(obj, dict):
-            for key, value in obj.items():
-                subelement = etree.SubElement(element, key)
-                if key in JSON_ONLY_KEYS:
-                    if value:
-                        # Need to use json.dumps for the JSON inside XML
-                        # otherwise quotes get mangled and json.loads breaks
-                        try:
-                            subelement.text = json.dumps(value)
-                        except TypeError:
-                            subelement.text = str(value)
-                else:
-                    self.object_to_element(value, subelement)
-        else:
-            element.text = str(obj)
-
-    def to_xml(self, data):
-        # Assumption : root node is dict with single key
-        root = data.keys()[0]
-        eltree = etree.Element(root)
-        self.object_to_element(data.get(root), eltree)
-        response = etree.tostring(eltree)
-        logging.debug("XML response : %s" % response)
-        return response
-
-    def default(self, response, result):
-        response.content_type = 'application/xml'
-        response.body = self.to_xml(result)
 
 
 class Resource(object):
@@ -675,7 +624,7 @@ class Resource(object):
             action_result = self.dispatch(self.controller, action,
                                           request, **action_args)
         except TypeError as err:
-            logging.error(_('Exception handling resource: %s') % str(err))
+            logging.error(_('Exception handling resource: %s') % err)
             msg = _('The server could not comply with the request since\r\n'
                     'it is either malformed or otherwise incorrect.\r\n')
             err = webob.exc.HTTPBadRequest(msg)
@@ -685,6 +634,11 @@ class Resource(object):
             # won't make it into the pipeline app that serializes errors
             raise exception.HTTPExceptionDisguise(http_exc)
         except webob.exc.HTTPException as err:
+            if isinstance(err, aws_exception.HeatAPIException):
+                # The AWS compatible API's don't use faultwrap, so
+                # we want to detect the HeatAPIException subclasses
+                # and raise rather than wrapping in HTTPExceptionDisguise
+                raise
             if not isinstance(err, webob.exc.HTTPError):
                 # Some HTTPException are actually not errors, they are
                 # responses ready to be sent back to the users, so we don't
@@ -701,16 +655,15 @@ class Resource(object):
         except Exception as err:
             log_exception(err, sys.exc_info())
             raise translate_exception(err, request.best_match_language())
-
         # Here we support either passing in a serializer or detecting it
         # based on the content type.
         try:
             serializer = self.serializer
             if serializer is None:
                 if content_type == "JSON":
-                    serializer = JSONResponseSerializer()
+                    serializer = serializers.JSONResponseSerializer()
                 else:
-                    serializer = XMLResponseSerializer()
+                    serializer = serializers.XMLResponseSerializer()
 
             response = webob.Response(request=request)
             self.dispatch(serializer, action, response, action_result)
@@ -773,7 +726,11 @@ def log_exception(err, exc_info):
 
 def translate_exception(exc, locale):
     """Translates all translatable elements of the given exception."""
-    exc.message = gettextutils.translate(str(exc), locale)
+    if isinstance(exc, exception.HeatException):
+        exc.message = gettextutils.translate(exc.message, locale)
+    else:
+        exc.message = gettextutils.translate(six.text_type(exc), locale)
+
     if isinstance(exc, webob.exc.HTTPError):
         # If the explanation is not a Message, that means that the
         # explanation is the default, generic and not translatable explanation
@@ -782,7 +739,7 @@ def translate_exception(exc, locale):
         # message, since message is what gets passed in at construction time
         # in the API
         if not isinstance(exc.explanation, gettextutils.Message):
-            exc.explanation = str(exc)
+            exc.explanation = six.text_type(exc)
             exc.detail = ''
         else:
             exc.explanation = \

@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -14,13 +13,11 @@
 
 from heat.common import exception
 from heat.engine import constraints
+from heat.engine import function
 from heat.engine import properties
 from heat.engine.properties import Properties
 from heat.engine import resource
 from heat.engine import watchrule
-from heat.openstack.common import log as logging
-
-logger = logging.getLogger(__name__)
 
 
 class CloudWatchAlarm(resource.Resource):
@@ -134,8 +131,6 @@ class CloudWatchAlarm(resource.Resource):
 
     strict_dependency = False
 
-    update_allowed_keys = ('Properties',)
-
     def handle_create(self):
         wr = watchrule.WatchRule(context=self.context,
                                  watch_name=self.physical_resource_name(),
@@ -149,7 +144,7 @@ class CloudWatchAlarm(resource.Resource):
         if prop_diff:
             self.properties = Properties(self.properties_schema,
                                          json_snippet.get('Properties', {}),
-                                         self.stack.resolve_runtime_data,
+                                         function.resolve,
                                          self.name,
                                          self.context)
             loader = watchrule.WatchRule.load

@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -78,7 +77,6 @@ class ResourceGroupTest(common.HeatTestCase):
         common.HeatTestCase.setUp(self)
         resource._register_class("dummy.resource",
                                  ResourceWithPropsAndId)
-        utils.setup_dummy_db()
 
     def test_assemble_nested(self):
         """
@@ -86,7 +84,7 @@ class ResourceGroupTest(common.HeatTestCase):
         appropriately based on properties.
         """
         stack = utils.parse_stack(template)
-        snip = stack.t['Resources']['group1']
+        snip = stack.t.resource_definitions(stack)['group1']
         resg = resource_group.ResourceGroup('test', snip, stack)
         templ = {
             "heat_template_version": "2013-05-23",
@@ -119,7 +117,7 @@ class ResourceGroupTest(common.HeatTestCase):
         res_def = templ["resources"]["group1"]["properties"]['resource_def']
         res_def['properties']['Foo'] = None
         stack = utils.parse_stack(templ)
-        snip = stack.t['Resources']['group1']
+        snip = stack.t.resource_definitions(stack)['group1']
         resg = resource_group.ResourceGroup('test', snip, stack)
         expect = {
             "heat_template_version": "2013-05-23",
@@ -148,7 +146,7 @@ class ResourceGroupTest(common.HeatTestCase):
         grp_props = tmp['resources']['group1']['properties']
         grp_props['resource_def']['type'] = "idontexist"
         stack = utils.parse_stack(tmp)
-        snip = stack.t['Resources']['group1']
+        snip = stack.t.resource_definitions(stack)['group1']
         resg = resource_group.ResourceGroup('test', snip, stack)
         exc = self.assertRaises(exception.StackValidationFailed,
                                 resg.validate)
@@ -156,11 +154,10 @@ class ResourceGroupTest(common.HeatTestCase):
 
     def test_reference_attr(self):
         stack = utils.parse_stack(template2)
-        snip = stack.t['Resources']['group1']
+        snip = stack.t.resource_definitions(stack)['group1']
         resgrp = resource_group.ResourceGroup('test', snip, stack)
         self.assertIsNone(resgrp.validate())
 
-    @utils.stack_delete_after
     def test_delete(self):
         """Test basic delete."""
         resg = self._create_dummy_stack()
@@ -169,7 +166,6 @@ class ResourceGroupTest(common.HeatTestCase):
         self.assertEqual((resg.DELETE, resg.COMPLETE), resg.nested().state)
         self.assertEqual((resg.DELETE, resg.COMPLETE), resg.state)
 
-    @utils.stack_delete_after
     def test_update(self):
         """Test basic update."""
         resg = self._create_dummy_stack()
@@ -181,7 +177,6 @@ class ResourceGroupTest(common.HeatTestCase):
         self.assertEqual((resg.UPDATE, resg.COMPLETE), resg.nested().state)
         self.assertEqual(3, len(resg.nested()))
 
-    @utils.stack_delete_after
     def test_aggregate_attribs(self):
         """
         Test attribute aggregation and that we mimic the nested resource's
@@ -192,7 +187,6 @@ class ResourceGroupTest(common.HeatTestCase):
         self.assertEqual(expected, resg.FnGetAtt('foo'))
         self.assertEqual(expected, resg.FnGetAtt('Foo'))
 
-    @utils.stack_delete_after
     def test_aggregate_refs(self):
         """
         Test resource id aggregation
@@ -201,7 +195,6 @@ class ResourceGroupTest(common.HeatTestCase):
         expected = ['ID-0', 'ID-1']
         self.assertEqual(expected, resg.FnGetAtt("refs"))
 
-    @utils.stack_delete_after
     def test_index_refs(self):
         """Tests getting ids of individual resources."""
         resg = self._create_dummy_stack()
@@ -212,7 +205,7 @@ class ResourceGroupTest(common.HeatTestCase):
 
     def _create_dummy_stack(self):
         stack = utils.parse_stack(template)
-        snip = stack.t['Resources']['group1']
+        snip = stack.t.resource_definitions(stack)['group1']
         resg = resource_group.ResourceGroup('test', snip, stack)
         scheduler.TaskRunner(resg.create)()
         self.stack = resg.nested()
@@ -222,7 +215,7 @@ class ResourceGroupTest(common.HeatTestCase):
 
     def test_child_template(self):
         stack = utils.parse_stack(template2)
-        snip = stack.t['Resources']['group1']
+        snip = stack.t.resource_definitions(stack)['group1']
         resgrp = resource_group.ResourceGroup('test', snip, stack)
         resgrp._assemble_nested = mock.Mock(return_value='tmpl')
         resgrp.properties.data[resgrp.COUNT] = 2
@@ -232,6 +225,6 @@ class ResourceGroupTest(common.HeatTestCase):
 
     def test_child_params(self):
         stack = utils.parse_stack(template2)
-        snip = stack.t['Resources']['group1']
+        snip = stack.t.resource_definitions(stack)['group1']
         resgrp = resource_group.ResourceGroup('test', snip, stack)
         self.assertEqual({}, resgrp.child_params())

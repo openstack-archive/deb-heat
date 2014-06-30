@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -12,10 +12,11 @@
 #    under the License.
 
 from datetime import datetime
-import json
 import uuid
 
+import json
 import mock
+import six
 
 from heat.common.identifier import EventIdentifier
 from heat.common import template_format
@@ -30,89 +31,12 @@ from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
 
 
-class EngineApiTest(HeatTestCase):
-    def test_timeout_extract(self):
-        p = {'timeout_mins': '5'}
-        args = api.extract_args(p)
-        self.assertEqual(5, args['timeout_mins'])
-
-    def test_timeout_extract_zero(self):
-        p = {'timeout_mins': '0'}
-        args = api.extract_args(p)
-        self.assertNotIn('timeout_mins', args)
-
-    def test_timeout_extract_garbage(self):
-        p = {'timeout_mins': 'wibble'}
-        args = api.extract_args(p)
-        self.assertNotIn('timeout_mins', args)
-
-    def test_timeout_extract_none(self):
-        p = {'timeout_mins': None}
-        args = api.extract_args(p)
-        self.assertNotIn('timeout_mins', args)
-
-    def test_timeout_extract_negative(self):
-        p = {'timeout_mins': '-100'}
-        error = self.assertRaises(ValueError, api.extract_args, p)
-        self.assertIn('Invalid timeout value', str(error))
-
-    def test_timeout_extract_not_present(self):
-        args = api.extract_args({})
-        self.assertNotIn('timeout_mins', args)
-
-    def test_adopt_stack_data_extract_present(self):
-        p = {'adopt_stack_data': json.dumps({'Resources': {}})}
-        args = api.extract_args(p)
-        self.assertTrue(args.get('adopt_stack_data'))
-
-    def test_invalid_adopt_stack_data(self):
-        p = {'adopt_stack_data': json.dumps("foo")}
-        error = self.assertRaises(ValueError, api.extract_args, p)
-        self.assertEqual(
-            'Unexpected adopt data "foo". Adopt data must be a dict.',
-            str(error))
-
-    def test_adopt_stack_data_extract_not_present(self):
-        args = api.extract_args({})
-        self.assertNotIn('adopt_stack_data', args)
-
-    def test_disable_rollback_extract_true(self):
-        args = api.extract_args({'disable_rollback': True})
-        self.assertIn('disable_rollback', args)
-        self.assertTrue(args.get('disable_rollback'))
-
-        args = api.extract_args({'disable_rollback': 'True'})
-        self.assertIn('disable_rollback', args)
-        self.assertTrue(args.get('disable_rollback'))
-
-        args = api.extract_args({'disable_rollback': 'true'})
-        self.assertIn('disable_rollback', args)
-        self.assertTrue(args.get('disable_rollback'))
-
-    def test_disable_rollback_extract_false(self):
-        args = api.extract_args({'disable_rollback': False})
-        self.assertIn('disable_rollback', args)
-        self.assertFalse(args.get('disable_rollback'))
-
-        args = api.extract_args({'disable_rollback': 'False'})
-        self.assertIn('disable_rollback', args)
-        self.assertFalse(args.get('disable_rollback'))
-
-        args = api.extract_args({'disable_rollback': 'false'})
-        self.assertIn('disable_rollback', args)
-        self.assertFalse(args.get('disable_rollback'))
-
-    def test_disable_rollback_extract_bad(self):
-        self.assertRaises(ValueError, api.extract_args,
-                          {'disable_rollback': 'bad'})
-
-
 class FormatTest(HeatTestCase):
     def setUp(self):
         super(FormatTest, self).setUp()
-        utils.setup_dummy_db()
 
         template = parser.Template({
+            'HeatTemplateFormatVersion': '2012-12-12',
             'Resources': {
                 'generic1': {'Type': 'GenericResourceType'},
                 'generic2': {
@@ -155,6 +79,37 @@ class FormatTest(HeatTestCase):
 
         formatted = api.format_stack_resource(res, True)
         self.assertEqual(resource_details_keys, set(formatted.keys()))
+
+        formatted = api.format_stack_resource(res, False)
+        self.assertEqual(resource_keys, set(formatted.keys()))
+
+    def test_format_stack_resource_with_nested_stack(self):
+        res = self.stack['generic1']
+        nested_id = {'foo': 'bar'}
+        res.nested = mock.Mock()
+        res.nested.return_value.identifier.return_value = nested_id
+
+        formatted = api.format_stack_resource(res, False)
+        self.assertEqual(nested_id, formatted[rpc_api.RES_NESTED_STACK_ID])
+
+    def test_format_stack_resource_with_nested_stack_none(self):
+        res = self.stack['generic1']
+        res.nested = mock.Mock()
+        res.nested.return_value = None
+
+        resource_keys = set((
+            rpc_api.RES_UPDATED_TIME,
+            rpc_api.RES_NAME,
+            rpc_api.RES_PHYSICAL_ID,
+            rpc_api.RES_METADATA,
+            rpc_api.RES_ACTION,
+            rpc_api.RES_STATUS,
+            rpc_api.RES_STATUS_DATA,
+            rpc_api.RES_TYPE,
+            rpc_api.RES_ID,
+            rpc_api.RES_STACK_ID,
+            rpc_api.RES_STACK_NAME,
+            rpc_api.RES_REQUIRED_BY))
 
         formatted = api.format_stack_resource(res, False)
         self.assertEqual(resource_keys, set(formatted.keys()))
@@ -260,6 +215,40 @@ class FormatTest(HeatTestCase):
         self.stack.status = 'COMPLETE'
         info = api.format_stack(self.stack)
         self.assertEqual('foobar', info[rpc_api.STACK_OUTPUTS])
+
+    def test_format_stack_outputs(self):
+        template = parser.Template({
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Resources': {
+                'generic': {'Type': 'GenericResourceType'}
+            },
+            'Outputs': {
+                'correct_output': {
+                    'Description': 'Good output',
+                    'Value': {'Fn::GetAtt': ['generic', 'Foo']}
+                },
+                'incorrect_output': {
+                    'Value': {'Fn::GetAtt': ['generic', 'Bar']}
+                }
+            }
+        })
+        stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                             template, stack_id=str(uuid.uuid4()))
+        stack.action = 'CREATE'
+        stack.status = 'COMPLETE'
+        stack['generic'].action = 'CREATE'
+        stack['generic'].status = 'COMPLETE'
+        info = api.format_stack_outputs(stack, stack.outputs)
+        expected = [{'description': 'No description given',
+                     'output_error': 'The Referenced Attribute (generic Bar) '
+                                     'is incorrect.',
+                     'output_key': 'incorrect_output',
+                     'output_value': None},
+                    {'description': 'Good output',
+                     'output_key': 'correct_output',
+                     'output_value': 'generic'}]
+
+        self.assertEqual(expected, info)
 
 
 class FormatValidateParameterTest(HeatTestCase):
@@ -767,6 +756,26 @@ class FormatValidateParameterTest(HeatTestCase):
                   'Label': 'KeyName'
               })
          ),
+        ('constraint_custom_hot',
+         dict(template=base_template_hot,
+              param_name='KeyName',
+              param='''
+                    "KeyName": {
+                        "type": "string",
+                        "description": "Public Network",
+                        "constraints": [
+                            { "custom_constraint": "neutron.network" }
+                        ]
+                    }
+                    ''',
+              expected={
+                  'Type': 'String',
+                  'Description': 'Public Network',
+                  'NoEcho': 'false',
+                  'Label': 'KeyName',
+                  'CustomConstraint': 'neutron.network'
+              })
+         )
     ]
 
     def test_format_validate_parameter(self):
@@ -777,7 +786,8 @@ class FormatValidateParameterTest(HeatTestCase):
         t = template_format.parse(self.template % self.param)
         tmpl = parser.Template(t)
 
-        tmpl_params = parameters.Parameters(None, tmpl, validate_value=False)
+        tmpl_params = parameters.Parameters(None, tmpl)
+        tmpl_params.validate(validate_value=False)
         param = tmpl_params.params[self.param_name]
         param_formated = api.format_validate_parameter(param)
         self.assertEqual(self.expected, param_formated)
@@ -837,3 +847,80 @@ class FormatSoftwareConfigDeploymentTest(HeatTestCase):
 
     def test_format_software_deployment_none(self):
         self.assertIsNone(api.format_software_deployment(None))
+
+
+class TestExtractArgs(HeatTestCase):
+    def test_timeout_extract(self):
+        p = {'timeout_mins': '5'}
+        args = api.extract_args(p)
+        self.assertEqual(5, args['timeout_mins'])
+
+    def test_timeout_extract_zero(self):
+        p = {'timeout_mins': '0'}
+        args = api.extract_args(p)
+        self.assertNotIn('timeout_mins', args)
+
+    def test_timeout_extract_garbage(self):
+        p = {'timeout_mins': 'wibble'}
+        args = api.extract_args(p)
+        self.assertNotIn('timeout_mins', args)
+
+    def test_timeout_extract_none(self):
+        p = {'timeout_mins': None}
+        args = api.extract_args(p)
+        self.assertNotIn('timeout_mins', args)
+
+    def test_timeout_extract_negative(self):
+        p = {'timeout_mins': '-100'}
+        error = self.assertRaises(ValueError, api.extract_args, p)
+        self.assertIn('Invalid timeout value', six.text_type(error))
+
+    def test_timeout_extract_not_present(self):
+        args = api.extract_args({})
+        self.assertNotIn('timeout_mins', args)
+
+    def test_adopt_stack_data_extract_present(self):
+        p = {'adopt_stack_data': json.dumps({'Resources': {}})}
+        args = api.extract_args(p)
+        self.assertTrue(args.get('adopt_stack_data'))
+
+    def test_invalid_adopt_stack_data(self):
+        p = {'adopt_stack_data': json.dumps("foo")}
+        error = self.assertRaises(ValueError, api.extract_args, p)
+        self.assertEqual(
+            'Unexpected adopt data "foo". Adopt data must be a dict.',
+            six.text_type(error))
+
+    def test_adopt_stack_data_extract_not_present(self):
+        args = api.extract_args({})
+        self.assertNotIn('adopt_stack_data', args)
+
+    def test_disable_rollback_extract_true(self):
+        args = api.extract_args({'disable_rollback': True})
+        self.assertIn('disable_rollback', args)
+        self.assertTrue(args.get('disable_rollback'))
+
+        args = api.extract_args({'disable_rollback': 'True'})
+        self.assertIn('disable_rollback', args)
+        self.assertTrue(args.get('disable_rollback'))
+
+        args = api.extract_args({'disable_rollback': 'true'})
+        self.assertIn('disable_rollback', args)
+        self.assertTrue(args.get('disable_rollback'))
+
+    def test_disable_rollback_extract_false(self):
+        args = api.extract_args({'disable_rollback': False})
+        self.assertIn('disable_rollback', args)
+        self.assertFalse(args.get('disable_rollback'))
+
+        args = api.extract_args({'disable_rollback': 'False'})
+        self.assertIn('disable_rollback', args)
+        self.assertFalse(args.get('disable_rollback'))
+
+        args = api.extract_args({'disable_rollback': 'false'})
+        self.assertIn('disable_rollback', args)
+        self.assertFalse(args.get('disable_rollback'))
+
+    def test_disable_rollback_extract_bad(self):
+        self.assertRaises(ValueError, api.extract_args,
+                          {'disable_rollback': 'bad'})

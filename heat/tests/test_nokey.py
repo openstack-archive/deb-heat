@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -13,6 +13,7 @@
 
 from heat.common import template_format
 from heat.engine import clients
+from heat.engine.resources import glance_utils
 from heat.engine.resources import instance as instances
 from heat.engine.resources import nova_utils
 from heat.engine import scheduler
@@ -44,7 +45,6 @@ class nokeyTest(HeatTestCase):
     def setUp(self):
         super(nokeyTest, self).setUp()
         self.fc = fakes.FakeClient()
-        utils.setup_dummy_db()
 
     def test_nokey_create(self):
 
@@ -55,15 +55,19 @@ class nokeyTest(HeatTestCase):
         t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
         t['Resources']['WebServer']['Properties']['InstanceType'] = \
             '256 MB Server'
+        resource_defns = stack.t.resource_definitions(stack)
         instance = instances.Instance('create_instance_name',
-                                      t['Resources']['WebServer'], stack)
+                                      resource_defns['WebServer'], stack)
 
         self.m.StubOutWithMock(instance, 'nova')
         instance.nova().MultipleTimes().AndReturn(self.fc)
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
-        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
-
-        instance.t = instance.stack.resolve_runtime_data(instance.t)
+        g_cli_mock = self.m.CreateMockAnything()
+        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
+        clients.OpenStackClients.glance().MultipleTimes().AndReturn(
+            g_cli_mock)
+        self.m.StubOutWithMock(glance_utils, 'get_image_id')
+        glance_utils.get_image_id(g_cli_mock, 'CentOS 5.2').MultipleTimes().\
+            AndReturn(1)
 
         # need to resolve the template functions
         server_userdata = nova_utils.build_userdata(
@@ -87,3 +91,5 @@ class nokeyTest(HeatTestCase):
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.create)()
+
+        self.m.VerifyAll()

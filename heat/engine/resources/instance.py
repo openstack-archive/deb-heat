@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,15 +11,18 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo.config import cfg
+import copy
 
-cfg.CONF.import_opt('instance_user', 'heat.common.config')
+from oslo.config import cfg
+import six
 
 from heat.common import exception
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
+from heat.engine.resources import glance_utils
 from heat.engine.resources.network_interface import NetworkInterface
 from heat.engine.resources.neutron import neutron
 from heat.engine.resources import nova_utils
@@ -30,7 +32,9 @@ from heat.engine import signal_responder
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 
-logger = logging.getLogger(__name__)
+cfg.CONF.import_opt('instance_user', 'heat.common.config')
+
+LOG = logging.getLogger(__name__)
 
 
 class Restarter(signal_responder.SignalResponder):
@@ -38,6 +42,12 @@ class Restarter(signal_responder.SignalResponder):
         INSTANCE_ID,
     ) = (
         'InstanceId',
+    )
+
+    ATTRIBUTES = (
+        ALARM_URL,
+    ) = (
+        'AlarmUrl',
     )
 
     properties_schema = {
@@ -49,8 +59,9 @@ class Restarter(signal_responder.SignalResponder):
     }
 
     attributes_schema = {
-        "AlarmUrl": _("A signed url to handle the alarm "
-                      "(Heat extension).")
+        ALARM_URL: attributes.Schema(
+            _("A signed url to handle the alarm (Heat extension).")
+        ),
     }
 
     def _find_resource(self, resource_id):
@@ -77,22 +88,21 @@ class Restarter(signal_responder.SignalResponder):
         else:
             alarm_state = details.get('state', 'alarm').lower()
 
-        logger.info(_('%(name)s Alarm, new state %(state)s') % {
-                    'name': self.name, 'state': alarm_state})
+        LOG.info(_('%(name)s Alarm, new state %(state)s')
+                 % {'name': self.name, 'state': alarm_state})
 
         if alarm_state != 'alarm':
             return
 
         victim = self._find_resource(self.properties[self.INSTANCE_ID])
         if victim is None:
-            logger.info(_('%(name)s Alarm, can not find instance '
-                        '%(instance)s') % {
-                            'name': self.name,
-                            'instance': self.properties[self.INSTANCE_ID]})
+            LOG.info(_('%(name)s Alarm, can not find instance %(instance)s')
+                     % {'name': self.name,
+                        'instance': self.properties[self.INSTANCE_ID]})
             return
 
-        logger.info(_('%(name)s Alarm, restarting resource: %(victim)s') % {
-                    'name': self.name, 'victim': victim.name})
+        LOG.info(_('%(name)s Alarm, restarting resource: %(victim)s')
+                 % {'name': self.name, 'victim': victim.name})
         self.stack.restart_resource(victim.name)
 
     def _resolve_attribute(self, name):
@@ -100,7 +110,7 @@ class Restarter(signal_responder.SignalResponder):
         heat extension: "AlarmUrl" returns the url to post to the policy
         when there is an alarm.
         '''
-        if name == 'AlarmUrl' and self.resource_id is not None:
+        if name == self.ALARM_URL and self.resource_id is not None:
             return unicode(self._get_signed_url())
 
 
@@ -138,6 +148,14 @@ class Instance(resource.Resource):
         VOLUME_DEVICE, VOLUME_ID,
     ) = (
         'Device', 'VolumeId',
+    )
+
+    ATTRIBUTES = (
+        AVAILABILITY_ZONE_ATTR, PRIVATE_DNS_NAME, PUBLIC_DNS_NAME, PRIVATE_IP,
+        PUBLIC_IP,
+    ) = (
+        'AvailabilityZone', 'PrivateDnsName', 'PublicDnsName', 'PrivateIp',
+        'PublicIp',
     )
 
     properties_schema = {
@@ -208,7 +226,8 @@ class Instance(resource.Resource):
         ),
         NETWORK_INTERFACES: properties.Schema(
             properties.Schema.LIST,
-            _('Network interfaces to associate with instance.')
+            _('Network interfaces to associate with instance.'),
+            update_allowed=True
         ),
         SOURCE_DEST_CHECK: properties.Schema(
             properties.Schema.BOOLEAN,
@@ -217,7 +236,8 @@ class Instance(resource.Resource):
         ),
         SUBNET_ID: properties.Schema(
             properties.Schema.STRING,
-            _('Subnet ID to launch instance in.')
+            _('Subnet ID to launch instance in.'),
+            update_allowed=True
         ),
         TAGS: properties.Schema(
             properties.Schema.LIST,
@@ -292,19 +312,24 @@ class Instance(resource.Resource):
         ),
     }
 
-    attributes_schema = {'AvailabilityZone': _('The Availability Zone where '
-                                               'the specified instance is '
-                                               'launched.'),
-                         'PrivateDnsName': _('Private DNS name of the'
-                                             ' specified instance.'),
-                         'PublicDnsName': _('Public DNS name of the specified '
-                                            'instance.'),
-                         'PrivateIp': _('Private IP address of the specified '
-                                        'instance.'),
-                         'PublicIp': _('Public IP address of the specified '
-                                       'instance.')}
-
-    update_allowed_keys = ('Metadata', 'Properties')
+    attributes_schema = {
+        AVAILABILITY_ZONE_ATTR: attributes.Schema(
+            _('The Availability Zone where the specified instance is '
+              'launched.')
+        ),
+        PRIVATE_DNS_NAME: attributes.Schema(
+            _('Private DNS name of the specified instance.')
+        ),
+        PUBLIC_DNS_NAME: attributes.Schema(
+            _('Public DNS name of the specified instance.')
+        ),
+        PRIVATE_IP: attributes.Schema(
+            _('Private IP address of the specified instance.')
+        ),
+        PUBLIC_IP: attributes.Schema(
+            _('Public IP address of the specified instance.')
+        ),
+    }
 
     # Server host name limit to 53 characters by due to typical default
     # linux HOST_NAME_MAX of 64, minus the .novalocal appended to the name
@@ -336,16 +361,13 @@ class Instance(resource.Resource):
 
     def _resolve_attribute(self, name):
         res = None
-        if name == 'AvailabilityZone':
+        if name == self.AVAILABILITY_ZONE_ATTR:
             res = self.properties[self.AVAILABILITY_ZONE]
-        elif name in ['PublicIp', 'PrivateIp', 'PublicDnsName',
-                      'PrivateDnsName']:
+        elif name in self.ATTRIBUTES[1:]:
             res = self._ipaddress()
 
-        logger.info(_('%(name)s._resolve_attribute(%(attname)s) == %(res)s'),
-                    {'name': self.name,
-                     'attname': name,
-                     'res': res})
+        LOG.info(_('%(name)s._resolve_attribute(%(attname)s) == %(res)s'),
+                 {'name': self.name, 'attname': name, 'res': res})
         return unicode(res) if res else None
 
     def _build_nics(self, network_interfaces,
@@ -418,14 +440,22 @@ class Instance(resource.Resource):
 
         image_name = self.properties[self.IMAGE_ID]
 
-        image_id = nova_utils.get_image_id(self.nova(), image_name)
+        image_id = glance_utils.get_image_id(self.glance(), image_name)
 
         flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
 
         scheduler_hints = {}
         if self.properties[self.NOVA_SCHEDULER_HINTS]:
             for tm in self.properties[self.NOVA_SCHEDULER_HINTS]:
-                scheduler_hints[tm[self.TAG_KEY]] = tm[self.TAG_VALUE]
+                # adopted from novaclient shell
+                hint = tm[self.TAG_KEY]
+                hint_value = tm[self.TAG_VALUE]
+                if hint in scheduler_hints:
+                    if isinstance(scheduler_hints[hint], six.string_types):
+                        scheduler_hints[hint] = [scheduler_hints[hint]]
+                    scheduler_hints[hint].append(hint_value)
+                else:
+                    scheduler_hints[hint] = hint_value
         else:
             scheduler_hints = None
 
@@ -523,10 +553,18 @@ class Instance(resource.Resource):
         return ((vol[self.VOLUME_ID],
                  vol[self.VOLUME_DEVICE]) for vol in volumes)
 
+    def _remove_matched_ifaces(self, old_network_ifaces, new_network_ifaces):
+        # find matches and remove them from old and new ifaces
+        old_network_ifaces_copy = copy.deepcopy(old_network_ifaces)
+        for iface in old_network_ifaces_copy:
+            if iface in new_network_ifaces:
+                new_network_ifaces.remove(iface)
+                old_network_ifaces.remove(iface)
+
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if 'Metadata' in tmpl_diff:
-            self.metadata = tmpl_diff['Metadata']
-
+            self.metadata_set(tmpl_diff['Metadata'])
+        checkers = []
         server = None
         if self.TAGS in prop_diff:
             server = self.nova().servers.get(self.resource_id)
@@ -541,18 +579,89 @@ class Instance(resource.Resource):
                 server = self.nova().servers.get(self.resource_id)
             checker = scheduler.TaskRunner(nova_utils.resize, server, flavor,
                                            flavor_id)
-            checker.start()
-            return checker
+            checkers.append(checker)
+        if self.NETWORK_INTERFACES in prop_diff:
+            new_network_ifaces = prop_diff.get(self.NETWORK_INTERFACES)
+            old_network_ifaces = self.properties.get(self.NETWORK_INTERFACES)
+            subnet_id = (
+                prop_diff.get(self.SUBNET_ID) or
+                self.properties.get(self.SUBNET_ID))
+            security_groups = self._get_security_groups()
+            if not server:
+                server = self.nova().servers.get(self.resource_id)
+            # if there is entrys in old_network_ifaces and new_network_ifaces,
+            # remove the same entrys from old and new ifaces
+            if old_network_ifaces and new_network_ifaces:
+                # there are four situations:
+                # 1.old includes new, such as: old = 2,3, new = 2
+                # 2.new includes old, such as: old = 2,3, new = 1,2,3
+                # 3.has overlaps, such as: old = 2,3, new = 1,2
+                # 4.different, such as: old = 2,3, new = 1,4
+                # detach unmatched ones in old, attach unmatched ones in new
+                self._remove_matched_ifaces(old_network_ifaces,
+                                            new_network_ifaces)
+                if old_network_ifaces:
+                    old_nics = self._build_nics(old_network_ifaces)
+                    for nic in old_nics:
+                        checker = scheduler.TaskRunner(
+                            server.interface_detach,
+                            nic['port-id'])
+                        checkers.append(checker)
+                if new_network_ifaces:
+                    new_nics = self._build_nics(new_network_ifaces)
+                    for nic in new_nics:
+                        checker = scheduler.TaskRunner(
+                            server.interface_attach,
+                            nic['port-id'],
+                            None, None)
+                        checkers.append(checker)
+            # if the interfaces not come from property 'NetworkInterfaces',
+            # the situation is somewhat complex, so to detach the old ifaces,
+            # and then attach the new ones.
+            else:
+                interfaces = server.interface_list()
+                for iface in interfaces:
+                    checker = scheduler.TaskRunner(server.interface_detach,
+                                                   iface.port_id)
+                    checkers.append(checker)
+                nics = self._build_nics(new_network_ifaces,
+                                        security_groups=security_groups,
+                                        subnet_id=subnet_id)
+                # 'SubnetId' property is empty(or None) and
+                # 'NetworkInterfaces' property is empty(or None),
+                # _build_nics() will return nics = None,we should attach
+                # first free port, according to similar behavior during
+                # instance creation
+                if not nics:
+                    checker = scheduler.TaskRunner(server.interface_attach,
+                                                   None, None, None)
+                    checkers.append(checker)
+                else:
+                    for nic in nics:
+                        checker = scheduler.TaskRunner(
+                            server.interface_attach,
+                            nic['port-id'], None, None)
+                        checkers.append(checker)
 
-    def check_update_complete(self, checker):
-        return checker.step() if checker is not None else True
+        if checkers:
+            checkers[0].start()
+        return checkers
+
+    def check_update_complete(self, checkers):
+        '''Push all checkers to completion in list order.'''
+        for checker in checkers:
+            if not checker.started():
+                checker.start()
+            if not checker.step():
+                return False
+        return True
 
     def metadata_update(self, new_metadata=None):
         '''
         Refresh the metadata if new_metadata is None
         '''
         if new_metadata is None:
-            self.metadata = self.parsed_template('Metadata')
+            self.metadata_set(self.parsed_template('Metadata'))
 
     def validate(self):
         '''
@@ -584,14 +693,10 @@ class Instance(resource.Resource):
             try:
                 nova_utils.refresh_server(server)
                 if server.status == "DELETED":
-                    self.resource_id_set(None)
                     break
-                elif server.status == "ERROR":
-                    raise exception.Error(_("Deletion of server %s failed.") %
-                                          server.id)
             except clients.novaclient.exceptions.NotFound:
-                self.resource_id_set(None)
                 break
+        self.resource_id_set(None)
 
     def _detach_volumes_task(self):
         '''
@@ -644,7 +749,7 @@ class Instance(resource.Resource):
             raise exception.NotFound(_('Failed to find instance %s') %
                                      self.resource_id)
         else:
-            logger.debug(_("suspending instance %s") % self.resource_id)
+            LOG.debug("suspending instance %s" % self.resource_id)
             # We want the server.suspend to happen after the volume
             # detachement has finished, so pass both tasks and the server
             suspend_runner = scheduler.TaskRunner(server.suspend)
@@ -666,10 +771,9 @@ class Instance(resource.Resource):
                     return True
 
                 nova_utils.refresh_server(server)
-                logger.debug(_("%(name)s check_suspend_complete "
-                               "status = %(status)s"),
-                             {'name': self.name,
-                              'status': server.status})
+                LOG.debug("%(name)s check_suspend_complete "
+                          "status = %(status)s",
+                          {'name': self.name, 'status': server.status})
                 if server.status in list(nova_utils.deferred_server_statuses +
                                          ['ACTIVE']):
                     return server.status == 'SUSPENDED'
@@ -700,7 +804,7 @@ class Instance(resource.Resource):
             raise exception.NotFound(_('Failed to find instance %s') %
                                      self.resource_id)
         else:
-            logger.debug(_("resuming instance %s") % self.resource_id)
+            LOG.debug("resuming instance %s" % self.resource_id)
             server.resume()
             return server, scheduler.TaskRunner(self._attach_volumes_task())
 

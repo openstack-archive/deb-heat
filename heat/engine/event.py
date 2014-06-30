@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,13 +11,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from heat.db import api as db_api
+import six
+
 from heat.common import exception
 from heat.common import identifier
-from heat.openstack.common import log as logging
+from heat.db import api as db_api
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import log as logging
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class Event(object):
@@ -43,7 +44,7 @@ class Event(object):
         try:
             self.resource_properties = dict(resource_properties)
         except ValueError as ex:
-            self.resource_properties = {'Error': str(ex)}
+            self.resource_properties = {'Error': six.text_type(ex)}
         self.uuid = uuid
         self.timestamp = timestamp
         self.id = id
@@ -87,7 +88,7 @@ class Event(object):
             ev['created_at'] = self.timestamp
 
         if self.id is not None:
-            logger.warning(_('Duplicating event'))
+            LOG.warning(_('Duplicating event'))
 
         new_ev = db_api.event_create(self.context, ev)
         self.id = new_ev.id

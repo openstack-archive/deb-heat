@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -17,6 +16,7 @@ from oslo.config import cfg
 
 from heat.common import exception
 from heat.common import template_format
+from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources import nova_utils
@@ -24,7 +24,7 @@ from heat.engine import stack_resource
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 lb_template_default = r'''
 {
@@ -197,7 +197,6 @@ lb_template_default = r'''
 # Allow user to provide alternative nested stack template to the above
 loadbalancer_opts = [
     cfg.StrOpt('loadbalancer_template',
-               default=None,
                help='Custom template for the built-in '
                     'loadbalancer nested stack.')]
 cfg.CONF.register_opts(loadbalancer_opts)
@@ -231,6 +230,14 @@ class LoadBalancer(stack_resource.StackResource):
     ) = (
         'InstancePort', 'LoadBalancerPort', 'Protocol',
         'SSLCertificateId', 'PolicyNames',
+    )
+
+    ATTRIBUTES = (
+        CANONICAL_HOSTED_ZONE_NAME, CANONICAL_HOSTED_ZONE_NAME_ID, DNS_NAME,
+        SOURCE_SECURITY_GROUP_GROUP_NAME, SOURCE_SECURITY_GROUP_OWNER_ALIAS,
+    ) = (
+        'CanonicalHostedZoneName', 'CanonicalHostedZoneNameID', 'DNSName',
+        'SourceSecurityGroup.GroupName', 'SourceSecurityGroup.OwnerAlias',
     )
 
     properties_schema = {
@@ -342,21 +349,25 @@ class LoadBalancer(stack_resource.StackResource):
     }
 
     attributes_schema = {
-        "CanonicalHostedZoneName": _("The name of the hosted zone that is "
-                                     "associated with the LoadBalancer."),
-        "CanonicalHostedZoneNameID": _("The ID of the hosted zone name "
-                                       "that is associated with the "
-                                       "LoadBalancer."),
-        "DNSName": _("The DNS name for the LoadBalancer."),
-        "SourceSecurityGroup.GroupName": _("The security group that you can "
-                                           "use as part of your inbound "
-                                           "rules for your LoadBalancer's "
-                                           "back-end instances."),
-        "SourceSecurityGroup.OwnerAlias": _("Owner of the source "
-                                            "security group.")
+        CANONICAL_HOSTED_ZONE_NAME: attributes.Schema(
+            _("The name of the hosted zone that is associated with the "
+              "LoadBalancer.")
+        ),
+        CANONICAL_HOSTED_ZONE_NAME_ID: attributes.Schema(
+            _("The ID of the hosted zone name that is associated with the "
+              "LoadBalancer.")
+        ),
+        DNS_NAME: attributes.Schema(
+            _("The DNS name for the LoadBalancer.")
+        ),
+        SOURCE_SECURITY_GROUP_GROUP_NAME: attributes.Schema(
+            _("The security group that you can use as part of your inbound "
+              "rules for your LoadBalancer's back-end instances.")
+        ),
+        SOURCE_SECURITY_GROUP_OWNER_ALIAS: attributes.Schema(
+            _("Owner of the source security group.")
+        ),
     }
-
-    update_allowed_keys = ('Properties',)
 
     def _haproxy_config(self, templ, instances):
         # initial simplifications:
@@ -414,7 +425,7 @@ class LoadBalancer(stack_resource.StackResource):
         client = self.nova()
         for i in instances:
             ip = nova_utils.server_to_ipaddress(client, i) or '0.0.0.0'
-            logger.debug(_('haproxy server:%s') % ip)
+            LOG.debug('haproxy server:%s' % ip)
             servers.append('%sserver server%d %s:%s %s' % (spaces, n,
                                                            ip, inst_port,
                                                            check))
@@ -425,8 +436,8 @@ class LoadBalancer(stack_resource.StackResource):
     def get_parsed_template(self):
         if cfg.CONF.loadbalancer_template:
             with open(cfg.CONF.loadbalancer_template) as templ_fd:
-                logger.info(_('Using custom loadbalancer template %s')
-                            % cfg.CONF.loadbalancer_template)
+                LOG.info(_('Using custom loadbalancer template %s')
+                         % cfg.CONF.loadbalancer_template)
                 contents = templ_fd.read()
         else:
             contents = lb_template_default
@@ -475,11 +486,11 @@ class LoadBalancer(stack_resource.StackResource):
             templ = self.get_parsed_template()
             cfg = self._haproxy_config(templ, prop_diff[self.INSTANCES])
 
-            md = self.nested()['LB_instance'].metadata
+            md = self.nested()['LB_instance'].metadata_get()
             files = md['AWS::CloudFormation::Init']['config']['files']
             files['/etc/haproxy/haproxy.cfg']['content'] = cfg
 
-            self.nested()['LB_instance'].metadata = md
+            self.nested()['LB_instance'].metadata_set(md)
 
     def handle_delete(self):
         return self.delete_nested()
@@ -512,7 +523,7 @@ class LoadBalancer(stack_resource.StackResource):
         '''
         We don't really support any of these yet.
         '''
-        if name == 'DNSName':
+        if name == self.DNS_NAME:
             return self.get_output('PublicIp')
         elif name in self.attributes_schema:
             # Not sure if we should return anything for the other attribs

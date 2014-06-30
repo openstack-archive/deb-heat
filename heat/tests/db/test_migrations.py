@@ -28,14 +28,14 @@ import tempfile
 import uuid
 
 from migrate.versioning import repository
+from six.moves.urllib import parse as urlparse
 import sqlalchemy
 
 from heat.db.sqlalchemy import migrate_repo
 from heat.db.sqlalchemy import migration
 from heat.openstack.common.db.sqlalchemy import test_migrations
 from heat.openstack.common import log as logging
-from heat.openstack.common.py3kcompat import urlutils
-
+from heat.tests import common
 
 LOG = logging.getLogger(__name__)
 
@@ -52,7 +52,8 @@ def get_table(engine, name):
 
 
 class TestHeatMigrations(test_migrations.BaseMigrationTestCase,
-                         test_migrations.WalkVersionsMixin):
+                         test_migrations.WalkVersionsMixin,
+                         common.FakeLogMixin):
     """Test sqlalchemy-migrate migrations."""
 
     def __init__(self, *args, **kwargs):
@@ -73,6 +74,7 @@ class TestHeatMigrations(test_migrations.BaseMigrationTestCase,
         os.environ["HEAT_LOCK_PATH"] = lock_dir
 
         super(TestHeatMigrations, self).setUp()
+        self.setup_logging()
 
         def clean_lock_dir():
             shutil.rmtree(lock_dir, ignore_errors=True)
@@ -125,7 +127,7 @@ class TestHeatMigrations(test_migrations.BaseMigrationTestCase,
         for key, eng in self.engines.items():
             if eng is engine:
                 conn_string = self.test_databases[key]
-                conn_pieces = urlutils.urlparse(conn_string)
+                conn_pieces = urlparse.urlparse(conn_string)
                 if conn_string.startswith('mysql'):
                     break
                 else:

@@ -30,17 +30,16 @@ possible_topdir = os.path.normpath(os.path.join(os.path.abspath(sys.argv[0]),
 if os.path.exists(os.path.join(possible_topdir, 'heat', '__init__.py')):
     sys.path.insert(0, possible_topdir)
 
-from heat.openstack.common import gettextutils
-
-gettextutils.install('heat', lazy=False)
-
 from oslo.config import cfg
 
 from heat.common import config
-from heat.common import wsgi
 from heat.common import notify
-
+from heat.common import wsgi
+from heat.openstack.common import gettextutils
 from heat.openstack.common import log as logging
+
+gettextutils.enable_lazy()
+gettextutils.install('heat', lazy=True)
 
 LOG = logging.getLogger('heat.api')
 
@@ -58,7 +57,8 @@ if __name__ == '__main__':
 
         port = cfg.CONF.heat_api.bind_port
         host = cfg.CONF.heat_api.bind_host
-        LOG.info('Starting Heat ReST API on %s:%s' % (host, port))
+        LOG.info(_('Starting Heat ReST API on %(host)s:%(port)s'),
+                 {'host': host, 'port': port})
         server = wsgi.Server()
         server.start(app, cfg.CONF.heat_api, default_port=port)
         notify.startup_notify(cfg.CONF.onready)

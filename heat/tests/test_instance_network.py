@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -17,6 +17,7 @@ from heat.common import template_format
 from heat.engine import clients
 from heat.engine import environment
 from heat.engine import parser
+from heat.engine.resources import glance_utils
 from heat.engine.resources import instance as instances
 from heat.engine.resources import network_interface as network_interfaces
 from heat.engine.resources import nova_utils
@@ -148,7 +149,15 @@ class instancesTest(HeatTestCase):
     def setUp(self):
         super(instancesTest, self).setUp()
         self.fc = fakes.FakeClient()
-        utils.setup_dummy_db()
+
+    def _mock_get_image_id_success(self, imageId_input, imageId):
+        g_cli_mock = self.m.CreateMockAnything()
+        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
+        clients.OpenStackClients.glance().MultipleTimes().AndReturn(
+            g_cli_mock)
+        self.m.StubOutWithMock(glance_utils, 'get_image_id')
+        glance_utils.get_image_id(g_cli_mock, imageId_input).MultipleTimes().\
+            AndReturn(imageId)
 
     def _create_test_instance(self, return_server, name):
         stack_name = '%s_s' % name
@@ -160,20 +169,21 @@ class instancesTest(HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment(kwargs),
                              stack_id=str(uuid.uuid4()))
-
-        t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
+        image_id = 'CentOS 5.2'
+        t['Resources']['WebServer']['Properties']['ImageId'] = image_id
+        resource_defns = stack.t.resource_definitions(stack)
         instance = instances.Instance('%s_name' % name,
-                                      t['Resources']['WebServer'], stack)
+                                      resource_defns['WebServer'], stack)
 
         self.m.StubOutWithMock(instance, 'nova')
         instance.nova().MultipleTimes().AndReturn(self.fc)
         self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
         clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
 
+        self._mock_get_image_id_success(image_id, 1)
+
         self.m.StubOutWithMock(instance, 'neutron')
         instance.neutron().MultipleTimes().AndReturn(FakeNeutron())
-
-        instance.t = instance.stack.resolve_runtime_data(instance.t)
 
         # need to resolve the template functions
         server_userdata = nova_utils.build_userdata(
@@ -210,16 +220,18 @@ class instancesTest(HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
                              environment.Environment(kwargs),
                              stack_id=str(uuid.uuid4()))
+        image_id = 'CentOS 5.2'
+        t['Resources']['WebServer']['Properties']['ImageId'] = image_id
 
-        t['Resources']['WebServer']['Properties']['ImageId'] = 'CentOS 5.2'
-
+        resource_defns = stack.t.resource_definitions(stack)
         nic = network_interfaces.NetworkInterface('%s_nic' % name,
-                                                  t['Resources']['nic1'],
+                                                  resource_defns['nic1'],
                                                   stack)
 
         instance = instances.Instance('%s_name' % name,
-                                      t['Resources']['WebServer'], stack)
+                                      resource_defns['WebServer'], stack)
 
+        self._mock_get_image_id_success(image_id, 1)
         self.m.StubOutWithMock(nic, 'neutron')
         nic.neutron().MultipleTimes().AndReturn(FakeNeutron())
 
@@ -227,9 +239,6 @@ class instancesTest(HeatTestCase):
         instance.nova().MultipleTimes().AndReturn(self.fc)
         self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
         clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
-
-        nic.t = nic.stack.resolve_runtime_data(nic.t)
-        instance.t = instance.stack.resolve_runtime_data(instance.t)
 
         # need to resolve the template functions
         server_userdata = nova_utils.build_userdata(

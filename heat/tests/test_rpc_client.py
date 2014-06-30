@@ -1,4 +1,4 @@
-
+#
 # Copyright 2012, Red Hat, Inc.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -89,6 +89,7 @@ class EngineRpcAPITestCase(testtools.TestCase):
             'sort_dir': mock.ANY,
             'filters': mock.ANY,
             'tenant_safe': mock.ANY,
+            'show_deleted': mock.ANY,
         }
         self._test_engine_api('list_stacks', 'call', **default_args)
 

@@ -1,3 +1,4 @@
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -10,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import properties
 from heat.engine import resource
@@ -17,11 +19,17 @@ from heat.openstack.common import excutils
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class NovaFloatingIp(resource.Resource):
     PROPERTIES = (POOL,) = ('pool',)
+
+    ATTRIBUTES = (
+        POOL_ATTR, IP,
+    ) = (
+        'pool', 'ip',
+    )
 
     properties_schema = {
         POOL: properties.Schema(
@@ -32,8 +40,12 @@ class NovaFloatingIp(resource.Resource):
     }
 
     attributes_schema = {
-        'pool': _('Pool from which floating IP is allocated.'),
-        'ip': _('Allocated floating IP address.')
+        POOL_ATTR: attributes.Schema(
+            _('Pool from which floating IP is allocated.')
+        ),
+        IP: attributes.Schema(
+            _('Allocated floating IP address.')
+        ),
     }
 
     def __init__(self, name, json_snippet, stack):
@@ -55,7 +67,7 @@ class NovaFloatingIp(resource.Resource):
                 if pool is None:
                     msg = _('Could not allocate floating IP. Probably there '
                             'is no default floating IP pool is configured.')
-                    logger.error(msg)
+                    LOG.error(msg)
 
         self.resource_id_set(floating_ip.id)
         self._floating_ip = floating_ip
@@ -70,8 +82,8 @@ class NovaFloatingIp(resource.Resource):
     def _resolve_attribute(self, key):
         floating_ip = self._get_resource()
         attributes = {
-            'pool': getattr(floating_ip, 'pool', None),
-            'ip': floating_ip.ip
+            self.POOL_ATTR: getattr(floating_ip, self.POOL_ATTR, None),
+            self.IP: floating_ip.ip
         }
         return unicode(attributes[key])
 

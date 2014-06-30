@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -22,9 +21,6 @@ from heat.api.openstack.v1 import software_configs
 from heat.api.openstack.v1 import software_deployments
 from heat.api.openstack.v1 import stacks
 from heat.common import wsgi
-from heat.openstack.common import log as logging
-
-logger = logging.getLogger(__name__)
 
 
 class API(wsgi.Router):

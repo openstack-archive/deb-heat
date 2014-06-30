@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -11,8 +11,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from heat.common import context
-
 """
 A fake server that "responds" to API methods with pre-canned responses.
 
@@ -20,6 +18,8 @@ All of these responses come from the spec, so if for some reason the spec's
 wrong the tests might raise AssertionError. I've indicated in comments the
 places where actual behavior differs from the spec.
 """
+
+from heat.common import context
 
 
 class FakeClient(object):

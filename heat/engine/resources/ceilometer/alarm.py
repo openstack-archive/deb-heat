@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -11,6 +10,8 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+
+from ceilometerclient import exc as ceilometerclient_exc
 
 from heat.common import exception
 from heat.engine import constraints
@@ -149,8 +150,6 @@ class CeilometerAlarm(resource.Resource):
     }
     properties_schema.update(common_properties_schema)
 
-    update_allowed_keys = ('Properties',)
-
     def handle_create(self):
         props = actions_to_urls(self.stack, self.parsed_template('Properties'))
         props['name'] = self.physical_resource_name()
@@ -195,7 +194,10 @@ class CeilometerAlarm(resource.Resource):
             pass
 
         if self.resource_id is not None:
-            self.ceilometer().alarms.delete(self.resource_id)
+            try:
+                self.ceilometer().alarms.delete(self.resource_id)
+            except ceilometerclient_exc.HTTPNotFound:
+                pass
 
 
 class CombinationAlarm(resource.Resource):
@@ -220,8 +222,6 @@ class CombinationAlarm(resource.Resource):
             update_allowed=True)
     }
     properties_schema.update(common_properties_schema)
-
-    update_allowed_keys = ('Properties',)
 
     def handle_create(self):
         properties = actions_to_urls(self.stack,
@@ -260,7 +260,10 @@ class CombinationAlarm(resource.Resource):
             alarm_id=self.resource_id, enabled=True)
 
     def handle_delete(self):
-        self.ceilometer().alarms.delete(self.resource_id)
+        try:
+            self.ceilometer().alarms.delete(self.resource_id)
+        except ceilometerclient_exc.HTTPNotFound:
+            pass
 
 
 def resource_mapping():

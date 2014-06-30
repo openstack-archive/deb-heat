@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,16 +11,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.engine import attributes
 from heat.engine import clients
+from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.neutron import neutron
-from heat.openstack.common import log as logging
 
 if clients.neutronclient is not None:
     import neutronclient.common.exceptions as neutron_exp
     from neutronclient.neutron import v2_0 as neutronV20
-
-logger = logging.getLogger(__name__)
 
 
 class Net(neutron.NeutronResource):
@@ -31,6 +29,12 @@ class Net(neutron.NeutronResource):
     ) = (
         'name', 'value_specs', 'admin_state_up', 'tenant_id', 'shared',
         'dhcp_agent_ids',
+    )
+
+    ATTRIBUTES = (
+        STATUS, NAME_ATTR, SUBNETS, ADMIN_STATE_UP_ATTR, TENANT_ID_ATTR, SHOW,
+    ) = (
+        "status", "name", "subnets", "admin_state_up", "tenant_id", "show",
     )
 
     properties_schema = {
@@ -79,15 +83,25 @@ class Net(neutron.NeutronResource):
     }
 
     attributes_schema = {
-        "status": _("The status of the network."),
-        "name": _("The name of the network."),
-        "subnets": _("Subnets of this network."),
-        "admin_state_up": _("The administrative status of the network."),
-        "tenant_id": _("The tenant owning this network."),
-        "show": _("All attributes."),
+        STATUS: attributes.Schema(
+            _("The status of the network.")
+        ),
+        NAME_ATTR: attributes.Schema(
+            _("The name of the network.")
+        ),
+        SUBNETS: attributes.Schema(
+            _("Subnets of this network.")
+        ),
+        ADMIN_STATE_UP_ATTR: attributes.Schema(
+            _("The administrative status of the network.")
+        ),
+        TENANT_ID_ATTR: attributes.Schema(
+            _("The tenant owning this network.")
+        ),
+        SHOW: attributes.Schema(
+            _("All attributes.")
+        ),
     }
-
-    update_allowed_keys = ('Properties',)
 
     def handle_create(self):
         props = self.prepare_properties(
@@ -170,17 +184,14 @@ class Net(neutron.NeutronResource):
                     raise ex
 
 
-class NetworkConstraint(object):
+class NetworkConstraint(constraints.BaseCustomConstraint):
 
-    def validate(self, value, context):
-        try:
-            neutron_client = clients.Clients(context).neutron()
-            neutronV20.find_resourceid_by_name_or_id(
-                neutron_client, 'network', value)
-        except neutron_exp.NeutronClientException:
-            return False
-        else:
-            return True
+    expected_exceptions = (neutron_exp.NeutronClientException,)
+
+    def validate_with_client(self, client, value):
+        neutron_client = client.neutron()
+        neutronV20.find_resourceid_by_name_or_id(
+            neutron_client, 'network', value)
 
 
 def constraint_mapping():

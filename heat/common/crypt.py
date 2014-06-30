@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -13,11 +12,11 @@
 #    under the License.
 
 import base64
+
 from Crypto.Cipher import AES
 from oslo.config import cfg
 
 from heat.openstack.common.crypto import utils
-from heat.openstack.common import log as logging
 
 
 auth_opts = [
@@ -27,8 +26,6 @@ auth_opts = [
 ]
 
 cfg.CONF.register_opts(auth_opts)
-
-logger = logging.getLogger(__name__)
 
 
 def encrypt(auth_info):
@@ -54,7 +51,7 @@ def heat_decrypt(auth_info):
     Note: the encrypt function returns the function that is needed to
     decrypt the data. The database then stores this. When the data is
     then retrieved (potentially by a later version of Heat) the decrypt
-    function must still exist. So whilst it my seem that this function
+    function must still exist. So whilst it may seem that this function
     is not referenced, it will be referenced from the database.
     """
     if auth_info is None:

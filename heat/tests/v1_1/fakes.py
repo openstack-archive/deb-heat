@@ -1,3 +1,4 @@
+#
 # Copyright (c) 2011 X.commerce, a business unit of eBay Inc.
 # Copyright 2011 OpenStack Foundation
 #
@@ -16,9 +17,10 @@
 import httplib2
 
 from novaclient import client as base_client
+from novaclient import exceptions as nova_exceptions
 from novaclient.v1_1 import client
+from six.moves.urllib import parse as urlparse
 
-from heat.openstack.common.py3kcompat import urlutils
 from heat.tests import fakes
 
 
@@ -46,7 +48,7 @@ class FakeHTTPClient(base_client.HTTPClient):
             assert 'body' in kwargs
 
         # Call the method
-        args = urlutils.parse_qsl(urlutils.urlparse(url)[4])
+        args = urlparse.parse_qsl(urlparse.urlparse(url)[4])
         kwargs.update(args)
         munged_url = url.rsplit('?', 1)[0]
         munged_url = munged_url.strip('/').replace('/', '_').replace('.', '_')
@@ -74,7 +76,7 @@ class FakeHTTPClient(base_client.HTTPClient):
     def get_servers_detail(self, **kw):
         return (
             200,
-            {"servers": [{"id": 1234,
+            {"servers": [{"id": "1234",
                           "name": "sample-server",
                           "OS-EXT-SRV-ATTR:instance_name":
                           "sample-server",
@@ -93,7 +95,7 @@ class FakeHTTPClient(base_client.HTTPClient):
                           "accessIPv6": "",
                           "metadata": {"Server Label": "Web Head 1",
                                        "Image Version": "2.1"}},
-                         {"id": 5678,
+                         {"id": "5678",
                           "name": "sample-server2",
                           "OS-EXT-SRV-ATTR:instance_name":
                           "sample-server2",
@@ -116,7 +118,7 @@ class FakeHTTPClient(base_client.HTTPClient):
                                                     "OS-EXT-IPS-MAC:mac_addr":
                                                     "fa:16:3e:8c:44:cc"}]},
                           "metadata": {}},
-                         {"id": 9101,
+                         {"id": "9101",
                           "name": "hard-reboot",
                           "OS-EXT-SRV-ATTR:instance_name":
                           "hard-reboot",
@@ -133,7 +135,7 @@ class FakeHTTPClient(base_client.HTTPClient):
                                         "private": [{"version": 4,
                                                      "addr": "10.13.12.13"}]},
                           "metadata": {"Server Label": "DB 1"}},
-                         {"id": 9102,
+                         {"id": "9102",
                           "name": "server-with-no-ip",
                           "OS-EXT-SRV-ATTR:instance_name":
                           "server-with-no-ip",
@@ -145,7 +147,7 @@ class FakeHTTPClient(base_client.HTTPClient):
                           "accessIPv6": "",
                           "addresses": {"empty_net": []},
                           "metadata": {"Server Label": "DB 1"}},
-                         {"id": 9999,
+                         {"id": "9999",
                           "name": "sample-server3",
                           "OS-EXT-SRV-ATTR:instance_name":
                           "sample-server3",
@@ -363,6 +365,14 @@ class FakeHTTPClient(base_client.HTTPClient):
         return (200, {"keypairs": [{'fingerprint': 'FAKE_KEYPAIR',
                                     'name': 'test',
                                     'public_key': 'foo'}]})
+
+    def get_os_keypairs_test(self, *kw):
+        return (200, {"keypair": {'fingerprint': 'FAKE_KEYPAIR',
+                                  'name': 'test',
+                                  'public_key': 'foo'}})
+
+    def get_os_keypairs_test2(self, *kw):
+        raise nova_exceptions.NotFound(404)
 
     def get_os_availability_zone(self, *kw):
         return (200, {"availabilityZoneInfo": [{'zoneName': 'nova1'}]})

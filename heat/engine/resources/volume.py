@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -15,11 +14,12 @@
 import json
 
 from heat.common import exception
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
-from heat.engine.resources import nova_utils
+from heat.engine.resources import glance_utils
 from heat.engine import scheduler
 from heat.engine import support
 from heat.openstack.common.importutils import try_import
@@ -27,7 +27,7 @@ from heat.openstack.common import log as logging
 
 volume_backups = try_import('cinderclient.v1.volume_backups')
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class Volume(resource.Resource):
@@ -51,8 +51,13 @@ class Volume(resource.Resource):
             required=True
         ),
         SIZE: properties.Schema(
-            properties.Schema.NUMBER,
-            _('The size of the volume in GB.')
+            properties.Schema.INTEGER,
+            _('The size of the volume in GB. '
+              'On update only increase in size is supported.'),
+            update_allowed=True,
+            constraints=[
+                constraints.Range(min=1),
+            ]
         ),
         BACKUP_ID: properties.Schema(
             properties.Schema.STRING,
@@ -150,7 +155,7 @@ class Volume(resource.Resource):
                     vol.get()
 
                 if vol.status == 'in-use':
-                    logger.warn(_('can not delete volume when in-use'))
+                    LOG.warn(_('can not delete volume when in-use'))
                     raise exception.Error(_('Volume in use'))
 
                 vol.delete()
@@ -176,6 +181,99 @@ class Volume(resource.Resource):
 
     def check_delete_complete(self, delete_task):
         return delete_task.step()
+
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
+        checkers = []
+        if self.SIZE in prop_diff:
+            new_size = prop_diff[self.SIZE]
+            vol = self.cinder().volumes.get(self.resource_id)
+
+            if new_size < vol.size:
+                raise exception.NotSupported(feature=_("Shrinking volume"))
+
+            elif new_size > vol.size:
+                if vol.attachments:
+                    #NOTE(pshchelo):
+                    # this relies on current behaviour of cinder attachments,
+                    # i.e. volume attachments is a list with len<=1,
+                    # so the volume can be attached only to single instance,
+                    # and id of attachment is the same as id of the volume
+                    # it describes, so detach/attach the same volume
+                    # will not change volume attachment id.
+                    server_id = vol.attachments[0]['server_id']
+                    device = vol.attachments[0]['device']
+                    attachment_id = vol.attachments[0]['id']
+                    detach_task = VolumeDetachTask(self.stack, server_id,
+                                                   attachment_id)
+                    checkers.append(scheduler.TaskRunner(detach_task))
+                    extend_task = VolumeExtendTask(self.stack, vol.id,
+                                                   new_size)
+                    checkers.append(scheduler.TaskRunner(extend_task))
+                    attach_task = VolumeAttachTask(self.stack, server_id,
+                                                   vol.id, device)
+                    checkers.append(scheduler.TaskRunner(attach_task))
+
+                else:
+                    extend_task = VolumeExtendTask(self.stack, vol.id,
+                                                   new_size)
+                    checkers.append(scheduler.TaskRunner(extend_task))
+
+        if checkers:
+            checkers[0].start()
+        return checkers
+
+    def check_update_complete(self, checkers):
+        for checker in checkers:
+            if not checker.started():
+                checker.start()
+            if not checker.step():
+                return False
+        return True
+
+
+class VolumeExtendTask(object):
+    """A task to resize volume using Cinder API."""
+
+    def __init__(self, stack, volume_id, size):
+        self.clients = stack.clients
+        self.volume_id = volume_id
+        self.size = size
+
+    def __str__(self):
+        return _("Resizing volume %(vol)s to size %(size)i") % {
+            'vol': self.volume_id, 'size': self.size}
+
+    def __repr__(self):
+        return "%s(%s +-> %i)" % (type(self).__name__, self.volume_id,
+                                  self.size)
+
+    def __call__(self):
+        LOG.debug(str(self))
+
+        cinder = self.clients.cinder().volumes
+        vol = cinder.get(self.volume_id)
+
+        try:
+            cinder.extend(self.volume_id, self.size)
+        except clients.cinderclient.exceptions.ClientException as ex:
+            raise exception.Error(_(
+                "Failed to extend volume %(vol)s - %(err)s") % {
+                    'vol': vol.id, 'err': str(ex)})
+
+        yield
+
+        vol.get()
+        while vol.status == 'extending':
+            LOG.debug("Volume %s is being extended" % self.volume_id)
+            yield
+            vol.get()
+
+        if vol.status != 'available':
+            raise exception.Error(_("Resize failed: Volume %(vol)s is in "
+                                    "%(status)s state.") % {
+                                        'vol': vol.id, 'status': vol.status})
+
+        LOG.info(_('%s - complete') % str(self))
 
 
 class VolumeAttachTask(object):
@@ -207,7 +305,7 @@ class VolumeAttachTask(object):
 
     def __call__(self):
         """Return a co-routine which runs the task."""
-        logger.debug(str(self))
+        LOG.debug(str(self))
 
         va = self.clients.nova().volumes.create_server_volume(
             server_id=self.server_id,
@@ -218,15 +316,15 @@ class VolumeAttachTask(object):
 
         vol = self.clients.cinder().volumes.get(self.volume_id)
         while vol.status == 'available' or vol.status == 'attaching':
-            logger.debug(_('%(name)s - volume status: %(status)s') % {
-                         'name': str(self), 'status': vol.status})
+            LOG.debug('%(name)s - volume status: %(status)s'
+                      % {'name': str(self), 'status': vol.status})
             yield
             vol.get()
 
         if vol.status != 'in-use':
             raise exception.Error(vol.status)
 
-        logger.info(_('%s - complete') % str(self))
+        LOG.info(_('%s - complete') % str(self))
 
 
 class VolumeDetachTask(object):
@@ -254,7 +352,7 @@ class VolumeDetachTask(object):
 
     def __call__(self):
         """Return a co-routine which runs the task."""
-        logger.debug(str(self))
+        LOG.debug(str(self))
 
         server_api = self.clients.nova().volumes
 
@@ -266,7 +364,7 @@ class VolumeDetachTask(object):
         except (clients.cinderclient.exceptions.NotFound,
                 clients.novaclient.exceptions.BadRequest,
                 clients.novaclient.exceptions.NotFound):
-            logger.warning(_('%s - volume not found') % str(self))
+            LOG.warning(_('%s - volume not found') % str(self))
             return
 
         # detach the volume using volume_attachment
@@ -274,32 +372,43 @@ class VolumeDetachTask(object):
             server_api.delete_server_volume(self.server_id, self.attachment_id)
         except (clients.novaclient.exceptions.BadRequest,
                 clients.novaclient.exceptions.NotFound) as e:
-            logger.warning('%(res)s - %(err)s' % {'res': str(self),
-                                                  'err': str(e)})
+            LOG.warning(_('%(res)s - %(err)s') % {'res': str(self),
+                                                  'err': e})
 
         yield
 
         try:
-            vol.get()
             while vol.status in ('in-use', 'detaching'):
-                logger.debug(_('%s - volume still in use') % str(self))
+                LOG.debug('%s - volume still in use' % str(self))
                 yield
-
-                try:
-                    server_api.delete_server_volume(self.server_id,
-                                                    self.attachment_id)
-                except (clients.novaclient.exceptions.BadRequest,
-                        clients.novaclient.exceptions.NotFound):
-                    pass
                 vol.get()
 
-            logger.info(_('%(name)s - status: %(status)s') % {
-                        'name': str(self), 'status': vol.status})
+            LOG.info(_('%(name)s - status: %(status)s')
+                     % {'name': str(self), 'status': vol.status})
             if vol.status != 'available':
                 raise exception.Error(vol.status)
 
         except clients.cinderclient.exceptions.NotFound:
-            logger.warning(_('%s - volume not found') % str(self))
+            LOG.warning(_('%s - volume not found') % str(self))
+
+        # The next check is needed for immediate reattachment when updating:
+        # there might be some time between cinder marking volume as 'available'
+        # and nova removing attachment from its own objects, so we
+        # check that nova already knows that the volume is detached
+        def server_has_attachment(server_id, attachment_id):
+            try:
+                server_api.get_server_volume(server_id, attachment_id)
+            except clients.novaclient.exceptions.NotFound:
+                return False
+            return True
+
+        while server_has_attachment(self.server_id, self.attachment_id):
+            LOG.info(_("Server %(srv)s still has attachment %(att)s.")
+                     % {'att': self.attachment_id, 'srv': self.server_id})
+            yield
+
+        LOG.info(_("Volume %(vol)s is detached from server %(srv)s")
+                 % {'vol': vol.id, 'srv': self.server_id})
 
         # The next check is needed for immediate reattachment when updating:
         # as the volume info is taken from cinder, but the detach
@@ -433,14 +542,26 @@ class CinderVolume(Volume):
         'source_volid',
     )
 
+    ATTRIBUTES = (
+        AVAILABILITY_ZONE_ATTR, SIZE_ATTR, SNAPSHOT_ID_ATTR, DISPLAY_NAME,
+        DISPLAY_DESCRIPTION, VOLUME_TYPE_ATTR, METADATA_ATTR,
+        SOURCE_VOLID_ATTR, STATUS, CREATED_AT, BOOTABLE,
+    ) = (
+        'availability_zone', 'size', 'snapshot_id', 'display_name',
+        'display_description', 'volume_type', 'metadata',
+        'source_volid', 'status', 'created_at', 'bootable',
+    )
+
     properties_schema = {
         AVAILABILITY_ZONE: properties.Schema(
             properties.Schema.STRING,
             _('The availability zone in which the volume will be created.')
         ),
         SIZE: properties.Schema(
-            properties.Schema.NUMBER,
-            _('The size of the volume in GB.'),
+            properties.Schema.INTEGER,
+            _('The size of the volume in GB. '
+              'On update only increase in size is supported.'),
+            update_allowed=True,
             constraints=[
                 constraints.Range(min=1),
             ]
@@ -492,20 +613,39 @@ class CinderVolume(Volume):
     }
 
     attributes_schema = {
-        'availability_zone': _('The availability zone in which the volume is '
-                               ' located.'),
-        'size': _('The size of the volume in GB.'),
-        'snapshot_id': _('The snapshot the volume was created from, if any.'),
-        'display_name': _('Name of the volume.'),
-        'display_description': _('Description of the volume.'),
-        'volume_type': _('The type of the volume mapping to a backend, if '
-                         'any.'),
-        'metadata': _('Key/value pairs associated with the volume.'),
-        'source_volid': _('The volume used as source, if any.'),
-        'status': _('The current status of the volume.'),
-        'created_at': _('The timestamp indicating volume creation.'),
-        'bootable': _('Boolean indicating if the volume can be booted or '
-                      'not.'),
+        AVAILABILITY_ZONE_ATTR: attributes.Schema(
+            _('The availability zone in which the volume is located.')
+        ),
+        SIZE_ATTR: attributes.Schema(
+            _('The size of the volume in GB.')
+        ),
+        SNAPSHOT_ID_ATTR: attributes.Schema(
+            _('The snapshot the volume was created from, if any.')
+        ),
+        DISPLAY_NAME: attributes.Schema(
+            _('Name of the volume.')
+        ),
+        DISPLAY_DESCRIPTION: attributes.Schema(
+            _('Description of the volume.')
+        ),
+        VOLUME_TYPE_ATTR: attributes.Schema(
+            _('The type of the volume mapping to a backend, if any.')
+        ),
+        METADATA_ATTR: attributes.Schema(
+            _('Key/value pairs associated with the volume.')
+        ),
+        SOURCE_VOLID_ATTR: attributes.Schema(
+            _('The volume used as source, if any.')
+        ),
+        STATUS: attributes.Schema(
+            _('The current status of the volume.')
+        ),
+        CREATED_AT: attributes.Schema(
+            _('The timestamp indicating volume creation.')
+        ),
+        BOOTABLE: attributes.Schema(
+            _('Boolean indicating if the volume can be booted or not.')
+        ),
     }
 
     _volume_creating_status = ['creating', 'restoring-backup', 'downloading']
@@ -525,8 +665,8 @@ class CinderVolume(Volume):
             'availability_zone': self.properties[self.AVAILABILITY_ZONE]
         }
         if self.properties.get(self.IMAGE):
-            arguments['imageRef'] = nova_utils.get_image_id(
-                self.nova(), self.properties[self.IMAGE])
+            arguments['imageRef'] = glance_utils.get_image_id(
+                self.glance(), self.properties[self.IMAGE])
         elif self.properties.get(self.IMAGE_REF):
             arguments['imageRef'] = self.properties[self.IMAGE_REF]
 

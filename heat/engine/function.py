@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -14,6 +13,7 @@
 
 import abc
 import collections
+import itertools
 
 
 class Function(object):
@@ -36,6 +36,15 @@ class Function(object):
         self.fn_name = fn_name
         self.args = args
 
+    def validate(self):
+        """
+        Validate arguments without resolving the function.
+
+        Function subclasses must override this method to validate their
+        args.
+        """
+        validate(self.args)
+
     @abc.abstractmethod
     def result(self):
         """
@@ -45,6 +54,9 @@ class Function(object):
         results.
         """
         return {self.fn_name: self.args}
+
+    def dependencies(self, path):
+        return dependencies(self.args, '.'.join([path, self.fn_name]))
 
     def __reduce__(self):
         """
@@ -110,3 +122,47 @@ def resolve(snippet):
         return [resolve(v) for v in snippet]
 
     return snippet
+
+
+def validate(snippet):
+    if isinstance(snippet, Function):
+        snippet.validate()
+    elif isinstance(snippet, collections.Mapping):
+        for v in snippet.values():
+            validate(v)
+    elif (not isinstance(snippet, basestring) and
+          isinstance(snippet, collections.Iterable)):
+        for v in snippet:
+            validate(v)
+
+
+def dependencies(snippet, path=''):
+    """
+    Return an iterator over Resource dependencies in a template snippet.
+
+    The snippet should be already parsed to insert Function objects where
+    appropriate.
+    """
+
+    if isinstance(snippet, Function):
+        return snippet.dependencies(path)
+
+    elif isinstance(snippet, collections.Mapping):
+        def mkpath(key):
+            return '.'.join([path, unicode(key)])
+
+        deps = (dependencies(value,
+                             mkpath(key)) for key, value in snippet.items())
+        return itertools.chain.from_iterable(deps)
+
+    elif (not isinstance(snippet, basestring) and
+          isinstance(snippet, collections.Iterable)):
+        def mkpath(idx):
+            return ''.join([path, '[%d]' % idx])
+
+        deps = (dependencies(value,
+                             mkpath(i)) for i, value in enumerate(snippet))
+        return itertools.chain.from_iterable(deps)
+
+    else:
+        return []

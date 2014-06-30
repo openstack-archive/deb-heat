@@ -1,4 +1,4 @@
-
+#
 # Copyright (C) 2012, Red Hat, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,11 +20,11 @@ Middleware for authenticating against custom backends.
 
 import logging
 
+import webob.exc
+
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import local
 from heat.rpc import client as rpc_client
-import webob.exc
-
 
 LOG = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class AuthProtocol(object):
         Authenticate send downstream on success. Reject request if
         we can't authenticate.
         """
-        LOG.debug(_('Authenticating user token'))
+        LOG.debug('Authenticating user token')
         context = local.store.context
         authenticated = self.rpc_client.authenticated_to_backend(context)
         if authenticated:

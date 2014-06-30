@@ -12,23 +12,21 @@
 #    under the License.
 
 import email
+
+import heatclient.exc as exc
 import mock
 
 from heat.engine import parser
+from heat.engine.resources.software_config import multi_part as mp
 from heat.engine import template
-
-import heat.engine.resources.software_config.multi_part as mp
-
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
-import heatclient.exc as exc
 
 
 class MultipartMimeTest(HeatTestCase):
 
     def setUp(self):
         super(MultipartMimeTest, self).setUp()
-        utils.setup_dummy_db()
         self.ctx = utils.dummy_context()
         self.init_config()
 
@@ -36,6 +34,7 @@ class MultipartMimeTest(HeatTestCase):
         stack = parser.Stack(
             self.ctx, 'software_config_test_stack',
             template.Template({
+                'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
                     'config_mysql': {
                         'Type': 'OS::Heat::MultipartMime',

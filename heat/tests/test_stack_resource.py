@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -28,7 +28,8 @@ from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
 
 
-ws_res_snippet = {"Type": "some_magic_type",
+ws_res_snippet = {"HeatTemplateFormatVersion": "2012-12-12",
+                  "Type": "some_magic_type",
                   "metadata": {
                       "key": "value",
                       "some": "more stuff"}}
@@ -101,17 +102,19 @@ class StackResourceTest(HeatTestCase):
 
     def setUp(self):
         super(StackResourceTest, self).setUp()
-        utils.setup_dummy_db()
         resource._register_class('some_magic_type',
                                  MyStackResource)
         resource._register_class('GenericResource',
                                  generic_rsrc.GenericResource)
-        t = parser.Template({'Resources':
-                             {"provider_resource": ws_res_snippet}})
+        self.ws_resname = "provider_resource"
+        t = parser.Template({'HeatTemplateFormatVersion': '2012-12-12',
+                             'Resources':
+                             {self.ws_resname: ws_res_snippet}})
         self.parent_stack = parser.Stack(utils.dummy_context(), 'test_stack',
                                          t, stack_id=str(uuid.uuid4()))
+        resource_defns = t.resource_definitions(self.parent_stack)
         self.parent_resource = MyStackResource('test',
-                                               ws_res_snippet,
+                                               resource_defns[self.ws_resname],
                                                self.parent_stack)
         self.templ = template_format.parse(param_template)
         self.simple_template = template_format.parse(simple_template)
@@ -135,7 +138,7 @@ class StackResourceTest(HeatTestCase):
         self.stack = self.parent_resource.nested()
         self.assertEqual({"foo": "bar"}, self.stack.t.files)
 
-    @mock.patch.object(stack_resource.environment, 'Environment')
+    @mock.patch.object(stack_resource.StackResource, '_nested_environment')
     @mock.patch.object(stack_resource.parser, 'Template')
     @mock.patch.object(stack_resource.parser, 'Stack')
     def test_preview_with_implemented_child_resource(self, mock_stack_class,
@@ -147,9 +150,12 @@ class StackResourceTest(HeatTestCase):
         mock_template_class.return_value = 'parsed_template'
         mock_env_class.return_value = 'environment'
         template = template_format.parse(param_template)
-        parent_resource = MyImplementedStackResource('test',
-                                                     ws_res_snippet,
-                                                     self.parent_stack)
+        parent_t = self.parent_stack.t
+        resource_defns = parent_t.resource_definitions(self.parent_stack)
+        parent_resource = MyImplementedStackResource(
+            'test',
+            resource_defns[self.ws_resname],
+            self.parent_stack)
         params = {'KeyName': 'test'}
         parent_resource.set_template(template, params)
         validation_mock = mock.Mock(return_value=None)
@@ -170,10 +176,14 @@ class StackResourceTest(HeatTestCase):
         )
 
     def test_preview_validates_nested_resources(self):
-        stack_resource = MyImplementedStackResource('test',
-                                                    ws_res_snippet,
-                                                    self.parent_stack)
-        stack_resource.child_template = mock.Mock(return_value={})
+        parent_t = self.parent_stack.t
+        resource_defns = parent_t.resource_definitions(self.parent_stack)
+        stack_resource = MyImplementedStackResource(
+            'test',
+            resource_defns[self.ws_resname],
+            self.parent_stack)
+        stack_resource.child_template = \
+            mock.Mock(return_value={'HeatTemplateFormatVersion': '2012-12-12'})
         stack_resource.child_params = mock.Mock()
         exc = exception.RequestLimitExceeded(message='Validation Failed')
         validation_mock = mock.Mock(side_effect=exc)
@@ -184,7 +194,8 @@ class StackResourceTest(HeatTestCase):
 
     def test__validate_nested_resources_checks_num_of_resources(self):
         stack_resource.cfg.CONF.set_override('max_resources_per_stack', 2)
-        tmpl = {'Resources': [1]}
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Resources': [1]}
         template = stack_resource.parser.Template(tmpl)
         root_resources = mock.Mock(return_value=2)
         self.parent_resource.stack.root_stack.total_resources = root_resources
@@ -193,7 +204,6 @@ class StackResourceTest(HeatTestCase):
                           self.parent_resource._validate_nested_resources,
                           template)
 
-    @utils.stack_delete_after
     def test_create_with_template_ok(self):
         self.parent_resource.create_with_template(self.templ,
                                                   {"KeyName": "key"})
@@ -206,7 +216,6 @@ class StackResourceTest(HeatTestCase):
         self.assertEqual(self.stack.id, self.parent_resource.resource_id)
         self.assertIsNone(self.stack.timeout_mins)
 
-    @utils.stack_delete_after
     def test_create_with_template_timeout_mins(self):
         self.assertIsNone(self.parent_stack.timeout_mins)
         self.m.StubOutWithMock(self.parent_stack, 'timeout_mins')
@@ -218,7 +227,6 @@ class StackResourceTest(HeatTestCase):
         self.assertEqual(100, self.stack.timeout_mins)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_adopt_with_template_ok(self):
         adopt_data = {
             "resources": {
@@ -241,20 +249,10 @@ class StackResourceTest(HeatTestCase):
         self.assertEqual(self.templ, self.stack.t.t)
         self.assertEqual(self.stack.id, self.parent_resource.resource_id)
 
-    @utils.stack_delete_after
-    def test_set_deletion_policy(self):
+    def test_prepare_abandon(self):
         self.parent_resource.create_with_template(self.templ,
                                                   {"KeyName": "key"})
-        self.stack = self.parent_resource.nested()
-        self.parent_resource.set_deletion_policy(resource.RETAIN)
-        for res in self.stack.resources.values():
-            self.assertEqual(resource.RETAIN, res.t['DeletionPolicy'])
-
-    @utils.stack_delete_after
-    def test_get_abandon_data(self):
-        self.parent_resource.create_with_template(self.templ,
-                                                  {"KeyName": "key"})
-        ret = self.parent_resource.get_abandon_data()
+        ret = self.parent_resource.prepare_abandon()
         # check abandoned data contains all the necessary information.
         # (no need to check stack/resource IDs, because they are
         # randomly generated uuids)
@@ -266,7 +264,6 @@ class StackResourceTest(HeatTestCase):
         self.assertEqual(template_format.parse(param_template),
                          ret['template'])
 
-    @utils.stack_delete_after
     def test_create_with_template_validates(self):
         """
         Creating a stack with a template validates the created stack, so that
@@ -281,7 +278,6 @@ class StackResourceTest(HeatTestCase):
             self.parent_resource.create_with_template,
             template, {'WebServer': 'foo'})
 
-    @utils.stack_delete_after
     def test_update_with_template_validates(self):
         """Updating a stack with a template validates the created stack."""
         create_result = self.parent_resource.create_with_template(
@@ -296,7 +292,6 @@ class StackResourceTest(HeatTestCase):
             self.parent_resource.update_with_template,
             template, {'WebServer': 'foo'})
 
-    @utils.stack_delete_after
     def test_update_with_template_ok(self):
         """
         The update_with_template method updates the nested stack with the
@@ -326,7 +321,6 @@ class StackResourceTest(HeatTestCase):
             self.parent_stack.context, self.stack.id)
         self.assertEqual(self.parent_stack.id, saved_stack.owner_id)
 
-    @utils.stack_delete_after
     def test_update_with_template_timeout_mins(self):
         self.assertIsNone(self.parent_stack.timeout_mins)
         self.m.StubOutWithMock(self.parent_stack, 'timeout_mins')
@@ -349,7 +343,6 @@ class StackResourceTest(HeatTestCase):
         self.assertEqual(200, self.stack.timeout_mins)
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_update_with_template_files(self):
         create_result = self.parent_resource.create_with_template(
             self.simple_template, {})
@@ -367,7 +360,6 @@ class StackResourceTest(HeatTestCase):
 
         self.assertEqual({"foo": "bar"}, self.stack.t.files)
 
-    @utils.stack_delete_after
     def test_update_with_template_state_err(self):
         """
         update_with_template_state_err method should raise error when update
@@ -401,7 +393,6 @@ class StackResourceTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_load_nested_ok(self):
         self.parent_resource.create_with_template(self.templ,
                                                   {"KeyName": "key"})
@@ -418,7 +409,6 @@ class StackResourceTest(HeatTestCase):
         self.parent_resource.nested()
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_load_nested_non_exist(self):
         self.parent_resource.create_with_template(self.templ,
                                                   {"KeyName": "key"})
@@ -486,7 +476,6 @@ class StackResourceTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_create_complete_state_err(self):
         """
         check_create_complete should raise error when create task is
@@ -503,11 +492,8 @@ class StackResourceTest(HeatTestCase):
                                   disable_rollback=True,
                                   parent_resource=self.parent_resource)
 
-        self.m.StubOutWithMock(parser, 'Template')
-        parser.Template(self.templ, files={}).AndReturn(templ)
-
         self.m.StubOutWithMock(environment, 'Environment')
-        environment.Environment({"KeyName": "test"}).AndReturn(env)
+        environment.Environment().AndReturn(env)
 
         self.m.StubOutWithMock(parser, 'Stack')
         parser.Stack(ctx, phy_id, templ, env, timeout_mins=None,
@@ -535,7 +521,6 @@ class StackResourceTest(HeatTestCase):
         # Restore state_set to let clean up proceed
         self.stack.state_set = st_set
 
-    @utils.stack_delete_after
     def test_suspend_complete_state_err(self):
         """
         check_suspend_complete should raise error when suspend task is
@@ -565,7 +550,6 @@ class StackResourceTest(HeatTestCase):
         # Restore state_set to let clean up proceed
         self.stack.state_set = st_set
 
-    @utils.stack_delete_after
     def test_resume_complete_state_err(self):
         """
         check_resume_complete should raise error when resume task is

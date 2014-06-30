@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -158,7 +158,8 @@ class CfnStackControllerTest(HeatTestCase):
                        u'StackStatus': u'CREATE_COMPLETE'}]}}}
         self.assertEqual(expected, result)
         default_args = {'limit': None, 'sort_keys': None, 'marker': None,
-                        'sort_dir': None, 'filters': None, 'tenant_safe': True}
+                        'sort_dir': None, 'filters': None, 'tenant_safe': True,
+                        'show_deleted': False}
         mock_call.assert_called_once_with(dummy_req.context, self.topic,
                                           {'namespace': None,
                                            'method': 'list_stacks',

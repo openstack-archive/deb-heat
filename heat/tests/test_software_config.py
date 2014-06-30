@@ -11,15 +11,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heatclient.exc import HTTPNotFound
 import mock
 
 from heat.common import exception
 from heat.engine import parser
+from heat.engine.resources.software_config import software_config as sc
 from heat.engine import template
-
-import heat.engine.resources.software_config.software_config as sc
-from heatclient.exc import HTTPNotFound
-
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
@@ -28,7 +26,6 @@ class SoftwareConfigTest(HeatTestCase):
 
     def setUp(self):
         super(SoftwareConfigTest, self).setUp()
-        utils.setup_dummy_db()
         self.ctx = utils.dummy_context()
         self.properties = {
             'group': 'Heat::Shell',
@@ -40,6 +37,7 @@ class SoftwareConfigTest(HeatTestCase):
         self.stack = parser.Stack(
             self.ctx, 'software_config_test_stack',
             template.Template({
+                'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
                     'config_mysql': {
                         'Type': 'OS::Heat::SoftwareConfig',

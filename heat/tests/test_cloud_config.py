@@ -14,10 +14,8 @@
 import mock
 
 from heat.engine import parser
+from heat.engine.resources.software_config import cloud_config as cc
 from heat.engine import template
-
-import heat.engine.resources.software_config.cloud_config as cc
-
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
@@ -26,7 +24,6 @@ class CloudConfigTest(HeatTestCase):
 
     def setUp(self):
         super(CloudConfigTest, self).setUp()
-        utils.setup_dummy_db()
         self.ctx = utils.dummy_context()
         self.properties = {
             'cloud_config': {'foo': 'bar'}
@@ -34,6 +31,7 @@ class CloudConfigTest(HeatTestCase):
         self.stack = parser.Stack(
             self.ctx, 'software_config_test_stack',
             template.Template({
+                'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
                     'config_mysql': {
                         'Type': 'OS::Heat::CloudConfig',

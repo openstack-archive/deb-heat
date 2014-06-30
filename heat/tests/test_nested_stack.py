@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -14,12 +14,10 @@
 
 import copy
 import json
+
 import mock
-from requests import exceptions
-
 from oslo.config import cfg
-
-cfg.CONF.import_opt('max_resources_per_stack', 'heat.common.config')
+from requests import exceptions
 
 from heat.common import exception
 from heat.common import template_format
@@ -31,6 +29,8 @@ from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
+
+cfg.CONF.import_opt('max_resources_per_stack', 'heat.common.config')
 
 
 class NestedStackTest(HeatTestCase):
@@ -68,7 +68,6 @@ Outputs:
     def setUp(self):
         super(NestedStackTest, self).setUp()
         self.m.StubOutWithMock(urlfetch, 'get')
-        utils.setup_dummy_db()
 
     def create_stack(self, template):
         t = template_format.parse(template)
@@ -629,7 +628,8 @@ Resources:
 
     @mock.patch.object(urlfetch, 'get')
     def test_child_template_when_io_error(self, mock_get):
-        mock_get.side_effect = IOError()
+        msg = 'Failed to retrieve template'
+        mock_get.side_effect = urlfetch.URLFetchError(msg)
         t = template_format.parse(self.test_template)
         stack = self.parse_stack(t)
         nested_stack = stack['the_nested']
@@ -638,7 +638,7 @@ Resources:
 
 class ResDataResource(generic_rsrc.GenericResource):
     def handle_create(self):
-        db_api.resource_data_set(self, "test", 'A secret value', True)
+        self.data_set("test", 'A secret value', True)
 
 
 class ResDataNestedStackTest(NestedStackTest):

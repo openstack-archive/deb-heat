@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -11,14 +11,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""
-Resources for Rackspace Auto Scale.
-"""
+"""Resources for Rackspace Auto Scale."""
 
 import copy
 
-from heat.common import exception
-from heat.db.sqlalchemy import api as db_api
+from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
@@ -38,6 +35,7 @@ except ImportError:
 
 
 class Group(resource.Resource):
+
     """Represents a scaling group."""
 
     # pyrax differs drastically from the actual Auto Scale API. We'll prefer
@@ -225,7 +223,8 @@ class Group(resource.Resource):
                       'this group.')
                 ),
             },
-            required=True
+            required=True,
+            update_allowed=True
         ),
         LAUNCH_CONFIGURATION: properties.Schema(
             properties.Schema.MAP,
@@ -247,16 +246,13 @@ class Group(resource.Resource):
                     ]
                 ),
             },
-            required=True
+            required=True,
+            update_allowed=True
         ),
         # We don't allow scaling policies to be specified here, despite the
         # fact that the API supports it. Users should use the ScalingPolicy
         # resource.
     }
-
-    update_allowed_keys = ('Properties',)
-    # Everything can be changed.
-    update_allowed_properties = (GROUP_CONFIGURATION, LAUNCH_CONFIGURATION)
 
     def _get_group_config_args(self, groupconf):
         """Get the groupConfiguration-related pyrax arguments."""
@@ -277,6 +273,11 @@ class Group(resource.Resource):
             for lb in lbs:
                 lbid = int(lb[self.LAUNCH_CONFIG_ARGS_LOAD_BALANCER_ID])
                 lb[self.LAUNCH_CONFIG_ARGS_LOAD_BALANCER_ID] = lbid
+        personality = server_args.get(
+            self.LAUNCH_CONFIG_ARGS_SERVER_PERSONALITY)
+        if personality:
+            personality = [{'path': k, 'contents': v} for k, v in
+                           personality.items()]
         return dict(
             launch_config_type=launchconf[self.LAUNCH_CONFIG_TYPE],
             server_name=server_args[self.GROUP_CONFIGURATION_NAME],
@@ -285,8 +286,7 @@ class Group(resource.Resource):
             disk_config=server_args.get(
                 self.LAUNCH_CONFIG_ARGS_SERVER_DISK_CONFIG),
             metadata=server_args.get(self.GROUP_CONFIGURATION_METADATA),
-            personality=server_args.get(
-                self.LAUNCH_CONFIG_ARGS_SERVER_PERSONALITY),
+            personality=personality,
             networks=server_args.get(self.LAUNCH_CONFIG_ARGS_SERVER_NETWORKS),
             load_balancers=lbs,
             key_name=server_args.get(self.LAUNCH_CONFIG_ARGS_SERVER_KEY_NAME),
@@ -302,18 +302,16 @@ class Group(resource.Resource):
         return args
 
     def handle_create(self):
-        """
-        Create the autoscaling group and set the resulting group's ID as the
-        resource_id.
+        """Create the autoscaling group and set resource_id.
+
+        The resource_id is set to the resulting group's ID.
         """
         asclient = self.stack.clients.auto_scale()
         group = asclient.create(**self._get_create_args())
         self.resource_id_set(str(group.id))
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        """
-        Update the group configuration and the launch configuration.
-        """
+        """Update the group configuration and the launch configuration."""
         asclient = self.stack.clients.auto_scale()
         if self.GROUP_CONFIGURATION in prop_diff:
             args = self._get_group_config_args(
@@ -325,8 +323,7 @@ class Group(resource.Resource):
             asclient.replace_launch_config(self.resource_id, **args)
 
     def handle_delete(self):
-        """
-        Delete the scaling group.
+        """Delete the scaling group.
 
         Since Auto Scale doesn't allow deleting a group until all its servers
         are gone, we must set the minEntities and maxEntities of the group to 0
@@ -360,6 +357,7 @@ class Group(resource.Resource):
 
 
 class ScalingPolicy(resource.Resource):
+
     """Represents a Rackspace Auto Scale scaling policy."""
 
     PROPERTIES = (
@@ -380,27 +378,32 @@ class ScalingPolicy(resource.Resource):
         NAME: properties.Schema(
             properties.Schema.STRING,
             _('Name of this scaling policy.'),
-            required=True
+            required=True,
+            update_allowed=True
         ),
         CHANGE: properties.Schema(
             properties.Schema.NUMBER,
             _('Amount to add to or remove from current number of instances. '
-              'Incompatible with changePercent and desiredCapacity.')
+              'Incompatible with changePercent and desiredCapacity.'),
+            update_allowed=True
         ),
         CHANGE_PERCENT: properties.Schema(
             properties.Schema.NUMBER,
             _('Percentage-based change to add or remove from current number '
-              'of instances. Incompatible with change and desiredCapacity.')
+              'of instances. Incompatible with change and desiredCapacity.'),
+            update_allowed=True
         ),
         DESIRED_CAPACITY: properties.Schema(
             properties.Schema.NUMBER,
             _('Absolute number to set the number of instances to. '
-              'Incompatible with change and changePercent.')
+              'Incompatible with change and changePercent.'),
+            update_allowed=True
         ),
         COOLDOWN: properties.Schema(
             properties.Schema.NUMBER,
             _('Number of seconds after a policy execution during which '
-              'further executions are disabled.')
+              'further executions are disabled.'),
+            update_allowed=True
         ),
         TYPE: properties.Schema(
             properties.Schema.STRING,
@@ -410,19 +413,15 @@ class ScalingPolicy(resource.Resource):
             constraints=[
                 constraints.AllowedValues(['webhook', 'schedule',
                                            'cloud_monitoring']),
-            ]
+            ],
+            update_allowed=True
         ),
         ARGS: properties.Schema(
             properties.Schema.MAP,
-            _('Type-specific arguments for the policy.')
+            _('Type-specific arguments for the policy.'),
+            update_allowed=True
         ),
     }
-
-    update_allowed_keys = ('Properties',)
-    # Everything other than group can be changed.
-    update_allowed_properties = (
-        NAME, CHANGE, CHANGE_PERCENT, DESIRED_CAPACITY, COOLDOWN, TYPE, ARGS,
-    )
 
     def _get_args(self, properties):
         """Get pyrax-style create arguments for scaling policies."""
@@ -444,9 +443,9 @@ class ScalingPolicy(resource.Resource):
         return args
 
     def handle_create(self):
-        """
-        Create the scaling policy, and initialize the resource ID to
-        {group_id}:{policy_id}.
+        """Create the scaling policy and initialize the resource ID.
+
+        The resource ID is initialized to {group_id}:{policy_id}.
         """
         asclient = self.stack.clients.auto_scale()
         args = self._get_args(self.properties)
@@ -476,15 +475,22 @@ class ScalingPolicy(resource.Resource):
 
 
 class WebHook(resource.Resource):
-    """
-    Represents a Rackspace AutoScale webhook.
+
+    """Represents a Rackspace AutoScale webhook.
 
     Exposes the URLs of the webhook as attributes.
     """
+
     PROPERTIES = (
         POLICY, NAME, METADATA,
     ) = (
         'policy', 'name', 'metadata',
+    )
+
+    ATTRIBUTES = (
+        EXECUTE_URL, CAPABILITY_URL,
+    ) = (
+        'executeUrl', 'capabilityUrl',
     )
 
     properties_schema = {
@@ -498,23 +504,25 @@ class WebHook(resource.Resource):
         NAME: properties.Schema(
             properties.Schema.STRING,
             _('The name of this webhook.'),
-            required=True
+            required=True,
+            update_allowed=True
         ),
         METADATA: properties.Schema(
             properties.Schema.MAP,
-            _('Arbitrary key/value metadata for this webhook.')
+            _('Arbitrary key/value metadata for this webhook.'),
+            update_allowed=True
         ),
     }
 
-    update_allowed_keys = ('Properties',)
-    # Everything other than policy can be changed.
-    update_allowed_properties = (NAME, METADATA)
-
     attributes_schema = {
-        'executeUrl': _(
-            "The url for executing the webhook (requires auth)."),
-        'capabilityUrl': _(
-            "The url for executing the webhook (doesn't require auth)."),
+        EXECUTE_URL: attributes.Schema(
+            _("The url for executing the webhook (requires auth)."),
+            cache_mode=attributes.Schema.CACHE_NONE
+        ),
+        CAPABILITY_URL: attributes.Schema(
+            _("The url for executing the webhook (doesn't require auth)."),
+            cache_mode=attributes.Schema.CACHE_NONE
+        ),
     }
 
     def _get_args(self, props):
@@ -537,7 +545,7 @@ class WebHook(resource.Resource):
             key = rel_to_key.get(link['rel'])
             if key is not None:
                 url = link['href'].encode('utf-8')
-                db_api.resource_data_set(self, key, url)
+                self.data_set(key, url)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         asclient = self.stack.clients.auto_scale()
@@ -546,9 +554,10 @@ class WebHook(resource.Resource):
         asclient.replace_webhook(**args)
 
     def _resolve_attribute(self, key):
-        try:
-            return db_api.resource_data_get(self, key).decode('utf-8')
-        except exception.NotFound:
+        v = self.data().get(key)
+        if v is not None:
+            return v.decode('utf-8')
+        else:
             return None
 
     def handle_delete(self):

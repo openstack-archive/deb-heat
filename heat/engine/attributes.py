@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -13,6 +12,66 @@
 #    under the License.
 
 import collections
+import warnings
+
+from heat.engine import constraints as constr
+from heat.engine import support
+
+
+class Schema(constr.Schema):
+    """
+    Simple schema class for attributes.
+
+    Schema objects are serialisable to dictionaries following a superset of
+    the HOT input Parameter schema using dict().
+    """
+
+    KEYS = (
+        DESCRIPTION,
+    ) = (
+        'description',
+    )
+
+    CACHE_MODES = (
+        CACHE_LOCAL,
+        CACHE_NONE
+    ) = (
+        'cache_local',
+        'cache_none'
+    )
+
+    def __init__(self, description=None,
+                 support_status=support.SupportStatus(),
+                 cache_mode=CACHE_LOCAL):
+        self.description = description
+        self.support_status = support_status
+        self.cache_mode = cache_mode
+
+    def __getitem__(self, key):
+        if key == self.DESCRIPTION:
+            if self.description is not None:
+                return self.description
+
+        raise KeyError(key)
+
+    @classmethod
+    def from_attribute(cls, schema_dict):
+        """
+        Return a Property Schema corresponding to a Attribute Schema.
+        """
+        if isinstance(schema_dict, cls):
+            return schema_dict
+        warnings.warn('<name>: <description> schema definition is deprecated. '
+                      'Use <name>: attributes.Schema(<description>) instead.',
+                      DeprecationWarning)
+        return cls(schema_dict)
+
+
+def schemata(schema):
+    """
+    Return dictionary of Schema objects for given dictionary of schemata.
+    """
+    return dict((n, Schema.from_attribute(s)) for n, s in schema.items())
 
 
 class Attribute(object):
@@ -20,17 +79,18 @@ class Attribute(object):
     An Attribute schema.
     """
 
-    (DESCRIPTION,) = ('description',)
-
-    def __init__(self, attr_name, description):
+    def __init__(self, attr_name, schema):
         """
         Initialise with a name and description.
 
         :param attr_name: the name of the attribute
-        :param description: attribute description
+        :param schema: attribute schema
         """
         self.name = attr_name
-        self.description = description
+        self.schema = Schema.from_attribute(schema)
+
+    def support_status(self):
+        return self.schema.support_status
 
     def as_output(self, resource_name):
         """
@@ -43,7 +103,7 @@ class Attribute(object):
         return {
             "Value": '{"Fn::GetAtt": ["%s", "%s"]}' % (resource_name,
                                                        self.name),
-            "Description": self.description
+            "Description": self.schema.description
         }
 
 
@@ -54,6 +114,10 @@ class Attributes(collections.Mapping):
         self._resource_name = res_name
         self._resolver = resolver
         self._attributes = Attributes._make_attributes(schema)
+        self.reset_resolved_values()
+
+    def reset_resolved_values(self):
+        self._resolved_values = {}
 
     @staticmethod
     def _make_attributes(schema):
@@ -75,7 +139,7 @@ class Attributes(collections.Mapping):
     @staticmethod
     def schema_from_outputs(json_snippet):
         if json_snippet:
-            return dict((k, v.get("Description"))
+            return dict((k, Schema(v.get("Description")))
                         for k, v in json_snippet.items())
         return {}
 
@@ -83,7 +147,20 @@ class Attributes(collections.Mapping):
         if key not in self:
             raise KeyError(_('%(resource)s: Invalid attribute %(key)s') %
                            dict(resource=self._resource_name, key=key))
-        return self._resolver(key)
+
+        attrib = self._attributes.get(key)
+        if attrib.schema.cache_mode == Schema.CACHE_NONE:
+            return self._resolver(key)
+
+        if key in self._resolved_values:
+            return self._resolved_values[key]
+
+        value = self._resolver(key)
+        if value is not None:
+            # only store if not None, it may resolve to an actual value
+            # on subsequent calls
+            self._resolved_values[key] = value
+        return value
 
     def __len__(self):
         return len(self._attributes)

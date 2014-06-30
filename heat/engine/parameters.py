@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -15,9 +14,12 @@
 import collections
 import itertools
 import json
-from heat.engine import constraints as constr
+
+import six
 
 from heat.common import exception
+from heat.engine import constraints as constr
+from heat.openstack.common import strutils
 
 
 PARAMETER_KEYS = (
@@ -46,13 +48,13 @@ class Schema(constr.Schema):
     # For Parameters the type name for Schema.LIST is CommaDelimitedList
     # and the type name for Schema.MAP is Json
     TYPES = (
-        STRING, NUMBER, LIST, MAP,
+        STRING, NUMBER, LIST, MAP, BOOLEAN,
     ) = (
-        'String', 'Number', 'CommaDelimitedList', 'Json',
+        'String', 'Number', 'CommaDelimitedList', 'Json', 'Boolean',
     )
 
     def __init__(self, data_type, description=None, default=None, schema=None,
-                 constraints=[], hidden=False, context=None, label=None):
+                 constraints=[], hidden=False, label=None):
         super(Schema, self).__init__(data_type=data_type,
                                      description=description,
                                      default=default,
@@ -61,13 +63,12 @@ class Schema(constr.Schema):
                                      constraints=constraints,
                                      label=label)
         self.hidden = hidden
-        self.context = context
 
     # Schema class validates default value for lists assuming list type. For
-    # comma delimited list string supported in paramaters Schema class, the
+    # comma delimited list string supported in parameters Schema class, the
     # default value has to be parsed into a list if necessary so that
     # validation works.
-    def _validate_default(self):
+    def _validate_default(self, context):
         if self.default is not None:
             default_value = self.default
             if self.type == self.LIST and not isinstance(self.default, list):
@@ -76,10 +77,11 @@ class Schema(constr.Schema):
                 except (KeyError, AttributeError) as err:
                     raise constr.InvalidSchemaError(_('Default must be a '
                                                       'comma-delimited list '
-                                                      'string: %s') % str(err))
+                                                      'string: %s') % err)
             try:
-                self.validate_constraints(default_value)
-            except (ValueError, TypeError) as exc:
+                self.validate_constraints(default_value, context)
+            except (ValueError, TypeError,
+                    exception.StackValidationFailed) as exc:
                 raise constr.InvalidSchemaError(_('Invalid default '
                                                   '%(default)s (%(exc)s)') %
                                                 dict(default=self.default,
@@ -108,18 +110,25 @@ class Schema(constr.Schema):
                         "key": key, "entity": entity})
 
     @classmethod
-    def _validate_dict(cls, schema_dict):
-        cls._check_dict(schema_dict, cls.PARAMETER_KEYS, "parameter")
+    def _validate_dict(cls, param_name, schema_dict):
+        cls._check_dict(schema_dict,
+                        cls.PARAMETER_KEYS,
+                        "parameter (%s)" % param_name)
 
         if cls.TYPE not in schema_dict:
-            raise constr.InvalidSchemaError(_("Missing parameter type"))
+            raise constr.InvalidSchemaError(
+                _("Missing parameter type for parameter: %s") % param_name)
 
     @classmethod
-    def from_dict(cls, schema_dict):
+    def from_dict(cls, param_name, schema_dict):
         """
         Return a Parameter Schema object from a legacy schema dictionary.
+
+        :param param_name: name of the parameter owning the schema; used
+               for more verbose logging
+        :type  param_name: str
         """
-        cls._validate_dict(schema_dict)
+        cls._validate_dict(param_name, schema_dict)
 
         def constraints():
             desc = schema_dict.get(CONSTRAINT_DESCRIPTION)
@@ -147,8 +156,8 @@ class Schema(constr.Schema):
                                               'false')).lower() == 'true',
                    label=schema_dict.get(LABEL))
 
-    def validate(self, name, value):
-        super(Schema, self).validate_constraints(value, self.context)
+    def validate_value(self, name, value, context=None):
+        super(Schema, self).validate_constraints(value, context)
 
     def __getitem__(self, key):
         if key == self.TYPE:
@@ -164,14 +173,14 @@ class Schema(constr.Schema):
 class Parameter(object):
     '''A template parameter.'''
 
-    def __new__(cls, name, schema, value=None, validate_value=True):
+    def __new__(cls, name, schema, value=None):
         '''Create a new Parameter of the appropriate type.'''
         if cls is not Parameter:
             return super(Parameter, cls).__new__(cls)
 
         # Check for fully-fledged Schema objects
         if not isinstance(schema, Schema):
-            schema = Schema.from_dict(schema)
+            schema = Schema.from_dict(name, schema)
 
         if schema.type == schema.STRING:
             ParamClass = StringParam
@@ -181,12 +190,14 @@ class Parameter(object):
             ParamClass = CommaDelimitedListParam
         elif schema.type == schema.MAP:
             ParamClass = JsonParam
+        elif schema.type == schema.BOOLEAN:
+            ParamClass = BooleanParam
         else:
             raise ValueError(_('Invalid Parameter type "%s"') % schema.type)
 
-        return ParamClass(name, schema, value, validate_value)
+        return ParamClass(name, schema, value)
 
-    def __init__(self, name, schema, value=None, validate_value=True):
+    def __init__(self, name, schema, value=None):
         '''
         Initialise the Parameter with a name, schema and optional user-supplied
         value.
@@ -195,13 +206,30 @@ class Parameter(object):
         self.schema = schema
         self.user_value = value
 
-        if validate_value:
+    def validate(self, validate_value=True, context=None):
+        '''
+        Validates the parameter.
+
+        This method validates if the parameter's schema is valid,
+        and if the default value - if present - or the user-provided
+        value for the parameter comply with the schema.
+        '''
+        self.schema.validate(context)
+
+        if not validate_value:
+            return
+
+        try:
             if self.has_default():
-                self.validate(self.default())
+                self._validate(self.default(), context)
             if self.user_value is not None:
-                self.validate(self.user_value)
+                self._validate(self.user_value, context)
             elif not self.has_default():
                 raise exception.UserParameterMissing(key=self.name)
+        except exception.StackValidationFailed as ex:
+            msg = _("Parameter '%(name)s' is invalid: %(exp)s") % dict(
+                name=self.name, exp=six.text_type(ex))
+            raise exception.StackValidationFailed(message=msg)
 
     def value(self):
         '''Get the parameter value, optionally sanitising it for output.'''
@@ -211,7 +239,7 @@ class Parameter(object):
         if self.has_default():
             return self.default()
 
-        raise KeyError(_('Missing parameter %s') % self.name)
+        raise exception.UserParameterMissing(key=self.name)
 
     def hidden(self):
         '''
@@ -256,42 +284,51 @@ class NumberParam(Parameter):
         '''Return a float representation of the parameter'''
         return float(super(NumberParam, self).value())
 
-    def validate(self, val):
-        self.schema.validate(self.name, val)
+    def _validate(self, val, context):
+        self.schema.validate_value(self.name, val, context)
 
     def value(self):
-        try:
-            return int(self)
-        except ValueError:
-            return float(self)
+        return Schema.str_to_num(super(NumberParam, self).value())
+
+
+class BooleanParam(Parameter):
+    '''A template parameter of type "Boolean".'''
+
+    def _validate(self, val, context):
+        self.schema.validate_value(self.name, val, context)
+
+    def value(self):
+        if self.user_value is not None:
+            raw_value = self.user_value
+        else:
+            raw_value = self.default()
+        return strutils.bool_from_string(str(raw_value), strict=True)
 
 
 class StringParam(Parameter):
     '''A template parameter of type "String".'''
 
-    def validate(self, val):
-        self.schema.validate(self.name, val)
+    def _validate(self, val, context):
+        self.schema.validate_value(self.name, val, context)
 
 
 class CommaDelimitedListParam(Parameter, collections.Sequence):
     '''A template parameter of type "CommaDelimitedList".'''
 
-    def __init__(self, name, schema, value=None, validate_value=True):
-        super(CommaDelimitedListParam, self).__init__(name, schema, value,
-                                                      validate_value)
+    def __init__(self, name, schema, value=None):
+        super(CommaDelimitedListParam, self).__init__(name, schema, value)
         self.parsed = self.parse(self.user_value or self.default())
 
     def parse(self, value):
         # only parse when value is not already a list
         if isinstance(value, list):
             return value
-
         try:
-            if value:
+            if value is not None:
                 return value.split(',')
         except (KeyError, AttributeError) as err:
             message = _('Value must be a comma-delimited list string: %s')
-            raise ValueError(message % str(err))
+            raise ValueError(message % six.text_type(err))
         return value
 
     def value(self):
@@ -305,17 +342,16 @@ class CommaDelimitedListParam(Parameter, collections.Sequence):
         '''Return an item from the list.'''
         return self.parsed[index]
 
-    def validate(self, val):
+    def _validate(self, val, context):
         parsed = self.parse(val)
-        self.schema.validate(self.name, parsed)
+        self.schema.validate_value(self.name, parsed, context)
 
 
 class JsonParam(Parameter, collections.Mapping):
     """A template parameter who's value is valid map."""
 
-    def __init__(self, name, schema, value=None, validate_value=True):
-        super(JsonParam, self).__init__(name, schema, value,
-                                        validate_value)
+    def __init__(self, name, schema, value=None):
+        super(JsonParam, self).__init__(name, schema, value)
         self.parsed = self.parse(self.user_value or self.default())
 
     def parse(self, value):
@@ -326,7 +362,7 @@ class JsonParam(Parameter, collections.Mapping):
             if val:
                 return json.loads(val)
         except (ValueError, TypeError) as err:
-            message = _('Value must be valid JSON: %s') % str(err)
+            message = _('Value must be valid JSON: %s') % err
             raise ValueError(message)
         return value
 
@@ -342,9 +378,9 @@ class JsonParam(Parameter, collections.Mapping):
     def __len__(self):
         return len(self.parsed)
 
-    def validate(self, val):
+    def _validate(self, val, context):
         val = self.parse(val)
-        self.schema.validate(self.name, val)
+        self.schema.validate_value(self.name, val, context)
 
 
 class Parameters(collections.Mapping):
@@ -359,22 +395,18 @@ class Parameters(collections.Mapping):
         'AWS::StackId', 'AWS::StackName', 'AWS::Region'
     )
 
-    def __init__(self, stack_identifier, tmpl, user_params={},
-                 validate_value=True, context=None):
+    def __init__(self, stack_identifier, tmpl, user_params={}):
         '''
         Create the parameter container for a stack from the stack name and
         template, optionally setting the user-supplied parameter values.
         '''
         def user_parameter(schema_item):
             name, schema = schema_item
-            schema.context = context
             return Parameter(name, schema,
-                             user_params.get(name),
-                             validate_value)
+                             user_params.get(name))
 
         self.tmpl = tmpl
-        self._validate_tmpl_parameters()
-        self._validate(user_params)
+        self.user_params = user_params
 
         schemata = self.tmpl.param_schemata()
         user_parameters = (user_parameter(si) for si in schemata.iteritems())
@@ -383,6 +415,19 @@ class Parameters(collections.Mapping):
         self.params = dict((p.name,
                             p) for p in itertools.chain(pseudo_parameters,
                                                         user_parameters))
+
+    def validate(self, validate_value=True, context=None):
+        '''
+        Validates all parameters.
+
+        This method validates if all user-provided parameters are actually
+        defined in the template, and if all parameters are valid.
+        '''
+        self._validate_tmpl_parameters()
+        self._validate_user_parameters()
+
+        for param in self.params.values():
+            param.validate(validate_value, context)
 
     def __contains__(self, key):
         '''Return whether the specified parameter exists.'''
@@ -418,9 +463,9 @@ class Parameters(collections.Mapping):
             return True
         return False
 
-    def _validate(self, user_params):
+    def _validate_user_parameters(self):
         schemata = self.tmpl.param_schemata()
-        for param in user_params:
+        for param in self.user_params:
             if param not in schemata:
                 raise exception.UnknownUserParameter(key=param)
 
@@ -431,7 +476,7 @@ class Parameters(collections.Mapping):
                 param = key
                 break
         if param is not None:
-            template_params = self.tmpl.t[key]
+            template_params = self.tmpl.t[key] or {}
             for name, attrs in template_params.iteritems():
                 if not isinstance(attrs, dict):
                     raise exception.InvalidTemplateParameter(key=name)

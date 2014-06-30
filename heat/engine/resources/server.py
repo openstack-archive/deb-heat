@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -13,16 +12,17 @@
 #    under the License.
 
 import copy
-
-from oslo.config import cfg
 import uuid
 
+from oslo.config import cfg
+
 from heat.common import exception
-from heat.db import api as db_api
+from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
+from heat.engine.resources import glance_utils
 from heat.engine.resources.neutron import subnet
 from heat.engine.resources import nova_utils
 from heat.engine.resources.software_config import software_config as sc
@@ -35,7 +35,7 @@ from heat.openstack.common import uuidutils
 
 cfg.CONF.import_opt('instance_user', 'heat.common.config')
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class Server(stack_user.StackUser):
@@ -84,6 +84,14 @@ class Server(stack_user.StackUser):
         POLL_SERVER_CFN, POLL_SERVER_HEAT
     ) = (
         'POLL_SERVER_CFN', 'POLL_SERVER_HEAT'
+    )
+
+    ATTRIBUTES = (
+        SHOW, ADDRESSES, NETWORKS_ATTR, FIRST_ADDRESS, INSTANCE_NAME,
+        ACCESSIPV4, ACCESSIPV6,
+    ) = (
+        'show', 'addresses', 'networks', 'first_address', 'instance_name',
+        'accessIPv4', 'accessIPv6',
     )
 
     properties_schema = {
@@ -274,8 +282,8 @@ class Server(stack_user.StackUser):
             _('A UUID for the set of servers being requested.')
         ),
         CONFIG_DRIVE: properties.Schema(
-            properties.Schema.STRING,
-            _('value for config drive either boolean, or volume-id.')
+            properties.Schema.BOOLEAN,
+            _('If True, enable config drive on the server.')
         ),
         DISK_CONFIG: properties.Schema(
             properties.Schema.STRING,
@@ -300,25 +308,40 @@ class Server(stack_user.StackUser):
     }
 
     attributes_schema = {
-        'show': _('A dict of all server details as returned by the API.'),
-        'addresses': _('A dict of all network addresses with corresponding'
-                       'port_id.'),
-        'networks': _('A dict of assigned network addresses of the form: '
-                      '{"public": [ip1, ip2...], "private": [ip3, ip4]}.'),
-        'first_address': _('Convenience attribute to fetch the first '
-                           'assigned network address, or an '
-                           'empty string if nothing has been assigned '
-                           'at this time. Result may not be predictable '
-                           'if the server has addresses from more than one '
-                           'network.'),
-        'instance_name': _('AWS compatible instance name.'),
-        'accessIPv4': _('The manually assigned alternative public IPv4 '
-                        'address of the server.'),
-        'accessIPv6': _('The manually assigned alternative public IPv6 '
-                        'address of the server.'),
+        SHOW: attributes.Schema(
+            _('A dict of all server details as returned by the API.')
+        ),
+        ADDRESSES: attributes.Schema(
+            _('A dict of all network addresses with corresponding port_id.')
+        ),
+        NETWORKS_ATTR: attributes.Schema(
+            _('A dict of assigned network addresses of the form: '
+              '{"public": [ip1, ip2...], "private": [ip3, ip4]}.')
+        ),
+        FIRST_ADDRESS: attributes.Schema(
+            _('Convenience attribute to fetch the first assigned network '
+              'address, or an empty string if nothing has been assigned at '
+              'this time. Result may not be predictable if the server has '
+              'addresses from more than one network.'),
+            support_status=support.SupportStatus(
+                status=support.DEPRECATED,
+                message=_('Use the networks attribute instead of '
+                          'first_address. For example: "{get_attr: '
+                          '[<server name>, networks, <network name>, 0]}"')
+            )
+        ),
+        INSTANCE_NAME: attributes.Schema(
+            _('AWS compatible instance name.')
+        ),
+        ACCESSIPV4: attributes.Schema(
+            _('The manually assigned alternative public IPv4 address '
+              'of the server.')
+        ),
+        ACCESSIPV6: attributes.Schema(
+            _('The manually assigned alternative public IPv6 address '
+              'of the server.')
+        ),
     }
-
-    update_allowed_keys = ('Metadata', 'Properties')
 
     # Server host name limit to 53 characters by due to typical default
     # linux HOST_NAME_MAX of 64, minus the .novalocal appended to the name
@@ -329,28 +352,20 @@ class Server(stack_user.StackUser):
         if self.user_data_software_config():
             self._register_access_key()
 
-    def physical_resource_name(self):
+    def _server_name(self):
         name = self.properties.get(self.NAME)
         if name:
             return name
 
-        return super(Server, self).physical_resource_name()
+        return self.physical_resource_name()
 
-    def _personality(self):
+    def _config_drive(self):
         # This method is overridden by the derived CloudServer resource
-        return self.properties.get(self.PERSONALITY)
+        return self.properties.get(self.CONFIG_DRIVE)
 
-    def _key_name(self):
-        # This method is overridden by the derived CloudServer resource
-        return self.properties.get(self.KEY_NAME)
-
-    @staticmethod
-    def _get_deployments_metadata(heatclient, server_id):
-        return heatclient.software_deployments.metadata(
-            server_id=server_id)
-
-    def _build_deployments_metadata(self):
-        meta = {}
+    def _populate_deployments_metadata(self):
+        meta = self.metadata_get(True) or {}
+        meta['deployments'] = meta.get('deployments', [])
         if self.transport_poll_server_heat():
             meta['os-collect-config'] = {'heat': {
                 'user_id': self._get_user_id(),
@@ -368,15 +383,7 @@ class Server(stack_user.StackUser):
                 'stack_name': self.stack.name,
                 'path': '%s.Metadata' % self.name}
             }
-
-        deployments = []
-        # cannot query the deployments if the nova server does
-        # not exist yet
-        if self.resource_id:
-            deployments = self._get_deployments_metadata(
-                self.heat(), self.resource_id)
-        meta['deployments'] = deployments
-        return meta
+        self.metadata_set(meta)
 
     def _register_access_key(self):
         '''
@@ -405,46 +412,22 @@ class Server(stack_user.StackUser):
 
     @property
     def access_key(self):
-        try:
-            return db_api.resource_data_get(self, 'access_key')
-        except exception.NotFound:
-            pass
+        return self.data().get('access_key')
 
     @property
     def secret_key(self):
-        try:
-            return db_api.resource_data_get(self, 'secret_key')
-        except exception.NotFound:
-            pass
+        return self.data().get('secret_key')
 
     @property
     def password(self):
-        try:
-            return db_api.resource_data_get(self, 'password')
-        except exception.NotFound:
-            pass
+        return self.data().get('password')
 
     @password.setter
     def password(self, password):
-        try:
-            if password is None:
-                db_api.resource_data_delete(self, 'password')
-            else:
-                db_api.resource_data_set(self, 'password', password, True)
-        except exception.NotFound:
-            pass
-
-    @property
-    def metadata(self):
-        if self.user_data_software_config():
-            return self._build_deployments_metadata()
+        if password is None:
+            self.data_delete('password')
         else:
-            return self._metadata
-
-    @metadata.setter
-    def metadata(self, metadata):
-        if not self.user_data_software_config():
-            self._metadata = metadata
+            self.data_set('password', password, True)
 
     def user_data_raw(self):
         return self.properties.get(self.USER_DATA_FORMAT) == self.RAW
@@ -478,6 +461,7 @@ class Server(stack_user.StackUser):
 
         if self.user_data_software_config():
             self._create_transport_credentials()
+            self._populate_deployments_metadata()
 
         if self.properties[self.ADMIN_USER]:
             instance_user = self.properties[self.ADMIN_USER]
@@ -497,7 +481,7 @@ class Server(stack_user.StackUser):
 
         image = self.properties.get(self.IMAGE)
         if image:
-            image = nova_utils.get_image_id(self.nova(), image)
+            image = glance_utils.get_image_id(self.glance(), image)
 
         flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
 
@@ -510,17 +494,18 @@ class Server(stack_user.StackUser):
         block_device_mapping = self._build_block_device_mapping(
             self.properties.get(self.BLOCK_DEVICE_MAPPING))
         reservation_id = self.properties.get(self.RESERVATION_ID)
-        config_drive = self.properties.get(self.CONFIG_DRIVE)
         disk_config = self.properties.get(self.DISK_CONFIG)
         admin_pass = self.properties.get(self.ADMIN_PASS) or None
+        personality_files = self.properties.get(self.PERSONALITY)
+        key_name = self.properties.get(self.KEY_NAME)
 
         server = None
         try:
             server = self.nova().servers.create(
-                name=self.physical_resource_name(),
+                name=self._server_name(),
                 image=image,
                 flavor=flavor_id,
-                key_name=self._key_name(),
+                key_name=key_name,
                 security_groups=security_groups,
                 userdata=userdata,
                 meta=instance_meta,
@@ -529,9 +514,9 @@ class Server(stack_user.StackUser):
                 availability_zone=availability_zone,
                 block_device_mapping=block_device_mapping,
                 reservation_id=reservation_id,
-                config_drive=config_drive,
+                config_drive=self._config_drive(),
                 disk_config=disk_config,
-                files=self._personality(),
+                files=personality_files,
                 admin_pass=admin_pass)
         finally:
             # Avoid a race condition where the thread could be cancelled
@@ -631,26 +616,26 @@ class Server(stack_user.StackUser):
         return nets
 
     def _resolve_attribute(self, name):
-        if name == 'first_address':
+        if name == self.FIRST_ADDRESS:
             return nova_utils.server_to_ipaddress(
                 self.nova(), self.resource_id) or ''
         try:
             server = self.nova().servers.get(self.resource_id)
         except clients.novaclient.exceptions.NotFound as ex:
-            logger.warn(_('Instance (%(server)s) not found: %(ex)s') % {
-                        'server': self.resource_id, 'ex': str(ex)})
+            LOG.warn(_('Instance (%(server)s) not found: %(ex)s')
+                     % {'server': self.resource_id, 'ex': ex})
             return ''
-        if name == 'addresses':
+        if name == self.ADDRESSES:
             return self._add_port_for_address(server)
-        if name == 'networks':
+        if name == self.NETWORKS_ATTR:
             return server.networks
-        if name == 'instance_name':
+        if name == self.INSTANCE_NAME:
             return server._info.get('OS-EXT-SRV-ATTR:instance_name')
-        if name == 'accessIPv4':
+        if name == self.ACCESSIPV4:
             return server.accessIPv4
-        if name == 'accessIPv6':
+        if name == self.ACCESSIPV6:
             return server.accessIPv6
-        if name == 'show':
+        if name == self.SHOW:
             return server._info
 
     def add_dependencies(self, deps):
@@ -676,12 +661,11 @@ class Server(stack_user.StackUser):
     def _get_network_matches(self, old_networks, new_networks):
         # make new_networks similar on old_networks
         for net in new_networks:
-            for key in ('port', 'network', 'fixed_ip'):
+            for key in ('port', 'network', 'fixed_ip', 'uuid'):
                 net.setdefault(key)
         # find matches and remove them from old and new networks
         not_updated_networks = []
         for net in old_networks:
-            net.pop('uuid', None)
             if net in new_networks:
                 new_networks.remove(net)
                 not_updated_networks.append(net)
@@ -721,7 +705,7 @@ class Server(stack_user.StackUser):
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if 'Metadata' in tmpl_diff:
-            self.metadata = tmpl_diff['Metadata']
+            self.metadata_set(tmpl_diff['Metadata'])
 
         checkers = []
         server = None
@@ -756,7 +740,7 @@ class Server(stack_user.StackUser):
             if image_update_policy == 'REPLACE':
                 raise resource.UpdateReplace(self.name)
             image = prop_diff[self.IMAGE]
-            image_id = nova_utils.get_image_id(self.nova(), image)
+            image_id = glance_utils.get_image_id(self.glance(), image)
             if not server:
                 server = self.nova().servers.get(self.resource_id)
             preserve_ephemeral = (
@@ -854,7 +838,16 @@ class Server(stack_user.StackUser):
         Refresh the metadata if new_metadata is None
         '''
         if new_metadata is None:
-            self.metadata = self.parsed_template('Metadata')
+            self.metadata_set(self.parsed_template('Metadata'))
+
+    @staticmethod
+    def _check_maximum(count, maximum, msg):
+        '''
+        Check a count against a maximum, unless maximum is -1 which indicates
+        that there is no limit
+        '''
+        if maximum != -1 and count > maximum:
+            raise exception.StackValidationFailed(message=msg)
 
     @staticmethod
     def _check_maximum(count, maximum, msg):
@@ -917,18 +910,18 @@ class Server(stack_user.StackUser):
                                    server=self.name)
                 raise exception.StackValidationFailed(message=msg)
             elif network.get(self.NETWORK_UUID):
-                logger.info(_('For the server "%(server)s" the "%(uuid)s" '
-                              'property is set to network "%(network)s". '
-                              '"%(uuid)s" property is deprecated. Use '
-                              '"%(id)s"  property instead.'
-                              '') % dict(uuid=self.NETWORK_UUID,
-                                         id=self.NETWORK_ID,
-                                         network=network[self.NETWORK_ID],
-                                         server=self.name))
+                LOG.info(_('For the server "%(server)s" the "%(uuid)s" '
+                           'property is set to network "%(network)s". '
+                           '"%(uuid)s" property is deprecated. Use '
+                           '"%(id)s"  property instead.')
+                         % dict(uuid=self.NETWORK_UUID,
+                                id=self.NETWORK_ID,
+                                network=network[self.NETWORK_ID],
+                                server=self.name))
 
         # retrieve provider's absolute limits if it will be needed
         metadata = self.properties.get(self.METADATA)
-        personality = self._personality()
+        personality = self.properties.get(self.PERSONALITY)
         if metadata is not None or personality is not None:
             limits = nova_utils.absolute_limits(self.nova())
 
@@ -1002,7 +995,7 @@ class Server(stack_user.StackUser):
             raise exception.NotFound(_('Failed to find server %s') %
                                      self.resource_id)
         else:
-            logger.debug(_('suspending server %s') % self.resource_id)
+            LOG.debug('suspending server %s' % self.resource_id)
             # We want the server.suspend to happen after the volume
             # detachement has finished, so pass both tasks and the server
             suspend_runner = scheduler.TaskRunner(server.suspend)
@@ -1019,9 +1012,8 @@ class Server(stack_user.StackUser):
                 return True
 
             nova_utils.refresh_server(server)
-            logger.debug(_('%(name)s check_suspend_complete status '
-                         '= %(status)s') % {
-                             'name': self.name, 'status': server.status})
+            LOG.debug('%(name)s check_suspend_complete status = %(status)s'
+                      % {'name': self.name, 'status': server.status})
             if server.status in list(nova_utils.deferred_server_statuses +
                                      ['ACTIVE']):
                 return server.status == 'SUSPENDED'
@@ -1048,7 +1040,7 @@ class Server(stack_user.StackUser):
             raise exception.NotFound(_('Failed to find server %s') %
                                      self.resource_id)
         else:
-            logger.debug(_('resuming server %s') % self.resource_id)
+            LOG.debug('resuming server %s' % self.resource_id)
             server.resume()
             return server
 
@@ -1056,16 +1048,13 @@ class Server(stack_user.StackUser):
         return self._check_active(server)
 
 
-class FlavorConstraint(object):
+class FlavorConstraint(constraints.BaseCustomConstraint):
 
-    def validate(self, value, context):
-        nova_client = clients.Clients(context).nova()
-        try:
-            nova_utils.get_flavor_id(nova_client, value)
-        except exception.FlavorMissing:
-            return False
-        else:
-            return True
+    expected_exceptions = (exception.FlavorMissing,)
+
+    def validate_with_client(self, client, value):
+        nova_client = client.nova()
+        nova_utils.get_flavor_id(nova_client, value)
 
 
 def constraint_mapping():

@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -21,28 +21,29 @@ from eventlet import greenpool
 import mock
 import mox
 from oslo.config import cfg
+from oslotest import mockpatch
 
 from heat.common import exception
 from heat.common import identifier
 from heat.common import template_format
 from heat.common import urlfetch
-import heat.db.api as db_api
+from heat.db import api as db_api
 from heat.engine import clients
 from heat.engine import dependencies
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine.properties import Properties
 from heat.engine import resource as res
+from heat.engine.resources import glance_utils
 from heat.engine.resources import instance as instances
 from heat.engine.resources import nova_utils
 from heat.engine import service
 from heat.engine import stack_lock
 from heat.engine import watchrule
-from heat.openstack.common.fixture import mockpatch
 from heat.openstack.common.rpc import common as rpc_common
 from heat.openstack.common.rpc import proxy
 from heat.openstack.common import threadgroup
-import heat.rpc.api as engine_api
+from heat.rpc import api as engine_api
 from heat.tests.common import HeatTestCase
 from heat.tests import fakes as test_fakes
 from heat.tests import generic_resource as generic_rsrc
@@ -192,15 +193,30 @@ def setup_keystone_mocks(mocks, stack):
     stack.clients.keystone().MultipleTimes().AndReturn(fkc)
 
 
-def setup_mocks(mocks, stack):
+def setup_mock_for_image_constraint(mocks, imageId_input,
+                                    imageId_output=744):
+    g_cli_mock = mocks.CreateMockAnything()
+    mocks.StubOutWithMock(clients.OpenStackClients, 'glance')
+    clients.OpenStackClients.glance().MultipleTimes().AndReturn(
+        g_cli_mock)
+    mocks.StubOutWithMock(glance_utils, 'get_image_id')
+    glance_utils.get_image_id(g_cli_mock, imageId_input).\
+        MultipleTimes().AndReturn(imageId_output)
+
+
+def setup_mocks(mocks, stack, mock_image_constraint=True):
     fc = fakes.FakeClient()
     mocks.StubOutWithMock(instances.Instance, 'nova')
     instances.Instance.nova().MultipleTimes().AndReturn(fc)
     mocks.StubOutWithMock(clients.OpenStackClients, 'nova')
     clients.OpenStackClients.nova().MultipleTimes().AndReturn(fc)
+    instance = stack['WebServer']
+    if mock_image_constraint:
+        setup_mock_for_image_constraint(mocks,
+                                        instance.t['Properties']['ImageId'])
+
     setup_keystone_mocks(mocks, stack)
 
-    instance = stack['WebServer']
     user_data = instance.properties['UserData']
     server_userdata = nova_utils.build_userdata(instance, user_data,
                                                 'ec2-user')
@@ -293,11 +309,14 @@ class DummyThreadGroup(object):
                   *args, **kwargs):
         self.threads.append(callback)
 
+    def stop_timers(self):
+        pass
+
     def add_thread(self, callback, *args, **kwargs):
         self.threads.append(callback)
         return self.pool.spawn(callback, *args, **kwargs)
 
-    def stop(self):
+    def stop(self, graceful=False):
         pass
 
     def wait(self):
@@ -307,7 +326,6 @@ class DummyThreadGroup(object):
 class StackCreateTest(HeatTestCase):
     def setUp(self):
         super(StackCreateTest, self).setUp()
-        utils.setup_dummy_db()
 
     def test_wordpress_single_instance_stack_create(self):
         stack = get_wordpress_stack('test_stack', utils.dummy_context())
@@ -403,14 +421,9 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
     def setUp(self):
         super(StackServiceCreateUpdateDeleteTest, self).setUp()
-        utils.setup_dummy_db()
-        utils.reset_dummy_db()
         self.ctx = utils.dummy_context()
-
-        self.m.StubOutWithMock(service.EngineListener, 'start')
-        service.EngineListener.start().AndReturn(None)
-        self.m.ReplayAll()
         self.man = service.EngineService('a-host', 'a-topic')
+        self.man.create_periodic_tasks()
 
     def _test_stack_create(self, stack_name):
         params = {'foo': 'bar'}
@@ -497,7 +510,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         self.assertRaises(ValueError,
                           self.man.create_stack,
-                          self.ctx, stack_name, stack.t, {}, None, {})
+                          self.ctx, stack_name, stack.t.t, {}, None, {})
 
     def test_stack_create_invalid_resource_name(self):
         stack_name = 'service_create_test_stack_invalid_res'
@@ -509,7 +522,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.assertRaises(ValueError,
                           self.man.create_stack,
                           self.ctx, stack_name,
-                          stack.t, {}, None, {})
+                          stack.t.t, {}, None, {})
 
     def test_stack_create_no_credentials(self):
         stack_name = 'test_stack_create_no_credentials'
@@ -560,7 +573,8 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         params = {}
         res._register_class('GenericResourceType',
                             generic_rsrc.GenericResource)
-        tpl = {'Resources': {
+        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
+               'Resources': {
                'A': {'Type': 'GenericResourceType'},
                'B': {'Type': 'GenericResourceType'},
                'C': {'Type': 'GenericResourceType'}}}
@@ -588,6 +602,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.m.VerifyAll()
         self.assertEqual(stack.identifier(), result)
         self.assertEqual(3, stack.total_resources())
+        self.man.thread_group_mgr.groups[stack.id].wait()
         stack.delete()
 
     def test_stack_create_total_resources_exceeds_max(self):
@@ -595,15 +610,15 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         params = {}
         res._register_class('GenericResourceType',
                             generic_rsrc.GenericResource)
-        tpl = {'Resources': {
+        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
+               'Resources': {
                'A': {'Type': 'GenericResourceType'},
                'B': {'Type': 'GenericResourceType'},
                'C': {'Type': 'GenericResourceType'}}}
-        template = parser.Template(tpl)
         cfg.CONF.set_override('max_resources_per_stack', 2)
         ex = self.assertRaises(rpc_common.ClientException,
                                self.man.create_stack, self.ctx, stack_name,
-                               template, params, None, {})
+                               tpl, params, None, {})
         self.assertEqual(ex._exc_info[0], exception.RequestLimitExceeded)
         self.assertIn(exception.StackResourceLimitExceeded.msg_fmt,
                       str(ex._exc_info[1]))
@@ -611,8 +626,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
     def test_stack_validate(self):
         stack_name = 'service_create_test_validate'
         stack = get_wordpress_stack(stack_name, self.ctx)
-        setup_mocks(self.m, stack)
-
+        setup_mocks(self.m, stack, mock_image_constraint=False)
         resource = stack['WebServer']
 
         self.m.ReplayAll()
@@ -624,6 +638,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                 'KeyName': 'test',
                 'InstanceType': 'm1.large'
             })
+        setup_mock_for_image_constraint(self.m, 'CentOS 5.2')
         stack.validate()
 
         resource.properties = Properties(
@@ -643,9 +658,6 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.m.StubOutWithMock(parser.Stack, 'load')
 
         parser.Stack.load(self.ctx, stack=s).AndReturn(stack)
-
-        self.man.tg = DummyThreadGroup()
-
         self.m.ReplayAll()
 
         self.assertIsNone(self.man.delete_stack(self.ctx, stack.identifier()))
@@ -672,13 +684,32 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         st = db_api.stack_get(self.ctx, sid)
         self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.ctx, stack=st).MultipleTimes().AndReturn(stack)
-        self.man.tg = DummyThreadGroup()
 
         self.m.StubOutWithMock(stack_lock.StackLock, 'try_acquire')
         stack_lock.StackLock.try_acquire().AndReturn(self.man.engine_id)
         self.m.ReplayAll()
 
         self.assertIsNone(self.man.delete_stack(self.ctx, stack.identifier()))
+        self.man.thread_group_mgr.groups[sid].wait()
+        self.m.VerifyAll()
+
+    def test_stack_delete_acquired_lock_stop_timers(self):
+        stack_name = 'service_delete_test_stack'
+        stack = get_wordpress_stack(stack_name, self.ctx)
+        sid = stack.store()
+
+        st = db_api.stack_get(self.ctx, sid)
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx, stack=st).MultipleTimes().AndReturn(stack)
+
+        self.m.StubOutWithMock(stack_lock.StackLock, 'try_acquire')
+        stack_lock.StackLock.try_acquire().AndReturn(self.man.engine_id)
+        self.m.ReplayAll()
+
+        self.man.thread_group_mgr.add_timer(stack.id, 'test')
+        self.assertEqual(1, len(self.man.thread_group_mgr.groups[sid].timers))
+        self.assertIsNone(self.man.delete_stack(self.ctx, stack.identifier()))
+        self.assertEqual(0, len(self.man.thread_group_mgr.groups[sid].timers))
         self.man.thread_group_mgr.groups[sid].wait()
         self.m.VerifyAll()
 
@@ -843,7 +874,8 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         params = {}
         res._register_class('GenericResourceType',
                             generic_rsrc.GenericResource)
-        tpl = {'Resources': {
+        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
+               'Resources': {
                'A': {'Type': 'GenericResourceType'},
                'B': {'Type': 'GenericResourceType'},
                'C': {'Type': 'GenericResourceType'}}}
@@ -1027,13 +1059,13 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         params = {}
         res._register_class('GenericResourceType',
                             generic_rsrc.GenericResource)
-        tpl = {'Resources': {
+        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
+               'Resources': {
                'A': {'Type': 'GenericResourceType'},
                'B': {'Type': 'GenericResourceType'},
                'C': {'Type': 'GenericResourceType'}}}
 
         template = parser.Template(tpl)
-
         old_stack = parser.Stack(self.ctx, stack_name, template)
         sid = old_stack.store()
         self.assertIsNotNone(sid)
@@ -1042,7 +1074,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         ex = self.assertRaises(rpc_common.ClientException,
                                self.man.update_stack, self.ctx,
-                               old_stack.identifier(), template, params,
+                               old_stack.identifier(), tpl, params,
                                None, {})
         self.assertEqual(ex._exc_info[0], exception.RequestLimitExceeded)
         self.assertIn(exception.StackResourceLimitExceeded.msg_fmt,
@@ -1184,31 +1216,20 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.assertEqual('Missing required credential: X-Auth-Key', str(ex))
 
 
-class StackServiceUpdateNotSupportedTest(HeatTestCase):
+class StackServiceUpdateSuspendedNotSupportedTest(HeatTestCase):
 
     scenarios = [
         ('suspend_in_progress', dict(action='SUSPEND', status='IN_PROGRESS')),
         ('suspend_complete', dict(action='SUSPEND', status='COMPLETE')),
         ('suspend_failed', dict(action='SUSPEND', status='FAILED')),
-        ('create_in_progress', dict(action='CREATE', status='IN_PROGRESS')),
-        ('delete_in_progress', dict(action='DELETE', status='IN_PROGRESS')),
-        ('update_in_progress', dict(action='UPDATE', status='IN_PROGRESS')),
-        ('rb_in_progress', dict(action='ROLLBACK', status='IN_PROGRESS')),
-        ('resume_in_progress', dict(action='RESUME', status='IN_PROGRESS')),
     ]
 
     def setUp(self):
-        super(StackServiceUpdateNotSupportedTest, self).setUp()
-        utils.setup_dummy_db()
-        utils.reset_dummy_db()
+        super(StackServiceUpdateSuspendedNotSupportedTest, self).setUp()
         self.ctx = utils.dummy_context()
-
-        self.m.StubOutWithMock(service.EngineListener, 'start')
-        service.EngineListener.start().AndReturn(None)
-        self.m.ReplayAll()
         self.man = service.EngineService('a-host', 'a-topic')
 
-    def test_stack_update_during(self):
+    def test_stack_update_suspended(self):
         stack_name = '%s-%s' % (self.action, self.status)
 
         old_stack = get_wordpress_stack(stack_name, self.ctx)
@@ -1238,13 +1259,9 @@ class StackServiceSuspendResumeTest(HeatTestCase):
 
     def setUp(self):
         super(StackServiceSuspendResumeTest, self).setUp()
-        utils.setup_dummy_db()
         self.ctx = utils.dummy_context()
-
-        self.m.StubOutWithMock(service.EngineListener, 'start')
-        service.EngineListener.start().AndReturn(None)
-        self.m.ReplayAll()
         self.man = service.EngineService('a-host', 'a-topic')
+        self.man.create_periodic_tasks()
 
     def test_stack_suspend(self):
         stack_name = 'service_suspend_test_stack'
@@ -1316,16 +1333,11 @@ class StackServiceAuthorizeTest(HeatTestCase):
         super(StackServiceAuthorizeTest, self).setUp()
 
         self.ctx = utils.dummy_context(tenant_id='stack_service_test_tenant')
-        self.m.StubOutWithMock(service.EngineListener, 'start')
-        service.EngineListener.start().AndReturn(None)
-        self.m.ReplayAll()
-
         self.eng = service.EngineService('a-host', 'a-topic')
+        self.eng.engine_id = 'engine-fake-uuid'
         cfg.CONF.set_default('heat_stack_user_role', 'stack_user_role')
         res._register_class('ResourceWithPropsType',
                             generic_rsrc.ResourceWithProps)
-
-        utils.setup_dummy_db()
 
     @stack_context('service_authorize_stack_user_nocreds_test_stack')
     def test_stack_authorize_stack_user_nocreds(self):
@@ -1415,38 +1427,29 @@ class StackServiceTest(HeatTestCase):
         super(StackServiceTest, self).setUp()
 
         self.ctx = utils.dummy_context(tenant_id='stack_service_test_tenant')
-
-        self.m.StubOutWithMock(service.EngineListener, 'start')
-        service.EngineListener.start().AndReturn(None)
-        self.m.ReplayAll()
-
         self.eng = service.EngineService('a-host', 'a-topic')
+        self.eng.create_periodic_tasks()
+        self.eng.engine_id = 'engine-fake-uuid'
         cfg.CONF.set_default('heat_stack_user_role', 'stack_user_role')
         res._register_class('ResourceWithPropsType',
                             generic_rsrc.ResourceWithProps)
 
-        utils.setup_dummy_db()
-
+    @mock.patch.object(service.StackWatch, 'start_watch_task')
     @mock.patch.object(service.db_api, 'stack_get_all')
     @mock.patch.object(service.service.Service, 'start')
-    def test_start_gets_all_stacks(self, mock_super_start, mock_stack_get_all):
-        mock_stack_get_all.return_value = []
-
-        self.eng.start()
-        mock_stack_get_all.assert_called_once_with(mock.ANY, tenant_safe=False)
-
-    @mock.patch.object(service.db_api, 'stack_get_all')
-    @mock.patch.object(service.service.Service, 'start')
-    def test_start_watches_all_stacks(self, mock_super_start, mock_get_all):
+    def test_start_watches_all_stacks(self, mock_super_start, mock_get_all,
+                                      start_watch_task):
         s1 = mock.Mock(id=1)
         s2 = mock.Mock(id=2)
         mock_get_all.return_value = [s1, s2]
-        mock_watch = mock.Mock()
-        self.eng.stack_watch.start_watch_task = mock_watch
+        start_watch_task.return_value = None
 
-        self.eng.start()
-        calls = mock_watch.call_args_list
-        self.assertEqual(2, mock_watch.call_count)
+        self.eng.thread_group_mgr = None
+        self.eng.create_periodic_tasks()
+
+        mock_get_all.assert_called_once_with(mock.ANY, tenant_safe=False)
+        calls = start_watch_task.call_args_list
+        self.assertEqual(2, start_watch_task.call_count)
         self.assertIn(mock.call(1, mock.ANY), calls)
         self.assertIn(mock.call(2, mock.ANY), calls)
 
@@ -1495,7 +1498,7 @@ class StackServiceTest(HeatTestCase):
     def test_stack_create_existing(self):
         ex = self.assertRaises(rpc_common.ClientException,
                                self.eng.create_stack, self.ctx,
-                               self.stack.name, self.stack.t, {}, None, {})
+                               self.stack.name, self.stack.t.t, {}, None, {})
         self.assertEqual(ex._exc_info[0], exception.StackExists)
 
     @stack_context('service_name_tenants_test_stack', False)
@@ -1569,7 +1572,8 @@ class StackServiceTest(HeatTestCase):
             return thread
         self.eng.thread_group_mgr.start = run
 
-        new_tmpl = {'Resources': {'AResource': {'Type':
+        new_tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                    'Resources': {'AResource': {'Type':
                                                 'GenericResourceType'}}}
 
         self.m.StubOutWithMock(instances.Instance, 'handle_delete')
@@ -1696,6 +1700,7 @@ class StackServiceTest(HeatTestCase):
                                                    mock.ANY,
                                                    filters,
                                                    mock.ANY,
+                                                   mock.ANY,
                                                    )
 
     @mock.patch.object(db_api, 'stack_get_all')
@@ -1708,6 +1713,7 @@ class StackServiceTest(HeatTestCase):
                                                    mock.ANY,
                                                    mock.ANY,
                                                    True,
+                                                   mock.ANY,
                                                    )
 
     @mock.patch.object(db_api, 'stack_get_all')
@@ -1720,6 +1726,7 @@ class StackServiceTest(HeatTestCase):
                                                    mock.ANY,
                                                    mock.ANY,
                                                    False,
+                                                   mock.ANY,
                                                    )
 
     @mock.patch.object(db_api, 'stack_count_all')
@@ -1754,7 +1761,7 @@ class StackServiceTest(HeatTestCase):
                 'metadata': {},
                 'name': u'WebServer',
                 'resource_data': {},
-                'resource_id': 9999,
+                'resource_id': '9999',
                 'status': 'COMPLETE',
                 'type': u'AWS::EC2::Instance'}}
         self.m.ReplayAll()
@@ -2160,7 +2167,7 @@ class StackServiceTest(HeatTestCase):
     @stack_context('service_metadata_test_stack')
     def test_metadata(self):
         test_metadata = {'foo': 'bar', 'baz': 'quux', 'blarg': 'wibble'}
-        pre_update_meta = self.stack['WebServer'].metadata
+        pre_update_meta = self.stack['WebServer'].metadata_get()
 
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
         s = db_api.stack_get(self.ctx, self.stack.id)
@@ -2260,7 +2267,6 @@ class StackServiceTest(HeatTestCase):
         self.stack.delete()
 
     @stack_context('service_show_watch_test_stack', False)
-    @utils.wr_delete_after
     def test_show_watch(self):
         # Insert two dummy watch rules into the DB
         rule = {u'EvaluationPeriods': u'1',
@@ -2315,7 +2321,6 @@ class StackServiceTest(HeatTestCase):
             self.assertIn(key, result[0])
 
     @stack_context('service_show_watch_metric_test_stack', False)
-    @utils.wr_delete_after
     def test_show_watch_metric(self):
         # Insert dummy watch rule into the DB
         rule = {u'EvaluationPeriods': u'1',
@@ -2362,7 +2367,6 @@ class StackServiceTest(HeatTestCase):
             self.assertIn(key, result[0])
 
     @stack_context('service_show_watch_state_test_stack')
-    @utils.wr_delete_after
     def test_set_watch_state(self):
         # Insert dummy watch rule into the DB
         rule = {u'EvaluationPeriods': u'1',
@@ -2424,7 +2428,6 @@ class StackServiceTest(HeatTestCase):
         self.m.VerifyAll()
 
     @stack_context('service_show_watch_state_badstate_test_stack')
-    @utils.wr_delete_after
     def test_set_watch_state_badstate(self):
         # Insert dummy watch rule into the DB
         rule = {u'EvaluationPeriods': u'1',
@@ -2489,6 +2492,7 @@ class StackServiceTest(HeatTestCase):
                             generic_rsrc.GenericResource)
 
         lazy_load_template = {
+            'HeatTemplateFormatVersion': '2012-12-12',
             'Resources': {
                 'foo': {'Type': 'GenericResourceType'},
                 'bar': {
@@ -2526,13 +2530,11 @@ class StackServiceTest(HeatTestCase):
         params = {}
         files = None
         stack_name = 'SampleStack'
-        tpl = {
-            'Description': 'Lorem ipsum.',
-            'Resources': {
-                'SampleResource1': {'Type': 'GenericResource1'},
-                'SampleResource2': {'Type': 'GenericResource2'},
-            }
-        }
+        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
+               'Description': 'Lorem ipsum.',
+               'Resources': {
+                   'SampleResource1': {'Type': 'GenericResource1'},
+                   'SampleResource2': {'Type': 'GenericResource2'}}}
 
         return self.eng.preview_stack(self.ctx, stack_name, tpl,
                                       params, files, args)
@@ -2588,14 +2590,16 @@ class StackServiceTest(HeatTestCase):
     def test_validate_new_stack_checks_stack_limit(self, mock_db_count):
         cfg.CONF.set_override('max_stacks_per_tenant', 99)
         mock_db_count.return_value = 99
-        template = service.parser.Template({})
+        template = service.parser.Template(
+            {'HeatTemplateFormatVersion': '2012-12-12'})
         self.assertRaises(exception.RequestLimitExceeded,
                           self.eng._validate_new_stack,
                           self.ctx, 'test_existing_stack', template)
 
     def test_validate_new_stack_checks_resource_limit(self):
         cfg.CONF.set_override('max_resources_per_stack', 5)
-        template = {'Resources': [1, 2, 3, 4, 5, 6]}
+        template = {'HeatTemplateFormatVersion': '2012-12-12',
+                    'Resources': [1, 2, 3, 4, 5, 6]}
         parsed_template = service.parser.Template(template)
         self.assertRaises(exception.RequestLimitExceeded,
                           self.eng._validate_new_stack,
@@ -2607,12 +2611,7 @@ class SoftwareConfigServiceTest(HeatTestCase):
     def setUp(self):
         super(SoftwareConfigServiceTest, self).setUp()
         self.ctx = utils.dummy_context()
-
-        self.m.StubOutWithMock(service.EngineListener, 'start')
-        service.EngineListener.start().AndReturn(None)
-        self.m.ReplayAll()
         self.engine = service.EngineService('a-host', 'a-topic')
-        utils.setup_dummy_db()
 
     def _create_software_config(
             self, group='Heat::Shell', name='config_mysql', config=None,
@@ -2684,21 +2683,51 @@ class SoftwareConfigServiceTest(HeatTestCase):
             action, status, status_reason, stack_user_project_id)
 
     def test_list_software_deployments(self):
-        deployment = self._create_software_deployment()
+        stack_name = 'test_list_software_deployments'
+        stack = get_wordpress_stack(stack_name, self.ctx)
+
+        setup_mocks(self.m, stack)
+        self.m.ReplayAll()
+        stack.store()
+        stack.create()
+        server = stack['WebServer']
+        server_id = server.resource_id
+
+        deployment = self._create_software_deployment(
+            server_id=server_id)
         deployment_id = deployment['id']
         self.assertIsNotNone(deployment)
+
         deployments = self.engine.list_software_deployments(
             self.ctx, server_id=None)
         self.assertIsNotNone(deployments)
         deployment_ids = [x['id'] for x in deployments]
         self.assertIn(deployment_id, deployment_ids)
         self.assertIn(deployment, deployments)
+
         deployments = self.engine.list_software_deployments(
             self.ctx, server_id=str(uuid.uuid4()))
         self.assertEqual([], deployments)
 
+        deployments = self.engine.list_software_deployments(
+            self.ctx, server_id=server.resource_id)
+        self.assertEqual([deployment], deployments)
+
+        rs = db_api.resource_get_by_physical_resource_id(self.ctx, server_id)
+        self.assertEqual(deployment['config_id'],
+                         rs.rsrc_metadata.get('deployments')[0]['id'])
+
     def test_metadata_software_deployments(self):
-        server_id = str(uuid.uuid4())
+        stack_name = 'test_list_software_deployments'
+        stack = get_wordpress_stack(stack_name, self.ctx)
+
+        setup_mocks(self.m, stack)
+        self.m.ReplayAll()
+        stack.store()
+        stack.create()
+        server = stack['WebServer']
+        server_id = server.resource_id
+
         stack_user_project_id = str(uuid.uuid4())
         d1 = self._create_software_deployment(
             config_group='mygroup',
@@ -2727,6 +2756,12 @@ class SoftwareConfigServiceTest(HeatTestCase):
         self.assertEqual('01_first', metadata[0]['name'])
         self.assertEqual('02_second', metadata[1]['name'])
         self.assertEqual('03_third', metadata[2]['name'])
+
+        # assert that metadata via metadata_software_deployments matches
+        # metadata via server resource
+        rs = db_api.resource_get_by_physical_resource_id(self.ctx, server_id)
+        self.assertEqual(metadata,
+                         rs.rsrc_metadata.get('deployments'))
 
         deployments = self.engine.metadata_software_deployments(
             self.ctx, server_id=str(uuid.uuid4()))
@@ -2784,8 +2819,22 @@ class SoftwareConfigServiceTest(HeatTestCase):
         self.assertEqual(deployment_id, deployment['id'])
         self.assertEqual(kwargs['input_values'], deployment['input_values'])
 
-    def test_update_software_deployment(self):
-        deployment = self._create_software_deployment()
+    def test_update_software_deployment_new_config(self):
+
+        server_id = str(uuid.uuid4())
+        self.m.StubOutWithMock(
+            self.engine, '_push_metadata_software_deployments')
+
+        # push on create
+        self.engine._push_metadata_software_deployments(
+            self.ctx, server_id).AndReturn(None)
+        # push on update with new config_id
+        self.engine._push_metadata_software_deployments(
+            self.ctx, server_id).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        deployment = self._create_software_deployment(server_id=server_id)
         self.assertIsNotNone(deployment)
         deployment_id = deployment['id']
         deployment_action = deployment['action']
@@ -2800,6 +2849,39 @@ class SoftwareConfigServiceTest(HeatTestCase):
         self.assertEqual(config_id, updated['config_id'])
         self.assertEqual('DEPLOY', updated['action'])
         self.assertEqual('WAITING', updated['status'])
+        self.m.VerifyAll()
+
+    def test_update_software_deployment_status(self):
+
+        server_id = str(uuid.uuid4())
+        self.m.StubOutWithMock(
+            self.engine, '_push_metadata_software_deployments')
+        # push on create
+        self.engine._push_metadata_software_deployments(
+            self.ctx, server_id).AndReturn(None)
+        # _push_metadata_software_deployments should not be called
+        # on update because config_id isn't being updated
+        self.m.ReplayAll()
+        deployment = self._create_software_deployment(server_id=server_id)
+
+        self.assertIsNotNone(deployment)
+        deployment_id = deployment['id']
+        deployment_action = deployment['action']
+        self.assertEqual('INIT', deployment_action)
+        updated = self.engine.update_software_deployment(
+            self.ctx, deployment_id=deployment_id, config_id=None,
+            input_values=None, output_values={}, action='DEPLOY',
+            status='WAITING', status_reason='')
+        self.assertIsNotNone(updated)
+        self.assertEqual('DEPLOY', updated['action'])
+        self.assertEqual('WAITING', updated['status'])
+        self.m.VerifyAll()
+
+    def test_update_software_deployment_fields(self):
+
+        deployment = self._create_software_deployment()
+        deployment_id = deployment['id']
+        config_id = deployment['config_id']
 
         def check_software_deployment_updated(**kwargs):
             values = {
@@ -2864,32 +2946,13 @@ class ThreadGroupManagerTest(HeatTestCase):
         self.cfg_mock = self.useFixture(
             mockpatch.Patch('heat.engine.service.cfg')).mock
 
-    def test_tgm_start_with_acquired_lock(self):
-        thm = service.ThreadGroupManager()
-        with self.patchobject(thm, 'start'):
-            thm.start_with_acquired_lock(self.stack, self.lock_mock,
-                                         self.f, *self.fargs,
-                                         **self.fkwargs)
-            thm.start.assert_called_with(self.stack.id, self.f,
-                                         *self.fargs, **self.fkwargs)
-            self.assertEqual(self.stack.id,
-                             thm.start().link.call_args[0][1])
-
-            self.assertFalse(self.lock_mock.release.called)
-
-    def test_tgm_start_with_acquired_lock_fail(self):
-        thm = service.ThreadGroupManager()
-        with self.patchobject(thm, 'start'):
-            with mock.patch('heat.engine.service.excutils'):
-                thm.start.side_effect = Exception
-                thm.start_with_acquired_lock(self.stack, self.lock_mock,
-                                             self.f, *self.fargs,
-                                             **self.fkwargs)
-                self.lock_mock.release.assert_called_with(self.stack.id)
-
     def test_tgm_start_with_lock(self):
         thm = service.ThreadGroupManager()
         with self.patchobject(thm, 'start_with_acquired_lock'):
+            mock_thread_lock = mock.Mock()
+            mock_thread_lock.__enter__ = mock.Mock(return_value=None)
+            mock_thread_lock.__exit__ = mock.Mock(return_value=None)
+            self.lock_mock.thread_lock.return_value = mock_thread_lock
             thm.start_with_lock(self.cnxt, self.stack, self.engine_id, self.f,
                                 *self.fargs, **self.fkwargs)
             self.stlock_mock.StackLock.assert_called_with(self.cnxt,
@@ -2918,9 +2981,9 @@ class ThreadGroupManagerTest(HeatTestCase):
 
         thm = service.ThreadGroupManager()
         thm.start(stack_id, self.f, *self.fargs, **self.fkwargs)
-        thm.stop(stack_id)
+        thm.stop(stack_id, True)
 
-        self.tg_mock.stop.assert_called_once()
+        self.tg_mock.stop.assert_called_with(True)
         self.assertNotIn(stack_id, thm.groups)
 
     def test_tgm_add_timer(self):

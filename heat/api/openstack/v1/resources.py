@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -16,6 +15,7 @@ import itertools
 
 from heat.api.openstack.v1 import util
 from heat.common import identifier
+from heat.common import serializers
 from heat.common import wsgi
 from heat.rpc import api as engine_api
 from heat.rpc import client as rpc_client
@@ -30,11 +30,19 @@ def format_resource(req, res, keys=[]):
 
         if key == engine_api.RES_ID:
             identity = identifier.ResourceIdentifier(**value)
-            yield ('links', [util.make_link(req, identity),
-                             util.make_link(req, identity.stack(), 'stack')])
+            links = [util.make_link(req, identity),
+                     util.make_link(req, identity.stack(), 'stack')]
+
+            nested_id = res.get(engine_api.RES_NESTED_STACK_ID)
+            if nested_id:
+                nested_identity = identifier.HeatIdentifier(**nested_id)
+                links.append(util.make_link(req, nested_identity, 'nested'))
+
+            yield ('links', links)
         elif (key == engine_api.RES_STACK_NAME or
               key == engine_api.RES_STACK_ID or
-              key == engine_api.RES_ACTION):
+              key == engine_api.RES_ACTION or
+              key == engine_api.RES_NESTED_STACK_ID):
             return
         elif (key == engine_api.RES_METADATA):
             return
@@ -114,5 +122,5 @@ def create_resource(options):
     Resources resource factory method.
     """
     deserializer = wsgi.JSONRequestDeserializer()
-    serializer = wsgi.JSONResponseSerializer()
+    serializer = serializers.JSONResponseSerializer()
     return wsgi.Resource(ResourceController(options), deserializer, serializer)

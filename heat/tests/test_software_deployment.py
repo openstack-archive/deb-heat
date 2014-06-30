@@ -25,6 +25,7 @@ from heat.tests import utils
 class SoftwareDeploymentTest(HeatTestCase):
 
     template = {
+        'HeatTemplateFormatVersion': '2012-12-12',
         'Resources': {
             'deployment_mysql': {
                 'Type': 'OS::Heat::SoftwareDeployment',
@@ -37,7 +38,30 @@ class SoftwareDeploymentTest(HeatTestCase):
         }
     }
 
+    template_with_server = {
+        'HeatTemplateFormatVersion': '2012-12-12',
+        'Resources': {
+            'deployment_mysql': {
+                'Type': 'OS::Heat::SoftwareDeployment',
+                'Properties': {
+                    'server': 'server',
+                    'config': '48e8ade1-9196-42d5-89a2-f709fde42632',
+                    'input_values': {'foo': 'bar'},
+                }
+            },
+            'server': {
+                'Type': 'OS::Nova::Server',
+                'Properties': {
+                    'image': 'fedora-amd64',
+                    'flavor': 'm1.small',
+                    'key_name': 'heat_key'
+                }
+            }
+        }
+    }
+
     template_no_signal = {
+        'HeatTemplateFormatVersion': '2012-12-12',
         'Resources': {
             'deployment_mysql': {
                 'Type': 'OS::Heat::SoftwareDeployment',
@@ -53,6 +77,7 @@ class SoftwareDeploymentTest(HeatTestCase):
     }
 
     template_delete_suspend_resume = {
+        'HeatTemplateFormatVersion': '2012-12-12',
         'Resources': {
             'deployment_mysql': {
                 'Type': 'OS::Heat::SoftwareDeployment',
@@ -68,7 +93,6 @@ class SoftwareDeploymentTest(HeatTestCase):
 
     def setUp(self):
         super(SoftwareDeploymentTest, self).setUp()
-        utils.setup_dummy_db()
         self.ctx = utils.dummy_context()
 
     def _create_stack(self, tmpl):
@@ -92,6 +116,28 @@ class SoftwareDeploymentTest(HeatTestCase):
         self.deployment.heat = heat
         self.deployments = heat.return_value.software_deployments
         self.software_configs = heat.return_value.software_configs
+
+    def test_validate(self):
+        template = dict(self.template_with_server)
+        props = template['Resources']['server']['Properties']
+        props['user_data_format'] = 'SOFTWARE_CONFIG'
+        self._create_stack(self.template_with_server)
+        sd = self.deployment
+        sd.validate()
+        server = self.stack['server']
+        self.assertTrue(server.user_data_software_config())
+
+    def test_validate_failed(self):
+        template = dict(self.template_with_server)
+        props = template['Resources']['server']['Properties']
+        props['user_data_format'] = 'RAW'
+        self._create_stack(template)
+        sd = self.deployment
+        err = self.assertRaises(exception.StackValidationFailed, sd.validate)
+        self.assertEqual("Resource server's property "
+                         "user_data_format should be set to "
+                         "SOFTWARE_CONFIG since there are "
+                         "software deployments on it.", str(err))
 
     def test_resource_mapping(self):
         self._create_stack(self.template)
@@ -398,7 +444,7 @@ class SoftwareDeploymentTest(HeatTestCase):
         sd.status = 'COMPLETE'
         self.assertTrue(self.deployment.check_resume_complete(sd))
 
-    def test_handle_signal(self):
+    def test_handle_signal_ok_zero(self):
         self._create_stack(self.template)
         sd = mock.MagicMock()
         sc = mock.MagicMock()
@@ -421,6 +467,36 @@ class SoftwareDeploymentTest(HeatTestCase):
             'output_values': {
                 'foo': 'bar',
                 'deploy_status_code': 0,
+                'deploy_stderr': None,
+                'deploy_stdout': None
+            },
+            'status': 'COMPLETE',
+            'status_reason': 'Outputs received'
+        }, args)
+
+    def test_handle_signal_ok_str_zero(self):
+        self._create_stack(self.template)
+        sd = mock.MagicMock()
+        sc = mock.MagicMock()
+        sc.outputs = [{'name': 'foo'},
+                      {'name': 'foo2'},
+                      {'name': 'failed',
+                       'error_output': True}]
+        sd.output_values = {}
+        sd.status = self.deployment.IN_PROGRESS
+        sd.update.return_value = None
+        self.deployments.get.return_value = sd
+        self.software_configs.get.return_value = sc
+        details = {
+            'foo': 'bar',
+            'deploy_status_code': '0'
+        }
+        self.deployment.handle_signal(details)
+        args = sd.update.call_args[1]
+        self.assertEqual({
+            'output_values': {
+                'foo': 'bar',
+                'deploy_status_code': '0',
                 'deploy_stderr': None,
                 'deploy_stdout': None
             },

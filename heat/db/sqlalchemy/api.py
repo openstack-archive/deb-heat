@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -13,17 +12,14 @@
 #    under the License.
 
 '''Implementation of SQLAlchemy backend.'''
-import sys
 from datetime import datetime
 from datetime import timedelta
+import sys
 
 from oslo.config import cfg
 import sqlalchemy
+from sqlalchemy import orm
 from sqlalchemy.orm.session import Session
-
-cfg.CONF.import_opt('max_events_per_stack', 'heat.common.config')
-
-from heat.openstack.common.gettextutils import _
 
 from heat.common import crypt
 from heat.common import exception
@@ -32,15 +28,32 @@ from heat.db.sqlalchemy import migration
 from heat.db.sqlalchemy import models
 from heat.openstack.common.db.sqlalchemy import session as db_session
 from heat.openstack.common.db.sqlalchemy import utils
+from heat.openstack.common.gettextutils import _
+
+cfg.CONF.import_opt('max_events_per_stack', 'heat.common.config')
+
+CONF = cfg.CONF
+CONF.import_opt('max_events_per_stack', 'heat.common.config')
+CONF.import_opt('connection', 'heat.openstack.common.db.options',
+                group='database')
+
+_facade = None
 
 
-get_engine = db_session.get_engine
-get_session = db_session.get_session
+def get_facade():
+    global _facade
+
+    if not _facade:
+        _facade = db_session.EngineFacade(
+            CONF.database.connection, **dict(CONF.database.iteritems()))
+    return _facade
+
+get_engine = lambda: get_facade().get_engine()
+get_session = lambda: get_facade().get_session()
 
 
 def get_backend():
     """The backend is this module itself."""
-
     return sys.modules[__name__]
 
 
@@ -100,7 +113,8 @@ def resource_get(context, resource_id):
 def resource_get_by_name_and_stack(context, resource_name, stack_id):
     result = model_query(context, models.Resource).\
         filter_by(name=resource_name).\
-        filter_by(stack_id=stack_id).first()
+        filter_by(stack_id=stack_id).\
+        options(orm.joinedload("data")).first()
 
     return result
 
@@ -111,7 +125,8 @@ def resource_get_by_physical_resource_id(context, physical_resource_id):
                .all())
 
     for result in results:
-        if context is None or result.stack.tenant == context.tenant_id:
+        if context is None or context.tenant_id in (
+                result.stack.tenant, result.stack.stack_user_project_id):
             return result
 
     return None
@@ -126,20 +141,21 @@ def resource_get_all(context):
     return results
 
 
-def resource_data_get_all(resource):
+def resource_data_get_all(resource, data=None):
     """
     Looks up resource_data by resource.id.  If data is encrypted,
     this method will decrypt the results.
     """
-    result = (model_query(resource.context, models.ResourceData)
-              .filter_by(resource_id=resource.id))
+    if data is None:
+        data = (model_query(resource.context, models.ResourceData)
+                .filter_by(resource_id=resource.id))
 
-    if not result:
+    if not data:
         raise exception.NotFound(_('no resource data found'))
 
     ret = {}
 
-    for res in result:
+    for res in data:
         if res.redact:
             ret[res.key] = _decrypt(res.value, res.decrypt_method)
         else:
@@ -235,13 +251,14 @@ def resource_create(context, values):
 
 def resource_get_all_by_stack(context, stack_id):
     results = model_query(context, models.Resource).\
-        filter_by(stack_id=stack_id).all()
+        filter_by(stack_id=stack_id).\
+        options(orm.joinedload("data")).all()
 
     if not results:
         raise exception.NotFound(_("no resources for stack_id %s were found")
                                  % stack_id)
 
-    return results
+    return dict((res.name, res) for res in results)
 
 
 def stack_get_by_name_and_owner_id(context, stack_name, owner_id):
@@ -267,8 +284,12 @@ def stack_get_by_name(context, stack_name):
     return query.first()
 
 
-def stack_get(context, stack_id, show_deleted=False, tenant_safe=True):
-    result = model_query(context, models.Stack).get(stack_id)
+def stack_get(context, stack_id, show_deleted=False, tenant_safe=True,
+              eager_load=False):
+    query = model_query(context, models.Stack)
+    if eager_load:
+        query = query.options(orm.joinedload("raw_template"))
+    result = query.get(stack_id)
 
     deleted_ok = show_deleted or context.show_deleted
     if result is None or result.deleted_at is not None and not deleted_ok:
@@ -329,8 +350,9 @@ def _paginate_query(context, query, model, limit=None, sort_keys=None,
     return query
 
 
-def _query_stack_get_all(context, tenant_safe=True):
-    query = soft_delete_aware_query(context, models.Stack).\
+def _query_stack_get_all(context, tenant_safe=True, show_deleted=False):
+    query = soft_delete_aware_query(context, models.Stack,
+                                    show_deleted=show_deleted).\
         filter_by(owner_id=None)
 
     if tenant_safe:
@@ -340,8 +362,10 @@ def _query_stack_get_all(context, tenant_safe=True):
 
 
 def stack_get_all(context, limit=None, sort_keys=None, marker=None,
-                  sort_dir=None, filters=None, tenant_safe=True):
-    query = _query_stack_get_all(context, tenant_safe)
+                  sort_dir=None, filters=None, tenant_safe=True,
+                  show_deleted=False):
+    query = _query_stack_get_all(context, tenant_safe,
+                                 show_deleted=show_deleted)
     return _filter_and_page_query(context, query, limit, sort_keys,
                                   marker, sort_dir, filters).all()
 
@@ -514,7 +538,8 @@ def _query_all_by_stack(context, stack_id):
 
 
 def event_get_all_by_stack(context, stack_id):
-    return _query_all_by_stack(context, stack_id).all()
+    return _query_all_by_stack(context, stack_id).order_by(
+        models.Event.id).all()
 
 
 def event_count_all_by_stack(context, stack_id):
@@ -529,17 +554,10 @@ def _delete_event_rows(context, stack_id, limit):
     # confirmed via integration tests.
     query = _query_all_by_stack(context, stack_id)
     session = _session(context)
-    if 'postgres' not in session.connection().dialect.name:
-        ids = [r.id for r in query.order_by(
-            models.Event.id).limit(limit).all()]
-        q = session.query(models.Event).filter(
-            models.Event.id.in_(ids))
-    else:
-        stmt = session.query(
-            models.Event.id).filter_by(
-                stack_id=stack_id).order_by(
-                    models.Event.id).limit(limit).subquery()
-        q = query.join(stmt, models.Event.id == stmt.c.id)
+    ids = [r.id for r in query.order_by(
+        models.Event.id).limit(limit).all()]
+    q = session.query(models.Event).filter(
+        models.Event.id.in_(ids))
     return q.delete(synchronize_session='fetch')
 
 
@@ -699,6 +717,39 @@ def software_deployment_delete(context, deployment_id):
     session.flush()
 
 
+def snapshot_create(context, values):
+    obj_ref = models.Snapshot()
+    obj_ref.update(values)
+    obj_ref.save(_session(context))
+    return obj_ref
+
+
+def snapshot_get(context, snapshot_id):
+    result = model_query(context, models.Snapshot).get(snapshot_id)
+    if (result is not None and context is not None and
+            context.tenant_id != result.tenant):
+        result = None
+
+    if not result:
+        raise exception.NotFound(_('Snapshot with id %s not found') %
+                                 snapshot_id)
+    return result
+
+
+def snapshot_update(context, snapshot_id, values):
+    snapshot = snapshot_get(context, snapshot_id)
+    snapshot.update(values)
+    snapshot.save(_session(context))
+    return snapshot
+
+
+def snapshot_delete(context, snapshot_id):
+    snapshot = snapshot_get(context, snapshot_id)
+    session = Session.object_session(snapshot)
+    session.delete(snapshot)
+    session.flush()
+
+
 def purge_deleted(age, granularity='days'):
     try:
         age = int(age)
@@ -746,11 +797,11 @@ def purge_deleted(age, granularity='days'):
         engine.execute(user_creds_del)
 
 
-def db_sync(version=None):
+def db_sync(engine, version=None):
     """Migrate the database to `version` or the most recent version."""
-    return migration.db_sync(version=version)
+    return migration.db_sync(engine, version=version)
 
 
-def db_version():
+def db_version(engine):
     """Display the current database version."""
-    return migration.db_version()
+    return migration.db_version(engine)

@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -191,6 +191,8 @@ class ScalingGroupTest(HeatTestCase):
                             key_name: my-key
                             metadata:
                                 server: metadata
+                            personality:
+                                /tmp/testfile: "dGVzdCBjb250ZW50"
                             networks:
                                 - uuid: "00000000-0000-0000-0000-000000000000"
                                 - uuid: "11111111-1111-1111-1111-111111111111"
@@ -198,7 +200,6 @@ class ScalingGroupTest(HeatTestCase):
 
     def setUp(self):
         super(ScalingGroupTest, self).setUp()
-        utils.setup_dummy_db()
         for res_name, res_class in auto_scale.resource_mapping().items():
             resource._register_class(res_name, res_class)
         self.fake_auto_scale = FakeAutoScale()
@@ -218,6 +219,70 @@ class ScalingGroupTest(HeatTestCase):
         the group ID as the resource ID.
         """
         self._setup_test_stack()
+        self.assertEqual(1, len(self.fake_auto_scale.groups))
+        self.assertEqual(
+            {
+                'cooldown': 60,
+                'disk_config': None,
+                'flavor': 'flavor-ref',
+                'image': 'image-ref',
+                'launch_config_type': 'launch_server',
+                'load_balancers': None,
+                'key_name': "my-key",
+                'max_entities': 25,
+                'group_metadata': {'group': 'metadata'},
+                'metadata': {'server': 'metadata'},
+                'min_entities': 1,
+                'name': 'My Group',
+                'networks': [{'uuid': '00000000-0000-0000-0000-000000000000'},
+                             {'uuid': '11111111-1111-1111-1111-111111111111'}],
+                'personality': [{
+                        'path': u'/tmp/testfile',
+                        'contents': u'dGVzdCBjb250ZW50'}],
+                'server_name': u'autoscaled-server'},
+            self.fake_auto_scale.groups['0'].kwargs)
+
+        resource = self.stack['my_group']
+        self.assertEqual('0', resource.FnGetRefId())
+
+    def test_group_create_no_personality(self):
+
+        template = template_format.parse('''
+HeatTemplateFormatVersion: "2012-12-12"
+Description: "Rackspace Auto Scale"
+Parameters: {}
+Resources:
+    my_group:
+        Type: Rackspace::AutoScale::Group
+        Properties:
+            groupConfiguration:
+                name: "My Group"
+                cooldown: 60
+                minEntities: 1
+                maxEntities: 25
+                metadata:
+                    group: metadata
+            launchConfiguration:
+                type: "launch_server"
+                args:
+                    server:
+                        name: autoscaled-server
+                        flavorRef: flavor-ref
+                        imageRef: image-ref
+                        key_name: my-key
+                        metadata:
+                            server: metadata
+                        networks:
+                            - uuid: "00000000-0000-0000-0000-000000000000"
+                            - uuid: "11111111-1111-1111-1111-111111111111"
+''')
+
+        self.stack = utils.parse_stack(template)
+        self.stack.create()
+        self.assertEqual(
+            ('CREATE', 'COMPLETE'), self.stack.state,
+            self.stack.status_reason)
+
         self.assertEqual(1, len(self.fake_auto_scale.groups))
         self.assertEqual(
             {
@@ -350,7 +415,6 @@ class PolicyTest(HeatTestCase):
 
     def setUp(self):
         super(PolicyTest, self).setUp()
-        utils.setup_dummy_db()
         for res_name, res_class in auto_scale.resource_mapping().items():
             resource._register_class(res_name, res_class)
         self.fake_auto_scale = FakeAutoScale()
@@ -492,7 +556,6 @@ class WebHookTest(HeatTestCase):
 
     def setUp(self):
         super(WebHookTest, self).setUp()
-        utils.setup_dummy_db()
         for res_name, res_class in auto_scale.resource_mapping().items():
             resource._register_class(res_name, res_class)
         self.fake_auto_scale = FakeAutoScale()

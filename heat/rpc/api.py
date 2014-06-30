@@ -14,9 +14,11 @@
 ENGINE_TOPIC = 'engine'
 
 PARAM_KEYS = (
-    PARAM_TIMEOUT, PARAM_DISABLE_ROLLBACK, PARAM_ADOPT_STACK_DATA
+    PARAM_TIMEOUT, PARAM_DISABLE_ROLLBACK, PARAM_ADOPT_STACK_DATA,
+    PARAM_SHOW_DELETED
 ) = (
-    'timeout_mins', 'disable_rollback', 'adopt_stack_data'
+    'timeout_mins', 'disable_rollback', 'adopt_stack_data',
+    'show_deleted'
 )
 
 STACK_KEYS = (
@@ -40,9 +42,11 @@ STACK_KEYS = (
 STACK_OUTPUT_KEYS = (
     OUTPUT_DESCRIPTION,
     OUTPUT_KEY, OUTPUT_VALUE,
+    OUTPUT_ERROR,
 ) = (
     'description',
     'output_key', 'output_value',
+    'output_error',
 )
 
 RES_KEYS = (
@@ -50,13 +54,13 @@ RES_KEYS = (
     RES_NAME, RES_PHYSICAL_ID, RES_METADATA,
     RES_ACTION, RES_STATUS, RES_STATUS_DATA,
     RES_TYPE, RES_ID, RES_STACK_ID, RES_STACK_NAME,
-    RES_REQUIRED_BY,
+    RES_REQUIRED_BY, RES_NESTED_STACK_ID,
 ) = (
     'description', 'updated_time',
     'resource_name', 'physical_resource_id', 'metadata',
     'resource_action', 'resource_status', 'resource_status_reason',
     'resource_type', 'resource_identity', STACK_ID, STACK_NAME,
-    'required_by',
+    'required_by', 'nested_stack_id',
 )
 
 RES_SCHEMA_KEYS = (
@@ -163,12 +167,14 @@ VALIDATE_PARAM_KEYS = (
     PARAM_TYPE, PARAM_DEFAULT, PARAM_NO_ECHO,
     PARAM_ALLOWED_VALUES, PARAM_ALLOWED_PATTERN, PARAM_MAX_LENGTH,
     PARAM_MIN_LENGTH, PARAM_MAX_VALUE, PARAM_MIN_VALUE,
-    PARAM_DESCRIPTION, PARAM_CONSTRAINT_DESCRIPTION, PARAM_LABEL
+    PARAM_DESCRIPTION, PARAM_CONSTRAINT_DESCRIPTION, PARAM_LABEL,
+    PARAM_CUSTOM_CONSTRAINT
 ) = (
     'Type', 'Default', 'NoEcho',
     'AllowedValues', 'AllowedPattern', 'MaxLength',
     'MinLength', 'MaxValue', 'MinValue',
-    'Description', 'ConstraintDescription', 'Label'
+    'Description', 'ConstraintDescription', 'Label',
+    'CustomConstraint'
 )
 
 VALIDATE_PARAM_TYPES = (

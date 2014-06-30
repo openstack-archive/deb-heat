@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -90,7 +90,6 @@ class OSDBInstanceTest(HeatTestCase):
     def setUp(self):
         super(OSDBInstanceTest, self).setUp()
         self.fc = self.m.CreateMockAnything()
-        utils.setup_dummy_db()
 
     def _setup_test_clouddbinstance(self, name, parsed_t):
         stack_name = '%s_stack' % name
@@ -104,9 +103,8 @@ class OSDBInstanceTest(HeatTestCase):
 
         instance = os_database.OSDBInstance(
             '%s_name' % name,
-            t['Resources']['MySqlCloudDB'],
+            template.resource_definitions(stack)['MySqlCloudDB'],
             stack)
-        instance.t = instance.stack.resolve_runtime_data(instance.t)
         return instance
 
     def _stubout_create(self, instance, fake_dbinstance):

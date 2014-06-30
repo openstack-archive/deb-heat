@@ -1,4 +1,3 @@
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -16,18 +15,17 @@ import hashlib
 import json
 
 from requests import exceptions
+import six
 
 from heat.common import exception
 from heat.common import template_format
 from heat.common import urlfetch
 from heat.engine import attributes
 from heat.engine import environment
+from heat.engine import function
 from heat.engine import properties
 from heat.engine import stack_resource
 from heat.engine import template
-from heat.openstack.common import log as logging
-
-logger = logging.getLogger(__name__)
 
 
 def generate_class(name, template_name):
@@ -59,7 +57,6 @@ class TemplateResource(stack_resource.StackResource):
         self._parsed_nested = None
         self.stack = stack
         self.validation_exception = None
-        self.update_allowed_keys = ('Properties',)
 
         tri = stack.env.get_resource_info(
             json_snippet['Type'],
@@ -88,7 +85,8 @@ class TemplateResource(stack_resource.StackResource):
             tmpl = template.Template(self.child_template())
         except ValueError as download_error:
             self.validation_exception = download_error
-            tmpl = template.Template({})
+            tmpl = template.Template(
+                {"HeatTemplateFormatVersion": "2012-12-12"})
 
         # re-generate the properties and attributes from the template.
         self.properties_schema = (properties.Properties
@@ -98,7 +96,7 @@ class TemplateResource(stack_resource.StackResource):
 
         self.properties = properties.Properties(self.properties_schema,
                                                 props,
-                                                self._resolve_runtime_data,
+                                                function.resolve,
                                                 self.name,
                                                 self.context)
         self.attributes = attributes.Attributes(self.name,
@@ -215,13 +213,13 @@ class TemplateResource(stack_resource.StackResource):
 
     def validate(self):
         if self.validation_exception is not None:
-            msg = str(self.validation_exception)
+            msg = six.text_type(self.validation_exception)
             raise exception.StackValidationFailed(message=msg)
 
         try:
             self.template_data()
         except ValueError as ex:
-            msg = _("Failed to retrieve template data: %s") % str(ex)
+            msg = _("Failed to retrieve template data: %s") % ex
             raise exception.StackValidationFailed(message=msg)
         cri = self.stack.env.get_resource_info(
             self.type(),
@@ -236,9 +234,18 @@ class TemplateResource(stack_resource.StackResource):
         return super(TemplateResource, self).validate()
 
     def handle_adopt(self, resource_data=None):
-        return self.create_with_template(self.parsed_nested(),
-                                         self._to_parameters(),
+        return self.create_with_template(self.child_template(),
+                                         self.child_params(),
                                          adopt_data=resource_data)
+
+    def check_adopt_complete(self, stack_creator):
+        done = stack_creator.step()
+        if done:
+            if self._nested.state != (self._nested.ADOPT,
+                                      self._nested.COMPLETE):
+                raise exception.Error(self._nested.status_reason)
+
+        return done
 
     def handle_create(self):
         return self.create_with_template(self.child_template(),

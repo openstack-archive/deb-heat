@@ -1,3 +1,4 @@
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -9,6 +10,8 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+
+"""Resources for Rackspace DNS."""
 
 from heat.common import exception
 from heat.engine import constraints
@@ -27,10 +30,12 @@ except ImportError:
 
     PYRAX_INSTALLED = False
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class CloudDns(resource.Resource):
+
+    """Represents a DNS resource."""
 
     PROPERTIES = (
         NAME, EMAIL_ADDRESS, TTL, COMMENT, RECORDS,
@@ -141,18 +146,14 @@ class CloudDns(resource.Resource):
         ),
     }
 
-    update_allowed_keys = ('Properties',)
-
     def cloud_dns(self):
         return self.stack.clients.cloud_dns()
 
     def handle_create(self):
-        """
-        Create a Rackspace CloudDns Instance.
-        """
+        """Create a Rackspace CloudDns Instance."""
         # There is no check_create_complete as the pyrax create for DNS is
         # synchronous.
-        logger.debug(_("CloudDns handle_create called."))
+        LOG.debug("CloudDns handle_create called.")
         args = dict((k, v) for k, v in self.properties.items())
         for rec in args[self.RECORDS] or {}:
             # only pop the priority for the correct types
@@ -163,10 +164,8 @@ class CloudDns(resource.Resource):
         self.resource_id_set(dom.id)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        """
-        Update a Rackspace CloudDns Instance.
-        """
-        logger.debug(_("CloudDns handle_update called."))
+        """Update a Rackspace CloudDns Instance."""
+        LOG.debug("CloudDns handle_update called.")
         if not self.resource_id:
             raise exception.Error(_('Update called on a non-existent domain'))
         if prop_diff:
@@ -188,10 +187,8 @@ class CloudDns(resource.Resource):
             dom.add_records(records)
 
     def handle_delete(self):
-        """
-        Delete a Rackspace CloudDns Instance.
-        """
-        logger.debug(_("CloudDns handle_delete called."))
+        """Delete a Rackspace CloudDns Instance."""
+        LOG.debug("CloudDns handle_delete called.")
         if self.resource_id:
             try:
                 dom = self.cloud_dns().get(self.resource_id)

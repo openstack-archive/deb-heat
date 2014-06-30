@@ -11,15 +11,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.common import param_utils
 from heat.common import template_format
-from heat.rpc import api
-from heat.openstack.common import timeutils
 from heat.engine import constraints as constr
-
-from heat.openstack.common import log as logging
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import log as logging
+from heat.openstack.common import timeutils
+from heat.rpc import api
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 def extract_args(params):
@@ -34,7 +34,7 @@ def extract_args(params):
         try:
             timeout = int(timeout_mins)
         except (ValueError, TypeError):
-            logger.exception(_('Timeout conversion failed'))
+            LOG.exception(_('Timeout conversion failed'))
         else:
             if timeout > 0:
                 kwargs[api.PARAM_TIMEOUT] = timeout
@@ -42,16 +42,13 @@ def extract_args(params):
                 raise ValueError(_('Invalid timeout value %s') % timeout)
 
     if api.PARAM_DISABLE_ROLLBACK in params:
-        disable_rollback = params.get(api.PARAM_DISABLE_ROLLBACK)
-        if str(disable_rollback).lower() == 'true':
-            kwargs[api.PARAM_DISABLE_ROLLBACK] = True
-        elif str(disable_rollback).lower() == 'false':
-            kwargs[api.PARAM_DISABLE_ROLLBACK] = False
-        else:
-            raise ValueError(_('Unexpected value for parameter'
-                               ' %(name)s : %(value)s') %
-                             dict(name=api.PARAM_DISABLE_ROLLBACK,
-                                  value=disable_rollback))
+        disable_rollback = param_utils.extract_bool(
+            params[api.PARAM_DISABLE_ROLLBACK])
+        kwargs[api.PARAM_DISABLE_ROLLBACK] = disable_rollback
+
+    if api.PARAM_SHOW_DELETED in params:
+        params[api.PARAM_SHOW_DELETED] = param_utils.extract_bool(
+            params[api.PARAM_SHOW_DELETED])
 
     adopt_data = params.get(api.PARAM_ADOPT_STACK_DATA)
     if adopt_data:
@@ -71,10 +68,15 @@ def format_stack_outputs(stack, outputs):
     that matches the API output expectations.
     '''
     def format_stack_output(k):
-        return {api.OUTPUT_DESCRIPTION: outputs[k].get('Description',
-                                                       'No description given'),
-                api.OUTPUT_KEY: k,
-                api.OUTPUT_VALUE: stack.output(k)}
+        output = {
+            api.OUTPUT_DESCRIPTION: outputs[k].get('Description',
+                                                   'No description given'),
+            api.OUTPUT_KEY: k,
+            api.OUTPUT_VALUE: stack.output(k)
+        }
+        if outputs[k].get('error_msg'):
+            output.update({api.OUTPUT_ERROR: outputs[k].get('error_msg')})
+        return output
 
     return [format_stack_output(key) for key in outputs]
 
@@ -119,7 +121,7 @@ def format_stack_resource(resource, detail=True):
         api.RES_UPDATED_TIME: timeutils.isotime(last_updated_time),
         api.RES_NAME: resource.name,
         api.RES_PHYSICAL_ID: resource.resource_id or '',
-        api.RES_METADATA: resource.metadata,
+        api.RES_METADATA: resource.metadata_get(),
         api.RES_ACTION: resource.action,
         api.RES_STATUS: resource.status,
         api.RES_STATUS_DATA: resource.status_reason,
@@ -130,9 +132,12 @@ def format_stack_resource(resource, detail=True):
         api.RES_REQUIRED_BY: resource.required_by(),
     }
 
+    if (hasattr(resource, 'nested') and callable(resource.nested) and
+            resource.nested()):
+        res[api.RES_NESTED_STACK_ID] = dict(resource.nested().identifier())
+
     if detail:
         res[api.RES_DESCRIPTION] = resource.parsed_template('Description', '')
-        res[api.RES_METADATA] = resource.metadata
 
     return res
 
@@ -171,7 +176,7 @@ def format_event(event):
 
 
 def format_notification_body(stack):
-    # some other posibilities here are:
+    # some other possibilities here are:
     # - template name
     # - template size
     # - resource count
@@ -234,7 +239,7 @@ def format_watch_data(wd):
     if len(metric) == 1:
         metric_name, metric_data = metric[0]
     else:
-        logger.error(_("Unexpected number of keys in watch_data.data!"))
+        LOG.error(_("Unexpected number of keys in watch_data.data!"))
         return
 
     result = {
@@ -300,6 +305,9 @@ def format_validate_parameter(param):
 
         elif isinstance(c, constr.AllowedPattern):
             res[api.PARAM_ALLOWED_PATTERN] = c.pattern
+
+        elif isinstance(c, constr.CustomConstraint):
+            res[api.PARAM_CUSTOM_CONSTRAINT] = c.name
 
         if c.description:
             constraint_description.append(c.description)

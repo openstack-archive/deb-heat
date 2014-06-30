@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -22,7 +22,6 @@ from heat.common import exception
 from heat.common import template_format
 from heat.engine import clients
 from heat.engine import parser
-from heat.engine import resource
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
 from heat.tests.fakes import FakeKeystoneClient
@@ -137,7 +136,6 @@ Resources:
         self.m.StubOutWithMock(nova_sg.SecurityGroupManager, 'delete')
         self.m.StubOutWithMock(nova_sg.SecurityGroupManager, 'get')
         self.m.StubOutWithMock(nova_sg.SecurityGroupManager, 'list')
-        utils.setup_dummy_db()
         self.m.StubOutWithMock(neutronclient.Client, 'create_security_group')
         self.m.StubOutWithMock(
             neutronclient.Client, 'create_security_group_rule')
@@ -163,9 +161,8 @@ Resources:
         self.assertIsNone(rsrc.validate())
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         self.assertEqual(ref_id, rsrc.FnGetRefId())
-        self.assertEqual(metadata, dict(rsrc.metadata))
+        self.assertEqual(metadata, dict(rsrc.metadata_get()))
 
-    @utils.stack_delete_after
     def test_security_group_nova(self):
         #create script
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
@@ -260,14 +257,12 @@ Resources:
         stack = self.create_stack(self.test_template_nova)
 
         sg = stack['the_sg']
-        self.assertRaises(resource.UpdateReplace, sg.handle_update, {}, {}, {})
 
         self.assertResourceState(sg, utils.PhysName('test_stack', 'the_sg'))
 
         stack.delete()
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_security_group_nova_bad_source_group(self):
         #create script
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
@@ -338,7 +333,6 @@ Resources:
         stack.delete()
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_security_group_nova_exception(self):
         #create script
         clients.OpenStackClients.nova('compute').AndReturn(self.fc)
@@ -449,7 +443,6 @@ Resources:
         stack = self.create_stack(self.test_template_nova)
 
         sg = stack['the_sg']
-        self.assertRaises(resource.UpdateReplace, sg.handle_update, {}, {}, {})
 
         self.assertResourceState(sg, utils.PhysName('test_stack', 'the_sg'))
 
@@ -468,7 +461,6 @@ Resources:
         sg = stack['the_sg']
         self.assertRaises(exception.EgressRuleNotAllowed, sg.validate)
 
-    @utils.stack_delete_after
     def test_security_group_neutron(self):
         #create script
         clients.OpenStackClients.keystone().AndReturn(
@@ -710,14 +702,12 @@ Resources:
         stack = self.create_stack(self.test_template_neutron)
 
         sg = stack['the_sg']
-        self.assertRaises(resource.UpdateReplace, sg.handle_update, {}, {}, {})
 
         self.assertResourceState(sg, 'aaaa')
 
         stack.delete()
         self.m.VerifyAll()
 
-    @utils.stack_delete_after
     def test_security_group_neutron_exception(self):
         #create script
         clients.OpenStackClients.keystone().AndReturn(
@@ -887,7 +877,6 @@ Resources:
         stack = self.create_stack(self.test_template_neutron)
 
         sg = stack['the_sg']
-        self.assertRaises(resource.UpdateReplace, sg.handle_update, {}, {}, {})
 
         self.assertResourceState(sg, 'aaaa')
 

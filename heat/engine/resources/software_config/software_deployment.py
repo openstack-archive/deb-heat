@@ -19,15 +19,16 @@ import uuid
 import heatclient.exc as heat_exp
 
 from heat.common import exception
-from heat.db import api as db_api
+from heat.engine import attributes
 from heat.engine import constraints
+from heat.engine import function
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources.software_config import software_config as sc
 from heat.engine import signal_responder
 from heat.openstack.common import log as logging
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
 
 
 class SoftwareDeployment(signal_responder.SignalResponder):
@@ -76,7 +77,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         resource.Resource.RESUME,
     )
 
-    DEPLOY_ATTRIBUTES = (
+    ATTRIBUTES = (
         STDOUT, STDERR, STATUS_CODE
     ) = (
         'deploy_stdout', 'deploy_stderr', 'deploy_status_code'
@@ -149,13 +150,16 @@ class SoftwareDeployment(signal_responder.SignalResponder):
     }
 
     attributes_schema = {
-        STDOUT: _("Captured stdout from the configuration execution."),
-        STDERR: _("Captured stderr from the configuration execution."),
-        STATUS_CODE: _("Returned status code from the configuration "
-                       "execution"),
+        STDOUT: attributes.Schema(
+            _("Captured stdout from the configuration execution.")
+        ),
+        STDERR: attributes.Schema(
+            _("Captured stderr from the configuration execution.")
+        ),
+        STATUS_CODE: attributes.Schema(
+            _("Returned status code from the configuration execution")
+        ),
     }
-
-    update_allowed_keys = ('Properties',)
 
     def _signal_transport_cfn(self):
         return self.properties.get(
@@ -225,13 +229,18 @@ class SoftwareDeployment(signal_responder.SignalResponder):
     def _check_complete(sd):
         if not sd:
             return True
-        sd._get()
+        # NOTE(dprince): when lazy loading the sd attributes
+        # we need to support multiple versions of heatclient
+        if hasattr(sd, 'get'):
+            sd.get()
+        else:
+            sd._get()
         if sd.status == SoftwareDeployment.COMPLETE:
             return True
         elif sd.status == SoftwareDeployment.FAILED:
             message = _("Deployment to server "
                         "failed: %s") % sd.status_reason
-            logger.error(message)
+            LOG.error(message)
             exc = exception.Error(message)
             raise exc
 
@@ -348,20 +357,14 @@ class SoftwareDeployment(signal_responder.SignalResponder):
 
     @property
     def password(self):
-        try:
-            return db_api.resource_data_get(self, 'password')
-        except exception.NotFound:
-            pass
+        return self.data().get('password')
 
     @password.setter
     def password(self, password):
-        try:
-            if password is None:
-                db_api.resource_data_delete(self, 'password')
-            else:
-                db_api.resource_data_set(self, 'password', password, True)
-        except exception.NotFound:
-            pass
+        if password is None:
+            self.data_delete('password')
+        else:
+            self.data_set('password', password, True)
 
     def check_create_complete(self, sd):
         return self._check_complete(sd)
@@ -371,7 +374,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             self.properties = properties.Properties(
                 self.properties_schema,
                 json_snippet.get('Properties', {}),
-                self.stack.resolve_runtime_data,
+                function.resolve,
                 self.name,
                 self.context)
 
@@ -436,7 +439,8 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         ov = sd.output_values or {}
         status = None
         status_reasons = {}
-        if details.get(self.STATUS_CODE):
+        status_code = details.get(self.STATUS_CODE)
+        if status_code and str(status_code) != '0':
             status = self.FAILED
             status_reasons[self.STATUS_CODE] = _(
                 'Deployment exited with non-zero status code: %s'
@@ -450,7 +454,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
                     status = self.FAILED
                     status_reasons[out_key] = details[out_key]
 
-        for out_key in self.DEPLOY_ATTRIBUTES:
+        for out_key in self.ATTRIBUTES:
             ov[out_key] = details.get(out_key)
 
         if status == self.FAILED:
@@ -475,9 +479,26 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         # to find out if the key is valid
         sc = self.heat().software_configs.get(self.properties[self.CONFIG])
         output_keys = [output['name'] for output in sc.outputs]
-        if key not in output_keys and key not in self.DEPLOY_ATTRIBUTES:
+        if key not in output_keys and key not in self.ATTRIBUTES:
             raise exception.InvalidTemplateAttribute(resource=self.name,
                                                      key=key)
+
+    def validate(self):
+        '''
+        Validate any of the provided params
+
+        :raises StackValidationFailed: if any property failed validation.
+        '''
+        super(SoftwareDeployment, self).validate()
+        server = self.properties.get(self.SERVER)
+        if server:
+            res = self.stack.resource_by_refid(server)
+            if res:
+                if not res.user_data_software_config():
+                    raise exception.StackValidationFailed(message=_(
+                        "Resource %s's property user_data_format should be "
+                        "set to SOFTWARE_CONFIG since there are software "
+                        "deployments on it.") % server)
 
 
 def resource_mapping():

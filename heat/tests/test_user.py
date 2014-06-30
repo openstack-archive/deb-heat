@@ -1,4 +1,4 @@
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -11,15 +11,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import uuid
-
 from oslo.config import cfg
 
 from heat.common import exception
 from heat.common import short_id
 from heat.common import template_format
 from heat.db import api as db_api
-from heat.engine import resource
 from heat.engine.resources import user
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
@@ -109,8 +106,6 @@ class UserTest(HeatTestCase):
         self.username = 'test_stack-CfnUser-aabbcc'
         self.fc = fakes.FakeKeystoneClient(username=self.username)
         cfg.CONF.set_default('heat_stack_user_role', 'stack_user_role')
-        utils.setup_dummy_db()
-        self.resource_id = str(uuid.uuid4())
 
     def create_user(self, t, stack, resource_name,
                     project_id='stackproject', user_id='dummy_user',
@@ -123,8 +118,14 @@ class UserTest(HeatTestCase):
         fakes.FakeKeystoneClient.create_stack_domain_project(
             stack.id).AndReturn(project_id)
 
+        resource_defns = stack.t.resource_definitions(stack)
+        rsrc = user.User(resource_name,
+                         resource_defns[resource_name],
+                         stack)
+        rsrc._store()
+
         self.m.StubOutWithMock(short_id, 'get_id')
-        short_id.get_id(self.resource_id).MultipleTimes().AndReturn('aabbcc')
+        short_id.get_id(rsrc.id).MultipleTimes().AndReturn('aabbcc')
 
         self.m.StubOutWithMock(fakes.FakeKeystoneClient,
                                'create_stack_domain_user')
@@ -132,13 +133,8 @@ class UserTest(HeatTestCase):
             username=self.username, password=password,
             project_id=project_id).AndReturn(user_id)
         self.m.ReplayAll()
-
-        rsrc = user.User(resource_name,
-                         t['Resources'][resource_name],
-                         stack)
         self.assertIsNone(rsrc.validate())
-        with utils.UUIDStub(self.resource_id):
-            scheduler.TaskRunner(rsrc.create)()
+        scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
 
@@ -154,8 +150,6 @@ class UserTest(HeatTestCase):
                           rsrc.FnGetAtt, 'Foo')
 
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
-        self.assertRaises(resource.UpdateReplace,
-                          rsrc.handle_update, {}, {}, {})
 
         self.assertIsNone(rsrc.handle_suspend())
         self.assertIsNone(rsrc.handle_resume())
@@ -229,8 +223,9 @@ class UserTest(HeatTestCase):
         t['Resources']['CfnUser']['Properties']['Policies'] = ['NoExistBad']
         stack = utils.parse_stack(t)
         resource_name = 'CfnUser'
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = user.User(resource_name,
-                         t['Resources'][resource_name],
+                         resource_defns[resource_name],
                          stack)
         self.assertRaises(exception.InvalidTemplateAttribute,
                           rsrc.handle_create)
@@ -279,7 +274,6 @@ class UserTest(HeatTestCase):
 class AccessKeyTest(HeatTestCase):
     def setUp(self):
         super(AccessKeyTest, self).setUp()
-        utils.setup_dummy_db()
         self.username = utils.PhysName('test_stack', 'CfnUser')
         self.credential_id = 'acredential123'
         self.fc = fakes.FakeKeystoneClient(username=self.username,
@@ -301,8 +295,9 @@ class AccessKeyTest(HeatTestCase):
         return rsrc
 
     def create_access_key(self, t, stack, resource_name):
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = user.AccessKey(resource_name,
-                              t['Resources'][resource_name],
+                              resource_defns[resource_name],
                               stack)
         self.assertIsNone(rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
@@ -317,8 +312,6 @@ class AccessKeyTest(HeatTestCase):
         rsrc = self.create_access_key(t, stack, 'HostKeys')
 
         self.m.VerifyAll()
-        self.assertRaises(resource.UpdateReplace,
-                          rsrc.handle_update, {}, {}, {})
         self.assertEqual(self.fc.access,
                          rsrc.resource_id)
 
@@ -382,8 +375,9 @@ class AccessKeyTest(HeatTestCase):
         stack = utils.parse_stack(t)
         stack['CfnUser'].resource_id = self.fc.user_id
 
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = user.AccessKey('HostKeys',
-                              t['Resources']['HostKeys'],
+                              resource_defns['HostKeys'],
                               stack)
         create = scheduler.TaskRunner(rsrc.create)
         self.assertRaises(exception.ResourceFailure, create)
@@ -402,8 +396,9 @@ class AccessPolicyTest(HeatTestCase):
         stack = utils.parse_stack(t)
 
         resource_name = 'WebServerAccessPolicy'
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = user.AccessPolicy(resource_name,
-                                 t['Resources'][resource_name],
+                                 resource_defns[resource_name],
                                  stack)
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
@@ -414,8 +409,9 @@ class AccessPolicyTest(HeatTestCase):
         t['Resources'][resource_name]['Properties']['AllowedResources'] = []
         stack = utils.parse_stack(t)
 
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = user.AccessPolicy(resource_name,
-                                 t['Resources'][resource_name],
+                                 resource_defns[resource_name],
                                  stack)
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
@@ -429,24 +425,14 @@ class AccessPolicyTest(HeatTestCase):
 
         self.assertRaises(exception.StackValidationFailed, stack.validate)
 
-    def test_accesspolicy_update(self):
-        t = template_format.parse(user_policy_template)
-        resource_name = 'WebServerAccessPolicy'
-        stack = utils.parse_stack(t)
-
-        rsrc = user.AccessPolicy(resource_name,
-                                 t['Resources'][resource_name],
-                                 stack)
-        self.assertRaises(resource.UpdateReplace,
-                          rsrc.handle_update, {}, {}, {})
-
     def test_accesspolicy_access_allowed(self):
         t = template_format.parse(user_policy_template)
         resource_name = 'WebServerAccessPolicy'
         stack = utils.parse_stack(t)
 
+        resource_defns = stack.t.resource_definitions(stack)
         rsrc = user.AccessPolicy(resource_name,
-                                 t['Resources'][resource_name],
+                                 resource_defns[resource_name],
                                  stack)
         self.assertTrue(rsrc.access_allowed('WikiDatabase'))
         self.assertFalse(rsrc.access_allowed('NotWikiDatabase'))
