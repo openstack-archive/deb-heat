@@ -1,3 +1,9 @@
+heat (2014.1.1-3) unstable; urgency=medium
+
+  * Now also packages etc/heat/templates by default.
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 31 Jul 2014 22:54:45 +0800
+
 heat (2014.1.1-2) unstable; urgency=medium
 
   * Updated de.po thanks to Chris Leick <c.leick@vollbio.de> (Closes: #751167).
