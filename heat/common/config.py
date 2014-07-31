@@ -22,9 +22,6 @@ from oslo.config import cfg
 
 from heat.common import wsgi
 from heat.openstack.common import log as logging
-from heat.openstack.common import rpc
-
-LOG = logging.getLogger(__name__)
 
 paste_deploy_group = cfg.OptGroup('paste_deploy')
 paste_deploy_opts = [
@@ -59,9 +56,16 @@ service_opts = [
     cfg.StrOpt('heat_stack_user_role',
                default="heat_stack_user",
                help='Keystone role for heat template-defined users.'),
-    cfg.StrOpt('stack_user_domain',
+    cfg.StrOpt('stack_user_domain_id',
+               deprecated_opts=[cfg.DeprecatedOpt('stack_user_domain',
+                                                  group=None)],
                help='Keystone domain ID which contains heat template-defined '
-                    'users.'),
+                    'users. If this option is set, stack_user_domain_name '
+                    'option will be ignored.'),
+    cfg.StrOpt('stack_user_domain_name',
+               help='Keystone domain name which contains heat '
+                    'template-defined users. If `stack_user_domain_id` option '
+                    'is set, this option is ignored.'),
     cfg.StrOpt('stack_domain_admin',
                help='Keystone username, a user with roles sufficient to '
                     'manage users and projects in the stack_user_domain.'),
@@ -176,6 +180,11 @@ heat_client_opts = [
                help=_('Optional heat url in format like'
                       ' http://0.0.0.0:8004/v1/%(tenant_id)s.'))]
 
+nova_client_opts = [
+    cfg.BoolOpt('http_log_debug',
+                default=False,
+                help=_("Allow client's debug log output."))]
+
 revision_group = cfg.OptGroup('revision')
 revision_opts = [
     cfg.StrOpt('heat_revision',
@@ -201,6 +210,7 @@ def list_opts():
         yield client_specific_group, clients_opts
 
     yield 'clients_heat', heat_client_opts
+    yield 'clients_nova', nova_client_opts
 
 
 cfg.CONF.register_group(paste_deploy_group)
@@ -209,24 +219,6 @@ cfg.CONF.register_group(revision_group)
 
 for group, opts in list_opts():
     cfg.CONF.register_opts(opts, group=group)
-
-rpc.set_defaults(control_exchange='heat')
-
-
-# A bit of history:
-# This was added initially by jianingy, then it got added
-# to oslo by Luis. Then it was receintly removed from the
-# default list again.
-# I am not sure we can (or should) rely on oslo to keep
-# our exceptions class in the defaults list.
-allowed_rpc_exception_modules = cfg.CONF.allowed_rpc_exception_modules
-allowed_rpc_exception_modules.append('heat.common.exception')
-cfg.CONF.set_default(name='allowed_rpc_exception_modules',
-                     default=allowed_rpc_exception_modules)
-
-if cfg.CONF.instance_user:
-    LOG.warn(_('The "instance_user" option in heat.conf is deprecated and '
-               'will be removed in the Juno release.'))
 
 
 def _get_deployment_flavor():

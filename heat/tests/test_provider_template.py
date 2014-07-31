@@ -16,6 +16,8 @@ import os
 import uuid
 import yaml
 
+import mock
+
 from heat.common import exception
 from heat.common import template_format
 from heat.common import urlfetch
@@ -156,6 +158,21 @@ class ProviderTemplateTest(HeatTestCase):
         self.assertEqual(5, converted_params.get("ANum"))
         # verify Map conversion
         self.assertEqual(map_prop_val, converted_params.get("AMap"))
+
+        with mock.patch.object(properties.Properties, '__getitem__') as m_get:
+            m_get.side_effect = ValueError('boom')
+
+            # If the property doesn't exist on INIT, return default value
+            temp_res.action = temp_res.INIT
+            converted_params = temp_res.child_params()
+            for key in DummyResource.properties_schema:
+                self.assertIn(key, converted_params)
+            self.assertEqual({}, converted_params['AMap'])
+            self.assertEqual(0, converted_params['ANum'])
+
+            # If the property doesn't exist past INIT, then error out
+            temp_res.action = temp_res.CREATE
+            self.assertRaises(ValueError, temp_res.child_params)
 
     def test_attributes_extra(self):
         provider = {
@@ -338,6 +355,37 @@ class ProviderTemplateTest(HeatTestCase):
                                                       definition, stack)
         self.assertRaises(exception.StackValidationFailed,
                           temp_res.validate)
+
+    def test_boolean_type_provider(self):
+        provider = {
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Parameters': {
+                'Foo': {'Type': 'Boolean'},
+            },
+        }
+        files = {'test_resource.template': json.dumps(provider)}
+
+        class DummyResource(object):
+            properties_schema = {"Foo":
+                                 properties.Schema(properties.Schema.BOOLEAN)}
+            attributes_schema = {}
+
+        env = environment.Environment()
+        resource._register_class('DummyResource', DummyResource)
+        env.load({'resource_registry':
+                  {'DummyResource': 'test_resource.template'}})
+        stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                             parser.Template(
+                                 {'HeatTemplateFormatVersion': '2012-12-12'},
+                                 files=files), env=env,
+                             stack_id=str(uuid.uuid4()))
+
+        definition = rsrc_defn.ResourceDefinition('test_t_res',
+                                                  "DummyResource",
+                                                  {"Foo": "False"})
+        temp_res = template_resource.TemplateResource('test_t_res',
+                                                      definition, stack)
+        self.assertIsNone(temp_res.validate())
 
     def test_get_template_resource(self):
         # assertion: if the name matches {.yaml|.template} we get the

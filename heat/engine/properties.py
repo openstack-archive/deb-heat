@@ -50,7 +50,7 @@ class Schema(constr.Schema):
 
     def __init__(self, data_type, description=None,
                  default=None, schema=None,
-                 required=False, constraints=[],
+                 required=False, constraints=None,
                  implemented=True,
                  update_allowed=False,
                  support_status=support.SupportStatus()):
@@ -74,7 +74,8 @@ class Schema(constr.Schema):
 
         unknown = [k for k in schema_dict if k not in SCHEMA_KEYS]
         if unknown:
-            raise constr.InvalidSchemaError(_('Unknown key(s) %s') % unknown)
+            raise exception.InvalidSchemaError(
+                message=_('Unknown key(s) %s') % unknown)
 
         def constraints():
             def get_num(key):
@@ -95,7 +96,8 @@ class Schema(constr.Schema):
         try:
             data_type = schema_dict[TYPE]
         except KeyError:
-            raise constr.InvalidSchemaError(_('No %s specified') % TYPE)
+            raise exception.InvalidSchemaError(
+                message=_('No %s specified') % TYPE)
 
         if SCHEMA in schema_dict:
             if data_type == Schema.LIST:
@@ -104,11 +106,9 @@ class Schema(constr.Schema):
                 schema_dicts = schema_dict[SCHEMA].items()
                 ss = dict((n, cls.from_legacy(sd)) for n, sd in schema_dicts)
             else:
-                raise constr.InvalidSchemaError(_('%(schema)s supplied for '
-                                                  ' %(type)s %(data)s') %
-                                                dict(schema=SCHEMA,
-                                                     type=TYPE,
-                                                     data=data_type))
+                raise exception.InvalidSchemaError(
+                    message=_('%(schema)s supplied for %(type)s %(data)s') %
+                    dict(schema=SCHEMA, type=TYPE, data=data_type))
         else:
             ss = None
 
@@ -135,7 +135,8 @@ class Schema(constr.Schema):
             param.STRING: cls.STRING,
             param.NUMBER: cls.NUMBER,
             param.LIST: cls.LIST,
-            param.MAP: cls.MAP
+            param.MAP: cls.MAP,
+            param.BOOLEAN: cls.BOOLEAN
         }
 
         # make update_allowed true by default on TemplateResources
@@ -193,7 +194,7 @@ class Property(object):
     def support_status(self):
         return self.schema.support_status
 
-    def _validate_integer(self, value):
+    def _get_integer(self, value):
         if value is None:
             value = self.has_default() and self.default() or 0
         try:
@@ -203,19 +204,19 @@ class Property(object):
         else:
             return value
 
-    def _validate_number(self, value):
+    def _get_number(self, value):
         if value is None:
             value = self.has_default() and self.default() or 0
         return Schema.str_to_num(value)
 
-    def _validate_string(self, value):
+    def _get_string(self, value):
         if value is None:
             value = self.has_default() and self.default() or ''
         if not isinstance(value, basestring):
             raise ValueError(_('Value must be a string'))
         return value
 
-    def _validate_children(self, child_values, keys=None):
+    def _get_children(self, child_values, keys=None, validate=False):
         if self.schema.schema is not None:
             if keys is None:
                 keys = list(self.schema.schema)
@@ -223,30 +224,33 @@ class Property(object):
             properties = Properties(schemata, dict(child_values),
                                     parent_name=self.name,
                                     context=self.context)
-            properties.validate()
+            if validate:
+                properties.validate()
+
             return ((k, properties[k]) for k in keys)
         else:
             return child_values
 
-    def _validate_map(self, value):
+    def _get_map(self, value, validate=False):
         if value is None:
             value = self.has_default() and self.default() or {}
         if not isinstance(value, collections.Mapping):
             raise TypeError(_('"%s" is not a map') % value)
 
-        return dict(self._validate_children(value.iteritems()))
+        return dict(self._get_children(value.iteritems(), validate=validate))
 
-    def _validate_list(self, value):
+    def _get_list(self, value, validate=False):
         if value is None:
             value = self.has_default() and self.default() or []
         if (not isinstance(value, collections.Sequence) or
                 isinstance(value, basestring)):
             raise TypeError(_('"%s" is not a list') % repr(value))
 
-        return [v[1] for v in self._validate_children(enumerate(value),
-                                                      range(len(value)))]
+        return [v[1] for v in self._get_children(enumerate(value),
+                                                 range(len(value)),
+                                                 validate)]
 
-    def _validate_bool(self, value):
+    def _get_bool(self, value):
         if value is None:
             value = self.has_default() and self.default() or False
         if isinstance(value, bool):
@@ -257,25 +261,29 @@ class Property(object):
 
         return normalised == 'true'
 
-    def _validate_data_type(self, value):
+    def get_value(self, value, validate=False):
+        """Get value from raw value and sanitize according to data type."""
+
         t = self.type()
         if t == Schema.STRING:
-            return self._validate_string(value)
+            _value = self._get_string(value)
         elif t == Schema.INTEGER:
-            return self._validate_integer(value)
+            _value = self._get_integer(value)
         elif t == Schema.NUMBER:
-            return self._validate_number(value)
+            _value = self._get_number(value)
         elif t == Schema.MAP:
-            return self._validate_map(value)
+            _value = self._get_map(value, validate)
         elif t == Schema.LIST:
-            return self._validate_list(value)
+            _value = self._get_list(value, validate)
         elif t == Schema.BOOLEAN:
-            return self._validate_bool(value)
+            _value = self._get_bool(value)
 
-    def validate_data(self, value):
-        value = self._validate_data_type(value)
-        self.schema.validate_constraints(value, self.context)
-        return value
+        # property value resolves to None if resource it depends on is not
+        # created. So, if value is None skip constraint validation.
+        if value is not None and validate:
+            self.schema.validate_constraints(_value, self.context)
+
+        return _value
 
 
 class Properties(collections.Mapping):
@@ -310,7 +318,7 @@ class Properties(collections.Mapping):
         for (key, prop) in self.props.items():
             if with_value:
                 try:
-                    self[key]
+                    self._get_property_value(key, validate=True)
                 except ValueError as e:
                     msg = _("Property error : %s") % e
                     raise exception.StackValidationFailed(message=msg)
@@ -325,7 +333,7 @@ class Properties(collections.Mapping):
                 msg = _("Unknown Property %s") % key
                 raise exception.StackValidationFailed(message=msg)
 
-    def __getitem__(self, key):
+    def _get_property_value(self, key, validate=False):
         if key not in self:
             raise KeyError(_('%(prefix)sInvalid Property %(key)s') %
                            {'prefix': self.error_prefix, 'key': key})
@@ -335,7 +343,7 @@ class Properties(collections.Mapping):
         if key in self.data:
             try:
                 value = self.resolve(self.data[key])
-                return prop.validate_data(value)
+                return prop.get_value(value, validate)
             # the resolver function could raise any number of exceptions,
             # so handle this generically
             except Exception as e:
@@ -346,6 +354,9 @@ class Properties(collections.Mapping):
         elif prop.required():
             raise ValueError(_('%(prefix)sProperty %(key)s not assigned') %
                              {'prefix': self.error_prefix, 'key': key})
+
+    def __getitem__(self, key):
+        return self._get_property_value(key)
 
     def __len__(self):
         return len(self.props)
@@ -365,7 +376,7 @@ class Properties(collections.Mapping):
             schema.INTEGER: parameters.Schema.NUMBER,
             schema.STRING: parameters.Schema.STRING,
             schema.NUMBER: parameters.Schema.NUMBER,
-            schema.BOOLEAN: parameters.Schema.STRING,
+            schema.BOOLEAN: parameters.Schema.BOOLEAN,
             schema.MAP: parameters.Schema.MAP,
             schema.LIST: parameters.Schema.LIST,
         }
@@ -435,6 +446,9 @@ class Properties(collections.Mapping):
             prop_def = cls._prop_def_from_prop(name, schema)
 
             return (name, param_def), (name, prop_def)
+
+        if not schema:
+            return {}, {}
 
         param_prop_defs = [param_prop_def_items(n, s)
                            for n, s in schemata(schema).iteritems()

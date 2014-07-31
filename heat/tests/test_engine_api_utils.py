@@ -46,6 +46,8 @@ class FormatTest(HeatTestCase):
         })
         resource._register_class('GenericResourceType',
                                  generic_rsrc.GenericResource)
+        resource._register_class('ResWithComplexPropsAndAttrs',
+                                 generic_rsrc.ResWithComplexPropsAndAttrs)
         self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
                                   template, stack_id=str(uuid.uuid4()))
 
@@ -64,7 +66,6 @@ class FormatTest(HeatTestCase):
             rpc_api.RES_UPDATED_TIME,
             rpc_api.RES_NAME,
             rpc_api.RES_PHYSICAL_ID,
-            rpc_api.RES_METADATA,
             rpc_api.RES_ACTION,
             rpc_api.RES_STATUS,
             rpc_api.RES_STATUS_DATA,
@@ -82,6 +83,49 @@ class FormatTest(HeatTestCase):
 
         formatted = api.format_stack_resource(res, False)
         self.assertEqual(resource_keys, set(formatted.keys()))
+
+    @mock.patch.object(api, 'format_resource_properties')
+    def test_format_stack_resource_with_props(self, mock_format_props):
+        mock_format_props.return_value = 'formatted_res_props'
+        res = self.stack['generic1']
+
+        formatted = api.format_stack_resource(res, True, with_props=True)
+        formatted_props = formatted[rpc_api.RES_SCHEMA_PROPERTIES]
+        self.assertEqual('formatted_res_props', formatted_props)
+
+    def _get_formatted_resource_properties(self, res_name):
+        tmpl = parser.Template(template_format.parse('''
+            heat_template_version: 2013-05-23
+            resources:
+              resource1:
+                type: ResWithComplexPropsAndAttrs
+              resource2:
+                type: ResWithComplexPropsAndAttrs
+                properties:
+                  a_string: foobar
+              resource3:
+                type: ResWithComplexPropsAndAttrs
+                properties:
+                  a_string: { get_attr: [ resource2, string] }
+        '''))
+        stack = parser.Stack(utils.dummy_context(), 'test_stack_for_preview',
+                             tmpl, stack_id=str(uuid.uuid4()))
+        res = stack[res_name]
+        return api.format_resource_properties(res)
+
+    def test_format_resource_properties_empty(self):
+        props = self._get_formatted_resource_properties('resource1')
+        self.assertIsNone(props['a_string'])
+        self.assertIsNone(props['a_list'])
+        self.assertIsNone(props['a_map'])
+
+    def test_format_resource_properties_direct_props(self):
+        props = self._get_formatted_resource_properties('resource2')
+        self.assertEqual('foobar', props['a_string'])
+
+    def test_format_resource_properties_get_attr(self):
+        props = self._get_formatted_resource_properties('resource3')
+        self.assertEqual('', props['a_string'])
 
     def test_format_stack_resource_with_nested_stack(self):
         res = self.stack['generic1']
@@ -101,7 +145,6 @@ class FormatTest(HeatTestCase):
             rpc_api.RES_UPDATED_TIME,
             rpc_api.RES_NAME,
             rpc_api.RES_PHYSICAL_ID,
-            rpc_api.RES_METADATA,
             rpc_api.RES_ACTION,
             rpc_api.RES_STATUS,
             rpc_api.RES_STATUS_DATA,
@@ -119,6 +162,14 @@ class FormatTest(HeatTestCase):
         res2 = api.format_stack_resource(self.stack['generic2'])
         self.assertEqual(['generic2'], res1['required_by'])
         self.assertEqual([], res2['required_by'])
+
+    def test_format_stack_resource_with_parent_stack(self):
+        res = self.stack['generic1']
+        res.stack.parent_resource = mock.Mock()
+        res.stack.parent_resource.name = 'foobar'
+
+        formatted = api.format_stack_resource(res, False)
+        self.assertEqual('foobar', formatted[rpc_api.RES_PARENT_RESOURCE])
 
     def test_format_event_identifier_uuid(self):
         self._test_format_event('abc123yc-9f88-404d-a85b-531529456xyz')
@@ -151,7 +202,7 @@ class FormatTest(HeatTestCase):
 
     @mock.patch.object(api, 'format_stack_resource')
     def test_format_stack_preview(self, mock_fmt_resource):
-        def mock_format_resources(res):
+        def mock_format_resources(res, **kwargs):
             return 'fmt%s' % res
 
         mock_fmt_resource.side_effect = mock_format_resources
@@ -163,6 +214,9 @@ class FormatTest(HeatTestCase):
         self.assertEqual('test_stack', stack['stack_name'])
         self.assertIn('resources', stack)
         self.assertEqual(['fmt1', ['fmt2', ['fmt3']]], stack['resources'])
+
+        kwargs = mock_fmt_resource.call_args[1]
+        self.assertTrue(kwargs['with_props'])
 
     def test_format_stack(self):
         self.stack.created_time = datetime(1970, 1, 1)
@@ -176,6 +230,7 @@ class FormatTest(HeatTestCase):
             'description': 'No description',
             'disable_rollback': True,
             'notification_topics': [],
+            'outputs': [],
             'stack_action': '',
             'stack_name': 'test_stack',
             'stack_status': '',

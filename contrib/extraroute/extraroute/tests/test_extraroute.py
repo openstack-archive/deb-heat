@@ -11,22 +11,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from testtools import skipIf
+from neutronclient.v2_0 import client as neutronclient
 
 from heat.common import template_format
-from heat.engine import clients
 from heat.engine import resource
-from heat.engine.resources.neutron import neutron_utils
 from heat.engine import scheduler
-from heat.openstack.common.importutils import try_import
 from heat.tests.common import HeatTestCase
-from heat.tests import fakes
 from heat.tests import utils
 
 from ..resources import extraroute  # noqa
 
-neutronclient = try_import('neutronclient.v2_0.client')
-qe = try_import('neutronclient.common.exceptions')
 
 neutron_template = '''
 {
@@ -58,19 +52,18 @@ neutron_template = '''
 '''
 
 
-@skipIf(neutronclient is None, 'neutronclient unavailable')
 class NeutronExtraRouteTest(HeatTestCase):
-    @skipIf(neutron_utils.neutronV20 is None, "Missing Neutron v2_0")
     def setUp(self):
         super(NeutronExtraRouteTest, self).setUp()
         self.m.StubOutWithMock(neutronclient.Client, 'show_router')
         self.m.StubOutWithMock(neutronclient.Client, 'update_router')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
         resource._register_class("OS::Neutron::ExtraRoute",
                                  extraroute.ExtraRoute)
 
-    def create_extraroute(self, t, stack, resource_name, properties={}):
+    def create_extraroute(self, t, stack, resource_name, properties=None):
+        properties = properties or {}
         t['Resources'][resource_name]['Properties'] = properties
         rsrc = extraroute.ExtraRoute(
             resource_name,
@@ -81,8 +74,6 @@ class NeutronExtraRouteTest(HeatTestCase):
         return rsrc
 
     def test_extraroute(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         # add first route
         neutronclient.Client.show_router(
             '3e46229d-8fce-4733-819a-b5fe630550f8')\

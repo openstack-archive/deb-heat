@@ -21,7 +21,8 @@ from heat.rpc import api as engine_api
 from heat.rpc import client as rpc_client
 
 
-def format_resource(req, res, keys=[]):
+def format_resource(req, res, keys=None):
+    keys = keys or []
     include_key = lambda k: k in keys if keys else True
 
     def transform(key, value):
@@ -80,8 +81,12 @@ class ResourceController(object):
         Lists summary information for all resources
         """
 
+        # Though nested_depth is defaulted in the RPC API, this prevents empty
+        # strings from being passed, thus breaking the code in the engine.
+        nested_depth = int(req.params.get('nested_depth') or 0)
         res_list = self.rpc_client.list_stack_resources(req.context,
-                                                        identity)
+                                                        identity,
+                                                        nested_depth)
 
         return {'resources': [format_resource(req, res) for res in res_list]}
 

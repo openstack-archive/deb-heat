@@ -11,18 +11,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import eventlet
 import functools
 import json
 import os
 
 from oslo.config import cfg
+from oslo import messaging
 import six
+import warnings
 import webob
 
 from heat.common import context
 from heat.common import exception
-from heat.common import heat_keystoneclient as hkc
 from heat.common import identifier
+from heat.common import messaging as rpc_messaging
 from heat.db import api as db_api
 from heat.engine import api
 from heat.engine import attributes
@@ -38,9 +41,7 @@ from heat.engine import stack_lock
 from heat.engine import watchrule
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
-from heat.openstack.common.rpc import common as rpc_common
-from heat.openstack.common.rpc import proxy
-from heat.openstack.common.rpc import service
+from heat.openstack.common import service
 from heat.openstack.common import threadgroup
 from heat.openstack.common import timeutils
 from heat.openstack.common import uuidutils
@@ -61,7 +62,7 @@ def request_context(func):
         try:
             return func(self, ctx, *args, **kwargs)
         except exception.HeatException:
-            raise rpc_common.ClientException()
+            raise messaging.rpc.dispatcher.ExpectedException()
     return wrapped
 
 
@@ -153,8 +154,22 @@ class ThreadGroupManager(object):
     def stop(self, stack_id, graceful=False):
         '''Stop any active threads on a stack.'''
         if stack_id in self.groups:
-            self.groups[stack_id].stop(graceful)
-            del self.groups[stack_id]
+            threadgroup = self.groups.pop(stack_id)
+            threads = threadgroup.threads[:]
+
+            threadgroup.stop(graceful)
+            threadgroup.wait()
+
+            # Wait for link()ed functions (i.e. lock release)
+            links_done = dict((th, False) for th in threads)
+
+            def mark_done(gt, th):
+                links_done[th] = True
+
+            for th in threads:
+                th.link(mark_done, th)
+            while not all(links_done.values()):
+                eventlet.sleep()
 
 
 class StackWatch(object):
@@ -195,12 +210,13 @@ class StackWatch(object):
         # scoping otherwise we fail to retrieve the stack
         LOG.debug("Periodic watcher task for stack %s" % sid)
         admin_context = context.get_admin_context()
-        stack = db_api.stack_get(admin_context, sid, tenant_safe=False,
-                                 eager_load=True)
-        if not stack:
+        db_stack = db_api.stack_get(admin_context, sid, tenant_safe=False,
+                                    eager_load=True)
+        if not db_stack:
             LOG.error(_("Unable to retrieve stack %s for periodic task") % sid)
             return
-        stack_context = EngineService.load_user_creds(stack.user_creds_id)
+        stack = parser.Stack.load(admin_context, stack=db_stack,
+                                  use_stored_context=True)
 
         # recurse into any nested stacks.
         children = db_api.stack_get_all_by_owner_id(admin_context, sid)
@@ -209,26 +225,24 @@ class StackWatch(object):
 
         # Get all watchrules for this stack and evaluate them
         try:
-            wrs = db_api.watch_rule_get_all_by_stack(stack_context, sid)
+            wrs = db_api.watch_rule_get_all_by_stack(admin_context, sid)
         except Exception as ex:
             LOG.warn(_('periodic_task db error watch rule removed? %(ex)s')
                      % ex)
             return
 
-        def run_alarm_action(actions, details):
+        def run_alarm_action(stack, actions, details):
             for action in actions:
                 action(details=details)
-
-            stk = parser.Stack.load(stack_context, stack=stack)
-            for res in stk.itervalues():
+            for res in stack.itervalues():
                 res.metadata_update()
 
         for wr in wrs:
-            rule = watchrule.WatchRule.load(stack_context, watch=wr)
+            rule = watchrule.WatchRule.load(stack.context, watch=wr)
             actions = rule.evaluate()
             if actions:
-                self.thread_group_mgr.start(sid, run_alarm_action, actions,
-                                            rule.get_details())
+                self.thread_group_mgr.start(sid, run_alarm_action, stack,
+                                            actions, rule.get_details())
 
     def periodic_watcher_task(self, sid):
         """
@@ -245,10 +259,16 @@ class EngineListener(service.Service):
     engines to communicate with each other for multi-engine support.
     '''
     def __init__(self, host, engine_id, thread_group_mgr):
-        super(EngineListener, self).__init__(host, engine_id)
-
+        super(EngineListener, self).__init__()
         self.thread_group_mgr = thread_group_mgr
         self.engine_id = engine_id
+
+    def start(self):
+        super(EngineListener, self).start()
+        self.target = messaging.Target(
+            server=cfg.CONF.host, topic=self.engine_id)
+        server = rpc_messaging.get_rpc_server(self.target, self)
+        server.start()
 
     def listening(self, ctxt):
         '''
@@ -277,9 +297,10 @@ class EngineService(service.Service):
     RPC_API_VERSION = '1.1'
 
     def __init__(self, host, topic, manager=None):
-        super(EngineService, self).__init__(host, topic)
+        super(EngineService, self).__init__()
         resources.initialise()
         self.host = host
+        self.topic = topic
 
         # The following are initialized here, but assigned in start() which
         # happens after the fork when spawning multiple worker processes
@@ -287,6 +308,12 @@ class EngineService(service.Service):
         self.listener = None
         self.engine_id = None
         self.thread_group_mgr = None
+        self.target = None
+
+        if cfg.CONF.instance_user:
+            warnings.warn('The "instance_user" option in heat.conf is '
+                          'deprecated and will be removed in the Juno '
+                          'release.', DeprecationWarning)
 
     def create_periodic_tasks(self):
         LOG.debug("Starting periodic watch tasks pid=%s" % os.getpid())
@@ -303,13 +330,21 @@ class EngineService(service.Service):
             self.stack_watch.start_watch_task(s.id, admin_context)
 
     def start(self):
-        self.thread_group_mgr = ThreadGroupManager()
         self.engine_id = stack_lock.StackLock.generate_engine_id()
+        self.thread_group_mgr = ThreadGroupManager()
         self.listener = EngineListener(self.host, self.engine_id,
                                        self.thread_group_mgr)
-        LOG.debug("Starting listener for engine %s pid=%s, ppid=%s" %
-                  (self.engine_id, os.getpid(), os.getppid()))
+        LOG.debug("Starting listener for engine %s" % self.engine_id)
         self.listener.start()
+        target = messaging.Target(
+            version=self.RPC_API_VERSION, server=cfg.CONF.host,
+            topic=self.topic)
+        self.target = target
+        server = rpc_messaging.get_rpc_server(target, self)
+        server.start()
+        self._client = rpc_messaging.get_rpc_client(
+            version=self.RPC_API_VERSION)
+
         super(EngineService, self).start()
 
     def stop(self):
@@ -334,16 +369,6 @@ class EngineService(service.Service):
         # Terminate the engine process
         LOG.info(_("All threads were gone, terminating engine"))
         super(EngineService, self).stop()
-
-    @staticmethod
-    def load_user_creds(creds_id):
-        user_creds = db_api.user_creds_get(creds_id)
-        stored_context = context.RequestContext.from_dict(user_creds)
-        # heat_keystoneclient populates the context with an auth_token
-        # either via the stored user/password or trust_id, depending
-        # on how deferred_auth_method is configured in the conf file
-        hkc.KeystoneClient(stored_context)
-        return stored_context
 
     @request_context
     def identify_stack(self, cnxt, stack_name):
@@ -398,15 +423,12 @@ class EngineService(service.Service):
             to show all
         """
         if stack_identity is not None:
-            stacks = [self._get_stack(cnxt, stack_identity, show_deleted=True)]
+            db_stack = self._get_stack(cnxt, stack_identity, show_deleted=True)
+            stacks = [parser.Stack.load(cnxt, stack=db_stack)]
         else:
-            stacks = db_api.stack_get_all(cnxt) or []
+            stacks = parser.Stack.load_all(cnxt)
 
-        def format_stack_detail(s):
-            stack = parser.Stack.load(cnxt, stack=s)
-            return api.format_stack(stack)
-
-        return [format_stack_detail(s) for s in stacks]
+        return [api.format_stack(stack) for stack in stacks]
 
     def get_revision(self, cnxt):
         return cfg.CONF.revision['heat_revision']
@@ -430,33 +452,25 @@ class EngineService(service.Service):
         :param show_deleted: if true, show soft-deleted stacks
         :returns: a list of formatted stacks
         """
-        def format_stack_details(stacks):
-            for s in stacks:
-                try:
-                    stack = parser.Stack.load(cnxt, stack=s,
-                                              resolve_data=False)
-                except exception.NotFound:
-                    # The stack may have been deleted between listing
-                    # and formatting
-                    pass
-                else:
-                    yield api.format_stack(stack)
-
-        stacks = db_api.stack_get_all(cnxt, limit, sort_keys, marker,
-                                      sort_dir, filters, tenant_safe,
-                                      show_deleted) or []
-        return list(format_stack_details(stacks))
+        stacks = parser.Stack.load_all(cnxt, limit, marker, sort_keys,
+                                       sort_dir, filters, tenant_safe,
+                                       show_deleted, resolve_data=False)
+        return [api.format_stack(stack) for stack in stacks]
 
     @request_context
-    def count_stacks(self, cnxt, filters=None, tenant_safe=True):
+    def count_stacks(self, cnxt, filters=None, tenant_safe=True,
+                     show_deleted=False):
         """
         Return the number of stacks that match the given filters
         :param ctxt: RPC context.
         :param filters: a dict of ATTR:VALUE to match against stacks
+        :param tenant_safe: if true, scope the request by the current tenant
+        :param show_deleted: if true, count will include the deleted stacks
         :returns: a integer representing the number of matched stacks
         """
         return db_api.stack_count_all(cnxt, filters=filters,
-                                      tenant_safe=tenant_safe)
+                                      tenant_safe=tenant_safe,
+                                      show_deleted=show_deleted)
 
     def _validate_deferred_auth_context(self, cnxt, stack):
         if cfg.CONF.deferred_auth_method != 'password':
@@ -485,6 +499,19 @@ class EngineService(service.Service):
             message = exception.StackResourceLimitExceeded.msg_fmt
             raise exception.RequestLimitExceeded(message=message)
 
+    def _parse_template_and_validate_stack(self, cnxt, stack_name, template,
+                                           params, files, args):
+        tmpl = parser.Template(template, files=files)
+        self._validate_new_stack(cnxt, stack_name, tmpl)
+
+        common_params = api.extract_args(args)
+        env = environment.Environment(params)
+        stack = parser.Stack(cnxt, stack_name, tmpl, env, **common_params)
+
+        self._validate_deferred_auth_context(cnxt, stack)
+        stack.validate()
+        return stack
+
     @request_context
     def preview_stack(self, cnxt, stack_name, template, params, files, args):
         """
@@ -502,15 +529,12 @@ class EngineService(service.Service):
         """
 
         LOG.info(_('previewing stack %s') % stack_name)
-        tmpl = parser.Template(template, files=files)
-        self._validate_new_stack(cnxt, stack_name, tmpl)
-
-        common_params = api.extract_args(args)
-        env = environment.Environment(params)
-        stack = parser.Stack(cnxt, stack_name, tmpl, env, **common_params)
-
-        self._validate_deferred_auth_context(cnxt, stack)
-        stack.validate()
+        stack = self._parse_template_and_validate_stack(cnxt,
+                                                        stack_name,
+                                                        template,
+                                                        params,
+                                                        files,
+                                                        args)
 
         return api.format_stack_preview(stack)
 
@@ -546,16 +570,12 @@ class EngineService(service.Service):
             else:
                 LOG.warning(_("Stack create failed, status %s") % stack.status)
 
-        tmpl = parser.Template(template, files=files)
-        self._validate_new_stack(cnxt, stack_name, tmpl)
-
-        common_params = api.extract_args(args)
-        env = environment.Environment(params)
-        stack = parser.Stack(cnxt, stack_name, tmpl, env, **common_params)
-
-        self._validate_deferred_auth_context(cnxt, stack)
-
-        stack.validate()
+        stack = self._parse_template_and_validate_stack(cnxt,
+                                                        stack_name,
+                                                        template,
+                                                        params,
+                                                        files,
+                                                        args)
 
         stack.store()
 
@@ -654,8 +674,9 @@ class EngineService(service.Service):
             props = properties.Properties(ResourceClass.properties_schema,
                                           res.get('Properties', {}),
                                           context=cnxt)
+            deletion_policy = res.get('DeletionPolicy', 'Delete')
             try:
-                ResourceClass.validate_deletion_policy(res)
+                ResourceClass.validate_deletion_policy(deletion_policy)
                 props.validate(with_value=False)
             except Exception as ex:
                 return {'Error': six.text_type(ex)}
@@ -707,12 +728,16 @@ class EngineService(service.Service):
         :param stack_identity: Name of the stack you want to delete.
         """
         def remote_stop(lock_engine_id):
-            rpc = proxy.RpcProxy(lock_engine_id, "1.0")
-            msg = rpc.make_msg("stop_stack", stack_identity=stack_identity)
             timeout = cfg.CONF.engine_life_check_timeout
+            self.cctxt = self._client.prepare(
+                version='1.0',
+                timeout=timeout,
+                topic=lock_engine_id)
             try:
-                rpc.call(cnxt, msg, topic=lock_engine_id, timeout=timeout)
-            except rpc_common.Timeout:
+                self.cctxt.call(cnxt,
+                                'stop_stack',
+                                stack_identity=stack_identity)
+            except messaging.MessagingTimeout:
                 return False
 
         st = self._get_stack(cnxt, stack_identity)
@@ -731,6 +756,9 @@ class EngineService(service.Service):
 
         # Current engine has the lock
         if acquire_result == self.engine_id:
+            # give threads which are almost complete an opportunity to
+            # finish naturally before force stopping them
+            eventlet.sleep(0.2)
             self.thread_group_mgr.stop(stack.id)
 
         # Another active engine has the lock
@@ -742,14 +770,6 @@ class EngineService(service.Service):
             else:
                 raise exception.StopActionFailed(stack_name=stack.name,
                                                  engine_id=acquire_result)
-
-        # If the lock isn't released here, then the call to
-        # start_with_lock below will raise an ActionInProgress
-        # exception.  Ideally, we wouldn't be calling another
-        # release() here, since it should be called as soon as the
-        # ThreadGroup is stopped.  But apparently there's a race
-        # between release() the next call to lock.acquire().
-        db_api.stack_lock_release(stack.id, acquire_result)
 
         # There may be additional resources that we don't know about
         # if an update was in-progress when the stack was stopped, so
@@ -831,20 +851,37 @@ class EngineService(service.Service):
             raise exception.ResourceTypeNotFound(type_name=type_name)
 
     @request_context
-    def list_events(self, cnxt, stack_identity):
+    def list_events(self, cnxt, stack_identity, filters=None, limit=None,
+                    marker=None, sort_keys=None, sort_dir=None):
         """
         The list_events method lists all events associated with a given stack.
+        It supports pagination (``limit`` and ``marker``),
+        sorting (``sort_keys`` and ``sort_dir``) and filtering(filters)
+        of the results.
 
         :param cnxt: RPC context.
-        :param stack_identity: Name of the stack you want to get events for.
+        :param stack_identity: Name of the stack you want to get events for
+        :param filters: a dict with attribute:value to filter the list
+        :param limit: the number of events to list (integer or string)
+        :param marker: the ID of the last event in the previous page
+        :param sort_keys: an array of fields used to sort the list
+        :param sort_dir: the direction of the sort ('asc' or 'desc').
         """
 
         if stack_identity is not None:
             st = self._get_stack(cnxt, stack_identity, show_deleted=True)
 
-            events = db_api.event_get_all_by_stack(cnxt, st.id)
+            events = db_api.event_get_all_by_stack(cnxt, st.id, limit=limit,
+                                                   marker=marker,
+                                                   sort_keys=sort_keys,
+                                                   sort_dir=sort_dir,
+                                                   filters=filters)
         else:
-            events = db_api.event_get_all_by_tenant(cnxt)
+            events = db_api.event_get_all_by_tenant(cnxt, limit=limit,
+                                                    marker=marker,
+                                                    sort_keys=sort_keys,
+                                                    sort_dir=sort_dir,
+                                                    filters=filters)
 
         stacks = {}
 
@@ -908,8 +945,7 @@ class EngineService(service.Service):
         # but this happens because the keystone user associated with the
         # signal doesn't have permission to read the secret key of
         # the user associated with the cfn-credentials file
-        stack_context = self.load_user_creds(s.user_creds_id)
-        stack = parser.Stack.load(stack_context, stack=s)
+        stack = parser.Stack.load(cnxt, stack=s, use_stored_context=True)
 
         if resource_name not in stack:
             raise exception.ResourceNotFound(resource_name=resource_name,
@@ -921,6 +957,14 @@ class EngineService(service.Service):
 
         if callable(stack[resource_name].signal):
             stack[resource_name].signal(details)
+
+        # Refresh the metadata for all other resources, since signals can
+        # update metadata which is used by other resources, e.g
+        # when signalling a WaitConditionHandle resource, and other
+        # resources may refer to WaitCondition Fn::GetAtt Data
+        for res in stack.dependencies:
+            if res.name != resource_name and res.id is not None:
+                res.metadata_update()
 
     @request_context
     def find_physical_resource(self, cnxt, physical_resource_id):
@@ -953,13 +997,13 @@ class EngineService(service.Service):
                 if resource_name is None or name == resource_name]
 
     @request_context
-    def list_stack_resources(self, cnxt, stack_identity):
+    def list_stack_resources(self, cnxt, stack_identity, nested_depth=0):
         s = self._get_stack(cnxt, stack_identity)
-
         stack = parser.Stack.load(cnxt, stack=s)
+        depth = min(nested_depth, cfg.CONF.max_nested_stack_depth)
 
         return [api.format_stack_resource(resource, detail=False)
-                for resource in stack.values()]
+                for resource in stack.iter_resources(depth)]
 
     @request_context
     def stack_suspend(self, cnxt, stack_identity):
@@ -1011,8 +1055,8 @@ class EngineService(service.Service):
         # but this happens because the keystone user associated with the
         # WaitCondition doesn't have permission to read the secret key of
         # the user associated with the cfn-credentials file
-        stack_context = self.load_user_creds(s.user_creds_id)
-        refresh_stack = parser.Stack.load(stack_context, stack=s)
+        refresh_stack = parser.Stack.load(cnxt, stack=s,
+                                          use_stored_context=True)
 
         # Refresh the metadata for all other resources, since we expect
         # resource_name to be a WaitCondition resource, and other

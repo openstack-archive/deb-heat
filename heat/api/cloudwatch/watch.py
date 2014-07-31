@@ -14,6 +14,8 @@
 """
 endpoint for heat AWS-compatible CloudWatch API
 """
+from oslo import messaging
+
 from heat.api.aws import exception
 from heat.api.aws import utils as api_utils
 from heat.common import exception as heat_exception
@@ -21,7 +23,6 @@ from heat.common import policy
 from heat.common import wsgi
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
-from heat.openstack.common.rpc import common as rpc_common
 from heat.rpc import api as engine_api
 from heat.rpc import client as rpc_client
 
@@ -137,7 +138,7 @@ class WatchController(object):
 
         try:
             watch_list = self.rpc_client.show_watch(con, watch_name=name)
-        except rpc_common.RemoteError as ex:
+        except messaging.RemoteError as ex:
             return exception.map_remote_error(ex)
 
         res = {'MetricAlarms': [format_metric_alarm(a)
@@ -182,13 +183,14 @@ class WatchController(object):
         """
         self._enforce(req, 'ListMetrics')
 
-        def format_metric_data(d, fil={}):
+        def format_metric_data(d, fil=None):
             """
             Reformat engine output into the AWS "Metric" format
             Takes an optional filter dict, which is traversed
             so a metric dict is only returned if all keys match
             the filter dict
             """
+            fil = fil or {}
             dimensions = [
                 {'AlarmName': d[engine_api.WATCH_DATA_ALARM]},
                 {'Timestamp': d[engine_api.WATCH_DATA_TIME]}
@@ -229,7 +231,7 @@ class WatchController(object):
                            'metric_name': None}
             watch_data = self.rpc_client.show_watch_metric(con,
                                                            **null_kwargs)
-        except rpc_common.RemoteError as ex:
+        except messaging.RemoteError as ex:
             return exception.map_remote_error(ex)
 
         res = {'Metrics': []}
@@ -292,7 +294,7 @@ class WatchController(object):
 
         try:
             self.rpc_client.create_watch_data(con, watch_name, data)
-        except rpc_common.RemoteError as ex:
+        except messaging.RemoteError as ex:
             return exception.map_remote_error(ex)
 
         result = {'ResponseMetadata': None}
@@ -329,7 +331,7 @@ class WatchController(object):
         try:
             self.rpc_client.set_watch_state(con, watch_name=name,
                                             state=state_map[state])
-        except rpc_common.RemoteError as ex:
+        except messaging.RemoteError as ex:
             return exception.map_remote_error(ex)
 
         return api_utils.format_response("SetAlarmState", "")

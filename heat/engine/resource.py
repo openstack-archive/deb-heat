@@ -13,8 +13,8 @@
 
 import base64
 from datetime import datetime
-
 import six
+import warnings
 
 from heat.common import exception
 from heat.common import identifier
@@ -34,8 +34,6 @@ from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
-
-DELETION_POLICY = (DELETE, RETAIN, SNAPSHOT) = ('Delete', 'Retain', 'Snapshot')
 
 
 def get_types(support_status):
@@ -95,6 +93,9 @@ class Resource(object):
 
     support_status = support.SupportStatus()
 
+    # Default name to use for calls to self.client()
+    default_client_name = None
+
     def __new__(cls, name, definition, stack):
         '''Create a new Resource of the appropriate class for its type.'''
 
@@ -113,7 +114,7 @@ class Resource(object):
             # of the same type. Instead get the next match which will get
             # us closer to a concrete class.
             def get_ancestor_template_resources():
-                """Return an ancestory list (TemplateResources only)."""
+                """Return an ancestry list (TemplateResources only)."""
                 parent = stack.parent_resource
                 while parent is not None:
                     if isinstance(parent, template_resource.TemplateResource):
@@ -150,42 +151,42 @@ class Resource(object):
 
         self.abandon_in_progress = False
 
-        resource = stack.db_resource_get(name)
-
-        if resource:
-            self.resource_id = resource.nova_instance
-            self.action = resource.action
-            self.status = resource.status
-            self.status_reason = resource.status_reason
-            self.id = resource.id
-            try:
-                self._data = db_api.resource_data_get_all(self, resource.data)
-            except exception.NotFound:
-                self._data = {}
-            self._rsrc_metadata = resource.rsrc_metadata
-            self.created_time = resource.created_at
-            self.updated_time = resource.updated_at
+        self.resource_id = None
+        # if the stack is being deleted, assume we've already been deleted
+        if stack.action == stack.DELETE:
+            self.action = self.DELETE
         else:
-            self.resource_id = None
-            # if the stack is being deleted, assume we've already been deleted
-            if stack.action == stack.DELETE:
-                self.action = self.DELETE
-            else:
-                self.action = self.INIT
-            self.status = self.COMPLETE
-            self.status_reason = ''
-            self.id = None
+            self.action = self.INIT
+        self.status = self.COMPLETE
+        self.status_reason = ''
+        self.id = None
+        self._data = {}
+        self._rsrc_metadata = None
+        self.created_time = None
+        self.updated_time = None
+
+        resource = stack.db_resource_get(name)
+        if resource:
+            self._load_data(resource)
+
+    def _load_data(self, resource):
+        '''Load the resource state from its DB representation.'''
+        self.resource_id = resource.nova_instance
+        self.action = resource.action
+        self.status = resource.status
+        self.status_reason = resource.status_reason
+        self.id = resource.id
+        try:
+            self._data = db_api.resource_data_get_all(self, resource.data)
+        except exception.NotFound:
             self._data = {}
-            self._rsrc_metadata = None
-            self.created_time = None
-            self.updated_time = None
+        self._rsrc_metadata = resource.rsrc_metadata
+        self.created_time = resource.created_at
+        self.updated_time = resource.updated_at
 
     def reparse(self):
-        self.properties = Properties(self.properties_schema,
-                                     self.t.get('Properties', {}),
-                                     function.resolve,
-                                     self.name,
-                                     self.context)
+        self.properties = self.t.properties(self.properties_schema,
+                                            self.context)
 
     def __eq__(self, other):
         '''Allow == comparison of two resources.'''
@@ -203,11 +204,27 @@ class Resource(object):
             return result
         return not result
 
+    @property
+    def metadata(self):
+        """DEPRECATED. use method metadata_get instead."""
+        warnings.warn('metadata attribute is deprecated, '
+                      'use method metadata_get instead',
+                      DeprecationWarning)
+        return self.metadata_get(True)
+
+    @metadata.setter
+    def metadata(self, metadata):
+        """DEPRECATED. use method metadata_set instead."""
+        warnings.warn('metadata attribute is deprecated, '
+                      'use method metadata_set instead',
+                      DeprecationWarning)
+        self.metadata_set(metadata)
+
     def metadata_get(self, refresh=False):
         if refresh:
             self._rsrc_metadata = None
         if self.id is None:
-            return self.parsed_template('Metadata')
+            return self.t.metadata()
         if self._rsrc_metadata is not None:
             return self._rsrc_metadata
         rs = db_api.resource_get(self.stack.context, self.id)
@@ -223,7 +240,7 @@ class Resource(object):
         self._rsrc_metadata = metadata
 
     def type(self):
-        return self.t['Type']
+        return self.t.resource_type
 
     def has_interface(self, resource_type):
         """Check to see if this resource is either mapped to resource_type
@@ -250,12 +267,13 @@ class Resource(object):
         return identifier.ResourceIdentifier(resource_name=self.name,
                                              **self.stack.identifier())
 
-    def parsed_template(self, section=None, default={}):
+    def parsed_template(self, section=None, default=None):
         '''
         Return the parsed template data for the resource. May be limited to
         only one section of the data, in which case a default value may also
         be supplied.
         '''
+        default = default or {}
         if section is None:
             template = self.t
         else:
@@ -321,32 +339,37 @@ class Resource(object):
         return list(
             [r.name for r in self.stack.dependencies.required_by(self)])
 
-    def keystone(self):
-        return self.stack.clients.keystone()
+    def client(self, name=None):
+        client_name = name or self.default_client_name
+        assert client_name, "Must specify client name"
+        return self.stack.clients.client(client_name)
 
-    def nova(self, service_type='compute'):
-        return self.stack.clients.nova(service_type)
+    def keystone(self):
+        return self.client('keystone')
+
+    def nova(self):
+        return self.client('nova')
 
     def swift(self):
-        return self.stack.clients.swift()
+        return self.client('swift')
 
     def neutron(self):
-        return self.stack.clients.neutron()
+        return self.client('neutron')
 
     def cinder(self):
-        return self.stack.clients.cinder()
+        return self.client('cinder')
 
     def trove(self):
-        return self.stack.clients.trove()
+        return self.client('trove')
 
     def ceilometer(self):
-        return self.stack.clients.ceilometer()
+        return self.client('ceilometer')
 
     def heat(self):
-        return self.stack.clients.heat()
+        return self.client('heat')
 
     def glance(self):
-        return self.stack.clients.glance()
+        return self.client('glance')
 
     def _do_action(self, action, pre_func=None, resource_data=None):
         '''
@@ -388,7 +411,7 @@ class Resource(object):
             failure = exception.ResourceFailure(ex, self, action)
             self.state_set(action, self.FAILED, six.text_type(failure))
             raise failure
-        except:
+        except:  # noqa
             with excutils.save_and_reraise_exception():
                 try:
                     self.state_set(action, self.FAILED,
@@ -480,6 +503,8 @@ class Resource(object):
         '''
         action = self.UPDATE
 
+        assert isinstance(after, rsrc_defn.ResourceDefinition)
+
         (cur_class_def, cur_ver) = self.implementation_signature()
         prev_ver = cur_ver
         if prev_resource is not None:
@@ -509,11 +534,8 @@ class Resource(object):
                                            function.resolve,
                                            self.name,
                                            self.context)
-            after_properties = Properties(self.properties_schema,
-                                          after.get('Properties', {}),
-                                          function.resolve,
-                                          self.name,
-                                          self.context)
+            after_properties = after.properties(self.properties_schema,
+                                                self.context)
             after_properties.validate()
             tmpl_diff = self.update_template_diff(function.resolve(after),
                                                   before)
@@ -614,18 +636,18 @@ class Resource(object):
         LOG.info(_('Validating %s') % str(self))
 
         function.validate(self.t)
-        self.validate_deletion_policy(self.t)
+        self.validate_deletion_policy(self.t.deletion_policy())
         return self.properties.validate()
 
     @classmethod
-    def validate_deletion_policy(cls, template):
-        deletion_policy = template.get('DeletionPolicy', DELETE)
-        if deletion_policy not in DELETION_POLICY:
-            msg = _('Invalid DeletionPolicy %s') % deletion_policy
+    def validate_deletion_policy(cls, policy):
+        if policy not in rsrc_defn.ResourceDefinition.DELETION_POLICIES:
+            msg = _('Invalid deletion policy "%s"') % policy
             raise exception.StackValidationFailed(message=msg)
-        elif deletion_policy == SNAPSHOT:
+
+        if policy == rsrc_defn.ResourceDefinition.SNAPSHOT:
             if not callable(getattr(cls, 'handle_snapshot_delete', None)):
-                msg = _('Snapshot DeletionPolicy not supported')
+                msg = _('"%s" deletion policy not supported') % policy
                 raise exception.StackValidationFailed(message=msg)
 
     def delete(self):
@@ -649,20 +671,20 @@ class Resource(object):
             self.state_set(action, self.IN_PROGRESS)
 
             if self.abandon_in_progress:
-                deletion_policy = RETAIN
+                deletion_policy = self.t.RETAIN
             else:
-                deletion_policy = self.t.get('DeletionPolicy', DELETE)
+                deletion_policy = self.t.deletion_policy()
             handle_data = None
-            if deletion_policy == DELETE:
+            if deletion_policy == self.t.DELETE:
                 if callable(getattr(self, 'handle_delete', None)):
                     handle_data = self.handle_delete()
                     yield
-            elif deletion_policy == SNAPSHOT:
+            elif deletion_policy == self.t.SNAPSHOT:
                 if callable(getattr(self, 'handle_snapshot_delete', None)):
                     handle_data = self.handle_snapshot_delete(initial_state)
                     yield
 
-            if (deletion_policy != RETAIN and
+            if (deletion_policy != self.t.RETAIN and
                     callable(getattr(self, 'check_delete_complete', None))):
                 while not self.check_delete_complete(handle_data):
                     yield
@@ -672,7 +694,7 @@ class Resource(object):
             failure = exception.ResourceFailure(ex, self, self.action)
             self.state_set(action, self.FAILED, six.text_type(failure))
             raise failure
-        except:
+        except:  # noqa
             with excutils.save_and_reraise_exception():
                 try:
                     self.state_set(action, self.FAILED,

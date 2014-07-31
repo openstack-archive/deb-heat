@@ -11,8 +11,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from novaclient import exceptions as nova_exceptions
+
 from heat.engine import attributes
-from heat.engine import clients
 from heat.engine import properties
 from heat.engine import resource
 from heat.openstack.common import excutils
@@ -62,7 +63,7 @@ class NovaFloatingIp(resource.Resource):
         try:
             pool = self.properties.get(self.POOL)
             floating_ip = self.nova().floating_ips.create(pool=pool)
-        except clients.novaclient.exceptions.NotFound:
+        except nova_exceptions.NotFound:
             with excutils.save_and_reraise_exception():
                 if pool is None:
                     msg = _('Could not allocate floating IP. Probably there '
@@ -76,7 +77,7 @@ class NovaFloatingIp(resource.Resource):
         if self.resource_id is not None:
             try:
                 self.nova().floating_ips.delete(self.resource_id)
-            except clients.novaclient.exceptions.NotFound:
+            except nova_exceptions.NotFound:
                 pass
 
     def _resolve_attribute(self, key):
@@ -99,12 +100,14 @@ class NovaFloatingIpAssociation(resource.Resource):
         SERVER: properties.Schema(
             properties.Schema.STRING,
             _('Server to assign floating IP to.'),
-            required=True
+            required=True,
+            update_allowed=True
         ),
         FLOATING_IP: properties.Schema(
             properties.Schema.STRING,
             _('ID of the floating IP to assign to the server.'),
-            required=True
+            required=True,
+            update_allowed=True
         ),
     }
 
@@ -128,8 +131,28 @@ class NovaFloatingIpAssociation(resource.Resource):
                 fl_ip = self.nova().floating_ips.\
                     get(self.properties[self.FLOATING_IP])
                 self.nova().servers.remove_floating_ip(server, fl_ip.ip)
-        except clients.novaclient.exceptions.NotFound:
+        except nova_exceptions.NotFound:
             pass
+
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
+        if prop_diff:
+            # If floating_ip in prop_diff, we need to remove the old floating
+            # ip from the old server, and then to add the new floating ip
+            # to the old/new(if the server_id is changed) server.
+            # If prop_diff only has the server_id, no need to remove the
+            # floating ip from the old server, nova does this automatically
+            # when calling add_floating_ip().
+            if self.FLOATING_IP in prop_diff:
+                self.handle_delete()
+            server_id = (prop_diff.get(self.SERVER) or
+                         self.properties[self.SERVER])
+            fl_ip_id = (prop_diff.get(self.FLOATING_IP) or
+                        self.properties[self.FLOATING_IP])
+            server = self.nova().servers.get(server_id)
+            fl_ip = self.nova().floating_ips.get(fl_ip_id)
+
+            self.nova().servers.add_floating_ip(server, fl_ip.ip)
+            self.resource_id_set('%s-%s' % (fl_ip.id, fl_ip.ip))
 
 
 def resource_mapping():

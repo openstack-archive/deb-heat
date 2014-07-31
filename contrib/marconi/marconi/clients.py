@@ -22,20 +22,11 @@ try:
     from marconiclient.queues.v1 import client as marconiclient
 except ImportError:
     marconiclient = None
-    LOG.info(_('marconiclient not available'))
 
 
 class Clients(clients.OpenStackClients):
 
-    """Convenience class to create and cache client instances."""
-
-    def __init__(self, context):
-        super(Clients, self).__init__(context)
-        self._marconi = None
-
-    def marconi(self, service_type="queuing"):
-        if self._marconi:
-            return self._marconi
+    def _marconi(self, service_type="queuing"):
 
         con = self.context
         if self.auth_token is None:
@@ -53,6 +44,4 @@ class Clients(clients.OpenStackClients):
         conf = {'auth_opts': auth_opts}
         endpoint = self.url_for(service_type=service_type)
 
-        self._marconi = marconiclient.Client(url=endpoint, conf=conf)
-
-        return self._marconi
+        return marconiclient.Client(url=endpoint, conf=conf)

@@ -41,8 +41,6 @@ class HOTemplate(template.Template):
 
     SECTIONS_NO_DIRECT_ACCESS = set([PARAMETERS, VERSION])
 
-    VERSIONS = ('2013-05-23',)
-
     _CFN_TO_HOT_SECTIONS = {cfn_template.CfnTemplate.VERSION: VERSION,
                             cfn_template.CfnTemplate.DESCRIPTION: DESCRIPTION,
                             cfn_template.CfnTemplate.PARAMETERS: PARAMETERS,
@@ -72,6 +70,8 @@ class HOTemplate(template.Template):
         else:
             default = {}
 
+        # if a section is None (empty yaml section) return {}
+        # to be consistent with an empty json section.
         the_section = self.t.get(section) or default
 
         # In some cases (e.g. parameters), also translate each entry of
@@ -214,17 +214,14 @@ class HOTemplate(template.Template):
                                                 update_policy)
             return name, defn
 
-        resources = self.t.get(self.RESOURCES, {}).items()
-        return dict(rsrc_defn_item(name, data) for name, data in resources)
+        resources = self.t.get(self.RESOURCES) or {}
+        return dict(rsrc_defn_item(name, data)
+                    for name, data in resources.items())
 
     def add_resource(self, definition, name=None):
         if name is None:
             name = definition.name
 
-        self.t.setdefault(self.RESOURCES, {})[name] = definition.render_hot()
-
-
-def template_mapping():
-    return {
-        ('heat_template_version', '2013-05-23'): HOTemplate,
-    }
+        if self.t.get(self.RESOURCES) is None:
+            self.t[self.RESOURCES] = {}
+        self.t[self.RESOURCES][name] = definition.render_hot()

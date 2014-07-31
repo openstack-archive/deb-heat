@@ -11,8 +11,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import uuid
-
 from heat.common import exception
 from heat.common import policy
 from heat.common import wsgi
@@ -20,10 +18,7 @@ from heat.db import api as db_api
 from heat.openstack.common import context
 from heat.openstack.common import importutils
 from heat.openstack.common import local
-
-
-def generate_request_id():
-    return 'req-' + str(uuid.uuid4())
+from heat.openstack.common.middleware import request_id
 
 
 class RequestContext(context.RequestContext):
@@ -152,6 +147,7 @@ class ContextMiddleware(wsgi.Middleware):
             if roles is not None:
                 roles = roles.split(',')
             token_info = environ.get('keystone.token_info')
+            req_id = environ.get(request_id.ENV_REQUEST_ID)
 
         except Exception:
             raise exception.NotAuthenticated()
@@ -164,6 +160,7 @@ class ContextMiddleware(wsgi.Middleware):
                                         password=password,
                                         auth_url=auth_url,
                                         roles=roles,
+                                        request_id=req_id,
                                         auth_token_info=token_info)
 
 

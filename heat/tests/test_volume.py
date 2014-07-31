@@ -14,26 +14,27 @@
 import copy
 import json
 
+from cinderclient import exceptions as cinder_exp
 from cinderclient.v1 import client as cinderclient
 import mox
 import six
-from testtools import skipIf
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import clients
+from heat.engine.clients.os import cinder
+from heat.engine.clients.os import glance
+from heat.engine.clients.os import nova
 from heat.engine.resources import glance_utils
 from heat.engine.resources import image
 from heat.engine.resources import instance
 from heat.engine.resources import volume as vol
+from heat.engine import rsrc_defn
 from heat.engine import scheduler
-from heat.openstack.common.importutils import try_import
+from heat.engine import template
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 from heat.tests.v1_1 import fakes
 
-
-volume_backups = try_import('cinderclient.v1.volume_backups')
 
 volume_template = '''
 {
@@ -80,18 +81,32 @@ volume_template = '''
 }
 '''
 
+cinder_volume_template = '''
+heat_template_version: 2013-05-23
+description: This template to define a cinder volume.
+resources:
+  my_volume:
+    type: OS::Cinder::Volume
+    properties:
+      size: 1
+      name: my_vol
+      description: test
+'''
+
 
 class VolumeTest(HeatTestCase):
     def setUp(self):
         super(VolumeTest, self).setUp()
         self.fc = fakes.FakeClient()
         self.cinder_fc = cinderclient.Client('username', 'password')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'cinder')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        self.m.StubOutWithMock(cinder.CinderClientPlugin, '_create')
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         self.m.StubOutWithMock(self.cinder_fc.volumes, 'create')
         self.m.StubOutWithMock(self.cinder_fc.volumes, 'get')
         self.m.StubOutWithMock(self.cinder_fc.volumes, 'delete')
         self.m.StubOutWithMock(self.cinder_fc.volumes, 'extend')
+        self.m.StubOutWithMock(self.cinder_fc.volumes, 'update')
+        self.m.StubOutWithMock(self.cinder_fc.volumes, 'update_all_metadata')
         self.m.StubOutWithMock(self.fc.volumes, 'create_server_volume')
         self.m.StubOutWithMock(self.fc.volumes, 'delete_server_volume')
         self.m.StubOutWithMock(self.fc.volumes, 'get_server_volume')
@@ -102,6 +117,16 @@ class VolumeTest(HeatTestCase):
         rsrc = vol.Volume(resource_name,
                           stack.t.resource_definitions(stack)[resource_name],
                           stack)
+        self.assertIsNone(rsrc.validate())
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        return rsrc
+
+    def create_cinder_volume(self, t, stack, resource_name):
+        rsrc = vol.CinderVolume(resource_name,
+                                stack.t.resource_definitions(
+                                    stack)[resource_name],
+                                stack)
         self.assertIsNone(rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
@@ -118,7 +143,7 @@ class VolumeTest(HeatTestCase):
         return rsrc
 
     def _mock_create_volume(self, fv, stack_name, size=1):
-        clients.OpenStackClients.cinder().MultipleTimes().AndReturn(
+        cinder.CinderClientPlugin._create().MultipleTimes().AndReturn(
             self.cinder_fc)
         vol_name = utils.PhysName(stack_name, 'DataVolume')
         self.cinder_fc.volumes.create(
@@ -133,7 +158,7 @@ class VolumeTest(HeatTestCase):
         self.m.StubOutWithMock(fv, 'get')
         fv.get().AndReturn(None)
         fv.get().AndRaise(
-            clients.cinderclient.exceptions.NotFound('Not found'))
+            cinder_exp.NotFound('Not found'))
         self.m.ReplayAll()
 
     def _mock_create_server_volume_script(self, fva,
@@ -142,7 +167,7 @@ class VolumeTest(HeatTestCase):
                                           device=u'/dev/vdc',
                                           update=False):
         if not update:
-            clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+            nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
         self.fc.volumes.create_server_volume(
             device=device, server_id=server, volume_id=volume).AndReturn(fva)
         self.cinder_fc.volumes.get(volume).AndReturn(fva)
@@ -185,7 +210,7 @@ class VolumeTest(HeatTestCase):
         stack_name = 'test_volume_stack'
 
         # create script
-        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
         self.m.StubOutWithMock(vol.VolumeAttachment, 'handle_create')
@@ -193,7 +218,7 @@ class VolumeTest(HeatTestCase):
         self.m.StubOutWithMock(image.ImageConstraint, "validate")
         instance.Instance.handle_create().AndReturn(None)
         instance.Instance.check_create_complete(None).AndReturn(True)
-        clients.OpenStackClients.cinder().MultipleTimes().AndReturn(
+        cinder.CinderClientPlugin._create().MultipleTimes().AndReturn(
             self.cinder_fc)
         image.ImageConstraint.validate(
             mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
@@ -211,7 +236,7 @@ class VolumeTest(HeatTestCase):
         self.m.StubOutWithMock(vol.VolumeAttachment, 'handle_delete')
         instance.Instance.handle_delete().AndReturn(None)
         self.cinder_fc.volumes.get('vol-123').AndRaise(
-            clients.cinderclient.exceptions.NotFound('Not found'))
+            cinder_exp.NotFound('Not found'))
         vol.VolumeAttachment.handle_delete().AndReturn(None)
         self.m.ReplayAll()
 
@@ -307,8 +332,7 @@ class VolumeTest(HeatTestCase):
         self.fc.volumes.get_server_volume(u'WikiDatabase',
                                           'vol-123').AndReturn(fva)
         self.fc.volumes.get_server_volume(
-            u'WikiDatabase', 'vol-123').AndRaise(
-                clients.novaclient.exceptions.NotFound('NotFound'))
+            u'WikiDatabase', 'vol-123').AndRaise(fakes.fake_exception())
 
         self.m.ReplayAll()
 
@@ -341,14 +365,12 @@ class VolumeTest(HeatTestCase):
         self.cinder_fc.volumes.get(fva.id).AndReturn(fva)
 
         self.fc.volumes.delete_server_volume(
-            'WikiDatabase', 'vol-123').AndRaise(
-                clients.novaclient.exceptions.BadRequest('Already detached'))
+            'WikiDatabase', 'vol-123').AndRaise(fakes.fake_exception(400))
 
         self.fc.volumes.get_server_volume(u'WikiDatabase',
                                           'vol-123').AndReturn(fva)
         self.fc.volumes.get_server_volume(
-            u'WikiDatabase', 'vol-123').AndRaise(
-                clients.novaclient.exceptions.NotFound('NotFound'))
+            u'WikiDatabase', 'vol-123').AndRaise(fakes.fake_exception())
         self.m.ReplayAll()
 
         t = template_format.parse(volume_template)
@@ -376,7 +398,7 @@ class VolumeTest(HeatTestCase):
         self.fc.volumes.get_server_volume(u'WikiDatabase',
                                           'vol-123').AndReturn(fva)
         self.cinder_fc.volumes.get(fva.id).AndRaise(
-            clients.cinderclient.exceptions.NotFound('Not found'))
+            cinder_exp.NotFound('Not found'))
 
         self.m.ReplayAll()
 
@@ -411,8 +433,7 @@ class VolumeTest(HeatTestCase):
         self.fc.volumes.get_server_volume(u'WikiDatabase',
                                           'vol-123').AndReturn(fva)
         self.fc.volumes.get_server_volume(
-            u'WikiDatabase', 'vol-123').AndRaise(
-                clients.novaclient.exceptions.NotFound('NotFound'))
+            u'WikiDatabase', 'vol-123').AndRaise(fakes.fake_exception())
 
         self.m.ReplayAll()
 
@@ -501,8 +522,7 @@ class VolumeTest(HeatTestCase):
         self.fc.volumes.get_server_volume(u'WikiDatabase',
                                           'vol-123').AndReturn(fva)
         self.fc.volumes.get_server_volume(
-            u'WikiDatabase', 'vol-123').AndRaise(
-                clients.novaclient.exceptions.NotFound('NotFound'))
+            u'WikiDatabase', 'vol-123').AndRaise(fakes.fake_exception())
 
         # attach script
         self._mock_create_server_volume_script(fva2, device=u'/dev/vdd',
@@ -520,11 +540,14 @@ class VolumeTest(HeatTestCase):
         rsrc = self.create_attachment(t, stack, 'MountPoint')
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
-        after = copy.deepcopy(t)['Resources']['MountPoint']
+        after_t = copy.deepcopy(t)
+        after = after_t['Resources']['MountPoint']
         after['Properties']['VolumeId'] = 'vol-123'
         after['Properties']['InstanceId'] = 'WikiDatabase'
         after['Properties']['Device'] = '/dev/vdd'
-        scheduler.TaskRunner(rsrc.update, after)()
+        after_defs = template.Template(after_t).resource_definitions(stack)
+
+        scheduler.TaskRunner(rsrc.update, after_defs['MountPoint'])()
 
         self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
@@ -559,8 +582,7 @@ class VolumeTest(HeatTestCase):
         self.fc.volumes.get_server_volume(u'WikiDatabase',
                                           'vol-123').AndReturn(fva)
         self.fc.volumes.get_server_volume(
-            u'WikiDatabase', 'vol-123').AndRaise(
-                clients.novaclient.exceptions.NotFound('NotFound'))
+            u'WikiDatabase', 'vol-123').AndRaise(fakes.fake_exception())
 
         # attach script
         self._mock_create_server_volume_script(fv2a, volume='vol-456',
@@ -586,10 +608,13 @@ class VolumeTest(HeatTestCase):
         rsrc = self.create_attachment(t, stack, 'MountPoint')
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
-        after = copy.deepcopy(t)['Resources']['MountPoint']
+        after_t = copy.deepcopy(t)
+        after = after_t['Resources']['MountPoint']
         after['Properties']['VolumeId'] = 'vol-456'
         after['Properties']['InstanceId'] = 'WikiDatabase'
-        scheduler.TaskRunner(rsrc.update, after)()
+        after_defs = template.Template(after_t).resource_definitions(stack)
+
+        scheduler.TaskRunner(rsrc.update, after_defs['MountPoint'])()
 
         self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
         self.assertEqual(fv2a.id, rsrc.resource_id)
@@ -615,8 +640,7 @@ class VolumeTest(HeatTestCase):
         self.fc.volumes.get_server_volume(u'WikiDatabase',
                                           'vol-123').AndReturn(fva)
         self.fc.volumes.get_server_volume(
-            u'WikiDatabase', 'vol-123').AndRaise(
-                clients.novaclient.exceptions.NotFound('NotFound'))
+            u'WikiDatabase', 'vol-123').AndRaise(fakes.fake_exception())
 
         # attach script
         self._mock_create_server_volume_script(fva2, server=u'WikiDatabase2',
@@ -634,16 +658,18 @@ class VolumeTest(HeatTestCase):
         rsrc = self.create_attachment(t, stack, 'MountPoint')
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
-        after = copy.deepcopy(t)['Resources']['MountPoint']
+        after_t = copy.deepcopy(t)
+        after = after_t['Resources']['MountPoint']
         after['Properties']['VolumeId'] = 'vol-123'
         after['Properties']['InstanceId'] = 'WikiDatabase2'
         #after['Properties']['Device'] = '/dev/vdd'
-        scheduler.TaskRunner(rsrc.update, after)()
+        after_defs = template.Template(after_t).resource_definitions(stack)
+
+        scheduler.TaskRunner(rsrc.update, after_defs['MountPoint'])()
 
         self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    @skipIf(volume_backups is None, 'unable to import volume_backups')
     def test_snapshot(self):
         stack_name = 'test_volume_stack'
         fv = FakeVolume('creating', 'available')
@@ -669,7 +695,6 @@ class VolumeTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @skipIf(volume_backups is None, 'unable to import volume_backups')
     def test_snapshot_error(self):
         stack_name = 'test_volume_stack'
         fv = FakeVolume('creating', 'available')
@@ -694,7 +719,6 @@ class VolumeTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @skipIf(volume_backups is None, 'unable to import volume_backups')
     def test_snapshot_no_volume(self):
         stack_name = 'test_volume_stack'
         fv = FakeVolume('creating', 'error')
@@ -722,14 +746,13 @@ class VolumeTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @skipIf(volume_backups is None, 'unable to import volume_backups')
     def test_create_from_snapshot(self):
         stack_name = 'test_volume_stack'
         fv = FakeVolumeWithStateTransition('restoring-backup', 'available')
         fvbr = FakeBackupRestore('vol-123')
 
         # create script
-        clients.OpenStackClients.cinder().MultipleTimes().AndReturn(
+        cinder.CinderClientPlugin._create().MultipleTimes().AndReturn(
             self.cinder_fc)
         self.m.StubOutWithMock(self.cinder_fc.restores, 'restore')
         self.cinder_fc.restores.restore('backup-123').AndReturn(fvbr)
@@ -751,14 +774,13 @@ class VolumeTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @skipIf(volume_backups is None, 'unable to import volume_backups')
     def test_create_from_snapshot_error(self):
         stack_name = 'test_volume_stack'
         fv = FakeVolumeWithStateTransition('restoring-backup', 'error')
         fvbr = FakeBackupRestore('vol-123')
 
         # create script
-        clients.OpenStackClients.cinder().MultipleTimes().AndReturn(
+        cinder.CinderClientPlugin._create().MultipleTimes().AndReturn(
             self.cinder_fc)
         self.m.StubOutWithMock(self.cinder_fc.restores, 'restore')
         self.cinder_fc.restores.restore('backup-123').AndReturn(fvbr)
@@ -789,7 +811,7 @@ class VolumeTest(HeatTestCase):
         fv = FakeVolume('creating', 'available')
         stack_name = 'test_volume_stack'
 
-        clients.OpenStackClients.cinder().MultipleTimes().AndReturn(
+        cinder.CinderClientPlugin._create().MultipleTimes().AndReturn(
             self.cinder_fc)
         self.cinder_fc.volumes.create(
             size=1, availability_zone='nova',
@@ -861,11 +883,11 @@ class VolumeTest(HeatTestCase):
         fv = FakeVolumeWithStateTransition('downloading', 'available')
         stack_name = 'test_volume_stack'
         image_id = '46988116-6703-4623-9dbc-2bc6d284021b'
-        clients.OpenStackClients.cinder().MultipleTimes().AndReturn(
+        cinder.CinderClientPlugin._create().MultipleTimes().AndReturn(
             self.cinder_fc)
         g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
-        clients.OpenStackClients.glance().MultipleTimes().AndReturn(
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
+        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
             g_cli_mock)
         self.m.StubOutWithMock(glance_utils, 'get_image_id')
         glance_utils.get_image_id(g_cli_mock, image_id).MultipleTimes().\
@@ -904,7 +926,7 @@ class VolumeTest(HeatTestCase):
         fv = FakeVolume('creating', 'available')
         stack_name = 'test_volume_stack'
 
-        clients.OpenStackClients.cinder().MultipleTimes().AndReturn(
+        cinder.CinderClientPlugin._create().MultipleTimes().AndReturn(
             self.cinder_fc)
         vol_name = utils.PhysName(stack_name, 'DataVolume')
         self.cinder_fc.volumes.create(
@@ -941,7 +963,7 @@ class VolumeTest(HeatTestCase):
                         created_at='2013-02-25T02:40:21.000000')
         stack_name = 'test_volume_stack'
 
-        clients.OpenStackClients.cinder().MultipleTimes().AndReturn(
+        cinder.CinderClientPlugin._create().MultipleTimes().AndReturn(
             self.cinder_fc)
         vol_name = utils.PhysName(stack_name, 'DataVolume')
         self.cinder_fc.volumes.create(
@@ -1005,8 +1027,7 @@ class VolumeTest(HeatTestCase):
         self.fc.volumes.get_server_volume(u'WikiDatabase',
                                           'vol-123').AndReturn(fva)
         self.fc.volumes.get_server_volume(
-            u'WikiDatabase', 'vol-123').AndRaise(
-                clients.novaclient.exceptions.NotFound('NotFound'))
+            u'WikiDatabase', 'vol-123').AndRaise(fakes.fake_exception())
 
         self.m.ReplayAll()
 
@@ -1051,8 +1072,9 @@ class VolumeTest(HeatTestCase):
         rsrc = self.create_volume(t, stack, 'DataVolume')
         self.assertEqual('available', fv.status)
 
-        after = copy.deepcopy(t)['Resources']['DataVolume']
-        after['Properties']['Size'] = 1
+        props = copy.deepcopy(rsrc.properties.data)
+        props['Size'] = 1
+        after = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(), props)
 
         update_task = scheduler.TaskRunner(rsrc.update, after)
         ex = self.assertRaises(exception.ResourceFailure, update_task)
@@ -1084,8 +1106,9 @@ class VolumeTest(HeatTestCase):
         rsrc = self.create_volume(t, stack, 'DataVolume')
         self.assertEqual('available', fv.status)
 
-        after = copy.deepcopy(t)['Resources']['DataVolume']
-        after['Properties']['Size'] = 2
+        props = copy.deepcopy(rsrc.properties.data)
+        props['Size'] = 2
+        after = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(), props)
 
         update_task = scheduler.TaskRunner(rsrc.update, after)
         self.assertIsNone(update_task())
@@ -1105,7 +1128,7 @@ class VolumeTest(HeatTestCase):
         self.cinder_fc.volumes.get(fv.id).AndReturn(fv2)
 
         self.cinder_fc.volumes.extend(fv.id, 2).AndRaise(
-            clients.cinderclient.exceptions.OverLimit)
+            cinder_exp.OverLimit)
 
         self.m.ReplayAll()
 
@@ -1115,8 +1138,9 @@ class VolumeTest(HeatTestCase):
         rsrc = self.create_volume(t, stack, 'DataVolume')
         self.assertEqual('available', fv.status)
 
-        after = copy.deepcopy(t)['Resources']['DataVolume']
-        after['Properties']['Size'] = 2
+        props = copy.deepcopy(rsrc.properties.data)
+        props['Size'] = 2
+        after = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(), props)
 
         update_task = scheduler.TaskRunner(rsrc.update, after)
         self.assertRaises(exception.ResourceFailure, update_task)
@@ -1146,8 +1170,9 @@ class VolumeTest(HeatTestCase):
         rsrc = self.create_volume(t, stack, 'DataVolume')
         self.assertEqual('available', fv.status)
 
-        after = copy.deepcopy(t)['Resources']['DataVolume']
-        after['Properties']['Size'] = 2
+        props = copy.deepcopy(rsrc.properties.data)
+        props['Size'] = 2
+        after = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(), props)
 
         update_task = scheduler.TaskRunner(rsrc.update, after)
         ex = self.assertRaises(exception.ResourceFailure, update_task)
@@ -1183,8 +1208,7 @@ class VolumeTest(HeatTestCase):
         self.fc.volumes.get_server_volume(u'WikiDatabase',
                                           'vol-123').AndReturn(fvd)
         self.fc.volumes.get_server_volume(
-            u'WikiDatabase', 'vol-123').AndRaise(
-                clients.novaclient.exceptions.NotFound('NotFound'))
+            u'WikiDatabase', 'vol-123').AndRaise(fakes.fake_exception())
 
         # resize script
         fvr = FakeLatencyVolume(life_cycle=('extending', 'extending',
@@ -1206,8 +1230,9 @@ class VolumeTest(HeatTestCase):
         self.assertEqual('available', fv.status)
         self.create_attachment(t, stack, 'MountPoint')
 
-        after = copy.deepcopy(t)['Resources']['DataVolume']
-        after['Properties']['Size'] = 2
+        props = copy.deepcopy(rsrc.properties.data)
+        props['Size'] = 2
+        after = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(), props)
 
         update_task = scheduler.TaskRunner(rsrc.update, after)
         self.assertIsNone(update_task())
@@ -1215,7 +1240,6 @@ class VolumeTest(HeatTestCase):
         self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    @skipIf(volume_backups is None, 'unable to import volume_backups')
     def test_volume_extend_created_from_snapshot_with_same_size(self):
         stack_name = 'test_volume_stack'
         fv = FakeVolumeWithStateTransition('restoring-backup', 'available',
@@ -1223,7 +1247,7 @@ class VolumeTest(HeatTestCase):
         fvbr = FakeBackupRestore('vol-123')
 
         # create script
-        clients.OpenStackClients.cinder().MultipleTimes().AndReturn(
+        cinder.CinderClientPlugin._create().MultipleTimes().AndReturn(
             self.cinder_fc)
         self.m.StubOutWithMock(self.cinder_fc.restores, 'restore')
         self.cinder_fc.restores.restore('backup-123').AndReturn(fvbr)
@@ -1247,11 +1271,53 @@ class VolumeTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         self.assertEqual('available', fv.status)
 
-        after = copy.deepcopy(t)['Resources']['DataVolume']
-        after['Properties']['Size'] = 2
+        props = copy.deepcopy(rsrc.properties.data)
+        props['Size'] = 2
+        after = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(), props)
 
         update_task = scheduler.TaskRunner(rsrc.update, after)
         self.assertIsNone(update_task())
+
+        self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
+        self.m.VerifyAll()
+
+    def test_update_cinder_volume(self):
+        # update the name, description and metadata
+        fv = FakeVolume('creating', 'available', size=1, name='my_vol',
+                        description='test')
+        stack_name = 'test_volume_stack'
+        update_name = 'update_name'
+        meta = {'Key': 'Value'}
+
+        update_description = 'update_description'
+        kwargs = {
+            'display_name': update_name,
+            'display_description': update_description
+        }
+
+        cinder.CinderClientPlugin._create().MultipleTimes().AndReturn(
+            self.cinder_fc)
+        self.cinder_fc.volumes.create(
+            availability_zone=None,
+            size=1,
+            display_description='test',
+            display_name='my_vol').AndReturn(fv)
+        self.cinder_fc.volumes.get(fv.id).AndReturn(fv)
+        self.cinder_fc.volumes.update(fv, **kwargs).AndReturn(None)
+        self.cinder_fc.volumes.update_all_metadata(fv, meta).AndReturn(None)
+        self.m.ReplayAll()
+
+        t = template_format.parse(cinder_volume_template)
+        stack = utils.parse_stack(t, stack_name=stack_name)
+
+        rsrc = self.create_cinder_volume(t, stack, 'my_volume')
+
+        props = copy.deepcopy(rsrc.properties.data)
+        props['name'] = update_name
+        props['description'] = update_description
+        props['metadata'] = meta
+        after = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(), props)
+        scheduler.TaskRunner(rsrc.update, after)()
 
         self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()

@@ -20,11 +20,10 @@ from novaclient.v1_1 import security_groups as nova_sg
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import clients
+from heat.engine.clients.os import nova
 from heat.engine import parser
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
-from heat.tests.fakes import FakeKeystoneClient
 from heat.tests import utils
 from heat.tests.v1_1 import fakes
 
@@ -128,8 +127,8 @@ Resources:
     def setUp(self):
         super(SecurityGroupTest, self).setUp()
         self.fc = fakes.FakeClient()
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        self.stub_keystoneclient()
         self.m.StubOutWithMock(nova_sgr.SecurityGroupRuleManager, 'create')
         self.m.StubOutWithMock(nova_sgr.SecurityGroupRuleManager, 'delete')
         self.m.StubOutWithMock(nova_sg.SecurityGroupManager, 'create')
@@ -157,7 +156,8 @@ Resources:
         stack.store()
         return stack
 
-    def assertResourceState(self, rsrc, ref_id, metadata={}):
+    def assertResourceState(self, rsrc, ref_id, metadata=None):
+        metadata = metadata or {}
         self.assertIsNone(rsrc.validate())
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         self.assertEqual(ref_id, rsrc.FnGetRefId())
@@ -165,14 +165,13 @@ Resources:
 
     def test_security_group_nova(self):
         #create script
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
         nova_sg.SecurityGroupManager.list().AndReturn([NovaSG(
             id=1,
             name='test',
             description='FAKE_SECURITY_GROUP',
             rules=[],
         )])
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         sg_name = utils.PhysName('test_stack', 'the_sg')
         nova_sg.SecurityGroupManager.create(
             sg_name,
@@ -182,7 +181,6 @@ Resources:
                 description='HTTP and SSH access',
                 rules=[]))
 
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.create(
             2, 'tcp', '22', '22', '0.0.0.0/0', None).AndReturn(None)
         nova_sgr.SecurityGroupRuleManager.create(
@@ -193,7 +191,6 @@ Resources:
             2, 'icmp', None, None, None, '1').AndReturn(None)
 
         # delete script
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sg.SecurityGroupManager.get(2).AndReturn(NovaSG(
             id=2,
             name=sg_name,
@@ -242,15 +239,10 @@ Resources:
                 'id': 133
             }]
         ))
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.delete(130).AndReturn(None)
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.delete(131).AndReturn(None)
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.delete(132).AndReturn(None)
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.delete(133).AndReturn(None)
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sg.SecurityGroupManager.delete(2).AndReturn(None)
 
         self.m.ReplayAll()
@@ -265,14 +257,13 @@ Resources:
 
     def test_security_group_nova_bad_source_group(self):
         #create script
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
         nova_sg.SecurityGroupManager.list().AndReturn([NovaSG(
             id=1,
             name='test',
             description='FAKE_SECURITY_GROUP',
             rules=[],
         )])
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         sg_name = utils.PhysName('test_stack', 'the_sg')
         nova_sg.SecurityGroupManager.create(
             sg_name,
@@ -282,14 +273,12 @@ Resources:
                 description='HTTP and SSH access',
                 rules=[]))
 
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.create(
             2, 'tcp', '22', '22', '0.0.0.0/0', None).AndReturn(None)
         nova_sgr.SecurityGroupRuleManager.create(
             2, 'tcp', '80', '80', '0.0.0.0/0', None).AndReturn(None)
 
         # delete script
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sg.SecurityGroupManager.get(2).AndReturn(NovaSG(
             id=2,
             name=sg_name,
@@ -316,11 +305,8 @@ Resources:
                 'id': 131
             }]
         ))
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.delete(130).AndReturn(None)
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.delete(131).AndReturn(None)
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sg.SecurityGroupManager.delete(2).AndReturn(None)
 
         self.m.ReplayAll()
@@ -333,9 +319,9 @@ Resources:
         stack.delete()
         self.m.VerifyAll()
 
-    def test_security_group_nova_exception(self):
+    def test_security_group_client_exception(self):
         #create script
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
         sg_name = utils.PhysName('test_stack', 'the_sg')
         nova_sg.SecurityGroupManager.list().AndReturn([
             NovaSG(
@@ -352,26 +338,20 @@ Resources:
             )
         ])
 
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.create(
             2, 'tcp', '22', '22', '0.0.0.0/0', None).AndRaise(
-                clients.novaclient.exceptions.BadRequest(
-                    400, 'Rule already exists'))
+                fakes.fake_exception(400, 'Rule already exists'))
         nova_sgr.SecurityGroupRuleManager.create(
             2, 'tcp', '80', '80', '0.0.0.0/0', None).AndReturn(
-                clients.novaclient.exceptions.BadRequest(
-                    400, 'Rule already exists'))
+                fakes.fake_exception(400, 'Rule already exists'))
         nova_sgr.SecurityGroupRuleManager.create(
             2, 'tcp', None, None, None, 1).AndReturn(
-                clients.novaclient.exceptions.BadRequest(
-                    400, 'Rule already exists'))
+                fakes.fake_exception(400, 'Rule already exists'))
         nova_sgr.SecurityGroupRuleManager.create(
             2, 'icmp', None, None, None, '1').AndReturn(
-                clients.novaclient.exceptions.BadRequest(
-                    400, 'Rule already exists'))
+                fakes.fake_exception(400, 'Rule already exists'))
 
         # delete script
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sg.SecurityGroupManager.get(2).AndReturn(NovaSG(
             id=2,
             name=sg_name,
@@ -420,24 +400,18 @@ Resources:
                 'id': 133
             }]
         ))
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sgr.SecurityGroupRuleManager.delete(130).AndRaise(
-            clients.novaclient.exceptions.NotFound('goneburger'))
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+            fakes.fake_exception())
         nova_sgr.SecurityGroupRuleManager.delete(131).AndRaise(
-            clients.novaclient.exceptions.NotFound('goneburger'))
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+            fakes.fake_exception())
         nova_sgr.SecurityGroupRuleManager.delete(132).AndRaise(
-            clients.novaclient.exceptions.NotFound('goneburger'))
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+            fakes.fake_exception())
         nova_sgr.SecurityGroupRuleManager.delete(133).AndRaise(
-            clients.novaclient.exceptions.NotFound('goneburger'))
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
+            fakes.fake_exception())
         nova_sg.SecurityGroupManager.delete(2).AndReturn(None)
 
-        clients.OpenStackClients.nova('compute').AndReturn(self.fc)
         nova_sg.SecurityGroupManager.get(2).AndRaise(
-            clients.novaclient.exceptions.NotFound('goneburger'))
+            fakes.fake_exception())
 
         self.m.ReplayAll()
         stack = self.create_stack(self.test_template_nova)
@@ -463,8 +437,6 @@ Resources:
 
     def test_security_group_neutron(self):
         #create script
-        clients.OpenStackClients.keystone().AndReturn(
-            FakeKeystoneClient())
         sg_name = utils.PhysName('test_stack', 'the_sg')
         neutronclient.Client.create_security_group({
             'security_group': {
@@ -710,8 +682,6 @@ Resources:
 
     def test_security_group_neutron_exception(self):
         #create script
-        clients.OpenStackClients.keystone().AndReturn(
-            FakeKeystoneClient())
         sg_name = utils.PhysName('test_stack', 'the_sg')
         neutronclient.Client.create_security_group({
             'security_group': {

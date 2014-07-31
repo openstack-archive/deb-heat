@@ -12,6 +12,7 @@
 #    under the License.
 
 
+import mock
 import mox
 from oslo.config import cfg
 
@@ -22,11 +23,11 @@ from heat.engine import parser
 from heat.engine.resources import image
 from heat.engine.resources import instance
 from heat.engine.resources import nova_keypair
+from heat.engine.resources import server
 from heat.engine.resources import wait_condition as wc
 from heat.engine import scheduler
 from heat.engine import service
 from heat.tests.common import HeatTestCase
-from heat.tests import fakes
 from heat.tests import utils
 
 
@@ -124,19 +125,37 @@ test_template_waitcondition = '''
 '''
 
 
+test_template_server = '''
+heat_template_version: 2013-05-23
+resources:
+  instance1:
+    type: OS::Nova::Server
+    metadata: {"template_data": {get_attr: [instance2, first_address]}}
+    properties:
+      image: cirros-0.3.2-x86_64-disk
+      flavor: m1.small
+      key_name: stack_key
+  instance2:
+    type: OS::Nova::Server
+    metadata: {'apples': 'pears'}
+    properties:
+      image: cirros-0.3.2-x86_64-disk
+      flavor: m1.small
+      key_name: stack_key
+'''
+
+
 class MetadataRefreshTest(HeatTestCase):
     '''
     The point of the test is to confirm that metadata gets updated
     when FnGetAtt() returns something different.
-    gets called.
     '''
     def setUp(self):
         super(MetadataRefreshTest, self).setUp()
-        self.fc = fakes.FakeKeystoneClient()
+        self.stub_keystoneclient()
 
-    # Note tests creating a stack should be decorated with @stack_delete_after
-    # to ensure the stack is properly cleaned up
-    def create_stack(self, stack_name='test_stack', params={}):
+    def create_stack(self, stack_name='test_stack', params=None):
+        params = params or {}
         temp = template_format.parse(test_template_metadata)
         template = parser.Template(temp)
         ctx = utils.dummy_context()
@@ -198,13 +217,15 @@ class MetadataRefreshTest(HeatTestCase):
 class WaitCondMetadataUpdateTest(HeatTestCase):
     def setUp(self):
         super(WaitCondMetadataUpdateTest, self).setUp()
-        self.fc = fakes.FakeKeystoneClient()
+        self.stub_keystoneclient()
+        self.mock_warnings = mock.patch('heat.engine.service.warnings')
+        self.mock_warnings.start()
+        self.addCleanup(self.mock_warnings.stop)
+
         self.man = service.EngineService('a-host', 'a-topic')
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://server.test:8000/v1/waitcondition')
 
-    # Note tests creating a stack should be decorated with @stack_delete_after
-    # to ensure the stack is properly cleaned up
     def create_stack(self, stack_name='test_stack'):
         temp = template_format.parse(test_template_waitcondition)
         template = parser.Template(temp)
@@ -226,30 +247,22 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
             instance.Instance.handle_create().AndReturn(cookie)
             instance.Instance.check_create_complete(cookie).AndReturn(True)
 
-        self.m.StubOutWithMock(wc.WaitConditionHandle, 'keystone')
-        wc.WaitConditionHandle.keystone().MultipleTimes().AndReturn(self.fc)
-
         id = identifier.ResourceIdentifier('test_tenant_id', stack.name,
                                            stack.id, '', 'WH')
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'identifier')
         wc.WaitConditionHandle.identifier().MultipleTimes().AndReturn(id)
 
         self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
-        self.m.StubOutWithMock(service.EngineService, 'load_user_creds')
-        service.EngineService.load_user_creds(
-            mox.IgnoreArg()).MultipleTimes().AndReturn(ctx)
-
         return stack
 
     def test_wait_meta(self):
         '''
         1 create stack
         2 assert empty instance metadata
-        3 service.metadata_update()
+        3 service.resource_signal()
         4 assert valid waitcond metadata
         5 assert valid instance metadata
         '''
-
         self.stack = self.create_stack()
 
         watch = self.stack['WC']
@@ -260,7 +273,7 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
             self.assertIsNone(inst.metadata_get()['test'])
 
         def update_metadata(id, data, reason):
-            self.man.metadata_update(utils.dummy_context(),
+            self.man.resource_signal(utils.dummy_context(),
                                      dict(self.stack.identifier()),
                                      'WH',
                                      {'Data': data, 'Reason': reason,
@@ -290,5 +303,85 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
                          inst.metadata_get()['test'])
         self.assertEqual('{"123": "foo", "456": "blarg"}',
                          inst.metadata_get(refresh=True)['test'])
+
+        self.m.VerifyAll()
+
+
+class MetadataRefreshTestServer(HeatTestCase):
+    '''
+    The point of the test is to confirm that metadata gets updated
+    when FnGetAtt() returns something different when using a native
+    OS::Nova::Server resource, and that metadata keys set inside the
+    resource (as opposed to in the template), e.g for deployments, don't
+    get overwritten on update/refresh.
+    '''
+    def setUp(self):
+        super(MetadataRefreshTestServer, self).setUp()
+        self.stub_keystoneclient()
+
+    def create_stack(self, stack_name='test_stack_native', params=None):
+        params = params or {}
+        temp = template_format.parse(test_template_server)
+        template = parser.Template(temp)
+        ctx = utils.dummy_context()
+        stack = parser.Stack(ctx, stack_name, template,
+                             environment.Environment(params),
+                             disable_rollback=True)
+
+        self.stack_id = stack.store()
+
+        self.m.StubOutWithMock(nova_keypair.KeypairConstraint, 'validate')
+        nova_keypair.KeypairConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.m.StubOutWithMock(image.ImageConstraint, 'validate')
+        image.ImageConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+
+        self.m.StubOutWithMock(server.Server, 'handle_create')
+        self.m.StubOutWithMock(server.Server, 'check_create_complete')
+        for cookie in (object(), object()):
+            server.Server.handle_create().AndReturn(cookie)
+            create_complete = server.Server.check_create_complete(cookie)
+            create_complete.InAnyOrder().AndReturn(True)
+        self.m.StubOutWithMock(server.Server, 'FnGetAtt')
+
+        return stack
+
+    def test_FnGetAtt(self):
+        self.stack = self.create_stack()
+
+        # Note dummy addresses are from TEST-NET-1 ref rfc5737
+        server.Server.FnGetAtt('first_address').AndReturn('192.0.2.1')
+
+        # called by metadata_update()
+        server.Server.FnGetAtt('first_address').AndReturn('192.0.2.2')
+        server.Server.FnGetAtt('first_address').AndReturn('192.0.2.2')
+
+        self.m.ReplayAll()
+        self.stack.create()
+
+        self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
+                         self.stack.state)
+
+        s1 = self.stack['instance1']
+        s2 = self.stack['instance2']
+        md = s1.metadata_get()
+        self.assertEqual({u'template_data': '192.0.2.1'}, md)
+
+        s1.metadata_update()
+        s2.metadata_update()
+        md = s1.metadata_get()
+        self.assertEqual({u'template_data': '192.0.2.2'}, md)
+
+        # Now set some metadata via the resource, like is done by
+        # _populate_deployments_metadata.  This should be persisted over
+        # calls to metadata_update()
+        new_md = {u'template_data': '192.0.2.2', 'set_by_rsrc': 'orange'}
+        s1.metadata_set(new_md)
+        md = s1.metadata_get(refresh=True)
+        self.assertEqual(new_md, md)
+        s1.metadata_update()
+        md = s1.metadata_get(refresh=True)
+        self.assertEqual(new_md, md)
 
         self.m.VerifyAll()

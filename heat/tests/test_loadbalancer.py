@@ -20,16 +20,16 @@ from oslo.config import cfg
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import clients
+from heat.engine.clients.os import glance
+from heat.engine.clients.os import nova
 from heat.engine import resource
 from heat.engine.resources import glance_utils
 from heat.engine.resources import instance
 from heat.engine.resources import loadbalancer as lb
 from heat.engine.resources import wait_condition as wc
+from heat.engine import rsrc_defn
 from heat.engine import scheduler
-from heat.engine import stack_user
 from heat.tests.common import HeatTestCase
-from heat.tests import fakes as test_fakes
 from heat.tests import utils
 from heat.tests.v1_1 import fakes
 
@@ -105,11 +105,10 @@ class LoadBalancerTest(HeatTestCase):
     def setUp(self):
         super(LoadBalancerTest, self).setUp()
         self.fc = fakes.FakeClient()
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.m.StubOutWithMock(resource.Resource, 'metadata_set')
-        self.fkc = test_fakes.FakeKeystoneClient(
-            username='test_stack.CfnLBUser')
+        self.stub_keystoneclient(username='test_stack.CfnLBUser')
 
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://server.test:8000/v1/waitcondition')
@@ -126,25 +125,19 @@ class LoadBalancerTest(HeatTestCase):
 
     def _mock_get_image_id_success(self, imageId_input, imageId):
         g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
-        clients.OpenStackClients.glance().MultipleTimes().AndReturn(
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
+        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
             g_cli_mock)
         self.m.StubOutWithMock(glance_utils, 'get_image_id')
         glance_utils.get_image_id(g_cli_mock, imageId_input).\
             MultipleTimes().AndReturn(imageId)
 
     def _create_stubs(self, key_name='test', stub_meta=True):
-        self.m.StubOutWithMock(stack_user.StackUser, 'keystone')
-        stack_user.StackUser.keystone().MultipleTimes().AndReturn(self.fkc)
-
         server_name = utils.PhysName(
             utils.PhysName('test_stack', 'LoadBalancer'),
             'LB_instance',
             limit=instance.Instance.physical_resource_name_limit)
-        clients.OpenStackClients.nova(
-            "compute").MultipleTimes().AndReturn(self.fc)
-        if key_name:
-            clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
         self.fc.servers.create(
             flavor=2, image=746, key_name=key_name,
             meta=None, nics=None, name=server_name,
@@ -201,7 +194,12 @@ class LoadBalancerTest(HeatTestCase):
                                      s)
             id_list.append(inst.FnGetRefId())
 
-        rsrc.handle_update(copy.deepcopy(rsrc.t), {}, {'Instances': id_list})
+        prop_diff = {'Instances': id_list}
+        props = copy.copy(rsrc.properties.data)
+        props.update(prop_diff)
+        update_defn = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(),
+                                                   props)
+        rsrc.handle_update(update_defn, {}, prop_diff)
 
         self.assertEqual('4.5.6.7', rsrc.FnGetAtt('DNSName'))
         self.assertEqual('', rsrc.FnGetAtt('SourceSecurityGroup.GroupName'))
@@ -209,7 +207,7 @@ class LoadBalancerTest(HeatTestCase):
         self.assertRaises(exception.InvalidTemplateAttribute,
                           rsrc.FnGetAtt, 'Foo')
 
-        self.assertIsNone(rsrc.handle_update({}, {}, {}))
+        self.assertIsNone(rsrc.handle_update(rsrc.t, {}, {}))
 
         self.m.VerifyAll()
 

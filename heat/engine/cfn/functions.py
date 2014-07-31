@@ -177,9 +177,7 @@ class GetAtt(function.Function):
         attribute = function.resolve(self._attribute)
 
         r = self._resource()
-        if (r.status in (r.IN_PROGRESS, r.COMPLETE) and
-                r.action in (r.CREATE, r.ADOPT, r.SUSPEND, r.RESUME,
-                             r.UPDATE)):
+        if (r.action in (r.CREATE, r.ADOPT, r.SUSPEND, r.RESUME, r.UPDATE)):
             return r.FnGetAtt(attribute)
         else:
             return None
@@ -544,7 +542,7 @@ class ResourceFacade(function.Function):
             up = self.stack.parent_resource.t.get('UpdatePolicy', {})
             return function.resolve(up)
         elif attr == self.DELETION_POLICY:
-            dp = self.stack.parent_resource.t.get('DeletionPolicy', 'Delete')
+            dp = self.stack.parent_resource.t.deletion_policy()
             return function.resolve(dp)
 
 

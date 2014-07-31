@@ -20,6 +20,7 @@ import warnings
 from oslo.config import cfg
 import six
 
+from heat.common import context as common_context
 from heat.common import exception
 from heat.common.exception import StackValidationFailed
 from heat.common import identifier
@@ -59,7 +60,8 @@ class Stack(collections.Mapping):
                  disable_rollback=True, parent_resource=None, owner_id=None,
                  adopt_stack_data=None, stack_user_project_id=None,
                  created_time=None, updated_time=None,
-                 user_creds_id=None, tenant_id=None, validate_parameters=True):
+                 user_creds_id=None, tenant_id=None, validate_parameters=True,
+                 use_stored_context=False):
         '''
         Initialise from a context, name, Template object and (optionally)
         Environment object. The database ID may also be initialised, if the
@@ -76,7 +78,6 @@ class Stack(collections.Mapping):
         self.id = stack_id
         self.owner_id = owner_id
         self.context = context
-        self.clients = Clients(context)
         self.t = tmpl
         self.name = stack_name
         self.action = action
@@ -95,6 +96,11 @@ class Stack(collections.Mapping):
         self.updated_time = updated_time
         self.user_creds_id = user_creds_id
 
+        if use_stored_context:
+            self.context = self.stored_context()
+
+        self.clients = Clients(self.context)
+
         # This will use the provided tenant ID when loading the stack
         # from the DB or get it from the context for new stacks.
         self.tenant_id = tenant_id or self.context.tenant_id
@@ -105,13 +111,28 @@ class Stack(collections.Mapping):
         self.parameters = self.t.parameters(self.identifier(),
                                             user_params=self.env.params)
         self.parameters.validate(validate_value=validate_parameters,
-                                 context=context)
+                                 context=self.context)
         self._set_param_stackid()
 
         if resolve_data:
             self.outputs = self.resolve_static_data(self.t[self.t.OUTPUTS])
         else:
             self.outputs = {}
+
+    def stored_context(self):
+        if self.user_creds_id:
+            creds = db_api.user_creds_get(self.user_creds_id)
+            # Maintain request_id from self.context so we retain tracability
+            # in situations where servicing a request requires switching from
+            # the request context to the stored context
+            creds['request_id'] = self.context.request_id
+            # We don't store roles in the user_creds table, so disable the
+            # policy check for admin by setting is_admin=False.
+            creds['is_admin'] = False
+            return common_context.RequestContext.from_dict(creds)
+        else:
+            msg = _("Attempt to use stored_context with no user_creds")
+            raise exception.Error(msg)
 
     @property
     def resources(self):
@@ -123,6 +144,25 @@ class Stack(collections.Mapping):
             # after resource creation
             self._db_resources = None
         return self._resources
+
+    def iter_resources(self, nested_depth=0):
+        '''
+        Iterates over all the resources in a stack, including nested stacks up
+        to `nested_depth` levels below.
+        '''
+        for res in self.values():
+            yield res
+
+            get_nested = getattr(res, 'nested', None)
+            if not callable(get_nested) or nested_depth == 0:
+                continue
+
+            nested_stack = get_nested()
+            if nested_stack is None:
+                continue
+
+            for nested_res in nested_stack.iter_resources(nested_depth - 1):
+                yield nested_res
 
     def db_resource_get(self, name):
         if not self.id:
@@ -187,8 +227,8 @@ class Stack(collections.Mapping):
         return deps
 
     @classmethod
-    def load(cls, context, stack_id=None, stack=None, resolve_data=True,
-             parent_resource=None, show_deleted=True):
+    def load(cls, context, stack_id=None, stack=None, parent_resource=None,
+             show_deleted=True, use_stored_context=False):
         '''Retrieve a Stack from the database.'''
         if stack is None:
             stack = db_api.stack_get(context, stack_id,
@@ -198,20 +238,35 @@ class Stack(collections.Mapping):
             message = _('No stack exists with id "%s"') % str(stack_id)
             raise exception.NotFound(message)
 
+        return cls._from_db(context, stack, parent_resource=parent_resource,
+                            use_stored_context=use_stored_context)
+
+    @classmethod
+    def load_all(cls, context, limit=None, marker=None, sort_keys=None,
+                 sort_dir=None, filters=None, tenant_safe=True,
+                 show_deleted=False, resolve_data=True):
+        stacks = db_api.stack_get_all(context, limit, sort_keys, marker,
+                                      sort_dir, filters, tenant_safe,
+                                      show_deleted) or []
+        for stack in stacks:
+            yield cls._from_db(context, stack, resolve_data=resolve_data)
+
+    @classmethod
+    def _from_db(cls, context, stack, parent_resource=None, resolve_data=True,
+                 use_stored_context=False):
         template = Template.load(
             context, stack.raw_template_id, stack.raw_template)
         env = environment.Environment(stack.parameters)
-        stack = cls(context, stack.name, template, env,
-                    stack.id, stack.action, stack.status, stack.status_reason,
-                    stack.timeout, resolve_data, stack.disable_rollback,
-                    parent_resource, owner_id=stack.owner_id,
-                    stack_user_project_id=stack.stack_user_project_id,
-                    created_time=stack.created_at,
-                    updated_time=stack.updated_at,
-                    user_creds_id=stack.user_creds_id, tenant_id=stack.tenant,
-                    validate_parameters=False)
-
-        return stack
+        return cls(context, stack.name, template, env,
+                   stack.id, stack.action, stack.status, stack.status_reason,
+                   stack.timeout, resolve_data, stack.disable_rollback,
+                   parent_resource, owner_id=stack.owner_id,
+                   stack_user_project_id=stack.stack_user_project_id,
+                   created_time=stack.created_at,
+                   updated_time=stack.updated_at,
+                   user_creds_id=stack.user_creds_id, tenant_id=stack.tenant,
+                   validate_parameters=False,
+                   use_stored_context=use_stored_context)
 
     def store(self, backup=False):
         '''
@@ -237,15 +292,17 @@ class Stack(collections.Mapping):
         if self.id:
             db_api.stack_update(self.context, self.id, s)
         else:
-            # Create a context containing a trust_id and trustor_user_id
-            # if trusts are enabled
-            if cfg.CONF.deferred_auth_method == 'trusts':
-                trust_context = self.clients.keystone().create_trust_context()
-                new_creds = db_api.user_creds_create(trust_context)
-            else:
-                new_creds = db_api.user_creds_create(self.context)
-            s['user_creds_id'] = new_creds.id
-            self.user_creds_id = new_creds.id
+            if not self.user_creds_id:
+                # Create a context containing a trust_id and trustor_user_id
+                # if trusts are enabled
+                if cfg.CONF.deferred_auth_method == 'trusts':
+                    keystone = self.clients.client('keystone')
+                    trust_ctx = keystone.create_trust_context()
+                    new_creds = db_api.user_creds_create(trust_ctx)
+                else:
+                    new_creds = db_api.user_creds_create(self.context)
+                s['user_creds_id'] = new_creds.id
+                self.user_creds_id = new_creds.id
 
             new_s = db_api.stack_create(self.context, s)
             self.id = new_s.id
@@ -278,17 +335,24 @@ class Stack(collections.Mapping):
         '''Get the resource with the specified name.'''
         return self.resources[key]
 
-    def __setitem__(self, key, resource):
-        '''Set the resource with the specified name to a specific value.'''
+    def add_resource(self, resource):
+        '''Insert the given resource into the stack.'''
         template = resource.stack.t
         resource.stack = self
-        resource.t = template.resource_definitions(self)[key]
+        definition = resource.t.reparse(self, template)
+        resource.t = definition
         resource.reparse()
-        self.resources[key] = resource
+        self.resources[resource.name] = resource
+        self.t.add_resource(definition)
+        if self.t.id is not None:
+            self.t.store(self.context)
 
-    def __delitem__(self, key):
+    def remove_resource(self, resource_name):
         '''Remove the resource with the specified name.'''
-        del self.resources[key]
+        del self.resources[resource_name]
+        self.t.remove_resource(resource_name)
+        if self.t.id is not None:
+            self.t.store(self.context)
 
     def __contains__(self, key):
         '''Determine whether the stack contains the specified resource.'''
@@ -471,7 +535,7 @@ class Stack(collections.Mapping):
     def stack_task(self, action, reverse=False, post_func=None):
         '''
         A task to perform an action on the stack and all of the resources
-        in forward or reverse dependency order as specfifed by reverse
+        in forward or reverse dependency order as specified by reverse
         '''
         self.state_set(action, self.IN_PROGRESS,
                        'Stack %s started' % action)
@@ -520,10 +584,9 @@ class Stack(collections.Mapping):
             LOG.debug('Loaded existing backup stack')
             return self.load(self.context, stack=s)
         elif create_if_missing:
-            templ = Template.load(self.context, self.t.id)
-            templ.files = copy.deepcopy(self.t.files)
-            prev = type(self)(self.context, self.name, templ, self.env,
-                              owner_id=self.id)
+            prev = type(self)(self.context, self.name, copy.deepcopy(self.t),
+                              self.env, owner_id=self.id,
+                              user_creds_id=self.user_creds_id)
             prev.store(backup=True)
             LOG.debug('Created new backup stack')
             return prev
@@ -579,10 +642,11 @@ class Stack(collections.Mapping):
                                'State invalid for %s' % action)
                 return
 
-        self.state_set(self.UPDATE, self.IN_PROGRESS,
+        self.state_set(action, self.IN_PROGRESS,
                        'Stack %s started' % action)
 
-        oldstack = Stack(self.context, self.name, self.t, self.env)
+        oldstack = Stack(self.context, self.name, copy.deepcopy(self.t),
+                         self.env)
         backup_stack = self._backup_stack()
         try:
             update_task = update.StackUpdate(self, newstack, backup_stack,
@@ -627,13 +691,11 @@ class Stack(collections.Mapping):
             LOG.debug('Deleting backup stack')
             backup_stack.delete(backup=True)
 
-        # flip the template to the newstack values
-        # Note we do this on success and failure, so the current
-        # stack resources are stored, even if one is in a failed
-        # state (otherwise we won't remove them on delete)
-        self.t = newstack.t
-        template_outputs = self.t[self.t.OUTPUTS]
-        self.outputs = self.resolve_static_data(template_outputs)
+            # flip the template to the newstack values
+            self.t = newstack.t
+            template_outputs = self.t[self.t.OUTPUTS]
+            self.outputs = self.resolve_static_data(template_outputs)
+
         # Don't use state_set to do only one update query and avoid race
         # condition with the COMPLETE status
         self.action = action
@@ -718,41 +780,65 @@ class Stack(collections.Mapping):
             stack_status = self.FAILED
             reason = '%s timed out' % action.title()
 
-        if stack_status != self.FAILED and not backup:
+        # If the stack delete suceeded, this is not a backup stack and it's
+        # not a nested stack, we should delete the credentials
+        if stack_status != self.FAILED and not backup and not self.owner_id:
             # Cleanup stored user_creds so they aren't accessible via
             # the soft-deleted stack which remains in the DB
             if self.user_creds_id:
                 user_creds = db_api.user_creds_get(self.user_creds_id)
                 # If we created a trust, delete it
-                trust_id = user_creds.get('trust_id')
-                if trust_id:
-                    try:
-                        self.clients.keystone().delete_trust(trust_id)
-                    except Exception as ex:
-                        LOG.exception(ex)
-                        stack_status = self.FAILED
-                        reason = "Error deleting trust: %s" % six.text_type(ex)
+                if user_creds is not None:
+                    trust_id = user_creds.get('trust_id')
+                    if trust_id:
+                        try:
+                            self.clients.client('keystone').delete_trust(
+                                trust_id)
+                        except Exception as ex:
+                            LOG.exception(ex)
+                            stack_status = self.FAILED
+                            reason = ("Error deleting trust: %s" %
+                                      six.text_type(ex))
 
                 # Delete the stored credentials
-                db_api.user_creds_delete(self.context, self.user_creds_id)
-                self.user_creds_id = None
-                self.store()
+                try:
+                    db_api.user_creds_delete(self.context, self.user_creds_id)
+                except exception.NotFound:
+                    LOG.info(_("Tried to delete user_creds that do not exist "
+                               "(stack=%(stack)s user_creds_id=%(uc)s)") %
+                             {'stack': self.id, 'uc': self.user_creds_id})
+
+                try:
+                    self.user_creds_id = None
+                    self.store()
+                except exception.NotFound:
+                    LOG.info(_("Tried to store a stack that does not exist "
+                               "%s ") % self.id)
 
             # If the stack has a domain project, delete it
             if self.stack_user_project_id:
                 try:
-                    self.clients.keystone().delete_stack_domain_project(
+                    keystone = self.clients.client('keystone')
+                    keystone.delete_stack_domain_project(
                         project_id=self.stack_user_project_id)
                 except Exception as ex:
                     LOG.exception(ex)
                     stack_status = self.FAILED
                     reason = "Error deleting project: %s" % six.text_type(ex)
 
-        self.state_set(action, stack_status, reason)
+        try:
+            self.state_set(action, stack_status, reason)
+        except exception.NotFound:
+            LOG.info(_("Tried to delete stack that does not exist "
+                       "%s ") % self.id)
 
         if stack_status != self.FAILED:
             # delete the stack
-            db_api.stack_delete(self.context, self.id)
+            try:
+                db_api.stack_delete(self.context, self.id)
+            except exception.NotFound:
+                LOG.info(_("Tried to delete stack that does not exist "
+                           "%s ") % self.id)
             self.id = None
 
     def suspend(self):
@@ -834,10 +920,11 @@ class Stack(collections.Mapping):
         # restart the whole stack
 
     def get_availability_zones(self):
+        nova = self.clients.client('nova')
         if self._zones is None:
             self._zones = [
                 zone.zoneName for zone in
-                self.clients.nova().availability_zones.list(detailed=False)]
+                nova.availability_zones.list(detailed=False)]
         return self._zones
 
     def set_stack_user_project_id(self, project_id):

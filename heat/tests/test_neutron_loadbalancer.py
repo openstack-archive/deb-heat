@@ -14,21 +14,18 @@
 import copy
 import mox
 
-from testtools import skipIf
+from neutronclient.v2_0 import client as neutronclient
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import clients
+from heat.engine.clients.os import nova
 from heat.engine.resources.neutron import loadbalancer
 from heat.engine.resources.neutron import neutron_utils
 from heat.engine import scheduler
-from heat.openstack.common.importutils import try_import
 from heat.tests.common import HeatTestCase
-from heat.tests import fakes
 from heat.tests import utils
 from heat.tests.v1_1 import fakes as nova_fakes
 
-neutronclient = try_import('neutronclient.v2_0.client')
 
 health_monitor_template = '''
 {
@@ -220,7 +217,6 @@ pool_with_health_monitors_template = '''
 '''
 
 
-@skipIf(neutronclient is None, 'neutronclient unavailable')
 class HealthMonitorTest(HeatTestCase):
 
     def setUp(self):
@@ -229,11 +225,9 @@ class HealthMonitorTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'delete_health_monitor')
         self.m.StubOutWithMock(neutronclient.Client, 'show_health_monitor')
         self.m.StubOutWithMock(neutronclient.Client, 'update_health_monitor')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
     def create_health_monitor(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_health_monitor({
             'health_monitor': {
                 'delay': 3, 'max_retries': 5, 'type': u'HTTP',
@@ -254,8 +248,6 @@ class HealthMonitorTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_failed(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_health_monitor({
             'health_monitor': {
                 'delay': 3, 'max_retries': 5, 'type': u'HTTP',
@@ -350,7 +342,6 @@ class HealthMonitorTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-@skipIf(neutronclient is None, 'neutronclient unavailable')
 class PoolTest(HeatTestCase):
 
     def setUp(self):
@@ -368,11 +359,9 @@ class PoolTest(HeatTestCase):
                                'find_resourceid_by_name_or_id')
         self.m.StubOutWithMock(neutronclient.Client, 'delete_vip')
         self.m.StubOutWithMock(neutronclient.Client, 'show_vip')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
     def create_pool(self, resolve_neutron=True, with_vip_subnet=False):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_pool({
             'pool': {
                 'subnet_id': 'sub123', 'protocol': u'HTTP',
@@ -447,8 +436,6 @@ class PoolTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_pending(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutron_utils.neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
@@ -487,8 +474,6 @@ class PoolTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_failed_unexpected_status(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutron_utils.neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
@@ -526,8 +511,6 @@ class PoolTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_failed_unexpected_vip_status(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutron_utils.neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
@@ -567,8 +550,6 @@ class PoolTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_failed(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutron_utils.neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
@@ -597,8 +578,6 @@ class PoolTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_with_session_persistence(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutron_utils.neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
@@ -663,8 +642,6 @@ class PoolTest(HeatTestCase):
         self.assertIsNone(resource.validate())
 
     def test_properties_are_prepared_for_session_persistence(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutron_utils.neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
@@ -816,8 +793,6 @@ class PoolTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_update_monitors(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutron_utils.neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
@@ -864,7 +839,6 @@ class PoolTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-@skipIf(neutronclient is None, 'neutronclient unavailable')
 class PoolMemberTest(HeatTestCase):
 
     def setUp(self):
@@ -874,11 +848,9 @@ class PoolMemberTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'delete_member')
         self.m.StubOutWithMock(neutronclient.Client, 'update_member')
         self.m.StubOutWithMock(neutronclient.Client, 'show_member')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
     def create_member(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_member({
             'member': {
                 'pool_id': 'pool123', 'protocol_port': 8080,
@@ -900,8 +872,6 @@ class PoolMemberTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_optional_parameters(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_member({
             'member': {
                 'pool_id': 'pool123', 'protocol_port': 8080,
@@ -971,7 +941,6 @@ class PoolMemberTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-@skipIf(neutronclient is None, 'neutronclient unavailable')
 class LoadBalancerTest(HeatTestCase):
 
     def setUp(self):
@@ -979,14 +948,11 @@ class LoadBalancerTest(HeatTestCase):
         self.fc = nova_fakes.FakeClient()
         self.m.StubOutWithMock(neutronclient.Client, 'create_member')
         self.m.StubOutWithMock(neutronclient.Client, 'delete_member')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        self.stub_keystoneclient()
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
 
     def create_load_balancer(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
-        clients.OpenStackClients.nova("compute").MultipleTimes().AndReturn(
-            self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
         neutronclient.Client.create_member({
             'member': {
                 'pool_id': 'pool123', 'protocol_port': 8080,
@@ -1061,7 +1027,6 @@ class LoadBalancerTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-@skipIf(neutronclient is None, 'neutronclient unavailable')
 class PoolUpdateHealthMonitorsTest(HeatTestCase):
 
     def setUp(self):
@@ -1081,11 +1046,9 @@ class PoolUpdateHealthMonitorsTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'create_vip')
         self.m.StubOutWithMock(neutronclient.Client, 'delete_vip')
         self.m.StubOutWithMock(neutronclient.Client, 'show_vip')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
     def _create_pool_with_health_monitors(self):
-        clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_health_monitor({
             'health_monitor': {
                 'delay': 3, 'max_retries': 5, 'type': u'HTTP',

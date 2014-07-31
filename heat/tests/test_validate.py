@@ -11,19 +11,19 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from glanceclient import exc as g_exc
-from testtools import skipIf
+from glanceclient import exc as glance_exceptions
+import mock
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import clients
+from heat.engine.clients.os import glance
+from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine.hot.template import HOTemplate
 from heat.engine import parser
 from heat.engine import resources
 from heat.engine.resources import glance_utils
 from heat.engine import service
-from heat.openstack.common.importutils import try_import
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 from heat.tests.v1_1 import fakes
@@ -773,6 +773,36 @@ resources:
     type: OS::Nova::Server
 '''
 
+test_template_allowed_integers = '''
+heat_template_version: 2013-05-23
+
+parameters:
+  size:
+    type: number
+    constraints:
+      - allowed_values: [1, 4, 8]
+resources:
+  my_volume:
+    type: OS::Cinder::Volume
+    properties:
+      size: { get_param: size }
+'''
+
+test_template_allowed_integers_str = '''
+heat_template_version: 2013-05-23
+
+parameters:
+  size:
+    type: number
+    constraints:
+      - allowed_values: ['1', '4', '8']
+resources:
+  my_volume:
+    type: OS::Cinder::Volume
+    properties:
+      size: { get_param: size }
+'''
+
 
 class validateTest(HeatTestCase):
     def setUp(self):
@@ -782,11 +812,14 @@ class validateTest(HeatTestCase):
         self.gc = fakes.FakeClient()
         resources.initialise()
         self.ctx = utils.dummy_context()
+        self.mock_warnings = mock.patch('heat.engine.service.warnings')
+        self.mock_warnings.start()
+        self.addCleanup(self.mock_warnings.stop)
 
     def _mock_get_image_id_success(self, imageId_input, imageId):
         g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
-        clients.OpenStackClients.glance().MultipleTimes().AndReturn(
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
+        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
             g_cli_mock)
         self.m.StubOutWithMock(glance_utils, 'get_image_id')
         glance_utils.get_image_id(g_cli_mock, imageId_input).MultipleTimes().\
@@ -794,8 +827,8 @@ class validateTest(HeatTestCase):
 
     def _mock_get_image_id_fail(self, image_id, exp):
         g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
-        clients.OpenStackClients.glance().MultipleTimes().AndReturn(
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
+        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
             g_cli_mock)
         self.m.StubOutWithMock(glance_utils, 'get_image_id')
         glance_utils.get_image_id(g_cli_mock, image_id).AndRaise(exp)
@@ -1020,17 +1053,15 @@ class validateTest(HeatTestCase):
         t = template_format.parse(test_template_invalid_deletion_policy)
         engine = service.EngineService('a', 't')
         res = dict(engine.validate_template(None, t, {}))
-        self.assertEqual({'Error': 'Invalid DeletionPolicy Destroy'}, res)
+        self.assertEqual({'Error': 'Invalid deletion policy "Destroy"'}, res)
 
     def test_snapshot_deletion_policy(self):
         t = template_format.parse(test_template_snapshot_deletion_policy)
         engine = service.EngineService('a', 't')
         res = dict(engine.validate_template(None, t, {}))
         self.assertEqual(
-            {'Error': 'Snapshot DeletionPolicy not supported'}, res)
+            {'Error': '"Snapshot" deletion policy not supported'}, res)
 
-    @skipIf(try_import('cinderclient.v1.volume_backups') is None,
-            'unable to import volume_backups')
     def test_volume_snapshot_deletion_policy(self):
         t = template_format.parse(test_template_volume_snapshot)
         engine = service.EngineService('a', 't')
@@ -1233,8 +1264,8 @@ class validateTest(HeatTestCase):
 
         self._mock_get_image_id_success('image_name', 'image_id')
 
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
-        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
         self.m.ReplayAll()
 
         resource = stack['Instance']
@@ -1250,8 +1281,8 @@ class validateTest(HeatTestCase):
 
         self._mock_get_image_id_success('image_name', 'image_id')
 
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
-        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
         self.m.ReplayAll()
 
         resource = stack['Instance']
@@ -1266,9 +1297,9 @@ class validateTest(HeatTestCase):
 
         self.m.StubOutWithMock(self.gc.images, 'list')
         self.gc.images.list().AndRaise(
-            g_exc.ClientException(500))
-        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
-        clients.OpenStackClients.glance().MultipleTimes().AndReturn(self.gc)
+            glance_exceptions.ClientException(500))
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
+        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(self.gc)
         self.m.ReplayAll()
 
         self.assertRaises(exception.StackValidationFailed, stack.validate)
@@ -1322,3 +1353,63 @@ class validateTest(HeatTestCase):
 
         self.assertEqual(_('Parameters must be provided for each Parameter '
                          'Group.'), str(exc))
+
+    def test_validate_allowed_values_integer(self):
+        t = template_format.parse(test_template_allowed_integers)
+        template = parser.Template(t)
+
+        # test with size parameter provided as string
+        stack = parser.Stack(self.ctx, 'test_stack', template,
+                             environment.Environment({'size': '4'}))
+        self.assertIsNone(stack.validate())
+
+        # test with size parameter provided as number
+        stack = parser.Stack(self.ctx, 'test_stack', template,
+                             environment.Environment({'size': 4}))
+        self.assertIsNone(stack.validate())
+
+    def test_validate_allowed_values_integer_str(self):
+        t = template_format.parse(test_template_allowed_integers_str)
+        template = parser.Template(t)
+
+        # test with size parameter provided as string
+        stack = parser.Stack(self.ctx, 'test_stack', template,
+                             environment.Environment({'size': '4'}))
+        self.assertIsNone(stack.validate())
+
+        # test with size parameter provided as number
+        stack = parser.Stack(self.ctx, 'test_stack', template,
+                             environment.Environment({'size': 4}))
+        self.assertIsNone(stack.validate())
+
+    def test_validate_not_allowed_values_integer(self):
+        t = template_format.parse(test_template_allowed_integers)
+        template = parser.Template(t)
+
+        # test with size parameter provided as string
+        err = self.assertRaises(exception.StackValidationFailed, parser.Stack,
+                                self.ctx, 'test_stack', template,
+                                environment.Environment({'size': '3'}))
+        self.assertIn('"3" is not an allowed value [1, 4, 8]', str(err))
+
+        # test with size parameter provided as number
+        err = self.assertRaises(exception.StackValidationFailed, parser.Stack,
+                                self.ctx, 'test_stack', template,
+                                environment.Environment({'size': 3}))
+        self.assertIn('"3" is not an allowed value [1, 4, 8]', str(err))
+
+    def test_validate_not_allowed_values_integer_str(self):
+        t = template_format.parse(test_template_allowed_integers_str)
+        template = parser.Template(t)
+
+        # test with size parameter provided as string
+        err = self.assertRaises(exception.StackValidationFailed, parser.Stack,
+                                self.ctx, 'test_stack', template,
+                                environment.Environment({'size': '3'}))
+        self.assertIn('"3" is not an allowed value [1, 4, 8]', str(err))
+
+        # test with size parameter provided as number
+        err = self.assertRaises(exception.StackValidationFailed, parser.Stack,
+                                self.ctx, 'test_stack', template,
+                                environment.Environment({'size': 3}))
+        self.assertIn('"3" is not an allowed value [1, 4, 8]', str(err))

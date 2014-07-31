@@ -11,21 +11,20 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from cinderclient import client as cinderclient
+from cinderclient.v1 import volume_backups
 import json
+from novaclient import exceptions as nova_exceptions
 
 from heat.common import exception
 from heat.engine import attributes
-from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources import glance_utils
 from heat.engine import scheduler
 from heat.engine import support
-from heat.openstack.common.importutils import try_import
 from heat.openstack.common import log as logging
-
-volume_backups = try_import('cinderclient.v1.volume_backups')
 
 LOG = logging.getLogger(__name__)
 
@@ -162,7 +161,7 @@ class Volume(resource.Resource):
                 while True:
                     yield
                     vol.get()
-            except clients.cinderclient.exceptions.NotFound:
+            except cinderclient.exceptions.NotFound:
                 self.resource_id_set(None)
 
     if volume_backups is not None:
@@ -250,12 +249,12 @@ class VolumeExtendTask(object):
     def __call__(self):
         LOG.debug(str(self))
 
-        cinder = self.clients.cinder().volumes
+        cinder = self.clients.client('cinder').volumes
         vol = cinder.get(self.volume_id)
 
         try:
             cinder.extend(self.volume_id, self.size)
-        except clients.cinderclient.exceptions.ClientException as ex:
+        except cinderclient.exceptions.ClientException as ex:
             raise exception.Error(_(
                 "Failed to extend volume %(vol)s - %(err)s") % {
                     'vol': vol.id, 'err': str(ex)})
@@ -307,14 +306,14 @@ class VolumeAttachTask(object):
         """Return a co-routine which runs the task."""
         LOG.debug(str(self))
 
-        va = self.clients.nova().volumes.create_server_volume(
+        va = self.clients.client('nova').volumes.create_server_volume(
             server_id=self.server_id,
             volume_id=self.volume_id,
             device=self.device)
         self.attachment_id = va.id
         yield
 
-        vol = self.clients.cinder().volumes.get(self.volume_id)
+        vol = self.clients.client('cinder').volumes.get(self.volume_id)
         while vol.status == 'available' or vol.status == 'attaching':
             LOG.debug('%(name)s - volume status: %(status)s'
                       % {'name': str(self), 'status': vol.status})
@@ -354,24 +353,24 @@ class VolumeDetachTask(object):
         """Return a co-routine which runs the task."""
         LOG.debug(str(self))
 
-        server_api = self.clients.nova().volumes
+        server_api = self.clients.client('nova').volumes
 
         # get reference to the volume while it is attached
         try:
             nova_vol = server_api.get_server_volume(self.server_id,
                                                     self.attachment_id)
-            vol = self.clients.cinder().volumes.get(nova_vol.id)
-        except (clients.cinderclient.exceptions.NotFound,
-                clients.novaclient.exceptions.BadRequest,
-                clients.novaclient.exceptions.NotFound):
+            vol = self.clients.client('cinder').volumes.get(nova_vol.id)
+        except (cinderclient.exceptions.NotFound,
+                nova_exceptions.BadRequest,
+                nova_exceptions.NotFound):
             LOG.warning(_('%s - volume not found') % str(self))
             return
 
         # detach the volume using volume_attachment
         try:
             server_api.delete_server_volume(self.server_id, self.attachment_id)
-        except (clients.novaclient.exceptions.BadRequest,
-                clients.novaclient.exceptions.NotFound) as e:
+        except (nova_exceptions.BadRequest,
+                nova_exceptions.NotFound) as e:
             LOG.warning(_('%(res)s - %(err)s') % {'res': str(self),
                                                   'err': e})
 
@@ -388,7 +387,7 @@ class VolumeDetachTask(object):
             if vol.status != 'available':
                 raise exception.Error(vol.status)
 
-        except clients.cinderclient.exceptions.NotFound:
+        except cinderclient.exceptions.NotFound:
             LOG.warning(_('%s - volume not found') % str(self))
 
         # The next check is needed for immediate reattachment when updating:
@@ -398,7 +397,7 @@ class VolumeDetachTask(object):
         def server_has_attachment(server_id, attachment_id):
             try:
                 server_api.get_server_volume(server_id, attachment_id)
-            except clients.novaclient.exceptions.NotFound:
+            except nova_exceptions.NotFound:
                 return False
             return True
 
@@ -553,11 +552,13 @@ class CinderVolume(Volume):
         ),
         NAME: properties.Schema(
             properties.Schema.STRING,
-            _('A name used to distinguish the volume.')
+            _('A name used to distinguish the volume.'),
+            update_allowed=True,
         ),
         DESCRIPTION: properties.Schema(
             properties.Schema.STRING,
-            _('A description of the volume.')
+            _('A description of the volume.'),
+            update_allowed=True,
         ),
         VOLUME_TYPE: properties.Schema(
             properties.Schema.STRING,
@@ -566,7 +567,8 @@ class CinderVolume(Volume):
         ),
         METADATA: properties.Schema(
             properties.Schema.MAP,
-            _('Key/value pairs to associate with the volume.')
+            _('Key/value pairs to associate with the volume.'),
+            update_allowed=True,
         ),
         IMAGE_REF: properties.Schema(
             properties.Schema.STRING,
@@ -658,6 +660,30 @@ class CinderVolume(Volume):
         if name == 'metadata':
             return unicode(json.dumps(vol.metadata))
         return unicode(getattr(vol, name))
+
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
+        vol = None
+        # update the name and description for cinder volume
+        if self.NAME in prop_diff or self.DESCRIPTION in prop_diff:
+            vol = self.cinder().volumes.get(self.resource_id)
+            kwargs = {}
+            update_name = (prop_diff.get(self.NAME) or
+                           self.properties.get(self.NAME))
+            update_description = (prop_diff.get(self.DESCRIPTION) or
+                                  self.properties.get(self.DESCRIPTION))
+            kwargs['display_name'] = update_name
+            kwargs['display_description'] = update_description
+            self.cinder().volumes.update(vol, **kwargs)
+        # update the metadata for cinder volume
+        if self.METADATA in prop_diff:
+            if not vol:
+                vol = self.cinder().volumes.get(self.resource_id)
+            metadata = prop_diff.get(self.METADATA)
+            self.cinder().volumes.update_all_metadata(vol, metadata)
+        # update the size in super
+        return super(CinderVolume, self).handle_update(json_snippet,
+                                                       tmpl_diff,
+                                                       prop_diff)
 
 
 class CinderVolumeAttachment(VolumeAttachment):

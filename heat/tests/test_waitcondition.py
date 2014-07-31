@@ -11,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import datetime
 import json
 import time
@@ -26,9 +27,9 @@ from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine.resources import wait_condition as wc
+from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
-from heat.tests import fakes
 from heat.tests import utils
 
 test_template_waitcondition = '''
@@ -103,14 +104,12 @@ class WaitConditionTest(HeatTestCase):
 
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://server.test:8000/v1/waitcondition')
+        self.stub_keystoneclient()
 
-        self.fc = fakes.FakeKeystoneClient()
-
-    # Note tests creating a stack should be decorated with @stack_delete_after
-    # to ensure the stack is properly cleaned up
     def create_stack(self, stack_id=None,
-                     template=test_template_waitcondition, params={},
+                     template=test_template_waitcondition, params=None,
                      stub=True):
+        params = params or {}
         temp = template_format.parse(template)
         template = parser.Template(temp)
         ctx = utils.dummy_context(tenant_id='test_tenant')
@@ -127,10 +126,6 @@ class WaitConditionTest(HeatTestCase):
             stack.store()
 
         if stub:
-            self.m.StubOutWithMock(wc.WaitConditionHandle, 'keystone')
-            wc.WaitConditionHandle.keystone().MultipleTimes().AndReturn(
-                self.fc)
-
             id = identifier.ResourceIdentifier('test_tenant', stack.name,
                                                stack.id, '', 'WaitHandle')
             self.m.StubOutWithMock(wc.WaitConditionHandle, 'identifier')
@@ -267,13 +262,13 @@ class WaitConditionTest(HeatTestCase):
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
-        handle.metadata_update(new_metadata=test_metadata)
+        handle.handle_signal(test_metadata)
         wc_att = rsrc.FnGetAtt('Data')
         self.assertEqual('{"123": "foo"}', wc_att)
 
         test_metadata = {'Data': 'dog', 'Reason': 'cat',
                          'Status': 'SUCCESS', 'UniqueId': '456'}
-        handle.metadata_update(new_metadata=test_metadata)
+        handle.handle_signal(test_metadata)
         wc_att = rsrc.FnGetAtt('Data')
         self.assertEqual(u'{"123": "foo", "456": "dog"}', wc_att)
         self.m.VerifyAll()
@@ -375,8 +370,7 @@ class WaitConditionHandleTest(HeatTestCase):
         super(WaitConditionHandleTest, self).setUp()
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://server.test:8000/v1/waitcondition')
-
-        self.fc = fakes.FakeKeystoneClient()
+        self.stub_keystoneclient()
 
     def create_stack(self, stack_name=None, stack_id=None):
         temp = template_format.parse(test_template_waitcondition)
@@ -397,10 +391,6 @@ class WaitConditionHandleTest(HeatTestCase):
         # Stub waitcondition status so all goes CREATE_COMPLETE
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'get_status')
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS'])
-
-        # Stub keystone() with fake client
-        self.m.StubOutWithMock(wc.WaitConditionHandle, 'keystone')
-        wc.WaitConditionHandle.keystone().MultipleTimes().AndReturn(self.fc)
 
         id = identifier.ResourceIdentifier('test_tenant', stack.name,
                                            stack.id, '', 'WaitHandle')
@@ -441,61 +431,61 @@ class WaitConditionHandleTest(HeatTestCase):
         self.assertEqual(unicode(expected_url), rsrc.FnGetRefId())
         self.m.VerifyAll()
 
-    def test_metadata_update(self):
+    def test_handle_signal(self):
         self.stack = self.create_stack()
         rsrc = self.stack['WaitHandle']
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
-        rsrc.metadata_update(new_metadata=test_metadata)
+        rsrc.handle_signal(test_metadata)
         handle_metadata = {u'123': {u'Data': u'foo',
                                     u'Reason': u'bar',
                                     u'Status': u'SUCCESS'}}
         self.assertEqual(handle_metadata, rsrc.metadata_get())
         self.m.VerifyAll()
 
-    def test_metadata_update_invalid(self):
+    def test_handle_signal_invalid(self):
         self.stack = self.create_stack()
         rsrc = self.stack['WaitHandle']
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
-        # metadata_update should raise a ValueError if the metadata
+        # handle_signal should raise a ValueError if the metadata
         # is missing any of the expected keys
         err_metadata = {'Data': 'foo', 'Status': 'SUCCESS', 'UniqueId': '123'}
-        self.assertRaises(ValueError, rsrc.metadata_update,
-                          new_metadata=err_metadata)
+        self.assertRaises(ValueError, rsrc.handle_signal,
+                          err_metadata)
 
         err_metadata = {'Data': 'foo', 'Reason': 'bar', 'UniqueId': '1234'}
-        self.assertRaises(ValueError, rsrc.metadata_update,
-                          new_metadata=err_metadata)
+        self.assertRaises(ValueError, rsrc.handle_signal,
+                          err_metadata)
 
         err_metadata = {'Data': 'foo', 'Reason': 'bar', 'UniqueId': '1234'}
-        self.assertRaises(ValueError, rsrc.metadata_update,
-                          new_metadata=err_metadata)
+        self.assertRaises(ValueError, rsrc.handle_signal,
+                          err_metadata)
 
         err_metadata = {'data': 'foo', 'reason': 'bar',
                         'status': 'SUCCESS', 'uniqueid': '1234'}
-        self.assertRaises(ValueError, rsrc.metadata_update,
-                          new_metadata=err_metadata)
+        self.assertRaises(ValueError, rsrc.handle_signal,
+                          err_metadata)
 
         # Also any Status other than SUCCESS or FAILURE should be rejected
         err_metadata = {'Data': 'foo', 'Reason': 'bar',
                         'Status': 'UCCESS', 'UniqueId': '123'}
-        self.assertRaises(ValueError, rsrc.metadata_update,
-                          new_metadata=err_metadata)
+        self.assertRaises(ValueError, rsrc.handle_signal,
+                          err_metadata)
         err_metadata = {'Data': 'foo', 'Reason': 'bar',
                         'Status': 'wibble', 'UniqueId': '123'}
-        self.assertRaises(ValueError, rsrc.metadata_update,
-                          new_metadata=err_metadata)
+        self.assertRaises(ValueError, rsrc.handle_signal,
+                          err_metadata)
         err_metadata = {'Data': 'foo', 'Reason': 'bar',
                         'Status': 'success', 'UniqueId': '123'}
-        self.assertRaises(ValueError, rsrc.metadata_update,
-                          new_metadata=err_metadata)
+        self.assertRaises(ValueError, rsrc.handle_signal,
+                          err_metadata)
         err_metadata = {'Data': 'foo', 'Reason': 'bar',
                         'Status': 'FAIL', 'UniqueId': '123'}
-        self.assertRaises(ValueError, rsrc.metadata_update,
-                          new_metadata=err_metadata)
+        self.assertRaises(ValueError, rsrc.handle_signal,
+                          err_metadata)
         self.m.VerifyAll()
 
     def test_get_status(self):
@@ -511,18 +501,13 @@ class WaitConditionHandleTest(HeatTestCase):
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
-        rsrc.metadata_update(new_metadata=test_metadata)
+        rsrc.handle_signal(test_metadata)
         self.assertEqual(['SUCCESS'], rsrc.get_status())
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '456'}
-        rsrc.metadata_update(new_metadata=test_metadata)
+        rsrc.handle_signal(test_metadata)
         self.assertEqual(['SUCCESS', 'SUCCESS'], rsrc.get_status())
-
-        # re-stub keystone() with fake client or stack delete fails
-        self.m.StubOutWithMock(wc.WaitConditionHandle, 'keystone')
-        wc.WaitConditionHandle.keystone().MultipleTimes().AndReturn(self.fc)
-        self.m.ReplayAll()
 
     def test_get_status_reason(self):
         self.stack = self.create_stack()
@@ -531,17 +516,17 @@ class WaitConditionHandleTest(HeatTestCase):
 
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
-        rsrc.metadata_update(new_metadata=test_metadata)
+        rsrc.handle_signal(test_metadata)
         self.assertEqual(['bar'], rsrc.get_status_reason('SUCCESS'))
 
         test_metadata = {'Data': 'dog', 'Reason': 'cat',
                          'Status': 'SUCCESS', 'UniqueId': '456'}
-        rsrc.metadata_update(new_metadata=test_metadata)
+        rsrc.handle_signal(test_metadata)
         self.assertEqual(['bar', 'cat'], rsrc.get_status_reason('SUCCESS'))
 
         test_metadata = {'Data': 'boo', 'Reason': 'hoo',
                          'Status': 'FAILURE', 'UniqueId': '789'}
-        rsrc.metadata_update(new_metadata=test_metadata)
+        rsrc.handle_signal(test_metadata)
         self.assertEqual(['hoo'], rsrc.get_status_reason('FAILURE'))
         self.m.VerifyAll()
 
@@ -551,16 +536,13 @@ class WaitConditionUpdateTest(HeatTestCase):
         super(WaitConditionUpdateTest, self).setUp()
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://server.test:8000/v1/waitcondition')
-
-        self.fc = fakes.FakeKeystoneClient()
+        self.stub_keystoneclient()
         scheduler.ENABLE_SLEEP = False
 
     def tearDown(self):
         super(WaitConditionUpdateTest, self).tearDown()
         scheduler.ENABLE_SLEEP = True
 
-    # Note tests creating a stack should be decorated with @stack_delete_after
-    # to ensure the stack is properly cleaned up
     def create_stack(self, tmpl=None):
         if tmpl is None:
             tmpl = test_template_wc_count
@@ -575,10 +557,6 @@ class WaitConditionUpdateTest(HeatTestCase):
         self.stack_id = stack_id
         with utils.UUIDStub(self.stack_id):
             stack.store()
-
-        self.m.StubOutWithMock(wc.WaitConditionHandle, 'keystone')
-        wc.WaitConditionHandle.keystone().MultipleTimes().AndReturn(
-            self.fc)
 
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'get_status')
         wc.WaitConditionHandle.get_status().AndReturn([])
@@ -609,10 +587,13 @@ class WaitConditionUpdateTest(HeatTestCase):
         wait_condition_handle = self.stack['WaitHandle']
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '1'}
-        self._metadata_update(wait_condition_handle, test_metadata, 5)
+        self._handle_signal(wait_condition_handle, test_metadata, 5)
 
-        update_snippet = rsrc.parsed_template()
-        update_snippet['Properties']['Count'] = '5'
+        uprops = copy.copy(rsrc.properties.data)
+        uprops['Count'] = '5'
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name,
+                                                      rsrc.type(),
+                                                      uprops)
 
         updater = scheduler.TaskRunner(rsrc.update, update_snippet)
         updater()
@@ -633,16 +614,14 @@ class WaitConditionUpdateTest(HeatTestCase):
         wait_condition_handle = self.stack['WaitHandle']
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '1'}
-        self._metadata_update(wait_condition_handle, test_metadata, 5)
+        self._handle_signal(wait_condition_handle, test_metadata, 5)
 
-        update_snippet = {"Type": "AWS::CloudFormation::WaitCondition",
-                          "Properties": {
-                              "Handle": {"Ref": "WaitHandle"},
-                              "Timeout": "5",
-                              "Count": "5"}}
         prop_diff = {"Count": 5}
-        parsed_snippet = self.stack.resolve_static_data(update_snippet)
-        updater = rsrc.handle_update(parsed_snippet, {}, prop_diff)
+        props = copy.copy(rsrc.properties.data)
+        props.update(prop_diff)
+        update_defn = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(),
+                                                   props)
+        updater = rsrc.handle_update(update_defn, {}, prop_diff)
         updater.run_to_completion()
 
         self.assertEqual(5, rsrc.properties['Count'])
@@ -662,30 +641,28 @@ class WaitConditionUpdateTest(HeatTestCase):
         wait_condition_handle = self.stack['WaitHandle']
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '1'}
-        self._metadata_update(wait_condition_handle, test_metadata, 2)
+        self._handle_signal(wait_condition_handle, test_metadata, 2)
 
         self.stack.store()
         self.stack = self.get_stack(self.stack_id)
         rsrc = self.stack['WaitForTheHandle']
 
-        self._metadata_update(wait_condition_handle, test_metadata, 3)
-        update_snippet = {"Type": "AWS::CloudFormation::WaitCondition",
-                          "Properties": {
-                              "Handle": {"Ref": "WaitHandle"},
-                              "Timeout": "5",
-                              "Count": "5"}}
+        self._handle_signal(wait_condition_handle, test_metadata, 3)
         prop_diff = {"Count": 5}
-        parsed_snippet = self.stack.resolve_static_data(update_snippet)
-        updater = rsrc.handle_update(parsed_snippet, {}, prop_diff)
+        props = copy.copy(rsrc.properties.data)
+        props.update(prop_diff)
+        update_defn = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(),
+                                                   props)
+        updater = rsrc.handle_update(update_defn, {}, prop_diff)
         updater.run_to_completion()
 
         self.assertEqual(5, rsrc.properties['Count'])
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
-    def _metadata_update(self, rsrc, metadata, times=1):
+    def _handle_signal(self, rsrc, metadata, times=1):
         for time in range(times):
             metadata['UniqueId'] = metadata['UniqueId'] * 2
-            rsrc.metadata_update(new_metadata=metadata)
+            rsrc.handle_signal(metadata)
 
     def test_handle_update_timeout(self):
         self.stack = self.create_stack()
@@ -714,14 +691,12 @@ class WaitConditionUpdateTest(HeatTestCase):
 
         self.m.ReplayAll()
 
-        update_snippet = {"Type": "AWS::CloudFormation::WaitCondition",
-                          "Properties": {
-                              "Handle": {"Ref": "WaitHandle"},
-                              "Timeout": "5",
-                              "Count": "5"}}
         prop_diff = {"Count": 5}
-        parsed_snippet = self.stack.resolve_static_data(update_snippet)
-        updater = rsrc.handle_update(parsed_snippet, {}, prop_diff)
+        props = copy.copy(rsrc.properties.data)
+        props.update(prop_diff)
+        update_defn = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(),
+                                                   props)
+        updater = rsrc.handle_update(update_defn, {}, prop_diff)
         self.assertEqual(5, rsrc.properties['Count'])
         ex = self.assertRaises(wc.WaitConditionTimeout,
                                updater.run_to_completion)

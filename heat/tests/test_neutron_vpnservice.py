@@ -13,22 +13,16 @@
 
 import copy
 import mox
-
-from testtools import skipIf
+from neutronclient.v2_0 import client as neutronclient
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import clients
 from heat.engine.resources.neutron import neutron_utils
 from heat.engine.resources.neutron import vpnservice
 from heat.engine import scheduler
-from heat.openstack.common.importutils import try_import
 from heat.tests.common import HeatTestCase
-from heat.tests import fakes
 from heat.tests import utils
 
-
-neutronclient = try_import('neutronclient.v2_0.client')
 
 vpnservice_template_deprecated = '''
 {
@@ -155,7 +149,6 @@ ipsecpolicy_template = '''
 '''
 
 
-@skipIf(neutronclient is None, 'neutronclient unavailable')
 class VPNServiceTest(HeatTestCase):
 
     VPN_SERVICE_CONF = {
@@ -176,11 +169,9 @@ class VPNServiceTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'update_vpnservice')
         self.m.StubOutWithMock(neutron_utils.neutronV20,
                                'find_resourceid_by_name_or_id')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
     def create_vpnservice(self, resolve_neutron=True):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         if resolve_neutron:
             neutron_utils.neutronV20.find_resourceid_by_name_or_id(
                 mox.IsA(neutronclient.Client),
@@ -213,8 +204,6 @@ class VPNServiceTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_failed(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutron_utils.neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
@@ -310,7 +299,6 @@ class VPNServiceTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-@skipIf(neutronclient is None, 'neutronclient unavailable')
 class IPsecSiteConnectionTest(HeatTestCase):
 
     IPSEC_SITE_CONNECTION_CONF = {
@@ -345,11 +333,9 @@ class IPsecSiteConnectionTest(HeatTestCase):
                                'show_ipsec_site_connection')
         self.m.StubOutWithMock(neutronclient.Client,
                                'update_ipsec_site_connection')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
     def create_ipsec_site_connection(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_ipsec_site_connection(
             self.IPSEC_SITE_CONNECTION_CONF).AndReturn(
                 {'ipsec_site_connection': {'id': 'con123'}})
@@ -369,8 +355,6 @@ class IPsecSiteConnectionTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_failed(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_ipsec_site_connection(
             self.IPSEC_SITE_CONNECTION_CONF).AndRaise(
                 vpnservice.NeutronClientException())
@@ -472,7 +456,6 @@ class IPsecSiteConnectionTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-@skipIf(neutronclient is None, 'neutronclient unavailable')
 class IKEPolicyTest(HeatTestCase):
 
     IKE_POLICY_CONF = {
@@ -497,11 +480,9 @@ class IKEPolicyTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'delete_ikepolicy')
         self.m.StubOutWithMock(neutronclient.Client, 'show_ikepolicy')
         self.m.StubOutWithMock(neutronclient.Client, 'update_ikepolicy')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
     def create_ikepolicy(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_ikepolicy(
             self.IKE_POLICY_CONF).AndReturn(
                 {'ikepolicy': {'id': 'ike123'}})
@@ -520,8 +501,6 @@ class IKEPolicyTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_failed(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_ikepolicy(
             self.IKE_POLICY_CONF).AndRaise(
                 vpnservice.NeutronClientException())
@@ -618,7 +597,6 @@ class IKEPolicyTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-@skipIf(neutronclient is None, 'neutronclient unavailable')
 class IPsecPolicyTest(HeatTestCase):
 
     IPSEC_POLICY_CONF = {
@@ -643,11 +621,9 @@ class IPsecPolicyTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'delete_ipsecpolicy')
         self.m.StubOutWithMock(neutronclient.Client, 'show_ipsecpolicy')
         self.m.StubOutWithMock(neutronclient.Client, 'update_ipsecpolicy')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
     def create_ipsecpolicy(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_ipsecpolicy(
             self.IPSEC_POLICY_CONF).AndReturn(
                 {'ipsecpolicy': {'id': 'ips123'}})
@@ -666,8 +642,6 @@ class IPsecPolicyTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_failed(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_ipsecpolicy(
             self.IPSEC_POLICY_CONF).AndRaise(
                 vpnservice.NeutronClientException())

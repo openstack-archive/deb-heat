@@ -11,15 +11,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from testtools import skipIf
-
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import clients
 from heat.engine import parser
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
-from heat.tests import fakes
 from heat.tests import utils
 
 try:
@@ -31,7 +27,6 @@ except ImportError:
 
 class VPCTestBase(HeatTestCase):
 
-    @skipIf(neutronclient is None, 'neutronclient unavaialble')
     def setUp(self):
         super(VPCTestBase, self).setUp()
         self.m.StubOutWithMock(neutronclient.Client, 'add_interface_router')
@@ -60,7 +55,7 @@ class VPCTestBase(HeatTestCase):
             neutronclient.Client, 'create_security_group_rule')
         self.m.StubOutWithMock(
             neutronclient.Client, 'delete_security_group_rule')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
     def create_stack(self, template):
         t = template_format.parse(template)
@@ -75,10 +70,6 @@ class VPCTestBase(HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), stack_name, tmpl)
         stack.store()
         return stack
-
-    def mock_keystone(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
 
     def mock_create_network(self):
         self.vpc_name = utils.PhysName('test_stack', 'the_vpc')
@@ -355,7 +346,6 @@ Resources:
 '''
 
     def test_vpc(self):
-        self.mock_keystone()
         self.mock_create_network()
         self.mock_delete_network()
         self.m.ReplayAll()
@@ -385,7 +375,6 @@ Resources:
 '''
 
     def test_subnet(self):
-        self.mock_keystone()
         self.mock_create_network()
         self.mock_create_subnet()
         self.mock_delete_subnet()
@@ -585,7 +574,6 @@ Resources:
         neutronclient.Client.delete_port('dddd').AndReturn(None)
 
     def test_network_interface(self):
-        self.mock_keystone()
         self.mock_create_security_group()
         self.mock_create_network()
         self.mock_create_subnet()
@@ -613,7 +601,6 @@ Resources:
     def test_network_interface_existing_groupset(self):
         self.m.StubOutWithMock(parser.Stack, 'resource_by_refid')
 
-        self.mock_keystone()
         self.mock_create_security_group()
         self.mock_create_network()
         self.mock_create_subnet()
@@ -637,7 +624,6 @@ Resources:
         self.m.VerifyAll()
 
     def test_network_interface_no_groupset(self):
-        self.mock_keystone()
         self.mock_create_network()
         self.mock_create_subnet()
         self.mock_show_subnet()
@@ -715,7 +701,6 @@ Resources:
         neutronclient.Client.remove_gateway_router('ffff').AndReturn(None)
 
     def test_internet_gateway(self):
-        self.mock_keystone()
         self.mock_create_internet_gateway()
         self.mock_create_network()
         self.mock_create_subnet()
@@ -772,7 +757,6 @@ Resources:
 '''
 
     def test_route_table(self):
-        self.mock_keystone()
         self.mock_create_network()
         self.mock_create_subnet()
         self.mock_create_route_table()

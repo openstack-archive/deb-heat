@@ -19,7 +19,7 @@ from oslo.config import cfg
 from heat.common import exception
 from heat.common import template_format
 from heat.db import api as db_api
-from heat.engine import clients
+from heat.engine.clients.os import keystone
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
@@ -62,8 +62,6 @@ class SignalTest(HeatTestCase):
     def tearDown(self):
         super(SignalTest, self).tearDown()
 
-    # Note tests creating a stack should be decorated with @stack_delete_after
-    # to ensure the stack is properly cleaned up
     def create_stack(self, stack_name='test_stack', stub=True):
         temp = template_format.parse(test_template_signal)
         template = parser.Template(temp)
@@ -105,13 +103,10 @@ class SignalTest(HeatTestCase):
     def test_resource_data(self):
         self.stack = self.create_stack(stack_name='resource_data_test',
                                        stub=False)
-
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
-            fakes.FakeKeystoneClient(
-                access='anaccesskey',
-                secret='verysecret',
-                credential_id='mycredential'))
+        self.stub_keystoneclient(
+            access='anaccesskey',
+            secret='verysecret',
+            credential_id='mycredential')
         self.m.ReplayAll()
 
         self.stack.create()
@@ -132,11 +127,7 @@ class SignalTest(HeatTestCase):
     def test_get_user_id(self):
         self.stack = self.create_stack(stack_name='resource_data_test',
                                        stub=False)
-
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
-            fakes.FakeKeystoneClient(
-                access='anaccesskey', secret='verysecret'))
+        self.stub_keystoneclient(access='anaccesskey', secret='verysecret')
         self.m.ReplayAll()
 
         self.stack.create()
@@ -223,8 +214,8 @@ class SignalTest(HeatTestCase):
             def delete_stack_user(self, name):
                 raise kc_exceptions.NotFound()
 
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
+        self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
+        keystone.KeystoneClientPlugin._create().AndReturn(
             FakeKeystoneClientFail())
         self.m.ReplayAll()
 
@@ -317,11 +308,9 @@ class SignalTest(HeatTestCase):
         self.m.UnsetStubs()
 
         # Since we unset the stubs above we must re-stub keystone to keep the
-        # test isolated from keystoneclient. The unset stubs is done so that we
-        # do not have to mock out all of the deleting that the
-        # stack_delete_after decorator will do during cleanup.
-        self.m.StubOutWithMock(self.stack.clients, 'keystone')
-        self.stack.clients.keystone().AndReturn(self.fc)
+        # test isolated from keystoneclient.
+        self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
+        keystone.KeystoneClientPlugin._create().AndReturn(self.fc)
 
         self.m.ReplayAll()
 

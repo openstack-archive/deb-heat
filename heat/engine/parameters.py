@@ -54,7 +54,7 @@ class Schema(constr.Schema):
     )
 
     def __init__(self, data_type, description=None, default=None, schema=None,
-                 constraints=[], hidden=False, label=None):
+                 constraints=None, hidden=False, label=None):
         super(Schema, self).__init__(data_type=data_type,
                                      description=description,
                                      default=default,
@@ -75,17 +75,16 @@ class Schema(constr.Schema):
                 try:
                     default_value = self.default.split(',')
                 except (KeyError, AttributeError) as err:
-                    raise constr.InvalidSchemaError(_('Default must be a '
-                                                      'comma-delimited list '
-                                                      'string: %s') % err)
+                    raise exception.InvalidSchemaError(
+                        message=_('Default must be a comma-delimited list '
+                                  'string: %s') % err)
             try:
                 self.validate_constraints(default_value, context)
             except (ValueError, TypeError,
                     exception.StackValidationFailed) as exc:
-                raise constr.InvalidSchemaError(_('Invalid default '
-                                                  '%(default)s (%(exc)s)') %
-                                                dict(default=self.default,
-                                                     exc=exc))
+                raise exception.InvalidSchemaError(
+                    message=_('Invalid default %(default)s (%(exc)s)') %
+                    dict(default=self.default, exc=exc))
 
     def set_default(self, default=None):
         super(Schema, self).set_default(default)
@@ -101,12 +100,12 @@ class Schema(constr.Schema):
     @staticmethod
     def _check_dict(schema_dict, allowed_keys, entity):
         if not isinstance(schema_dict, dict):
-            raise constr.InvalidSchemaError(
-                _("Invalid %s, expected a mapping") % entity)
+            raise exception.InvalidSchemaError(
+                message=_("Invalid %s, expected a mapping") % entity)
         for key in schema_dict:
             if key not in allowed_keys:
-                raise constr.InvalidSchemaError(
-                    _("Invalid key '%(key)s' for %(entity)s") % {
+                raise exception.InvalidSchemaError(
+                    message=_("Invalid key '%(key)s' for %(entity)s") % {
                         "key": key, "entity": entity})
 
     @classmethod
@@ -116,8 +115,9 @@ class Schema(constr.Schema):
                         "parameter (%s)" % param_name)
 
         if cls.TYPE not in schema_dict:
-            raise constr.InvalidSchemaError(
-                _("Missing parameter type for parameter: %s") % param_name)
+            raise exception.InvalidSchemaError(
+                message=_("Missing parameter type for parameter: %s") %
+                param_name)
 
     @classmethod
     def from_dict(cls, param_name, schema_dict):
@@ -156,7 +156,7 @@ class Schema(constr.Schema):
                                               'false')).lower() == 'true',
                    label=schema_dict.get(LABEL))
 
-    def validate_value(self, name, value, context=None):
+    def validate_value(self, value, context=None):
         super(Schema, self).validate_constraints(value, context)
 
     def __getitem__(self, key):
@@ -270,7 +270,7 @@ class Parameter(object):
         if self.hidden():
             return '******'
         else:
-            return str(value)
+            return strutils.safe_encode(six.text_type(value))
 
 
 class NumberParam(Parameter):
@@ -285,7 +285,11 @@ class NumberParam(Parameter):
         return float(super(NumberParam, self).value())
 
     def _validate(self, val, context):
-        self.schema.validate_value(self.name, val, context)
+        try:
+            Schema.str_to_num(val)
+        except ValueError as ex:
+            raise exception.StackValidationFailed(message=six.text_type(ex))
+        self.schema.validate_value(val, context)
 
     def value(self):
         return Schema.str_to_num(super(NumberParam, self).value())
@@ -295,7 +299,11 @@ class BooleanParam(Parameter):
     '''A template parameter of type "Boolean".'''
 
     def _validate(self, val, context):
-        self.schema.validate_value(self.name, val, context)
+        try:
+            strutils.bool_from_string(val, strict=True)
+        except ValueError as ex:
+            raise exception.StackValidationFailed(message=six.text_type(ex))
+        self.schema.validate_value(val, context)
 
     def value(self):
         if self.user_value is not None:
@@ -309,7 +317,7 @@ class StringParam(Parameter):
     '''A template parameter of type "String".'''
 
     def _validate(self, val, context):
-        self.schema.validate_value(self.name, val, context)
+        self.schema.validate_value(val, context)
 
 
 class CommaDelimitedListParam(Parameter, collections.Sequence):
@@ -344,7 +352,7 @@ class CommaDelimitedListParam(Parameter, collections.Sequence):
 
     def _validate(self, val, context):
         parsed = self.parse(val)
-        self.schema.validate_value(self.name, parsed, context)
+        self.schema.validate_value(parsed, context)
 
 
 class JsonParam(Parameter, collections.Mapping):
@@ -380,7 +388,7 @@ class JsonParam(Parameter, collections.Mapping):
 
     def _validate(self, val, context):
         val = self.parse(val)
-        self.schema.validate_value(self.name, val, context)
+        self.schema.validate_value(val, context)
 
 
 class Parameters(collections.Mapping):
@@ -395,11 +403,13 @@ class Parameters(collections.Mapping):
         'AWS::StackId', 'AWS::StackName', 'AWS::Region'
     )
 
-    def __init__(self, stack_identifier, tmpl, user_params={}):
+    def __init__(self, stack_identifier, tmpl, user_params=None):
         '''
         Create the parameter container for a stack from the stack name and
         template, optionally setting the user-supplied parameter values.
         '''
+        user_params = user_params or {}
+
         def user_parameter(schema_item):
             name, schema = schema_item
             return Parameter(name, schema,

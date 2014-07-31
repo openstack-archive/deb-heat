@@ -24,9 +24,12 @@ from oslotest import mockpatch
 import testscenarios
 import testtools
 
+from heat.common import messaging
+from heat.engine.clients.os import keystone
 from heat.engine import environment
 from heat.engine import resources
 from heat.engine import scheduler
+from heat.tests import fakes
 from heat.tests import utils
 
 
@@ -77,9 +80,10 @@ class HeatTestCase(testscenarios.WithScenarios,
                                'environment.d')
 
         cfg.CONF.set_default('environment_dir', env_dir)
-        cfg.CONF.set_override('allowed_rpc_exception_modules',
-                              ['heat.common.exception', 'exceptions'])
         self.addCleanup(cfg.CONF.reset)
+
+        messaging.setup("fake://", optional=True)
+        self.addCleanup(messaging.cleanup)
 
         tri = resources.global_env().get_resource_info(
             'AWS::RDS::DBInstance',
@@ -109,3 +113,9 @@ class HeatTestCase(testscenarios.WithScenarios,
     def patchobject(self, obj, attr):
         mockfixture = self.useFixture(mockpatch.PatchObject(obj, attr))
         return mockfixture.mock
+
+    def stub_keystoneclient(self, fake_client=None, **kwargs):
+        client = self.patchobject(keystone.KeystoneClientPlugin, "_create")
+        fkc = fake_client or fakes.FakeKeystoneClient(**kwargs)
+        client.return_value = fkc
+        return fkc

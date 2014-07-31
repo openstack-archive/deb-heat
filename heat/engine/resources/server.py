@@ -14,11 +14,11 @@
 import copy
 import uuid
 
+from novaclient import exceptions as nova_exceptions
 from oslo.config import cfg
 
 from heat.common import exception
 from heat.engine import attributes
-from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
@@ -87,11 +87,11 @@ class Server(stack_user.StackUser):
     )
 
     ATTRIBUTES = (
-        SHOW, ADDRESSES, NETWORKS_ATTR, FIRST_ADDRESS, INSTANCE_NAME,
-        ACCESSIPV4, ACCESSIPV6,
+        NAME_ATTR, SHOW, ADDRESSES, NETWORKS_ATTR, FIRST_ADDRESS,
+        INSTANCE_NAME, ACCESSIPV4, ACCESSIPV6,
     ) = (
-        'show', 'addresses', 'networks', 'first_address', 'instance_name',
-        'accessIPv4', 'accessIPv6',
+        'name', 'show', 'addresses', 'networks', 'first_address',
+        'instance_name', 'accessIPv4', 'accessIPv6',
     )
 
     properties_schema = {
@@ -308,6 +308,9 @@ class Server(stack_user.StackUser):
     }
 
     attributes_schema = {
+        NAME_ATTR: attributes.Schema(
+            _('Name of the server.')
+        ),
         SHOW: attributes.Schema(
             _('A dict of all server details as returned by the API.')
         ),
@@ -569,8 +572,10 @@ class Server(stack_user.StackUser):
 
             volume_size = mapping.get(cls.BLOCK_DEVICE_MAPPING_VOLUME_SIZE)
             delete = mapping.get(cls.BLOCK_DEVICE_MAPPING_DELETE_ON_TERM)
-            if volume_size or delete:
-                mapping_parts.append(str(volume_size or 0))
+            if volume_size:
+                mapping_parts.append(str(volume_size))
+            else:
+                mapping_parts.append('')
             if delete:
                 mapping_parts.append(str(delete))
 
@@ -621,10 +626,12 @@ class Server(stack_user.StackUser):
                 self.nova(), self.resource_id) or ''
         try:
             server = self.nova().servers.get(self.resource_id)
-        except clients.novaclient.exceptions.NotFound as ex:
+        except nova_exceptions.NotFound as ex:
             LOG.warn(_('Instance (%(server)s) not found: %(ex)s')
                      % {'server': self.resource_id, 'ex': ex})
             return ''
+        if name == self.NAME_ATTR:
+            return self._server_name()
         if name == self.ADDRESSES:
             return self._add_port_for_address(server)
         if name == self.NETWORKS_ATTR:
@@ -838,7 +845,15 @@ class Server(stack_user.StackUser):
         Refresh the metadata if new_metadata is None
         '''
         if new_metadata is None:
-            self.metadata_set(self.parsed_template('Metadata'))
+            # Re-resolve the template metadata and merge it with the
+            # current resource metadata.  This is necessary because the
+            # attributes referenced in the template metadata may change
+            # and the resource itself adds keys to the metadata which
+            # are not specified in the template (e.g the deployments data)
+            meta = self.metadata_get(refresh=True) or {}
+            tmpl_meta = self.t.metadata()
+            meta.update(tmpl_meta)
+            self.metadata_set(meta)
 
     @staticmethod
     def _check_maximum(count, maximum, msg):
@@ -951,9 +966,7 @@ class Server(stack_user.StackUser):
                                     limits['maxPersonalitySize'], msg)
 
     def handle_delete(self):
-        '''
-        Delete a server, blocking until it is disposed by OpenStack
-        '''
+
         if self.resource_id is None:
             return
 
@@ -962,13 +975,17 @@ class Server(stack_user.StackUser):
 
         try:
             server = self.nova().servers.get(self.resource_id)
-        except clients.novaclient.exceptions.NotFound:
-            pass
-        else:
-            delete = scheduler.TaskRunner(nova_utils.delete_server, server)
-            delete(wait_time=0.2)
+        except nova_exceptions.NotFound:
+            return
+        deleter = scheduler.TaskRunner(nova_utils.delete_server, server)
+        deleter.start()
+        return deleter
 
-        self.resource_id_set(None)
+    def check_delete_complete(self, deleter):
+        if deleter is None or deleter.step():
+            self.resource_id_set(None)
+            return True
+        return False
 
     def handle_suspend(self):
         '''
@@ -982,7 +999,7 @@ class Server(stack_user.StackUser):
 
         try:
             server = self.nova().servers.get(self.resource_id)
-        except clients.novaclient.exceptions.NotFound:
+        except nova_exceptions.NotFound:
             raise exception.NotFound(_('Failed to find server %s') %
                                      self.resource_id)
         else:
@@ -1027,7 +1044,7 @@ class Server(stack_user.StackUser):
 
         try:
             server = self.nova().servers.get(self.resource_id)
-        except clients.novaclient.exceptions.NotFound:
+        except nova_exceptions.NotFound:
             raise exception.NotFound(_('Failed to find server %s') %
                                      self.resource_id)
         else:
@@ -1044,12 +1061,8 @@ class FlavorConstraint(constraints.BaseCustomConstraint):
     expected_exceptions = (exception.FlavorMissing,)
 
     def validate_with_client(self, client, value):
-        nova_client = client.nova()
+        nova_client = client.client('nova')
         nova_utils.get_flavor_id(nova_client, value)
-
-
-def constraint_mapping():
-    return {'nova.flavor': FlavorConstraint}
 
 
 def resource_mapping():

@@ -16,23 +16,18 @@
 
 import mox
 from mox import IgnoreArg
-from testtools import skipIf
+from neutronclient.common import exceptions as qe
+from neutronclient.v2_0 import client as neutronclient
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import clients
 from heat.engine.resources.neutron import network_gateway
 from heat.engine.resources.neutron import neutron_utils
+from heat.engine import rsrc_defn
 from heat.engine import scheduler
-from heat.openstack.common.importutils import try_import
 from heat.tests.common import HeatTestCase
-from heat.tests import fakes
 from heat.tests import utils
 
-neutronclient = try_import('neutronclient.v2_0.client')
-neutronV20 = try_import('neutronclient.neutron.v2_0')
-
-qe = try_import('neutronclient.common.exceptions')
 
 gw_template_deprecated = '''
 {
@@ -97,9 +92,7 @@ sng = {
 }
 
 
-@skipIf(neutronclient is None, 'neutronclient unavailable')
 class NeutronNetworkGatewayTest(HeatTestCase):
-    @skipIf(neutronV20 is None, 'Missing Neutron v2_0')
     def setUp(self):
         super(NeutronNetworkGatewayTest, self).setUp()
         self.m.StubOutWithMock(neutronclient.Client, 'create_network_gateway')
@@ -112,11 +105,9 @@ class NeutronNetworkGatewayTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'list_networks')
         self.m.StubOutWithMock(neutron_utils.neutronV20,
                                'find_resourceid_by_name_or_id')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
     def prepare_create_network_gateway(self, resolve_neutron=True):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_network_gateway({
             'network_gateway': {
                 'name': u'NetworkGateway',
@@ -375,9 +366,10 @@ class NeutronNetworkGatewayTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         # update name
-        snippet_for_update = {
-            'Type': u'OS::Neutron::NetworkGatewayUpdate',
-            'Properties': {
+        snippet_for_update = rsrc_defn.ResourceDefinition(
+            rsrc.name,
+            rsrc.type(),
+            {
                 'name': u'NetworkGatewayUpdate',
                 'devices': [{
                     'id': u'e52148ca-7db9-4ec3-abe6-2c7c0ff316eb',
@@ -386,16 +378,16 @@ class NeutronNetworkGatewayTest(HeatTestCase):
                     'network': '6af055d3-26f6-48dd-a597-7611d7e58d35',
                     'segmentation_type': 'vlan',
                     'segmentation_id': 10}]
-            }
-        }
+            })
         prop_diff = {'name': u'NetworkGatewayUpdate'}
         self.assertIsNone(rsrc.handle_update(snippet_for_update, IgnoreArg(),
                                              prop_diff))
 
         # update connections
-        snippet_for_update = {
-            'Type': u'OS::Neutron::NetworkGateway',
-            'Properties': {
+        snippet_for_update = rsrc_defn.ResourceDefinition(
+            rsrc.name,
+            rsrc.type(),
+            {
                 'name': u'NetworkGateway',
                 'devices': [{
                     'id': u'e52148ca-7db9-4ec3-abe6-2c7c0ff316eb',
@@ -404,8 +396,7 @@ class NeutronNetworkGatewayTest(HeatTestCase):
                     'network': u'6af055d3-26f6-48dd-a597-7611d7e58d35',
                     'segmentation_type': u'flat',
                     'segmentation_id': 0}]
-            }
-        }
+            })
         prop_diff = {
             'connections': [{
                 'network': u'6af055d3-26f6-48dd-a597-7611d7e58d35',
@@ -420,9 +411,10 @@ class NeutronNetworkGatewayTest(HeatTestCase):
                                              prop_diff))
 
         # update devices
-        snippet_for_update = {
-            'Type': u'OS::Neutron::NetworkGateway',
-            'Properties': {
+        snippet_for_update = rsrc_defn.ResourceDefinition(
+            rsrc.name,
+            rsrc.type(),
+            {
                 'name': u'NetworkGateway',
                 'devices': [{
                     'id': u'e52148ca-7db9-4ec3-abe6-2c7c0ff316eb',
@@ -431,8 +423,7 @@ class NeutronNetworkGatewayTest(HeatTestCase):
                     'network_id': u'6af055d3-26f6-48dd-a597-7611d7e58d35',
                     'segmentation_type': u'vlan',
                     'segmentation_id': 10}]
-            }
-        }
+            })
         prop_diff = {
             'devices': [{
                 'id': u'e52148ca-7db9-4ec3-abe6-2c7c0ff316eb',
@@ -444,8 +435,6 @@ class NeutronNetworkGatewayTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_network_gatway_create_failed(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_network_gateway({
             'network_gateway': {
                 'name': u'NetworkGateway',

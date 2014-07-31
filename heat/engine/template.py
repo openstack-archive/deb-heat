@@ -13,7 +13,9 @@
 
 import abc
 import collections
+import copy
 import functools
+from stevedore import extension
 
 from heat.common import exception
 from heat.db import api as db_api
@@ -75,8 +77,12 @@ def get_template_class(plugin_mgr, template_data):
     global _template_classes
 
     if _template_classes is None:
-        tmpl_mapping = plugin_manager.PluginMapping('template')
-        _template_classes = dict(tmpl_mapping.load_all(plugin_mgr))
+        mgr = extension.ExtensionManager(
+            namespace='heat.templates',
+            invoke_on_load=False,
+            verify_requirements=True)
+        _template_classes = dict((tuple(name.split('.')), mgr[name].plugin)
+                                 for name in mgr.names())
 
     available_versions = _template_classes.keys()
     version = get_version(template_data, available_versions)
@@ -124,6 +130,9 @@ class Template(collections.Mapping):
         self.maps = self[self.MAPPINGS]
         self.version = get_version(self.t, _template_classes.keys())
 
+    def __deepcopy__(self, memo):
+        return Template(copy.deepcopy(self.t, memo), files=self.files)
+
     @classmethod
     def load(cls, context, template_id, t=None):
         '''Retrieve a Template with the given ID from the database.'''
@@ -140,6 +149,8 @@ class Template(collections.Mapping):
             }
             new_rt = db_api.raw_template_create(context, rt)
             self.id = new_rt.id
+        else:
+            db_api.raw_template_update_template(context, self.id, self.t)
         return self.id
 
     def __iter__(self):
@@ -175,6 +186,10 @@ class Template(collections.Mapping):
         '''
         pass
 
+    def remove_resource(self, name):
+        '''Remove a resource from the template.'''
+        self.t.get(self.RESOURCES, {}).pop(name)
+
     def functions(self):
         '''Return a dict of template functions keyed by name.'''
         if self.version not in self._functionmaps:
@@ -204,7 +219,7 @@ class Template(collections.Mapping):
 
         # check resources
         tmpl_resources = self[self.RESOURCES]
-        if not tmpl_resources:
+        if len(tmpl_resources) == 0:
             LOG.warn(_('Template does not contain any resources, so '
                        'the template would not really do anything when '
                        'being instantiated.'))

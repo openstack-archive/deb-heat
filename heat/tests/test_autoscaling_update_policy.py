@@ -20,7 +20,8 @@ from testtools.matchers import MatchesRegex
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import clients
+from heat.engine.clients.os import glance
+from heat.engine.clients.os import nova
 from heat.engine import function
 from heat.engine.notification import stack as notification
 from heat.engine import parser
@@ -28,9 +29,7 @@ from heat.engine.resources import glance_utils
 from heat.engine.resources import instance
 from heat.engine.resources import loadbalancer as lb
 from heat.engine.resources import wait_condition as wc
-from heat.engine import stack_user
 from heat.tests.common import HeatTestCase
-from heat.tests import fakes
 from heat.tests import utils
 from heat.tests.v1_1 import fakes as fakes11
 
@@ -208,21 +207,28 @@ class AutoScalingGroupTest(HeatTestCase):
     def setUp(self):
         super(AutoScalingGroupTest, self).setUp()
         self.fc = fakes11.FakeClient()
-        self.fkc = fakes.FakeKeystoneClient(username='test_stack.CfnLBUser')
+        self.stub_keystoneclient(username='test_stack.CfnLBUser')
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://127.0.0.1:8000/v1/waitcondition')
 
     def _mock_get_image_id_success(self, imageId_input, imageId,
                                    update_image=None):
         g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
-        clients.OpenStackClients.glance().MultipleTimes().AndReturn(
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
+        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
             g_cli_mock)
         self.m.StubOutWithMock(glance_utils, 'get_image_id')
-        glance_utils.get_image_id(g_cli_mock, imageId_input).MultipleTimes().\
-            AndReturn(imageId)
-        if update_image:
-            glance_utils.get_image_id(g_cli_mock, update_image).\
+
+        # If update_image is None (create case), validation for initial image
+        # imageId_input will be invoked multiple times (for each server).
+        # If update_image is set (update case), validation of the old property
+        # values and new property values will be done, but the order is not
+        # deterministic. Therefore, using mox.IgnoreArg() for the update case.
+        if update_image is None:
+            glance_utils.get_image_id(g_cli_mock, imageId_input).\
+                MultipleTimes().AndReturn(imageId)
+        else:
+            glance_utils.get_image_id(g_cli_mock, mox.IgnoreArg()).\
                 MultipleTimes().AndReturn(imageId)
 
     def _stub_validate(self):
@@ -230,8 +236,6 @@ class AutoScalingGroupTest(HeatTestCase):
         parser.Stack.validate().MultipleTimes()
 
     def _stub_lb_create(self):
-        self.m.StubOutWithMock(stack_user.StackUser, 'keystone')
-        stack_user.StackUser.keystone().MultipleTimes().AndReturn(self.fkc)
         self.m.StubOutWithMock(wc.WaitConditionHandle, 'get_status')
         wc.WaitConditionHandle.get_status().AndReturn(['SUCCESS'])
 
@@ -250,7 +254,6 @@ class AutoScalingGroupTest(HeatTestCase):
         """
         self._stub_validate()
 
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
 
@@ -259,7 +262,8 @@ class AutoScalingGroupTest(HeatTestCase):
 
         cookie = object()
 
-        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
         # for load balancer setup
         if setup_lb:
             self._stub_lb_create()
@@ -286,13 +290,13 @@ class AutoScalingGroupTest(HeatTestCase):
         notification.send(mox.IgnoreArg()).MultipleTimes().AndReturn(None)
 
         # for instances in the group
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
         self.m.StubOutWithMock(instance.Instance, 'destroy')
 
         if num_reloads_expected_on_updt > 1:
-            clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+            self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+            nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
 
         cookie = object()
         for i in range(num_creates_expected_on_updt):
@@ -308,8 +312,6 @@ class AutoScalingGroupTest(HeatTestCase):
         """
         Expect update of the instances
         """
-        self.m.StubOutWithMock(instance.Instance, 'nova')
-        instance.Instance.nova().MultipleTimes().AndReturn(self.fc)
 
         def activate_status(server):
             server.status = 'VERIFY_RESIZE'

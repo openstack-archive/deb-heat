@@ -33,6 +33,7 @@ if os.path.exists(os.path.join(possible_topdir, 'heat', '__init__.py')):
 from oslo.config import cfg
 
 from heat.common import config
+from heat.common import messaging
 from heat.common import notify
 from heat.common import wsgi
 from heat.openstack.common import gettextutils
@@ -46,12 +47,8 @@ LOG = logging.getLogger('heat.api')
 if __name__ == '__main__':
     try:
         cfg.CONF(project='heat', prog='heat-api')
-        cfg.CONF.default_log_levels = ['amqplib=WARN',
-                                       'qpid.messaging=INFO',
-                                       'keystone=INFO',
-                                       'eventlet.wsgi.server=WARN',
-                                       ]
         logging.setup('heat')
+        messaging.setup()
 
         app = config.load_paste_app()
 

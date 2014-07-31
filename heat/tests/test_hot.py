@@ -17,15 +17,16 @@ import six
 from heat.common import exception
 from heat.common import identifier
 from heat.common import template_format
-from heat.engine import constraints
 from heat.engine import environment
 from heat.engine import function
+from heat.engine.hot import functions as hot_functions
 from heat.engine.hot import parameters as hot_param
 from heat.engine.hot import template as hot_template
 from heat.engine import parameters
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import resources
+from heat.engine import rsrc_defn
 from heat.engine import template
 from heat.tests.common import HeatTestCase
 from heat.tests import generic_resource as generic_rsrc
@@ -121,6 +122,7 @@ class HOTemplateTest(HeatTestCase):
 
         self.assertIsNone(stack.parameters._validate_user_parameters())
         self.assertIsNone(stack.parameters._validate_tmpl_parameters())
+        self.assertIsNone(stack.validate())
 
     def test_translate_resources_good(self):
         """Test translation of resources into internal engine format."""
@@ -558,8 +560,10 @@ class HOTemplateTest(HeatTestCase):
 
         parent_resource = DummyClass()
         parent_resource.metadata_set({"foo": "bar"})
-        parent_resource.t = {'DeletionPolicy': 'Retain',
-                             'UpdatePolicy': {"blarg": "wibble"}}
+        parent_resource.t = rsrc_defn.ResourceDefinition(
+            'parent', 'SomeType',
+            deletion_policy=rsrc_defn.ResourceDefinition.RETAIN,
+            update_policy={"blarg": "wibble"})
         parent_resource.stack = parser.Stack(utils.dummy_context(),
                                              'toplevel_stack',
                                              parser.Template(hot_tpl_empty))
@@ -581,11 +585,11 @@ class HOTemplateTest(HeatTestCase):
         parent_resource.stack = parser.Stack(utils.dummy_context(),
                                              'toplevel_stack',
                                              parser.Template(hot_tpl_empty))
-        parent_snippet = {'DeletionPolicy': {'Fn::Join': ['eta',
-                                                          ['R', 'in']]}}
-        parent_tmpl = parent_resource.stack.t.parse(parent_resource.stack,
-                                                    parent_snippet)
-        parent_resource.t = parent_tmpl
+        del_policy = hot_functions.Join(parent_resource.stack,
+                                        'list_join', ['eta', ['R', 'in']])
+        parent_resource.t = rsrc_defn.ResourceDefinition(
+            'parent', 'SomeType',
+            deletion_policy=del_policy)
 
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template(hot_tpl_empty),
@@ -608,7 +612,7 @@ class HOTemplateTest(HeatTestCase):
 
         parent_resource = DummyClass()
         parent_resource.metadata_set({"foo": "bar"})
-        parent_resource.t = {}
+        parent_resource.t = rsrc_defn.ResourceDefinition('parent', 'SomeType')
         parent_resource.stack = parser.Stack(utils.dummy_context(),
                                              'toplevel_stack',
                                              parser.Template(hot_tpl_empty))
@@ -1065,7 +1069,7 @@ class HOTParamValidatorTest(HeatTestCase):
         def v(value):
             param_schema = hot_param.HOTParamSchema.from_dict(name, schema)
             param_schema.validate()
-            param_schema.validate_value(name, value)
+            param_schema.validate_value(value)
             return True
 
         value = 'wp'
@@ -1160,7 +1164,7 @@ class HOTParamValidatorTest(HeatTestCase):
         def v(value):
             param_schema = hot_param.HOTParamSchema.from_dict(name, schema)
             param_schema.validate()
-            param_schema.validate_value(name, value)
+            param_schema.validate_value(value)
             return True
 
         value = 29999
@@ -1203,7 +1207,7 @@ class HOTParamValidatorTest(HeatTestCase):
         def v(value):
             param_schema = hot_param.HOTParamSchema.from_dict(name, schema)
             param_schema.validate()
-            param_schema.validate_value(name, value)
+            param_schema.validate_value(value)
             return True
 
         value = "1"
@@ -1230,7 +1234,7 @@ class HOTParamValidatorTest(HeatTestCase):
 
         schema = hot_param.HOTParamSchema.from_dict('db_port',
                                                     param['db_port'])
-        err = self.assertRaises(constraints.InvalidSchemaError,
+        err = self.assertRaises(exception.InvalidSchemaError,
                                 schema.validate)
         self.assertIn(range_desc, str(err))
 
@@ -1242,7 +1246,7 @@ class HOTParamValidatorTest(HeatTestCase):
                 foo: bar
         ''')
         error = self.assertRaises(
-            constraints.InvalidSchemaError, parameters.Parameters,
+            exception.InvalidSchemaError, parameters.Parameters,
             "stack_testit", parser.Template(hot_tpl))
         self.assertEqual("Invalid key 'foo' for parameter (param1)",
                          str(error))
@@ -1255,7 +1259,7 @@ class HOTParamValidatorTest(HeatTestCase):
                 description: Hi!
         ''')
         error = self.assertRaises(
-            constraints.InvalidSchemaError, parameters.Parameters,
+            exception.InvalidSchemaError, parameters.Parameters,
             "stack_testit", parser.Template(hot_tpl))
         self.assertEqual("Missing parameter type for parameter: param1",
                          str(error))
@@ -1268,7 +1272,7 @@ class HOTParamValidatorTest(HeatTestCase):
                 type: Unicode
         ''')
         error = self.assertRaises(
-            constraints.InvalidSchemaError, parameters.Parameters,
+            exception.InvalidSchemaError, parameters.Parameters,
             "stack_testit", parser.Template(hot_tpl))
         self.assertEqual(
             "Invalid type (Unicode)", str(error))
@@ -1284,7 +1288,7 @@ class HOTParamValidatorTest(HeatTestCase):
                 default: foo
         ''')
         error = self.assertRaises(
-            constraints.InvalidSchemaError, parameters.Parameters,
+            exception.InvalidSchemaError, parameters.Parameters,
             "stack_testit", parser.Template(hot_tpl))
         self.assertEqual(
             "Invalid key 'allowed_valus' for parameter constraints",
@@ -1300,7 +1304,7 @@ class HOTParamValidatorTest(HeatTestCase):
                 default: foo
         ''')
         error = self.assertRaises(
-            constraints.InvalidSchemaError, parameters.Parameters,
+            exception.InvalidSchemaError, parameters.Parameters,
             "stack_testit", parser.Template(hot_tpl))
         self.assertEqual(
             "Invalid parameter constraints for parameter param1, "
@@ -1316,7 +1320,7 @@ class HOTParamValidatorTest(HeatTestCase):
                 default: foo
         ''')
         error = self.assertRaises(
-            constraints.InvalidSchemaError, parameters.Parameters,
+            exception.InvalidSchemaError, parameters.Parameters,
             "stack_testit", parser.Template(hot_tpl))
         self.assertEqual(
             "Invalid parameter constraints, expected a mapping", str(error))
@@ -1332,7 +1336,7 @@ class HOTParamValidatorTest(HeatTestCase):
                 default: foo
         ''')
         error = self.assertRaises(
-            constraints.InvalidSchemaError, parameters.Parameters,
+            exception.InvalidSchemaError, parameters.Parameters,
             "stack_testit", parser.Template(hot_tpl))
         self.assertEqual("No constraint expressed", str(error))
 
@@ -1347,7 +1351,7 @@ class HOTParamValidatorTest(HeatTestCase):
                 default: foo
         ''')
         error = self.assertRaises(
-            constraints.InvalidSchemaError, parameters.Parameters,
+            exception.InvalidSchemaError, parameters.Parameters,
             "stack_testit", parser.Template(hot_tpl))
         self.assertEqual(
             "Invalid range constraint, expected a mapping", str(error))
@@ -1363,7 +1367,7 @@ class HOTParamValidatorTest(HeatTestCase):
                 default: 1
         ''')
         error = self.assertRaises(
-            constraints.InvalidSchemaError, parameters.Parameters,
+            exception.InvalidSchemaError, parameters.Parameters,
             "stack_testit", parser.Template(hot_tpl))
         self.assertEqual(
             "Invalid key 'foo' for range constraint", str(error))
@@ -1379,7 +1383,7 @@ class HOTParamValidatorTest(HeatTestCase):
                 default: foo
         ''')
         error = self.assertRaises(
-            constraints.InvalidSchemaError, parameters.Parameters,
+            exception.InvalidSchemaError, parameters.Parameters,
             "stack_testit", parser.Template(hot_tpl))
         self.assertEqual(
             "Invalid length constraint, expected a mapping", str(error))
@@ -1395,7 +1399,7 @@ class HOTParamValidatorTest(HeatTestCase):
                 default: foo
         ''')
         error = self.assertRaises(
-            constraints.InvalidSchemaError, parameters.Parameters,
+            exception.InvalidSchemaError, parameters.Parameters,
             "stack_testit", parser.Template(hot_tpl))
         self.assertEqual(
             "Invalid key 'foo' for length constraint", str(error))
@@ -1411,7 +1415,7 @@ class HOTParamValidatorTest(HeatTestCase):
                 default: foo
         ''')
         error = self.assertRaises(
-            constraints.InvalidSchemaError, parameters.Parameters,
+            exception.InvalidSchemaError, parameters.Parameters,
             "stack_testit", parser.Template(hot_tpl))
         self.assertEqual(
             "AllowedPattern must be a string", str(error))

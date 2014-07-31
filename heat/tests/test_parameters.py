@@ -17,7 +17,6 @@ import testtools
 
 from heat.common import exception
 from heat.common import identifier
-from heat.engine import constraints as constr
 from heat.engine import parameters
 from heat.engine import template
 
@@ -51,8 +50,8 @@ class ParameterTest(testtools.TestCase):
         self.assertIsInstance(p, parameters.JsonParam)
 
     def test_new_bad_type(self):
-        self.assertRaises(constr.InvalidSchemaError, self.new_parameter, 'p',
-                          {'Type': 'List'}, validate_value=False)
+        self.assertRaises(exception.InvalidSchemaError, self.new_parameter,
+                          'p', {'Type': 'List'}, validate_value=False)
 
     def test_default_no_override(self):
         p = self.new_parameter('defaulted', {'Type': 'String',
@@ -75,7 +74,7 @@ class ParameterTest(testtools.TestCase):
                   'AllowedValues': ['foo'],
                   'ConstraintDescription': 'wibble',
                   'Default': 'bar'}
-        err = self.assertRaises(constr.InvalidSchemaError,
+        err = self.assertRaises(exception.InvalidSchemaError,
                                 self.new_parameter, 'p', schema, 'foo')
         self.assertIn('wibble', str(err))
 
@@ -165,6 +164,11 @@ class ParameterTest(testtools.TestCase):
         p = self.new_parameter('p', schema, 'bar')
         self.assertEqual('bar', p.value())
 
+    def test_string_value_unicode(self):
+        schema = {'Type': 'String'}
+        p = self.new_parameter('p', schema, u'test\u2665')
+        self.assertEqual(u'test\u2665', p.value())
+
     def test_string_value_list_bad(self):
         schema = {'Type': 'String',
                   'ConstraintDescription': 'wibble',
@@ -209,6 +213,12 @@ class ParameterTest(testtools.TestCase):
         err = self.assertRaises(exception.StackValidationFailed,
                                 self.new_parameter, 'p', schema, '3')
         self.assertIn('wibble', str(err))
+
+    def test_number_bad(self):
+        schema = {'Type': 'Number'}
+        err = self.assertRaises(exception.StackValidationFailed,
+                                self.new_parameter, 'p', schema, 'str')
+        self.assertIn('float', str(err))
 
     def test_number_value_list_good(self):
         schema = {'Type': 'Number',
@@ -318,8 +328,8 @@ class ParameterTest(testtools.TestCase):
 
     def test_bool_value_invalid(self):
         schema = {'Type': 'Boolean'}
-        bo = self.new_parameter('bo', schema, 'foo')
-        err = self.assertRaises(ValueError, bo.value)
+        err = self.assertRaises(exception.StackValidationFailed,
+                                self.new_parameter, 'bo', schema, 'foo')
         self.assertIn("Unrecognized value 'foo'", unicode(err))
 
     def test_missing_param(self):
@@ -350,8 +360,9 @@ params_schema = json.loads('''{
 
 
 class ParametersTest(testtools.TestCase):
-    def new_parameters(self, stack_name, tmpl, user_params={}, stack_id=None,
-                       validate_value=True):
+    def new_parameters(self, stack_name, tmpl, user_params=None,
+                       stack_id=None, validate_value=True):
+        user_params = user_params or {}
         tmpl.update({'HeatTemplateFormatVersion': '2012-12-12'})
         tmpl = template.Template(tmpl)
         params = tmpl.parameters(
@@ -418,13 +429,17 @@ class ParametersTest(testtools.TestCase):
 
     def test_map_str(self):
         template = {'Parameters': {'Foo': {'Type': 'String'},
-                                   'Bar': {'Type': 'Number'}}}
+                                   'Bar': {'Type': 'Number'},
+                                   'Uni': {'Type': 'String'}}}
         stack_name = 'test_params'
         params = self.new_parameters(stack_name, template,
-                                     {'Foo': 'foo', 'Bar': '42'})
+                                     {'Foo': 'foo',
+                                      'Bar': '42',
+                                      'Uni': u'test\u2665'})
 
         expected = {'Foo': 'foo',
                     'Bar': '42',
+                    'Uni': 'test\xe2\x99\xa5',
                     'AWS::Region': 'ap-southeast-1',
                     'AWS::StackId':
                     'arn:openstack:heat:::stacks/{0}/{1}'.format(
@@ -454,7 +469,7 @@ class ParametersTest(testtools.TestCase):
         params = {'Parameters': {'Foo': {'Type': 'String'},
                                  'NoAttr': 'No attribute.',
                                  'Bar': {'Type': 'Number', 'Default': '1'}}}
-        self.assertRaises(constr.InvalidSchemaError,
+        self.assertRaises(exception.InvalidSchemaError,
                           self.new_parameters,
                           'test',
                           params)
@@ -463,14 +478,14 @@ class ParametersTest(testtools.TestCase):
 class ParameterSchemaTest(testtools.TestCase):
 
     def test_validate_schema_wrong_key(self):
-        error = self.assertRaises(constr.InvalidSchemaError,
+        error = self.assertRaises(exception.InvalidSchemaError,
                                   parameters.Schema.from_dict, 'param_name',
                                   {"foo": "bar"})
         self.assertEqual("Invalid key 'foo' for parameter (param_name)",
                          str(error))
 
     def test_validate_schema_no_type(self):
-        error = self.assertRaises(constr.InvalidSchemaError,
+        error = self.assertRaises(exception.InvalidSchemaError,
                                   parameters.Schema.from_dict,
                                   'broken',
                                   {"Description": "Hi!"})

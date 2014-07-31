@@ -20,22 +20,26 @@ from keystoneclient import exceptions as kc_exceptions
 import mock
 from mox import IgnoreArg
 from oslo.config import cfg
-from six.moves import xrange
+import six
 import warnings
 
+from heat.common import context
 from heat.common import exception
 from heat.common import template_format
 from heat.common import urlfetch
 import heat.db.api as db_api
 import heat.engine.cfn.functions
+from heat.engine.cfn import functions as cfn_funcs
 from heat.engine.cfn import template as cfn_t
-from heat.engine import clients
+from heat.engine.clients.os import keystone
+from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import function
 from heat.engine.hot import template as hot_t
 from heat.engine import parameters
 from heat.engine import parser
 from heat.engine import resource
+from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.engine import template
 from heat.tests.common import HeatTestCase
@@ -55,7 +59,7 @@ class ParserTest(HeatTestCase):
     def test_list(self):
         raw = ['foo', 'bar', 'baz']
         parsed = join(raw)
-        for i in xrange(len(raw)):
+        for i in six.moves.xrange(len(raw)):
             self.assertEqual(raw[i], parsed[i])
         self.assertIsNot(raw, parsed)
 
@@ -70,7 +74,7 @@ class ParserTest(HeatTestCase):
         raw = {'foo': ['bar', 'baz'], 'blarg': 'wibble'}
         parsed = join(raw)
         self.assertEqual(raw['blarg'], parsed['blarg'])
-        for i in xrange(len(raw['foo'])):
+        for i in six.moves.xrange(len(raw['foo'])):
             self.assertEqual(raw['foo'][i], parsed['foo'][i])
         self.assertIsNot(raw, parsed)
         self.assertIsNot(raw['foo'], parsed['foo'])
@@ -78,7 +82,7 @@ class ParserTest(HeatTestCase):
     def test_list_dict(self):
         raw = [{'foo': 'bar', 'blarg': 'wibble'}, 'baz', 'quux']
         parsed = join(raw)
-        for i in xrange(1, len(raw)):
+        for i in six.moves.xrange(1, len(raw)):
             self.assertEqual(raw[i], parsed[i])
         for k in raw[0]:
             self.assertEqual(raw[0][k], parsed[0][k])
@@ -97,7 +101,7 @@ class ParserTest(HeatTestCase):
         raw = [{'Fn::Join': [' ', ['foo', 'bar', 'baz']]}, 'blarg', 'wibble']
         parsed = join(raw)
         self.assertEqual('foo bar baz', parsed[0])
-        for i in xrange(1, len(raw)):
+        for i in six.moves.xrange(1, len(raw)):
             self.assertEqual(raw[i], parsed[i])
         self.assertIsNot(raw, parsed)
 
@@ -463,9 +467,9 @@ Mappings:
         snippet = {"Fn::GetAZs": ""}
         stack = parser.Stack(self.ctx, 'test_stack',
                              parser.Template(empty_template))
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         fc = fakes.FakeClient()
-        clients.OpenStackClients.nova().MultipleTimes().AndReturn(fc)
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(fc)
         self.m.ReplayAll()
         self.assertEqual(["nova1"], self.resolve(snippet, tmpl, stack))
 
@@ -544,8 +548,12 @@ Mappings:
 
         parent_resource = DummyClass()
         parent_resource.metadata_set({"foo": "bar"})
-        parent_resource.t = {'DeletionPolicy': 'Retain',
-                             'UpdatePolicy': {"blarg": "wibble"}}
+
+        parent_resource.t = rsrc_defn.ResourceDefinition(
+            'parent', 'SomeType',
+            deletion_policy=rsrc_defn.ResourceDefinition.RETAIN,
+            update_policy={"blarg": "wibble"})
+
         parent_resource.stack = parser.Stack(self.ctx, 'toplevel_stack',
                                              parser.Template(empty_template))
         stack = parser.Stack(self.ctx, 'test_stack',
@@ -565,11 +573,11 @@ Mappings:
         parent_resource.metadata_set({"foo": "bar"})
         parent_resource.stack = parser.Stack(self.ctx, 'toplevel_stack',
                                              parser.Template(empty_template))
-        parent_snippet = {'DeletionPolicy': {'Fn::Join': ['eta',
-                                                          ['R', 'in']]}}
-        parent_tmpl = parent_resource.stack.t.parse(parent_resource.stack,
-                                                    parent_snippet)
-        parent_resource.t = parent_tmpl
+        del_policy = cfn_funcs.Join(parent_resource.stack,
+                                    'Fn::Join', ['eta', ['R', 'in']])
+        parent_resource.t = rsrc_defn.ResourceDefinition(
+            'parent', 'SomeType',
+            deletion_policy=del_policy)
 
         stack = parser.Stack(self.ctx, 'test_stack',
                              parser.Template(empty_template),
@@ -592,7 +600,8 @@ Mappings:
 
         parent_resource = DummyClass()
         parent_resource.metadata_set({"foo": "bar"})
-        parent_resource.t = {'HeatTemplateFormatVersion': '2012-12-12'}
+        parent_resource.t = rsrc_defn.ResourceDefinition('parent', 'SomeType')
+
         parent_resource.stack = parser.Stack(self.ctx, 'toplevel_stack',
                                              parser.Template(empty_template))
         stack = parser.Stack(self.ctx, 'test_stack',
@@ -894,7 +903,7 @@ class StackTest(HeatTestCase):
         super(StackTest, self).setUp()
 
         self.username = 'parser_stack_test_user'
-        self.tmpl = parser.Template(empty_template)
+        self.tmpl = parser.Template(copy.deepcopy(empty_template))
 
         self.ctx = utils.dummy_context()
 
@@ -943,13 +952,12 @@ class StackTest(HeatTestCase):
     def test_no_auth_token(self):
         ctx = utils.dummy_context()
         ctx.auth_token = None
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
-            FakeKeystoneClient())
+        self.stub_keystoneclient()
 
         self.m.ReplayAll()
         stack = parser.Stack(ctx, 'test_stack', self.tmpl)
-        self.assertEqual('abcd1234', stack.clients.auth_token)
+        self.assertEqual('abcd1234',
+                         stack.clients.client('keystone').auth_token)
 
         self.m.VerifyAll()
 
@@ -1047,6 +1055,23 @@ class StackTest(HeatTestCase):
             4,
             self.stack['A'].nested().root_stack.total_resources())
 
+    def test_iter_resources(self):
+        self._setup_nested('iter_resources')
+        nested_stack = self.stack['A'].nested()
+        resource_generator = self.stack.iter_resources()
+        self.assertIsNot(resource_generator, list)
+
+        first_level_resources = list(resource_generator)
+        self.assertEqual(2, len(first_level_resources))
+        self.assertIn(self.stack['A'], first_level_resources)
+        self.assertIn(self.stack['B'], first_level_resources)
+
+        all_resources = list(self.stack.iter_resources(1))
+        self.assertIn(self.stack['A'], first_level_resources)
+        self.assertIn(self.stack['B'], first_level_resources)
+        self.assertIn(nested_stack['A'], all_resources)
+        self.assertIn(nested_stack['B'], all_resources)
+
     def test_root_stack(self):
         self._setup_nested('toor')
         self.assertEqual(self.stack, self.stack.root_stack)
@@ -1080,7 +1105,8 @@ class StackTest(HeatTestCase):
                               updated_time=None,
                               user_creds_id=stack.user_creds_id,
                               tenant_id='test_tenant_id',
-                              validate_parameters=False)
+                              validate_parameters=False,
+                              use_stored_context=False)
 
         self.m.ReplayAll()
         parser.Stack.load(self.ctx, stack_id=self.stack.id,
@@ -1088,8 +1114,6 @@ class StackTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    # Note tests creating a stack should be decorated with @stack_delete_after
-    # to ensure the self.stack is properly cleaned up
     def test_identifier(self):
         self.stack = parser.Stack(self.ctx, 'identifier_test',
                                   self.tmpl)
@@ -1285,13 +1309,38 @@ class StackTest(HeatTestCase):
         self.assertEqual((parser.Stack.DELETE, parser.Stack.COMPLETE),
                          self.stack.state)
 
+    def test_delete_user_creds_gone_missing(self):
+        '''It may happen that user_creds were deleted when a delete
+           operation was stopped. We should be resilient to this and still
+           complete the delete operation.
+           '''
+        self.stack = parser.Stack(self.ctx, 'delete_test',
+                                  self.tmpl)
+        stack_id = self.stack.store()
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertIsNotNone(db_s)
+        self.assertIsNotNone(db_s.user_creds_id)
+        user_creds_id = db_s.user_creds_id
+        db_creds = db_api.user_creds_get(db_s.user_creds_id)
+        self.assertIsNotNone(db_creds)
+
+        db_api.user_creds_delete(self.ctx, user_creds_id)
+
+        self.stack.delete()
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertIsNone(db_s)
+        db_creds = db_api.user_creds_get(user_creds_id)
+        self.assertIsNone(db_creds)
+        del_db_s = db_api.stack_get(self.ctx, stack_id, show_deleted=True)
+        self.assertIsNone(del_db_s.user_creds_id)
+        self.assertEqual((parser.Stack.DELETE, parser.Stack.COMPLETE),
+                         self.stack.state)
+
     def test_delete_trust(self):
         cfg.CONF.set_override('deferred_auth_method', 'trusts')
-
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
-            FakeKeystoneClient())
-        self.m.ReplayAll()
+        self.stub_keystoneclient()
 
         self.stack = parser.Stack(
             self.ctx, 'delete_trust', self.tmpl)
@@ -1314,8 +1363,8 @@ class StackTest(HeatTestCase):
             def delete_trust(self, trust_id):
                 raise Exception("Shouldn't delete")
 
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
+        self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
+        keystone.KeystoneClientPlugin._create().MultipleTimes().AndReturn(
             FakeKeystoneClientFail())
         self.m.ReplayAll()
 
@@ -1333,6 +1382,36 @@ class StackTest(HeatTestCase):
         self.assertEqual(self.stack.state,
                          (parser.Stack.DELETE, parser.Stack.COMPLETE))
 
+    def test_delete_trust_nested(self):
+        cfg.CONF.set_override('deferred_auth_method', 'trusts')
+
+        class FakeKeystoneClientFail(FakeKeystoneClient):
+            def delete_trust(self, trust_id):
+                raise Exception("Shouldn't delete")
+
+        self.stub_keystoneclient(fake_client=FakeKeystoneClientFail())
+
+        self.stack = parser.Stack(
+            self.ctx, 'delete_trust_nested', self.tmpl,
+            owner_id='owner123')
+        stack_id = self.stack.store()
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertIsNotNone(db_s)
+        user_creds_id = db_s.user_creds_id
+        self.assertIsNotNone(user_creds_id)
+        user_creds = db_api.user_creds_get(user_creds_id)
+        self.assertIsNotNone(user_creds)
+
+        self.stack.delete()
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertIsNone(db_s)
+        user_creds = db_api.user_creds_get(user_creds_id)
+        self.assertIsNotNone(user_creds)
+        self.assertEqual(self.stack.state,
+                         (parser.Stack.DELETE, parser.Stack.COMPLETE))
+
     def test_delete_trust_fail(self):
         cfg.CONF.set_override('deferred_auth_method', 'trusts')
 
@@ -1340,8 +1419,8 @@ class StackTest(HeatTestCase):
             def delete_trust(self, trust_id):
                 raise kc_exceptions.Forbidden("Denied!")
 
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
+        self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
+        keystone.KeystoneClientPlugin._create().MultipleTimes().AndReturn(
             FakeKeystoneClientFail())
         self.m.ReplayAll()
 
@@ -2113,6 +2192,41 @@ class StackTest(HeatTestCase):
                          self.stack.state)
         self.m.VerifyAll()
 
+    def test_update_add_signal(self):
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Resources': {'AResource': {'Type': 'GenericResourceType'}}}
+
+        self.stack = parser.Stack(self.ctx, 'update_test_stack',
+                                  template.Template(tmpl))
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((parser.Stack.CREATE, parser.Stack.COMPLETE),
+                         self.stack.state)
+
+        tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
+                 'Resources': {
+                 'AResource': {'Type': 'GenericResourceType'},
+                 'BResource': {'Type': 'GenericResourceType'}}}
+        updated_stack = parser.Stack(self.ctx, 'updated_stack',
+                                     template.Template(tmpl2))
+
+        updater = scheduler.TaskRunner(self.stack.update_task, updated_stack)
+        updater.start()
+        while 'BResource' not in self.stack:
+            self.assertFalse(updater.step())
+        self.assertEqual((parser.Stack.UPDATE, parser.Stack.IN_PROGRESS),
+                         self.stack.state)
+
+        # Reload the stack from the DB and prove that it contains the new
+        # resource already
+        re_stack = parser.Stack.load(utils.dummy_context(), self.stack.id)
+        self.assertIn('BResource', re_stack)
+
+        updater.run_to_completion()
+        self.assertEqual((parser.Stack.UPDATE, parser.Stack.COMPLETE),
+                         self.stack.state)
+        self.assertIn('BResource', self.stack)
+
     def test_update_add_failed_create(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {'AResource': {'Type': 'GenericResourceType'}}}
@@ -2143,7 +2257,44 @@ class StackTest(HeatTestCase):
 
         # Reload the stack from the DB and prove that it contains the failed
         # resource (to ensure it will be deleted on stack delete)
-        re_stack = parser.Stack.load(self.ctx, stack_id=self.stack.id)
+        re_stack = parser.Stack.load(utils.dummy_context(), self.stack.id)
+        self.assertIn('BResource', re_stack)
+        self.m.VerifyAll()
+
+    def test_update_add_failed_create_rollback_failed(self):
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Resources': {'AResource': {'Type': 'GenericResourceType'}}}
+
+        self.stack = parser.Stack(self.ctx, 'update_test_stack',
+                                  template.Template(tmpl))
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((parser.Stack.CREATE, parser.Stack.COMPLETE),
+                         self.stack.state)
+
+        tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
+                 'Resources': {
+                 'AResource': {'Type': 'GenericResourceType'},
+                 'BResource': {'Type': 'GenericResourceType'}}}
+        updated_stack = parser.Stack(self.ctx, 'updated_stack',
+                                     template.Template(tmpl2),
+                                     disable_rollback=False)
+
+        # patch in a dummy handle_create making BResource fail creating
+        self.m.StubOutWithMock(generic_rsrc.GenericResource, 'handle_create')
+        generic_rsrc.GenericResource.handle_create().AndRaise(Exception)
+        self.m.StubOutWithMock(generic_rsrc.GenericResource, 'handle_delete')
+        generic_rsrc.GenericResource.handle_delete().AndRaise(Exception)
+        self.m.ReplayAll()
+
+        self.stack.update(updated_stack)
+        self.assertEqual((parser.Stack.ROLLBACK, parser.Stack.FAILED),
+                         self.stack.state)
+        self.assertIn('BResource', self.stack)
+
+        # Reload the stack from the DB and prove that it contains the failed
+        # resource (to ensure it will be deleted on stack delete)
+        re_stack = parser.Stack.load(utils.dummy_context(), self.stack.id)
         self.assertIn('BResource', re_stack)
         self.m.VerifyAll()
 
@@ -2174,10 +2325,17 @@ class StackTest(HeatTestCase):
         generic_rsrc.ResourceWithProps.handle_create().AndRaise(Exception)
         self.m.ReplayAll()
 
-        self.stack.update(updated_stack)
-        self.assertEqual((parser.Stack.ROLLBACK, parser.Stack.COMPLETE),
-                         self.stack.state)
-        self.assertEqual('abc', self.stack['AResource'].properties['Foo'])
+        with mock.patch.object(self.stack, 'state_set',
+                               side_effect=self.stack.state_set) as mock_state:
+            self.stack.update(updated_stack)
+            self.assertEqual((parser.Stack.ROLLBACK, parser.Stack.COMPLETE),
+                             self.stack.state)
+            self.assertEqual('abc', self.stack['AResource'].properties['Foo'])
+            self.assertEqual(2, mock_state.call_count)
+            self.assertEqual(('UPDATE', 'IN_PROGRESS'),
+                             mock_state.call_args_list[0][0][:2])
+            self.assertEqual(('ROLLBACK', 'IN_PROGRESS'),
+                             mock_state.call_args_list[1][0][:2])
         self.m.VerifyAll()
 
     def test_update_rollback_fail(self):
@@ -2794,20 +2952,20 @@ class StackTest(HeatTestCase):
         for action, status in (
                 (rsrc.CREATE, rsrc.IN_PROGRESS),
                 (rsrc.CREATE, rsrc.COMPLETE),
+                (rsrc.CREATE, rsrc.FAILED),
                 (rsrc.SUSPEND, rsrc.IN_PROGRESS),
                 (rsrc.SUSPEND, rsrc.COMPLETE),
                 (rsrc.RESUME, rsrc.IN_PROGRESS),
                 (rsrc.RESUME, rsrc.COMPLETE),
                 (rsrc.UPDATE, rsrc.IN_PROGRESS),
+                (rsrc.UPDATE, rsrc.FAILED),
                 (rsrc.UPDATE, rsrc.COMPLETE)):
             rsrc.state_set(action, status)
             self.assertEqual('AResource', self.stack.output('TestOutput'))
         for action, status in (
-                (rsrc.CREATE, rsrc.FAILED),
                 (rsrc.DELETE, rsrc.IN_PROGRESS),
                 (rsrc.DELETE, rsrc.FAILED),
-                (rsrc.DELETE, rsrc.COMPLETE),
-                (rsrc.UPDATE, rsrc.FAILED)):
+                (rsrc.DELETE, rsrc.COMPLETE)):
             rsrc.state_set(action, status)
             self.assertIsNone(self.stack.output('TestOutput'))
 
@@ -2871,6 +3029,19 @@ class StackTest(HeatTestCase):
         db_stack = db_api.stack_get(self.ctx, stack_ownee.id)
         self.assertEqual(self.stack.id, db_stack.owner_id)
 
+    def test_init_user_creds_id(self):
+        ctx_init = utils.dummy_context(user='my_user',
+                                       password='my_pass')
+        ctx_init.request_id = self.ctx.request_id
+        creds = db_api.user_creds_create(ctx_init)
+        self.stack = parser.Stack(self.ctx, 'creds_init', self.tmpl,
+                                  user_creds_id=creds.id)
+        self.stack.store()
+        self.assertEqual(creds.id, self.stack.user_creds_id)
+        ctx_expected = ctx_init.to_dict()
+        ctx_expected['auth_token'] = None
+        self.assertEqual(ctx_expected, self.stack.stored_context().to_dict())
+
     def test_store_saves_creds(self):
         """
         A user_creds entry is created on first stack store
@@ -2891,6 +3062,12 @@ class StackTest(HeatTestCase):
         self.assertIsNone(user_creds.get('trust_id'))
         self.assertIsNone(user_creds.get('trustor_user_id'))
 
+        # Check the stored_context is as expected
+        expected_context = context.RequestContext.from_dict(self.ctx.to_dict())
+        expected_context.auth_token = None
+        stored_context = self.stack.stored_context().to_dict()
+        self.assertEqual(expected_context.to_dict(), stored_context)
+
         # Store again, ID should not change
         self.stack.store()
         self.assertEqual(user_creds_id, db_stack.user_creds_id)
@@ -2901,8 +3078,8 @@ class StackTest(HeatTestCase):
         """
         cfg.CONF.set_override('deferred_auth_method', 'trusts')
 
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        clients.OpenStackClients.keystone().MultipleTimes().AndReturn(
+        self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
+        keystone.KeystoneClientPlugin._create().MultipleTimes().AndReturn(
             FakeKeystoneClient())
         self.m.ReplayAll()
 
@@ -2924,9 +3101,92 @@ class StackTest(HeatTestCase):
         self.assertEqual('atrust', user_creds.get('trust_id'))
         self.assertEqual('auser123', user_creds.get('trustor_user_id'))
 
+        # Check the stored_context is as expected
+        expected_context = context.RequestContext(
+            trust_id='atrust', trustor_user_id='auser123',
+            request_id=self.ctx.request_id, is_admin=False).to_dict()
+        stored_context = self.stack.stored_context().to_dict()
+        self.assertEqual(expected_context, stored_context)
+
         # Store again, ID should not change
         self.stack.store()
         self.assertEqual(user_creds_id, db_stack.user_creds_id)
+
+    def test_backup_copies_user_creds_id(self):
+        ctx_init = utils.dummy_context(user='my_user',
+                                       password='my_pass')
+        ctx_init.request_id = self.ctx.request_id
+        creds = db_api.user_creds_create(ctx_init)
+        self.stack = parser.Stack(self.ctx, 'creds_init', self.tmpl,
+                                  user_creds_id=creds.id)
+        self.stack.store()
+        self.assertEqual(creds.id, self.stack.user_creds_id)
+        backup = self.stack._backup_stack()
+        self.assertEqual(creds.id, backup.user_creds_id)
+
+    def test_stored_context_err(self):
+        """
+        Test stored_context error path.
+        """
+        self.stack = parser.Stack(self.ctx, 'creds_stack', self.tmpl)
+        ex = self.assertRaises(exception.Error, self.stack.stored_context)
+        expected_err = 'Attempt to use stored_context with no user_creds'
+        self.assertEqual(expected_err, six.text_type(ex))
+
+    def test_init_stored_context_false(self):
+        ctx_init = utils.dummy_context(user='mystored_user',
+                                       password='mystored_pass')
+        ctx_init.request_id = self.ctx.request_id
+        creds = db_api.user_creds_create(ctx_init)
+        self.stack = parser.Stack(self.ctx, 'creds_store1', self.tmpl,
+                                  user_creds_id=creds.id,
+                                  use_stored_context=False)
+        ctx_expected = self.ctx.to_dict()
+        self.assertEqual(ctx_expected, self.stack.context.to_dict())
+        self.stack.store()
+        self.assertEqual(ctx_expected, self.stack.context.to_dict())
+
+    def test_init_stored_context_true(self):
+        ctx_init = utils.dummy_context(user='mystored_user',
+                                       password='mystored_pass')
+        ctx_init.request_id = self.ctx.request_id
+        creds = db_api.user_creds_create(ctx_init)
+        self.stack = parser.Stack(self.ctx, 'creds_store2', self.tmpl,
+                                  user_creds_id=creds.id,
+                                  use_stored_context=True)
+        ctx_expected = ctx_init.to_dict()
+        ctx_expected['auth_token'] = None
+        self.assertEqual(ctx_expected, self.stack.context.to_dict())
+        self.stack.store()
+        self.assertEqual(ctx_expected, self.stack.context.to_dict())
+
+    def test_load_stored_context_false(self):
+        ctx_init = utils.dummy_context(user='mystored_user',
+                                       password='mystored_pass')
+        ctx_init.request_id = self.ctx.request_id
+        creds = db_api.user_creds_create(ctx_init)
+        self.stack = parser.Stack(self.ctx, 'creds_store3', self.tmpl,
+                                  user_creds_id=creds.id)
+        self.stack.store()
+
+        load_stack = parser.Stack.load(self.ctx, stack_id=self.stack.id,
+                                       use_stored_context=False)
+        self.assertEqual(self.ctx.to_dict(), load_stack.context.to_dict())
+
+    def test_load_stored_context_true(self):
+        ctx_init = utils.dummy_context(user='mystored_user',
+                                       password='mystored_pass')
+        ctx_init.request_id = self.ctx.request_id
+        creds = db_api.user_creds_create(ctx_init)
+        self.stack = parser.Stack(self.ctx, 'creds_store4', self.tmpl,
+                                  user_creds_id=creds.id)
+        self.stack.store()
+        ctx_expected = ctx_init.to_dict()
+        ctx_expected['auth_token'] = None
+
+        load_stack = parser.Stack.load(self.ctx, stack_id=self.stack.id,
+                                       use_stored_context=True)
+        self.assertEqual(ctx_expected, load_stack.context.to_dict())
 
     def test_load_honors_owner(self):
         """
@@ -2967,8 +3227,7 @@ class StackTest(HeatTestCase):
         self.assertIsNone(db_stack.stack_user_project_id)
 
     def test_stack_user_project_id_constructor(self):
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        clients.OpenStackClients.keystone().AndReturn(FakeKeystoneClient())
+        self.stub_keystoneclient()
         self.m.ReplayAll()
 
         self.stack = parser.Stack(self.ctx, 'user_project_init',
@@ -2990,8 +3249,9 @@ class StackTest(HeatTestCase):
             def delete_stack_domain_project(self, project_id):
                 raise kc_exceptions.Forbidden("Denied!")
 
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        clients.OpenStackClients.keystone().AndReturn(FakeKeystoneClientFail())
+        self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
+        keystone.KeystoneClientPlugin._create().AndReturn(
+            FakeKeystoneClientFail())
         self.m.ReplayAll()
 
         self.stack = parser.Stack(self.ctx, 'user_project_init',
@@ -3009,8 +3269,7 @@ class StackTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_stack_user_project_id_setter(self):
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
-        clients.OpenStackClients.keystone().AndReturn(FakeKeystoneClient())
+        self.stub_keystoneclient()
         self.m.ReplayAll()
 
         self.stack = parser.Stack(self.ctx, 'user_project_init',
@@ -3118,8 +3377,8 @@ class StackTest(HeatTestCase):
         # Mock objects so the query for flavors in server.FlavorConstraint
         # works for stack creation
         fc = fakes.FakeClient()
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
-        clients.OpenStackClients.nova().MultipleTimes().AndReturn(fc)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(fc)
 
         fc.flavors = self.m.CreateMockAnything()
         flavor = collections.namedtuple("Flavor", ["id", "name"])

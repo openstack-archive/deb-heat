@@ -38,8 +38,8 @@ opts = [
     cfg.StrOpt('stack-domain-admin-password',
                help="Password to set for stack-domain-admin"),
 ]
-for opt in opts:
-    cfg.CONF.register_opt(opt, cli=True)
+
+cfg.CONF.register_cli_opts(opts)
 cfg.CONF(sys.argv[1:], project='heat', prog='heat-keystone-setup-domain')
 
 HEAT_DOMAIN_NAME = os.environ.get(
@@ -51,7 +51,6 @@ HEAT_DOMAIN_PASSWORD = os.environ.get('HEAT_DOMAIN_PASSWORD',
 HEAT_DOMAIN_DESCRIPTION = 'Contains users and projects created by heat'
 
 logger.debug("USERNAME=%s" % USERNAME)
-logger.debug("PASSWORD=%s" % PASSWORD)
 logger.debug("AUTH_URL=%s" % AUTH_URL)
 
 
@@ -104,7 +103,7 @@ def main():
     c.roles.grant(role=admin_role, user=domain_admin, domain=heat_domain)
 
     print("\nPlease update your heat.conf with the following in [DEFAULT]\n")
-    print("stack_user_domain=%s" % heat_domain.id)
+    print("stack_user_domain_id=%s" % heat_domain.id)
     print("stack_domain_admin=%s" % HEAT_DOMAIN_ADMIN)
     print("stack_domain_admin_password=%s" % HEAT_DOMAIN_PASSWORD)
 

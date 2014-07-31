@@ -19,13 +19,11 @@ Unit Tests for heat.rpc.client
 
 
 import mock
-from oslo.config import cfg
 import stubout
 import testtools
 
 from heat.common import identifier
-from heat.openstack.common import rpc
-from heat.rpc import api as rpc_api
+from heat.common import messaging
 from heat.rpc import client as rpc_client
 from heat.tests import utils
 
@@ -33,11 +31,9 @@ from heat.tests import utils
 class EngineRpcAPITestCase(testtools.TestCase):
 
     def setUp(self):
+        messaging.setup("fake://", optional=True)
+        self.addCleanup(messaging.cleanup)
         self.context = utils.dummy_context()
-        cfg.CONF.set_default('rpc_backend',
-                             'heat.openstack.common.rpc.impl_fake')
-        cfg.CONF.set_default('verbose', True)
-        cfg.CONF.set_default('host', 'host')
 
         self.stubs = stubout.StubOutForTesting()
         self.identity = dict(identifier.HeatIdentifier('engine_test_tenant',
@@ -55,24 +51,20 @@ class EngineRpcAPITestCase(testtools.TestCase):
         rpcapi = rpcapi_class()
         expected_retval = 'foo' if method == 'call' else None
 
-        expected_version = kwargs.pop('version', rpcapi.BASE_RPC_API_VERSION)
+        kwargs.pop('version', None)
         expected_msg = rpcapi.make_msg(method, **kwargs)
-
-        expected_msg['version'] = expected_version
-        expected_topic = rpc_api.ENGINE_TOPIC
 
         cast_and_call = ['delete_stack']
         if rpc_method == 'call' and method in cast_and_call:
             kwargs['cast'] = False
 
-        with mock.patch.object(rpc, rpc_method) as mock_rpc_method:
+        with mock.patch.object(rpcapi, rpc_method) as mock_rpc_method:
             mock_rpc_method.return_value = expected_retval
 
             retval = getattr(rpcapi, method)(ctxt, **kwargs)
 
             self.assertEqual(expected_retval, retval)
-            expected_args = [ctxt, expected_topic, expected_msg,
-                             mock.ANY]
+            expected_args = [ctxt, expected_msg, mock.ANY]
             actual_args, _ = mock_rpc_method.call_args
             for expected_arg, actual_arg in zip(expected_args,
                                                 actual_args):
@@ -97,6 +89,7 @@ class EngineRpcAPITestCase(testtools.TestCase):
         default_args = {
             'filters': mock.ANY,
             'tenant_safe': mock.ANY,
+            'show_deleted': mock.ANY,
         }
         self._test_engine_api('count_stacks', 'call', **default_args)
 
@@ -157,8 +150,13 @@ class EngineRpcAPITestCase(testtools.TestCase):
         self._test_engine_api('generate_template', 'call', type_name="TYPE")
 
     def test_list_events(self):
-        self._test_engine_api('list_events', 'call',
-                              stack_identity=self.identity)
+        kwargs = {'stack_identity': self.identity,
+                  'limit': None,
+                  'marker': None,
+                  'sort_keys': None,
+                  'sort_dir': None,
+                  'filters': None}
+        self._test_engine_api('list_events', 'call', **kwargs)
 
     def test_describe_stack_resource(self):
         self._test_engine_api('describe_stack_resource', 'call',
@@ -176,7 +174,8 @@ class EngineRpcAPITestCase(testtools.TestCase):
 
     def test_list_stack_resources(self):
         self._test_engine_api('list_stack_resources', 'call',
-                              stack_identity=self.identity)
+                              stack_identity=self.identity,
+                              nested_depth=0)
 
     def test_stack_suspend(self):
         self._test_engine_api('stack_suspend', 'call',

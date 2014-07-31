@@ -20,10 +20,7 @@ import six
 from heat.common import exception
 from heat.engine import clients
 from heat.engine import resources
-
-
-class InvalidSchemaError(exception.Error):
-    pass
+from heat.openstack.common import strutils
 
 
 class Schema(collections.Mapping):
@@ -79,12 +76,13 @@ class Schema(collections.Mapping):
 
     def __init__(self, data_type, description=None,
                  default=None, schema=None,
-                 required=False, constraints=[], label=None):
+                 required=False, constraints=None, label=None):
         self._len = None
         self.label = label
         self.type = data_type
         if self.type not in self.TYPES:
-            raise InvalidSchemaError(_('Invalid type (%s)') % self.type)
+            raise exception.InvalidSchemaError(
+                message=_('Invalid type (%s)') % self.type)
 
         self.description = description
         self.required = required
@@ -94,7 +92,7 @@ class Schema(collections.Mapping):
                 msg = _('Single schema valid only for '
                         '%(ltype)s, not %(utype)s') % dict(ltype=self.LIST,
                                                            utype=self.type)
-                raise InvalidSchemaError(msg)
+                raise exception.InvalidSchemaError(message=msg)
 
             self.schema = AnyIndexDict(schema)
         else:
@@ -105,9 +103,9 @@ class Schema(collections.Mapping):
                     '%(mtype)s, not %(utype)s') % dict(ltype=self.LIST,
                                                        mtype=self.MAP,
                                                        utype=self.type)
-            raise InvalidSchemaError(msg)
+            raise exception.InvalidSchemaError(message=msg)
 
-        self.constraints = constraints
+        self.constraints = constraints or []
         self.default = default
 
     def validate(self, context=None):
@@ -123,7 +121,7 @@ class Schema(collections.Mapping):
                             'invalid for %(utype)s') % dict(
                                 name=type(c).__name__,
                                 utype=self.type)
-                raise InvalidSchemaError(err_msg)
+                raise exception.InvalidSchemaError(message=err_msg)
 
         self._validate_default(context)
         # validated nested schema(ta)
@@ -139,9 +137,9 @@ class Schema(collections.Mapping):
             try:
                 self.validate_constraints(self.default, context)
             except (ValueError, TypeError) as exc:
-                raise InvalidSchemaError(_('Invalid default '
-                                           '%(default)s (%(exc)s)') %
-                                         dict(default=self.default, exc=exc))
+                raise exception.InvalidSchemaError(
+                    message=_('Invalid default %(default)s (%(exc)s)') %
+                    dict(default=self.default, exc=exc))
 
     def set_default(self, default=None):
         """Set the default value for this Schema object."""
@@ -161,10 +159,37 @@ class Schema(collections.Mapping):
         except ValueError:
             return float(value)
 
+    def to_schema_type(self, value):
+        """Returns the value in the schema's data type."""
+        try:
+            # We have to be backwards-compatible for Integer and Number
+            # Schema types and try to convert string representations of
+            # number into "real" number types, therefore calling
+            # str_to_num below.
+            if self.type == self.INTEGER:
+                num = Schema.str_to_num(value)
+                if isinstance(num, float):
+                    raise ValueError(_('%s is not an integer.') % num)
+                return num
+            elif self.type == self.NUMBER:
+                return Schema.str_to_num(value)
+            elif self.type == self.STRING:
+                if value and not isinstance(value, basestring):
+                    raise ValueError()
+                return str(value)
+            elif self.type == self.BOOLEAN:
+                return strutils.bool_from_string(str(value), strict=True)
+        except ValueError:
+            raise ValueError(_('Value "%(val)s" is invalid for data type '
+                               '"%(type)s".')
+                             % {'val': value, 'type': self.type})
+
+        return value
+
     def validate_constraints(self, value, context=None):
         try:
             for constraint in self.constraints:
-                constraint.validate(value, context)
+                constraint.validate(value, self, context)
         except ValueError as ex:
             raise exception.StackValidationFailed(message=six.text_type(ex))
 
@@ -250,8 +275,8 @@ class Constraint(collections.Mapping):
 
         return '\n'.join(desc())
 
-    def validate(self, value, context=None):
-        if not self._is_valid(value, context):
+    def validate(self, value, schema=None, context=None):
+        if not self._is_valid(value, schema, context):
             if self.description:
                 err_msg = self.description
             else:
@@ -307,12 +332,13 @@ class Range(Constraint):
 
         for param in (min, max):
             if not isinstance(param, (float, int, long, type(None))):
-                raise InvalidSchemaError(_('min/max must be numeric'))
+                raise exception.InvalidSchemaError(
+                    message=_('min/max must be numeric'))
 
         if min is max is None:
-            raise InvalidSchemaError(
-                _('A range constraint must have a min value and/or a max '
-                  'value specified.'))
+            raise exception.InvalidSchemaError(
+                message=_('A range constraint must have a min value and/or '
+                          'a max value specified.'))
 
     def _str(self):
         if self.max is None:
@@ -328,7 +354,7 @@ class Range(Constraint):
                                                           self.min,
                                                           self.max)
 
-    def _is_valid(self, value, context):
+    def _is_valid(self, value, schema, context):
         value = Schema.str_to_num(value)
 
         if self.min is not None:
@@ -367,16 +393,16 @@ class Length(Range):
 
     def __init__(self, min=None, max=None, description=None):
         if min is max is None:
-            raise InvalidSchemaError(
-                _('A length constraint must have a min value and/or a max '
-                  'value specified.'))
+            raise exception.InvalidSchemaError(
+                message=_('A length constraint must have a min value and/or '
+                          'a max value specified.'))
 
         super(Length, self).__init__(min, max, description)
 
         for param in (min, max):
             if not isinstance(param, (int, long, type(None))):
                 msg = _('min/max length must be integral')
-                raise InvalidSchemaError(msg)
+                raise exception.InvalidSchemaError(message=msg)
 
     def _str(self):
         if self.max is None:
@@ -392,8 +418,8 @@ class Length(Range):
                                                                    self.min,
                                                                    self.max)
 
-    def _is_valid(self, value, context):
-        return super(Length, self)._is_valid(len(value), context)
+    def _is_valid(self, value, schema, context):
+        return super(Length, self)._is_valid(len(value), schema, context)
 
 
 class AllowedValues(Constraint):
@@ -415,7 +441,8 @@ class AllowedValues(Constraint):
         super(AllowedValues, self).__init__(description)
         if (not isinstance(allowed, collections.Sequence) or
                 isinstance(allowed, basestring)):
-            raise InvalidSchemaError(_('AllowedValues must be a list'))
+            raise exception.InvalidSchemaError(
+                message=_('AllowedValues must be a list'))
         self.allowed = tuple(allowed)
 
     def _str(self):
@@ -426,11 +453,15 @@ class AllowedValues(Constraint):
         allowed = '[%s]' % ', '.join(str(a) for a in self.allowed)
         return '"%s" is not an allowed value %s' % (value, allowed)
 
-    def _is_valid(self, value, context):
+    def _is_valid(self, value, schema, context):
         # For list values, check if all elements of the list are contained
         # in allowed list.
         if isinstance(value, list):
             return all(v in self.allowed for v in value)
+
+        if schema is not None:
+            _allowed = tuple(schema.to_schema_type(v) for v in self.allowed)
+            return schema.to_schema_type(value) in _allowed
 
         return value in self.allowed
 
@@ -455,7 +486,8 @@ class AllowedPattern(Constraint):
     def __init__(self, pattern, description=None):
         super(AllowedPattern, self).__init__(description)
         if not isinstance(pattern, basestring):
-            raise InvalidSchemaError(_('AllowedPattern must be a string'))
+            raise exception.InvalidSchemaError(
+                message=_('AllowedPattern must be a string'))
         self.pattern = pattern
         self.match = re.compile(pattern).match
 
@@ -465,7 +497,7 @@ class AllowedPattern(Constraint):
     def _err_msg(self, value):
         return '"%s" does not match pattern "%s"' % (value, self.pattern)
 
-    def _is_valid(self, value, context):
+    def _is_valid(self, value, schema, context):
         match = self.match(value)
         return match is not None and match.end() == len(value)
 
@@ -518,7 +550,7 @@ class CustomConstraint(Constraint):
         return _('"%(value)s" does not validate %(name)s') % {
             "value": value, "name": self.name}
 
-    def _is_valid(self, value, context):
+    def _is_valid(self, value, schema, context):
         constraint = self.custom_constraint
         if not constraint:
             return False

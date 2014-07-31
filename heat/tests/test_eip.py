@@ -12,16 +12,16 @@
 #    under the License.
 
 import mox
-from testtools import skipIf
+from neutronclient.v2_0 import client as neutronclient
+from novaclient import exceptions as nova_exceptions
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import clients
+from heat.engine.clients.os import nova
 from heat.engine import parser
 from heat.engine.resources import eip
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
-from heat.tests import fakes as fakec
 from heat.tests import utils
 from heat.tests.v1_1 import fakes
 
@@ -135,28 +135,13 @@ eip_template_ipassoc3 = '''
 '''
 
 
-def force_networking(mode):
-    if mode == 'nova':
-        force_networking.client = clients.neutronclient
-        clients.neutronclient = None
-    if mode == 'neutron':
-        clients.neutronclient = force_networking.client
-force_networking.client = None
-
-
 class EIPTest(HeatTestCase):
     def setUp(self):
         # force Nova, will test Neutron below
-        force_networking('nova')
         super(EIPTest, self).setUp()
         self.fc = fakes.FakeClient()
-        self.m.StubOutWithMock(eip.ElasticIp, 'nova')
-        self.m.StubOutWithMock(eip.ElasticIpAssociation, 'nova')
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         self.m.StubOutWithMock(self.fc.servers, 'get')
-
-    def tearDown(self):
-        super(EIPTest, self).tearDown()
-        force_networking('neutron')
 
     def create_eip(self, t, stack, resource_name):
         resource_defns = stack.t.resource_definitions(stack)
@@ -179,7 +164,7 @@ class EIPTest(HeatTestCase):
         return rsrc
 
     def test_eip(self):
-        eip.ElasticIp.nova().MultipleTimes().AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
         self.fc.servers.get('WebServer').AndReturn(self.fc.servers.list()[0])
         self.fc.servers.get('WebServer')
 
@@ -206,8 +191,7 @@ class EIPTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_association_eip(self):
-        eip.ElasticIp.nova().MultipleTimes().AndReturn(self.fc)
-        eip.ElasticIpAssociation.nova().MultipleTimes().AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
         self.fc.servers.get('WebServer').MultipleTimes() \
             .AndReturn(self.fc.servers.list()[0])
 
@@ -239,9 +223,8 @@ class EIPTest(HeatTestCase):
 
     def test_eip_with_exception(self):
         self.m.StubOutWithMock(self.fc.floating_ips, 'create')
-        eip.ElasticIp.nova().MultipleTimes().AndReturn(self.fc)
-        self.fc.floating_ips.create().AndRaise(
-            clients.novaclient.exceptions.NotFound('fake_falure'))
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
+        self.fc.floating_ips.create().AndRaise(fakes.fake_exception())
         self.m.ReplayAll()
 
         t = template_format.parse(eip_template)
@@ -252,15 +235,15 @@ class EIPTest(HeatTestCase):
                              resource_defns[resource_name],
                              stack)
 
-        self.assertRaises(clients.novaclient.exceptions.NotFound,
+        self.assertRaises(nova_exceptions.NotFound,
                           rsrc.handle_create)
         self.m.VerifyAll()
 
     def test_delete_eip_with_exception(self):
         self.m.StubOutWithMock(self.fc.floating_ips, 'delete')
-        eip.ElasticIp.nova().MultipleTimes().AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
         self.fc.floating_ips.delete(mox.IsA(object)).AndRaise(
-            clients.novaclient.exceptions.NotFound('fake_falure'))
+            fakes.fake_exception())
         self.fc.servers.get(mox.IsA(object)).AndReturn(False)
         self.m.ReplayAll()
 
@@ -278,38 +261,35 @@ class EIPTest(HeatTestCase):
 
 class AllocTest(HeatTestCase):
 
-    @skipIf(clients.neutronclient is None, 'neutronclient unavailable')
     def setUp(self):
         super(AllocTest, self).setUp()
 
         self.fc = fakes.FakeClient()
-        self.m.StubOutWithMock(eip.ElasticIp, 'nova')
-        self.m.StubOutWithMock(eip.ElasticIpAssociation, 'nova')
         self.m.StubOutWithMock(self.fc.servers, 'get')
-
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         self.m.StubOutWithMock(parser.Stack, 'resource_by_refid')
-        self.m.StubOutWithMock(clients.neutronclient.Client,
+        self.m.StubOutWithMock(neutronclient.Client,
                                'create_floatingip')
-        self.m.StubOutWithMock(clients.neutronclient.Client,
+        self.m.StubOutWithMock(neutronclient.Client,
                                'show_floatingip')
-        self.m.StubOutWithMock(clients.neutronclient.Client,
+        self.m.StubOutWithMock(neutronclient.Client,
                                'update_floatingip')
-        self.m.StubOutWithMock(clients.neutronclient.Client,
+        self.m.StubOutWithMock(neutronclient.Client,
                                'delete_floatingip')
-        self.m.StubOutWithMock(clients.neutronclient.Client,
+        self.m.StubOutWithMock(neutronclient.Client,
                                'add_gateway_router')
-        self.m.StubOutWithMock(clients.neutronclient.Client, 'list_networks')
-        self.m.StubOutWithMock(clients.neutronclient.Client, 'list_ports')
-        self.m.StubOutWithMock(clients.neutronclient.Client, 'list_subnets')
-        self.m.StubOutWithMock(clients.neutronclient.Client, 'show_network')
-        self.m.StubOutWithMock(clients.neutronclient.Client, 'list_routers')
-        self.m.StubOutWithMock(clients.neutronclient.Client,
+        self.m.StubOutWithMock(neutronclient.Client, 'list_networks')
+        self.m.StubOutWithMock(neutronclient.Client, 'list_ports')
+        self.m.StubOutWithMock(neutronclient.Client, 'list_subnets')
+        self.m.StubOutWithMock(neutronclient.Client, 'show_network')
+        self.m.StubOutWithMock(neutronclient.Client, 'list_routers')
+        self.m.StubOutWithMock(neutronclient.Client,
                                'remove_gateway_router')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
     def mock_show_network(self):
         vpc_name = utils.PhysName('test_stack', 'the_vpc')
-        clients.neutronclient.Client.show_network(
+        neutronclient.Client.show_network(
             'aaaa-netid'
         ).AndReturn({"network": {
             "status": "BUILD",
@@ -342,16 +322,16 @@ class AllocTest(HeatTestCase):
         return rsrc
 
     def mock_update_floatingip(self, port='the_nic'):
-        clients.neutronclient.Client.update_floatingip(
+        neutronclient.Client.update_floatingip(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
             {'floatingip': {'port_id': port}}).AndReturn(None)
 
     def mock_create_gateway_attachment(self):
-        clients.neutronclient.Client.add_gateway_router(
+        neutronclient.Client.add_gateway_router(
             'bbbb', {'network_id': 'eeee'}).AndReturn(None)
 
     def mock_create_floatingip(self):
-        clients.neutronclient.Client.list_networks(
+        neutronclient.Client.list_networks(
             **{'router:external': True}).AndReturn({'networks': [{
                 'status': 'ACTIVE',
                 'subnets': [],
@@ -363,7 +343,7 @@ class AllocTest(HeatTestCase):
                 'id': 'eeee'
             }]})
 
-        clients.neutronclient.Client.create_floatingip({
+        neutronclient.Client.create_floatingip({
             'floatingip': {'floating_network_id': u'eeee'}
         }).AndReturn({'floatingip': {
             "status": "ACTIVE",
@@ -372,7 +352,7 @@ class AllocTest(HeatTestCase):
         }})
 
     def mock_show_floatingip(self, refid):
-        clients.neutronclient.Client.show_floatingip(
+        neutronclient.Client.show_floatingip(
             refid,
         ).AndReturn({'floatingip': {
             'router_id': None,
@@ -386,10 +366,10 @@ class AllocTest(HeatTestCase):
 
     def mock_delete_floatingip(self):
         id = 'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
-        clients.neutronclient.Client.delete_floatingip(id).AndReturn(None)
+        neutronclient.Client.delete_floatingip(id).AndReturn(None)
 
     def mock_list_ports(self):
-        clients.neutronclient.Client.list_ports(id='the_nic').AndReturn(
+        neutronclient.Client.list_ports(id='the_nic').AndReturn(
             {"ports": [{
                 "status": "DOWN",
                 "binding:host_id": "null",
@@ -409,7 +389,7 @@ class AllocTest(HeatTestCase):
             }]})
 
     def mock_list_instance_ports(self, refid):
-        clients.neutronclient.Client.list_ports(device_id=refid).AndReturn(
+        neutronclient.Client.list_ports(device_id=refid).AndReturn(
             {"ports": [{
                 "status": "DOWN",
                 "binding:host_id": "null",
@@ -429,7 +409,7 @@ class AllocTest(HeatTestCase):
             }]})
 
     def mock_list_subnets(self):
-        clients.neutronclient.Client.list_subnets(
+        neutronclient.Client.list_subnets(
             id='mysubnetid-70ec').AndReturn(
                 {'subnets': [{
                     u'name': u'wp-Subnet-pyjm7bvoi4xw',
@@ -448,7 +428,7 @@ class AllocTest(HeatTestCase):
 
     def mock_router_for_vpc(self):
         vpc_name = utils.PhysName('test_stack', 'the_vpc')
-        clients.neutronclient.Client.list_routers(name=vpc_name).AndReturn({
+        neutronclient.Client.list_routers(name=vpc_name).AndReturn({
             "routers": [{
                 "status": "ACTIVE",
                 "external_gateway_info": {
@@ -464,16 +444,12 @@ class AllocTest(HeatTestCase):
 
     def mock_no_router_for_vpc(self):
         vpc_name = utils.PhysName('test_stack', 'the_vpc')
-        clients.neutronclient.Client.list_routers(name=vpc_name).AndReturn({
+        neutronclient.Client.list_routers(name=vpc_name).AndReturn({
             "routers": []
         })
 
-    def mock_keystone(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakec.FakeKeystoneClient())
-
     def test_neutron_eip(self):
-        eip.ElasticIp.nova().MultipleTimes().AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
         self.fc.servers.get('WebServer').AndReturn(self.fc.servers.list()[0])
         self.fc.servers.get('WebServer')
 
@@ -500,7 +476,6 @@ class AllocTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_association_allocationid(self):
-        self.mock_keystone()
         self.mock_create_gateway_attachment()
         self.mock_show_network()
         self.mock_router_for_vpc()
@@ -529,7 +504,6 @@ class AllocTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_association_allocationid_with_instance(self):
-        self.mock_keystone()
         self.mock_show_network()
 
         self.mock_create_floatingip()

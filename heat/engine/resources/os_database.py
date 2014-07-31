@@ -11,9 +11,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from troveclient.openstack.common.apiclient import exceptions as troveexc
+
 from heat.common import exception
 from heat.engine import attributes
-from heat.engine.clients import troveclient
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
@@ -29,12 +30,20 @@ class OSDBInstance(resource.Resource):
     OpenStack cloud database instance resource.
     '''
 
+    TROVE_STATUS = (
+        ERROR, FAILED, ACTIVE,
+    ) = (
+        'ERROR', 'FAILED', 'ACTIVE',
+    )
+
+    BAD_STATUSES = (ERROR, FAILED)
+
     PROPERTIES = (
         NAME, FLAVOR, SIZE, DATABASES, USERS, AVAILABILITY_ZONE,
-        RESTORE_POINT,
+        RESTORE_POINT, DATASTORE_TYPE, DATASTORE_VERSION,
     ) = (
         'name', 'flavor', 'size', 'databases', 'users', 'availability_zone',
-        'restore_point',
+        'restore_point', 'datastore_type', 'datastore_version',
     )
 
     _DATABASE_KEYS = (
@@ -59,7 +68,6 @@ class OSDBInstance(resource.Resource):
         NAME: properties.Schema(
             properties.Schema.STRING,
             _('Name of the DB instance to create.'),
-            required=True,
             constraints=[
                 constraints.Length(max=255),
             ]
@@ -68,6 +76,22 @@ class OSDBInstance(resource.Resource):
             properties.Schema.STRING,
             _('Reference to a flavor for creating DB instance.'),
             required=True
+        ),
+        DATASTORE_TYPE: properties.Schema(
+            properties.Schema.STRING,
+            _("Name of registered datastore type."),
+            constraints=[
+                constraints.Length(max=255)
+            ]
+        ),
+        DATASTORE_VERSION: properties.Schema(
+            properties.Schema.STRING,
+            _("Name of the registered datastore version. "
+              "It must exist for provided datastore type. "
+              "Defaults to using single active version. "
+              "If several active versions exist for provided datastore type, "
+              "explicit value for this parameter must be specified."),
+            constraints=[constraints.Length(max=255)]
         ),
         SIZE: properties.Schema(
             properties.Schema.INTEGER,
@@ -153,7 +177,10 @@ class OSDBInstance(resource.Resource):
                         schema=properties.Schema(
                             properties.Schema.STRING,
                         ),
-                        required=True
+                        required=True,
+                        constraints=[
+                            constraints.Length(min=1),
+                        ]
                     ),
                 },
             )
@@ -190,25 +217,28 @@ class OSDBInstance(resource.Resource):
 
         return self._dbinstance
 
-    def physical_resource_name(self):
+    def _dbinstance_name(self):
         name = self.properties.get(self.NAME)
         if name:
             return name
 
-        return super(OSDBInstance, self).physical_resource_name()
+        return self.physical_resource_name()
 
     def handle_create(self):
         '''
         Create cloud database instance.
         '''
-        self.dbinstancename = self.physical_resource_name()
         self.flavor = nova_utils.get_flavor_id(self.trove(),
                                                self.properties[self.FLAVOR])
         self.volume = {'size': self.properties[self.SIZE]}
         self.databases = self.properties.get(self.DATABASES)
         self.users = self.properties.get(self.USERS)
         restore_point = self.properties.get(self.RESTORE_POINT)
+        if restore_point:
+            restore_point = {"backupRef": restore_point}
         zone = self.properties.get(self.AVAILABILITY_ZONE)
+        self.datastore_type = self.properties.get(self.DATASTORE_TYPE)
+        self.datastore_version = self.properties.get(self.DATASTORE_VERSION)
 
         # convert user databases to format required for troveclient.
         # that is, list of database dictionaries
@@ -218,13 +248,15 @@ class OSDBInstance(resource.Resource):
 
         # create db instance
         instance = self.trove().instances.create(
-            self.dbinstancename,
+            self._dbinstance_name(),
             self.flavor,
             volume=self.volume,
             databases=self.databases,
             users=self.users,
             restorePoint=restore_point,
-            availability_zone=zone)
+            availability_zone=zone,
+            datastore=self.datastore_type,
+            datastore_version=self.datastore_version)
         self.resource_id_set(instance.id)
 
         return instance
@@ -232,7 +264,7 @@ class OSDBInstance(resource.Resource):
     def _refresh_instance(self, instance):
         try:
             instance.get()
-        except troveclient.exceptions.RequestEntityTooLarge as exc:
+        except troveexc.RequestEntityTooLarge as exc:
             msg = _("Stack %(name)s (%(id)s) received an OverLimit "
                     "response during instance.get(): %(exception)s")
             LOG.warning(msg % {'name': self.stack.name,
@@ -243,19 +275,22 @@ class OSDBInstance(resource.Resource):
         '''
         Check if cloud DB instance creation is complete.
         '''
-        self._refresh_instance(instance)
-
-        if instance.status == 'ERROR':
+        self._refresh_instance(instance)  # get updated attributes
+        if instance.status in self.BAD_STATUSES:
             raise exception.Error(_("Database instance creation failed."))
 
-        if instance.status != 'ACTIVE':
+        if instance.status != self.ACTIVE:
             return False
 
         msg = _("Database instance %(database)s created (flavor:%(flavor)s, "
-                "volume:%(volume)s)")
-        LOG.info(msg % ({'database': self.dbinstancename,
-                         'flavor': self.flavor,
-                         'volume': self.volume}))
+                "volume:%(volume)s, datastore:%(datastore_type)s, "
+                "datastore_version:%(datastore_version)s)")
+
+        LOG.info(msg % {'database': self._dbinstance_name(),
+                        'flavor': self.flavor,
+                        'volume': self.volume,
+                        'datastore_type': self.datastore_type,
+                        'datastore_version': self.datastore_version})
         return True
 
     def handle_delete(self):
@@ -268,7 +303,7 @@ class OSDBInstance(resource.Resource):
         instance = None
         try:
             instance = self.trove().instances.get(self.resource_id)
-        except troveclient.exceptions.NotFound:
+        except troveexc.NotFound:
             LOG.debug("Database instance %s not found." % self.resource_id)
             self.resource_id_set(None)
         else:
@@ -277,14 +312,15 @@ class OSDBInstance(resource.Resource):
 
     def check_delete_complete(self, instance):
         '''
-        Check for completion of cloud DB instance delettion
+        Check for completion of cloud DB instance deletion
         '''
         if not instance:
             return True
 
         try:
+            # For some time trove instance may continue to live
             self._refresh_instance(instance)
-        except troveclient.exceptions.NotFound:
+        except troveexc.NotFound:
             self.resource_id_set(None)
             return True
 
@@ -298,6 +334,39 @@ class OSDBInstance(resource.Resource):
         if res:
             return res
 
+        datastore_type = self.properties.get(self.DATASTORE_TYPE)
+        datastore_version = self.properties.get(self.DATASTORE_VERSION)
+
+        if datastore_type:
+            # get current active versions
+            allowed_versions = self.trove().datastore_versions.list(
+                datastore_type)
+            allowed_version_names = [v.name for v in allowed_versions]
+            if datastore_version:
+                if datastore_version not in allowed_version_names:
+                    msg = _("Datastore version %(dsversion)s "
+                            "for datastore type %(dstype)s is not valid. "
+                            "Allowed versions are %(allowed)s.") % {
+                                'dstype': datastore_type,
+                                'dsversion': datastore_version,
+                                'allowed': ', '.join(allowed_version_names)}
+                    raise exception.StackValidationFailed(message=msg)
+            else:
+                if len(allowed_versions) > 1:
+                    msg = _("Multiple active datastore versions exist for "
+                            "datastore type %(dstype)s. "
+                            "Explicit datastore version must be provided. "
+                            "Allowed versions are %(allowed)s.") % {
+                                'dstype': datastore_type,
+                                'allowed': ', '.join(allowed_version_names)}
+                    raise exception.StackValidationFailed(message=msg)
+        else:
+            if datastore_version:
+                msg = _("Not allowed - %(dsver)s without %(dstype)s.") % {
+                    'dsver': self.DATASTORE_VERSION,
+                    'dstype': self.DATASTORE_TYPE}
+                raise exception.StackValidationFailed(message=msg)
+
         # check validity of user and databases
         users = self.properties.get(self.USERS)
         if not users:
@@ -305,23 +374,19 @@ class OSDBInstance(resource.Resource):
 
         databases = self.properties.get(self.DATABASES)
         if not databases:
-            msg = _('Databases property is required if users property'
-                    ' is provided')
+            msg = _('Databases property is required if users property '
+                    'is provided for resource %s.') % self.name
             raise exception.StackValidationFailed(message=msg)
 
         db_names = set([db[self.DATABASE_NAME] for db in databases])
         for user in users:
-            if not user.get(self.USER_DATABASES, []):
-                msg = _('Must provide access to at least one database for '
-                        'user %s') % user[self.USER_NAME]
-                raise exception.StackValidationFailed(message=msg)
-
             missing_db = [db_name for db_name in user[self.USER_DATABASES]
                           if db_name not in db_names]
 
             if missing_db:
-                msg = _('Database %s specified for user does not exist in '
-                        'databases.') % missing_db
+                msg = (_('Database %(dbs)s specified for user does '
+                         'not exist in databases for resource %(name)s.')
+                       % {'dbs': missing_db, 'name': self.name})
                 raise exception.StackValidationFailed(message=msg)
 
     def href(self):

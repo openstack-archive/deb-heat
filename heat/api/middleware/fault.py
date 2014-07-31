@@ -25,11 +25,9 @@ import traceback
 from oslo.config import cfg
 import webob
 
-
 from heat.common import exception
 from heat.common import serializers
 from heat.common import wsgi
-from heat.openstack.common.rpc import common as rpc_common
 
 
 cfg.CONF.import_opt('debug', 'heat.openstack.common.log')
@@ -70,6 +68,7 @@ class FaultWrapper(wsgi.Middleware):
         'Forbidden': webob.exc.HTTPForbidden,
         'StackExists': webob.exc.HTTPConflict,
         'StackValidationFailed': webob.exc.HTTPBadRequest,
+        'InvalidSchemaError': webob.exc.HTTPBadRequest,
         'InvalidTemplateReference': webob.exc.HTTPBadRequest,
         'InvalidTemplateVersion': webob.exc.HTTPBadRequest,
         'InvalidTemplateSection': webob.exc.HTTPBadRequest,
@@ -108,8 +107,8 @@ class FaultWrapper(wsgi.Middleware):
 
         ex_type = ex.__class__.__name__
 
-        if ex_type.endswith(rpc_common._REMOTE_POSTFIX):
-            ex_type = ex_type[:-len(rpc_common._REMOTE_POSTFIX)]
+        if ex_type.endswith('_Remote'):
+            ex_type = ex_type[:-len('_Remote')]
 
         full_message = unicode(ex)
         if full_message.find('\n') > -1:

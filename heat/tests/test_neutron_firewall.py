@@ -13,19 +13,15 @@
 
 import copy
 
-from testtools import skipIf
+from neutronclient.v2_0 import client as neutronclient
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import clients
 from heat.engine.resources.neutron import firewall
 from heat.engine import scheduler
-from heat.openstack.common.importutils import try_import
 from heat.tests.common import HeatTestCase
-from heat.tests import fakes
 from heat.tests import utils
 
-neutronclient = try_import('neutronclient.v2_0.client')
 
 firewall_template = '''
 {
@@ -86,7 +82,6 @@ firewall_rule_template = '''
 '''
 
 
-@skipIf(neutronclient is None, 'neutronclient unavailable')
 class FirewallTest(HeatTestCase):
 
     def setUp(self):
@@ -95,11 +90,9 @@ class FirewallTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'delete_firewall')
         self.m.StubOutWithMock(neutronclient.Client, 'show_firewall')
         self.m.StubOutWithMock(neutronclient.Client, 'update_firewall')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
     def create_firewall(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_firewall({
             'firewall': {
                 'name': 'test-firewall', 'admin_state_up': True,
@@ -120,8 +113,6 @@ class FirewallTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_failed(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_firewall({
             'firewall': {
                 'name': 'test-firewall', 'admin_state_up': True,
@@ -218,7 +209,6 @@ class FirewallTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-@skipIf(neutronclient is None, 'neutronclient unavailable')
 class FirewallPolicyTest(HeatTestCase):
 
     def setUp(self):
@@ -227,11 +217,9 @@ class FirewallPolicyTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'delete_firewall_policy')
         self.m.StubOutWithMock(neutronclient.Client, 'show_firewall_policy')
         self.m.StubOutWithMock(neutronclient.Client, 'update_firewall_policy')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
     def create_firewall_policy(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_firewall_policy({
             'firewall_policy': {
                 'name': 'test-firewall-policy', 'shared': True,
@@ -252,8 +240,6 @@ class FirewallPolicyTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_failed(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_firewall_policy({
             'firewall_policy': {
                 'name': 'test-firewall-policy', 'shared': True,
@@ -349,7 +335,6 @@ class FirewallPolicyTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-@skipIf(neutronclient is None, 'neutronclient unavailable')
 class FirewallRuleTest(HeatTestCase):
 
     def setUp(self):
@@ -358,11 +343,9 @@ class FirewallRuleTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'delete_firewall_rule')
         self.m.StubOutWithMock(neutronclient.Client, 'show_firewall_rule')
         self.m.StubOutWithMock(neutronclient.Client, 'update_firewall_rule')
-        self.m.StubOutWithMock(clients.OpenStackClients, 'keystone')
+        self.stub_keystoneclient()
 
     def create_firewall_rule(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_firewall_rule({
             'firewall_rule': {
                 'name': 'test-firewall-rule', 'shared': True,
@@ -384,8 +367,6 @@ class FirewallRuleTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_failed(self):
-        clients.OpenStackClients.keystone().AndReturn(
-            fakes.FakeKeystoneClient())
         neutronclient.Client.create_firewall_rule({
             'firewall_rule': {
                 'name': 'test-firewall-rule', 'shared': True,

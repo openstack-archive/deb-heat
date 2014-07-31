@@ -17,7 +17,6 @@ import datetime
 import mock
 import mox
 from oslo.config import cfg
-from testtools import skipIf
 
 from heat.common import exception
 from heat.common import short_id
@@ -32,13 +31,9 @@ from heat.engine.resources import loadbalancer
 from heat.engine.resources.neutron import loadbalancer as neutron_lb
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
-from heat.openstack.common.importutils import try_import
 from heat.openstack.common import timeutils
 from heat.tests.common import HeatTestCase
-from heat.tests import fakes
 from heat.tests import utils
-
-neutronclient = try_import('neutronclient.v2_0.client')
 
 
 as_template = '''
@@ -130,7 +125,7 @@ class AutoScalingTest(HeatTestCase):
         super(AutoScalingTest, self).setUp()
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://server.test:8000/v1/waitcondition')
-        self.fc = fakes.FakeKeystoneClient()
+        self.stub_keystoneclient()
 
     def create_scaling_group(self, t, stack, resource_name):
         # create the launch configuration resource
@@ -153,17 +148,16 @@ class AutoScalingTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
 
-    def _stub_validate(self):
-        self.m.StubOutWithMock(parser.Stack, 'validate')
-        parser.Stack.validate().MultipleTimes()
-
-    def _stub_create(self, num):
-        self._stub_validate()
+    def _stub_create(self, num, with_error=None):
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
         self.m.StubOutWithMock(image.ImageConstraint, "validate")
         image.ImageConstraint.validate(
             mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        if with_error:
+            instance.Instance.handle_create().AndRaise(
+                exception.Error(with_error))
+            return
         cookie = object()
         for x in range(num):
             instance.Instance.handle_create().AndReturn(cookie)
@@ -171,8 +165,13 @@ class AutoScalingTest(HeatTestCase):
         instance.Instance.check_create_complete(
             cookie).MultipleTimes().AndReturn(True)
 
+    def _stub_image_validate(self, num=1):
+        self.m.StubOutWithMock(image.ImageConstraint, "validate")
+        for x in range(num):
+            image.ImageConstraint.validate(
+                mox.IgnoreArg(), mox.IgnoreArg()).AndReturn(True)
+
     def _stub_delete(self, num):
-        self._stub_validate()
         self.m.StubOutWithMock(instance.Instance, 'handle_delete')
         self.m.StubOutWithMock(instance.Instance, 'check_delete_complete')
         task = object()
@@ -181,6 +180,38 @@ class AutoScalingTest(HeatTestCase):
         instance.Instance.check_delete_complete(task).AndReturn(False)
         instance.Instance.check_delete_complete(
             task).MultipleTimes().AndReturn(True)
+
+    def _stub_suspend(self, cookies=None, with_error=None):
+        cookies = cookies or []
+        self.m.StubOutWithMock(instance.Instance, 'handle_suspend')
+        self.m.StubOutWithMock(instance.Instance, 'check_suspend_complete')
+        if with_error:
+            instance.Instance.handle_suspend().AndRaise(
+                exception.Error(with_error))
+            return
+        inst_cookies = cookies or [(object(), object(), object())]
+        for cookie in inst_cookies:
+            instance.Instance.handle_suspend().InAnyOrder().AndReturn(cookie)
+            instance.Instance.check_suspend_complete(
+                cookie).InAnyOrder().AndReturn(False)
+            instance.Instance.check_suspend_complete(
+                cookie).InAnyOrder().AndReturn(True)
+
+    def _stub_resume(self, cookies=None, with_error=None):
+        cookies = cookies or []
+        self.m.StubOutWithMock(instance.Instance, 'handle_resume')
+        self.m.StubOutWithMock(instance.Instance, 'check_resume_complete')
+        if with_error:
+            instance.Instance.handle_resume().AndRaise(
+                exception.Error(with_error))
+            return
+        inst_cookies = cookies or [(object(), object(), object())]
+        for cookie in inst_cookies:
+            instance.Instance.handle_resume().InAnyOrder().AndReturn(cookie)
+            instance.Instance.check_resume_complete(
+                cookie).InAnyOrder().AndReturn(False)
+            instance.Instance.check_resume_complete(
+                cookie).InAnyOrder().AndReturn(True)
 
     def _stub_lb_reload(self, num, unset=True, nochange=False):
         expected_list = [self.dummy_instance_id] * num
@@ -284,8 +315,11 @@ class AutoScalingTest(HeatTestCase):
         self.assertEqual(1, len(instance_names))
 
         # Reduce the min size to 0, should complete without adjusting
-        update_snippet = copy.deepcopy(rsrc.parsed_template())
-        update_snippet['Properties']['MinSize'] = '0'
+        props = copy.copy(rsrc.properties.data)
+        props['MinSize'] = '0'
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name,
+                                                      rsrc.type(),
+                                                      props)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual(instance_names, rsrc.get_instance_names())
 
@@ -294,6 +328,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_scale_notification(adjust=-1, groupname=rsrc.FnGetRefId(),
                                       start_capacity=1, end_capacity=0)
         self._stub_meta_expected(now, 'ChangeInCapacity : -1')
+        self._stub_delete(1)
         self.m.ReplayAll()
         rsrc.adjust(-1)
         self.assertEqual([], rsrc.get_instance_names())
@@ -314,8 +349,11 @@ class AutoScalingTest(HeatTestCase):
         self.assertEqual(utils.PhysName(stack.name, rsrc.name),
                          rsrc.FnGetRefId())
         self.assertEqual(1, len(rsrc.get_instance_names()))
-        update_snippet = copy.deepcopy(rsrc.parsed_template())
-        update_snippet['Properties']['AvailabilityZones'] = ['foo']
+        props = copy.copy(rsrc.properties.data)
+        props['AvailabilityZones'] = ['foo']
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name,
+                                                      rsrc.type(),
+                                                      props)
         updater = scheduler.TaskRunner(rsrc.update, update_snippet)
         self.assertRaises(resource.UpdateReplace, updater)
 
@@ -340,12 +378,7 @@ class AutoScalingTest(HeatTestCase):
         self.m.VerifyAll()
         self.m.UnsetStubs()
 
-        self.m.StubOutWithMock(instance.Instance, 'handle_suspend')
-        self.m.StubOutWithMock(instance.Instance, 'check_suspend_complete')
-        inst_cookie = (object(), object(), object())
-        instance.Instance.handle_suspend().AndReturn(inst_cookie)
-        instance.Instance.check_suspend_complete(inst_cookie).AndReturn(False)
-        instance.Instance.check_suspend_complete(inst_cookie).AndReturn(True)
+        self._stub_suspend()
         self.m.ReplayAll()
 
         scheduler.TaskRunner(rsrc.suspend)()
@@ -372,12 +405,7 @@ class AutoScalingTest(HeatTestCase):
         self.m.VerifyAll()
         self.m.UnsetStubs()
 
-        self.m.StubOutWithMock(instance.Instance, 'handle_resume')
-        self.m.StubOutWithMock(instance.Instance, 'check_resume_complete')
-        inst_cookie = (object(), object(), object())
-        instance.Instance.handle_resume().AndReturn(inst_cookie)
-        instance.Instance.check_resume_complete(inst_cookie).AndReturn(False)
-        instance.Instance.check_resume_complete(inst_cookie).AndReturn(True)
+        self._stub_resume()
         self.m.ReplayAll()
 
         rsrc.state_set(rsrc.SUSPEND, rsrc.COMPLETE)
@@ -410,16 +438,8 @@ class AutoScalingTest(HeatTestCase):
         self.m.VerifyAll()
         self.m.UnsetStubs()
 
-        self.m.StubOutWithMock(instance.Instance, 'handle_suspend')
-        self.m.StubOutWithMock(instance.Instance, 'check_suspend_complete')
-        inst_cookie1 = ('foo1', 'foo2', 'foo3')
-        inst_cookie2 = ('bar1', 'bar2', 'bar3')
-        instance.Instance.handle_suspend().InAnyOrder().AndReturn(inst_cookie1)
-        instance.Instance.handle_suspend().InAnyOrder().AndReturn(inst_cookie2)
-        instance.Instance.check_suspend_complete(inst_cookie1).InAnyOrder(
-        ).AndReturn(True)
-        instance.Instance.check_suspend_complete(inst_cookie2).InAnyOrder(
-        ).AndReturn(True)
+        self._stub_suspend(cookies=[('foo1', 'foo2', 'foo3'),
+                                    ('bar1', 'bar2', 'bar3')])
         self.m.ReplayAll()
 
         scheduler.TaskRunner(rsrc.suspend)()
@@ -448,16 +468,8 @@ class AutoScalingTest(HeatTestCase):
         self.m.VerifyAll()
         self.m.UnsetStubs()
 
-        self.m.StubOutWithMock(instance.Instance, 'handle_resume')
-        self.m.StubOutWithMock(instance.Instance, 'check_resume_complete')
-        inst_cookie1 = ('foo1', 'foo2', 'foo3')
-        inst_cookie2 = ('bar1', 'bar2', 'bar3')
-        instance.Instance.handle_resume().InAnyOrder().AndReturn(inst_cookie1)
-        instance.Instance.handle_resume().InAnyOrder().AndReturn(inst_cookie2)
-        instance.Instance.check_resume_complete(inst_cookie1).InAnyOrder(
-        ).AndReturn(True)
-        instance.Instance.check_resume_complete(inst_cookie2).InAnyOrder(
-        ).AndReturn(True)
+        self._stub_resume(cookies=[('foo1', 'foo2', 'foo3'),
+                                   ('bar1', 'bar2', 'bar3')])
         self.m.ReplayAll()
 
         rsrc.state_set(rsrc.SUSPEND, rsrc.COMPLETE)
@@ -488,15 +500,13 @@ class AutoScalingTest(HeatTestCase):
         self.m.VerifyAll()
         self.m.UnsetStubs()
 
-        self.m.StubOutWithMock(instance.Instance, 'handle_suspend')
-        self.m.StubOutWithMock(instance.Instance, 'check_suspend_complete')
-        instance.Instance.handle_suspend().AndRaise(Exception('oops'))
+        self._stub_suspend(with_error='oops')
         self.m.ReplayAll()
 
         sus_task = scheduler.TaskRunner(rsrc.suspend)
         self.assertRaises(exception.ResourceFailure, sus_task, ())
         self.assertEqual((rsrc.SUSPEND, rsrc.FAILED), rsrc.state)
-        self.assertEqual('Error: Resource SUSPEND failed: Exception: oops',
+        self.assertEqual('Error: Resource SUSPEND failed: Error: oops',
                          rsrc.status_reason)
 
         rsrc.delete()
@@ -520,9 +530,7 @@ class AutoScalingTest(HeatTestCase):
         self.m.VerifyAll()
         self.m.UnsetStubs()
 
-        self.m.StubOutWithMock(instance.Instance, 'handle_resume')
-        self.m.StubOutWithMock(instance.Instance, 'check_resume_complete')
-        instance.Instance.handle_resume().AndRaise(Exception('oops'))
+        self._stub_resume(with_error='oops')
         self.m.ReplayAll()
 
         rsrc.state_set(rsrc.SUSPEND, rsrc.COMPLETE)
@@ -532,7 +540,7 @@ class AutoScalingTest(HeatTestCase):
         sus_task = scheduler.TaskRunner(rsrc.resume)
         self.assertRaises(exception.ResourceFailure, sus_task, ())
         self.assertEqual((rsrc.RESUME, rsrc.FAILED), rsrc.state)
-        self.assertEqual('Error: Resource RESUME failed: Exception: oops',
+        self.assertEqual('Error: Resource RESUME failed: Error: oops',
                          rsrc.status_reason)
 
         rsrc.delete()
@@ -542,7 +550,6 @@ class AutoScalingTest(HeatTestCase):
         t = template_format.parse(as_template)
         stack = utils.parse_stack(t, params=self.params)
 
-        self._stub_validate()
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
         instance.Instance.handle_create().AndRaise(Exception)
@@ -584,8 +591,11 @@ class AutoScalingTest(HeatTestCase):
         instance_names = rsrc.get_instance_names()
 
         # Reduce the max size to 2, should complete without adjusting
-        update_snippet = copy.deepcopy(rsrc.parsed_template())
-        update_snippet['Properties']['MaxSize'] = '2'
+        props = copy.copy(rsrc.properties.data)
+        props['MaxSize'] = '2'
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name,
+                                                      rsrc.type(),
+                                                      props)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual(instance_names, rsrc.get_instance_names())
         self.assertEqual(2, rsrc.properties['MaxSize'])
@@ -614,8 +624,11 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
 
-        update_snippet = copy.deepcopy(rsrc.parsed_template())
-        update_snippet['Properties']['MinSize'] = '2'
+        props = copy.copy(rsrc.properties.data)
+        props['MinSize'] = '2'
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name,
+                                                      rsrc.type(),
+                                                      props)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual(2, len(rsrc.get_instance_names()))
         self.assertEqual(2, rsrc.properties['MinSize'])
@@ -644,8 +657,11 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
 
-        update_snippet = copy.deepcopy(rsrc.parsed_template())
-        update_snippet['Properties']['DesiredCapacity'] = '2'
+        props = copy.copy(rsrc.properties.data)
+        props['DesiredCapacity'] = '2'
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name,
+                                                      rsrc.type(),
+                                                      props)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual(2, len(rsrc.get_instance_names()))
         self.assertEqual(2, rsrc.properties['DesiredCapacity'])
@@ -674,9 +690,12 @@ class AutoScalingTest(HeatTestCase):
         self._stub_delete(1)
         self.m.ReplayAll()
 
-        update_snippet = copy.deepcopy(rsrc.parsed_template())
-        update_snippet['Properties']['MinSize'] = '0'
-        update_snippet['Properties']['DesiredCapacity'] = '0'
+        props = copy.copy(rsrc.properties.data)
+        props['MinSize'] = '0'
+        props['DesiredCapacity'] = '0'
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name,
+                                                      rsrc.type(),
+                                                      props)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual(0, len(rsrc.get_instance_names()))
         self.assertEqual(0, rsrc.properties['DesiredCapacity'])
@@ -701,8 +720,11 @@ class AutoScalingTest(HeatTestCase):
 
         # Remove DesiredCapacity from the updated template, which should
         # have no effect, it's an optional parameter
-        update_snippet = copy.deepcopy(rsrc.parsed_template())
-        del(update_snippet['Properties']['DesiredCapacity'])
+        props = copy.copy(rsrc.properties.data)
+        del props['DesiredCapacity']
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name,
+                                                      rsrc.type(),
+                                                      props)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual(instance_names, rsrc.get_instance_names())
         self.assertIsNone(rsrc.properties['DesiredCapacity'])
@@ -726,8 +748,12 @@ class AutoScalingTest(HeatTestCase):
         self.assertEqual(utils.PhysName(stack.name, rsrc.name),
                          rsrc.FnGetRefId())
         self.assertEqual(1, len(rsrc.get_instance_names()))
-        update_snippet = copy.deepcopy(rsrc.parsed_template())
-        update_snippet['Properties']['Cooldown'] = '61'
+
+        props = copy.copy(rsrc.properties.data)
+        props['Cooldown'] = '61'
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name,
+                                                      rsrc.type(),
+                                                      props)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual(61, rsrc.properties['Cooldown'])
 
@@ -771,14 +797,16 @@ class AutoScalingTest(HeatTestCase):
         self.assertEqual(utils.PhysName(stack.name, rsrc.name),
                          rsrc.FnGetRefId())
         self.assertEqual(1, len(rsrc.get_instance_names()))
-        update_snippet = copy.deepcopy(rsrc.parsed_template())
-        update_snippet['Properties']['Cooldown'] = '61'
+        props = copy.copy(rsrc.properties.data)
+        props['Cooldown'] = '61'
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name,
+                                                      rsrc.type(),
+                                                      props)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
 
         rsrc.delete()
         self.m.VerifyAll()
 
-    @skipIf(neutronclient is None, 'neutronclient unavailable')
     def test_lb_reload_members(self):
         t = template_format.parse(as_template)
         t['Resources']['ElasticLoadBalancer'] = {
@@ -814,7 +842,6 @@ class AutoScalingTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    @skipIf(neutronclient is None, 'neutronclient unavailable')
     def test_lb_reload_invalid_resource(self):
         t = template_format.parse(as_template)
         t['Resources']['ElasticLoadBalancer'] = {
@@ -854,7 +881,8 @@ class AutoScalingTest(HeatTestCase):
 
         # reduce to 1
         self._stub_lb_reload(1)
-        self._stub_validate()
+        self._stub_delete(2)
+        self._stub_image_validate()
         self._stub_meta_expected(now, 'ChangeInCapacity : -2')
         self._stub_scale_notification(adjust=-2, groupname=rsrc.FnGetRefId(),
                                       start_capacity=3, end_capacity=1)
@@ -874,7 +902,8 @@ class AutoScalingTest(HeatTestCase):
 
         # set to 2
         self._stub_lb_reload(2)
-        self._stub_validate()
+        self._stub_delete(1)
+        self._stub_image_validate(2)
         self._stub_meta_expected(now, 'ExactCapacity : 2')
         self._stub_scale_notification(adjust=2, groupname=rsrc.FnGetRefId(),
                                       adjust_type='ExactCapacity',
@@ -900,13 +929,8 @@ class AutoScalingTest(HeatTestCase):
         self.m.UnsetStubs()
 
         # Scale up one 1 instance with resource failure
-        self.m.StubOutWithMock(instance.Instance, 'handle_create')
-        instance.Instance.handle_create().AndRaise(exception.Error('Bang'))
-        self.m.StubOutWithMock(image.ImageConstraint, "validate")
-        image.ImageConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self._stub_create(1, with_error='Bang')
         self._stub_lb_reload(1, unset=False, nochange=True)
-        self._stub_validate()
         self._stub_scale_notification(adjust=1,
                                       groupname=rsrc.FnGetRefId(),
                                       start_capacity=1,
@@ -931,7 +955,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(2)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack['WebServerGroup'] = rsrc
+        stack.resources['WebServerGroup'] = rsrc
         self.assertEqual(2, len(rsrc.get_instance_names()))
 
         # raise above the max
@@ -944,7 +968,8 @@ class AutoScalingTest(HeatTestCase):
 
         # lower below the min
         self._stub_lb_reload(1)
-        self._stub_validate()
+        self._stub_delete(4)
+        self._stub_image_validate()
         self._stub_meta_expected(now, 'ChangeInCapacity : -5')
         self.m.ReplayAll()
         rsrc.adjust(-5)
@@ -971,14 +996,15 @@ class AutoScalingTest(HeatTestCase):
         self._stub_meta_expected(now, 'ExactCapacity : 2')
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack['WebServerGroup'] = rsrc
+        stack.resources['WebServerGroup'] = rsrc
         self.assertEqual(2, len(rsrc.get_instance_names()))
 
         # reduce by decrease %
         self._stub_lb_reload(lowest)
         adjust = 'PercentChangeInCapacity : %d' % decrease
         self._stub_meta_expected(now, adjust)
-        self._stub_validate()
+        self._stub_delete(2 - lowest)
+        self._stub_image_validate()
         self.m.ReplayAll()
         rsrc.adjust(decrease, 'PercentChangeInCapacity')
         self.assertEqual(lowest, len(rsrc.get_instance_names()))
@@ -1017,12 +1043,13 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(2)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack['WebServerGroup'] = rsrc
+        stack.resources['WebServerGroup'] = rsrc
         self.assertEqual(2, len(rsrc.get_instance_names()))
 
         # reduce by 50%
         self._stub_lb_reload(1)
-        self._stub_validate()
+        self._stub_delete(1)
+        self._stub_image_validate()
         self._stub_meta_expected(now, 'PercentChangeInCapacity : -50')
         self.m.ReplayAll()
         rsrc.adjust(-50, 'PercentChangeInCapacity')
@@ -1068,12 +1095,13 @@ class AutoScalingTest(HeatTestCase):
         self._stub_meta_expected(now, 'ExactCapacity : 2')
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack['WebServerGroup'] = rsrc
+        stack.resources['WebServerGroup'] = rsrc
         self.assertEqual(2, len(rsrc.get_instance_names()))
 
         # reduce by 50%
         self._stub_lb_reload(1)
-        self._stub_validate()
+        self._stub_delete(1)
+        self._stub_image_validate()
         self._stub_meta_expected(now, 'PercentChangeInCapacity : -50')
         self.m.ReplayAll()
         rsrc.adjust(-50, 'PercentChangeInCapacity')
@@ -1121,13 +1149,14 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(2)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack['WebServerGroup'] = rsrc
+        stack.resources['WebServerGroup'] = rsrc
         self.assertEqual(2, len(rsrc.get_instance_names()))
 
         # reduce by 50%
         self._stub_lb_reload(1)
         self._stub_meta_expected(now, 'PercentChangeInCapacity : -50')
-        self._stub_validate()
+        self._stub_delete(1)
+        self._stub_image_validate()
         self.m.ReplayAll()
         rsrc.adjust(-50, 'PercentChangeInCapacity')
         self.assertEqual(1, len(rsrc.get_instance_names()))
@@ -1161,10 +1190,6 @@ class AutoScalingTest(HeatTestCase):
         t = template_format.parse(as_template_bad_group)
         stack = utils.parse_stack(t, params=self.params)
 
-        self.m.StubOutWithMock(asc.ScalingPolicy, 'keystone')
-        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(
-            self.fc)
-
         self.m.ReplayAll()
         up_policy = self.create_scaling_policy(t, stack,
                                                'WebServerScaleUpPolicy')
@@ -1189,17 +1214,13 @@ class AutoScalingTest(HeatTestCase):
 
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack['WebServerGroup'] = rsrc
+        stack.resources['WebServerGroup'] = rsrc
         self.assertEqual(1, len(rsrc.get_instance_names()))
 
         # Scale up one
         self._stub_lb_reload(2)
         self._stub_meta_expected(now, 'ChangeInCapacity : 1', 2)
         self._stub_create(1)
-
-        self.m.StubOutWithMock(asc.ScalingPolicy, 'keystone')
-        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(
-            self.fc)
 
         self.m.ReplayAll()
         up_policy = self.create_scaling_policy(t, stack,
@@ -1235,17 +1256,13 @@ class AutoScalingTest(HeatTestCase):
 
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack['WebServerGroup'] = rsrc
+        stack.resources['WebServerGroup'] = rsrc
         self.assertEqual(1, len(rsrc.get_instance_names()))
 
         # Scale up one
         self._stub_lb_reload(2)
         self._stub_meta_expected(now, 'ChangeInCapacity : 1', 2)
         self._stub_create(1)
-
-        self.m.StubOutWithMock(asc.ScalingPolicy, 'keystone')
-        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(
-            self.fc)
 
         self.m.ReplayAll()
         up_policy = self.create_scaling_policy(t, stack,
@@ -1281,17 +1298,14 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(2)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack['WebServerGroup'] = rsrc
+        stack.resources['WebServerGroup'] = rsrc
         self.assertEqual(2, len(rsrc.get_instance_names()))
 
         # Scale down one
         self._stub_lb_reload(1)
-        self._stub_validate()
+        self._stub_delete(1)
+        self._stub_image_validate()
         self._stub_meta_expected(now, 'ChangeInCapacity : -1', 2)
-
-        self.m.StubOutWithMock(asc.ScalingPolicy, 'keystone')
-        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(
-            self.fc)
 
         self.m.ReplayAll()
         down_policy = self.create_scaling_policy(t, stack,
@@ -1313,17 +1327,13 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack['WebServerGroup'] = rsrc
+        stack.resources['WebServerGroup'] = rsrc
         self.assertEqual(1, len(rsrc.get_instance_names()))
 
         # Scale up one
         self._stub_lb_reload(2)
         self._stub_meta_expected(now, 'ChangeInCapacity : 1', 2)
         self._stub_create(1)
-
-        self.m.StubOutWithMock(asc.ScalingPolicy, 'keystone')
-        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(
-            self.fc)
 
         self.m.ReplayAll()
         up_policy = self.create_scaling_policy(t, stack,
@@ -1366,17 +1376,13 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack['WebServerGroup'] = rsrc
+        stack.resources['WebServerGroup'] = rsrc
         self.assertEqual(1, len(rsrc.get_instance_names()))
 
         # Scale up one
         self._stub_lb_reload(2)
         self._stub_meta_expected(now, 'ChangeInCapacity : 1', 2)
         self._stub_create(1)
-
-        self.m.StubOutWithMock(asc.ScalingPolicy, 'keystone')
-        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(
-            self.fc)
 
         self.m.ReplayAll()
         up_policy = self.create_scaling_policy(t, stack,
@@ -1425,16 +1431,12 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack['WebServerGroup'] = rsrc
+        stack.resources['WebServerGroup'] = rsrc
         self.assertEqual(1, len(rsrc.get_instance_names()))
 
         self._stub_lb_reload(2)
         self._stub_meta_expected(now, 'ChangeInCapacity : 1', 2)
         self._stub_create(1)
-
-        self.m.StubOutWithMock(asc.ScalingPolicy, 'keystone')
-        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(
-            self.fc)
 
         self.m.ReplayAll()
         up_policy = self.create_scaling_policy(t, stack,
@@ -1482,17 +1484,13 @@ class AutoScalingTest(HeatTestCase):
         self._stub_create(1)
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack['WebServerGroup'] = rsrc
+        stack.resources['WebServerGroup'] = rsrc
         self.assertEqual(1, len(rsrc.get_instance_names()))
 
         self._stub_lb_reload(2)
         now = timeutils.utcnow()
         self._stub_meta_expected(now, 'ChangeInCapacity : 1', 2)
         self._stub_create(1)
-
-        self.m.StubOutWithMock(asc.ScalingPolicy, 'keystone')
-        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(
-            self.fc)
 
         self.m.ReplayAll()
         up_policy = self.create_scaling_policy(t, stack,
@@ -1533,12 +1531,9 @@ class AutoScalingTest(HeatTestCase):
         self._stub_meta_expected(now, 'ExactCapacity : 1')
         self._stub_create(1)
 
-        self.m.StubOutWithMock(asc.ScalingPolicy, 'keystone')
-        asc.ScalingPolicy.keystone().MultipleTimes().AndReturn(self.fc)
-
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        stack['WebServerGroup'] = rsrc
+        stack.resources['WebServerGroup'] = rsrc
         self.assertEqual(1, len(rsrc.get_instance_names()))
 
         # Create initial scaling policy
@@ -1557,8 +1552,11 @@ class AutoScalingTest(HeatTestCase):
         self.assertEqual(2, len(rsrc.get_instance_names()))
 
         # Update scaling policy
-        update_snippet = copy.deepcopy(up_policy.parsed_template())
-        update_snippet['Properties']['ScalingAdjustment'] = '2'
+        props = copy.copy(up_policy.properties.data)
+        props['ScalingAdjustment'] = '2'
+        update_snippet = rsrc_defn.ResourceDefinition(up_policy.name,
+                                                      up_policy.type(),
+                                                      props)
         scheduler.TaskRunner(up_policy.update, update_snippet)()
         self.assertEqual(2, up_policy.properties['ScalingAdjustment'])
 
@@ -1683,6 +1681,33 @@ class AutoScalingTest(HeatTestCase):
 
         expected_msg = "DesiredCapacity must be between MinSize and MaxSize"
         self.assertEqual(expected_msg, str(e))
+
+    def test_child_template_uses_min_size(self):
+        t = template_format.parse(as_template)
+        stack = utils.parse_stack(t, params=self.params)
+        defn = rsrc_defn.ResourceDefinition(
+            'asg', 'AWS::AutoScaling::AutoScalingGroup',
+            {'MinSize': 2, 'MaxSize': 5, 'LaunchConfigurationName': 'foo'})
+        rsrc = asc.AutoScalingGroup('asg', defn, stack)
+
+        rsrc._create_template = mock.Mock(return_value='tpl')
+
+        self.assertEqual('tpl', rsrc.child_template())
+        rsrc._create_template.assert_called_once_with(2)
+
+    def test_child_template_uses_desired_capacity(self):
+        t = template_format.parse(as_template)
+        stack = utils.parse_stack(t, params=self.params)
+        defn = rsrc_defn.ResourceDefinition(
+            'asg', 'AWS::AutoScaling::AutoScalingGroup',
+            {'MinSize': 2, 'MaxSize': 5, 'DesiredCapacity': 3,
+             'LaunchConfigurationName': 'foo'})
+        rsrc = asc.AutoScalingGroup('asg', defn, stack)
+
+        rsrc._create_template = mock.Mock(return_value='tpl')
+
+        self.assertEqual('tpl', rsrc.child_template())
+        rsrc._create_template.assert_called_once_with(3)
 
 
 class TestInstanceGroup(HeatTestCase):

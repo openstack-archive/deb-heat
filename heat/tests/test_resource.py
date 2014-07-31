@@ -52,6 +52,9 @@ class ResourceTest(HeatTestCase):
         self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
                                   parser.Template(empty_template), env=env,
                                   stack_id=str(uuid.uuid4()))
+        self.mock_warnings = mock.patch('heat.engine.resource.warnings')
+        self.mock_warnings.start()
+        self.addCleanup(self.mock_warnings.stop)
 
     def test_get_class_ok(self):
         cls = resource.get_class('GenericResourceType')
@@ -238,7 +241,8 @@ class ResourceTest(HeatTestCase):
                                             'TestResource')
         res = TestResource('test_resource', tmpl, self.stack)
 
-        utmpl = {'Type': 'TestResource', 'Properties': {'a_string': 'foo'}}
+        utmpl = rsrc_defn.ResourceDefinition('test_resource', 'TestResource',
+                                             {'a_string': 'foo'})
         self.assertRaises(
             resource.UpdateReplace, scheduler.TaskRunner(res.update, utmpl))
 
@@ -301,6 +305,7 @@ class ResourceTest(HeatTestCase):
         tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo')
         res = generic_rsrc.GenericResource('test_resource', tmpl, self.stack)
         self.assertEqual({}, res.metadata_get())
+        self.assertEqual({}, res.metadata)
 
     def test_equals_different_stacks(self):
         tmpl1 = rsrc_defn.ResourceDefinition('test_resource', 'Foo')
@@ -730,7 +735,7 @@ class ResourceTest(HeatTestCase):
             'HeatTemplateFormatVersion': '2012-12-12',
             'Parameters': {
                 'name': {'Type': 'String'},
-                'bool': {'Type': 'String',
+                'bool': {'Type': 'Boolean',
                          'AllowedValues': ['True', 'true', 'False', 'false']},
                 'implemented': {
                     'Type': 'String',
@@ -779,6 +784,9 @@ class ResourceAdoptTest(HeatTestCase):
         super(ResourceAdoptTest, self).setUp()
         resource._register_class('GenericResourceType',
                                  generic_rsrc.GenericResource)
+        self.mock_warnings = mock.patch('heat.engine.resource.warnings')
+        self.mock_warnings.start()
+        self.addCleanup(self.mock_warnings.stop)
 
     def test_adopt_resource_success(self):
         adopt_data = '{}'
@@ -805,6 +813,7 @@ class ResourceAdoptTest(HeatTestCase):
         adopt = scheduler.TaskRunner(res.adopt, res_data)
         adopt()
         self.assertEqual({}, res.metadata_get())
+        self.assertEqual({}, res.metadata)
         self.assertEqual((res.ADOPT, res.COMPLETE), res.state)
 
     def test_adopt_with_resource_data_and_metadata(self):
@@ -834,6 +843,7 @@ class ResourceAdoptTest(HeatTestCase):
         self.assertEqual("test-value",
                          db_api.resource_data_get(res, "test-key"))
         self.assertEqual({"os_distro": "test-distro"}, res.metadata_get())
+        self.assertEqual({"os_distro": "test-distro"}, res.metadata)
         self.assertEqual((res.ADOPT, res.COMPLETE), res.state)
 
     def test_adopt_resource_missing(self):
@@ -1350,14 +1360,24 @@ class MetadataTest(HeatTestCase):
 
         scheduler.TaskRunner(self.res.create)()
         self.addCleanup(self.stack.delete)
+        self.mock_warnings = mock.patch('heat.engine.resource.warnings')
+        self.mock_warnings.start()
+        self.addCleanup(self.mock_warnings.stop)
 
     def test_read_initial(self):
         self.assertEqual({'Test': 'Initial metadata'}, self.res.metadata_get())
+        self.assertEqual({'Test': 'Initial metadata'}, self.res.metadata)
 
     def test_write(self):
         test_data = {'Test': 'Newly-written data'}
         self.res.metadata_set(test_data)
         self.assertEqual(test_data, self.res.metadata_get())
+
+    def test_assign_attribute(self):
+        test_data = {'Test': 'Newly-written data'}
+        self.res.metadata = test_data
+        self.assertEqual(test_data, self.res.metadata_get())
+        self.assertEqual(test_data, self.res.metadata)
 
 
 class ReducePhysicalResourceNameTest(HeatTestCase):

@@ -12,14 +12,12 @@
 #    under the License.
 
 from heat.engine import attributes
-from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.neutron import neutron
 
-if clients.neutronclient is not None:
-    import neutronclient.common.exceptions as neutron_exp
-    from neutronclient.neutron import v2_0 as neutronV20
+import neutronclient.common.exceptions as neutron_exp
+from neutronclient.neutron import v2_0 as neutronV20
 
 
 class Net(neutron.NeutronResource):
@@ -189,21 +187,12 @@ class NetworkConstraint(constraints.BaseCustomConstraint):
     expected_exceptions = (neutron_exp.NeutronClientException,)
 
     def validate_with_client(self, client, value):
-        neutron_client = client.neutron()
+        neutron_client = client.client('neutron')
         neutronV20.find_resourceid_by_name_or_id(
             neutron_client, 'network', value)
 
 
-def constraint_mapping():
-    if clients.neutronclient is None:
-        return {}
-    return {'neutron.network': NetworkConstraint}
-
-
 def resource_mapping():
-    if clients.neutronclient is None:
-        return {}
-
     return {
         'OS::Neutron::Net': Net,
     }

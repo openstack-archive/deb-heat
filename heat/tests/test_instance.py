@@ -20,7 +20,8 @@ from neutronclient.v2_0 import client as neutronclient
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import clients
+from heat.engine.clients.os import glance
+from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
@@ -80,8 +81,8 @@ class InstancesTest(HeatTestCase):
 
     def _mock_get_image_id_success(self, imageId_input, imageId):
         g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
-        clients.OpenStackClients.glance().MultipleTimes().AndReturn(
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
+        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
             g_cli_mock)
         self.m.StubOutWithMock(glance_utils, 'get_image_id')
         glance_utils.get_image_id(g_cli_mock, imageId_input).MultipleTimes().\
@@ -89,8 +90,8 @@ class InstancesTest(HeatTestCase):
 
     def _mock_get_image_id_fail(self, image_id, exp):
         g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
-        clients.OpenStackClients.glance().MultipleTimes().AndReturn(
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
+        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
             g_cli_mock)
         self.m.StubOutWithMock(glance_utils, 'get_image_id')
         glance_utils.get_image_id(g_cli_mock, image_id).AndRaise(exp)
@@ -114,10 +115,8 @@ class InstancesTest(HeatTestCase):
 
         self._mock_get_image_id_success(image_id or 'CentOS 5.2', 1)
 
-        self.m.StubOutWithMock(instance, 'nova')
-        instance.nova().MultipleTimes().AndReturn(self.fc)
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
-        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
 
         if stub_create:
             self.m.StubOutWithMock(self.fc.servers, 'create')
@@ -187,12 +186,18 @@ class InstancesTest(HeatTestCase):
         instance = instances.Instance('instance_create_image_err',
                                       resource_defns['WebServer'], stack)
 
-        g_cli_moc = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(clients.OpenStackClients, 'glance')
-        clients.OpenStackClients.glance().MultipleTimes().AndReturn(g_cli_moc)
+        self._mock_get_image_id_fail('Slackware',
+                                     exception.ImageNotFound(
+                                         image_name='Slackware'))
         self.m.ReplayAll()
 
-        self.assertRaises(ValueError, instance.handle_create)
+        create = scheduler.TaskRunner(instance.create)
+        error = self.assertRaises(exception.ResourceFailure, create)
+        self.assertEqual(
+            'StackValidationFailed: Property error : WebServer: '
+            'ImageId Error validating value \'Slackware\': '
+            'The Image (Slackware) could not be found.',
+            str(error))
 
         self.m.VerifyAll()
 
@@ -213,7 +218,13 @@ class InstancesTest(HeatTestCase):
 
         self.m.ReplayAll()
 
-        self.assertRaises(ValueError, instance.handle_create)
+        create = scheduler.TaskRunner(instance.create)
+        error = self.assertRaises(exception.ResourceFailure, create)
+        self.assertEqual(
+            'StackValidationFailed: Property error : WebServer: '
+            'ImageId Multiple physical resources were '
+            'found with name (CentOS 5.2).',
+            str(error))
 
         self.m.VerifyAll()
 
@@ -231,7 +242,12 @@ class InstancesTest(HeatTestCase):
 
         self.m.ReplayAll()
 
-        self.assertRaises(ValueError, instance.handle_create)
+        create = scheduler.TaskRunner(instance.create)
+        error = self.assertRaises(exception.ResourceFailure, create)
+        self.assertEqual(
+            'StackValidationFailed: Property error : WebServer: '
+            'ImageId 404 (HTTP 404)',
+            str(error))
 
         self.m.VerifyAll()
 
@@ -297,8 +313,8 @@ class InstancesTest(HeatTestCase):
         instance = instances.Instance('instance_create_image',
                                       resource_defns['WebServer'], stack)
 
-        self.m.StubOutWithMock(clients.OpenStackClients, 'nova')
-        clients.OpenStackClients.nova().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
 
         self._mock_get_image_id_success('1', 1)
         self.m.ReplayAll()
@@ -330,8 +346,7 @@ class InstancesTest(HeatTestCase):
             d2['server']['status'] = vm_delete_status
             get().AndReturn((200, d2))
         else:
-            get().AndRaise(
-                instances.clients.novaclient.exceptions.NotFound(404))
+            get().AndRaise(fakes.fake_exception())
 
         self.m.ReplayAll()
 

@@ -24,7 +24,6 @@ from heat.engine import environment
 from heat.engine import function
 from heat.engine.notification import autoscaling as notification
 from heat.engine import properties
-from heat.engine.properties import Properties
 from heat.engine import resource
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
@@ -172,10 +171,8 @@ class InstanceGroup(stack_resource.StackResource):
         UpdatePolicy.
         """
         super(InstanceGroup, self).__init__(name, json_snippet, stack)
-        self.update_policy = Properties(self.update_policy_schema,
-                                        self.t.get('UpdatePolicy', {}),
-                                        parent_name=self.name,
-                                        context=self.context)
+        self.update_policy = self.t.update_policy(self.update_policy_schema,
+                                                  self.context)
 
     def validate(self):
         """
@@ -243,18 +240,13 @@ class InstanceGroup(stack_resource.StackResource):
         if tmpl_diff:
             # parse update policy
             if 'UpdatePolicy' in tmpl_diff:
-                self.update_policy = Properties(
-                    self.update_policy_schema,
-                    json_snippet.get('UpdatePolicy', {}),
-                    parent_name=self.name,
-                    context=self.context)
+                up = json_snippet.update_policy(self.update_policy_schema,
+                                                self.context)
+                self.update_policy = up
 
         if prop_diff:
-            self.properties = Properties(self.properties_schema,
-                                         json_snippet.get('Properties', {}),
-                                         function.resolve,
-                                         self.name,
-                                         self.context)
+            self.properties = json_snippet.properties(self.properties_schema,
+                                                      self.context)
 
             # Replace instances first if launch configuration has changed
             self._try_rolling_update(prop_diff)
@@ -394,7 +386,7 @@ class InstanceGroup(stack_resource.StackResource):
             # nodes.
             self._lb_reload()
 
-    def _lb_reload(self, exclude=[]):
+    def _lb_reload(self, exclude=None):
         '''
         Notify the LoadBalancer to reload its config to include
         the changes in instances we have just made.
@@ -402,22 +394,31 @@ class InstanceGroup(stack_resource.StackResource):
         This must be done after activation (instance in ACTIVE state),
         otherwise the instances' IP addresses may not be available.
         '''
+        exclude = exclude or []
         if self.properties[self.LOAD_BALANCER_NAMES]:
             id_list = [inst.FnGetRefId() for inst in self.get_instances()
                        if inst.FnGetRefId() not in exclude]
             for lb in self.properties[self.LOAD_BALANCER_NAMES]:
                 lb_resource = self.stack[lb]
-                lb_defn = copy.deepcopy(lb_resource.t)
+
+                props = copy.copy(lb_resource.properties.data)
                 if 'Instances' in lb_resource.properties_schema:
-                    lb_defn['Properties']['Instances'] = id_list
+                    props['Instances'] = id_list
                 elif 'members' in lb_resource.properties_schema:
-                    lb_defn['Properties']['members'] = id_list
+                    props['members'] = id_list
                 else:
                     raise exception.Error(
                         _("Unsupported resource '%s' in LoadBalancerNames") %
                         (lb,))
-                resolved_snippet = self.stack.resolve_static_data(lb_defn)
-                scheduler.TaskRunner(lb_resource.update, resolved_snippet)()
+
+                lb_defn = rsrc_defn.ResourceDefinition(
+                    lb_resource.name,
+                    lb_resource.type(),
+                    props,
+                    lb_resource.t.get('Metadata'),
+                    deletion_policy=lb_resource.t.get('DeletionPolicy'))
+
+                scheduler.TaskRunner(lb_resource.update, lb_defn)()
 
     def FnGetRefId(self):
         return self.physical_resource_name()
@@ -567,12 +568,7 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
     }
 
     def handle_create(self):
-        if self.properties[self.DESIRED_CAPACITY]:
-            num_to_create = self.properties[self.DESIRED_CAPACITY]
-        else:
-            num_to_create = self.properties[self.MIN_SIZE]
-        initial_template = self._create_template(num_to_create)
-        return self.create_with_template(initial_template,
+        return self.create_with_template(self.child_template(),
                                          self._environment())
 
     def check_create_complete(self, task):
@@ -591,18 +587,13 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
         if tmpl_diff:
             # parse update policy
             if 'UpdatePolicy' in tmpl_diff:
-                self.update_policy = Properties(
-                    self.update_policy_schema,
-                    json_snippet.get('UpdatePolicy', {}),
-                    parent_name=self.name,
-                    context=self.context)
+                up = json_snippet.update_policy(self.update_policy_schema,
+                                                self.context)
+                self.update_policy = up
 
         if prop_diff:
-            self.properties = Properties(self.properties_schema,
-                                         json_snippet.get('Properties', {}),
-                                         function.resolve,
-                                         self.name,
-                                         self.context)
+            self.properties = json_snippet.properties(self.properties_schema,
+                                                      self.context)
 
             # Replace instances first if launch configuration has changed
             self._try_rolling_update(prop_diff)
@@ -751,6 +742,13 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
                 len(self.properties[self.VPCZONE_IDENTIFIER]) != 1:
             raise exception.NotSupported(feature=_("Anything other than one "
                                          "VPCZoneIdentifier"))
+
+    def child_template(self):
+        if self.properties[self.DESIRED_CAPACITY]:
+            num_instances = self.properties[self.DESIRED_CAPACITY]
+        else:
+            num_instances = self.properties[self.MIN_SIZE]
+        return self._create_template(num_instances)
 
 
 class LaunchConfiguration(resource.Resource):
@@ -1006,11 +1004,8 @@ class ScalingPolicy(signal_responder.SignalResponder, CooldownMixin):
         values during any subsequent adjustment.
         """
         if prop_diff:
-            self.properties = Properties(self.properties_schema,
-                                         json_snippet.get('Properties', {}),
-                                         function.resolve,
-                                         self.name,
-                                         self.context)
+            self.properties = json_snippet.properties(self.properties_schema,
+                                                      self.context)
 
     def _get_adjustement_type(self):
         return self.properties[self.ADJUSTMENT_TYPE]
