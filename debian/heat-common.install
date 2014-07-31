@@ -2,3 +2,4 @@
 etc/heat/api-paste.ini
 etc/heat/environment.d/default.yaml
 etc/heat/policy.json
+etc/heat/templates
