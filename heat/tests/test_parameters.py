@@ -28,8 +28,9 @@ class ParameterTest(testtools.TestCase):
                       validate_value=True):
         tmpl = template.Template({'Parameters': {name: schema}})
         schema = tmpl.param_schemata()[name]
-        return parameters.Parameter(name, schema, value,
-                                    validate_value)
+        param = parameters.Parameter(name, schema, value)
+        param.validate(validate_value)
+        return param
 
     def test_new_string(self):
         p = self.new_parameter('p', {'Type': 'String'}, validate_value=False)
@@ -162,6 +163,11 @@ class ParameterTest(testtools.TestCase):
                   'AllowedValues': ['foo', 'bar', 'baz']}
         p = self.new_parameter('p', schema, 'bar')
         self.assertEqual('bar', p.value())
+
+    def test_string_value_unicode(self):
+        schema = {'Type': 'String'}
+        p = self.new_parameter('p', schema, u'test\u2665')
+        self.assertEqual(u'test\u2665', p.value())
 
     def test_string_value_list_bad(self):
         schema = {'Type': 'String',
@@ -310,9 +316,11 @@ class ParametersTest(testtools.TestCase):
     def new_parameters(self, stack_name, tmpl, user_params={}, stack_id=None,
                        validate_value=True):
         tmpl = template.Template(tmpl)
-        return tmpl.parameters(
+        params = tmpl.parameters(
             identifier.HeatIdentifier('', stack_name, stack_id),
-            user_params, validate_value)
+            user_params)
+        params.validate(validate_value)
+        return params
 
     def test_pseudo_params(self):
         stack_name = 'test_stack'
@@ -372,13 +380,17 @@ class ParametersTest(testtools.TestCase):
 
     def test_map_str(self):
         template = {'Parameters': {'Foo': {'Type': 'String'},
-                                   'Bar': {'Type': 'Number'}}}
+                                   'Bar': {'Type': 'Number'},
+                                   'Uni': {'Type': 'String'}}}
         stack_name = 'test_params'
         params = self.new_parameters(stack_name, template,
-                                     {'Foo': 'foo', 'Bar': '42'})
+                                     {'Foo': 'foo',
+                                      'Bar': '42',
+                                      'Uni': u'test\u2665'})
 
         expected = {'Foo': 'foo',
                     'Bar': '42',
+                    'Uni': 'test\xe2\x99\xa5',
                     'AWS::Region': 'ap-southeast-1',
                     'AWS::StackId':
                     'arn:openstack:heat:::stacks/{0}/{1}'.format(
@@ -408,7 +420,7 @@ class ParametersTest(testtools.TestCase):
         params = {'Parameters': {'Foo': {'Type': 'String'},
                                  'NoAttr': 'No attribute.',
                                  'Bar': {'Type': 'Number', 'Default': '1'}}}
-        self.assertRaises(exception.InvalidTemplateParameter,
+        self.assertRaises(constr.InvalidSchemaError,
                           self.new_parameters,
                           'test',
                           params)

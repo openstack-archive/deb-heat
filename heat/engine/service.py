@@ -151,6 +151,10 @@ class ThreadGroupManager(object):
         self.groups[stack_id].add_timer(cfg.CONF.periodic_interval,
                                         func, *args, **kwargs)
 
+    def stop_timers(self, stack_id):
+        if stack_id in self.groups:
+            self.groups[stack_id].stop_timers()
+
     def stop(self, stack_id):
         '''Stop any active threads on a stack.'''
         if stack_id in self.groups:
@@ -641,7 +645,8 @@ class EngineService(service.Service):
             except Exception as ex:
                 return {'Error': str(ex)}
 
-        tmpl_params = tmpl.parameters(None, {}, validate_value=False)
+        tmpl_params = tmpl.parameters(None, {})
+        tmpl_params.validate(validate_value=False, context=cnxt)
         is_real_param = lambda p: p.name not in tmpl_params.PSEUDO_PARAMETERS
         params = tmpl_params.map(api.format_validate_parameter, is_real_param)
         param_groups = parameter_groups.ParameterGroups(tmpl)
@@ -703,6 +708,7 @@ class EngineService(service.Service):
 
         # Successfully acquired lock
         if acquire_result is None:
+            self.thread_group_mgr.stop_timers(stack.id)
             self.thread_group_mgr.start_with_acquired_lock(stack, lock,
                                                            stack.delete)
             return
