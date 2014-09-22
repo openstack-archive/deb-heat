@@ -45,14 +45,9 @@ override_dh_auto_build:
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-common.postinst
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func heat-common.config
 
-override_dh_installman:
-ifeq (,$(findstring nodocs, $(DEB_BUILD_OPTIONS)))
-	sphinx-build -b man doc/source doc/build/man
-	dh_installman
-endif
-
 override_dh_sphinxdoc:
 ifeq (,$(findstring nodocs, $(DEB_BUILD_OPTIONS)))
-	sphinx-build -b html doc/source $(CURDIR)/debian/heat-doc/usr/share/doc/heat-doc/html
+	python setup.py build_sphinx
+	cp -rf doc/build/html $(CURDIR)/debian/heat-doc/usr/share/doc/heat-doc
 	dh_sphinxdoc -O--buildsystem=python_distutils
 endif

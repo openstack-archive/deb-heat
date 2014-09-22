@@ -1,3 +1,5 @@
+/usr/bin/heat-db-setup
+/usr/bin/heat-keystone-setup
 /usr/bin/heat-manage
 etc/heat/api-paste.ini
 etc/heat/environment.d/default.yaml
