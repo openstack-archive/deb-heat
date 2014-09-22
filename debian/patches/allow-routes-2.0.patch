@@ -1,0 +1,19 @@
+Description: Fix requirements.txt to allow routes 2.0
+ The issue with routes 2.0 was only in the PyPi release, and using the
+ Debian package isn't at all an issue. This patch makes it then possible to use
+ python-routes, which is what Debian has currently.
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: not-needed
+Last-Update: 2014-09-22
+
+--- heat-2014.2~b3.orig/requirements.txt
++++ heat-2014.2~b3/requirements.txt
+@@ -29,7 +29,7 @@ python-troveclient>=1.0.4
+ PyYAML>=3.1.0
+ qpid-python
+ requests>=1.1
+-Routes>=1.12.3,!=2.0
++Routes>=1.12.3
+ six>=1.7.0
+ SQLAlchemy>=0.7.8,!=0.9.5,<=0.9.99
+ sqlalchemy-migrate>=0.9.1
