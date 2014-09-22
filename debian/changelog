@@ -2,6 +2,7 @@ heat (2014.2~b3-1) experimental; urgency=medium
 
   * New upstream release.
   * Fixed (build-)depends for this release.
+  * Added a patch to allow python-routes 2.0.
 
  -- Thomas Goirand <zigo@debian.org>  Tue, 01 Jul 2014 00:58:38 +0800
 
