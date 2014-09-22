@@ -13,16 +13,12 @@
 
 import copy
 
-import mox
-
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import resources
-from heat.engine.resources import image
 from heat.engine.resources import instance
-from heat.engine.resources import nova_keypair
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
@@ -46,12 +42,19 @@ ig_template = '''
 
     "JobServerConfig" : {
       "Type" : "AWS::AutoScaling::LaunchConfiguration",
+      "Metadata": {"foo": "bar"},
       "Properties": {
         "ImageId"           : "foo",
         "InstanceType"      : "m1.large",
         "KeyName"           : "test",
         "SecurityGroups"    : [ "sg-1" ],
-        "UserData"          : "jsconfig data"
+        "UserData"          : "jsconfig data",
+        "BlockDeviceMappings": [
+            {
+                "DeviceName": "vdb",
+                "Ebs": {"SnapshotId": "9ef5496e-7426-446a-bbc8-01f84d9c9972",
+                        "DeleteOnTermination": "True"}
+            }]
       }
     }
   }
@@ -72,12 +75,8 @@ class InstanceGroupTest(HeatTestCase):
         """
         self.m.StubOutWithMock(parser.Stack, 'validate')
         parser.Stack.validate()
-        self.m.StubOutWithMock(nova_keypair.KeypairConstraint, 'validate')
-        nova_keypair.KeypairConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
-        self.m.StubOutWithMock(image.ImageConstraint, 'validate')
-        image.ImageConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.stub_KeypairConstraint_validate()
+        self.stub_ImageConstraint_validate()
 
         self.m.StubOutWithMock(instance_class, 'handle_create')
         self.m.StubOutWithMock(instance_class, 'check_create_complete')
@@ -109,11 +108,18 @@ class InstanceGroupTest(HeatTestCase):
         instance.Instance.FnGetAtt('PublicIp').AndReturn('1.2.3.4')
 
         self.m.ReplayAll()
-        self.create_resource(t, stack, 'JobServerConfig')
+        lc_rsrc = self.create_resource(t, stack, 'JobServerConfig')
+        # check bdm in configuration
+        self.assertIsNotNone(lc_rsrc.properties['BlockDeviceMappings'])
+
         rsrc = self.create_resource(t, stack, 'JobServerGroup')
         self.assertEqual(utils.PhysName(stack.name, rsrc.name),
                          rsrc.FnGetRefId())
         self.assertEqual('1.2.3.4', rsrc.FnGetAtt('InstanceList'))
+        # check bdm in instance_definition
+        instance_definition = rsrc._get_instance_definition()
+        self.assertIn('BlockDeviceMappings',
+                      instance_definition['Properties'])
 
         nested = rsrc.nested()
         self.assertEqual(nested.id, rsrc.resource_id)
@@ -153,21 +159,25 @@ class InstanceGroupTest(HeatTestCase):
 
         t = template_format.parse(ig_template)
         stack = utils.parse_stack(t)
+        self.stub_ImageConstraint_validate()
+        self.stub_KeypairConstraint_validate()
+
+        self.m.ReplayAll()
 
         self.create_resource(t, stack, 'JobServerConfig')
         rsrc = stack['JobServerGroup']
+
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
 
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         not_found = exception.ImageNotFound(image_name='bla')
         instance.Instance.handle_create().AndRaise(not_found)
         self.m.StubOutWithMock(parser.Stack, 'validate')
         parser.Stack.validate()
-        self.m.StubOutWithMock(nova_keypair.KeypairConstraint, 'validate')
-        nova_keypair.KeypairConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
-        self.m.StubOutWithMock(image.ImageConstraint, 'validate')
-        image.ImageConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+
+        self.stub_KeypairConstraint_validate()
+        self.stub_ImageConstraint_validate()
 
         self.m.ReplayAll()
 
@@ -227,12 +237,8 @@ class InstanceGroupTest(HeatTestCase):
 
         self.m.StubOutWithMock(parser.Stack, 'validate')
         parser.Stack.validate()
-        self.m.StubOutWithMock(nova_keypair.KeypairConstraint, 'validate')
-        nova_keypair.KeypairConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
-        self.m.StubOutWithMock(image.ImageConstraint, 'validate')
-        image.ImageConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.stub_ImageConstraint_validate()
+        self.stub_KeypairConstraint_validate()
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         instance.Instance.handle_create().AndRaise(Exception)
 
@@ -274,12 +280,8 @@ class InstanceGroupTest(HeatTestCase):
 
         self.m.StubOutWithMock(parser.Stack, 'validate')
         parser.Stack.validate()
-        self.m.StubOutWithMock(nova_keypair.KeypairConstraint, 'validate')
-        nova_keypair.KeypairConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
-        self.m.StubOutWithMock(image.ImageConstraint, 'validate')
-        image.ImageConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.stub_ImageConstraint_validate()
+        self.stub_KeypairConstraint_validate()
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         instance.Instance.handle_create().AndRaise(Exception)
 
@@ -326,4 +328,37 @@ class InstanceGroupTest(HeatTestCase):
         self.assertRaises(resource.UpdateReplace, updater)
 
         rsrc.delete()
+        self.m.VerifyAll()
+
+    def test_update_config_metadata(self):
+        t = template_format.parse(ig_template)
+        properties = t['Resources']['JobServerGroup']['Properties']
+        properties['Size'] = '2'
+        stack = utils.parse_stack(t)
+
+        self._stub_create(2)
+        self.m.ReplayAll()
+        rsrc = self.create_resource(t, stack, 'JobServerConfig')
+        self.create_resource(t, stack, 'JobServerGroup')
+
+        props = copy.copy(rsrc.properties.data)
+        metadata = copy.copy(rsrc.metadata_get())
+
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name,
+                                                      rsrc.type(),
+                                                      props,
+                                                      metadata)
+        # Change nothing in the first update
+        scheduler.TaskRunner(rsrc.update, update_snippet)()
+
+        self.assertEqual('bar', metadata['foo'])
+        metadata['foo'] = 'wibble'
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name,
+                                                      rsrc.type(),
+                                                      props,
+                                                      metadata)
+        # Changing metadata in the second update triggers UpdateReplace
+        updater = scheduler.TaskRunner(rsrc.update, update_snippet)
+        self.assertRaises(resource.UpdateReplace, updater)
+
         self.m.VerifyAll()

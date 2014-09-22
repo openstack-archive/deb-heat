@@ -12,9 +12,7 @@
 #    under the License.
 
 from six.moves.urllib import parse as urlparse
-from swiftclient import exceptions as swift_exceptions
 
-from heat.common import exception
 from heat.engine import attributes
 from heat.engine import properties
 from heat.engine import resource
@@ -93,6 +91,8 @@ class SwiftContainer(resource.Resource):
         ),
     }
 
+    default_client_name = 'swift'
+
     def physical_resource_name(self):
         name = self.properties.get(self.NAME)
         if name:
@@ -142,17 +142,17 @@ class SwiftContainer(resource.Resource):
 
     def handle_delete(self):
         """Perform specified delete policy."""
-        LOG.debug('SwiftContainer delete container %s' % self.resource_id)
-        if self.resource_id is not None:
-            try:
-                self.swift().delete_container(self.resource_id)
-            except swift_exceptions.ClientException as ex:
-                LOG.warn(_("Delete container failed: %s") % ex)
+        if self.resource_id is None:
+            return
+        try:
+            self.swift().delete_container(self.resource_id)
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
 
     def FnGetRefId(self):
         return unicode(self.resource_id)
 
-    def FnGetAtt(self, key):
+    def _resolve_attribute(self, key):
         parsed = list(urlparse.urlparse(self.swift().url))
         if key == self.DOMAIN_NAME:
             return parsed[1].split(':')[0]
@@ -165,9 +165,11 @@ class SwiftContainer(resource.Resource):
                 self.OBJECT_COUNT, self.BYTES_USED, self.HEAD_CONTAINER):
             try:
                 headers = self.swift().head_container(self.resource_id)
-            except swift_exceptions.ClientException as ex:
-                LOG.warn(_("Head container failed: %s") % ex)
-                return None
+            except Exception as ex:
+                if self.client_plugin().is_client_exception(ex):
+                    LOG.warn(_("Head container failed: %s") % ex)
+                    return None
+                raise
             else:
                 if key == self.OBJECT_COUNT:
                     return headers['x-container-object-count']
@@ -175,9 +177,6 @@ class SwiftContainer(resource.Resource):
                     return headers['x-container-bytes-used']
                 elif key == self.HEAD_CONTAINER:
                     return headers
-        else:
-            raise exception.InvalidTemplateAttribute(resource=self.name,
-                                                     key=key)
 
 
 def resource_mapping():

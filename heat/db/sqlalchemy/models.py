@@ -16,6 +16,8 @@ SQLAlchemy models for heat data.
 
 import uuid
 
+from oslo.db.sqlalchemy import models
+import six
 import sqlalchemy
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import backref
@@ -23,7 +25,6 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.orm.session import Session
 
 from heat.db.sqlalchemy.types import Json
-from heat.openstack.common.db.sqlalchemy import models
 from heat.openstack.common import timeutils
 
 BASE = declarative_base()
@@ -69,7 +70,7 @@ class HeatBase(models.ModelBase, models.TimestampMixin):
             if not session:
                 session = get_session()
         session.begin()
-        for k, v in values.iteritems():
+        for k, v in six.iteritems(values):
             setattr(self, k, v)
         session.commit()
 
@@ -132,6 +133,7 @@ class Stack(BASE, HeatBase, SoftDelete, StateAware):
     disable_rollback = sqlalchemy.Column(sqlalchemy.Boolean, nullable=False)
     stack_user_project_id = sqlalchemy.Column(sqlalchemy.String(64),
                                               nullable=True)
+    backup = sqlalchemy.Column('backup', sqlalchemy.Boolean)
 
     # Override timestamp column to store the correct value: it should be the
     # time the create/update call was issued, not the time the DB entry is
@@ -246,6 +248,7 @@ class Resource(BASE, HeatBase, StateAware):
     # time the create/update call was issued, not the time the DB entry is
     # created/modified. (bug #1193269)
     updated_at = sqlalchemy.Column(sqlalchemy.DateTime)
+    properties_data = sqlalchemy.Column('properties_data', Json)
 
 
 class WatchRule(BASE, HeatBase):
@@ -337,7 +340,7 @@ class Snapshot(BASE, HeatBase):
     name = sqlalchemy.Column('name', sqlalchemy.String(255), nullable=True)
     data = sqlalchemy.Column('data', Json)
     tenant = sqlalchemy.Column(
-        'tenant', sqlalchemy.String(256), nullable=False)
+        'tenant', sqlalchemy.String(64), nullable=False)
     status = sqlalchemy.Column('status', sqlalchemy.String(255))
     status_reason = sqlalchemy.Column('status_reason', sqlalchemy.String(255))
     stack = relationship(Stack, backref=backref('snapshot'))

@@ -12,7 +12,7 @@
 #    under the License.
 
 import copy
-from novaclient import exceptions as nova_exceptions
+
 from oslo.config import cfg
 import six
 
@@ -21,10 +21,6 @@ from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
-from heat.engine.resources import glance_utils
-from heat.engine.resources.network_interface import NetworkInterface
-from heat.engine.resources.neutron import neutron
-from heat.engine.resources import nova_utils
 from heat.engine.resources import volume
 from heat.engine import scheduler
 from heat.engine import signal_responder
@@ -121,14 +117,14 @@ class Instance(resource.Resource):
         PLACEMENT_GROUP_NAME, PRIVATE_IP_ADDRESS, RAM_DISK_ID,
         SECURITY_GROUPS, SECURITY_GROUP_IDS, NETWORK_INTERFACES,
         SOURCE_DEST_CHECK, SUBNET_ID, TAGS, NOVA_SCHEDULER_HINTS, TENANCY,
-        USER_DATA, VOLUMES,
+        USER_DATA, VOLUMES, BLOCK_DEVICE_MAPPINGS
     ) = (
         'ImageId', 'InstanceType', 'KeyName', 'AvailabilityZone',
         'DisableApiTermination', 'KernelId', 'Monitoring',
         'PlacementGroupName', 'PrivateIpAddress', 'RamDiskId',
         'SecurityGroups', 'SecurityGroupIds', 'NetworkInterfaces',
         'SourceDestCheck', 'SubnetId', 'Tags', 'NovaSchedulerHints', 'Tenancy',
-        'UserData', 'Volumes',
+        'UserData', 'Volumes', 'BlockDeviceMappings'
     )
 
     _TAG_KEYS = (
@@ -147,6 +143,20 @@ class Instance(resource.Resource):
         VOLUME_DEVICE, VOLUME_ID,
     ) = (
         'Device', 'VolumeId',
+    )
+
+    _BLOCK_DEVICE_MAPPINGS_KEYS = (
+        DEVICE_NAME, EBS, NO_DEVICE, VIRTUAL_NAME,
+    ) = (
+        'DeviceName', 'Ebs', 'NoDevice', 'VirtualName',
+    )
+
+    _EBS_KEYS = (
+        DELETE_ON_TERMINATION, IOPS, SNAPSHOT_ID, VOLUME_SIZE,
+        VOLUME_TYPE,
+    ) = (
+        'DeleteOnTermination', 'Iops', 'SnapshotId', 'VolumeSize',
+        'VolumeType'
     )
 
     ATTRIBUTES = (
@@ -309,6 +319,70 @@ class Instance(resource.Resource):
                 }
             )
         ),
+        BLOCK_DEVICE_MAPPINGS: properties.Schema(
+            properties.Schema.LIST,
+            _('Block device mappings to attach to instance.'),
+            schema=properties.Schema(
+                properties.Schema.MAP,
+                schema={
+                    DEVICE_NAME: properties.Schema(
+                        properties.Schema.STRING,
+                        _('A device name where the volume will be '
+                          'attached in the system at /dev/device_name.'
+                          'e.g. vdb'),
+                        required=True,
+                    ),
+                    EBS: properties.Schema(
+                        properties.Schema.MAP,
+                        _('The ebs volume to attach to the instance.'),
+                        schema={
+                            DELETE_ON_TERMINATION: properties.Schema(
+                                properties.Schema.BOOLEAN,
+                                _('Indicate whether the volume should be '
+                                  'deleted when the instance is terminated.'),
+                                default=True
+                            ),
+                            IOPS: properties.Schema(
+                                properties.Schema.NUMBER,
+                                _('The number of I/O operations per second '
+                                  'that the volume supports.'),
+                                implemented=False
+                            ),
+                            SNAPSHOT_ID: properties.Schema(
+                                properties.Schema.STRING,
+                                _('The ID of the snapshot to create '
+                                  'a volume from.'),
+                            ),
+                            VOLUME_SIZE: properties.Schema(
+                                properties.Schema.STRING,
+                                _('The size of the volume, in GB. Must be '
+                                  'equal or greater than the size of the '
+                                  'snapshot. It is safe to leave this blank '
+                                  'and have the Compute service infer '
+                                  'the size.'),
+                            ),
+                            VOLUME_TYPE: properties.Schema(
+                                properties.Schema.STRING,
+                                _('The volume type.'),
+                                implemented=False
+                            ),
+                        },
+                    ),
+                    NO_DEVICE: properties.Schema(
+                        properties.Schema.MAP,
+                        _('The can be used to unmap a defined device.'),
+                        implemented=False
+                    ),
+                    VIRTUAL_NAME: properties.Schema(
+                        properties.Schema.STRING,
+                        _('The name of the virtual device. The name must be '
+                          'in the form ephemeralX where X is a number '
+                          'starting from zero (0); for example, ephemeral0.'),
+                        implemented=False
+                    ),
+                },
+            ),
+        ),
     }
 
     attributes_schema = {
@@ -334,6 +408,8 @@ class Instance(resource.Resource):
     # linux HOST_NAME_MAX of 64, minus the .novalocal appended to the name
     physical_resource_name_limit = 53
 
+    default_client_name = 'nova'
+
     def __init__(self, name, json_snippet, stack):
         super(Instance, self).__init__(name, json_snippet, stack)
         self.ipaddress = None
@@ -353,8 +429,8 @@ class Instance(resource.Resource):
         Return the server's IP address, fetching it from Nova if necessary
         '''
         if self.ipaddress is None:
-            self.ipaddress = nova_utils.server_to_ipaddress(
-                self.nova(), self.resource_id)
+            self.ipaddress = self.client_plugin().server_to_ipaddress(
+                self.resource_id)
 
         return self.ipaddress or '0.0.0.0'
 
@@ -368,6 +444,16 @@ class Instance(resource.Resource):
         LOG.info(_('%(name)s._resolve_attribute(%(attname)s) == %(res)s'),
                  {'name': self.name, 'attname': name, 'res': res})
         return unicode(res) if res else None
+
+    def _port_data_delete(self):
+        # delete the port data which implicit-created
+        port_id = self.data().get('port_id')
+        if port_id:
+            try:
+                self.neutron().delete_port(port_id)
+            except Exception as ex:
+                self.client_plugin('neutron').ignore_not_found(ex)
+            self.data_delete('port_id')
 
     def _build_nics(self, network_interfaces,
                     security_groups=None, subnet_id=None):
@@ -390,8 +476,9 @@ class Instance(resource.Resource):
             # if SubnetId property in Instance, ensure subnet exists
             if subnet_id:
                 neutronclient = self.neutron()
-                network_id = NetworkInterface.network_id_from_subnet_id(
-                    neutronclient, subnet_id)
+                network_id = \
+                    self.client_plugin('neutron').network_id_from_subnet_id(
+                        subnet_id)
                 # if subnet verified, create a port to use this subnet
                 # if port is not created explicitly, nova will choose
                 # the first subnet in the given network.
@@ -405,10 +492,16 @@ class Instance(resource.Resource):
 
                     if security_groups:
                         props['security_groups'] = \
-                            neutron.NeutronResource.get_secgroup_uuids(
-                                security_groups, self.neutron())
+                            self.client_plugin('neutron').get_secgroup_uuids(
+                                security_groups)
 
                     port = neutronclient.create_port({'port': props})['port']
+
+                    # after create the port, set the port-id to
+                    # resource data, so that the port can be deleted on
+                    # instance delete.
+                    self.data_set('port_id', port['id'])
+
                     nics = [{'port-id': port['id']}]
 
         return nics
@@ -422,6 +515,33 @@ class Instance(resource.Resource):
         if not security_groups:
             security_groups = None
         return security_groups
+
+    def _build_block_device_mapping(self, bdm):
+        if not bdm:
+            return None
+        bdm_dict = {}
+        for mapping in bdm:
+            device_name = mapping.get(self.DEVICE_NAME)
+            ebs = mapping.get(self.EBS)
+            if ebs:
+                mapping_parts = []
+                snapshot_id = ebs.get(self.SNAPSHOT_ID)
+                volume_size = ebs.get(self.VOLUME_SIZE)
+                delete = ebs.get(self.DELETE_ON_TERMINATION)
+
+                if snapshot_id:
+                    mapping_parts.append(snapshot_id)
+                    mapping_parts.append('snap')
+                if volume_size:
+                    mapping_parts.append(str(volume_size))
+                else:
+                    mapping_parts.append('')
+                if delete is not None:
+                    mapping_parts.append(str(delete))
+
+                bdm_dict[device_name] = ':'.join(mapping_parts)
+
+        return bdm_dict
 
     def _get_nova_metadata(self, properties):
         if properties is None or properties.get(self.TAGS) is None:
@@ -439,9 +559,9 @@ class Instance(resource.Resource):
 
         image_name = self.properties[self.IMAGE_ID]
 
-        image_id = glance_utils.get_image_id(self.glance(), image_name)
+        image_id = self.client_plugin('glance').get_image_id(image_name)
 
-        flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
+        flavor_id = self.client_plugin().get_flavor_id(flavor)
 
         scheduler_hints = {}
         if self.properties[self.NOVA_SCHEDULER_HINTS]:
@@ -461,6 +581,10 @@ class Instance(resource.Resource):
         nics = self._build_nics(self.properties[self.NETWORK_INTERFACES],
                                 security_groups=security_groups,
                                 subnet_id=self.properties[self.SUBNET_ID])
+
+        block_device_mapping = self._build_block_device_mapping(
+            self.properties.get(self.BLOCK_DEVICE_MAPPINGS))
+
         server = None
 
         # FIXME(shadower): the instance_user config option is deprecated. Once
@@ -478,12 +602,13 @@ class Instance(resource.Resource):
                 flavor=flavor_id,
                 key_name=self.properties[self.KEY_NAME],
                 security_groups=security_groups,
-                userdata=nova_utils.build_userdata(self, userdata,
-                                                   instance_user),
+                userdata=self.client_plugin().build_userdata(
+                    self.metadata_get(), userdata, instance_user),
                 meta=self._get_nova_metadata(self.properties),
                 scheduler_hints=scheduler_hints,
                 nics=nics,
-                availability_zone=availability_zone)
+                availability_zone=availability_zone,
+                block_device_mapping=block_device_mapping)
         finally:
             # Avoid a race condition where the thread could be cancelled
             # before the ID is stored
@@ -514,33 +639,30 @@ class Instance(resource.Resource):
             return volume_attach_task.step()
 
     def _check_active(self, server):
-        if server.status != 'ACTIVE':
-            nova_utils.refresh_server(server)
+        cp = self.client_plugin()
+        status = cp.get_status(server)
+        if status != 'ACTIVE':
+            cp.refresh_server(server)
+            status = cp.get_status(server)
 
-        if server.status == 'ACTIVE':
+        if status == 'ACTIVE':
             return True
 
-        # Some clouds append extra (STATUS) strings to the status
-        short_server_status = server.status.split('(')[0]
-        if short_server_status in nova_utils.deferred_server_statuses:
+        if status in cp.deferred_server_statuses:
             return False
 
-        if server.status == 'ERROR':
+        if status == 'ERROR':
             fault = getattr(server, 'fault', {})
-            message = fault.get('message', 'Unknown')
-            code = fault.get('code', 500)
-            exc = exception.Error(_("Creation of server %(server)s "
-                                    "failed: %(message)s (%(code)s)") %
-                                  dict(server=server.name,
-                                       message=message,
-                                       code=code))
-            raise exc
+            raise resource.ResourceInError(
+                resource_status=status,
+                status_reason=_("Message: %(message)s, Code: %(code)s") % {
+                    'message': fault.get('message', _('Unknown')),
+                    'code': fault.get('code', _('Unknown'))
+                })
 
-        exc = exception.Error(_("Creation of server %(server)s failed "
-                                "with unknown status: %(status)s") %
-                              dict(server=server.name,
-                                   status=server.status))
-        raise exc
+        raise resource.ResourceUnknownStatus(
+            resource_status=server.status,
+            result=_('Instance is not active'))
 
     def volumes(self):
         """
@@ -560,6 +682,12 @@ class Instance(resource.Resource):
                 new_network_ifaces.remove(iface)
                 old_network_ifaces.remove(iface)
 
+    def handle_check(self):
+        server = self.nova().servers.get(self.resource_id)
+        if not self._check_active(server):
+            raise exception.Error(_("Instance is not ACTIVE (was: %s)") %
+                                  server.status.strip())
+
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if 'Metadata' in tmpl_diff:
             self.metadata_set(tmpl_diff['Metadata'])
@@ -567,17 +695,16 @@ class Instance(resource.Resource):
         server = None
         if self.TAGS in prop_diff:
             server = self.nova().servers.get(self.resource_id)
-            nova_utils.meta_update(self.nova(),
-                                   server,
-                                   self._get_nova_metadata(prop_diff))
+            self.client_plugin().meta_update(
+                server, self._get_nova_metadata(prop_diff))
 
         if self.INSTANCE_TYPE in prop_diff:
             flavor = prop_diff[self.INSTANCE_TYPE]
-            flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
+            flavor_id = self.client_plugin().get_flavor_id(flavor)
             if not server:
                 server = self.nova().servers.get(self.resource_id)
-            checker = scheduler.TaskRunner(nova_utils.resize, server, flavor,
-                                           flavor_id)
+            checker = scheduler.TaskRunner(self.client_plugin().resize,
+                                           server, flavor, flavor_id)
             checkers.append(checker)
         if self.NETWORK_INTERFACES in prop_diff:
             new_network_ifaces = prop_diff.get(self.NETWORK_INTERFACES)
@@ -623,6 +750,8 @@ class Instance(resource.Resource):
                     checker = scheduler.TaskRunner(server.interface_detach,
                                                    iface.port_id)
                     checkers.append(checker)
+                # first to delete the port which implicit-created by heat
+                self._port_data_delete()
                 nics = self._build_nics(new_network_ifaces,
                                         security_groups=security_groups,
                                         subnet_id=subnet_id)
@@ -677,25 +806,22 @@ class Instance(resource.Resource):
                 '/'.join([self.SECURITY_GROUPS, self.SECURITY_GROUP_IDS]),
                 self.NETWORK_INTERFACES)
 
-    @scheduler.wrappertask
-    def _delete_server(self, server):
-        '''
-        Return a co-routine that deletes the server and waits for it to
-        disappear from Nova.
-        '''
-        yield self._detach_volumes_task()()
-        server.delete()
-
-        while True:
-            yield
-
-            try:
-                nova_utils.refresh_server(server)
-                if server.status == "DELETED":
-                    break
-            except nova_exceptions.NotFound:
-                break
-        self.resource_id_set(None)
+        # check bdm property
+        # now we don't support without snapshot_id in bdm
+        bdm = self.properties.get(self.BLOCK_DEVICE_MAPPINGS)
+        if bdm:
+            for mapping in bdm:
+                ebs = mapping.get(self.EBS)
+                if ebs:
+                    snapshot_id = ebs.get(self.SNAPSHOT_ID)
+                    if not snapshot_id:
+                        msg = _("SnapshotId is missing, this is required "
+                                "when specifying BlockDeviceMappings.")
+                        raise exception.StackValidationFailed(message=msg)
+                else:
+                    msg = _("Ebs is missing, this is required "
+                            "when specifying BlockDeviceMappings.")
+                    raise exception.StackValidationFailed(message=msg)
 
     def _detach_volumes_task(self):
         '''
@@ -708,29 +834,32 @@ class Instance(resource.Resource):
         return scheduler.PollingTaskGroup(detach_tasks)
 
     def handle_delete(self):
-        '''
-        Delete an instance, blocking until it is disposed by OpenStack
-        '''
+        # make sure to delete the port which implicit-created by heat
+        self._port_data_delete()
+
         if self.resource_id is None:
             return
-
         try:
             server = self.nova().servers.get(self.resource_id)
-        except nova_exceptions.NotFound:
-            self.resource_id_set(None)
+        except Exception as e:
+            self.client_plugin().ignore_not_found(e)
             return
+        deleters = (
+            scheduler.TaskRunner(self._detach_volumes_task()),
+            scheduler.TaskRunner(self.client_plugin().delete_server,
+                                 server))
+        deleters[0].start()
+        return deleters
 
-        server_delete_task = scheduler.TaskRunner(self._delete_server,
-                                                  server=server)
-        server_delete_task.start()
-        return server_delete_task
-
-    def check_delete_complete(self, server_delete_task):
-        # if the resource was already deleted, server_delete_task will be None
-        if server_delete_task is None:
-            return True
-        else:
-            return server_delete_task.step()
+    def check_delete_complete(self, deleters):
+        # if the resource was already deleted, deleters will be None
+        if deleters:
+            for deleter in deleters:
+                if not deleter.started():
+                    deleter.start()
+                if not deleter.step():
+                    return False
+        return True
 
     def handle_suspend(self):
         '''
@@ -744,9 +873,10 @@ class Instance(resource.Resource):
 
         try:
             server = self.nova().servers.get(self.resource_id)
-        except nova_exceptions.NotFound:
-            raise exception.NotFound(_('Failed to find instance %s') %
-                                     self.resource_id)
+        except Exception as e:
+            if self.client_plugin().is_not_found(e):
+                raise exception.NotFound(_('Failed to find instance %s') %
+                                         self.resource_id)
         else:
             LOG.debug("suspending instance %s" % self.resource_id)
             # We want the server.suspend to happen after the volume
@@ -769,11 +899,12 @@ class Instance(resource.Resource):
                 if server.status == 'SUSPENDED':
                     return True
 
-                nova_utils.refresh_server(server)
+                cp = self.client_plugin()
+                cp.refresh_server(server)
                 LOG.debug("%(name)s check_suspend_complete "
                           "status = %(status)s",
                           {'name': self.name, 'status': server.status})
-                if server.status in list(nova_utils.deferred_server_statuses +
+                if server.status in list(cp.deferred_server_statuses +
                                          ['ACTIVE']):
                     return server.status == 'SUSPENDED'
                 else:
@@ -799,9 +930,10 @@ class Instance(resource.Resource):
 
         try:
             server = self.nova().servers.get(self.resource_id)
-        except nova_exceptions.NotFound:
-            raise exception.NotFound(_('Failed to find instance %s') %
-                                     self.resource_id)
+        except Exception as e:
+            if self.client_plugin().is_not_found(e):
+                raise exception.NotFound(_('Failed to find instance %s') %
+                                         self.resource_id)
         else:
             LOG.debug("resuming instance %s" % self.resource_id)
             server.resume()

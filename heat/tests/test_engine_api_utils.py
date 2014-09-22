@@ -233,6 +233,7 @@ class FormatTest(HeatTestCase):
             'outputs': [],
             'stack_action': '',
             'stack_name': 'test_stack',
+            'stack_owner': 'test_username',
             'stack_status': '',
             'stack_status_reason': '',
             'template_description': 'No description',
@@ -246,7 +247,8 @@ class FormatTest(HeatTestCase):
                 'stack_id': self.stack.id,
                 'stack_name': 'test_stack',
                 'tenant': 'test_tenant_id'},
-            'updated_time': None}
+            'updated_time': None,
+            'parent': None}
         self.assertEqual(expected_stack_info, info)
 
     def test_format_stack_created_time(self):

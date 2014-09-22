@@ -59,11 +59,7 @@ class Enforcer(object):
            :returns: A non-False value if access is allowed.
         """
         do_raise = False if not exc else True
-        credentials = {
-            'roles': context.roles,
-            'user': context.username,
-            'tenant': context.tenant,
-        }
+        credentials = context.to_dict()
         return self.enforcer.enforce(rule, target, credentials,
                                      do_raise, exc=exc, *args, **kwargs)
 
@@ -80,16 +76,6 @@ class Enforcer(object):
         _target = target or {}
         return self._check(context, _action, _target, self.exc, action=action)
 
-    def check(self, context, action, target):
-        """Verifies that the action is valid on the target in this context.
-
-           :param context: Heat request context
-           :param action: String representing the action to be checked
-           :param target: Dictionary representing the object of the action.
-           :returns: A non-False value if access is allowed.
-        """
-        return self._check(context, action, target)
-
     def check_is_admin(self, context):
         """Whether or not roles contains 'admin' role according to policy.json
 
@@ -97,6 +83,3 @@ class Enforcer(object):
            :returns: A non-False value if the user is admin according to policy
         """
         return self._check(context, 'context_is_admin', target={}, exc=None)
-
-    def clear(self):
-        self.enforcer.clear()

@@ -46,7 +46,8 @@ def upgrade(migrate_engine):
     fake_autoincrement = itertools.count(1)
 
     event_list = event_table.select().order_by(
-        sqlalchemy.sql.expression.asc(event_table.c.created_at)).execute()
+        sqlalchemy.sql.expression.asc(
+            event_table.c.created_at)).execute().fetchall()
     for event in event_list:
         values = {'tmp_id': fake_autoincrement.next(), 'uuid': event.id}
         update = event_table.update().where(
@@ -145,6 +146,9 @@ def downgrade(migrate_engine):
     cons.create()
 
     event_table.c.tmp_id.alter('id', default=lambda: str(uuid.uuid4))
+    if migrate_engine.name == 'postgresql':
+        sequence = sqlalchemy.Sequence('evt')
+        sqlalchemy.schema.DropSequence(sequence, bind=migrate_engine).execute()
 
 
 def downgrade_sqlite(migrate_engine):
@@ -177,7 +181,7 @@ def downgrade_sqlite(migrate_engine):
     event_table.create()
 
     prev_event_table = sqlalchemy.Table('event', meta, autoload=True)
-    event_list = prev_event_table.select().execute()
+    event_list = prev_event_table.select().execute().fetchall()
     for event in event_list:
         values = {
             'id': event.uuid,

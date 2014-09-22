@@ -11,7 +11,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutronclient.common import exceptions
 from neutronclient.v2_0 import client as neutronclient
+import six
 
 from heat.common import exception
 from heat.common import template_format
@@ -88,7 +90,7 @@ class MeteringLabelTest(HeatTestCase):
             'metering_label': {
                 'name': 'TestLabel',
                 'description': 'Description of TestLabel'}
-        }).AndRaise(metering.NeutronClientException())
+        }).AndRaise(exceptions.NeutronClientException())
         self.m.ReplayAll()
 
         snippet = template_format.parse(metering_template)
@@ -100,14 +102,14 @@ class MeteringLabelTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
     def test_delete(self):
         neutronclient.Client.delete_metering_label('1234')
         neutronclient.Client.show_metering_label('1234').AndRaise(
-            metering.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         rsrc = self.create_metering_label()
         self.m.ReplayAll()
@@ -118,7 +120,7 @@ class MeteringLabelTest(HeatTestCase):
 
     def test_delete_already_gone(self):
         neutronclient.Client.delete_metering_label('1234').AndRaise(
-            metering.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         rsrc = self.create_metering_label()
         self.m.ReplayAll()
@@ -129,7 +131,7 @@ class MeteringLabelTest(HeatTestCase):
 
     def test_delete_failed(self):
         neutronclient.Client.delete_metering_label('1234').AndRaise(
-            metering.NeutronClientException(status_code=400))
+            exceptions.NeutronClientException(status_code=400))
 
         rsrc = self.create_metering_label()
         self.m.ReplayAll()
@@ -138,7 +140,7 @@ class MeteringLabelTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
@@ -201,7 +203,7 @@ class MeteringRuleTest(HeatTestCase):
                 'remote_ip_prefix': '10.0.3.0/24',
                 'direction': 'ingress',
                 'excluded': False}
-        }).AndRaise(metering.NeutronClientException())
+        }).AndRaise(exceptions.NeutronClientException())
         self.m.ReplayAll()
 
         snippet = template_format.parse(metering_template)
@@ -213,14 +215,14 @@ class MeteringRuleTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
     def test_delete(self):
         neutronclient.Client.delete_metering_label_rule('5678')
         neutronclient.Client.show_metering_label_rule('5678').AndRaise(
-            metering.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         rsrc = self.create_metering_label_rule()
         self.m.ReplayAll()
@@ -231,7 +233,7 @@ class MeteringRuleTest(HeatTestCase):
 
     def test_delete_already_gone(self):
         neutronclient.Client.delete_metering_label_rule('5678').AndRaise(
-            metering.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         rsrc = self.create_metering_label_rule()
         self.m.ReplayAll()
@@ -242,7 +244,7 @@ class MeteringRuleTest(HeatTestCase):
 
     def test_delete_failed(self):
         neutronclient.Client.delete_metering_label_rule('5678').AndRaise(
-            metering.NeutronClientException(status_code=400))
+            exceptions.NeutronClientException(status_code=400))
 
         rsrc = self.create_metering_label_rule()
         self.m.ReplayAll()
@@ -251,7 +253,7 @@ class MeteringRuleTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 

@@ -23,7 +23,6 @@ from heat.common import template_format
 from heat.engine.clients.os import glance
 from heat.engine.clients.os import nova
 from heat.engine import resource
-from heat.engine.resources import glance_utils
 from heat.engine.resources import instance
 from heat.engine.resources import loadbalancer as lb
 from heat.engine.resources import wait_condition as wc
@@ -124,12 +123,8 @@ class LoadBalancerTest(HeatTestCase):
         return rsrc
 
     def _mock_get_image_id_success(self, imageId_input, imageId):
-        g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
-        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
-            g_cli_mock)
-        self.m.StubOutWithMock(glance_utils, 'get_image_id')
-        glance_utils.get_image_id(g_cli_mock, imageId_input).\
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image_id')
+        glance.GlanceClientPlugin.get_image_id(imageId_input).\
             MultipleTimes().AndReturn(imageId)
 
     def _create_stubs(self, key_name='test', stub_meta=True):
@@ -137,12 +132,13 @@ class LoadBalancerTest(HeatTestCase):
             utils.PhysName('test_stack', 'LoadBalancer'),
             'LB_instance',
             limit=instance.Instance.physical_resource_name_limit)
-        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
         self.fc.servers.create(
             flavor=2, image=746, key_name=key_name,
             meta=None, nics=None, name=server_name,
             scheduler_hints=None, userdata=mox.IgnoreArg(),
-            security_groups=None, availability_zone=None).AndReturn(
+            security_groups=None, availability_zone=None,
+            block_device_mapping=None).AndReturn(
                 self.fc.servers.list()[1])
         if stub_meta:
             resource.Resource.metadata_set(mox.IgnoreArg()).AndReturn(None)

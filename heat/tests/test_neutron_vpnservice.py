@@ -13,11 +13,13 @@
 
 import copy
 import mox
+from neutronclient.common import exceptions
+from neutronclient.neutron import v2_0 as neutronV20
 from neutronclient.v2_0 import client as neutronclient
+import six
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine.resources.neutron import neutron_utils
 from heat.engine.resources.neutron import vpnservice
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
@@ -167,13 +169,12 @@ class VPNServiceTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'delete_vpnservice')
         self.m.StubOutWithMock(neutronclient.Client, 'show_vpnservice')
         self.m.StubOutWithMock(neutronclient.Client, 'update_vpnservice')
-        self.m.StubOutWithMock(neutron_utils.neutronV20,
-                               'find_resourceid_by_name_or_id')
+        self.m.StubOutWithMock(neutronV20, 'find_resourceid_by_name_or_id')
         self.stub_keystoneclient()
 
     def create_vpnservice(self, resolve_neutron=True):
         if resolve_neutron:
-            neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+            neutronV20.find_resourceid_by_name_or_id(
                 mox.IsA(neutronclient.Client),
                 'subnet',
                 'sub123'
@@ -204,14 +205,14 @@ class VPNServiceTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_failed(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
             'sub123'
         ).AndReturn('sub123')
 
         neutronclient.Client.create_vpnservice(self.VPN_SERVICE_CONF).AndRaise(
-            vpnservice.NeutronClientException())
+            exceptions.NeutronClientException())
         self.m.ReplayAll()
         snippet = template_format.parse(vpnservice_template)
         self.stack = utils.parse_stack(snippet)
@@ -223,14 +224,14 @@ class VPNServiceTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
     def test_delete(self):
         neutronclient.Client.delete_vpnservice('vpn123')
         neutronclient.Client.show_vpnservice('vpn123').AndRaise(
-            vpnservice.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
         rsrc = self.create_vpnservice()
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -240,7 +241,7 @@ class VPNServiceTest(HeatTestCase):
 
     def test_delete_already_gone(self):
         neutronclient.Client.delete_vpnservice('vpn123').AndRaise(
-            vpnservice.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
         rsrc = self.create_vpnservice()
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -250,7 +251,7 @@ class VPNServiceTest(HeatTestCase):
 
     def test_delete_failed(self):
         neutronclient.Client.delete_vpnservice('vpn123').AndRaise(
-            vpnservice.NeutronClientException(status_code=400))
+            exceptions.NeutronClientException(status_code=400))
         rsrc = self.create_vpnservice()
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -258,7 +259,7 @@ class VPNServiceTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
@@ -284,7 +285,7 @@ class VPNServiceTest(HeatTestCase):
         self.assertEqual(
             'The Referenced Attribute (vpnservice non-existent_property) is '
             'incorrect.',
-            str(error))
+            six.text_type(error))
         self.m.VerifyAll()
 
     def test_update(self):
@@ -357,7 +358,7 @@ class IPsecSiteConnectionTest(HeatTestCase):
     def test_create_failed(self):
         neutronclient.Client.create_ipsec_site_connection(
             self.IPSEC_SITE_CONNECTION_CONF).AndRaise(
-                vpnservice.NeutronClientException())
+                exceptions.NeutronClientException())
         self.m.ReplayAll()
         snippet = template_format.parse(ipsec_site_connection_template)
         self.stack = utils.parse_stack(snippet)
@@ -370,14 +371,14 @@ class IPsecSiteConnectionTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
     def test_delete(self):
         neutronclient.Client.delete_ipsec_site_connection('con123')
         neutronclient.Client.show_ipsec_site_connection('con123').AndRaise(
-            vpnservice.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
         rsrc = self.create_ipsec_site_connection()
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -387,7 +388,7 @@ class IPsecSiteConnectionTest(HeatTestCase):
 
     def test_delete_already_gone(self):
         neutronclient.Client.delete_ipsec_site_connection('con123').AndRaise(
-            vpnservice.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
         rsrc = self.create_ipsec_site_connection()
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -397,7 +398,7 @@ class IPsecSiteConnectionTest(HeatTestCase):
 
     def test_delete_failed(self):
         neutronclient.Client.delete_ipsec_site_connection('con123').AndRaise(
-            vpnservice.NeutronClientException(status_code=400))
+            exceptions.NeutronClientException(status_code=400))
         rsrc = self.create_ipsec_site_connection()
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -405,7 +406,7 @@ class IPsecSiteConnectionTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
@@ -441,7 +442,7 @@ class IPsecSiteConnectionTest(HeatTestCase):
         self.assertEqual(
             'The Referenced Attribute (ipsec_site_connection '
             'non-existent_property) is incorrect.',
-            str(error))
+            six.text_type(error))
         self.m.VerifyAll()
 
     def test_update(self):
@@ -503,7 +504,7 @@ class IKEPolicyTest(HeatTestCase):
     def test_create_failed(self):
         neutronclient.Client.create_ikepolicy(
             self.IKE_POLICY_CONF).AndRaise(
-                vpnservice.NeutronClientException())
+                exceptions.NeutronClientException())
         self.m.ReplayAll()
         snippet = template_format.parse(ikepolicy_template)
         self.stack = utils.parse_stack(snippet)
@@ -516,14 +517,14 @@ class IKEPolicyTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
     def test_delete(self):
         neutronclient.Client.delete_ikepolicy('ike123')
         neutronclient.Client.show_ikepolicy('ike123').AndRaise(
-            vpnservice.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
         rsrc = self.create_ikepolicy()
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -533,7 +534,7 @@ class IKEPolicyTest(HeatTestCase):
 
     def test_delete_already_gone(self):
         neutronclient.Client.delete_ikepolicy('ike123').AndRaise(
-            vpnservice.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
         rsrc = self.create_ikepolicy()
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -543,7 +544,7 @@ class IKEPolicyTest(HeatTestCase):
 
     def test_delete_failed(self):
         neutronclient.Client.delete_ikepolicy('ike123').AndRaise(
-            vpnservice.NeutronClientException(status_code=400))
+            exceptions.NeutronClientException(status_code=400))
         rsrc = self.create_ikepolicy()
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -551,7 +552,7 @@ class IKEPolicyTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
@@ -581,7 +582,7 @@ class IKEPolicyTest(HeatTestCase):
         self.assertEqual(
             'The Referenced Attribute (ikepolicy non-existent_property) is '
             'incorrect.',
-            str(error))
+            six.text_type(error))
         self.m.VerifyAll()
 
     def test_update(self):
@@ -644,7 +645,7 @@ class IPsecPolicyTest(HeatTestCase):
     def test_create_failed(self):
         neutronclient.Client.create_ipsecpolicy(
             self.IPSEC_POLICY_CONF).AndRaise(
-                vpnservice.NeutronClientException())
+                exceptions.NeutronClientException())
         self.m.ReplayAll()
         snippet = template_format.parse(ipsecpolicy_template)
         self.stack = utils.parse_stack(snippet)
@@ -657,14 +658,14 @@ class IPsecPolicyTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
     def test_delete(self):
         neutronclient.Client.delete_ipsecpolicy('ips123')
         neutronclient.Client.show_ipsecpolicy('ips123').AndRaise(
-            vpnservice.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
         rsrc = self.create_ipsecpolicy()
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -674,7 +675,7 @@ class IPsecPolicyTest(HeatTestCase):
 
     def test_delete_already_gone(self):
         neutronclient.Client.delete_ipsecpolicy('ips123').AndRaise(
-            vpnservice.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
         rsrc = self.create_ipsecpolicy()
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -684,7 +685,7 @@ class IPsecPolicyTest(HeatTestCase):
 
     def test_delete_failed(self):
         neutronclient.Client.delete_ipsecpolicy('ips123').AndRaise(
-            vpnservice.NeutronClientException(status_code=400))
+            exceptions.NeutronClientException(status_code=400))
         rsrc = self.create_ipsecpolicy()
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -692,7 +693,7 @@ class IPsecPolicyTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
@@ -722,7 +723,7 @@ class IPsecPolicyTest(HeatTestCase):
         self.assertEqual(
             'The Referenced Attribute (ipsecpolicy non-existent_property) is '
             'incorrect.',
-            str(error))
+            six.text_type(error))
         self.m.VerifyAll()
 
     def test_update(self):

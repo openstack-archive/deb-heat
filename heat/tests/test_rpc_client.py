@@ -18,6 +18,7 @@ Unit Tests for heat.rpc.client
 """
 
 
+import copy
 import mock
 import stubout
 import testtools
@@ -39,32 +40,32 @@ class EngineRpcAPITestCase(testtools.TestCase):
         self.identity = dict(identifier.HeatIdentifier('engine_test_tenant',
                                                        '6',
                                                        'wordpress'))
+        self.rpcapi = rpc_client.EngineClient()
         super(EngineRpcAPITestCase, self).setUp()
 
     def _test_engine_api(self, method, rpc_method, **kwargs):
         ctxt = utils.dummy_context()
-        if 'rpcapi_class' in kwargs:
-            rpcapi_class = kwargs['rpcapi_class']
-            del kwargs['rpcapi_class']
-        else:
-            rpcapi_class = rpc_client.EngineClient
-        rpcapi = rpcapi_class()
         expected_retval = 'foo' if method == 'call' else None
 
         kwargs.pop('version', None)
-        expected_msg = rpcapi.make_msg(method, **kwargs)
+
+        if 'expected_message' in kwargs:
+            expected_message = kwargs['expected_message']
+            del kwargs['expected_message']
+        else:
+            expected_message = self.rpcapi.make_msg(method, **kwargs)
 
         cast_and_call = ['delete_stack']
         if rpc_method == 'call' and method in cast_and_call:
             kwargs['cast'] = False
 
-        with mock.patch.object(rpcapi, rpc_method) as mock_rpc_method:
+        with mock.patch.object(self.rpcapi, rpc_method) as mock_rpc_method:
             mock_rpc_method.return_value = expected_retval
 
-            retval = getattr(rpcapi, method)(ctxt, **kwargs)
+            retval = getattr(self.rpcapi, method)(ctxt, **kwargs)
 
             self.assertEqual(expected_retval, retval)
-            expected_args = [ctxt, expected_msg, mock.ANY]
+            expected_args = [ctxt, expected_message, mock.ANY]
             actual_args, _ = mock_rpc_method.call_args
             for expected_arg, actual_arg in zip(expected_args,
                                                 actual_args):
@@ -82,6 +83,7 @@ class EngineRpcAPITestCase(testtools.TestCase):
             'filters': mock.ANY,
             'tenant_safe': mock.ANY,
             'show_deleted': mock.ANY,
+            'show_nested': mock.ANY,
         }
         self._test_engine_api('list_stacks', 'call', **default_args)
 
@@ -90,6 +92,7 @@ class EngineRpcAPITestCase(testtools.TestCase):
             'filters': mock.ANY,
             'tenant_safe': mock.ANY,
             'show_deleted': mock.ANY,
+            'show_nested': mock.ANY,
         }
         self._test_engine_api('count_stacks', 'call', **default_args)
 
@@ -108,11 +111,16 @@ class EngineRpcAPITestCase(testtools.TestCase):
                               args={'timeout_mins': u'30'})
 
     def test_create_stack(self):
-        self._test_engine_api('create_stack', 'call', stack_name='wordpress',
-                              template={u'Foo': u'bar'},
-                              params={u'InstanceType': u'm1.xlarge'},
-                              files={u'a_file': u'the contents'},
-                              args={'timeout_mins': u'30'})
+        kwargs = dict(stack_name='wordpress',
+                      template={u'Foo': u'bar'},
+                      params={u'InstanceType': u'm1.xlarge'},
+                      files={u'a_file': u'the contents'},
+                      args={'timeout_mins': u'30'})
+        call_kwargs = copy.deepcopy(kwargs)
+        call_kwargs['owner_id'] = None
+        expected_message = self.rpcapi.make_msg('create_stack', **call_kwargs)
+        kwargs['expected_message'] = expected_message
+        self._test_engine_api('create_stack', 'call', **kwargs)
 
     def test_update_stack(self):
         self._test_engine_api('update_stack', 'call',
@@ -268,3 +276,20 @@ class EngineRpcAPITestCase(testtools.TestCase):
         deployment_id = '86729f02-4648-44d8-af44-d0ec65b6abc9'
         self._test_engine_api('delete_software_deployment', 'call',
                               deployment_id=deployment_id)
+
+    def test_show_snapshot(self):
+        snapshot_id = '86729f02-4648-44d8-af44-d0ec65b6abc9'
+        self._test_engine_api('show_snapshot', 'call',
+                              stack_identity=self.identity,
+                              snapshot_id=snapshot_id)
+
+    def test_stack_snapshot(self):
+        self._test_engine_api(
+            'stack_snapshot', 'call', stack_identity=self.identity,
+            name='snap1')
+
+    def test_delete_snapshot(self):
+        snapshot_id = '86729f02-4648-44d8-af44-d0ec65b6abc9'
+        self._test_engine_api('delete_snapshot', 'call',
+                              stack_identity=self.identity,
+                              snapshot_id=snapshot_id)

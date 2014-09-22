@@ -13,8 +13,10 @@
 
 import copy
 import mock
+import six
 
 from heat.common import exception
+from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources import resource_group
 from heat.engine import scheduler
@@ -64,11 +66,67 @@ template2 = {
     }
 }
 
+template_repl = {
+    "heat_template_version": "2013-05-23",
+    "resources": {
+        "group1": {
+            "type": "OS::Heat::ResourceGroup",
+            "properties": {
+                "count": 2,
+                "resource_def": {
+                    "type": "dummy.listresource%index%",
+                    "properties": {
+                        "Foo": "Bar_%index%",
+                        "listprop": [
+                            "%index%_0",
+                            "%index%_1",
+                            "%index%_2"
+                        ]
+                    }
+                }
+            }
+        }
+    }
+}
+
+template_attr = {
+    "heat_template_version": "2014-10-16",
+    "resources": {
+        "group1": {
+            "type": "OS::Heat::ResourceGroup",
+            "properties": {
+                "count": 2,
+                "resource_def": {
+                    "type": "dummyattr.resource",
+                    "properties": {
+                    }
+                }
+            }
+        }
+    },
+    "outputs": {
+        "nested_strings": {
+            "value": {"get_attr": ["group1", "nested_dict", "string"]}
+        }
+    }
+}
+
 
 class ResourceWithPropsAndId(generic_resource.ResourceWithProps):
 
     def FnGetRefId(self):
         return "ID-%s" % self.name
+
+
+class ResourceWithListProp(ResourceWithPropsAndId):
+
+    def __init__(self):
+        self.properties_schema.update({
+            "listprop": properties.Schema(
+                properties.Schema.LIST
+            )
+        })
+        super(ResourceWithListProp, self).__init__(self)
 
 
 class ResourceGroupTest(common.HeatTestCase):
@@ -77,6 +135,46 @@ class ResourceGroupTest(common.HeatTestCase):
         common.HeatTestCase.setUp(self)
         resource._register_class("dummy.resource",
                                  ResourceWithPropsAndId)
+        resource._register_class('dummy.listresource',
+                                 ResourceWithListProp)
+        AttributeResource = generic_resource.ResourceWithComplexAttributes
+        resource._register_class("dummyattr.resource",
+                                 AttributeResource)
+
+    def test_build_resource_definition(self):
+        stack = utils.parse_stack(template)
+        snip = stack.t.resource_definitions(stack)['group1']
+        resg = resource_group.ResourceGroup('test', snip, stack)
+        expect = {
+            "type": "dummy.resource",
+            "properties": {
+                "Foo": "Bar"
+            },
+        }
+        self.assertEqual(
+            expect, resg._build_resource_definition())
+        self.assertEqual(
+            expect, resg._build_resource_definition(include_all=True))
+
+    def test_build_resource_definition_include(self):
+        templ = copy.deepcopy(template)
+        res_def = templ["resources"]["group1"]["properties"]['resource_def']
+        res_def['properties']['Foo'] = None
+        stack = utils.parse_stack(templ)
+        snip = stack.t.resource_definitions(stack)['group1']
+        resg = resource_group.ResourceGroup('test', snip, stack)
+        expect = {
+            "type": "dummy.resource",
+            "properties": {}
+        }
+        self.assertEqual(
+            expect, resg._build_resource_definition())
+        expect = {
+            "type": "dummy.resource",
+            "properties": {"Foo": None}
+        }
+        self.assertEqual(
+            expect, resg._build_resource_definition(include_all=True))
 
     def test_assemble_nested(self):
         """
@@ -132,6 +230,88 @@ class ResourceGroupTest(common.HeatTestCase):
         expect['resources']["0"]['properties'] = {"Foo": None}
         self.assertEqual(expect, resg._assemble_nested(1, include_all=True))
 
+    def test_index_var(self):
+        stack = utils.parse_stack(template_repl)
+        snip = stack.t.resource_definitions(stack)['group1']
+        resg = resource_group.ResourceGroup('test', snip, stack)
+        expect = {
+            "heat_template_version": "2013-05-23",
+            "resources": {
+                "0": {
+                    "type": "dummy.listresource%index%",
+                    "properties": {
+                        "Foo": "Bar_0",
+                        "listprop": [
+                            "0_0", "0_1", "0_2"
+                        ]
+                    }
+                },
+                "1": {
+                    "type": "dummy.listresource%index%",
+                    "properties": {
+                        "Foo": "Bar_1",
+                        "listprop": [
+                            "1_0", "1_1", "1_2"
+                        ]
+                    }
+                },
+                "2": {
+                    "type": "dummy.listresource%index%",
+                    "properties": {
+                        "Foo": "Bar_2",
+                        "listprop": [
+                            "2_0", "2_1", "2_2"
+                        ]
+                    }
+                }
+            }
+        }
+        self.assertEqual(expect, resg._assemble_nested(3))
+
+    def test_custom_index_var(self):
+        templ = copy.deepcopy(template_repl)
+        templ['resources']['group1']['properties']['index_var'] = "__foo__"
+        stack = utils.parse_stack(templ)
+        snip = stack.t.resource_definitions(stack)['group1']
+        resg = resource_group.ResourceGroup('test', snip, stack)
+        expect = {
+            "heat_template_version": "2013-05-23",
+            "resources": {
+                "0": {
+                    "type": "dummy.listresource%index%",
+                    "properties": {
+                        "Foo": "Bar_%index%",
+                        "listprop": [
+                            "%index%_0", "%index%_1", "%index%_2"
+                        ]
+                    }
+                }
+            }
+        }
+        self.assertEqual(expect, resg._assemble_nested(1))
+
+        res_def = snip['Properties']['resource_def']
+        res_def['properties']['Foo'] = "Bar___foo__"
+        res_def['properties']['listprop'] = ["__foo___0", "__foo___1",
+                                             "__foo___2"]
+        res_def['type'] = "dummy.listresource__foo__"
+        resg = resource_group.ResourceGroup('test', snip, stack)
+        expect = {
+            "heat_template_version": "2013-05-23",
+            "resources": {
+                "0": {
+                    "type": "dummy.listresource__foo__",
+                    "properties": {
+                        "Foo": "Bar_0",
+                        "listprop": [
+                            "0_0", "0_1", "0_2"
+                        ]
+                    }
+                }
+            }
+        }
+        self.assertEqual(expect, resg._assemble_nested(1))
+
     def test_assemble_no_properties(self):
         templ = copy.deepcopy(template)
         res_def = templ["resources"]["group1"]["properties"]['resource_def']
@@ -150,13 +330,19 @@ class ResourceGroupTest(common.HeatTestCase):
         resg = resource_group.ResourceGroup('test', snip, stack)
         exc = self.assertRaises(exception.StackValidationFailed,
                                 resg.validate)
-        self.assertIn('Unknown resource Type', str(exc))
+        self.assertIn('Unknown resource Type', six.text_type(exc))
 
     def test_reference_attr(self):
         stack = utils.parse_stack(template2)
         snip = stack.t.resource_definitions(stack)['group1']
         resgrp = resource_group.ResourceGroup('test', snip, stack)
         self.assertIsNone(resgrp.validate())
+
+    def test_zero_resources(self):
+        noresources = copy.deepcopy(template)
+        noresources['resources']['group1']['properties']['count'] = 0
+        resg = self._create_dummy_stack(noresources, expect_count=0)
+        self.assertEqual((resg.CREATE, resg.COMPLETE), resg.state)
 
     def test_delete(self):
         """Test basic delete."""
@@ -187,6 +373,53 @@ class ResourceGroupTest(common.HeatTestCase):
         self.assertEqual(expected, resg.FnGetAtt('foo'))
         self.assertEqual(expected, resg.FnGetAtt('Foo'))
 
+    def test_index_dotted_attribs(self):
+        """
+        Test attribute aggregation and that we mimic the nested resource's
+        attributes.
+        """
+        resg = self._create_dummy_stack()
+        self.assertEqual('0', resg.FnGetAtt('resource.0.Foo'))
+        self.assertEqual('1', resg.FnGetAtt('resource.1.Foo'))
+
+    def test_index_path_attribs(self):
+        """
+        Test attribute aggregation and that we mimic the nested resource's
+        attributes.
+        """
+        resg = self._create_dummy_stack()
+        self.assertEqual('0', resg.FnGetAtt('resource.0', 'Foo'))
+        self.assertEqual('1', resg.FnGetAtt('resource.1', 'Foo'))
+
+    def test_index_deep_path_attribs(self):
+        """
+        Test attribute aggregation and that we mimic the nested resource's
+        attributes.
+        """
+        resg = self._create_dummy_stack(template_attr)
+        self.assertEqual(2, resg.FnGetAtt('resource.0',
+                                          'nested_dict', 'dict', 'b'))
+        self.assertEqual(2, resg.FnGetAtt('resource.1',
+                                          'nested_dict', 'dict', 'b'))
+
+    def test_aggregate_deep_path_attribs(self):
+        """
+        Test attribute aggregation and that we mimic the nested resource's
+        attributes.
+        """
+        resg = self._create_dummy_stack(template_attr)
+        expected = [3, 3]
+        self.assertEqual(expected, resg.FnGetAtt('nested_dict', 'list', 2))
+
+    def test_get_attr_path(self):
+        """
+        Test attribute aggregation and that we mimic the nested resource's
+        attributes.
+        """
+        resg = self._create_dummy_stack(template_attr)
+        expected = ['abc', 'abc']
+        self.assertEqual(expected, resg.stack.output('nested_strings'))
+
     def test_aggregate_refs(self):
         """
         Test resource id aggregation
@@ -203,13 +436,15 @@ class ResourceGroupTest(common.HeatTestCase):
         self.assertRaises(exception.InvalidTemplateAttribute, resg.FnGetAtt,
                           'resource.2')
 
-    def _create_dummy_stack(self):
-        stack = utils.parse_stack(template)
-        snip = stack.t.resource_definitions(stack)['group1']
-        resg = resource_group.ResourceGroup('test', snip, stack)
+    def _create_dummy_stack(self, template_data=template, expect_count=2):
+        stack = utils.parse_stack(template_data)
+        resg = stack['group1']
         scheduler.TaskRunner(resg.create)()
         self.stack = resg.nested()
-        self.assertEqual(2, len(resg.nested()))
+        if expect_count > 0:
+            self.assertEqual(expect_count, len(resg.nested()))
+        else:
+            self.assertIsNone(resg.nested())
         self.assertEqual((resg.CREATE, resg.COMPLETE), resg.state)
         return resg
 

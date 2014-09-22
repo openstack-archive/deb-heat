@@ -17,11 +17,15 @@ import six
 
 
 @six.add_metaclass(abc.ABCMeta)
-class ClientPlugin():
+class ClientPlugin(object):
 
-    def __init__(self, clients):
-        self.context = clients.context
-        self.clients = clients
+    # Module which contains all exceptions classes which the client
+    # may emit
+    exceptions_module = None
+
+    def __init__(self, context):
+        self.context = context
+        self.clients = context.clients
         self._client = None
 
     def client(self):
@@ -54,3 +58,27 @@ class ClientPlugin():
         except (cfg.NoSuchGroupError, cfg.NoSuchOptError):
             cfg.CONF.import_opt(option, 'heat.common.config', group='clients')
             return getattr(cfg.CONF.clients, option)
+
+    def is_client_exception(self, ex):
+        '''Returns True if the current exception comes from the client.'''
+        if self.exceptions_module:
+            if isinstance(self.exceptions_module, list):
+                for m in self.exceptions_module:
+                    if type(ex) in m.__dict__.values():
+                        return True
+            else:
+                return type(ex) in self.exceptions_module.__dict__.values()
+        return False
+
+    def is_not_found(self, ex):
+        '''Returns True if the exception is a not-found.'''
+        return False
+
+    def is_over_limit(self, ex):
+        '''Returns True if the exception is an over-limit.'''
+        return False
+
+    def ignore_not_found(self, ex):
+        '''Raises the exception unless it is a not-found.'''
+        if not self.is_not_found(ex):
+            raise ex

@@ -11,7 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from neutronclient.common.exceptions import NeutronClientException
+import warnings
 
 from heat.common import exception
 from heat.engine import resource
@@ -23,6 +23,8 @@ LOG = logging.getLogger(__name__)
 
 
 class NeutronResource(resource.Resource):
+
+    default_client_name = 'neutron'
 
     def validate(self):
         '''
@@ -103,21 +105,24 @@ class NeutronResource(resource.Resource):
 
     @staticmethod
     def is_built(attributes):
-        if attributes['status'] == 'BUILD':
+        status = attributes['status']
+        if status == 'BUILD':
             return False
-        if attributes['status'] in ('ACTIVE', 'DOWN'):
+        if status in ('ACTIVE', 'DOWN'):
             return True
+        elif status == 'ERROR':
+            raise resource.ResourceInError(
+                resource_status=status)
         else:
-            raise exception.Error(_('neutron reported unexpected '
-                                    'resource[%(name)s] status[%(status)s]') %
-                                  {'name': attributes['name'],
-                                   'status': attributes['status']})
+            raise resource.ResourceUnknownStatus(
+                resource_status=status,
+                result=_('Resource is not built'))
 
     def _resolve_attribute(self, name):
         try:
             attributes = self._show_resource()
-        except NeutronClientException as ex:
-            LOG.warn(_("failed to fetch resource attributes: %s") % ex)
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
             return None
         if name == 'show':
             return attributes
@@ -129,25 +134,25 @@ class NeutronResource(resource.Resource):
             try:
                 yield
                 self._show_resource()
-            except NeutronClientException as ex:
-                self._handle_not_found_exception(ex)
+            except Exception as ex:
+                self.client_plugin().ignore_not_found(ex)
                 return
-
-    def _handle_not_found_exception(self, ex):
-        if ex.status_code != 404:
-            raise ex
 
     def FnGetRefId(self):
         return unicode(self.resource_id)
 
     @staticmethod
-    def get_secgroup_uuids(security_groups, client):
+    def get_secgroup_uuids(security_groups, client, tenant_id):
         '''
         Returns a list of security group UUIDs.
         Args:
             security_groups: List of security group names or UUIDs
             client: reference to neutronclient
+            tenant_id: the tenant id to match the security_groups
         '''
+        warnings.warn('neutron.NeutronResource.get_secgroup_uuids is '
+                      'deprecated. Use '
+                      'self.client_plugin("neutron").get_secgroup_uuids')
         seclist = []
         all_groups = None
         for sg in security_groups:
@@ -157,12 +162,22 @@ class NeutronResource(resource.Resource):
                 if not all_groups:
                     response = client.list_security_groups()
                     all_groups = response['security_groups']
-                groups = [g['id'] for g in all_groups if g['name'] == sg]
+                same_name_groups = [g for g in all_groups if g['name'] == sg]
+                groups = [g['id'] for g in same_name_groups]
                 if len(groups) == 0:
                     raise exception.PhysicalResourceNotFound(resource_id=sg)
-                if len(groups) > 1:
-                    raise exception.PhysicalResourceNameAmbiguity(name=sg)
-                seclist.append(groups[0])
+                elif len(groups) == 1:
+                    seclist.append(groups[0])
+                else:
+                    # for admin roles, can get the other users'
+                    # securityGroups, so we should match the tenant_id with
+                    # the groups, and return the own one
+                    own_groups = [g['id'] for g in same_name_groups
+                                  if g['tenant_id'] == tenant_id]
+                    if len(own_groups) == 1:
+                        seclist.append(own_groups[0])
+                    else:
+                        raise exception.PhysicalResourceNameAmbiguity(name=sg)
         return seclist
 
     def _delete_task(self):

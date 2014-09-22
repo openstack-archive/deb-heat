@@ -14,7 +14,6 @@
 import copy
 import uuid
 
-from novaclient import exceptions as nova_exceptions
 from oslo.config import cfg
 
 from heat.common import exception
@@ -22,14 +21,12 @@ from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
-from heat.engine.resources import glance_utils
 from heat.engine.resources.neutron import subnet
-from heat.engine.resources import nova_utils
-from heat.engine.resources.software_config import software_config as sc
 from heat.engine import scheduler
 from heat.engine import stack_user
 from heat.engine import support
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import jsonutils
 from heat.openstack.common import log as logging
 from heat.openstack.common import uuidutils
 
@@ -81,9 +78,9 @@ class Server(stack_user.StackUser):
     )
 
     _SOFTWARE_CONFIG_TRANSPORTS = (
-        POLL_SERVER_CFN, POLL_SERVER_HEAT
+        POLL_SERVER_CFN, POLL_SERVER_HEAT, POLL_TEMP_URL
     ) = (
-        'POLL_SERVER_CFN', 'POLL_SERVER_HEAT'
+        'POLL_SERVER_CFN', 'POLL_SERVER_HEAT', 'POLL_TEMP_URL'
     )
 
     ATTRIBUTES = (
@@ -266,7 +263,8 @@ class Server(stack_user.StackUser):
               'the cfn API action DescribeStackResource authenticated with '
               'the provided keypair. POLL_SERVER_HEAT will allow calls to '
               'the Heat API resource-show using the provided keystone '
-              'credentials.'),
+              'credentials. POLL_TEMP_URL will create and populate a '
+              'Swift TempURL with metadata for polling.'),
             default=POLL_SERVER_CFN,
             constraints=[
                 constraints.AllowedValues(_SOFTWARE_CONFIG_TRANSPORTS),
@@ -350,6 +348,8 @@ class Server(stack_user.StackUser):
     # linux HOST_NAME_MAX of 64, minus the .novalocal appended to the name
     physical_resource_name_limit = 53
 
+    default_client_name = 'nova'
+
     def __init__(self, name, json_snippet, stack):
         super(Server, self).__init__(name, json_snippet, stack)
         if self.user_data_software_config():
@@ -366,8 +366,7 @@ class Server(stack_user.StackUser):
         # This method is overridden by the derived CloudServer resource
         return self.properties.get(self.CONFIG_DRIVE)
 
-    def _populate_deployments_metadata(self):
-        meta = self.metadata_get(True) or {}
+    def _populate_deployments_metadata(self, meta):
         meta['deployments'] = meta.get('deployments', [])
         if self.transport_poll_server_heat():
             meta['os-collect-config'] = {'heat': {
@@ -386,6 +385,24 @@ class Server(stack_user.StackUser):
                 'stack_name': self.stack.name,
                 'path': '%s.Metadata' % self.name}
             }
+        elif self.transport_poll_temp_url():
+            container = self.physical_resource_name()
+            object_name = str(uuid.uuid4())
+
+            self.client('swift').put_container(container)
+
+            url = self.client_plugin('swift').get_temp_url(
+                container, object_name, method='GET')
+            put_url = self.client_plugin('swift').get_temp_url(
+                container, object_name)
+            self.data_set('metadata_put_url', put_url)
+            self.data_set('metadata_object_name', object_name)
+
+            meta['os-collect-config'] = {'request': {
+                'metadata_url': url}
+            }
+            self.client('swift').put_object(
+                container, object_name, jsonutils.dumps(meta))
         self.metadata_set(meta)
 
     def _register_access_key(self):
@@ -447,6 +464,10 @@ class Server(stack_user.StackUser):
         return self.properties.get(
             self.SOFTWARE_CONFIG_TRANSPORT) == self.POLL_SERVER_HEAT
 
+    def transport_poll_temp_url(self):
+        return self.properties.get(
+            self.SOFTWARE_CONFIG_TRANSPORT) == self.POLL_TEMP_URL
+
     def handle_create(self):
         security_groups = self.properties.get(self.SECURITY_GROUPS)
 
@@ -456,15 +477,16 @@ class Server(stack_user.StackUser):
             if uuidutils.is_uuid_like(ud_content):
                 # attempt to load the userdata from software config
                 try:
-                    ud_content = sc.SoftwareConfig.get_software_config(
-                        self.heat(), ud_content)
-                except exception.SoftwareConfigMissing:
-                    # no config was found, so do not modify the user_data
-                    pass
+                    ud_content = self.heat().software_configs.get(
+                        ud_content).config
+                except Exception as ex:
+                    self.client_plugin('heat').ignore_not_found(ex)
+
+        metadata = self.metadata_get(True) or {}
 
         if self.user_data_software_config():
             self._create_transport_credentials()
-            self._populate_deployments_metadata()
+            self._populate_deployments_metadata(metadata)
 
         if self.properties[self.ADMIN_USER]:
             instance_user = self.properties[self.ADMIN_USER]
@@ -473,8 +495,8 @@ class Server(stack_user.StackUser):
         else:
             instance_user = None
 
-        userdata = nova_utils.build_userdata(
-            self,
+        userdata = self.client_plugin().build_userdata(
+            metadata,
             ud_content,
             instance_user=instance_user,
             user_data_format=user_data_format)
@@ -484,13 +506,14 @@ class Server(stack_user.StackUser):
 
         image = self.properties.get(self.IMAGE)
         if image:
-            image = glance_utils.get_image_id(self.glance(), image)
+            image = self.client_plugin('glance').get_image_id(image)
 
-        flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
+        flavor_id = self.client_plugin().get_flavor_id(flavor)
 
         instance_meta = self.properties.get(self.METADATA)
         if instance_meta is not None:
-            instance_meta = nova_utils.meta_serialize(instance_meta)
+            instance_meta = self.client_plugin().meta_serialize(
+                instance_meta)
 
         scheduler_hints = self.properties.get(self.SCHEDULER_HINTS)
         nics = self._build_nics(self.properties.get(self.NETWORKS))
@@ -522,7 +545,7 @@ class Server(stack_user.StackUser):
                 files=personality_files,
                 admin_pass=admin_pass)
         finally:
-            # Avoid a race condition where the thread could be cancelled
+            # Avoid a race condition where the thread could be canceled
             # before the ID is stored
             if server is not None:
                 self.resource_id_set(server.id)
@@ -533,26 +556,28 @@ class Server(stack_user.StackUser):
         return self._check_active(server)
 
     def _check_active(self, server):
+        cp = self.client_plugin()
+        status = cp.get_status(server)
+        if status != 'ACTIVE':
+            cp.refresh_server(server)
+            status = cp.get_status(server)
 
-        if server.status != 'ACTIVE':
-            nova_utils.refresh_server(server)
-
-        # Some clouds append extra (STATUS) strings to the status
-        short_server_status = server.status.split('(')[0]
-        if short_server_status in nova_utils.deferred_server_statuses:
+        if status in cp.deferred_server_statuses:
             return False
-        elif server.status == 'ACTIVE':
+        elif status == 'ACTIVE':
             return True
-        elif server.status == 'ERROR':
-            exc = exception.Error(_('Creation of server %s failed.') %
-                                  server.name)
-            raise exc
+        elif status == 'ERROR':
+            fault = getattr(server, 'fault', {})
+            raise resource.ResourceInError(
+                resource_status=status,
+                status_reason=_("Message: %(message)s, Code: %(code)s") % {
+                    'message': fault.get('message', _('Unknown')),
+                    'code': fault.get('code', _('Unknown'))
+                })
         else:
-            exc = exception.Error(_('Creation of server %(server)s failed '
-                                    'with unknown status: %(status)s') %
-                                  dict(server=server.name,
-                                       status=server.status))
-            raise exc
+            raise resource.ResourceUnknownStatus(
+                resource_status=server.status,
+                result=_('Server is not active'))
 
     @classmethod
     def _build_block_device_mapping(cls, bdm):
@@ -622,16 +647,15 @@ class Server(stack_user.StackUser):
 
     def _resolve_attribute(self, name):
         if name == self.FIRST_ADDRESS:
-            return nova_utils.server_to_ipaddress(
-                self.nova(), self.resource_id) or ''
-        try:
-            server = self.nova().servers.get(self.resource_id)
-        except nova_exceptions.NotFound as ex:
-            LOG.warn(_('Instance (%(server)s) not found: %(ex)s')
-                     % {'server': self.resource_id, 'ex': ex})
-            return ''
+            return self.client_plugin().server_to_ipaddress(
+                self.resource_id) or ''
         if name == self.NAME_ATTR:
             return self._server_name()
+        try:
+            server = self.nova().servers.get(self.resource_id)
+        except Exception as e:
+            self.client_plugin().ignore_not_found(e)
+            return ''
         if name == self.ADDRESSES:
             return self._add_port_for_address(server)
         if name == self.NETWORKS_ATTR:
@@ -719,9 +743,8 @@ class Server(stack_user.StackUser):
 
         if self.METADATA in prop_diff:
             server = self.nova().servers.get(self.resource_id)
-            nova_utils.meta_update(self.nova(),
-                                   server,
-                                   prop_diff[self.METADATA])
+            self.client_plugin().meta_update(server,
+                                             prop_diff[self.METADATA])
 
         if self.FLAVOR in prop_diff:
 
@@ -733,11 +756,11 @@ class Server(stack_user.StackUser):
                 raise resource.UpdateReplace(self.name)
 
             flavor = prop_diff[self.FLAVOR]
-            flavor_id = nova_utils.get_flavor_id(self.nova(), flavor)
+            flavor_id = self.client_plugin().get_flavor_id(flavor)
             if not server:
                 server = self.nova().servers.get(self.resource_id)
-            checker = scheduler.TaskRunner(nova_utils.resize, server, flavor,
-                                           flavor_id)
+            checker = scheduler.TaskRunner(self.client_plugin().resize,
+                                           server, flavor, flavor_id)
             checkers.append(checker)
 
         if self.IMAGE in prop_diff:
@@ -747,20 +770,20 @@ class Server(stack_user.StackUser):
             if image_update_policy == 'REPLACE':
                 raise resource.UpdateReplace(self.name)
             image = prop_diff[self.IMAGE]
-            image_id = glance_utils.get_image_id(self.glance(), image)
+            image_id = self.client_plugin('glance').get_image_id(image)
             if not server:
                 server = self.nova().servers.get(self.resource_id)
             preserve_ephemeral = (
                 image_update_policy == 'REBUILD_PRESERVE_EPHEMERAL')
             checker = scheduler.TaskRunner(
-                nova_utils.rebuild, server, image_id,
+                self.client_plugin().rebuild, server, image_id,
                 preserve_ephemeral=preserve_ephemeral)
             checkers.append(checker)
 
         if self.NAME in prop_diff:
             if not server:
                 server = self.nova().servers.get(self.resource_id)
-            nova_utils.rename(server, prop_diff[self.NAME])
+            self.client_plugin().rename(server, prop_diff[self.NAME])
 
         if self.NETWORKS in prop_diff:
             new_networks = prop_diff.get(self.NETWORKS)
@@ -928,8 +951,8 @@ class Server(stack_user.StackUser):
         # retrieve provider's absolute limits if it will be needed
         metadata = self.properties.get(self.METADATA)
         personality = self.properties.get(self.PERSONALITY)
-        if metadata is not None or personality is not None:
-            limits = nova_utils.absolute_limits(self.nova())
+        if metadata is not None or personality:
+            limits = self.client_plugin().absolute_limits()
 
         # if 'security_groups' present for the server and explict 'port'
         # in one or more entries in 'networks', raise validation error
@@ -950,7 +973,7 @@ class Server(stack_user.StackUser):
 
         # verify the number of personality files and the size of each
         # personality file against the provider's absolute limits
-        if personality is not None:
+        if personality:
             msg = _("The personality property may not contain "
                     "greater than %s entries.") % limits['maxPersonality']
             self._check_maximum(len(personality),
@@ -965,6 +988,20 @@ class Server(stack_user.StackUser):
                 self._check_maximum(len(bytes(contents)),
                                     limits['maxPersonalitySize'], msg)
 
+    def _delete_temp_url(self):
+        object_name = self.data().get('metadata_object_name')
+        if not object_name:
+            return
+        try:
+            container = self.physical_resource_name()
+            swift = self.client('swift')
+            swift.delete_object(container, object_name)
+            headers = swift.head_container(container)
+            if int(headers['x-container-object-count']) == 0:
+                swift.delete_container(container)
+        except Exception as ex:
+            self.client_plugin('swift').ignore_not_found(ex)
+
     def handle_delete(self):
 
         if self.resource_id is None:
@@ -972,18 +1009,20 @@ class Server(stack_user.StackUser):
 
         if self.user_data_software_config():
             self._delete_user()
+            self._delete_temp_url()
 
         try:
             server = self.nova().servers.get(self.resource_id)
-        except nova_exceptions.NotFound:
-            return
-        deleter = scheduler.TaskRunner(nova_utils.delete_server, server)
-        deleter.start()
-        return deleter
+        except Exception as e:
+            self.client_plugin().ignore_not_found(e)
+        else:
+            deleter = scheduler.TaskRunner(self.client_plugin().delete_server,
+                                           server)
+            deleter.start()
+            return deleter
 
     def check_delete_complete(self, deleter):
         if deleter is None or deleter.step():
-            self.resource_id_set(None)
             return True
         return False
 
@@ -999,9 +1038,12 @@ class Server(stack_user.StackUser):
 
         try:
             server = self.nova().servers.get(self.resource_id)
-        except nova_exceptions.NotFound:
-            raise exception.NotFound(_('Failed to find server %s') %
-                                     self.resource_id)
+        except Exception as e:
+            if self.client_plugin().is_not_found(e):
+                raise exception.NotFound(_('Failed to find server %s') %
+                                         self.resource_id)
+            else:
+                raise
         else:
             LOG.debug('suspending server %s' % self.resource_id)
             # We want the server.suspend to happen after the volume
@@ -1019,10 +1061,11 @@ class Server(stack_user.StackUser):
             if server.status == 'SUSPENDED':
                 return True
 
-            nova_utils.refresh_server(server)
+            cp = self.client_plugin()
+            cp.refresh_server(server)
             LOG.debug('%(name)s check_suspend_complete status = %(status)s'
                       % {'name': self.name, 'status': server.status})
-            if server.status in list(nova_utils.deferred_server_statuses +
+            if server.status in list(cp.deferred_server_statuses +
                                      ['ACTIVE']):
                 return server.status == 'SUSPENDED'
             else:
@@ -1044,9 +1087,12 @@ class Server(stack_user.StackUser):
 
         try:
             server = self.nova().servers.get(self.resource_id)
-        except nova_exceptions.NotFound:
-            raise exception.NotFound(_('Failed to find server %s') %
-                                     self.resource_id)
+        except Exception as e:
+            if self.client_plugin().is_not_found(e):
+                raise exception.NotFound(_('Failed to find server %s') %
+                                         self.resource_id)
+            else:
+                raise
         else:
             LOG.debug('resuming server %s' % self.resource_id)
             server.resume()
@@ -1055,14 +1101,34 @@ class Server(stack_user.StackUser):
     def check_resume_complete(self, server):
         return self._check_active(server)
 
+    def handle_snapshot(self):
+        image_id = self.nova().servers.create_image(
+            self.resource_id, self.physical_resource_name())
+        return image_id
+
+    def check_snapshot_complete(self, image_id):
+        image = self.nova().images.get(image_id)
+        if image.status == 'ACTIVE':
+            self.data_set('snapshot_image_id', image.id)
+            return True
+        elif image.status == 'ERROR':
+            raise exception.Error(image.status)
+        return False
+
+    def handle_delete_snapshot(self, snapshot):
+        image_id = snapshot['resource_data']['snapshot_image_id']
+        try:
+            self.nova().images.delete(image_id)
+        except Exception as e:
+            self.client_plugin().ignore_not_found(e)
+
 
 class FlavorConstraint(constraints.BaseCustomConstraint):
 
     expected_exceptions = (exception.FlavorMissing,)
 
     def validate_with_client(self, client, value):
-        nova_client = client.client('nova')
-        nova_utils.get_flavor_id(nova_client, value)
+        client.client_plugin('nova').get_flavor_id(value)
 
 
 def resource_mapping():

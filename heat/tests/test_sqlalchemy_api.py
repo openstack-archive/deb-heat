@@ -15,6 +15,7 @@ from datetime import datetime
 from datetime import timedelta
 from json import dumps
 from json import loads
+import six
 import uuid
 
 import fixtures
@@ -30,7 +31,6 @@ from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine.resource import Resource
-from heat.engine.resources import glance_utils
 from heat.engine.resources import instance as instances
 from heat.engine import scheduler
 from heat.openstack.common import timeutils
@@ -96,16 +96,12 @@ class SqlAlchemyTest(HeatTestCase):
         super(SqlAlchemyTest, self).tearDown()
 
     def _mock_get_image_id_success(self, imageId_input, imageId):
-        g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
-        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
-            g_cli_mock)
-        self.m.StubOutWithMock(glance_utils, 'get_image_id')
-        glance_utils.get_image_id(g_cli_mock, imageId_input).MultipleTimes().\
-            AndReturn(imageId)
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image_id')
+        glance.GlanceClientPlugin.get_image_id(
+            imageId_input).MultipleTimes().AndReturn(imageId)
 
     def _setup_test_stack(self, stack_name, stack_id=None, owner_id=None,
-                          stack_user_project_id=None):
+                          stack_user_project_id=None, backup=False):
         t = template_format.parse(wp_template)
         template = parser.Template(t)
         stack_id = stack_id or str(uuid.uuid4())
@@ -114,7 +110,7 @@ class SqlAlchemyTest(HeatTestCase):
                              owner_id=owner_id,
                              stack_user_project_id=stack_user_project_id)
         with utils.UUIDStub(stack_id):
-            stack.store()
+            stack.store(backup=backup)
         return (template, stack)
 
     def _mock_create(self, mocks):
@@ -122,7 +118,7 @@ class SqlAlchemyTest(HeatTestCase):
         mocks.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().MultipleTimes().AndReturn(fc)
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 744)
 
         mocks.StubOutWithMock(fc.servers, 'create')
@@ -131,8 +127,9 @@ class SqlAlchemyTest(HeatTestCase):
                           security_groups=None,
                           userdata=mox.IgnoreArg(), scheduler_hints=None,
                           meta=None, nics=None,
-                          availability_zone=None).MultipleTimes().AndReturn(
-                              fc.servers.list()[4])
+                          availability_zone=None,
+                          block_device_mapping=None).MultipleTimes().\
+            AndReturn(fc.servers.list()[4])
         return fc
 
     def _mock_delete(self, mocks):
@@ -444,6 +441,26 @@ class SqlAlchemyTest(HeatTestCase):
         st_db = db_api.stack_get_all(self.ctx, show_deleted=True)
         self.assertEqual(3, len(st_db))
 
+    def test_stack_get_all_show_nested(self):
+        stack1 = self._setup_test_stack('stack1', UUID1)[1]
+        stack2 = self._setup_test_stack('stack2', UUID2,
+                                        owner_id=stack1.id)[1]
+        # Backup stack should not be returned
+        stack3 = self._setup_test_stack('stack1*', UUID3,
+                                        owner_id=stack1.id,
+                                        backup=True)[1]
+
+        st_db = db_api.stack_get_all(self.ctx)
+        self.assertEqual(1, len(st_db))
+        self.assertEqual(stack1.id, st_db[0].id)
+
+        st_db = db_api.stack_get_all(self.ctx, show_nested=True)
+        self.assertEqual(2, len(st_db))
+        st_ids = [s.id for s in st_db]
+        self.assertNotIn(stack3.id, st_ids)
+        self.assertIn(stack1.id, st_ids)
+        self.assertIn(stack2.id, st_ids)
+
     def test_stack_get_all_with_filters(self):
         self._setup_test_stack('foo', UUID1)
         self._setup_test_stack('bar', UUID2)
@@ -563,6 +580,21 @@ class SqlAlchemyTest(HeatTestCase):
         filters = {'name': 'bar'}
 
         st_db = db_api.stack_count_all(self.ctx, filters=filters)
+        self.assertEqual(2, st_db)
+
+    def test_stack_count_all_show_nested(self):
+        stack1 = self._setup_test_stack('stack1', UUID1)[1]
+        self._setup_test_stack('stack2', UUID2,
+                               owner_id=stack1.id)
+        # Backup stack should not be counted
+        self._setup_test_stack('stack1*', UUID3,
+                               owner_id=stack1.id,
+                               backup=True)
+
+        st_db = db_api.stack_count_all(self.ctx)
+        self.assertEqual(1, st_db)
+
+        st_db = db_api.stack_count_all(self.ctx, show_nested=True)
         self.assertEqual(2, st_db)
 
     def test_event_get_all_by_stack(self):
@@ -895,7 +927,7 @@ class SqlAlchemyTest(HeatTestCase):
         err = self.assertRaises(exception.NotFound,
                                 db_api.software_deployment_update,
                                 self.ctx, deployment_id, values={})
-        self.assertIn(deployment_id, str(err))
+        self.assertIn(deployment_id, six.text_type(err))
         values = self._deployment_values()
         deployment = db_api.software_deployment_create(self.ctx, values)
         deployment_id = deployment.id
@@ -910,7 +942,7 @@ class SqlAlchemyTest(HeatTestCase):
         err = self.assertRaises(exception.NotFound,
                                 db_api.software_deployment_delete,
                                 self.ctx, deployment_id)
-        self.assertIn(deployment_id, str(err))
+        self.assertIn(deployment_id, six.text_type(err))
         values = self._deployment_values()
         deployment = db_api.software_deployment_create(self.ctx, values)
         deployment_id = deployment.id
@@ -924,7 +956,7 @@ class SqlAlchemyTest(HeatTestCase):
             self.ctx,
             deployment_id)
 
-        self.assertIn(deployment_id, str(err))
+        self.assertIn(deployment_id, six.text_type(err))
 
     def test_snapshot_create(self):
         template = create_raw_template(self.ctx)
@@ -988,7 +1020,7 @@ class SqlAlchemyTest(HeatTestCase):
         err = self.assertRaises(exception.NotFound,
                                 db_api.snapshot_update,
                                 self.ctx, snapshot_id, values={})
-        self.assertIn(snapshot_id, str(err))
+        self.assertIn(snapshot_id, six.text_type(err))
 
     def test_snapshot_update(self):
         template = create_raw_template(self.ctx)
@@ -1008,7 +1040,7 @@ class SqlAlchemyTest(HeatTestCase):
         err = self.assertRaises(exception.NotFound,
                                 db_api.snapshot_delete,
                                 self.ctx, snapshot_id)
-        self.assertIn(snapshot_id, str(err))
+        self.assertIn(snapshot_id, six.text_type(err))
 
     def test_snapshot_delete(self):
         template = create_raw_template(self.ctx)
@@ -1028,7 +1060,21 @@ class SqlAlchemyTest(HeatTestCase):
             self.ctx,
             snapshot_id)
 
-        self.assertIn(snapshot_id, str(err))
+        self.assertIn(snapshot_id, six.text_type(err))
+
+    def test_snapshot_get_all(self):
+        template = create_raw_template(self.ctx)
+        user_creds = create_user_creds(self.ctx)
+        stack = create_stack(self.ctx, template, user_creds)
+        values = {'tenant': self.ctx.tenant_id, 'status': 'IN_PROGRESS',
+                  'stack_id': stack.id}
+        snapshot = db_api.snapshot_create(self.ctx, values)
+        self.assertIsNotNone(snapshot)
+        [snapshot] = db_api.snapshot_get_all(self.ctx, stack.id)
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(values['tenant'], snapshot.tenant)
+        self.assertEqual(values['status'], snapshot.status)
+        self.assertIsNotNone(snapshot.created_at)
 
 
 def create_raw_template(context, **kwargs):
@@ -1192,7 +1238,7 @@ class DBAPIUserCredsTest(HeatTestCase):
             self.ctx, user_creds.id)
         exp_msg = ('Attempt to delete user creds with id '
                    '%s that does not exist' % user_creds.id)
-        self.assertIn(exp_msg, str(err))
+        self.assertIn(exp_msg, six.text_type(err))
 
 
 class DBAPIStackTest(HeatTestCase):
@@ -1417,7 +1463,7 @@ class DBAPIStackTest(HeatTestCase):
         stacks = [create_stack(self.ctx, templates[i], creds[i],
                                deleted_at=deleted[i]) for i in range(5)]
 
-        class MyDatetime():
+        class MyDatetime(object):
             def now(self):
                 return now
         self.useFixture(fixtures.MonkeyPatch('heat.db.sqlalchemy.api.datetime',

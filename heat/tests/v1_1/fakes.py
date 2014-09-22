@@ -14,8 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import httplib2
 import mock
+import requests
 
 from novaclient import client as base_client
 from novaclient import exceptions as nova_exceptions
@@ -74,10 +74,13 @@ class FakeHTTPClient(base_client.HTTPClient):
         self.callstack.append((method, url, kwargs.get('body')))
 
         status, body = getattr(self, callback)(**kwargs)
-        if hasattr(status, 'items'):
-            return httplib2.Response(status), body
+        response = requests.models.Response()
+        if isinstance(status, dict):
+            response.status_code = status.pop("status")
+            response.headers = status
         else:
-            return httplib2.Response({"status": status}), body
+            response.status_code = status
+        return response, body
 
     #
     # Servers
@@ -171,7 +174,10 @@ class FakeHTTPClient(base_client.HTTPClient):
                                          {"version": 4, "addr": "5.6.9.8"}],
                               "private": [{"version": 4,
                                            "addr": "10.13.12.13"}]},
-                          "metadata": {"Server Label": "DB 1"}},
+                          "metadata": {"Server Label": "DB 1"},
+                          "os-extended-volumes:volumes_attached":
+                              [{"id":
+                                    "66359157-dace-43ab-a7ed-a7e7cd7be59d"}]},
                          {"id": 56789,
                           "name": "server-with-metadata",
                           "OS-EXT-SRV-ATTR:instance_name":
@@ -218,7 +224,7 @@ class FakeHTTPClient(base_client.HTTPClient):
         return (202, None)
 
     def get_servers_9999(self, **kw):
-        r = {'server': self.get_servers_detail()[1]['servers'][0]}
+        r = {'server': self.get_servers_detail()[1]['servers'][4]}
         return (200, r)
 
     def get_servers_9102(self, **kw):
@@ -275,7 +281,8 @@ class FakeHTTPClient(base_client.HTTPClient):
             assert body[action].keys() == ['address']
         elif action == 'createImage':
             assert set(body[action].keys()) == set(['name', 'metadata'])
-            resp = dict(status=202, location="http://blah/images/456")
+            resp = {"status": 202,
+                    "location": "http://blah/images/456"}
         elif action == 'changePassword':
             assert body[action].keys() == ['adminPass']
         elif action == 'os-getConsoleOutput':
@@ -289,6 +296,18 @@ class FakeHTTPClient(base_client.HTTPClient):
                                                     'disk_over_commit'])
         else:
             raise AssertionError("Unexpected server action: %s" % action)
+        return (resp, _body)
+
+    def post_servers_5678_action(self, body, **kw):
+        _body = None
+        resp = 202
+        assert len(body.keys()) == 1
+        action = body.keys()[0]
+        if action == 'addFloatingIp':
+            assert body[action].keys() == ['address']
+        elif action == 'removeFloatingIp':
+            assert body[action].keys() == ['address']
+
         return (resp, _body)
 
     #
@@ -366,6 +385,8 @@ class FakeHTTPClient(base_client.HTTPClient):
 
     def get_images_1(self, **kw):
         return (200, {'image': self.get_images_detail()[1]['images'][0]})
+
+    get_images_456 = get_images_1
 
     #
     # Keypairs

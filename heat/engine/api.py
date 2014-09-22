@@ -102,6 +102,8 @@ def format_stack(stack):
         api.STACK_CAPABILITIES: [],   # TODO Not implemented yet
         api.STACK_DISABLE_ROLLBACK: stack.disable_rollback,
         api.STACK_TIMEOUT: stack.timeout_mins,
+        api.STACK_OWNER: stack.username,
+        api.STACK_PARENT: stack.owner_id,
     }
 
     # allow users to view the outputs of stacks
@@ -285,7 +287,8 @@ def format_validate_parameter(param):
         param.schema.STRING: api.PARAM_TYPE_STRING,
         param.schema.NUMBER: api.PARAM_TYPE_NUMBER,
         param.schema.LIST: api.PARAM_TYPE_COMMA_DELIMITED_LIST,
-        param.schema.MAP: api.PARAM_TYPE_JSON
+        param.schema.MAP: api.PARAM_TYPE_JSON,
+        param.schema.BOOLEAN: api.PARAM_TYPE_BOOLEAN
     }
 
     res = {
@@ -363,5 +366,18 @@ def format_software_deployment(sd):
         api.SOFTWARE_DEPLOYMENT_STATUS: sd.status,
         api.SOFTWARE_DEPLOYMENT_STATUS_REASON: sd.status_reason,
         api.SOFTWARE_DEPLOYMENT_CONFIG_ID: sd.config.id,
+    }
+    return result
+
+
+def format_snapshot(snapshot):
+    if snapshot is None:
+        return
+    result = {
+        api.SNAPSHOT_ID: snapshot.id,
+        api.SNAPSHOT_NAME: snapshot.name,
+        api.SNAPSHOT_STATUS: snapshot.status,
+        api.SNAPSHOT_STATUS_REASON: snapshot.status_reason,
+        api.SNAPSHOT_DATA: snapshot.data,
     }
     return result

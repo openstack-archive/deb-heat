@@ -18,7 +18,6 @@ import re
 import six
 
 from heat.common import exception
-from heat.engine import clients
 from heat.engine import resources
 from heat.openstack.common import strutils
 
@@ -174,8 +173,6 @@ class Schema(collections.Mapping):
             elif self.type == self.NUMBER:
                 return Schema.str_to_num(value)
             elif self.type == self.STRING:
-                if value and not isinstance(value, basestring):
-                    raise ValueError()
                 return str(value)
             elif self.type == self.BOOLEAN:
                 return strutils.bool_from_string(str(value), strict=True)
@@ -575,9 +572,8 @@ class BaseCustomConstraint(object):
             "value": value, "message": self._error_message}
 
     def validate(self, value, context):
-        client = clients.Clients(context)
         try:
-            self.validate_with_client(client, value)
+            self.validate_with_client(context.clients, value)
         except self.expected_exceptions as e:
             self._error_message = str(e)
             return False

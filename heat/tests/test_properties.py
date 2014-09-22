@@ -11,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import six
 import testtools
 
 from heat.common import exception
@@ -30,6 +31,7 @@ class PropertySchemaTest(testtools.TestCase):
             'default': 'wibble',
             'required': True,
             'update_allowed': False,
+            'immutable': False,
             'constraints': [
                 {'length': {'min': 4, 'max': 8}},
             ]
@@ -50,13 +52,15 @@ class PropertySchemaTest(testtools.TestCase):
                     'default': 'wibble',
                     'required': True,
                     'update_allowed': False,
+                    'immutable': False,
                     'constraints': [
                         {'length': {'min': 4, 'max': 8}},
                     ]
                 }
             },
             'required': False,
-            'update_allowed': False
+            'update_allowed': False,
+            'immutable': False,
         }
         s = properties.Schema(properties.Schema.STRING, 'A string',
                               default='wibble', required=True,
@@ -75,6 +79,7 @@ class PropertySchemaTest(testtools.TestCase):
                     'default': 'wibble',
                     'required': True,
                     'update_allowed': False,
+                    'immutable': False,
                     'constraints': [
                         {'length': {'min': 4, 'max': 8}},
                     ]
@@ -82,6 +87,7 @@ class PropertySchemaTest(testtools.TestCase):
             },
             'required': False,
             'update_allowed': False,
+            'immutable': False,
         }
         s = properties.Schema(properties.Schema.STRING, 'A string',
                               default='wibble', required=True,
@@ -105,6 +111,7 @@ class PropertySchemaTest(testtools.TestCase):
                             'default': 'wibble',
                             'required': True,
                             'update_allowed': False,
+                            'immutable': False,
                             'constraints': [
                                 {'length': {'min': 4, 'max': 8}},
                             ]
@@ -112,10 +119,12 @@ class PropertySchemaTest(testtools.TestCase):
                     },
                     'required': False,
                     'update_allowed': False,
+                    'immutable': False,
                 }
             },
             'required': False,
             'update_allowed': False,
+            'immutable': False,
         }
         s = properties.Schema(properties.Schema.STRING, 'A string',
                               default='wibble', required=True,
@@ -163,6 +172,7 @@ class PropertySchemaTest(testtools.TestCase):
         self.assertEqual('wibble', s.default)
         self.assertTrue(s.required)
         self.assertEqual(3, len(s.constraints))
+        self.assertFalse(s.immutable)
 
     def test_from_legacy_min_length(self):
         s = properties.Schema.from_legacy({
@@ -690,7 +700,7 @@ class PropertyTest(testtools.TestCase):
         p = properties.Property(schema)
         ex = self.assertRaises(TypeError, p.get_value, [1])
         self.assertEqual("int() argument must be a string or a number, "
-                         "not 'list'", str(ex))
+                         "not 'list'", six.text_type(ex))
 
     def test_int_from_str_good(self):
         schema = {'Type': 'Integer'}
@@ -701,7 +711,7 @@ class PropertyTest(testtools.TestCase):
         schema = {'Type': 'Integer'}
         p = properties.Property(schema)
         ex = self.assertRaises(TypeError, p.get_value, '3a')
-        self.assertEqual("Value '3a' is not an integer", str(ex))
+        self.assertEqual("Value '3a' is not an integer", six.text_type(ex))
 
     def test_integer_low(self):
         schema = {'Type': 'Integer',
@@ -852,7 +862,7 @@ class PropertyTest(testtools.TestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                p.get_value, {'valid': 'fish'}, True)
         self.assertEqual('Property error : valid "fish" is not '
-                         'a valid boolean', str(ex))
+                         'a valid boolean', six.text_type(ex))
 
     def test_map_schema_missing_data(self):
         map_schema = {'valid': {'Type': 'Boolean'}}
@@ -865,7 +875,7 @@ class PropertyTest(testtools.TestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                p.get_value, {}, True)
         self.assertEqual('Property error : Property valid not assigned',
-                         str(ex))
+                         six.text_type(ex))
 
     def test_list_schema_good(self):
         map_schema = {'valid': {'Type': 'Boolean'}}
@@ -884,7 +894,7 @@ class PropertyTest(testtools.TestCase):
                                p.get_value,
                                [{'valid': 'True'}, {'valid': 'fish'}], True)
         self.assertEqual('Property error : 1 Property error : 1: valid '
-                         '"fish" is not a valid boolean', str(ex))
+                         '"fish" is not a valid boolean', six.text_type(ex))
 
     def test_list_schema_int_good(self):
         list_schema = {'Type': 'Integer'}
@@ -897,7 +907,7 @@ class PropertyTest(testtools.TestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                p.get_value, [42, 'fish'], True)
         self.assertEqual('Property error : 1 Value \'fish\' is not '
-                         'an integer', str(ex))
+                         'an integer', six.text_type(ex))
 
 
 class PropertiesTest(testtools.TestCase):
@@ -1029,7 +1039,7 @@ class PropertiesTest(testtools.TestCase):
 
         props = properties.Properties(schema, {'foo': 'baz'}, bad_resolver)
         err = self.assertRaises(ValueError, props.get, 'foo')
-        self.assertEqual('foo resolution failed!', str(err))
+        self.assertEqual('foo resolution failed!', six.text_type(err))
 
     def test_resolve_returns_none(self):
         schema = {'foo': {'Type': 'String', "MinLength": "5"}}
@@ -1135,6 +1145,7 @@ class PropertiesTest(testtools.TestCase):
                 "description": "The WordPress database admin account username",
                 "required": False,
                 'update_allowed': True,
+                'immutable': False,
                 "constraints": [
                     {"length": {"min": 1, "max": 16},
                      "description": "must begin with a letter and contain "
@@ -1149,6 +1160,7 @@ class PropertiesTest(testtools.TestCase):
                 "description": "Distribution of choice",
                 "required": False,
                 'update_allowed': True,
+                'immutable': False,
                 "constraints": [
                     {"allowed_values": ["F18", "F17", "U10",
                                         "RHEL-6.1", "RHEL-6.2", "RHEL-6.3"]}
@@ -1159,6 +1171,7 @@ class PropertiesTest(testtools.TestCase):
                 "description": "WebServer EC2 instance type",
                 "required": False,
                 'update_allowed': True,
+                'immutable': False,
                 "constraints": [
                     {"allowed_values": ["t1.micro",
                                         "m1.small",
@@ -1178,6 +1191,7 @@ class PropertiesTest(testtools.TestCase):
                 "description": "Root password for MySQL",
                 "required": False,
                 'update_allowed': True,
+                'immutable': False,
                 "constraints": [
                     {"length": {"min": 1, "max": 41},
                      "description": "must contain only alphanumeric "
@@ -1193,12 +1207,14 @@ class PropertiesTest(testtools.TestCase):
                                 "SSH access to the instances"),
                 "required": True,
                 'update_allowed': True,
+                'immutable': False,
             },
             "DBPassword": {
                 "type": "string",
                 "description": "The WordPress database admin account password",
                 "required": False,
                 'update_allowed': True,
+                'immutable': False,
                 "constraints": [
                     {"length": {"min": 1, "max": 41},
                      "description": "must contain only alphanumeric "
@@ -1213,6 +1229,7 @@ class PropertiesTest(testtools.TestCase):
                 "description": "The WordPress database name",
                 "required": False,
                 'update_allowed': True,
+                'immutable': False,
                 "constraints": [
                     {"length": {"min": 1, "max": 64},
                      "description": "must begin with a letter and contain "
@@ -1318,12 +1335,14 @@ class PropertiesTest(testtools.TestCase):
                                 "SSH access to the instances"),
                 "required": True,
                 'update_allowed': True,
+                'immutable': False,
             },
             "InstanceType": {
                 "type": "string",
                 "description": "WebServer EC2 instance type",
                 "required": False,
                 'update_allowed': True,
+                'immutable': False,
                 "constraints": [
                     {"allowed_values": ["t1.micro", "m1.small", "m1.large",
                                         "m1.xlarge", "m2.xlarge", "m2.2xlarge",
@@ -1337,6 +1356,7 @@ class PropertiesTest(testtools.TestCase):
                 "description": "Distribution of choice",
                 "required": False,
                 'update_allowed': True,
+                'immutable': False,
                 "constraints": [
                     {"allowed_values": ["F18", "F17", "U10",
                                         "RHEL-6.1", "RHEL-6.2", "RHEL-6.3"],
@@ -1348,6 +1368,7 @@ class PropertiesTest(testtools.TestCase):
                 "description": "The WordPress database name",
                 "required": False,
                 'update_allowed': True,
+                'immutable': False,
                 "constraints": [
                     {"length": {"min": 1, "max": 64},
                      "description": "Length must be between 1 and 64"},
@@ -1361,6 +1382,7 @@ class PropertiesTest(testtools.TestCase):
                 "description": "The WordPress database admin account username",
                 "required": False,
                 'update_allowed': True,
+                'immutable': False,
                 "constraints": [
                     {"length": {"min": 1, "max": 16},
                      "description": "Length must be between 1 and 16"},
@@ -1374,6 +1396,7 @@ class PropertiesTest(testtools.TestCase):
                 "description": "The WordPress database admin account password",
                 "required": False,
                 'update_allowed': True,
+                'immutable': False,
                 "constraints": [
                     {"length": {"min": 1, "max": 41},
                      "description": "Length must be between 1 and 41"},
@@ -1387,6 +1410,7 @@ class PropertiesTest(testtools.TestCase):
                 "description": "Root password for MySQL",
                 "required": False,
                 'update_allowed': True,
+                'immutable': False,
                 "constraints": [
                     {"length": {"min": 1, "max": 41},
                      "description": "Length must be between 1 and 41"},
@@ -1603,7 +1627,7 @@ class PropertiesValidationTest(testtools.TestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                props.validate)
         self.assertEqual('Property error : foo Property error : foo: 0 '
-                         'Unknown Property bar', str(ex))
+                         'Unknown Property bar', six.text_type(ex))
 
     def test_nested_properties_schema_invalid_property_in_map(self):
         child_schema = {'Key': {'Type': 'String',
@@ -1623,7 +1647,7 @@ class PropertiesValidationTest(testtools.TestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                props.validate)
         self.assertEqual('Property error : foo Property error : foo: boo '
-                         'Unknown Property bar', str(ex))
+                         'Unknown Property bar', six.text_type(ex))
 
     def test_more_nested_properties_schema_invalid_property_in_list(self):
         nested_child_schema = {'Key': {'Type': 'String',
@@ -1642,7 +1666,7 @@ class PropertiesValidationTest(testtools.TestCase):
                                props.validate)
         self.assertEqual('Property error : foo Property error : foo: 0 '
                          'Property error : 0: doo Unknown Property bar',
-                         str(ex))
+                         six.text_type(ex))
 
     def test_more_nested_properties_schema_invalid_property_in_map(self):
         nested_child_schema = {'Key': {'Type': 'String',
@@ -1661,7 +1685,7 @@ class PropertiesValidationTest(testtools.TestCase):
                                props.validate)
         self.assertEqual('Property error : foo Property error : foo: boo '
                          'Property error : boo: doo Unknown Property bar',
-                         str(ex))
+                         six.text_type(ex))
 
     def test_schema_to_template_empty_schema(self):
         schema = {}
@@ -1670,3 +1694,11 @@ class PropertiesValidationTest(testtools.TestCase):
             properties.Properties.schema_to_parameters_and_properties(schema)
         self.assertEqual({}, parameters)
         self.assertEqual({}, props)
+
+    def test_update_allowed_and_immutable_contradict(self):
+        schema = {'foo': properties.Schema(
+            properties.Schema.STRING,
+            update_allowed=True,
+            immutable=True)}
+        props = properties.Properties(schema, {})
+        self.assertRaises(exception.InvalidSchemaError, props.validate)

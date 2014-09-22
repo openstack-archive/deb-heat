@@ -15,6 +15,7 @@
 import mox
 import swiftclient.client as sc
 
+from heat.common import exception
 from heat.common import template_format
 from heat.engine.resources import swift
 from heat.engine import scheduler
@@ -148,7 +149,7 @@ class swiftTest(HeatTestCase):
         self.assertEqual('17680980', rsrc.FnGetAtt('BytesUsed'))
         self.assertEqual(headers, rsrc.FnGetAtt('HeadContainer'))
 
-        self.assertRaises(swift.exception.InvalidTemplateAttribute,
+        self.assertRaises(exception.InvalidTemplateAttribute,
                           rsrc.FnGetAtt, 'Foo')
 
         scheduler.TaskRunner(rsrc.delete)()
@@ -225,6 +226,24 @@ class swiftTest(HeatTestCase):
             {}).AndReturn(None)
         sc.Connection.delete_container(container_name).AndRaise(
             sc.ClientException('Test delete failure'))
+
+        self.m.ReplayAll()
+        t = template_format.parse(swift_template)
+        stack = utils.parse_stack(t)
+        rsrc = self.create_resource(t, stack, 'SwiftContainer')
+        self.assertRaises(exception.ResourceFailure,
+                          scheduler.TaskRunner(rsrc.delete))
+
+        self.m.VerifyAll()
+
+    def test_delete_not_found(self):
+        container_name = utils.PhysName('test_stack', 'test_resource')
+        sc.Connection.put_container(
+            container_name,
+            {}).AndReturn(None)
+        sc.Connection.delete_container(container_name).AndRaise(
+            sc.ClientException('Its gone',
+                               http_status=404))
 
         self.m.ReplayAll()
         t = template_format.parse(swift_template)

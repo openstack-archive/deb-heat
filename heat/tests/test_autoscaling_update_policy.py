@@ -13,6 +13,7 @@
 
 import copy
 import json
+import six
 
 import mox
 from oslo.config import cfg
@@ -20,12 +21,10 @@ from testtools.matchers import MatchesRegex
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine.clients.os import glance
 from heat.engine.clients.os import nova
 from heat.engine import function
 from heat.engine.notification import stack as notification
 from heat.engine import parser
-from heat.engine.resources import glance_utils
 from heat.engine.resources import instance
 from heat.engine.resources import loadbalancer as lb
 from heat.engine.resources import wait_condition as wc
@@ -211,26 +210,6 @@ class AutoScalingGroupTest(HeatTestCase):
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://127.0.0.1:8000/v1/waitcondition')
 
-    def _mock_get_image_id_success(self, imageId_input, imageId,
-                                   update_image=None):
-        g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
-        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
-            g_cli_mock)
-        self.m.StubOutWithMock(glance_utils, 'get_image_id')
-
-        # If update_image is None (create case), validation for initial image
-        # imageId_input will be invoked multiple times (for each server).
-        # If update_image is set (update case), validation of the old property
-        # values and new property values will be done, but the order is not
-        # deterministic. Therefore, using mox.IgnoreArg() for the update case.
-        if update_image is None:
-            glance_utils.get_image_id(g_cli_mock, imageId_input).\
-                MultipleTimes().AndReturn(imageId)
-        else:
-            glance_utils.get_image_id(g_cli_mock, mox.IgnoreArg()).\
-                MultipleTimes().AndReturn(imageId)
-
     def _stub_validate(self):
         self.m.StubOutWithMock(parser.Stack, 'validate')
         parser.Stack.validate().MultipleTimes()
@@ -263,7 +242,7 @@ class AutoScalingGroupTest(HeatTestCase):
         cookie = object()
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
         # for load balancer setup
         if setup_lb:
             self._stub_lb_create()
@@ -293,10 +272,6 @@ class AutoScalingGroupTest(HeatTestCase):
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
         self.m.StubOutWithMock(instance.Instance, 'destroy')
-
-        if num_reloads_expected_on_updt > 1:
-            self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-            nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
 
         cookie = object()
         for i in range(num_creates_expected_on_updt):
@@ -342,13 +317,22 @@ class AutoScalingGroupTest(HeatTestCase):
     def test_parse_without_update_policy(self):
         tmpl = template_format.parse(asg_tmpl_without_updt_policy)
         stack = utils.parse_stack(tmpl)
+        self.stub_ImageConstraint_validate()
+        self.stub_KeypairConstraint_validate()
+        self.m.ReplayAll()
+
         stack.validate()
         grp = stack['WebServerGroup']
         self.assertFalse(grp.update_policy['AutoScalingRollingUpdate'])
+        self.m.VerifyAll()
 
     def test_parse_with_update_policy(self):
         tmpl = template_format.parse(asg_tmpl_with_updt_policy)
         stack = utils.parse_stack(tmpl)
+        self.stub_ImageConstraint_validate()
+        self.stub_KeypairConstraint_validate()
+        self.m.ReplayAll()
+
         stack.validate()
         tmpl_grp = tmpl['Resources']['WebServerGroup']
         tmpl_policy = tmpl_grp['UpdatePolicy']['AutoScalingRollingUpdate']
@@ -362,10 +346,15 @@ class AutoScalingGroupTest(HeatTestCase):
         self.assertEqual(1, int(policy['MinInstancesInService']))
         self.assertEqual(tmpl_batch_sz, int(policy['MaxBatchSize']))
         self.assertEqual('PT1S', policy['PauseTime'])
+        self.m.VerifyAll()
 
     def test_parse_with_default_update_policy(self):
         tmpl = template_format.parse(asg_tmpl_with_default_updt_policy)
         stack = utils.parse_stack(tmpl)
+        self.stub_ImageConstraint_validate()
+        self.stub_KeypairConstraint_validate()
+        self.m.ReplayAll()
+
         stack.validate()
         grp = stack['WebServerGroup']
         self.assertTrue(grp.update_policy)
@@ -376,19 +365,30 @@ class AutoScalingGroupTest(HeatTestCase):
         self.assertEqual(0, int(policy['MinInstancesInService']))
         self.assertEqual(1, int(policy['MaxBatchSize']))
         self.assertEqual('PT0S', policy['PauseTime'])
+        self.m.VerifyAll()
 
     def test_parse_with_bad_update_policy(self):
+        self.stub_ImageConstraint_validate()
+        self.stub_KeypairConstraint_validate()
+        self.m.ReplayAll()
         tmpl = template_format.parse(asg_tmpl_with_bad_updt_policy)
         stack = utils.parse_stack(tmpl)
-        self.assertRaises(exception.StackValidationFailed, stack.validate)
+        error = self.assertRaises(
+            exception.StackValidationFailed, stack.validate)
+        self.assertIn("foo", six.text_type(error))
 
     def test_parse_with_bad_pausetime_in_update_policy(self):
+        self.stub_ImageConstraint_validate()
+        self.stub_KeypairConstraint_validate()
+        self.m.ReplayAll()
         tmpl = template_format.parse(asg_tmpl_with_default_updt_policy)
         group = tmpl['Resources']['WebServerGroup']
         policy = group['UpdatePolicy']['AutoScalingRollingUpdate']
         policy['PauseTime'] = 'P1YT1H'
         stack = utils.parse_stack(tmpl)
-        self.assertRaises(exception.StackValidationFailed, stack.validate)
+        error = self.assertRaises(
+            exception.StackValidationFailed, stack.validate)
+        self.assertIn("Only ISO 8601 duration format", six.text_type(error))
 
     def validate_update_policy_diff(self, current, updated):
 
@@ -449,14 +449,18 @@ class AutoScalingGroupTest(HeatTestCase):
         tmpl = template_format.parse(init_template)
         stack = utils.parse_stack(tmpl)
 
-        self._mock_get_image_id_success('F20-x86_64-cfntools',
-                                        'image_id')
+        self.stub_KeypairConstraint_validate()
+        self.stub_ImageConstraint_validate()
+        self.m.ReplayAll()
 
         stack.validate()
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
 
         # test stack create
         size = int(stack['WebServerGroup'].properties['MinSize'])
         self._stub_grp_create(size)
+        self.stub_ImageConstraint_validate()
         self.m.ReplayAll()
         stack.create()
         self.m.VerifyAll()
@@ -511,11 +515,12 @@ class AutoScalingGroupTest(HeatTestCase):
                                   num_deletes_expected_on_updt,
                                   num_reloads_expected_on_updt)
         self.stub_wallclock()
-        self._mock_get_image_id_success('F20-x86_64-cfntools', 'image_id',
-                                        update_image=update_image_id)
+        self.stub_ImageConstraint_validate()
+        self.stub_KeypairConstraint_validate()
+        self.m.ReplayAll()
 
         stack.validate()
-        self.m.ReplayAll()
+
         stack.update(updated_stack)
         self.m.VerifyAll()
         self.assertEqual(('UPDATE', 'COMPLETE'), stack.state)
@@ -710,12 +715,18 @@ class AutoScalingGroupTest(HeatTestCase):
         # setup stack from the initial template
         tmpl = template_format.parse(asg_tmpl_with_updt_policy)
         stack = utils.parse_stack(tmpl)
+        self.stub_ImageConstraint_validate()
+        self.stub_KeypairConstraint_validate()
+        self.m.ReplayAll()
+
         stack.validate()
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
 
         # test stack create
         size = int(stack['WebServerGroup'].properties['MinSize'])
         self._stub_grp_create(size)
-        self._mock_get_image_id_success('F20-x86_64-cfntools', 'image_id')
+        self.stub_ImageConstraint_validate()
         self.m.ReplayAll()
         stack.create()
         self.m.VerifyAll()
@@ -768,7 +779,7 @@ class AutoScalingGroupTest(HeatTestCase):
         # test stack create
         size = int(stack['WebServerGroup'].properties['MinSize'])
         self._stub_grp_create(size)
-        self._mock_get_image_id_success('F20-x86_64-cfntools', 'image_id')
+        self.stub_ImageConstraint_validate()
         self.m.ReplayAll()
         stack.create()
         self.m.VerifyAll()
@@ -805,6 +816,8 @@ class AutoScalingGroupTest(HeatTestCase):
         self._stub_grp_replace(num_creates_expected_on_updt=0,
                                num_deletes_expected_on_updt=0,
                                num_reloads_expected_on_updt=1)
+        self.stub_KeypairConstraint_validate()
+        self.stub_ImageConstraint_validate()
         self.m.ReplayAll()
         stack.update(updated_stack)
         self.m.VerifyAll()

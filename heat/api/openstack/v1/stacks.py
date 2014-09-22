@@ -164,6 +164,7 @@ class StackController(object):
             'sort_dir': 'single',
             'sort_keys': 'multi',
             'show_deleted': 'single',
+            'show_nested': 'single',
         }
         params = util.get_allowed_params(req.params, whitelist)
         filter_params = util.get_allowed_params(req.params, filter_whitelist)
@@ -173,6 +174,11 @@ class StackController(object):
             params[engine_api.PARAM_SHOW_DELETED] = param_utils.extract_bool(
                 params[engine_api.PARAM_SHOW_DELETED])
             show_deleted = params[engine_api.PARAM_SHOW_DELETED]
+        show_nested = False
+        if engine_api.PARAM_SHOW_NESTED in params:
+            params[engine_api.PARAM_SHOW_NESTED] = param_utils.extract_bool(
+                params[engine_api.PARAM_SHOW_NESTED])
+            show_nested = params[engine_api.PARAM_SHOW_NESTED]
         # get the with_count value, if invalid, raise ValueError
         with_count = False
         if req.params.get('with_count'):
@@ -195,7 +201,8 @@ class StackController(object):
                 count = self.rpc_client.count_stacks(req.context,
                                                      filters=filter_params,
                                                      tenant_safe=tenant_safe,
-                                                     show_deleted=show_deleted)
+                                                     show_deleted=show_deleted,
+                                                     show_nested=show_nested)
             except AttributeError as exc:
                 LOG.warning(_("Old Engine Version: %s") % exc)
 
@@ -397,6 +404,29 @@ class StackController(object):
         Generates a template based on the specified type.
         """
         return self.rpc_client.generate_template(req.context, type_name)
+
+    @util.identified_stack
+    def snapshot(self, req, identity, body):
+        name = body.get('name')
+        return self.rpc_client.stack_snapshot(req.context, identity, name)
+
+    @util.identified_stack
+    def show_snapshot(self, req, identity, snapshot_id):
+        snapshot = self.rpc_client.show_snapshot(
+            req.context, identity, snapshot_id)
+        return {'snapshot': snapshot}
+
+    @util.identified_stack
+    def delete_snapshot(self, req, identity, snapshot_id):
+        self.rpc_client.delete_snapshot(req.context, identity, snapshot_id)
+        raise exc.HTTPNoContent()
+
+    @util.identified_stack
+    def list_snapshots(self, req, identity):
+        return {
+            'snapshots': self.rpc_client.stack_list_snapshots(
+                req.context, identity)
+        }
 
 
 class StackSerializer(serializers.JSONResponseSerializer):

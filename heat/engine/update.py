@@ -11,6 +11,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import six
+
 from heat.db import api as db_api
 from heat.engine import dependencies
 from heat.engine import resource
@@ -27,15 +29,16 @@ class StackUpdate(object):
     """
 
     def __init__(self, existing_stack, new_stack, previous_stack,
-                 rollback=False):
+                 rollback=False, error_wait_time=None):
         """Initialise with the existing stack and the new stack."""
         self.existing_stack = existing_stack
         self.new_stack = new_stack
         self.previous_stack = previous_stack
 
         self.rollback = rollback
+        self.error_wait_time = error_wait_time
 
-        self.existing_snippets = dict((n, r.parsed_template())
+        self.existing_snippets = dict((n, r.frozen_definition())
                                       for n, r in self.existing_stack.items())
 
     def __repr__(self):
@@ -51,7 +54,8 @@ class StackUpdate(object):
         cleanup_prev = scheduler.DependencyTaskGroup(
             self.previous_stack.dependencies,
             self._remove_backup_resource,
-            reverse=True)
+            reverse=True,
+            error_wait_time=self.error_wait_time)
 
         update = scheduler.DependencyTaskGroup(self.dependencies(),
                                                self._resource_update)
@@ -142,8 +146,10 @@ class StackUpdate(object):
 
         # Note the new resource snippet is resolved in the context
         # of the existing stack (which is the stack being updated)
+        # but with the template of the new stack (in case the update
+        # is switching template implementations)
         new_snippet = new_res.t.reparse(self.existing_stack,
-                                        self.existing_stack.t)
+                                        self.new_stack.t)
 
         return existing_res.update(new_snippet, existing_snippet,
                                    prev_resource=prev_res)
@@ -184,7 +190,7 @@ class StackUpdate(object):
             for e in existing_deps.graph(reverse=True).edges():
                 yield e
             # Don't cleanup old resources until after they have been replaced
-            for name, res in self.existing_stack.iteritems():
+            for name, res in six.iteritems(self.existing_stack):
                 if name in self.new_stack:
                     yield (res, self.new_stack[name])
 

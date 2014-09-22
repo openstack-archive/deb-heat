@@ -15,13 +15,14 @@
 endpoint for heat AWS-compatible CloudWatch API
 """
 from oslo import messaging
+import six
 
 from heat.api.aws import exception
 from heat.api.aws import utils as api_utils
 from heat.common import exception as heat_exception
+from heat.common.i18n import _
 from heat.common import policy
 from heat.common import wsgi
-from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 from heat.rpc import api as engine_api
 from heat.rpc import client as rpc_client
@@ -220,7 +221,7 @@ class WatchController(object):
         con = req.context
         parms = dict(req.params)
         # FIXME : Don't yet handle filtering by Dimensions
-        filter_result = dict((k, v) for (k, v) in parms.iteritems() if k in
+        filter_result = dict((k, v) for (k, v) in six.iteritems(parms) if k in
                              ("MetricName", "Namespace"))
         LOG.debug("filter parameters : %s" % filter_result)
 

@@ -113,6 +113,11 @@ engine_opts = [
                default=100,
                help=_('Maximum number of stacks any one tenant may have'
                       ' active at one time.')),
+    cfg.IntOpt('action_retry_limit',
+               default=5,
+               help=_('Number of times to retry to bring a '
+                      'resource to a non-error state. Set to 0 to disable '
+                      'retries.')),
     cfg.IntOpt('event_purge_batch_size',
                default=10,
                help=_('Controls how many events will be pruned whenever a '
@@ -133,12 +138,7 @@ engine_opts = [
                help=_('RPC timeout for the engine liveness check that is used'
                       ' for stack locking.')),
     cfg.StrOpt('onready',
-               help=_('onready allows you to send a notification when the'
-                      ' heat processes are ready to serve.  This is either a'
-                      ' module with the notify() method or a shell command. '
-                      ' To enable notifications with systemd, one may use'
-                      ' the \'systemd-notify --ready\' shell command or'
-                      ' the \'heat.common.systemd\' notification module.'))]
+               help=_('Deprecated.'))]
 
 rpc_opts = [
     cfg.StrOpt('host',
@@ -180,7 +180,7 @@ heat_client_opts = [
                help=_('Optional heat url in format like'
                       ' http://0.0.0.0:8004/v1/%(tenant_id)s.'))]
 
-nova_client_opts = [
+client_http_log_debug_opts = [
     cfg.BoolOpt('http_log_debug',
                 default=False,
                 help=_("Allow client's debug log output."))]
@@ -210,7 +210,8 @@ def list_opts():
         yield client_specific_group, clients_opts
 
     yield 'clients_heat', heat_client_opts
-    yield 'clients_nova', nova_client_opts
+    yield 'clients_nova', client_http_log_debug_opts
+    yield 'clients_cinder', client_http_log_debug_opts
 
 
 cfg.CONF.register_group(paste_deploy_group)

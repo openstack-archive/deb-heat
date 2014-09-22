@@ -11,16 +11,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from troveclient.openstack.common.apiclient import exceptions as troveexc
-
 from heat.common import exception
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
-from heat.engine.resources import nova_utils
 from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
+from heat.openstack.common import uuidutils
 
 LOG = logging.getLogger(__name__)
 
@@ -40,10 +38,10 @@ class OSDBInstance(resource.Resource):
 
     PROPERTIES = (
         NAME, FLAVOR, SIZE, DATABASES, USERS, AVAILABILITY_ZONE,
-        RESTORE_POINT, DATASTORE_TYPE, DATASTORE_VERSION,
+        RESTORE_POINT, DATASTORE_TYPE, DATASTORE_VERSION, NICS,
     ) = (
         'name', 'flavor', 'size', 'databases', 'users', 'availability_zone',
-        'restore_point', 'datastore_type', 'datastore_version',
+        'restore_point', 'datastore_type', 'datastore_version', 'networks',
     )
 
     _DATABASE_KEYS = (
@@ -56,6 +54,12 @@ class OSDBInstance(resource.Resource):
         USER_NAME, USER_PASSWORD, USER_HOST, USER_DATABASES,
     ) = (
         'name', 'password', 'host', 'databases',
+    )
+
+    _NICS_KEYS = (
+        NET, PORT, V4_FIXED_IP
+    ) = (
+        'network', 'port', 'fixed_ip'
     )
 
     ATTRIBUTES = (
@@ -100,6 +104,33 @@ class OSDBInstance(resource.Resource):
             constraints=[
                 constraints.Range(1, 150),
             ]
+        ),
+        NICS: properties.Schema(
+            properties.Schema.LIST,
+            _("List of network interfaces to create on instance."),
+            default=[],
+            schema=properties.Schema(
+                properties.Schema.MAP,
+                schema={
+                    NET: properties.Schema(
+                        properties.Schema.STRING,
+                        _('Name or UUID of the network to attach this NIC to. '
+                          'Either %(port)s or %(net)s must be specified.') % {
+                              'port': PORT, 'net': NET}
+                    ),
+                    PORT: properties.Schema(
+                        properties.Schema.STRING,
+                        _('Name or UUID of Neutron port to attach this '
+                          'NIC to. '
+                          'Either %(port)s or %(net)s must be specified.') % {
+                              'port': PORT, 'net': NET}
+                    ),
+                    V4_FIXED_IP: properties.Schema(
+                        properties.Schema.STRING,
+                        _('Fixed IPv4 address for this NIC.')
+                    ),
+                },
+            ),
         ),
         DATABASES: properties.Schema(
             properties.Schema.LIST,
@@ -197,12 +228,14 @@ class OSDBInstance(resource.Resource):
 
     attributes_schema = {
         HOSTNAME: attributes.Schema(
-            _("Hostname of the instance")
+            _("Hostname of the instance.")
         ),
         HREF: attributes.Schema(
-            _("Api endpoint reference of the instance")
+            _("Api endpoint reference of the instance.")
         ),
     }
+
+    default_client_name = 'trove'
 
     def __init__(self, name, json_snippet, stack):
         super(OSDBInstance, self).__init__(name, json_snippet, stack)
@@ -228,8 +261,8 @@ class OSDBInstance(resource.Resource):
         '''
         Create cloud database instance.
         '''
-        self.flavor = nova_utils.get_flavor_id(self.trove(),
-                                               self.properties[self.FLAVOR])
+        self.flavor = self.client_plugin().get_flavor_id(
+            self.properties[self.FLAVOR])
         self.volume = {'size': self.properties[self.SIZE]}
         self.databases = self.properties.get(self.DATABASES)
         self.users = self.properties.get(self.USERS)
@@ -246,6 +279,30 @@ class OSDBInstance(resource.Resource):
             dbs = [{'name': db} for db in user.get(self.USER_DATABASES, [])]
             user[self.USER_DATABASES] = dbs
 
+        # convert networks to format required by troveclient
+        nics = []
+        for nic in self.properties.get(self.NICS):
+            nic_dict = {}
+            net = nic.get(self.NET)
+            if net:
+                if uuidutils.is_uuid_like(net):
+                    net_id = net
+                else:
+                    # using Nova for lookup to cover both neutron and
+                    # nova-network cases
+                    nova = self.client('nova')
+                    net_id = nova.networks.find(label=net).id
+                nic_dict['net-id'] = net_id
+            port = nic.get(self.PORT)
+            if port:
+                neutron = self.client_plugin('neutron')
+                nic_dict['port-id'] = neutron.find_neutron_resource(
+                    self.properties, self.PORT, 'port')
+            ip = nic.get(self.V4_FIXED_IP)
+            if ip:
+                nic_dict['v4-fixed-ip'] = ip
+            nics.append(nic_dict)
+
         # create db instance
         instance = self.trove().instances.create(
             self._dbinstance_name(),
@@ -256,7 +313,8 @@ class OSDBInstance(resource.Resource):
             restorePoint=restore_point,
             availability_zone=zone,
             datastore=self.datastore_type,
-            datastore_version=self.datastore_version)
+            datastore_version=self.datastore_version,
+            nics=nics)
         self.resource_id_set(instance.id)
 
         return instance
@@ -264,12 +322,15 @@ class OSDBInstance(resource.Resource):
     def _refresh_instance(self, instance):
         try:
             instance.get()
-        except troveexc.RequestEntityTooLarge as exc:
-            msg = _("Stack %(name)s (%(id)s) received an OverLimit "
-                    "response during instance.get(): %(exception)s")
-            LOG.warning(msg % {'name': self.stack.name,
-                               'id': self.stack.id,
-                               'exception': exc})
+        except Exception as exc:
+            if self.client_plugin().is_over_limit(exc):
+                msg = _("Stack %(name)s (%(id)s) received an OverLimit "
+                        "response during instance.get(): %(exception)s")
+                LOG.warning(msg % {'name': self.stack.name,
+                                   'id': self.stack.id,
+                                   'exception': exc})
+            else:
+                raise
 
     def check_create_complete(self, instance):
         '''
@@ -277,7 +338,8 @@ class OSDBInstance(resource.Resource):
         '''
         self._refresh_instance(instance)  # get updated attributes
         if instance.status in self.BAD_STATUSES:
-            raise exception.Error(_("Database instance creation failed."))
+            raise resource.ResourceInError(
+                resource_status=instance.status)
 
         if instance.status != self.ACTIVE:
             return False
@@ -303,9 +365,8 @@ class OSDBInstance(resource.Resource):
         instance = None
         try:
             instance = self.trove().instances.get(self.resource_id)
-        except troveexc.NotFound:
-            LOG.debug("Database instance %s not found." % self.resource_id)
-            self.resource_id_set(None)
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
         else:
             instance.delete()
             return instance
@@ -320,8 +381,8 @@ class OSDBInstance(resource.Resource):
         try:
             # For some time trove instance may continue to live
             self._refresh_instance(instance)
-        except troveexc.NotFound:
-            self.resource_id_set(None)
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
             return True
 
         return False
@@ -369,24 +430,35 @@ class OSDBInstance(resource.Resource):
 
         # check validity of user and databases
         users = self.properties.get(self.USERS)
-        if not users:
-            return
+        if users:
+            databases = self.properties.get(self.DATABASES)
+            if not databases:
+                msg = _('Databases property is required if users property '
+                        'is provided for resource %s.') % self.name
+                raise exception.StackValidationFailed(message=msg)
 
-        databases = self.properties.get(self.DATABASES)
-        if not databases:
-            msg = _('Databases property is required if users property '
-                    'is provided for resource %s.') % self.name
-            raise exception.StackValidationFailed(message=msg)
+            db_names = set([db[self.DATABASE_NAME] for db in databases])
+            for user in users:
+                missing_db = [db_name for db_name in user[self.USER_DATABASES]
+                              if db_name not in db_names]
 
-        db_names = set([db[self.DATABASE_NAME] for db in databases])
-        for user in users:
-            missing_db = [db_name for db_name in user[self.USER_DATABASES]
-                          if db_name not in db_names]
+                if missing_db:
+                    msg = (_('Database %(dbs)s specified for user does '
+                             'not exist in databases for resource %(name)s.')
+                           % {'dbs': missing_db, 'name': self.name})
+                    raise exception.StackValidationFailed(message=msg)
 
-            if missing_db:
-                msg = (_('Database %(dbs)s specified for user does '
-                         'not exist in databases for resource %(name)s.')
-                       % {'dbs': missing_db, 'name': self.name})
+        # check validity of NICS
+        is_neutron = self.is_using_neutron()
+        nics = self.properties.get(self.NICS)
+        for nic in nics:
+            if not is_neutron and nic.get(self.PORT):
+                msg = _("Can not use %s property on Nova-network.") % self.PORT
+                raise exception.StackValidationFailed(message=msg)
+
+            if bool(nic.get(self.NET)) == bool(nic.get(self.PORT)):
+                msg = _("Either %(net)s or %(port)s must be provided.") % {
+                    'net': self.NET, 'port': self.PORT}
                 raise exception.StackValidationFailed(message=msg)
 
     def href(self):

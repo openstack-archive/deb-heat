@@ -11,14 +11,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from novaclient import exceptions as nova_exceptions
-
 from heat.common import exception
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
-from heat.engine.resources import nova_utils
 from heat.openstack.common.gettextutils import _
 
 
@@ -52,7 +49,10 @@ class KeyPair(resource.Resource):
         NAME: properties.Schema(
             properties.Schema.STRING,
             _('The name of the key pair.'),
-            required=True
+            required=True,
+            constraints=[
+                constraints.Length(min=1, max=255)
+            ]
         ),
         SAVE_PRIVATE_KEY: properties.Schema(
             properties.Schema.BOOLEAN,
@@ -78,6 +78,8 @@ class KeyPair(resource.Resource):
         ),
     }
 
+    default_client_name = 'nova'
+
     def __init__(self, name, json_snippet, stack):
         super(KeyPair, self).__init__(name, json_snippet, stack)
         self._public_key = None
@@ -97,8 +99,7 @@ class KeyPair(resource.Resource):
             if self.properties[self.PUBLIC_KEY]:
                 self._public_key = self.properties[self.PUBLIC_KEY]
             elif self.resource_id:
-                nova_key = nova_utils.get_keypair(self.nova(),
-                                                  self.resource_id)
+                nova_key = self.client_plugin().get_keypair(self.resource_id)
                 self._public_key = nova_key.public_key
         return self._public_key
 
@@ -117,8 +118,8 @@ class KeyPair(resource.Resource):
         if self.resource_id:
             try:
                 self.nova().keypairs.delete(self.resource_id)
-            except nova_exceptions.NotFound:
-                pass
+            except Exception as e:
+                self.client_plugin().ignore_not_found(e)
 
     def _resolve_attribute(self, key):
         attr_fn = {'private_key': self.private_key,
@@ -138,8 +139,7 @@ class KeypairConstraint(constraints.BaseCustomConstraint):
             # Don't validate empty key, which can happen when you use a KeyPair
             # resource
             return True
-        nova_client = client.client('nova')
-        nova_utils.get_keypair(nova_client, value)
+        client.client_plugin('nova').get_keypair(value)
 
 
 def resource_mapping():

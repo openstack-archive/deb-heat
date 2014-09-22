@@ -17,6 +17,7 @@ import datetime
 import mock
 import mox
 from oslo.config import cfg
+import six
 
 from heat.common import exception
 from heat.common import short_id
@@ -25,7 +26,6 @@ from heat.engine.notification import autoscaling as notification
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine.resources import autoscaling as asc
-from heat.engine.resources import image
 from heat.engine.resources import instance
 from heat.engine.resources import loadbalancer
 from heat.engine.resources.neutron import loadbalancer as neutron_lb
@@ -89,6 +89,12 @@ as_template = '''
       "Properties": {
         "ImageId" : {"Ref": "ImageId"},
         "InstanceType"   : "bar",
+        "BlockDeviceMappings": [
+            {
+                "DeviceName": "vdb",
+                "Ebs": {"SnapshotId": "9ef5496e-7426-446a-bbc8-01f84d9c9972",
+                        "DeleteOnTermination": "True"}
+            }]
       }
     }
   }
@@ -133,12 +139,19 @@ class AutoScalingTest(HeatTestCase):
         self.assertIsNone(conf.validate())
         scheduler.TaskRunner(conf.create)()
         self.assertEqual((conf.CREATE, conf.COMPLETE), conf.state)
+        # check bdm in configuration
+        self.assertIsNotNone(conf.properties['BlockDeviceMappings'])
 
         # create the group resource
         rsrc = stack[resource_name]
         self.assertIsNone(rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        # check bdm in instance_definition
+        instance_definition = rsrc._get_instance_definition()
+        self.assertIn('BlockDeviceMappings',
+                      instance_definition['Properties'])
+
         return rsrc
 
     def create_scaling_policy(self, t, stack, resource_name):
@@ -151,9 +164,7 @@ class AutoScalingTest(HeatTestCase):
     def _stub_create(self, num, with_error=None):
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
-        self.m.StubOutWithMock(image.ImageConstraint, "validate")
-        image.ImageConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.stub_ImageConstraint_validate()
         if with_error:
             instance.Instance.handle_create().AndRaise(
                 exception.Error(with_error))
@@ -164,12 +175,6 @@ class AutoScalingTest(HeatTestCase):
         instance.Instance.check_create_complete(cookie).AndReturn(False)
         instance.Instance.check_create_complete(
             cookie).MultipleTimes().AndReturn(True)
-
-    def _stub_image_validate(self, num=1):
-        self.m.StubOutWithMock(image.ImageConstraint, "validate")
-        for x in range(num):
-            image.ImageConstraint.validate(
-                mox.IgnoreArg(), mox.IgnoreArg()).AndReturn(True)
 
     def _stub_delete(self, num):
         self.m.StubOutWithMock(instance.Instance, 'handle_delete')
@@ -290,6 +295,7 @@ class AutoScalingTest(HeatTestCase):
         properties['DesiredCapacity'] = '0'
         stack = utils.parse_stack(t, params=self.params)
         self._stub_lb_reload(0)
+        self.stub_ImageConstraint_validate()
         self.m.ReplayAll()
         rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
         self.assertIsNone(rsrc.FnGetAtt("InstanceList"))
@@ -553,9 +559,7 @@ class AutoScalingTest(HeatTestCase):
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
         instance.Instance.handle_create().AndRaise(Exception)
-        self.m.StubOutWithMock(image.ImageConstraint, "validate")
-        image.ImageConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.stub_ImageConstraint_validate()
 
         self.m.ReplayAll()
 
@@ -620,7 +624,7 @@ class AutoScalingTest(HeatTestCase):
 
         # Increase min size to 2, should trigger an ExactCapacity adjust
         self._stub_lb_reload(2)
-        self._stub_meta_expected(now, 'ExactCapacity : 2')
+        self._stub_meta_expected(now, 'ExactCapacity : 1')
         self._stub_create(1)
         self.m.ReplayAll()
 
@@ -860,7 +864,7 @@ class AutoScalingTest(HeatTestCase):
         self.assertEqual(
             "Error: Unsupported resource 'ElasticLoadBalancer' in "
             "LoadBalancerNames",
-            str(error))
+            six.text_type(error))
 
         self.m.VerifyAll()
 
@@ -882,7 +886,7 @@ class AutoScalingTest(HeatTestCase):
         # reduce to 1
         self._stub_lb_reload(1)
         self._stub_delete(2)
-        self._stub_image_validate()
+        self.stub_ImageConstraint_validate(num=1)
         self._stub_meta_expected(now, 'ChangeInCapacity : -2')
         self._stub_scale_notification(adjust=-2, groupname=rsrc.FnGetRefId(),
                                       start_capacity=3, end_capacity=1)
@@ -903,7 +907,7 @@ class AutoScalingTest(HeatTestCase):
         # set to 2
         self._stub_lb_reload(2)
         self._stub_delete(1)
-        self._stub_image_validate(2)
+        self.stub_ImageConstraint_validate(num=2)
         self._stub_meta_expected(now, 'ExactCapacity : 2')
         self._stub_scale_notification(adjust=2, groupname=rsrc.FnGetRefId(),
                                       adjust_type='ExactCapacity',
@@ -969,7 +973,7 @@ class AutoScalingTest(HeatTestCase):
         # lower below the min
         self._stub_lb_reload(1)
         self._stub_delete(4)
-        self._stub_image_validate()
+        self.stub_ImageConstraint_validate(num=1)
         self._stub_meta_expected(now, 'ChangeInCapacity : -5')
         self.m.ReplayAll()
         rsrc.adjust(-5)
@@ -1004,7 +1008,7 @@ class AutoScalingTest(HeatTestCase):
         adjust = 'PercentChangeInCapacity : %d' % decrease
         self._stub_meta_expected(now, adjust)
         self._stub_delete(2 - lowest)
-        self._stub_image_validate()
+        self.stub_ImageConstraint_validate(num=1)
         self.m.ReplayAll()
         rsrc.adjust(decrease, 'PercentChangeInCapacity')
         self.assertEqual(lowest, len(rsrc.get_instance_names()))
@@ -1049,7 +1053,7 @@ class AutoScalingTest(HeatTestCase):
         # reduce by 50%
         self._stub_lb_reload(1)
         self._stub_delete(1)
-        self._stub_image_validate()
+        self.stub_ImageConstraint_validate(num=1)
         self._stub_meta_expected(now, 'PercentChangeInCapacity : -50')
         self.m.ReplayAll()
         rsrc.adjust(-50, 'PercentChangeInCapacity')
@@ -1101,7 +1105,7 @@ class AutoScalingTest(HeatTestCase):
         # reduce by 50%
         self._stub_lb_reload(1)
         self._stub_delete(1)
-        self._stub_image_validate()
+        self.stub_ImageConstraint_validate(num=1)
         self._stub_meta_expected(now, 'PercentChangeInCapacity : -50')
         self.m.ReplayAll()
         rsrc.adjust(-50, 'PercentChangeInCapacity')
@@ -1156,7 +1160,7 @@ class AutoScalingTest(HeatTestCase):
         self._stub_lb_reload(1)
         self._stub_meta_expected(now, 'PercentChangeInCapacity : -50')
         self._stub_delete(1)
-        self._stub_image_validate()
+        self.stub_ImageConstraint_validate(num=1)
         self.m.ReplayAll()
         rsrc.adjust(-50, 'PercentChangeInCapacity')
         self.assertEqual(1, len(rsrc.get_instance_names()))
@@ -1198,7 +1202,7 @@ class AutoScalingTest(HeatTestCase):
         self.assertIsNotNone(alarm_url)
         ex = self.assertRaises(exception.ResourceFailure, up_policy.signal)
         self.assertIn('Alarm WebServerScaleUpPolicy could '
-                      'not find scaling group', str(ex))
+                      'not find scaling group', six.text_type(ex))
 
         self.m.VerifyAll()
 
@@ -1304,7 +1308,7 @@ class AutoScalingTest(HeatTestCase):
         # Scale down one
         self._stub_lb_reload(1)
         self._stub_delete(1)
-        self._stub_image_validate()
+        self.stub_ImageConstraint_validate(num=1)
         self._stub_meta_expected(now, 'ChangeInCapacity : -1', 2)
 
         self.m.ReplayAll()
@@ -1615,10 +1619,13 @@ class AutoScalingTest(HeatTestCase):
         properties['VPCZoneIdentifier'] = ['xxxx', 'yyyy']
 
         stack = utils.parse_stack(t, params=self.params)
-
+        self.stub_ImageConstraint_validate()
+        self.m.ReplayAll()
         self.assertRaises(exception.NotSupported,
                           self.create_scaling_group, t,
                           stack, 'WebServerGroup')
+
+        self.m.VerifyAll()
 
     def test_invalid_min_size(self):
         t = template_format.parse(as_template)
@@ -1628,12 +1635,16 @@ class AutoScalingTest(HeatTestCase):
 
         stack = utils.parse_stack(t, params=self.params)
 
+        self.stub_ImageConstraint_validate()
+
+        self.m.ReplayAll()
         e = self.assertRaises(exception.StackValidationFailed,
                               self.create_scaling_group, t,
                               stack, 'WebServerGroup')
 
         expected_msg = "The size of AutoScalingGroup can not be less than zero"
-        self.assertEqual(expected_msg, str(e))
+        self.assertEqual(expected_msg, six.text_type(e))
+        self.m.VerifyAll()
 
     def test_invalid_max_size(self):
         t = template_format.parse(as_template)
@@ -1643,12 +1654,16 @@ class AutoScalingTest(HeatTestCase):
 
         stack = utils.parse_stack(t, params=self.params)
 
+        self.stub_ImageConstraint_validate()
+        self.m.ReplayAll()
+
         e = self.assertRaises(exception.StackValidationFailed,
                               self.create_scaling_group, t,
                               stack, 'WebServerGroup')
 
         expected_msg = "MinSize can not be greater than MaxSize"
-        self.assertEqual(expected_msg, str(e))
+        self.assertEqual(expected_msg, six.text_type(e))
+        self.m.VerifyAll()
 
     def test_invalid_desiredcapacity(self):
         t = template_format.parse(as_template)
@@ -1658,13 +1673,16 @@ class AutoScalingTest(HeatTestCase):
         properties['DesiredCapacity'] = '4'
 
         stack = utils.parse_stack(t, params=self.params)
+        self.stub_ImageConstraint_validate()
 
+        self.m.ReplayAll()
         e = self.assertRaises(exception.StackValidationFailed,
                               self.create_scaling_group, t,
                               stack, 'WebServerGroup')
 
         expected_msg = "DesiredCapacity must be between MinSize and MaxSize"
-        self.assertEqual(expected_msg, str(e))
+        self.assertEqual(expected_msg, six.text_type(e))
+        self.m.VerifyAll()
 
     def test_invalid_desiredcapacity_zero(self):
         t = template_format.parse(as_template)
@@ -1674,13 +1692,16 @@ class AutoScalingTest(HeatTestCase):
         properties['DesiredCapacity'] = '0'
 
         stack = utils.parse_stack(t, params=self.params)
+        self.stub_ImageConstraint_validate()
 
+        self.m.ReplayAll()
         e = self.assertRaises(exception.StackValidationFailed,
                               self.create_scaling_group, t,
                               stack, 'WebServerGroup')
 
         expected_msg = "DesiredCapacity must be between MinSize and MaxSize"
-        self.assertEqual(expected_msg, str(e))
+        self.assertEqual(expected_msg, six.text_type(e))
+        self.m.VerifyAll()
 
     def test_child_template_uses_min_size(self):
         t = template_format.parse(as_template)
@@ -1708,6 +1729,106 @@ class AutoScalingTest(HeatTestCase):
 
         self.assertEqual('tpl', rsrc.child_template())
         rsrc._create_template.assert_called_once_with(3)
+
+    def test_launch_config_get_ref_by_id(self):
+        t = template_format.parse(as_template)
+        stack = utils.parse_stack(t, params=self.params)
+        rsrc = stack['LaunchConfig']
+        self.stub_ImageConstraint_validate()
+        self.assertIsNone(rsrc.validate())
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+
+        # use physical_resource_name when rsrc.id is not None
+        self.assertIsNotNone(rsrc.id)
+        expected = '%s-%s-%s' % (rsrc.stack.name,
+                                 rsrc.name,
+                                 short_id.get_id(rsrc.id))
+        self.assertEqual(expected, rsrc.FnGetRefId())
+
+        # otherwise use parent method
+        rsrc.id = None
+        self.assertIsNone(rsrc.resource_id)
+        self.assertEqual('LaunchConfig', rsrc.FnGetRefId())
+
+    def test_validate_BlockDeviceMappings_VolumeSize_invalid_str(self):
+        t = template_format.parse(as_template)
+        lcp = t['Resources']['LaunchConfig']['Properties']
+        bdm = [{'DeviceName': 'vdb',
+                'Ebs': {'SnapshotId': '1234',
+                        'VolumeSize': 10}}]
+        lcp['BlockDeviceMappings'] = bdm
+        stack = utils.parse_stack(t, params=self.params)
+        self.stub_ImageConstraint_validate()
+        self.m.ReplayAll()
+
+        e = self.assertRaises(exception.StackValidationFailed,
+                              self.create_scaling_group, t,
+                              stack, 'LaunchConfig')
+
+        expected_msg = "Value must be a string"
+        self.assertIn(expected_msg, six.text_type(e))
+
+        self.m.VerifyAll()
+
+    def test_validate_BlockDeviceMappings_without_Ebs_property(self):
+        t = template_format.parse(as_template)
+        lcp = t['Resources']['LaunchConfig']['Properties']
+        bdm = [{'DeviceName': 'vdb'}]
+        lcp['BlockDeviceMappings'] = bdm
+        stack = utils.parse_stack(t, params=self.params)
+
+        self.stub_ImageConstraint_validate()
+        self.m.ReplayAll()
+
+        e = self.assertRaises(exception.StackValidationFailed,
+                              self.create_scaling_group, t,
+                              stack, 'LaunchConfig')
+
+        self.assertIn("Ebs is missing, this is required",
+                      six.text_type(e))
+
+        self.m.VerifyAll()
+
+    def test_validate_BlockDeviceMappings_without_SnapshotId_property(self):
+        t = template_format.parse(as_template)
+        lcp = t['Resources']['LaunchConfig']['Properties']
+        bdm = [{'DeviceName': 'vdb',
+                'Ebs': {'VolumeSize': '1'}}]
+        lcp['BlockDeviceMappings'] = bdm
+        stack = utils.parse_stack(t, params=self.params)
+
+        self.stub_ImageConstraint_validate()
+        self.m.ReplayAll()
+
+        e = self.assertRaises(exception.StackValidationFailed,
+                              self.create_scaling_group, t,
+                              stack, 'LaunchConfig')
+
+        self.assertIn("SnapshotId is missing, this is required",
+                      six.text_type(e))
+        self.m.VerifyAll()
+
+    def test_validate_BlockDeviceMappings_without_DeviceName_property(self):
+        t = template_format.parse(as_template)
+        lcp = t['Resources']['LaunchConfig']['Properties']
+        bdm = [{'Ebs': {'SnapshotId': '1234',
+                        'VolumeSize': '1'}}]
+        lcp['BlockDeviceMappings'] = bdm
+        stack = utils.parse_stack(t, params=self.params)
+        self.stub_ImageConstraint_validate()
+        self.m.ReplayAll()
+
+        e = self.assertRaises(exception.StackValidationFailed,
+                              self.create_scaling_group, t,
+                              stack, 'LaunchConfig')
+
+        excepted_error = ('Property error : LaunchConfig: BlockDeviceMappings '
+                          'Property error : BlockDeviceMappings: 0 Property '
+                          'error : 0: Property DeviceName not assigned')
+        self.assertIn(excepted_error, six.text_type(e))
+
+        self.m.VerifyAll()
 
 
 class TestInstanceGroup(HeatTestCase):

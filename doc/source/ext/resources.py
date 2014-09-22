@@ -14,6 +14,7 @@
 
 import itertools
 
+from docutils import core
 from docutils import nodes
 import pydoc
 from sphinx.util.compat import Directive
@@ -25,7 +26,6 @@ from heat.engine import properties
 from heat.engine import resources
 from heat.engine import support
 from heat.openstack.common.gettextutils import _
-
 
 
 global_env = environment.Environment({}, user_env=False)
@@ -66,8 +66,9 @@ class ResourcePages(Directive):
 
             cls_doc = pydoc.getdoc(resource_class)
             if cls_doc:
-                para = nodes.paragraph('', cls_doc)
-                section.append(para)
+                # allow for rst in the class comments
+                cls_nodes = core.publish_doctree(cls_doc).children
+                section.extend(cls_nodes)
 
             self.contribute_properties(section)
             self.contribute_attributes(section)
@@ -114,16 +115,19 @@ class ResourcePages(Directive):
                 props.append('%s: %s' % (prop_key,
                                          self._prop_syntax_example(prop)))
 
+        props_str = ''
+        if props:
+            props_str = '''\n    properties:
+      %s''' % ('\n      '.join(props))
+
         template = '''heat_template_version: 2013-05-23
 ...
 resources:
   ...
   the_resource:
-    type: %s
-    properties:
-      %s''' % (self.resource_type, '\n      '.join(props))
+    type: %s%s''' % (self.resource_type, props_str)
 
-        block = nodes.literal_block('', template)
+        block = nodes.literal_block('', template, language="hot")
         section.append(block)
 
     def contribute_yaml_syntax(self, parent):
@@ -136,16 +140,19 @@ resources:
                 props.append('%s: %s' % (prop_key,
                                          self._prop_syntax_example(prop)))
 
+        props_str = ''
+        if props:
+            props_str = '''\n    Properties:
+      %s''' % ('\n      '.join(props))
+
         template = '''HeatTemplateFormatVersion: '2012-12-12'
 ...
 Resources:
   ...
   TheResource:
-    Type: %s
-    Properties:
-      %s''' % (self.resource_type, '\n      '.join(props))
+    Type: %s%s''' % (self.resource_type, props_str)
 
-        block = nodes.literal_block('', template)
+        block = nodes.literal_block('', template, language='yaml')
         section.append(block)
 
     def contribute_json_syntax(self, parent):
@@ -158,19 +165,24 @@ Resources:
                     and prop.support_status.status == support.SUPPORTED):
                 props.append('"%s": %s' % (prop_key,
                                            self._prop_syntax_example(prop)))
+
+        props_str = ''
+        if props:
+            props_str = ''',\n      "Properties": {
+        %s
+      }''' % (',\n        '.join(props))
+
         template = '''{
   "AWSTemplateFormatVersion" : "2010-09-09",
   ...
   "Resources" : {
     "TheResource": {
-      "Type": "%s",
-      "Properties": {
-        %s
-      }
+      "Type": "%s"%s
     }
   }
-}''' % (self.resource_type, ',\n        '.join(props))
-        block = nodes.literal_block('', template)
+}''' % (self.resource_type, props_str)
+
+        block = nodes.literal_block('', template, language="json")
         section.append(block)
 
     @staticmethod
@@ -218,6 +230,11 @@ Resources:
         if prop.update_allowed:
             para = nodes.paragraph('',
                                    _('Can be updated without replacement.'))
+            definition.append(para)
+        elif prop.immutable:
+            para = nodes.paragraph('', _('Updates are not supported. '
+                                         'Resource update will fail on any '
+                                         'attempt to update this property.'))
             definition.append(para)
         else:
             para = nodes.paragraph('', _('Updates cause replacement.'))

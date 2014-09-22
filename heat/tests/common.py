@@ -25,10 +25,13 @@ import testscenarios
 import testtools
 
 from heat.common import messaging
+from heat.engine.clients.os import glance
 from heat.engine.clients.os import keystone
 from heat.engine import environment
 from heat.engine import resources
+from heat.engine.resources import nova_keypair
 from heat.engine import scheduler
+from heat.engine import stack
 from heat.tests import fakes
 from heat.tests import utils
 
@@ -36,7 +39,7 @@ from heat.tests import utils
 TEST_DEFAULT_LOGLEVELS = {'migrate': logging.WARN}
 
 
-class FakeLogMixin:
+class FakeLogMixin(object):
     def setup_logging(self):
         # Assign default logs to self.LOG so we can still
         # assert on heat logs.
@@ -97,6 +100,14 @@ class HeatTestCase(testscenarios.WithScenarios,
         utils.setup_dummy_db()
         self.addCleanup(utils.reset_dummy_db)
 
+        cached_wait_time = stack.ERROR_WAIT_TIME
+        stack.ERROR_WAIT_TIME = None
+
+        def replace_wait_time():
+            stack.ERROR_WAIT_TIME = cached_wait_time
+
+        self.addCleanup(replace_wait_time)
+
     def stub_wallclock(self):
         """
         Overrides scheduler wallclock to speed up tests expecting timeouts.
@@ -110,8 +121,15 @@ class HeatTestCase(testscenarios.WithScenarios,
         self.m.StubOutWithMock(scheduler, 'wallclock')
         scheduler.wallclock = fake_wallclock
 
-    def patchobject(self, obj, attr):
-        mockfixture = self.useFixture(mockpatch.PatchObject(obj, attr))
+    def patchobject(self, obj, attr, **kwargs):
+        mockfixture = self.useFixture(mockpatch.PatchObject(obj, attr,
+                                                            **kwargs))
+        return mockfixture.mock
+
+    # NOTE(pshchelo): this overrides the testtools.TestCase.patch method
+    # that does simple monkey-patching in favor of mock's patching
+    def patch(self, target, **kwargs):
+        mockfixture = self.useFixture(mockpatch.Patch(target, **kwargs))
         return mockfixture.mock
 
     def stub_keystoneclient(self, fake_client=None, **kwargs):
@@ -119,3 +137,19 @@ class HeatTestCase(testscenarios.WithScenarios,
         fkc = fake_client or fakes.FakeKeystoneClient(**kwargs)
         client.return_value = fkc
         return fkc
+
+    def stub_KeypairConstraint_validate(self):
+        self.m.StubOutWithMock(nova_keypair.KeypairConstraint, 'validate')
+        nova_keypair.KeypairConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+
+    def stub_ImageConstraint_validate(self, num=None):
+        self.m.StubOutWithMock(glance.ImageConstraint, 'validate')
+        if num is None:
+            glance.ImageConstraint.validate(
+                mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().\
+                AndReturn(True)
+        else:
+            for x in range(num):
+                glance.ImageConstraint.validate(
+                    mox.IgnoreArg(), mox.IgnoreArg()).AndReturn(True)

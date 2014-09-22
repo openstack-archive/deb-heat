@@ -12,24 +12,23 @@
 #    under the License.
 
 import copy
+import six
 import uuid
 
 from glanceclient import exc as glance_exceptions
+import mock
 import mox
 from neutronclient.v2_0 import client as neutronclient
 
 from heat.common import exception
 from heat.common import template_format
 from heat.engine.clients.os import glance
+from heat.engine.clients.os import neutron
 from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
-from heat.engine.resources import glance_utils
-from heat.engine.resources import image
 from heat.engine.resources import instance as instances
-from heat.engine.resources import network_interface
-from heat.engine.resources import nova_utils
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
@@ -58,7 +57,13 @@ wp_template = '''
                                 {"Key": "bar", "Value": "eggs"},
                                 {"Key": "foo", "Value": "ham"},
                                 {"Key": "foo", "Value": "baz"}],
-        "UserData"       : "wordpress"
+        "UserData"       : "wordpress",
+        "BlockDeviceMappings": [
+            {
+                "DeviceName": "vdb",
+                "Ebs": {"SnapshotId": "9ef5496e-7426-446a-bbc8-01f84d9c9972",
+                        "DeleteOnTermination": "True"}
+            }]
       }
     }
   }
@@ -80,21 +85,13 @@ class InstancesTest(HeatTestCase):
         return (template, stack)
 
     def _mock_get_image_id_success(self, imageId_input, imageId):
-        g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
-        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
-            g_cli_mock)
-        self.m.StubOutWithMock(glance_utils, 'get_image_id')
-        glance_utils.get_image_id(g_cli_mock, imageId_input).MultipleTimes().\
-            AndReturn(imageId)
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image_id')
+        glance.GlanceClientPlugin.get_image_id(
+            imageId_input).MultipleTimes().AndReturn(imageId)
 
     def _mock_get_image_id_fail(self, image_id, exp):
-        g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
-        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
-            g_cli_mock)
-        self.m.StubOutWithMock(glance_utils, 'get_image_id')
-        glance_utils.get_image_id(g_cli_mock, image_id).AndRaise(exp)
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image_id')
+        glance.GlanceClientPlugin.get_image_id(image_id).AndRaise(exp)
 
     def _get_test_template(self, stack_name, image_id=None):
         (tmpl, stack) = self._setup_test_stack(stack_name)
@@ -112,11 +109,12 @@ class InstancesTest(HeatTestCase):
         tmpl, stack = self._get_test_template(stack_name, image_id)
         resource_defns = tmpl.resource_definitions(stack)
         instance = instances.Instance(name, resource_defns['WebServer'], stack)
+        bdm = {"vdb": "9ef5496e-7426-446a-bbc8-01f84d9c9972:snap::True"}
 
         self._mock_get_image_id_success(image_id or 'CentOS 5.2', 1)
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
 
         if stub_create:
             self.m.StubOutWithMock(self.fc.servers, 'create')
@@ -129,7 +127,8 @@ class InstancesTest(HeatTestCase):
                 security_groups=None,
                 userdata=mox.IgnoreArg(),
                 scheduler_hints={'foo': ['spam', 'ham', 'baz'], 'bar': 'eggs'},
-                meta=None, nics=None, availability_zone=None).AndReturn(
+                meta=None, nics=None, availability_zone=None,
+                block_device_mapping=bdm).AndReturn(
                     return_server)
 
         return instance
@@ -151,8 +150,169 @@ class InstancesTest(HeatTestCase):
         expected_ip = return_server.networks['public'][0]
         self.assertEqual(expected_ip, instance.FnGetAtt('PublicIp'))
         self.assertEqual(expected_ip, instance.FnGetAtt('PrivateIp'))
+        self.assertEqual(expected_ip, instance.FnGetAtt('PublicDnsName'))
         self.assertEqual(expected_ip, instance.FnGetAtt('PrivateDnsName'))
+
+        self.m.VerifyAll()
+
+    def test_instance_create_with_BlockDeviceMappings(self):
+        return_server = self.fc.servers.list()[4]
+        instance = self._create_test_instance(return_server,
+                                              'create_with_bdm')
+        # this makes sure the auto increment worked on instance creation
+        self.assertTrue(instance.id > 0)
+
+        expected_ip = return_server.networks['public'][0]
+        self.assertEqual(expected_ip, instance.FnGetAtt('PublicIp'))
+        self.assertEqual(expected_ip, instance.FnGetAtt('PrivateIp'))
+        self.assertEqual(expected_ip, instance.FnGetAtt('PublicDnsName'))
         self.assertEqual(expected_ip, instance.FnGetAtt('PrivateDnsName'))
+
+        self.m.VerifyAll()
+
+    def test_build_block_device_mapping(self):
+        return_server = self.fc.servers.list()[1]
+        instance = self._create_test_instance(return_server,
+                                              'test_build_bdm')
+        self.assertIsNone(instance._build_block_device_mapping([]))
+        self.assertIsNone(instance._build_block_device_mapping(None))
+
+        self.assertEqual({
+            'vdb': '1234:snap:',
+            'vdc': '5678:snap::False',
+        }, instance._build_block_device_mapping([
+            {'DeviceName': 'vdb', 'Ebs': {'SnapshotId': '1234'}},
+            {'DeviceName': 'vdc', 'Ebs': {'SnapshotId': '5678',
+                                          'DeleteOnTermination': False}},
+        ]))
+
+        self.assertEqual({
+            'vdb': '1234:snap:1',
+            'vdc': '5678:snap:2:True',
+        }, instance._build_block_device_mapping([
+            {'DeviceName': 'vdb', 'Ebs': {'SnapshotId': '1234',
+                                          'VolumeSize': '1'}},
+            {'DeviceName': 'vdc', 'Ebs': {'SnapshotId': '5678',
+                                          'VolumeSize': '2',
+                                          'DeleteOnTermination': True}},
+        ]))
+
+    def test_validate_BlockDeviceMappings_VolumeSize_valid_str(self):
+        stack_name = 'val_VolumeSize_valid'
+        tmpl, stack = self._setup_test_stack(stack_name)
+        bdm = [{'DeviceName': 'vdb',
+                'Ebs': {'SnapshotId': '1234',
+                        'VolumeSize': '1'}}]
+        wsp = tmpl.t['Resources']['WebServer']['Properties']
+        wsp['BlockDeviceMappings'] = bdm
+        resource_defns = tmpl.resource_definitions(stack)
+        instance = instances.Instance('validate_volume_size',
+                                      resource_defns['WebServer'], stack)
+
+        self._mock_get_image_id_success('F17-x86_64-gold', 1)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
+
+        self.m.ReplayAll()
+
+        self.assertIsNone(instance.validate())
+
+        self.m.VerifyAll()
+
+    def test_validate_BlockDeviceMappings_VolumeSize_invalid_str(self):
+        stack_name = 'val_VolumeSize_valid'
+        tmpl, stack = self._setup_test_stack(stack_name)
+        bdm = [{'DeviceName': 'vdb',
+                'Ebs': {'SnapshotId': '1234',
+                        'VolumeSize': 10}}]
+        wsp = tmpl.t['Resources']['WebServer']['Properties']
+        wsp['BlockDeviceMappings'] = bdm
+        resource_defns = tmpl.resource_definitions(stack)
+        instance = instances.Instance('validate_volume_size',
+                                      resource_defns['WebServer'], stack)
+
+        self._mock_get_image_id_success('F17-x86_64-gold', 1)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
+
+        self.m.ReplayAll()
+
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                instance.validate)
+        self.assertIn("Value must be a string", six.text_type(exc))
+
+        self.m.VerifyAll()
+
+    def test_validate_BlockDeviceMappings_without_Ebs_property(self):
+        stack_name = 'without_Ebs'
+        tmpl, stack = self._setup_test_stack(stack_name)
+        bdm = [{'DeviceName': 'vdb'}]
+        wsp = tmpl.t['Resources']['WebServer']['Properties']
+        wsp['BlockDeviceMappings'] = bdm
+        resource_defns = tmpl.resource_definitions(stack)
+        instance = instances.Instance('validate_without_Ebs',
+                                      resource_defns['WebServer'], stack)
+
+        self._mock_get_image_id_success('F17-x86_64-gold', 1)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
+
+        self.m.ReplayAll()
+
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                instance.validate)
+        self.assertIn("Ebs is missing, this is required",
+                      six.text_type(exc))
+
+        self.m.VerifyAll()
+
+    def test_validate_BlockDeviceMappings_without_SnapshotId_property(self):
+        stack_name = 'without_SnapshotId'
+        tmpl, stack = self._setup_test_stack(stack_name)
+        bdm = [{'DeviceName': 'vdb',
+                'Ebs': {'VolumeSize': '1'}}]
+        wsp = tmpl.t['Resources']['WebServer']['Properties']
+        wsp['BlockDeviceMappings'] = bdm
+        resource_defns = tmpl.resource_definitions(stack)
+        instance = instances.Instance('validate_without_SnapshotId',
+                                      resource_defns['WebServer'], stack)
+
+        self._mock_get_image_id_success('F17-x86_64-gold', 1)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
+
+        self.m.ReplayAll()
+
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                instance.validate)
+        self.assertIn("SnapshotId is missing, this is required",
+                      six.text_type(exc))
+
+        self.m.VerifyAll()
+
+    def test_validate_BlockDeviceMappings_without_DeviceName_property(self):
+        stack_name = 'without_DeviceName'
+        tmpl, stack = self._setup_test_stack(stack_name)
+        bdm = [{'Ebs': {'SnapshotId': '1234',
+                        'VolumeSize': '1'}}]
+        wsp = tmpl.t['Resources']['WebServer']['Properties']
+        wsp['BlockDeviceMappings'] = bdm
+        resource_defns = tmpl.resource_definitions(stack)
+        instance = instances.Instance('validate_without_DeviceName',
+                                      resource_defns['WebServer'], stack)
+
+        self._mock_get_image_id_success('F17-x86_64-gold', 1)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
+
+        self.m.ReplayAll()
+
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                instance.validate)
+        excepted_error = ('Property error : WebServer: BlockDeviceMappings '
+                          'Property error : BlockDeviceMappings: 0 Property '
+                          'error : 0: Property DeviceName not assigned')
+        self.assertIn(excepted_error, six.text_type(exc))
 
         self.m.VerifyAll()
 
@@ -197,7 +357,7 @@ class InstancesTest(HeatTestCase):
             'StackValidationFailed: Property error : WebServer: '
             'ImageId Error validating value \'Slackware\': '
             'The Image (Slackware) could not be found.',
-            str(error))
+            six.text_type(error))
 
         self.m.VerifyAll()
 
@@ -224,7 +384,7 @@ class InstancesTest(HeatTestCase):
             'StackValidationFailed: Property error : WebServer: '
             'ImageId Multiple physical resources were '
             'found with name (CentOS 5.2).',
-            str(error))
+            six.text_type(error))
 
         self.m.VerifyAll()
 
@@ -247,11 +407,35 @@ class InstancesTest(HeatTestCase):
         self.assertEqual(
             'StackValidationFailed: Property error : WebServer: '
             'ImageId 404 (HTTP 404)',
-            str(error))
+            six.text_type(error))
 
         self.m.VerifyAll()
 
-    class FakeVolumeAttach:
+    def test_handle_check(self):
+        (tmpl, stack) = self._setup_test_stack('test_instance_check_active')
+        res_definitions = tmpl.resource_definitions(stack)
+
+        instance = instances.Instance('instance_create_image',
+                                      res_definitions['WebServer'], stack)
+        instance.nova = mock.Mock()
+        instance._check_active = mock.Mock(return_value=True)
+
+        self.assertIsNone(instance.handle_check())
+
+    def test_handle_check_raises_exception_if_instance_not_active(self):
+        (tmpl, stack) = self._setup_test_stack('test_instance_check_inactive')
+        res_definitions = tmpl.resource_definitions(stack)
+
+        instance = instances.Instance('instance_create_image',
+                                      res_definitions['WebServer'], stack)
+        instance.nova = mock.Mock()
+        instance.nova.return_value.servers.get.return_value.status = 'foo'
+        instance._check_active = mock.Mock(return_value=False)
+
+        exc = self.assertRaises(exception.Error, instance.handle_check)
+        self.assertIn('foo', str(exc))
+
+    class FakeVolumeAttach(object):
         def started(self):
             return False
 
@@ -261,9 +445,12 @@ class InstancesTest(HeatTestCase):
                                               'test_instance_create')
         return_server.get = lambda: None
         return_server.status = 'BOGUS'
-        self.assertRaises(exception.Error,
-                          instance.check_create_complete,
-                          (return_server, self.FakeVolumeAttach()))
+        e = self.assertRaises(resource.ResourceUnknownStatus,
+                              instance.check_create_complete,
+                              (return_server, self.FakeVolumeAttach()))
+        self.assertEqual(
+            'Instance is not active - Unknown status BOGUS',
+            str(e))
 
     def test_instance_create_error_status(self):
         return_server = self.fc.servers.list()[1]
@@ -279,9 +466,12 @@ class InstancesTest(HeatTestCase):
         return_server.get()
         self.m.ReplayAll()
 
-        self.assertRaises(exception.Error,
-                          instance.check_create_complete,
-                          (return_server, self.FakeVolumeAttach()))
+        e = self.assertRaises(resource.ResourceInError,
+                              instance.check_create_complete,
+                              (return_server, self.FakeVolumeAttach()))
+        self.assertEqual(
+            'Went to status ERROR due to "Message: NoValidHost, Code: 500"',
+            str(e))
 
         self.m.VerifyAll()
 
@@ -296,11 +486,11 @@ class InstancesTest(HeatTestCase):
         self.m.ReplayAll()
 
         e = self.assertRaises(
-            exception.Error, instance.check_create_complete,
+            resource.ResourceInError, instance.check_create_complete,
             (return_server, self.FakeVolumeAttach()))
         self.assertEqual(
-            'Creation of server sample-server2 failed: Unknown (500)',
-            str(e))
+            'Went to status ERROR due to "Message: Unknown, Code: Unknown"',
+            six.text_type(e))
 
         self.m.VerifyAll()
 
@@ -314,7 +504,7 @@ class InstancesTest(HeatTestCase):
                                       resource_defns['WebServer'], stack)
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
 
         self._mock_get_image_id_success('1', 1)
         self.m.ReplayAll()
@@ -351,7 +541,6 @@ class InstancesTest(HeatTestCase):
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.delete)()
-        self.assertIsNone(instance.resource_id)
         self.assertEqual((instance.DELETE, instance.COMPLETE), instance.state)
         self.m.VerifyAll()
 
@@ -439,12 +628,12 @@ class InstancesTest(HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure, updater)
         self.assertEqual(
             "Error: Resizing to 'm1.small' failed, status 'ACTIVE'",
-            str(error))
+            six.text_type(error))
         self.assertEqual((instance.UPDATE, instance.FAILED), instance.state)
         self.m.VerifyAll()
 
     def create_fake_iface(self, port, net, ip):
-        class fake_interface():
+        class fake_interface(object):
             def __init__(self, port_id, net_id, fixed_ip):
                 self.port_id = port_id
                 self.net_id = net_id
@@ -712,15 +901,15 @@ class InstancesTest(HeatTestCase):
         instance = self._create_test_instance(return_server,
                                               'in_update2')
 
-        self.m.StubOutWithMock(image.ImageConstraint, "validate")
-        image.ImageConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.stub_ImageConstraint_validate()
         self.m.ReplayAll()
 
         update_template = copy.deepcopy(instance.t)
         update_template['Properties']['ImageId'] = 'mustreplace'
         updater = scheduler.TaskRunner(instance.update, update_template)
         self.assertRaises(resource.UpdateReplace, updater)
+
+        self.m.VerifyAll()
 
     def test_instance_status_build(self):
         return_server = self.fc.servers.list()[0]
@@ -1082,11 +1271,9 @@ class InstancesTest(HeatTestCase):
                 neutronclient.Client, 'list_security_groups')
             neutronclient.Client.list_security_groups().AndReturn(
                 fake_groups_list)
-
-        net_interface = network_interface.NetworkInterface
-        self.m.StubOutWithMock(net_interface, 'network_id_from_subnet_id')
-        net_interface.network_id_from_subnet_id(
-            nclient,
+        self.m.StubOutWithMock(neutron.NeutronClientPlugin,
+                               'network_id_from_subnet_id')
+        neutron.NeutronClientPlugin.network_id_from_subnet_id(
             'fake_subnet_id').MultipleTimes().AndReturn('fake_network_id')
 
         if not get_secgroup_raises:
@@ -1094,7 +1281,7 @@ class InstancesTest(HeatTestCase):
             neutronclient.Client.create_port(
                 {'port': props}).MultipleTimes().AndReturn(
                     {'port': {'id': 'fake_port_id'}})
-
+        self.stub_keystoneclient()
         self.m.ReplayAll()
 
         if get_secgroup_raises:
@@ -1115,24 +1302,28 @@ class InstancesTest(HeatTestCase):
         fake_groups_list = {
             'security_groups': [
                 {
+                    'tenant_id': 'test_tenant_id',
                     'id': '0389f747-7785-4757-b7bb-2ab07e4b09c3',
                     'name': 'security_group_1',
                     'security_group_rules': [],
                     'description': 'no protocol'
                 },
                 {
+                    'tenant_id': 'test_tenant_id',
                     'id': '384ccd91-447c-4d83-832c-06974a7d3d05',
                     'name': 'security_group_2',
                     'security_group_rules': [],
                     'description': 'no protocol'
                 },
                 {
+                    'tenant_id': 'test_tenant_id',
                     'id': 'e91a0007-06a6-4a4a-8edb-1d91315eb0ef',
                     'name': 'duplicate_group_name',
                     'security_group_rules': [],
                     'description': 'no protocol'
                 },
                 {
+                    'tenant_id': 'test_tenant_id',
                     'id': '8be37f3c-176d-4826-aa17-77d1d9df7b2e',
                     'name': 'duplicate_group_name',
                     'security_group_rules': [],
@@ -1170,8 +1361,10 @@ class InstancesTest(HeatTestCase):
         """The default value for instance_user in heat.conf is ec2-user."""
         return_server = self.fc.servers.list()[1]
         instance = self._setup_test_instance(return_server, 'default_user')
-        self.m.StubOutWithMock(nova_utils, 'build_userdata')
-        nova_utils.build_userdata(instance, 'wordpress', 'ec2-user')
+        metadata = instance.metadata_get()
+        self.m.StubOutWithMock(nova.NovaClientPlugin, 'build_userdata')
+        nova.NovaClientPlugin.build_userdata(
+            metadata, 'wordpress', 'ec2-user')
         self.m.ReplayAll()
         scheduler.TaskRunner(instance.create)()
         self.m.VerifyAll()
@@ -1188,8 +1381,10 @@ class InstancesTest(HeatTestCase):
         instance = self._setup_test_instance(return_server, 'custom_user')
         self.m.StubOutWithMock(instances.cfg.CONF, 'instance_user')
         instances.cfg.CONF.instance_user = 'custom_user'
-        self.m.StubOutWithMock(nova_utils, 'build_userdata')
-        nova_utils.build_userdata(instance, 'wordpress', 'custom_user')
+        metadata = instance.metadata_get()
+        self.m.StubOutWithMock(nova.NovaClientPlugin, 'build_userdata')
+        nova.NovaClientPlugin.build_userdata(
+            metadata, 'wordpress', 'custom_user')
         self.m.ReplayAll()
         scheduler.TaskRunner(instance.create)()
         self.m.VerifyAll()
@@ -1207,8 +1402,10 @@ class InstancesTest(HeatTestCase):
         instance = self._setup_test_instance(return_server, 'empty_user')
         self.m.StubOutWithMock(instances.cfg.CONF, 'instance_user')
         instances.cfg.CONF.instance_user = ''
-        self.m.StubOutWithMock(nova_utils, 'build_userdata')
-        nova_utils.build_userdata(instance, 'wordpress', 'ec2-user')
+        metadata = instance.metadata_get()
+        self.m.StubOutWithMock(nova.NovaClientPlugin, 'build_userdata')
+        nova.NovaClientPlugin.build_userdata(
+            metadata, 'wordpress', 'ec2-user')
         self.m.ReplayAll()
         scheduler.TaskRunner(instance.create)()
         self.m.VerifyAll()

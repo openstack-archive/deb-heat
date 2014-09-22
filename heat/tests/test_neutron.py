@@ -12,10 +12,12 @@
 #    under the License.
 
 import copy
+import six
 
 import mock
 import mox
 from neutronclient.common import exceptions as qe
+from neutronclient.neutron import v2_0 as neutronV20
 from neutronclient.v2_0 import client as neutronclient
 
 from heat.common import exception
@@ -23,9 +25,9 @@ from heat.common import template_format
 from heat.engine.cfn import functions as cfn_funcs
 from heat.engine.clients.os import neutron
 from heat.engine import properties
+from heat.engine import resource
 from heat.engine.resources.neutron import net
 from heat.engine.resources.neutron.neutron import NeutronResource as qr
-from heat.engine.resources.neutron import neutron_utils
 from heat.engine.resources.neutron import provider_net
 from heat.engine.resources.neutron import router
 from heat.engine.resources.neutron import subnet
@@ -498,22 +500,21 @@ class NeutronTest(HeatTestCase):
                           'shared': False}, props)
 
     def test_is_built(self):
-        self.assertTrue(qr.is_built({
-            'name': 'the_net',
-            'status': 'ACTIVE'
-        }))
-        self.assertTrue(qr.is_built({
-            'name': 'the_net',
-            'status': 'DOWN'
-        }))
-        self.assertFalse(qr.is_built({
-            'name': 'the_net',
-            'status': 'BUILD'
-        }))
-        self.assertRaises(exception.Error, qr.is_built, {
-            'name': 'the_net',
+        self.assertTrue(qr.is_built({'status': 'ACTIVE'}))
+        self.assertTrue(qr.is_built({'status': 'DOWN'}))
+        self.assertFalse(qr.is_built({'status': 'BUILD'}))
+        e = self.assertRaises(resource.ResourceInError, qr.is_built, {
+            'status': 'ERROR'
+        })
+        self.assertEqual(
+            'Went to status ERROR due to "Unknown"',
+            str(e))
+        e = self.assertRaises(resource.ResourceUnknownStatus, qr.is_built, {
             'status': 'FROBULATING'
         })
+        self.assertEqual(
+            'Resource is not built - Unknown status FROBULATING',
+            str(e))
 
     def test_resolve_attribute(self):
         class SomeNeutronResource(qr):
@@ -535,6 +536,96 @@ class NeutronTest(HeatTestCase):
         self.assertEqual('val2', res._resolve_attribute('attr2'))
         self.assertRaises(KeyError, res._resolve_attribute, 'attr3')
         self.assertIsNone(res._resolve_attribute('attr2'))
+
+    def test_get_secgroup_uuids(self):
+        # test get_secgroup_uuids with uuid
+        security_groups = ['b62c3079-6946-44f5-a67b-6b9091884d4f',
+                           '9887157c-d092-40f5-b547-6361915fce7d']
+        self.assertEqual(security_groups,
+                         qr.get_secgroup_uuids(security_groups, None, None))
+        # test get_secgroup_uuids with name
+        secgroups = ['security_group_1']
+        expected_groups = ['0389f747-7785-4757-b7bb-2ab07e4b09c3']
+        ctx = utils.dummy_context(
+            tenant_id='dc4b074874244f7693dd65583733a758')
+        fake_groups_list = {
+            'security_groups': [
+                {
+                    'tenant_id': 'dc4b074874244f7693dd65583733a758',
+                    'id': '0389f747-7785-4757-b7bb-2ab07e4b09c3',
+                    'name': 'security_group_1',
+                    'security_group_rules': [],
+                    'description': 'no protocol'
+                }
+            ]
+        }
+        nclient = neutronclient.Client()
+        self.m.StubOutWithMock(neutronclient.Client, 'list_security_groups')
+        neutronclient.Client.list_security_groups().AndReturn(
+            fake_groups_list)
+        self.m.ReplayAll()
+        self.assertEqual(expected_groups,
+                         qr.get_secgroup_uuids(secgroups, nclient,
+                                               ctx.tenant_id))
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
+        # test there are two securityGroups with same name, but there is
+        # one belongs to the tenant
+        fake_groups_list = {
+            'security_groups': [
+                {
+                    'tenant_id': 'dc4b074874244f7693dd65583733a758',
+                    'id': '0389f747-7785-4757-b7bb-2ab07e4b09c3',
+                    'name': 'security_group_1',
+                    'security_group_rules': [],
+                    'description': 'no protocol'
+                },
+                {
+                    'tenant_id': '64395a8e5beb4930a18245f76a5b1570',
+                    'id': '384ccd91-447c-4d83-832c-06974a7d3d05',
+                    'name': 'security_group_1',
+                    'security_group_rules': [],
+                    'description': 'no protocol'
+                }
+            ]
+        }
+        self.m.StubOutWithMock(neutronclient.Client, 'list_security_groups')
+        neutronclient.Client.list_security_groups().AndReturn(
+            fake_groups_list)
+        self.m.ReplayAll()
+        self.assertEqual(expected_groups,
+                         qr.get_secgroup_uuids(secgroups, nclient,
+                                               ctx.tenant_id))
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
+        # test there are two securityGroups with same name, and the two
+        # all belong to the tenant
+        fake_groups_list = {
+            'security_groups': [
+                {
+                    'tenant_id': 'dc4b074874244f7693dd65583733a758',
+                    'id': '0389f747-7785-4757-b7bb-2ab07e4b09c3',
+                    'name': 'security_group_1',
+                    'security_group_rules': [],
+                    'description': 'no protocol'
+                },
+                {
+                    'tenant_id': 'dc4b074874244f7693dd65583733a758',
+                    'id': '384ccd91-447c-4d83-832c-06974a7d3d05',
+                    'name': 'security_group_1',
+                    'security_group_rules': [],
+                    'description': 'no protocol'
+                }
+            ]
+        }
+        self.m.StubOutWithMock(neutronclient.Client, 'list_security_groups')
+        neutronclient.Client.list_security_groups().AndReturn(fake_groups_list)
+        self.m.ReplayAll()
+        self.assertRaises(exception.PhysicalResourceNameAmbiguity,
+                          qr.get_secgroup_uuids,
+                          secgroups, nclient, ctx.tenant_id)
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
 
 
 class NeutronNetTest(HeatTestCase):
@@ -862,8 +953,7 @@ class NeutronSubnetTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'delete_subnet')
         self.m.StubOutWithMock(neutronclient.Client, 'show_subnet')
         self.m.StubOutWithMock(neutronclient.Client, 'update_subnet')
-        self.m.StubOutWithMock(neutron_utils.neutronV20,
-                               'find_resourceid_by_name_or_id')
+        self.m.StubOutWithMock(neutronV20, 'find_resourceid_by_name_or_id')
         self.stub_keystoneclient()
 
     def create_subnet(self, t, stack, resource_name):
@@ -874,7 +964,7 @@ class NeutronSubnetTest(HeatTestCase):
 
     def test_subnet(self):
         t = self._test_subnet()
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'None'
@@ -1031,7 +1121,7 @@ class NeutronSubnetTest(HeatTestCase):
         return t
 
     def test_subnet_disable_dhcp(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'None'
@@ -1173,8 +1263,7 @@ class NeutronRouterTest(HeatTestCase):
                                'remove_router_from_l3_agent')
         self.m.StubOutWithMock(neutronclient.Client,
                                'list_l3_agent_hosting_routers')
-        self.m.StubOutWithMock(neutron_utils.neutronV20,
-                               'find_resourceid_by_name_or_id')
+        self.m.StubOutWithMock(neutronV20, 'find_resourceid_by_name_or_id')
         self.stub_keystoneclient()
 
     def create_router(self, t, stack, resource_name):
@@ -1401,7 +1490,7 @@ class NeutronRouterTest(HeatTestCase):
         t = template_format.parse(neutron_template)
         stack = utils.parse_stack(t)
         if resolve_neutron:
-            neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+            neutronV20.find_resourceid_by_name_or_id(
                 mox.IsA(neutronclient.Client),
                 'subnet',
                 '91e47a57-7508-46fe-afc9-fc454e8580e1'
@@ -1528,10 +1617,10 @@ class NeutronRouterTest(HeatTestCase):
                                      stack)
         ex = self.assertRaises(exception.StackValidationFailed, res.validate)
         self.assertEqual("Either subnet or port_id must be specified.",
-                         str(ex))
+                         six.text_type(ex))
 
     def test_gateway_router(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
@@ -1562,7 +1651,7 @@ class NeutronRouterTest(HeatTestCase):
         self.m.VerifyAll()
 
     def _create_router_with_gateway(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'public'
@@ -1641,7 +1730,7 @@ class NeutronRouterTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_router_gateway_enable_snat(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'public'
@@ -1702,7 +1791,7 @@ class NeutronRouterTest(HeatTestCase):
     def test_update_router_gateway_as_property(self):
         self._create_router_with_gateway()
 
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'other_public'
@@ -1785,7 +1874,7 @@ class NeutronFloatingIPTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'delete_port')
         self.m.StubOutWithMock(neutronclient.Client, 'update_port')
         self.m.StubOutWithMock(neutronclient.Client, 'show_port')
-        self.m.StubOutWithMock(neutron_utils.neutronV20,
+        self.m.StubOutWithMock(neutronV20,
                                'find_resourceid_by_name_or_id')
         self.stub_keystoneclient()
 
@@ -1820,7 +1909,7 @@ class NeutronFloatingIPTest(HeatTestCase):
                 qe.NeutronClientException(status_code=404))
         if resolve_neutron:
             t = template_format.parse(neutron_floating_template)
-            neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+            neutronV20.find_resourceid_by_name_or_id(
                 mox.IsA(neutronclient.Client),
                 'network',
                 'abcd1234'
@@ -1860,12 +1949,12 @@ class NeutronFloatingIPTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_port(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'xyz1234'
         ).AndReturn('xyz1234')
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
             'sub1234'
@@ -1955,17 +2044,17 @@ class NeutronFloatingIPTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_floatip_port(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'abcd1234'
         ).AndReturn('abcd1234')
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'xyz1234'
         ).AndReturn('xyz1234')
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
             'sub1234'
@@ -2159,12 +2248,12 @@ class NeutronPortTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'create_port')
         self.m.StubOutWithMock(neutronclient.Client, 'show_port')
         self.m.StubOutWithMock(neutronclient.Client, 'update_port')
-        self.m.StubOutWithMock(neutron_utils.neutronV20,
-                               'find_resourceid_by_name_or_id')
+        self.m.StubOutWithMock(neutronclient.Client, 'show_subnet')
+        self.m.StubOutWithMock(neutronV20, 'find_resourceid_by_name_or_id')
         self.stub_keystoneclient()
 
     def test_missing_subnet_id(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'net1234'
@@ -2200,12 +2289,12 @@ class NeutronPortTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_missing_ip_address(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'net1234'
         ).AndReturn('net1234')
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
             'sub1234'
@@ -2241,7 +2330,7 @@ class NeutronPortTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_missing_fixed_ips(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'net1234'
@@ -2277,7 +2366,7 @@ class NeutronPortTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_allowed_address_pair(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'abcd1234'
@@ -2311,7 +2400,7 @@ class NeutronPortTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_missing_mac_address(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'abcd1234'
@@ -2347,12 +2436,12 @@ class NeutronPortTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_security_groups(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'net1234'
         ).AndReturn('net1234')
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
             'sub1234'
@@ -2401,7 +2490,7 @@ class NeutronPortTest(HeatTestCase):
         new_props_update = new_props.copy()
         new_props_update.pop('network_id')
 
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'net1234'
@@ -2444,23 +2533,217 @@ class NeutronPortTest(HeatTestCase):
 
         self.m.VerifyAll()
 
+    def test_get_port_attributes(self):
+        subnet_dict = {'name': 'test-subnet', 'enable_dhcp': True,
+                       'network_id': 'net1234', 'dns_nameservers': [],
+                       'tenant_id': '58a61fc3992944ce971404a2ece6ff98',
+                       'ipv6_ra_mode': None, 'cidr': '10.0.0.0/24',
+                       'allocation_pools': [{'start': '10.0.0.2',
+                                             'end': u'10.0.0.254'}],
+                       'gateway_ip': '10.0.0.1', 'ipv6_address_mode': None,
+                       'ip_version': 4, 'host_routes': [],
+                       'id': '6dd609ad-d52a-4587-b1a0-b335f76062a5'}
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'net1234'
+        ).AndReturn('net1234')
+        neutronclient.Client.create_port({'port': {
+            'network_id': u'net1234',
+            'name': utils.PhysName('test_stack', 'port'),
+            'admin_state_up': True,
+            'device_owner': u'network:dhcp'}}
+        ).AndReturn({'port': {
+            'status': 'BUILD',
+            'id': 'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        }})
+        neutronclient.Client.show_subnet(
+            'd0e971a6-a6b4-4f4c-8c88-b75e9c120b7e'
+        ).AndReturn({'subnet': subnet_dict})
+        neutronclient.Client.show_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).MultipleTimes().AndReturn({'port': {
+            'status': 'DOWN',
+            'name': utils.PhysName('test_stack', 'port'),
+            'allowed_address_pairs': [],
+            'admin_state_up': True,
+            'network_id': 'net1234',
+            'device_id': 'dc68eg2c-b60g-4b3f-bd82-67ec87650532',
+            'mac_address': 'fa:16:3e:75:67:60',
+            'tenant_id': '58a61fc3992944ce971404a2ece6ff98',
+            'security_groups': ['5b15d80c-6b70-4a1c-89c9-253538c5ade6'],
+            'fixed_ips': [{'subnet_id': 'd0e971a6-a6b4-4f4c-8c88-b75e9c120b7e',
+                           'ip_address': '10.0.0.2'}]
+        }})
+        self.m.ReplayAll()
+
+        t = template_format.parse(neutron_port_template)
+        t['Resources']['port']['Properties'].pop('fixed_ips')
+        stack = utils.parse_stack(t)
+
+        port = stack['port']
+        scheduler.TaskRunner(port.create)()
+        self.assertEqual('DOWN', port.FnGetAtt('status'))
+        self.assertEqual([], port.FnGetAtt('allowed_address_pairs'))
+        self.assertEqual(True, port.FnGetAtt('admin_state_up'))
+        self.assertEqual('net1234', port.FnGetAtt('network_id'))
+        self.assertEqual('fa:16:3e:75:67:60', port.FnGetAtt('mac_address'))
+        self.assertEqual(utils.PhysName('test_stack', 'port'),
+                         port.FnGetAtt('name'))
+        self.assertEqual('dc68eg2c-b60g-4b3f-bd82-67ec87650532',
+                         port.FnGetAtt('device_id'))
+        self.assertEqual('58a61fc3992944ce971404a2ece6ff98',
+                         port.FnGetAtt('tenant_id'))
+        self.assertEqual(['5b15d80c-6b70-4a1c-89c9-253538c5ade6'],
+                         port.FnGetAtt('security_groups'))
+        self.assertEqual([{'subnet_id': 'd0e971a6-a6b4-4f4c-8c88-b75e9c120b7e',
+                           'ip_address': '10.0.0.2'}],
+                         port.FnGetAtt('fixed_ips'))
+        self.assertEqual([subnet_dict], port.FnGetAtt('subnets'))
+        self.assertRaises(exception.InvalidTemplateAttribute,
+                          port.FnGetAtt, 'Foo')
+        self.m.VerifyAll()
+
+    def test_subnet_attribute_exception(self):
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'net1234'
+        ).AndReturn('net1234')
+        neutronclient.Client.create_port({'port': {
+            'network_id': u'net1234',
+            'name': utils.PhysName('test_stack', 'port'),
+            'admin_state_up': True,
+            'device_owner': u'network:dhcp'}}
+        ).AndReturn({'port': {
+            'status': 'BUILD',
+            'id': 'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        }})
+        neutronclient.Client.show_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).MultipleTimes().AndReturn({'port': {
+            'status': 'DOWN',
+            'name': utils.PhysName('test_stack', 'port'),
+            'allowed_address_pairs': [],
+            'admin_state_up': True,
+            'network_id': 'net1234',
+            'device_id': 'dc68eg2c-b60g-4b3f-bd82-67ec87650532',
+            'mac_address': 'fa:16:3e:75:67:60',
+            'tenant_id': '58a61fc3992944ce971404a2ece6ff98',
+            'security_groups': ['5b15d80c-6b70-4a1c-89c9-253538c5ade6'],
+            'fixed_ips': [{'subnet_id': 'd0e971a6-a6b4-4f4c-8c88-b75e9c120b7e',
+                           'ip_address': '10.0.0.2'}]
+        }})
+        neutronclient.Client.show_subnet(
+            'd0e971a6-a6b4-4f4c-8c88-b75e9c120b7e'
+        ).AndRaise(qe.NeutronClientException('ConnectionFailed: Connection '
+                                             'to neutron failed: Maximum '
+                                             'attempts reached'))
+        self.m.ReplayAll()
+
+        t = template_format.parse(neutron_port_template)
+        t['Resources']['port']['Properties'].pop('fixed_ips')
+        stack = utils.parse_stack(t)
+        port = stack['port']
+        scheduler.TaskRunner(port.create)()
+        self.assertIsNone(port.FnGetAtt('subnets'))
+        log_msg = ('Failed to fetch resource attributes: ConnectionFailed: '
+                   'Connection to neutron failed: Maximum attempts reached')
+        self.assertIn(log_msg, self.LOG.output)
+        self.m.VerifyAll()
+
 
 class NetworkConstraintTest(HeatTestCase):
 
     def test_validate(self):
+        nc = self.m.CreateMockAnything()
         self.m.StubOutWithMock(neutron.NeutronClientPlugin, '_create')
-        neutron.NeutronClientPlugin._create().MultipleTimes().AndReturn(None)
-        self.m.StubOutWithMock(net.neutronV20, 'find_resourceid_by_name_or_id')
-        net.neutronV20.find_resourceid_by_name_or_id(
-            None, 'network', 'foo'
+        neutron.NeutronClientPlugin._create().AndReturn(nc)
+        self.m.StubOutWithMock(neutron.neutronV20,
+                               'find_resourceid_by_name_or_id')
+        neutron.neutronV20.find_resourceid_by_name_or_id(
+            nc, 'network', 'foo'
         ).AndReturn('foo')
-        net.neutronV20.find_resourceid_by_name_or_id(
-            None, 'network', 'bar'
+        neutron.neutronV20.find_resourceid_by_name_or_id(
+            nc, 'network', 'bar'
         ).AndRaise(qe.NeutronClientException(status_code=404))
         self.m.ReplayAll()
 
-        constraint = net.NetworkConstraint()
-        self.assertTrue(constraint.validate("foo", None))
-        self.assertFalse(constraint.validate("bar", None))
+        constraint = neutron.NetworkConstraint()
+        ctx = utils.dummy_context()
+        self.assertTrue(constraint.validate("foo", ctx))
+        self.assertFalse(constraint.validate("bar", ctx))
+
+        self.m.VerifyAll()
+
+
+class PortConstraintTest(HeatTestCase):
+
+    def test_validate(self):
+        nc = self.m.CreateMockAnything()
+        self.m.StubOutWithMock(neutron.NeutronClientPlugin, '_create')
+        neutron.NeutronClientPlugin._create().AndReturn(nc)
+        self.m.StubOutWithMock(neutron.neutronV20,
+                               'find_resourceid_by_name_or_id')
+        neutron.neutronV20.find_resourceid_by_name_or_id(
+            nc, 'port', 'foo'
+        ).AndReturn('foo')
+        neutron.neutronV20.find_resourceid_by_name_or_id(
+            nc, 'port', 'bar'
+        ).AndRaise(qe.NeutronClientException(status_code=404))
+        self.m.ReplayAll()
+
+        constraint = neutron.PortConstraint()
+        ctx = utils.dummy_context()
+        self.assertTrue(constraint.validate("foo", ctx))
+        self.assertFalse(constraint.validate("bar", ctx))
+
+        self.m.VerifyAll()
+
+
+class RouterConstraintTest(HeatTestCase):
+
+    def test_validate(self):
+        nc = self.m.CreateMockAnything()
+        self.m.StubOutWithMock(neutron.NeutronClientPlugin, '_create')
+        neutron.NeutronClientPlugin._create().AndReturn(nc)
+        self.m.StubOutWithMock(neutron.neutronV20,
+                               'find_resourceid_by_name_or_id')
+        neutron.neutronV20.find_resourceid_by_name_or_id(
+            nc, 'router', 'foo'
+        ).AndReturn('foo')
+        neutron.neutronV20.find_resourceid_by_name_or_id(
+            nc, 'router', 'bar'
+        ).AndRaise(qe.NeutronClientException(status_code=404))
+        self.m.ReplayAll()
+
+        constraint = neutron.RouterConstraint()
+        ctx = utils.dummy_context()
+        self.assertTrue(constraint.validate("foo", ctx))
+        self.assertFalse(constraint.validate("bar", ctx))
+
+        self.m.VerifyAll()
+
+
+class SubnetConstraintTest(HeatTestCase):
+
+    def test_validate(self):
+        nc = self.m.CreateMockAnything()
+        self.m.StubOutWithMock(neutron.NeutronClientPlugin, '_create')
+        neutron.NeutronClientPlugin._create().AndReturn(nc)
+        self.m.StubOutWithMock(neutron.neutronV20,
+                               'find_resourceid_by_name_or_id')
+        neutron.neutronV20.find_resourceid_by_name_or_id(
+            nc, 'subnet', 'foo'
+        ).AndReturn('foo')
+        neutron.neutronV20.find_resourceid_by_name_or_id(
+            nc, 'subnet', 'bar'
+        ).AndRaise(qe.NeutronClientException(status_code=404))
+        self.m.ReplayAll()
+
+        constraint = neutron.SubnetConstraint()
+        ctx = utils.dummy_context()
+        self.assertTrue(constraint.validate("foo", ctx))
+        self.assertFalse(constraint.validate("bar", ctx))
 
         self.m.VerifyAll()

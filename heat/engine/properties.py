@@ -24,10 +24,12 @@ SCHEMA_KEYS = (
     REQUIRED, IMPLEMENTED, DEFAULT, TYPE, SCHEMA,
     ALLOWED_PATTERN, MIN_VALUE, MAX_VALUE, ALLOWED_VALUES,
     MIN_LENGTH, MAX_LENGTH, DESCRIPTION, UPDATE_ALLOWED,
+    IMMUTABLE,
 ) = (
     'Required', 'Implemented', 'Default', 'Type', 'Schema',
     'AllowedPattern', 'MinValue', 'MaxValue', 'AllowedValues',
     'MinLength', 'MaxLength', 'Description', 'UpdateAllowed',
+    'Immutable',
 )
 
 
@@ -42,10 +44,10 @@ class Schema(constr.Schema):
 
     KEYS = (
         TYPE, DESCRIPTION, DEFAULT, SCHEMA, REQUIRED, CONSTRAINTS,
-        UPDATE_ALLOWED
+        UPDATE_ALLOWED, IMMUTABLE,
     ) = (
         'type', 'description', 'default', 'schema', 'required', 'constraints',
-        'update_allowed'
+        'update_allowed', 'immutable',
     )
 
     def __init__(self, data_type, description=None,
@@ -53,11 +55,13 @@ class Schema(constr.Schema):
                  required=False, constraints=None,
                  implemented=True,
                  update_allowed=False,
+                 immutable=False,
                  support_status=support.SupportStatus()):
         super(Schema, self).__init__(data_type, description, default,
                                      schema, required, constraints)
         self.implemented = implemented
         self.update_allowed = update_allowed
+        self.immutable = immutable
         self.support_status = support_status
         # validate structural correctness of schema itself
         self.validate()
@@ -119,7 +123,8 @@ class Schema(constr.Schema):
                    required=schema_dict.get(REQUIRED, False),
                    constraints=list(constraints()),
                    implemented=schema_dict.get(IMPLEMENTED, True),
-                   update_allowed=schema_dict.get(UPDATE_ALLOWED, False))
+                   update_allowed=schema_dict.get(UPDATE_ALLOWED, False),
+                   immutable=schema_dict.get(IMMUTABLE, False))
 
     @classmethod
     def from_parameter(cls, param):
@@ -145,11 +150,32 @@ class Schema(constr.Schema):
                    description=param.description,
                    required=param.required,
                    constraints=param.constraints,
-                   update_allowed=True)
+                   update_allowed=True,
+                   immutable=False)
+
+    def allowed_param_prop_type(self):
+        """
+        Return allowed type of Property Schema converted from parameter.
+
+        Especially, when generating Schema from parameter, Integer Property
+        Schema will be supplied by Number parameter.
+        """
+        param_type_map = {
+            self.INTEGER: self.NUMBER,
+            self.STRING: self.STRING,
+            self.NUMBER: self.NUMBER,
+            self.BOOLEAN: self.BOOLEAN,
+            self.LIST: self.LIST,
+            self.MAP: self.MAP
+        }
+
+        return param_type_map[self.type]
 
     def __getitem__(self, key):
         if key == self.UPDATE_ALLOWED:
             return self.update_allowed
+        elif key == self.IMMUTABLE:
+            return self.immutable
         else:
             return super(Schema, self).__getitem__(key)
 
@@ -181,6 +207,9 @@ class Property(object):
 
     def update_allowed(self):
         return self.schema.update_allowed
+
+    def immutable(self):
+        return self.schema.immutable
 
     def has_default(self):
         return self.schema.default is not None
@@ -237,7 +266,8 @@ class Property(object):
         if not isinstance(value, collections.Mapping):
             raise TypeError(_('"%s" is not a map') % value)
 
-        return dict(self._get_children(value.iteritems(), validate=validate))
+        return dict(self._get_children(six.iteritems(value),
+                                       validate=validate))
 
     def _get_list(self, value, validate=False):
         if value is None:
@@ -316,6 +346,16 @@ class Properties(collections.Mapping):
 
     def validate(self, with_value=True):
         for (key, prop) in self.props.items():
+            # check that update_allowed and immutable
+            # do not contradict each other
+            if prop.update_allowed() and prop.immutable():
+                msg = _("Property %(prop)s: %(ua)s and %(im)s "
+                        "cannot both be True") % {
+                            'prop': key,
+                            'ua': prop.schema.UPDATE_ALLOWED,
+                            'im': prop.schema.IMMUTABLE}
+                raise exception.InvalidSchemaError(message=msg)
+
             if with_value:
                 try:
                     self._get_property_value(key, validate=True)
@@ -451,7 +491,7 @@ class Properties(collections.Mapping):
             return {}, {}
 
         param_prop_defs = [param_prop_def_items(n, s)
-                           for n, s in schemata(schema).iteritems()
+                           for n, s in six.iteritems(schemata(schema))
                            if s.implemented]
         param_items, prop_items = zip(*param_prop_defs)
         return dict(param_items), dict(prop_items)

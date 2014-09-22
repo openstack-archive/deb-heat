@@ -113,7 +113,7 @@ class HeatException(Exception):
             #kwargs doesn't match a variable in the message
             #log the issue and the kwargs
             LOG.exception(_('Exception in string format operation'))
-            for name, value in kwargs.iteritems():
+            for name, value in six.iteritems(kwargs):
                 LOG.error("%s: %s" % (name, value))  # noqa
 
             if _FATAL_EXCEPTION_FORMAT_ERRORS:
@@ -296,6 +296,10 @@ class NotSupported(HeatException):
     msg_fmt = _("%(feature)s is not supported.")
 
 
+class ResourceActionNotSupported(HeatException):
+    msg_fmt = _("%(action)s is not supported for resource.")
+
+
 class ResourcePropertyConflict(HeatException):
     msg_fmt = _('Cannot define the following properties at the same time: %s.')
 
@@ -346,10 +350,6 @@ class StackResourceLimitExceeded(HeatException):
 class ActionInProgress(HeatException):
     msg_fmt = _("Stack %(stack_name)s already has an action (%(action)s) "
                 "in progress.")
-
-
-class SoftwareConfigMissing(HeatException):
-    msg_fmt = _("The config (%(software_config_id)s) could not be found.")
 
 
 class StopActionFailed(HeatException):

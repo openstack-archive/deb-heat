@@ -14,6 +14,7 @@
 import collections
 
 from heat.common import exception
+from heat.engine import attributes
 from heat.engine.cfn import functions as cfn_funcs
 from heat.engine import function
 
@@ -82,7 +83,7 @@ class GetParam(function.Function):
             return ''
 
 
-class GetAtt(cfn_funcs.GetAtt):
+class GetAttThenSelect(cfn_funcs.GetAtt):
     '''
     A function for resolving resource attributes.
 
@@ -111,26 +112,37 @@ class GetAtt(cfn_funcs.GetAtt):
         return tuple(self.args[:2])
 
     def result(self):
-        attribute = super(GetAtt, self).result()
+        attribute = super(GetAttThenSelect, self).result()
         if attribute is None:
             return None
 
         path_components = function.resolve(self._path_components)
+        return attributes.select_from_attribute(attribute, path_components)
 
-        def get_path_component(collection, key):
-            if not isinstance(collection, (collections.Mapping,
-                                           collections.Sequence)):
-                raise TypeError(_('"%s" can\'t traverse path') % self.fn_name)
 
-            if not isinstance(key, (basestring, int)):
-                raise TypeError(_('Path components in "%s" '
-                                  'must be strings') % self.fn_name)
+class GetAtt(GetAttThenSelect):
+    '''
+    A function for resolving resource attributes.
 
-            return collection[key]
+    Takes the form::
 
-        try:
-            return reduce(get_path_component, path_components, attribute)
-        except (KeyError, IndexError, TypeError):
+        get_attr:
+          - <resource_name>
+          - <attribute_name>
+          - <path1>
+          - ...
+    '''
+
+    def result(self):
+        path_components = function.resolve(self._path_components)
+        attribute = function.resolve(self._attribute)
+
+        r = self._resource()
+        if (r.status in (r.IN_PROGRESS, r.COMPLETE) and
+                r.action in (r.CREATE, r.ADOPT, r.SUSPEND, r.RESUME,
+                             r.UPDATE)):
+            return r.FnGetAtt(attribute, *path_components)
+        else:
             return None
 
 
@@ -236,6 +248,21 @@ class ResourceFacade(cfn_funcs.ResourceFacade):
     )
 
 
+class Removed(function.Function):
+    '''
+    This function existed in previous versions of HOT, but has been removed.
+    Check the HOT guide for an equivalent native function.
+    '''
+
+    def validate(self):
+        exp = (_("The function %s is not supported in this version of HOT.") %
+               self.fn_name)
+        raise exception.InvalidTemplateVersion(explanation=exp)
+
+    def result(self):
+        return super(Removed, self).result()
+
+
 def function_mapping(version_key, version):
     if version_key != 'heat_template_version':
         return {}
@@ -246,10 +273,9 @@ def function_mapping(version_key, version):
             'get_param': GetParam,
             'get_resource': cfn_funcs.ResourceRef,
             'Ref': cfn_funcs.Ref,
-            'get_attr': GetAtt,
+            'get_attr': GetAttThenSelect,
             'Fn::Select': cfn_funcs.Select,
             'Fn::Join': cfn_funcs.Join,
-            'list_join': Join,
             'Fn::Split': cfn_funcs.Split,
             'str_replace': Replace,
             'Fn::Replace': cfn_funcs.Replace,
@@ -258,6 +284,27 @@ def function_mapping(version_key, version):
             'resource_facade': ResourceFacade,
             'Fn::ResourceFacade': cfn_funcs.ResourceFacade,
             'get_file': GetFile,
+        }
+    if version == '2014-10-16':
+        return {
+            'get_param': GetParam,
+            'get_resource': cfn_funcs.ResourceRef,
+            'get_attr': GetAtt,
+            'list_join': Join,
+            'str_replace': Replace,
+            'resource_facade': ResourceFacade,
+            'get_file': GetFile,
+
+            'Fn::Select': cfn_funcs.Select,
+
+            'Fn::GetAZs': Removed,
+            'Ref': Removed,
+            'Fn::Join': Removed,
+            'Fn::Split': Removed,
+            'Fn::Replace': Removed,
+            'Fn::Base64': Removed,
+            'Fn::MemberListToMap': Removed,
+            'Fn::ResourceFacade': Removed,
         }
 
     return {}

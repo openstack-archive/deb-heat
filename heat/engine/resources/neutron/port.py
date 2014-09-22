@@ -14,12 +14,9 @@
 from heat.engine import attributes
 from heat.engine import properties
 from heat.engine.resources.neutron import neutron
-from heat.engine.resources.neutron import neutron_utils
 from heat.engine.resources.neutron import subnet
 from heat.engine import support
 from heat.openstack.common import log as logging
-
-import neutronclient.common.exceptions as neutron_exp
 
 LOG = logging.getLogger(__name__)
 
@@ -53,11 +50,11 @@ class Port(neutron.NeutronResource):
     ATTRIBUTES = (
         ADMIN_STATE_UP_ATTR, DEVICE_ID_ATTR, DEVICE_OWNER_ATTR, FIXED_IPS_ATTR,
         MAC_ADDRESS_ATTR, NAME_ATTR, NETWORK_ID_ATTR, SECURITY_GROUPS_ATTR,
-        STATUS, TENANT_ID, ALLOWED_ADDRESS_PAIRS_ATTR, SHOW,
+        STATUS, TENANT_ID, ALLOWED_ADDRESS_PAIRS_ATTR, SHOW, SUBNETS_ATTR,
     ) = (
         'admin_state_up', 'device_id', 'device_owner', 'fixed_ips',
         'mac_address', 'name', 'network_id', 'security_groups',
-        'status', 'tenant_id', 'allowed_address_pairs', 'show',
+        'status', 'tenant_id', 'allowed_address_pairs', 'show', 'subnets',
     )
 
     properties_schema = {
@@ -197,6 +194,9 @@ class Port(neutron.NeutronResource):
         SHOW: attributes.Schema(
             _("All attributes.")
         ),
+        SUBNETS_ATTR: attributes.Schema(
+            _("A list of all subnet attributes for the port.")
+        ),
     }
 
     def validate(self):
@@ -225,8 +225,7 @@ class Port(neutron.NeutronResource):
         props = self.prepare_properties(
             self.properties,
             self.physical_resource_name())
-        neutron_utils.resolve_network(self.neutron(),
-                                      props, self.NETWORK, 'network_id')
+        self.client_plugin().resolve_network(props, self.NETWORK, 'network_id')
         self._prepare_list_properties(props)
 
         port = self.neutron().create_port({'port': props})['port']
@@ -238,9 +237,8 @@ class Port(neutron.NeutronResource):
                 if value is None:
                     fixed_ip.pop(key)
             if fixed_ip.get(self.FIXED_IP_SUBNET):
-                neutron_utils.resolve_subnet(
-                    self.neutron(), fixed_ip,
-                    self.FIXED_IP_SUBNET, 'subnet_id')
+                self.client_plugin().resolve_subnet(
+                    fixed_ip, self.FIXED_IP_SUBNET, 'subnet_id')
         # delete empty MAC addresses so that Neutron validation code
         # wouldn't fail as it not accepts Nones
         for pair in props.get(self.ALLOWED_ADDRESS_PAIRS, []):
@@ -249,8 +247,8 @@ class Port(neutron.NeutronResource):
                 del pair[self.ALLOWED_ADDRESS_PAIR_MAC_ADDRESS]
 
         if props.get(self.SECURITY_GROUPS):
-            props[self.SECURITY_GROUPS] = self.get_secgroup_uuids(
-                props.get(self.SECURITY_GROUPS), self.neutron())
+            props[self.SECURITY_GROUPS] = self.client_plugin().\
+                get_secgroup_uuids(props.get(self.SECURITY_GROUPS))
         else:
             props.pop(self.SECURITY_GROUPS, None)
 
@@ -269,16 +267,26 @@ class Port(neutron.NeutronResource):
         client = self.neutron()
         try:
             client.delete_port(self.resource_id)
-        except neutron_exp.NeutronClientException as ex:
-            self._handle_not_found_exception(ex)
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
         else:
             return self._delete_task()
 
-    def _handle_not_found_exception(self, ex):
-        # raise any exception which is not for a not found port
-        if not (ex.status_code == 404 or
-                isinstance(ex, neutron_exp.PortNotFoundClient)):
-            raise ex
+    def _resolve_attribute(self, name):
+        if name == self.SUBNETS_ATTR:
+            subnets = []
+            try:
+                fixed_ips = self._show_resource().get('fixed_ips', [])
+                for fixed_ip in fixed_ips:
+                    subnet_id = fixed_ip.get('subnet_id')
+                    if subnet_id:
+                        subnets.append(self.neutron().show_subnet(
+                            subnet_id)['subnet'])
+            except Exception as ex:
+                LOG.warn(_("Failed to fetch resource attributes: %s") % ex)
+                return
+            return subnets
+        return super(Port, self)._resolve_attribute(name)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         props = self.prepare_update_properties(json_snippet)

@@ -17,12 +17,8 @@ from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources.neutron import neutron
-from heat.engine.resources.neutron import neutron_utils
-from heat.engine.resources import nova_utils
 from heat.engine import scheduler
 from heat.engine import support
-
-from neutronclient.common.exceptions import NeutronClientException
 
 
 class HealthMonitor(neutron.NeutronResource):
@@ -162,8 +158,8 @@ class HealthMonitor(neutron.NeutronResource):
     def handle_delete(self):
         try:
             self.neutron().delete_health_monitor(self.resource_id)
-        except NeutronClientException as ex:
-            self._handle_not_found_exception(ex)
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
         else:
             return self._delete_task()
 
@@ -373,8 +369,8 @@ class Pool(neutron.NeutronResource):
         properties = self.prepare_properties(
             self.properties,
             self.physical_resource_name())
-        neutron_utils.resolve_subnet(
-            self.neutron(), properties, self.SUBNET, 'subnet_id')
+        self.client_plugin().resolve_subnet(
+            properties, self.SUBNET, 'subnet_id')
         vip_properties = properties.pop(self.VIP)
         monitors = properties.pop(self.MONITORS)
         client = self.neutron()
@@ -399,8 +395,7 @@ class Pool(neutron.NeutronResource):
         if vip_arguments.get(self.VIP_SUBNET) is None:
             vip_arguments['subnet_id'] = properties[self.SUBNET_ID]
         else:
-            vip_arguments['subnet_id'] = neutron_utils.resolve_subnet(
-                self.neutron(),
+            vip_arguments['subnet_id'] = self.client_plugin().resolve_subnet(
                 vip_arguments, self.VIP_SUBNET, 'subnet_id')
 
         vip_arguments['pool_id'] = pool['id']
@@ -413,25 +408,32 @@ class Pool(neutron.NeutronResource):
 
     def check_create_complete(self, data):
         attributes = self._show_resource()
-        if attributes['status'] == 'PENDING_CREATE':
+        status = attributes['status']
+        if status == 'PENDING_CREATE':
             return False
-        elif attributes['status'] == 'ACTIVE':
+        elif status == 'ACTIVE':
             vip_attributes = self.neutron().show_vip(
                 self.metadata_get()['vip'])['vip']
-            if vip_attributes['status'] == 'PENDING_CREATE':
+            vip_status = vip_attributes['status']
+            if vip_status == 'PENDING_CREATE':
                 return False
-            elif vip_attributes['status'] == 'ACTIVE':
+            if vip_status == 'ACTIVE':
                 return True
-            raise exception.Error(
-                _('neutron reported unexpected vip resource[%(name)s] '
-                  'status[%(status)s]') %
-                {'name': vip_attributes['name'],
-                 'status': vip_attributes['status']})
-        raise exception.Error(
-            _('neutron reported unexpected pool resource[%(name)s] '
-              'status[%(status)s]') %
-            {'name': attributes['name'],
-             'status': attributes['status']})
+            if vip_status == 'ERROR':
+                raise resource.ResourceInError(
+                    resource_status=vip_status,
+                    status_reason=_('error in vip'))
+            raise resource.ResourceUnknownStatus(
+                resource_status=vip_status,
+                result=_('Pool creation failed due to vip'))
+        elif status == 'ERROR':
+            raise resource.ResourceInError(
+                resource_status=status,
+                status_reason=_('error in pool'))
+        else:
+            raise resource.ResourceUnknownStatus(
+                resource_status=status,
+                result=_('Pool creation failed'))
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
@@ -460,8 +462,8 @@ class Pool(neutron.NeutronResource):
             try:
                 yield
                 client.show_vip(self.metadata_get()['vip'])
-            except NeutronClientException as ex:
-                self._handle_not_found_exception(ex)
+            except Exception as ex:
+                self.client_plugin().ignore_not_found(ex)
                 break
 
     def handle_delete(self):
@@ -469,14 +471,14 @@ class Pool(neutron.NeutronResource):
         if self.metadata_get():
             try:
                 self.neutron().delete_vip(self.metadata_get()['vip'])
-            except NeutronClientException as ex:
-                self._handle_not_found_exception(ex)
+            except Exception as ex:
+                self.client_plugin().ignore_not_found(ex)
             else:
                 checkers.append(scheduler.TaskRunner(self._confirm_vip_delete))
         try:
             self.neutron().delete_pool(self.resource_id)
-        except NeutronClientException as ex:
-            self._handle_not_found_exception(ex)
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
         else:
             checkers.append(scheduler.TaskRunner(self._confirm_delete))
         return checkers
@@ -604,8 +606,8 @@ class PoolMember(neutron.NeutronResource):
         client = self.neutron()
         try:
             client.delete_member(self.resource_id)
-        except NeutronClientException as ex:
-            self._handle_not_found_exception(ex)
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
         else:
             return self._delete_task()
 
@@ -641,14 +643,15 @@ class LoadBalancer(resource.Resource):
         ),
     }
 
+    default_client_name = 'neutron'
+
     def handle_create(self):
         pool = self.properties[self.POOL_ID]
         client = self.neutron()
-        nova_client = self.nova()
         protocol_port = self.properties[self.PROTOCOL_PORT]
 
         for member in self.properties.get(self.MEMBERS):
-            address = nova_utils.server_to_ipaddress(nova_client, member)
+            address = self.client_plugin('nova').server_to_ipaddress(member)
             lb_member = client.create_member({
                 'member': {
                     'pool_id': pool,
@@ -666,15 +669,14 @@ class LoadBalancer(resource.Resource):
                 member_id = rd_members[member]
                 try:
                     client.delete_member(member_id)
-                except NeutronClientException as ex:
-                    if ex.status_code != 404:
-                        raise ex
+                except Exception as ex:
+                    self.client_plugin().ignore_not_found(ex)
                 self.data_delete(member)
             pool = self.properties[self.POOL_ID]
-            nova_client = self.nova()
             protocol_port = self.properties[self.PROTOCOL_PORT]
             for member in members - old_members:
-                address = nova_utils.server_to_ipaddress(nova_client, member)
+                address = self.client_plugin('nova').server_to_ipaddress(
+                    member)
                 lb_member = client.create_member({
                     'member': {
                         'pool_id': pool,
@@ -688,9 +690,8 @@ class LoadBalancer(resource.Resource):
             member_id = self.data().get(member)
             try:
                 client.delete_member(member_id)
-            except NeutronClientException as ex:
-                if ex.status_code != 404:
-                    raise ex
+            except Exception as ex:
+                self.client_plugin().ignore_not_found(ex)
             self.data_delete(member)
 
 

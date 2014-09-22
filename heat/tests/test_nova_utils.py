@@ -14,6 +14,7 @@
 """Tests for :module:'heat.engine.resources.nova_utls'."""
 
 import mock
+import six
 import uuid
 
 from novaclient import exceptions as nova_exceptions
@@ -34,6 +35,10 @@ class NovaUtilsTests(HeatTestCase):
     def setUp(self):
         super(NovaUtilsTests, self).setUp()
         self.nova_client = self.m.CreateMockAnything()
+        self.mock_warnings = mock.patch(
+            'heat.engine.resources.nova_utils.warnings')
+        self.mock_warnings.start()
+        self.addCleanup(self.mock_warnings.stop)
 
     def test_get_ip(self):
         my_image = self.m.CreateMockAnything()
@@ -119,10 +124,18 @@ class NovaUtilsTests(HeatTestCase):
         }
         task = scheduler.TaskRunner(nova_utils.delete_server, server)
         err = self.assertRaises(exception.Error, task)
-        self.assertIn("myserver delete failed: (None) test error", str(err))
+        self.assertIn("myserver delete failed: (None) test error",
+                      six.text_type(err))
 
 
 class NovaUtilsRefreshServerTests(HeatTestCase):
+
+    def setUp(self):
+        super(NovaUtilsRefreshServerTests, self).setUp()
+        self.mock_warnings = mock.patch(
+            'heat.engine.resources.nova_utils.warnings')
+        self.mock_warnings.start()
+        self.addCleanup(self.mock_warnings.stop)
 
     def test_successful_refresh(self):
         server = self.m.CreateMockAnything()
@@ -168,6 +181,10 @@ class NovaUtilsUserdataTests(HeatTestCase):
     def setUp(self):
         super(NovaUtilsUserdataTests, self).setUp()
         self.nova_client = self.m.CreateMockAnything()
+        self.mock_warnings = mock.patch(
+            'heat.engine.resources.nova_utils.warnings')
+        self.mock_warnings.start()
+        self.addCleanup(self.mock_warnings.stop)
 
     def test_build_userdata(self):
         """Tests the build_userdata function."""
@@ -225,6 +242,13 @@ class NovaUtilsUserdataTests(HeatTestCase):
 
 
 class NovaUtilsMetadataTests(HeatTestCase):
+
+    def setUp(self):
+        super(NovaUtilsMetadataTests, self).setUp()
+        self.mock_warnings = mock.patch(
+            'heat.engine.resources.nova_utils.warnings')
+        self.mock_warnings.start()
+        self.addCleanup(self.mock_warnings.stop)
 
     def test_serialize_string(self):
         original = {'test_key': 'simple string value'}

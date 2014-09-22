@@ -11,7 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from heat.common import exception
+from heat.engine import attributes
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources.vpc import VPC
@@ -29,6 +29,10 @@ class Subnet(resource.Resource):
         TAG_KEY, TAG_VALUE,
     ) = (
         'Key', 'Value',
+    )
+
+    ATTRIBUTES = (
+        AVAILABILITY_ZONE,
     )
 
     properties_schema = {
@@ -67,6 +71,14 @@ class Subnet(resource.Resource):
         ),
     }
 
+    attributes_schema = {
+        AVAILABILITY_ZONE: attributes.Schema(
+            _('Availability Zone of the subnet.')
+        ),
+    }
+
+    default_client_name = 'neutron'
+
     def handle_create(self):
         client = self.neutron()
         # TODO(sbaker) Verify that this CidrBlock is within the vpc CidrBlock
@@ -88,8 +100,6 @@ class Subnet(resource.Resource):
         self.resource_id_set(subnet['id'])
 
     def handle_delete(self):
-        from neutronclient.common.exceptions import NeutronClientException
-
         client = self.neutron()
         network_id = self.properties.get(self.VPC_ID)
         subnet_id = self.resource_id
@@ -100,20 +110,17 @@ class Subnet(resource.Resource):
                 client.remove_interface_router(
                     router['id'],
                     {'subnet_id': subnet_id})
-        except NeutronClientException as ex:
-            if ex.status_code != 404:
-                raise ex
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
 
         try:
             client.delete_subnet(subnet_id)
-        except NeutronClientException as ex:
-            if ex.status_code != 404:
-                raise ex
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
 
-    def FnGetAtt(self, key):
-        if key == 'AvailabilityZone':
-            return self.properties.get(key)
-        raise exception.InvalidTemplateAttribute(resource=self.name, key=key)
+    def _resolve_attribute(self, name):
+        if name == self.AVAILABILITY_ZONE:
+            return self.properties.get(self.AVAILABILITY_ZONE)
 
 
 def resource_mapping():

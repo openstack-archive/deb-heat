@@ -19,8 +19,8 @@
 import six
 import webob.exc
 
+from heat.common.i18n import _
 from heat.common import serializers
-from heat.openstack.common.gettextutils import _
 
 
 class HeatAPIException(webob.exc.HTTPError):
@@ -270,6 +270,7 @@ def map_remote_error(ex):
             'ValueError',
             'InvalidTenant',
             'StackNotFound',
+            'ResourceActionNotSupported',
             'ResourceNotFound',
             'ResourceNotAvailable',
             'ResourceTypeNotFound',

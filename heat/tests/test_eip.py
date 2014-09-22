@@ -11,15 +11,18 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import mox
 from neutronclient.v2_0 import client as neutronclient
 from novaclient import exceptions as nova_exceptions
+import six
 
 from heat.common import exception
 from heat.common import template_format
 from heat.engine.clients.os import nova
 from heat.engine import parser
 from heat.engine.resources import eip
+from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
@@ -134,6 +137,23 @@ eip_template_ipassoc3 = '''
 }
 '''
 
+ipassoc_template_validate = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "EIP Test",
+  "Parameters" : {},
+  "Resources" : {
+    "IPAssoc" : {
+      "Type" : "AWS::EC2::EIPAssociation",
+      "Properties" : {
+        "EIP" : '11.0.0.1',
+        "InstanceId" : '1fafbe59-2332-4f5f-bfa4-517b4d6c1b65'
+      }
+    }
+  }
+}
+'''
+
 
 class EIPTest(HeatTestCase):
     def setUp(self):
@@ -188,6 +208,38 @@ class EIPTest(HeatTestCase):
         finally:
             scheduler.TaskRunner(rsrc.destroy)()
 
+        self.m.VerifyAll()
+
+    def test_eip_update(self):
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
+        server_old = self.fc.servers.list()[0]
+        self.fc.servers.get('WebServer').AndReturn(server_old)
+
+        server_update = self.fc.servers.list()[1]
+        self.fc.servers.get('5678').MultipleTimes().AndReturn(server_update)
+
+        self.m.ReplayAll()
+        t = template_format.parse(eip_template)
+        stack = utils.parse_stack(t)
+
+        rsrc = self.create_eip(t, stack, 'IPAddress')
+        self.assertEqual('11.0.0.1', rsrc.FnGetRefId())
+        # update with the new InstanceId
+        props = copy.deepcopy(rsrc.properties.data)
+        update_server_id = '5678'
+        props['InstanceId'] = update_server_id
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(),
+                                                      props)
+        scheduler.TaskRunner(rsrc.update, update_snippet)()
+        self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
+        self.assertEqual('11.0.0.1', rsrc.FnGetRefId())
+        # update without InstanceId
+        props = copy.deepcopy(rsrc.properties.data)
+        props.pop('InstanceId')
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(),
+                                                      props)
+        scheduler.TaskRunner(rsrc.update, update_snippet)()
+        self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
     def test_association_eip(self):
@@ -258,6 +310,50 @@ class EIPTest(HeatTestCase):
         rsrc.handle_delete()
         self.m.VerifyAll()
 
+    def test_delete_eip_successful_if_eip_associate_failed(self):
+        floating_ip = mox.IsA(object)
+        floating_ip.ip = '172.24.4.13'
+        floating_ip.id = '9037272b-6875-42e6-82e9-4342d5925da4'
+
+        self.m.StubOutWithMock(self.fc.floating_ips, 'create')
+        self.fc.floating_ips.create().AndReturn(floating_ip)
+
+        server = self.fc.servers.list()[0]
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
+        self.fc.servers.get('WebServer').MultipleTimes().AndReturn(server)
+
+        self.m.StubOutWithMock(self.fc.servers, 'add_floating_ip')
+        self.fc.servers.add_floating_ip(server, floating_ip.ip, None).\
+            AndRaise(nova_exceptions.BadRequest(400))
+
+        self.m.StubOutWithMock(self.fc.servers, 'remove_floating_ip')
+        msg = ("ClientException: Floating ip 172.24.4.13 is not associated "
+               "with instance 1234.")
+        self.fc.servers.remove_floating_ip(server, floating_ip.ip).\
+            AndRaise(nova_exceptions.ClientException(422, msg))
+        self.m.StubOutWithMock(self.fc.floating_ips, 'delete')
+        self.fc.floating_ips.delete(mox.IsA(object))
+
+        self.m.ReplayAll()
+
+        t = template_format.parse(eip_template)
+        stack = utils.parse_stack(t)
+        resource_name = 'IPAddress'
+        resource_defns = stack.t.resource_definitions(stack)
+        rsrc = eip.ElasticIp(resource_name,
+                             resource_defns[resource_name],
+                             stack)
+
+        self.assertIsNone(rsrc.validate())
+        self.assertRaises(exception.ResourceFailure,
+                          scheduler.TaskRunner(rsrc.create))
+        self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
+
+        # to delete the eip
+        scheduler.TaskRunner(rsrc.delete)()
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
+        self.m.VerifyAll()
+
 
 class AllocTest(HeatTestCase):
 
@@ -280,17 +376,35 @@ class AllocTest(HeatTestCase):
                                'add_gateway_router')
         self.m.StubOutWithMock(neutronclient.Client, 'list_networks')
         self.m.StubOutWithMock(neutronclient.Client, 'list_ports')
-        self.m.StubOutWithMock(neutronclient.Client, 'list_subnets')
         self.m.StubOutWithMock(neutronclient.Client, 'show_network')
         self.m.StubOutWithMock(neutronclient.Client, 'list_routers')
         self.m.StubOutWithMock(neutronclient.Client,
                                'remove_gateway_router')
         self.stub_keystoneclient()
 
+    def _setup_test_stack(self, stack_name):
+        t = template_format.parse(ipassoc_template_validate)
+        template = parser.Template(t)
+        stack = parser.Stack(utils.dummy_context(), stack_name,
+                             template, stack_id='12233',
+                             stack_user_project_id='8888')
+
+        return template, stack
+
+    def _validate_properties(self, stack, template, expected):
+        resource_defns = template.resource_definitions(stack)
+        rsrc = eip.ElasticIpAssociation('validate_eip_ass',
+                                        resource_defns['IPAssoc'],
+                                        stack)
+
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                rsrc.validate)
+        self.assertIn(expected, six.text_type(exc))
+
     def mock_show_network(self):
         vpc_name = utils.PhysName('test_stack', 'the_vpc')
         neutronclient.Client.show_network(
-            'aaaa-netid'
+            '22c26451-cf27-4d48-9031-51f5e397b84e'
         ).AndReturn({"network": {
             "status": "BUILD",
             "subnets": [],
@@ -298,7 +412,7 @@ class AllocTest(HeatTestCase):
             "admin_state_up": False,
             "shared": False,
             "tenant_id": "c1210485b2424d48804aad5d39c61b8f",
-            "id": "aaaa-netid"
+            "id": "22c26451-cf27-4d48-9031-51f5e397b84e"
         }})
 
     def create_eip(self, t, stack, resource_name):
@@ -408,24 +522,6 @@ class AllocTest(HeatTestCase):
                 "device_id": refid
             }]})
 
-    def mock_list_subnets(self):
-        neutronclient.Client.list_subnets(
-            id='mysubnetid-70ec').AndReturn(
-                {'subnets': [{
-                    u'name': u'wp-Subnet-pyjm7bvoi4xw',
-                    u'enable_dhcp': True,
-                    u'network_id': u'aaaa-netid',
-                    u'tenant_id': u'ecf538ec1729478fa1f97f1bf4fdcf7b',
-                    u'dns_nameservers': [],
-                    u'allocation_pools': [{u'start': u'192.168.9.2',
-                                           u'end': u'192.168.9.254'}],
-                    u'host_routes': [],
-                    u'ip_version': 4,
-                    u'gateway_ip': u'192.168.9.1',
-                    u'cidr': u'192.168.9.0/24',
-                    u'id': u'2c339ccd-734a-4acc-9f64-6f0dfe427e2d'
-                }]})
-
     def mock_router_for_vpc(self):
         vpc_name = utils.PhysName('test_stack', 'the_vpc')
         neutronclient.Client.list_routers(name=vpc_name).AndReturn({
@@ -482,7 +578,6 @@ class AllocTest(HeatTestCase):
 
         self.mock_create_floatingip()
         self.mock_list_ports()
-        self.mock_list_subnets()
 
         self.mock_show_floatingip('fc68ea2c-b60b-4b4f-bd82-94ec81110766')
         self.mock_update_floatingip()
@@ -508,7 +603,6 @@ class AllocTest(HeatTestCase):
 
         self.mock_create_floatingip()
         self.mock_list_instance_ports('1fafbe59-2332-4f5f-bfa4-517b4d6c1b65')
-        self.mock_list_subnets()
 
         self.mock_no_router_for_vpc()
         self.mock_update_floatingip(
@@ -527,5 +621,71 @@ class AllocTest(HeatTestCase):
 
         scheduler.TaskRunner(association.delete)()
         scheduler.TaskRunner(rsrc.delete)()
+
+        self.m.VerifyAll()
+
+    def test_validate_properties_EIP_and_AllocationId(self):
+        template, stack = self._setup_test_stack(
+            stack_name='validate_EIP_AllocationId')
+
+        properties = template.t['Resources']['IPAssoc']['Properties']
+        # test with EIP and AllocationId
+        properties['AllocationId'] = 'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        expected = ("Either 'EIP' or 'AllocationId' must be provided.")
+        self._validate_properties(stack, template, expected)
+
+        # test without EIP and AllocationId
+        properties.pop('AllocationId')
+        properties.pop('EIP')
+        self._validate_properties(stack, template, expected)
+
+    def test_validate_EIP_and_InstanceId(self):
+        template, stack = self._setup_test_stack(
+            stack_name='validate_EIP_InstanceId')
+        properties = template.t['Resources']['IPAssoc']['Properties']
+        # test with EIP and no InstanceId
+        properties.pop('InstanceId')
+        expected = ("Must specify 'InstanceId' if you specify 'EIP'.")
+        self._validate_properties(stack, template, expected)
+
+    def test_validate_without_NetworkInterfaceId_and_InstanceId(self):
+        template, stack = self._setup_test_stack(
+            stack_name='validate_EIP_InstanceId')
+
+        properties = template.t['Resources']['IPAssoc']['Properties']
+        # test without NetworkInterfaceId and InstanceId
+        properties.pop('InstanceId')
+        properties.pop('EIP')
+        allocation_id = '1fafbe59-2332-4f5f-bfa4-517b4d6c1b65'
+        properties['AllocationId'] = allocation_id
+        expected = ("Must specify at least one of 'InstanceId' "
+                    "or 'NetworkInterfaceId'.")
+        self._validate_properties(stack, template, expected)
+
+    def test_delete_association_successful_if_create_failed(self):
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
+        server = self.fc.servers.list()[0]
+        self.fc.servers.get('WebServer').MultipleTimes() \
+            .AndReturn(server)
+        self.m.StubOutWithMock(self.fc.servers, 'add_floating_ip')
+        self.fc.servers.add_floating_ip(server, '11.0.0.1').AndRaise(
+            fakes.fake_exception(400))
+        self.m.ReplayAll()
+
+        t = template_format.parse(eip_template_ipassoc)
+        stack = utils.parse_stack(t)
+
+        self.create_eip(t, stack, 'IPAddress')
+        resource_defns = stack.t.resource_definitions(stack)
+        rsrc = eip.ElasticIpAssociation('IPAssoc',
+                                        resource_defns['IPAssoc'],
+                                        stack)
+        self.assertIsNone(rsrc.validate())
+        self.assertRaises(exception.ResourceFailure,
+                          scheduler.TaskRunner(rsrc.create))
+        self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
+
+        scheduler.TaskRunner(rsrc.delete)()
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()

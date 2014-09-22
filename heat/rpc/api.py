@@ -15,10 +15,10 @@ ENGINE_TOPIC = 'engine'
 
 PARAM_KEYS = (
     PARAM_TIMEOUT, PARAM_DISABLE_ROLLBACK, PARAM_ADOPT_STACK_DATA,
-    PARAM_SHOW_DELETED
+    PARAM_SHOW_DELETED, PARAM_SHOW_NESTED
 ) = (
     'timeout_mins', 'disable_rollback', 'adopt_stack_data',
-    'show_deleted'
+    'show_deleted', 'show_nested'
 )
 
 STACK_KEYS = (
@@ -28,7 +28,8 @@ STACK_KEYS = (
     STACK_DESCRIPTION, STACK_TMPL_DESCRIPTION,
     STACK_PARAMETERS, STACK_OUTPUTS, STACK_ACTION,
     STACK_STATUS, STACK_STATUS_DATA, STACK_CAPABILITIES,
-    STACK_DISABLE_ROLLBACK, STACK_TIMEOUT,
+    STACK_DISABLE_ROLLBACK, STACK_TIMEOUT, STACK_OWNER,
+    STACK_PARENT
 ) = (
     'stack_name', 'stack_identity',
     'creation_time', 'updated_time', 'deletion_time',
@@ -36,7 +37,8 @@ STACK_KEYS = (
     'description', 'template_description',
     'parameters', 'outputs', 'stack_action',
     'stack_status', 'stack_status_reason', 'capabilities',
-    'disable_rollback', 'timeout_mins',
+    'disable_rollback', 'timeout_mins', 'stack_owner',
+    'parent'
 )
 
 STACK_OUTPUT_KEYS = (
@@ -181,10 +183,10 @@ VALIDATE_PARAM_KEYS = (
 
 VALIDATE_PARAM_TYPES = (
     PARAM_TYPE_STRING, PARAM_TYPE_NUMBER, PARAM_TYPE_COMMA_DELIMITED_LIST,
-    PARAM_TYPE_JSON
+    PARAM_TYPE_JSON, PARAM_TYPE_BOOLEAN
 ) = (
     'String', 'Number', 'CommaDelimitedList',
-    'Json'
+    'Json', 'Boolean'
 )
 
 SOFTWARE_CONFIG_KEYS = (
@@ -221,6 +223,22 @@ SOFTWARE_DEPLOYMENT_KEYS = (
     'input_values',
     'output_values',
     'action',
+    'status',
+    'status_reason'
+)
+
+SNAPSHOT_KEYS = (
+    SNAPSHOT_ID,
+    SNAPSHOT_NAME,
+    SNAPSHOT_STACK_ID,
+    SNAPSHOT_DATA,
+    SNAPSHOT_STATUS,
+    SNAPSHOT_STATUS_REASON
+) = (
+    'id',
+    'name',
+    'stack_id',
+    'data',
     'status',
     'status_reason'
 )

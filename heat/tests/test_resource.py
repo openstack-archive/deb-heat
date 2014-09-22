@@ -16,9 +16,12 @@ import json
 import uuid
 
 import mock
+from oslo.config import cfg
 import six
 
 from heat.common import exception
+from heat.common import short_id
+from heat.common import timeutils
 from heat.db import api as db_api
 from heat.engine import attributes
 from heat.engine.cfn import functions as cfn_funcs
@@ -52,9 +55,7 @@ class ResourceTest(HeatTestCase):
         self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
                                   parser.Template(empty_template), env=env,
                                   stack_id=str(uuid.uuid4()))
-        self.mock_warnings = mock.patch('heat.engine.resource.warnings')
-        self.mock_warnings.start()
-        self.addCleanup(self.mock_warnings.stop)
+        self.patch('heat.engine.resource.warnings')
 
     def test_get_class_ok(self):
         cls = resource.get_class('GenericResourceType')
@@ -93,7 +94,8 @@ class ResourceTest(HeatTestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                resource.Resource, resource_name,
                                snippet, self.stack)
-        self.assertIn(_('Resource "%s" has no type') % resource_name, str(ex))
+        self.assertIn(_('Resource "%s" has no type') % resource_name,
+                      six.text_type(ex))
 
     def test_state_defaults(self):
         tmpl = rsrc_defn.ResourceDefinition('test_res_def', 'Foo')
@@ -140,6 +142,25 @@ class ResourceTest(HeatTestCase):
         self.assertEqual(res.COMPLETE, res.status)
         self.assertEqual((res.CREATE, res.COMPLETE), res.state)
         self.assertEqual('wibble', res.status_reason)
+
+    def test_physical_resource_name_or_FnGetRefId(self):
+        tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo')
+        res = generic_rsrc.GenericResource('test_resource', tmpl, self.stack)
+        scheduler.TaskRunner(res.create)()
+        self.assertEqual((res.CREATE, res.COMPLETE), res.state)
+
+        # use physical_resource_name when res.id is not None
+        self.assertIsNotNone(res.id)
+        expected = '%s-%s-%s' % (self.stack.name,
+                                 res.name,
+                                 short_id.get_id(res.id))
+        self.assertEqual(expected, res.physical_resource_name_or_FnGetRefId())
+
+        # otherwise use parent method
+        res.id = None
+        self.assertIsNone(res.resource_id)
+        self.assertEqual('test_resource',
+                         res.physical_resource_name_or_FnGetRefId())
 
     def test_prepare_abandon(self):
         tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo')
@@ -390,8 +411,9 @@ class ResourceTest(HeatTestCase):
         before_props = {'Foo': '123'}
         tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo',
                                             before_props)
-        generic_rsrc.ResourceWithProps.properties_schema = \
-            {'Foo': {'Type': 'String', 'Default': '567'}}
+        schema = {'Foo': {'Type': 'String', 'Default': '567'}}
+        self.patchobject(generic_rsrc.ResourceWithProps, 'properties_schema',
+                         new=schema)
         # Here should be used real property to get default value
         new_t = rsrc_defn.ResourceDefinition('test_resource', 'Foo')
         new_res = generic_rsrc.ResourceWithProps('new_res', new_t, self.stack)
@@ -423,6 +445,29 @@ class ResourceTest(HeatTestCase):
                           res.update_template_diff_properties,
                           after_props, before_props)
 
+    def test_update_template_diff_properties_immutable_notsupported(self):
+        before_props = {'Foo': 'bar', 'Parrot': 'dead',
+                        'Spam': 'ham', 'Viking': 'axe'}
+        tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo',
+                                            before_props)
+        schema = {'Foo': {'Type': 'String'},
+                  'Viking': {'Type': 'String', 'Immutable': True},
+                  'Spam': {'Type': 'String', 'Immutable': True},
+                  'Parrot': {'Type': 'String', 'Immutable': True},
+                  }
+        after_props = {'Foo': 'baz', 'Parrot': 'dead',
+                       'Spam': 'eggs', 'Viking': 'sword'}
+
+        self.patchobject(generic_rsrc.ResourceWithProps,
+                         'properties_schema', new=schema)
+        res = generic_rsrc.ResourceWithProps('test_resource', tmpl,
+                                             self.stack)
+        ex = self.assertRaises(exception.NotSupported,
+                               res.update_template_diff_properties,
+                               after_props, before_props)
+        self.assertIn("Update to properties Spam, Viking of",
+                      six.text_type(ex))
+
     def test_resource(self):
         tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo',
                                             {'Foo': 'abc'})
@@ -438,7 +483,7 @@ class ResourceTest(HeatTestCase):
         estr = 'Property error : test_resource: Property Foo not assigned'
         create = scheduler.TaskRunner(res.create)
         err = self.assertRaises(exception.ResourceFailure, create)
-        self.assertIn(estr, str(err))
+        self.assertIn(estr, six.text_type(err))
         self.assertEqual((res.CREATE, res.FAILED), res.state)
 
     def test_create_fail_prop_typo(self):
@@ -450,7 +495,7 @@ class ResourceTest(HeatTestCase):
         estr = 'StackValidationFailed: Unknown Property Food'
         create = scheduler.TaskRunner(res.create)
         err = self.assertRaises(exception.ResourceFailure, create)
-        self.assertIn(estr, str(err))
+        self.assertIn(estr, six.text_type(err))
         self.assertEqual((res.CREATE, res.FAILED), res.state)
 
     def test_create_fail_metadata_parse_error(self):
@@ -472,11 +517,150 @@ class ResourceTest(HeatTestCase):
         res = generic_rsrc.ResourceWithProps(rname, tmpl, self.stack)
         res.id = 'test_res_id'
         (res.action, res.status) = (res.INIT, res.DELETE)
-        self.assertRaises(exception.ResourceFailure, res.create)
+        create = scheduler.TaskRunner(res.create)
+        self.assertRaises(exception.ResourceFailure, create)
         scheduler.TaskRunner(res.destroy)()
         res.state_reset()
         scheduler.TaskRunner(res.create)()
         self.assertEqual((res.CREATE, res.COMPLETE), res.state)
+
+    def test_create_fail_retry(self):
+        tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo',
+                                            {'Foo': 'abc'})
+        res = generic_rsrc.ResourceWithProps('test_resource', tmpl, self.stack)
+        self.m.StubOutWithMock(timeutils, 'retry_backoff_delay')
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_create')
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_delete')
+
+        # first attempt to create fails
+        generic_rsrc.ResourceWithProps.handle_create().AndRaise(
+            resource.ResourceInError(resource_name='test_resource',
+                                     resource_status='ERROR',
+                                     resource_type='GenericResourceType',
+                                     resource_action='CREATE',
+                                     status_reason='just because'))
+        # delete error resource from first attempt
+        generic_rsrc.ResourceWithProps.handle_delete().AndReturn(None)
+
+        # second attempt to create succeeds
+        timeutils.retry_backoff_delay(1, jitter_max=2.0).AndReturn(0.01)
+        generic_rsrc.ResourceWithProps.handle_create().AndReturn(None)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(res.create)()
+        self.assertEqual((res.CREATE, res.COMPLETE), res.state)
+        self.m.VerifyAll()
+
+    def test_create_fail_retry_disabled(self):
+        cfg.CONF.set_override('action_retry_limit', 0)
+        tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo',
+                                            {'Foo': 'abc'})
+        res = generic_rsrc.ResourceWithProps('test_resource', tmpl, self.stack)
+
+        self.m.StubOutWithMock(timeutils, 'retry_backoff_delay')
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_create')
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_delete')
+
+        # attempt to create fails
+        generic_rsrc.ResourceWithProps.handle_create().AndRaise(
+            resource.ResourceInError(resource_name='test_resource',
+                                     resource_status='ERROR',
+                                     resource_type='GenericResourceType',
+                                     resource_action='CREATE',
+                                     status_reason='just because'))
+        self.m.ReplayAll()
+
+        estr = ('ResourceInError: Went to status ERROR due to "just because"')
+        create = scheduler.TaskRunner(res.create)
+        err = self.assertRaises(exception.ResourceFailure, create)
+        self.assertEqual(estr, str(err))
+        self.assertEqual((res.CREATE, res.FAILED), res.state)
+
+        self.m.VerifyAll()
+
+    def test_create_deletes_fail_retry(self):
+        tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo',
+                                            {'Foo': 'abc'})
+        res = generic_rsrc.ResourceWithProps('test_resource', tmpl, self.stack)
+
+        self.m.StubOutWithMock(timeutils, 'retry_backoff_delay')
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_create')
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_delete')
+
+        # first attempt to create fails
+        generic_rsrc.ResourceWithProps.handle_create().AndRaise(
+            resource.ResourceInError(resource_name='test_resource',
+                                     resource_status='ERROR',
+                                     resource_type='GenericResourceType',
+                                     resource_action='CREATE',
+                                     status_reason='just because'))
+        # first attempt to delete fails
+        generic_rsrc.ResourceWithProps.handle_delete().AndRaise(
+            resource.ResourceInError(resource_name='test_resource',
+                                     resource_status='ERROR',
+                                     resource_type='GenericResourceType',
+                                     resource_action='DELETE',
+                                     status_reason='delete failed'))
+        # second attempt to delete fails
+        timeutils.retry_backoff_delay(1, jitter_max=2.0).AndReturn(0.01)
+        generic_rsrc.ResourceWithProps.handle_delete().AndRaise(
+            resource.ResourceInError(resource_name='test_resource',
+                                     resource_status='ERROR',
+                                     resource_type='GenericResourceType',
+                                     resource_action='DELETE',
+                                     status_reason='delete failed again'))
+
+        # third attempt to delete succeeds
+        timeutils.retry_backoff_delay(2, jitter_max=2.0).AndReturn(0.01)
+        generic_rsrc.ResourceWithProps.handle_delete().AndReturn(None)
+
+        # second attempt to create succeeds
+        timeutils.retry_backoff_delay(1, jitter_max=2.0).AndReturn(0.01)
+        generic_rsrc.ResourceWithProps.handle_create().AndReturn(None)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(res.create)()
+        self.assertEqual((res.CREATE, res.COMPLETE), res.state)
+        self.m.VerifyAll()
+
+    def test_creates_fail_retry(self):
+        tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo',
+                                            {'Foo': 'abc'})
+        res = generic_rsrc.ResourceWithProps('test_resource', tmpl, self.stack)
+
+        self.m.StubOutWithMock(timeutils, 'retry_backoff_delay')
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_create')
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_delete')
+
+        # first attempt to create fails
+        generic_rsrc.ResourceWithProps.handle_create().AndRaise(
+            resource.ResourceInError(resource_name='test_resource',
+                                     resource_status='ERROR',
+                                     resource_type='GenericResourceType',
+                                     resource_action='CREATE',
+                                     status_reason='just because'))
+        # delete error resource from first attempt
+        generic_rsrc.ResourceWithProps.handle_delete().AndReturn(None)
+
+        # second attempt to create fails
+        timeutils.retry_backoff_delay(1, jitter_max=2.0).AndReturn(0.01)
+        generic_rsrc.ResourceWithProps.handle_create().AndRaise(
+            resource.ResourceInError(resource_name='test_resource',
+                                     resource_status='ERROR',
+                                     resource_type='GenericResourceType',
+                                     resource_action='CREATE',
+                                     status_reason='just because'))
+        # delete error resource from second attempt
+        generic_rsrc.ResourceWithProps.handle_delete().AndReturn(None)
+
+        # third attempt to create succeeds
+        timeutils.retry_backoff_delay(2, jitter_max=2.0).AndReturn(0.01)
+        generic_rsrc.ResourceWithProps.handle_create().AndReturn(None)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(res.create)()
+        self.assertEqual((res.CREATE, res.COMPLETE), res.state)
+        self.m.VerifyAll()
 
     def test_preview(self):
         tmpl = rsrc_defn.ResourceDefinition('test_resource',
@@ -505,6 +689,9 @@ class ResourceTest(HeatTestCase):
 
         scheduler.TaskRunner(res.update, utmpl)()
         self.assertEqual((res.UPDATE, res.COMPLETE), res.state)
+
+        self.assertEqual({'Foo': 'xyz'}, res._stored_properties_data)
+
         self.m.VerifyAll()
 
     def test_update_replace_with_resource_name(self):
@@ -615,6 +802,39 @@ class ResourceTest(HeatTestCase):
         self.assertRaises(exception.ResourceFailure, updater)
         self.assertEqual((res.UPDATE, res.FAILED), res.state)
         self.m.VerifyAll()
+
+    def test_check_supported(self):
+        tmpl = rsrc_defn.ResourceDefinition('test_res', 'GenericResourceType')
+        res = generic_rsrc.ResourceWithProps('test_res', tmpl, self.stack)
+        res.handle_check = mock.Mock()
+        scheduler.TaskRunner(res.check)()
+
+        self.assertTrue(res.handle_check.called)
+        self.assertEqual(res.CHECK, res.action)
+        self.assertEqual(res.COMPLETE, res.status)
+        self.assertNotIn('not supported', res.status_reason)
+
+    def test_check_not_supported(self):
+        tmpl = rsrc_defn.ResourceDefinition('test_res', 'GenericResourceType')
+        res = generic_rsrc.ResourceWithProps('test_res', tmpl, self.stack)
+        scheduler.TaskRunner(res.check)()
+
+        self.assertIn('not supported', res.status_reason)
+        self.assertEqual(res.CHECK, res.action)
+        self.assertEqual(res.COMPLETE, res.status)
+
+    def test_check_failed(self):
+        tmpl = rsrc_defn.ResourceDefinition('test_res', 'GenericResourceType')
+        res = generic_rsrc.ResourceWithProps('test_res', tmpl, self.stack)
+        res.handle_check = mock.Mock()
+        res.handle_check.side_effect = Exception('boom')
+
+        self.assertRaises(exception.ResourceFailure,
+                          scheduler.TaskRunner(res.check))
+        self.assertTrue(res.handle_check.called)
+        self.assertEqual(res.CHECK, res.action)
+        self.assertEqual(res.FAILED, res.status)
+        self.assertIn('boom', res.status_reason)
 
     def test_suspend_resume_ok(self):
         tmpl = rsrc_defn.ResourceDefinition('test_resource',
@@ -778,15 +998,30 @@ class ResourceTest(HeatTestCase):
                          TestResource.resource_to_template(
                              'Test::Resource::resource'))
 
+    def test_is_using_neutron(self):
+        snippet = rsrc_defn.ResourceDefinition('aresource',
+                                               'GenericResourceType')
+        res = resource.Resource('aresource', snippet, self.stack)
+        self.patch(
+            'heat.engine.clients.os.neutron.NeutronClientPlugin._create')
+        self.assertTrue(res.is_using_neutron())
+
+    def test_is_not_using_neutron(self):
+        snippet = rsrc_defn.ResourceDefinition('aresource',
+                                               'GenericResourceType')
+        res = resource.Resource('aresource', snippet, self.stack)
+        mock_create = self.patch(
+            'heat.engine.clients.os.neutron.NeutronClientPlugin._create')
+        mock_create.side_effect = Exception()
+        self.assertFalse(res.is_using_neutron())
+
 
 class ResourceAdoptTest(HeatTestCase):
     def setUp(self):
         super(ResourceAdoptTest, self).setUp()
         resource._register_class('GenericResourceType',
                                  generic_rsrc.GenericResource)
-        self.mock_warnings = mock.patch('heat.engine.resource.warnings')
-        self.mock_warnings.start()
-        self.addCleanup(self.mock_warnings.stop)
+        self.patch('heat.engine.resource.warnings')
 
     def test_adopt_resource_success(self):
         adopt_data = '{}'
@@ -1066,7 +1301,7 @@ class ResourceDependenciesTest(HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
         ex = self.assertRaises(exception.InvalidTemplateReference,
                                stack.validate)
-        self.assertIn('"baz" (in bar.Properties.Foo)', str(ex))
+        self.assertIn('"baz" (in bar.Properties.Foo)', six.text_type(ex))
 
     def test_getatt(self):
         tmpl = template.Template({
@@ -1222,7 +1457,7 @@ class ResourceDependenciesTest(HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
         ex = self.assertRaises(exception.InvalidTemplateReference,
                                getattr, stack, 'dependencies')
-        self.assertIn('"baz" (in bar.Properties.Foo)', str(ex))
+        self.assertIn('"baz" (in bar.Properties.Foo)', six.text_type(ex))
 
     def test_hot_getatt_fail(self):
         tmpl = template.Template({
@@ -1240,7 +1475,7 @@ class ResourceDependenciesTest(HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
         ex = self.assertRaises(exception.InvalidTemplateReference,
                                getattr, stack, 'dependencies')
-        self.assertIn('"baz" (in bar.Properties.Foo)', str(ex))
+        self.assertIn('"baz" (in bar.Properties.Foo)', six.text_type(ex))
 
     def test_getatt_fail_nested_deep(self):
         tmpl = template.Template({
@@ -1263,7 +1498,8 @@ class ResourceDependenciesTest(HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
         ex = self.assertRaises(exception.InvalidTemplateReference,
                                getattr, stack, 'dependencies')
-        self.assertIn('"baz" (in bar.Properties.Foo.Fn::Join[1][3])', str(ex))
+        self.assertIn('"baz" (in bar.Properties.Foo.Fn::Join[1][3])',
+                      six.text_type(ex))
 
     def test_hot_getatt_fail_nested_deep(self):
         tmpl = template.Template({
@@ -1286,7 +1522,8 @@ class ResourceDependenciesTest(HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
         ex = self.assertRaises(exception.InvalidTemplateReference,
                                getattr, stack, 'dependencies')
-        self.assertIn('"baz" (in bar.Properties.Foo.Fn::Join[1][3])', str(ex))
+        self.assertIn('"baz" (in bar.Properties.Foo.Fn::Join[1][3])',
+                      six.text_type(ex))
 
     def test_dependson(self):
         tmpl = template.Template({
@@ -1341,7 +1578,7 @@ class ResourceDependenciesTest(HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
         ex = self.assertRaises(exception.InvalidTemplateReference,
                                getattr, stack, 'dependencies')
-        self.assertIn('"wibble" (in foo)', str(ex))
+        self.assertIn('"wibble" (in foo)', six.text_type(ex))
 
 
 class MetadataTest(HeatTestCase):
@@ -1360,9 +1597,7 @@ class MetadataTest(HeatTestCase):
 
         scheduler.TaskRunner(self.res.create)()
         self.addCleanup(self.stack.delete)
-        self.mock_warnings = mock.patch('heat.engine.resource.warnings')
-        self.mock_warnings.start()
-        self.addCleanup(self.mock_warnings.stop)
+        self.patch('heat.engine.resource.warnings')
 
     def test_read_initial(self):
         self.assertEqual({'Test': 'Initial metadata'}, self.res.metadata_get())

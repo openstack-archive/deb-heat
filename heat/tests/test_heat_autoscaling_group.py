@@ -13,7 +13,6 @@
 import copy
 import datetime
 import itertools
-import mock
 
 from oslo.config import cfg
 
@@ -41,7 +40,7 @@ class AutoScalingGroupTest(HeatTestCase):
               max_size: 5
               min_size: 1
               resource:
-                type: ResourceWithProps
+                type: ResourceWithPropsAndAttrs
                 properties:
                     Foo: hello
             type: OS::Heat::AutoScalingGroup
@@ -49,8 +48,8 @@ class AutoScalingGroupTest(HeatTestCase):
 
     def setUp(self):
         super(AutoScalingGroupTest, self).setUp()
-        resource._register_class('ResourceWithProps',
-                                 generic_resource.ResourceWithProps)
+        resource._register_class('ResourceWithPropsAndAttrs',
+                                 generic_resource.ResourceWithPropsAndAttrs)
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://server.test:8000/v1/waitcondition')
         self.stub_keystoneclient()
@@ -254,6 +253,17 @@ class AutoScalingGroupTest(HeatTestCase):
         self.assertRaises(exception.StackValidationFailed,
                           stack['my-group'].validate)
 
+    def test_output_attribute_list(self):
+        rsrc = self.create_stack(self.parsed)['my-group']
+        member_names = rsrc.nested().resources.keys()
+        self.assertEqual(member_names, rsrc.FnGetAtt('outputs_list', 'Bar'))
+
+    def test_output_attribute_dict(self):
+        rsrc = self.create_stack(self.parsed)['my-group']
+        member_names = rsrc.nested().resources.keys()
+        self.assertEqual(dict((n, n) for n in member_names),
+                         rsrc.FnGetAtt('outputs', 'Bar'))
+
 
 class HeatScalingGroupWithCFNScalingPolicyTest(HeatTestCase):
     as_template = '''
@@ -313,7 +323,7 @@ class HeatScalingGroupWithCFNScalingPolicyTest(HeatTestCase):
 
 
 class ScalingPolicyTest(HeatTestCase):
-
+    # TODO(Qiming): Add more tests to the scaling policy
     as_template = '''
         heat_template_version: 2013-05-23
         resources:
@@ -436,11 +446,9 @@ class RollingUpdatesTest(HeatTestCase):
             templates = [definitions[name] for name in created_order]
             batches.append(templates)
 
-        patcher = mock.patch.object(
+        self.patchobject(
             stack_resource.StackResource, 'update_with_template',
             side_effect=update_with_template, wraps=rsrc.update_with_template)
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
         props = copy.deepcopy(rsrc.properties.data)
         props['resource']['properties']['Foo'] = 'Hi'

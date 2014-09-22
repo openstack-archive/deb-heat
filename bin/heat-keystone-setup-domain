@@ -55,10 +55,11 @@ logger.debug("AUTH_URL=%s" % AUTH_URL)
 
 
 def main():
-    log_lvl = logging.DEBUG if DEBUG else logging.INFO
+    log_lvl = logging.DEBUG if DEBUG else logging.WARNING
     logging.basicConfig(
         format="%(levelname)s (%(module)s:%(lineno)d) %(message)s",
         level=log_lvl)
+    logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
 
     c = client.Client(debug=DEBUG,
                       username=USERNAME,
@@ -79,6 +80,11 @@ def main():
             logger.error("Unexpected filtered list response, please upgrade "
                          "keystoneclient to >= 0.5")
             sys.exit(1)
+    except kc_exception.Forbidden:
+        logger.error("User '%s' is not authorized to perform this "
+                     "operation, please try with other OS_USERNAME setting." %
+                     USERNAME)
+        sys.exit(1)
 
     # Create heat domain admin user
     if not HEAT_DOMAIN_PASSWORD:

@@ -13,6 +13,7 @@
 
 import collections
 
+from keystoneclient import exceptions as keystone_exc
 from neutronclient.common.exceptions import NeutronClientException
 from neutronclient.v2_0 import client as neutronclient
 from novaclient.v1_1 import security_group_rules as nova_sgr
@@ -23,6 +24,7 @@ from heat.common import template_format
 from heat.engine.clients.os import nova
 from heat.engine import parser
 from heat.engine import scheduler
+from heat.engine import template
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 from heat.tests.v1_1 import fakes
@@ -143,15 +145,19 @@ Resources:
             neutronclient.Client, 'delete_security_group_rule')
         self.m.StubOutWithMock(neutronclient.Client, 'delete_security_group')
 
-    def create_stack(self, template):
-        t = template_format.parse(template)
-        self.stack = self.parse_stack(t)
+    def mock_no_neutron(self):
+        mock_create = self.patch(
+            'heat.engine.clients.os.neutron.NeutronClientPlugin._create')
+        mock_create.side_effect = keystone_exc.EndpointNotFound()
+
+    def create_stack(self, templ):
+        self.stack = self.parse_stack(template_format.parse(templ))
         self.assertIsNone(self.stack.create())
         return self.stack
 
     def parse_stack(self, t):
         stack_name = 'test_stack'
-        tmpl = parser.Template(t)
+        tmpl = template.Template(t)
         stack = parser.Stack(utils.dummy_context(), stack_name, tmpl)
         stack.store()
         return stack
@@ -165,6 +171,7 @@ Resources:
 
     def test_security_group_nova(self):
         #create script
+        self.mock_no_neutron()
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         nova_sg.SecurityGroupManager.list().AndReturn([NovaSG(
             id=1,
@@ -257,6 +264,7 @@ Resources:
 
     def test_security_group_nova_bad_source_group(self):
         #create script
+        self.mock_no_neutron()
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         nova_sg.SecurityGroupManager.list().AndReturn([NovaSG(
             id=1,
@@ -321,6 +329,7 @@ Resources:
 
     def test_security_group_client_exception(self):
         #create script
+        self.mock_no_neutron()
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         sg_name = utils.PhysName('test_stack', 'the_sg')
         nova_sg.SecurityGroupManager.list().AndReturn([
@@ -429,6 +438,7 @@ Resources:
         self.m.VerifyAll()
 
     def test_security_group_nova_with_egress_rules(self):
+        self.mock_no_neutron()
         t = template_format.parse(self.test_template_nova_with_egress)
         stack = self.parse_stack(t)
 

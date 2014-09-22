@@ -11,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import six
 import uuid
 
 import mock
@@ -19,7 +20,7 @@ from heat.common import exception
 from heat.common import template_format
 from heat.engine import resource
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 
 from ..resources import cloudnetworks  # noqa
@@ -74,7 +75,7 @@ class FakeClient(object):
 
 
 @mock.patch.object(cloudnetworks.CloudNetwork, "cloud_networks")
-class CloudNetworkTest(HeatTestCase):
+class CloudNetworkTest(common.HeatTestCase):
 
     _template = template_format.parse("""
     heat_template_version: 2013-05-23
@@ -120,7 +121,7 @@ class CloudNetworkTest(HeatTestCase):
         self._parse_stack()
         exc = self.assertRaises(exception.StackValidationFailed,
                                 self.stack.validate)
-        self.assertIn("Invalid cidr", str(exc))
+        self.assertIn("Invalid cidr", six.text_type(exc))
 
     def test_delete(self, mock_client):
         self._setup_stack(mock_client)
@@ -129,7 +130,7 @@ class CloudNetworkTest(HeatTestCase):
         scheduler.TaskRunner(res.delete)()
         self.assertEqual((res.DELETE, res.COMPLETE), res.state)
         exc = self.assertRaises(NotFound, self.fake_cnw.get, res_id)
-        self.assertIn(res_id, str(exc))
+        self.assertIn(res_id, six.text_type(exc))
 
     def test_delete_not_complete(self, mock_client):
         self._setup_stack(mock_client)

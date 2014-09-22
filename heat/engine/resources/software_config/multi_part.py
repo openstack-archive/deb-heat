@@ -16,7 +16,6 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import os
 
-from heat.common import exception
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.software_config import software_config
@@ -57,7 +56,7 @@ class MultipartMime(software_config.SoftwareConfig):
     properties_schema = {
         PARTS: properties.Schema(
             properties.Schema.LIST,
-            _('Parts belonging to this messsage.'),
+            _('Parts belonging to this message.'),
             default=[],
             schema=properties.Schema(
                 properties.Schema.MAP,
@@ -106,9 +105,9 @@ class MultipartMime(software_config.SoftwareConfig):
             part_type = item.get(self.TYPE, self.TEXT)
             part = config
             try:
-                part = self.get_software_config(self.heat(), config)
-            except exception.SoftwareConfigMissing:
-                pass
+                part = self.heat().software_configs.get(config).config
+            except Exception as ex:
+                self.client_plugin().ignore_not_found(ex)
 
             if part_type == self.MULTIPART:
                 self._append_multiparts(subparts, part)

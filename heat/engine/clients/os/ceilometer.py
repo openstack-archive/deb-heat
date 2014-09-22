@@ -12,11 +12,15 @@
 #    under the License.
 
 from ceilometerclient import client as cc
+from ceilometerclient import exc
+from ceilometerclient.openstack.common.apiclient import exceptions as api_exc
 
 from heat.engine.clients import client_plugin
 
 
 class CeilometerClientPlugin(client_plugin.ClientPlugin):
+
+    exceptions_module = [exc, api_exc]
 
     def _create(self):
 
@@ -37,3 +41,9 @@ class CeilometerClientPlugin(client_plugin.ClientPlugin):
         }
 
         return cc.Client('2', endpoint, **args)
+
+    def is_not_found(self, ex):
+        return isinstance(ex, (exc.HTTPNotFound, api_exc.NotFound))
+
+    def is_over_limit(self, ex):
+        return isinstance(ex, exc.HTTPOverLimit)

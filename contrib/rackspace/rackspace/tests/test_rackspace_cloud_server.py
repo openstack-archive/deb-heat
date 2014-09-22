@@ -13,18 +13,18 @@
 
 import mock
 import mox
+from oslo.config import cfg
+import six
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine.clients.os import glance
-from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
-from heat.engine.resources import glance_utils
 from heat.engine import scheduler
+from heat.engine import template
 from heat.openstack.common import uuidutils
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 from heat.tests.v1_1 import fakes
 
@@ -56,41 +56,45 @@ wp_template = '''
 }
 '''
 
+cfg.CONF.import_opt('region_name_for_services', 'heat.common.config')
 
-class CloudServersTest(HeatTestCase):
+
+class CloudServersTest(common.HeatTestCase):
     def setUp(self):
         super(CloudServersTest, self).setUp()
+        cfg.CONF.set_override('region_name_for_services', 'RegionOne')
+        self.ctx = utils.dummy_context()
+
         self.fc = fakes.FakeClient()
+        mock_nova_create = mock.Mock()
+        self.ctx.clients.client_plugin(
+            'nova')._create = mock_nova_create
+        mock_nova_create.return_value = self.fc
+
+        self.stub_keystoneclient()
         # Test environment may not have pyrax client library installed and if
         # pyrax is not installed resource class would not be registered.
         # So register resource provider class explicitly for unit testing.
         resource._register_class("Rackspace::Cloud::Server",
                                  cloud_server.CloudServer)
 
-    def _mock_get_image_id_success(self, imageId_input, imageId):
-        g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
-        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
-            g_cli_mock)
-        self.m.StubOutWithMock(glance_utils, 'get_image_id')
-        glance_utils.get_image_id(g_cli_mock, imageId_input).MultipleTimes().\
-            AndReturn(imageId)
+    def _mock_get_image_id_success(self, imageId):
+        self.mock_get_image = mock.Mock()
+        self.ctx.clients.client_plugin(
+            'glance').get_image_id = self.mock_get_image
+        self.mock_get_image.return_value = imageId
 
     def _stub_server_validate(self, server, imageId_input, image_id):
-        # stub nova validate
-        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
-
         # stub glance image validate
-        self._mock_get_image_id_success(imageId_input, image_id)
+        self._mock_get_image_id_success(image_id)
 
     def _setup_test_stack(self, stack_name):
         t = template_format.parse(wp_template)
-        template = parser.Template(t)
-        stack = parser.Stack(utils.dummy_context(), stack_name, template,
+        templ = template.Template(t)
+        stack = parser.Stack(self.ctx, stack_name, templ,
                              environment.Environment({'key_name': 'test'}),
                              stack_id=uuidutils.generate_uuid())
-        return (template, stack)
+        return (templ, stack)
 
     def _setup_test_server(self, return_server, name, image_id=None,
                            override_name=False, stub_create=True, exit_code=0):
@@ -174,7 +178,8 @@ class CloudServersTest(HeatTestCase):
         self.m.ReplayAll()
         create = scheduler.TaskRunner(server.create)
         exc = self.assertRaises(exception.ResourceFailure, create)
-        self.assertEqual('Error: RackConnect automation FAILED', str(exc))
+        self.assertEqual('Error: RackConnect automation FAILED',
+                         six.text_type(exc))
 
     def test_rackconnect_unprocessable(self):
         return_server = self.fc.servers.list()[1]
@@ -205,7 +210,7 @@ class CloudServersTest(HeatTestCase):
         create = scheduler.TaskRunner(server.create)
         exc = self.assertRaises(exception.ResourceFailure, create)
         self.assertEqual('Error: Unknown RackConnect automation status: FOO',
-                         str(exc))
+                         six.text_type(exc))
 
     def test_rackconnect_deploying(self):
         return_server = self.fc.servers.list()[0]
@@ -303,7 +308,8 @@ class CloudServersTest(HeatTestCase):
         self.m.ReplayAll()
         create = scheduler.TaskRunner(server.create)
         exc = self.assertRaises(exception.ResourceFailure, create)
-        self.assertEqual('Error: Managed Cloud automation failed', str(exc))
+        self.assertEqual('Error: Managed Cloud automation failed',
+                         six.text_type(exc))
 
     def test_managed_cloud_unknown(self):
         return_server = self.fc.servers.list()[1]
@@ -317,13 +323,11 @@ class CloudServersTest(HeatTestCase):
         create = scheduler.TaskRunner(server.create)
         exc = self.assertRaises(exception.ResourceFailure, create)
         self.assertEqual('Error: Unknown Managed Cloud automation status: FOO',
-                         str(exc))
+                         six.text_type(exc))
 
-    @mock.patch.object(nova.NovaClientPlugin, '_create')
     @mock.patch.object(resource.Resource, 'data_set')
     def test_create_store_admin_pass_resource_data(self,
-                                                   mock_data_set,
-                                                   mock_create):
+                                                   mock_data_set):
         self._mock_metadata_os_distro()
         return_server = self.fc.servers.list()[1]
         return_server.adminPass = 'autogenerated'
@@ -335,19 +339,15 @@ class CloudServersTest(HeatTestCase):
         server = cloud_server.CloudServer('WebServer',
                                           resource_defns['WebServer'], stack)
 
-        mock_create.return_value = self.fc
         self.fc.servers.create = mock.Mock(return_value=return_server)
-        self._mock_get_image_id_success('CentOS 5.2', 'image_id')
+        self._mock_get_image_id_success('image_id')
         scheduler.TaskRunner(server.create)()
         expected_call = mock.call(server.ADMIN_PASS,
                                   'autogenerated', redact=True)
         self.assertIn(expected_call, mock_data_set.call_args_list)
 
-    @mock.patch.object(nova.NovaClientPlugin, '_create')
     @mock.patch.object(resource.Resource, 'data_set')
-    def test_create_save_admin_pass_is_false(self,
-                                             mock_data_set,
-                                             mock_create):
+    def test_create_save_admin_pass_is_false(self, mock_data_set):
         self._mock_metadata_os_distro()
         return_server = self.fc.servers.list()[1]
         return_server.adminPass = 'autogenerated'
@@ -359,19 +359,16 @@ class CloudServersTest(HeatTestCase):
         server = cloud_server.CloudServer('WebServer',
                                           resource_defns['WebServer'], stack)
 
-        mock_create.return_value = self.fc
         self.fc.servers.create = mock.Mock(return_value=return_server)
-        self._mock_get_image_id_success('CentOS 5.2', 'image_id')
+        self._mock_get_image_id_success('image_id')
         scheduler.TaskRunner(server.create)()
         expected_call = mock.call(mock.ANY, server.ADMIN_PASS,
                                   mock.ANY, mock.ANY)
         self.assertNotIn(expected_call, mock_data_set.call_args_list)
 
-    @mock.patch.object(nova.NovaClientPlugin, '_create')
     @mock.patch.object(resource.Resource, 'data_set')
     def test_create_save_admin_pass_defaults_to_false(self,
-                                                      mock_data_set,
-                                                      mock_create):
+                                                      mock_data_set):
         self._mock_metadata_os_distro()
         return_server = self.fc.servers.list()[1]
         return_server.adminPass = 'autogenerated'
@@ -383,19 +380,17 @@ class CloudServersTest(HeatTestCase):
         server = cloud_server.CloudServer('WebServer',
                                           resource_defns['WebServer'], stack)
 
-        mock_create.return_value = self.fc
         self.fc.servers.create = mock.Mock(return_value=return_server)
-        self._mock_get_image_id_success('CentOS 5.2', 'image_id')
+        self._mock_get_image_id_success('image_id')
+
         scheduler.TaskRunner(server.create)()
         expected_call = mock.call(mock.ANY, server.ADMIN_PASS,
                                   mock.ANY, mock.ANY)
         self.assertNotIn(expected_call, mock_data_set.call_args_list)
 
-    @mock.patch.object(nova.NovaClientPlugin, '_create')
     @mock.patch.object(resource.Resource, 'data_set')
     def test_create_without_adminPass_attribute(self,
-                                                mock_data_set,
-                                                mock_create):
+                                                mock_data_set):
         self._mock_metadata_os_distro()
         return_server = self.fc.servers.list()[1]
         stack_name = 'admin_pass_s'
@@ -405,9 +400,9 @@ class CloudServersTest(HeatTestCase):
         server = cloud_server.CloudServer('WebServer',
                                           resource_defns['WebServer'], stack)
 
-        mock_create.return_value = self.fc
         self.fc.servers.create = mock.Mock(return_value=return_server)
-        self._mock_get_image_id_success('CentOS 5.2', 'image_id')
+        self._mock_get_image_id_success('image_id')
+
         scheduler.TaskRunner(server.create)()
         expected_call = mock.call(mock.ANY, server.ADMIN_PASS,
                                   mock.ANY, redact=mock.ANY)
@@ -435,9 +430,7 @@ class CloudServersTest(HeatTestCase):
                                           resource_defns['WebServer'], stack)
         self.assertEqual('foo', server.FnGetAtt('admin_pass'))
 
-    @mock.patch.object(nova.NovaClientPlugin, '_create')
-    def _test_server_config_drive(self, user_data, config_drive, result,
-                                  mock_create):
+    def _test_server_config_drive(self, user_data, config_drive, result):
         return_server = self.fc.servers.list()[1]
         stack_name = 'no_user_data'
         (tmpl, stack) = self._setup_test_stack(stack_name)
@@ -447,11 +440,10 @@ class CloudServersTest(HeatTestCase):
         resource_defns = tmpl.resource_definitions(stack)
         server = cloud_server.CloudServer('WebServer',
                                           resource_defns['WebServer'], stack)
-        mock_create.return_value = self.fc
         mock_servers_create = mock.Mock(return_value=return_server)
         self.fc.servers.create = mock_servers_create
         image_id = mock.ANY
-        self._mock_get_image_id_success('CentOS 5.2', image_id)
+        self._mock_get_image_id_success(image_id)
         scheduler.TaskRunner(server.create)()
         mock_servers_create.assert_called_with(
             image=image_id,

@@ -18,6 +18,7 @@ import os
 
 from oslo.config import cfg
 from oslo import messaging
+import requests
 import six
 import warnings
 import webob
@@ -38,8 +39,10 @@ from heat.engine import properties
 from heat.engine import resource
 from heat.engine import resources
 from heat.engine import stack_lock
+from heat.engine import template as templatem
 from heat.engine import watchrule
 from heat.openstack.common.gettextutils import _
+from heat.openstack.common import jsonutils
 from heat.openstack.common import log as logging
 from heat.openstack.common import service
 from heat.openstack.common import threadgroup
@@ -357,7 +360,7 @@ class EngineService(service.Service):
 
         # Wait for all active threads to be finished
         for stack_id in self.thread_group_mgr.groups.keys():
-            # Ingore dummy service task
+            # Ignore dummy service task
             if stack_id == cfg.CONF.periodic_interval:
                 continue
             LOG.info(_("Waiting stack %s processing to be finished")
@@ -436,7 +439,7 @@ class EngineService(service.Service):
     @request_context
     def list_stacks(self, cnxt, limit=None, marker=None, sort_keys=None,
                     sort_dir=None, filters=None, tenant_safe=True,
-                    show_deleted=False):
+                    show_deleted=False, show_nested=False):
         """
         The list_stacks method returns attributes of all stacks.  It supports
         pagination (``limit`` and ``marker``), sorting (``sort_keys`` and
@@ -450,27 +453,31 @@ class EngineService(service.Service):
         :param filters: a dict with attribute:value to filter the list
         :param tenant_safe: if true, scope the request by the current tenant
         :param show_deleted: if true, show soft-deleted stacks
+        :param show_nested: if true, show nested stacks
         :returns: a list of formatted stacks
         """
         stacks = parser.Stack.load_all(cnxt, limit, marker, sort_keys,
                                        sort_dir, filters, tenant_safe,
-                                       show_deleted, resolve_data=False)
+                                       show_deleted, resolve_data=False,
+                                       show_nested=show_nested)
         return [api.format_stack(stack) for stack in stacks]
 
     @request_context
     def count_stacks(self, cnxt, filters=None, tenant_safe=True,
-                     show_deleted=False):
+                     show_deleted=False, show_nested=False):
         """
         Return the number of stacks that match the given filters
-        :param ctxt: RPC context.
+        :param cnxt: RPC context.
         :param filters: a dict of ATTR:VALUE to match against stacks
         :param tenant_safe: if true, scope the request by the current tenant
         :param show_deleted: if true, count will include the deleted stacks
+        :param show_nested: if true, count will include nested stacks
         :returns: a integer representing the number of matched stacks
         """
         return db_api.stack_count_all(cnxt, filters=filters,
                                       tenant_safe=tenant_safe,
-                                      show_deleted=show_deleted)
+                                      show_deleted=show_deleted,
+                                      show_nested=show_nested)
 
     def _validate_deferred_auth_context(self, cnxt, stack):
         if cfg.CONF.deferred_auth_method != 'password':
@@ -500,13 +507,15 @@ class EngineService(service.Service):
             raise exception.RequestLimitExceeded(message=message)
 
     def _parse_template_and_validate_stack(self, cnxt, stack_name, template,
-                                           params, files, args):
-        tmpl = parser.Template(template, files=files)
+                                           params, files, args, owner_id=None):
+        tmpl = templatem.Template(template, files=files)
         self._validate_new_stack(cnxt, stack_name, tmpl)
 
         common_params = api.extract_args(args)
         env = environment.Environment(params)
-        stack = parser.Stack(cnxt, stack_name, tmpl, env, **common_params)
+        stack = parser.Stack(cnxt, stack_name, tmpl, env,
+                             owner_id=owner_id,
+                             **common_params)
 
         self._validate_deferred_auth_context(cnxt, stack)
         stack.validate()
@@ -539,7 +548,8 @@ class EngineService(service.Service):
         return api.format_stack_preview(stack)
 
     @request_context
-    def create_stack(self, cnxt, stack_name, template, params, files, args):
+    def create_stack(self, cnxt, stack_name, template, params, files, args,
+                     owner_id=None):
         """
         The create_stack method creates a new stack using the template
         provided.
@@ -552,10 +562,16 @@ class EngineService(service.Service):
         :param params: Stack Input Params
         :param files: Files referenced from the template
         :param args: Request parameters/args passed from API
+        :param owner_id: parent stack ID for nested stacks, only expected when
+                         called from another heat-engine (not a user option)
         """
         LOG.info(_('Creating stack %s') % stack_name)
 
         def _stack_create(stack):
+
+            if not stack.stack_user_project_id:
+                stack.create_stack_user_project_id()
+
             # Create/Adopt a stack, and create the periodic task if successful
             if stack.adopt_stack_data:
                 stack.adopt()
@@ -568,14 +584,15 @@ class EngineService(service.Service):
                     # Schedule a periodic watcher task for this stack
                     self.stack_watch.start_watch_task(stack.id, cnxt)
             else:
-                LOG.warning(_("Stack create failed, status %s") % stack.status)
+                LOG.info(_("Stack create failed, status %s") % stack.status)
 
         stack = self._parse_template_and_validate_stack(cnxt,
                                                         stack_name,
                                                         template,
                                                         params,
                                                         files,
-                                                        args)
+                                                        args,
+                                                        owner_id)
 
         stack.store()
 
@@ -612,7 +629,7 @@ class EngineService(service.Service):
 
         # Now parse the template and any parameters for the updated
         # stack definition.
-        tmpl = parser.Template(template, files=files)
+        tmpl = templatem.Template(template, files=files)
         if len(tmpl[tmpl.RESOURCES]) > cfg.CONF.max_resources_per_stack:
             raise exception.RequestLimitExceeded(
                 message=exception.StackResourceLimitExceeded.msg_fmt)
@@ -650,7 +667,7 @@ class EngineService(service.Service):
             msg = _("No Template provided.")
             return webob.exc.HTTPBadRequest(explanation=msg)
 
-        tmpl = parser.Template(template)
+        tmpl = templatem.Template(template)
 
         # validate overall template
         try:
@@ -668,7 +685,7 @@ class EngineService(service.Service):
             if ResourceClass == resources.template_resource.TemplateResource:
                 # we can't validate a TemplateResource unless we instantiate
                 # it as we need to download the template and convert the
-                # paramerters into properties_schema.
+                # parameters into properties_schema.
                 continue
 
             props = properties.Properties(ResourceClass.properties_schema,
@@ -901,7 +918,7 @@ class EngineService(service.Service):
         - The user must map to a User resource defined in the requested stack
         - The user resource must validate OK against any Policy specified
         '''
-        # first check whether access is allowd by context user_id
+        # first check whether access is allowed by context user_id
         if stack.access_allowed(cnxt.user_id, resource_name):
             return True
 
@@ -966,6 +983,8 @@ class EngineService(service.Service):
             if res.name != resource_name and res.id is not None:
                 res.metadata_update()
 
+        return resource.metadata_get()
+
     @request_context
     def find_physical_resource(self, cnxt, physical_resource_id):
         """
@@ -993,12 +1012,12 @@ class EngineService(service.Service):
         stack = parser.Stack.load(cnxt, stack=s)
 
         return [api.format_stack_resource(resource)
-                for name, resource in stack.iteritems()
+                for name, resource in six.iteritems(stack)
                 if resource_name is None or name == resource_name]
 
     @request_context
     def list_stack_resources(self, cnxt, stack_identity, nested_depth=0):
-        s = self._get_stack(cnxt, stack_identity)
+        s = self._get_stack(cnxt, stack_identity, show_deleted=True)
         stack = parser.Stack.load(cnxt, stack=s)
         depth = min(nested_depth, cfg.CONF.max_nested_stack_depth)
 
@@ -1036,11 +1055,79 @@ class EngineService(service.Service):
                                               _stack_resume, stack)
 
     @request_context
+    def stack_snapshot(self, cnxt, stack_identity, name):
+        def _stack_snapshot(stack, snapshot):
+            LOG.debug("snapshotting stack %s" % stack.name)
+            stack.snapshot()
+            data = stack.prepare_abandon()
+            db_api.snapshot_update(
+                cnxt,
+                snapshot.id,
+                {'data': data, 'status': stack.status,
+                 'status_reason': stack.status_reason})
+
+        s = self._get_stack(cnxt, stack_identity)
+
+        stack = parser.Stack.load(cnxt, stack=s)
+
+        lock = stack_lock.StackLock(cnxt, stack, self.engine_id)
+
+        with lock.thread_lock(stack.id):
+            snapshot = db_api.snapshot_create(cnxt, {
+                'tenant': cnxt.tenant_id,
+                'name': name,
+                'stack_id': stack.id,
+                'status': 'IN_PROGRESS'})
+            self.thread_group_mgr.start_with_acquired_lock(
+                stack, lock, _stack_snapshot, stack, snapshot)
+            return api.format_snapshot(snapshot)
+
+    @request_context
+    def show_snapshot(self, cnxt, stack_identity, snapshot_id):
+        snapshot = db_api.snapshot_get(cnxt, snapshot_id)
+        return api.format_snapshot(snapshot)
+
+    @request_context
+    def delete_snapshot(self, cnxt, stack_identity, snapshot_id):
+        def _delete_snapshot(stack, snapshot):
+            stack.delete_snapshot(snapshot)
+            db_api.snapshot_delete(cnxt, snapshot_id)
+
+        s = self._get_stack(cnxt, stack_identity)
+        stack = parser.Stack.load(cnxt, stack=s)
+        snapshot = db_api.snapshot_get(cnxt, snapshot_id)
+        self.thread_group_mgr.start(
+            stack.id, _delete_snapshot, stack, snapshot)
+
+    @request_context
+    def stack_check(self, cnxt, stack_identity):
+        '''
+        Handle request to perform a check action on a stack
+        '''
+        s = self._get_stack(cnxt, stack_identity)
+        stack = parser.Stack.load(cnxt, stack=s)
+        LOG.info(_("Checking stack %s") % stack.name)
+
+        self.thread_group_mgr.start_with_lock(cnxt, stack, self.engine_id,
+                                              stack.check)
+
+    @request_context
+    def stack_list_snapshots(self, cnxt, stack_identity):
+        s = self._get_stack(cnxt, stack_identity)
+        data = db_api.snapshot_get_all(cnxt, s.id)
+        return [api.format_snapshot(snapshot) for snapshot in data]
+
+    @request_context
     def metadata_update(self, cnxt, stack_identity,
                         resource_name, metadata):
         """
         Update the metadata for the given resource.
+        DEPRECATED: Use resource_signal instead
         """
+        warnings.warn('metadata_update is deprecated, '
+                      'use resource_signal instead',
+                      DeprecationWarning)
+
         s = self._get_stack(cnxt, stack_identity)
 
         stack = parser.Stack.load(cnxt, stack=s)
@@ -1210,11 +1297,21 @@ class EngineService(service.Service):
 
     def _push_metadata_software_deployments(self, cnxt, server_id):
         rs = db_api.resource_get_by_physical_resource_id(cnxt, server_id)
-        if rs:
-            deployments = self.metadata_software_deployments(cnxt, server_id)
-            md = rs.rsrc_metadata or {}
-            md['deployments'] = deployments
-            rs.update_and_save({'rsrc_metadata': md})
+        if not rs:
+            return
+        deployments = self.metadata_software_deployments(cnxt, server_id)
+        md = rs.rsrc_metadata or {}
+        md['deployments'] = deployments
+        rs.update_and_save({'rsrc_metadata': md})
+
+        metadata_put_url = None
+        for rd in rs.data:
+            if rd.key == 'metadata_put_url':
+                metadata_put_url = rd.value
+                break
+        if metadata_put_url:
+            json_md = jsonutils.dumps(md)
+            requests.put(metadata_put_url, json_md)
 
     @request_context
     def show_software_deployment(self, cnxt, deployment_id):

@@ -14,9 +14,7 @@
 from heat.common import template_format
 from heat.engine.clients.os import glance
 from heat.engine.clients.os import nova
-from heat.engine.resources import glance_utils
 from heat.engine.resources import instance as instances
-from heat.engine.resources import nova_utils
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
@@ -62,22 +60,19 @@ class nokeyTest(HeatTestCase):
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
-        g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
-        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
-            g_cli_mock)
-        self.m.StubOutWithMock(glance_utils, 'get_image_id')
-        glance_utils.get_image_id(g_cli_mock, 'CentOS 5.2').MultipleTimes().\
-            AndReturn(1)
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image_id')
+        glance.GlanceClientPlugin.get_image_id(
+            'CentOS 5.2').MultipleTimes().AndReturn(1)
 
         # need to resolve the template functions
-        server_userdata = nova_utils.build_userdata(
-            instance,
+        metadata = instance.metadata_get()
+        server_userdata = instance.client_plugin().build_userdata(
+            metadata,
             instance.t['Properties']['UserData'],
             'ec2-user')
-        self.m.StubOutWithMock(nova_utils, 'build_userdata')
-        nova_utils.build_userdata(
-            instance,
+        self.m.StubOutWithMock(nova.NovaClientPlugin, 'build_userdata')
+        nova.NovaClientPlugin.build_userdata(
+            metadata,
             instance.t['Properties']['UserData'],
             'ec2-user').AndReturn(server_userdata)
 
@@ -87,7 +82,8 @@ class nokeyTest(HeatTestCase):
             name=utils.PhysName(stack_name, instance.name),
             security_groups=None,
             userdata=server_userdata, scheduler_hints=None,
-            meta=None, nics=None, availability_zone=None).AndReturn(
+            meta=None, nics=None, availability_zone=None,
+            block_device_mapping=None).AndReturn(
                 self.fc.servers.list()[1])
         self.m.ReplayAll()
 

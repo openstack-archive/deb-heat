@@ -25,18 +25,14 @@ supported backend.
 '''
 
 from oslo.config import cfg
-
-from heat.openstack.common.db import api as db_api
+from oslo.db import api
 
 CONF = cfg.CONF
-CONF.import_opt('backend', 'heat.openstack.common.db.options',
-                group='database')
 
 
 _BACKEND_MAPPING = {'sqlalchemy': 'heat.db.sqlalchemy.api'}
 
-IMPL = db_api.DBAPI(CONF.database.backend, backend_mapping=_BACKEND_MAPPING,
-                    lazy=True)
+IMPL = api.DBAPI.from_config(CONF, backend_mapping=_BACKEND_MAPPING)
 
 
 def get_engine():
@@ -128,10 +124,10 @@ def stack_get_by_name(context, stack_name):
 
 def stack_get_all(context, limit=None, sort_keys=None, marker=None,
                   sort_dir=None, filters=None, tenant_safe=True,
-                  show_deleted=False):
+                  show_deleted=False, show_nested=False):
     return IMPL.stack_get_all(context, limit, sort_keys,
                               marker, sort_dir, filters, tenant_safe,
-                              show_deleted)
+                              show_deleted, show_nested)
 
 
 def stack_get_all_by_owner_id(context, owner_id):
@@ -139,10 +135,11 @@ def stack_get_all_by_owner_id(context, owner_id):
 
 
 def stack_count_all(context, filters=None, tenant_safe=True,
-                    show_deleted=False):
+                    show_deleted=False, show_nested=False):
     return IMPL.stack_count_all(context, filters=filters,
                                 tenant_safe=tenant_safe,
-                                show_deleted=show_deleted)
+                                show_deleted=show_deleted,
+                                show_nested=show_nested)
 
 
 def stack_create(context, values):
@@ -299,6 +296,10 @@ def snapshot_update(context, snapshot_id, values):
 
 def snapshot_delete(context, snapshot_id):
     return IMPL.snapshot_delete(context, snapshot_id)
+
+
+def snapshot_get_all(context, stack_id):
+    return IMPL.snapshot_get_all(context, stack_id)
 
 
 def db_sync(engine, version=None):

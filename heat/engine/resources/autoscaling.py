@@ -16,22 +16,20 @@ import math
 
 import six
 
+from heat.common import environment_format
 from heat.common import exception
 from heat.common import timeutils as iso8601utils
 from heat.engine import attributes
 from heat.engine import constraints
-from heat.engine import environment
 from heat.engine import function
 from heat.engine.notification import autoscaling as notification
 from heat.engine import properties
-from heat.engine import resource
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
-from heat.engine import signal_responder
 from heat.engine import stack_resource
 from heat.openstack.common import excutils
 from heat.openstack.common import log as logging
-from heat.openstack.common import timeutils
+from heat.scaling import cooldown
 from heat.scaling import template
 
 LOG = logging.getLogger(__name__)
@@ -44,34 +42,37 @@ LOG = logging.getLogger(__name__)
     'ExactCapacity', 'ChangeInCapacity', 'PercentChangeInCapacity')
 
 
-class CooldownMixin(object):
-    '''
-    Utility class to encapsulate Cooldown related logic which is shared
-    between AutoScalingGroup and ScalingPolicy
-    '''
-    def _cooldown_inprogress(self):
-        inprogress = False
-        try:
-            # Negative values don't make sense, so they are clamped to zero
-            cooldown = max(0, self.properties[self.COOLDOWN])
-        except TypeError:
-            # If not specified, it will be None, same as cooldown == 0
-            cooldown = 0
+def _calculate_new_capacity(current, adjustment, adjustment_type,
+                            minimum, maximum):
+    """
+    Given the current capacity, calculates the new capacity which results
+    from applying the given adjustment of the given adjustment-type.  The
+    new capacity will be kept within the maximum and minimum bounds.
+    """
+    if adjustment_type == CHANGE_IN_CAPACITY:
+        new_capacity = current + adjustment
+    elif adjustment_type == EXACT_CAPACITY:
+        new_capacity = adjustment
+    else:
+        # PercentChangeInCapacity
+        delta = current * adjustment / 100.0
+        if math.fabs(delta) < 1.0:
+            rounded = int(math.ceil(delta) if delta > 0.0
+                          else math.floor(delta))
+        else:
+            rounded = int(math.floor(delta) if delta > 0.0
+                          else math.ceil(delta))
+        new_capacity = current + rounded
 
-        metadata = self.metadata_get()
-        if metadata and cooldown != 0:
-            last_adjust = metadata.keys()[0]
-            if not timeutils.is_older_than(last_adjust, cooldown):
-                inprogress = True
-        return inprogress
+    if new_capacity > maximum:
+        LOG.debug(_('truncating growth to %s') % maximum)
+        return maximum
 
-    def _cooldown_timestamp(self, reason):
-        # Save resource metadata with a timestamp and reason
-        # If we wanted to implement the AutoScaling API like AWS does,
-        # we could maintain event history here, but since we only need
-        # the latest event for cooldown, just store that for now
-        metadata = {timeutils.strtime(): reason}
-        self.metadata_set(metadata)
+    if new_capacity < minimum:
+        LOG.debug(_('truncating shrinkage to %s') % minimum)
+        return minimum
+
+    return new_capacity
 
 
 class InstanceGroup(stack_resource.StackResource):
@@ -209,8 +210,8 @@ class InstanceGroup(stack_resource.StackResource):
     def _environment(self):
         """Return the environment for the nested stack."""
         return {
-            environment.PARAMETERS: {},
-            environment.RESOURCE_REGISTRY: {
+            environment_format.PARAMETERS: {},
+            environment_format.RESOURCE_REGISTRY: {
                 SCALED_RESOURCE_TYPE: 'AWS::EC2::Instance',
             },
         }
@@ -421,7 +422,7 @@ class InstanceGroup(stack_resource.StackResource):
                 scheduler.TaskRunner(lb_resource.update, lb_defn)()
 
     def FnGetRefId(self):
-        return self.physical_resource_name()
+        return self.physical_resource_name_or_FnGetRefId()
 
     def _resolve_attribute(self, name):
         '''
@@ -440,7 +441,7 @@ class InstanceGroup(stack_resource.StackResource):
         return self._environment()
 
 
-class AutoScalingGroup(InstanceGroup, CooldownMixin):
+class AutoScalingGroup(InstanceGroup, cooldown.CooldownMixin):
 
     PROPERTIES = (
         AVAILABILITY_ZONES, LAUNCH_CONFIGURATION_NAME, MAX_SIZE, MIN_SIZE,
@@ -598,24 +599,14 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
             # Replace instances first if launch configuration has changed
             self._try_rolling_update(prop_diff)
 
-            # Get the current capacity, we may need to adjust if
-            # MinSize or MaxSize has changed
-            capacity = len(self.get_instances())
+            if (self.DESIRED_CAPACITY in prop_diff and
+                    self.properties[self.DESIRED_CAPACITY] is not None):
 
-            # Figure out if an adjustment is required
-            new_capacity = None
-            if self.MIN_SIZE in prop_diff:
-                if capacity < self.properties[self.MIN_SIZE]:
-                    new_capacity = self.properties[self.MIN_SIZE]
-            if self.MAX_SIZE in prop_diff:
-                if capacity > self.properties[self.MAX_SIZE]:
-                    new_capacity = self.properties[self.MAX_SIZE]
-            if self.DESIRED_CAPACITY in prop_diff:
-                if self.properties[self.DESIRED_CAPACITY] is not None:
-                    new_capacity = self.properties[self.DESIRED_CAPACITY]
-
-            if new_capacity is not None:
-                self.adjust(new_capacity, adjustment_type=EXACT_CAPACITY)
+                self.adjust(self.properties[self.DESIRED_CAPACITY],
+                            adjustment_type=EXACT_CAPACITY)
+            else:
+                current_capacity = len(self.get_instances())
+                self.adjust(current_capacity, adjustment_type=EXACT_CAPACITY)
 
     def adjust(self, adjustment, adjustment_type=CHANGE_IN_CAPACITY):
         """
@@ -629,38 +620,11 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
             return
 
         capacity = len(self.get_instances())
-        if adjustment_type == CHANGE_IN_CAPACITY:
-            new_capacity = capacity + adjustment
-        elif adjustment_type == EXACT_CAPACITY:
-            new_capacity = adjustment
-        else:
-            # PercentChangeInCapacity
-            delta = capacity * adjustment / 100.0
-            if math.fabs(delta) < 1.0:
-                rounded = int(math.ceil(delta) if delta > 0.0
-                              else math.floor(delta))
-            else:
-                rounded = int(math.floor(delta) if delta > 0.0
-                              else math.ceil(delta))
-            new_capacity = capacity + rounded
-
-        upper = self.properties[self.MAX_SIZE]
         lower = self.properties[self.MIN_SIZE]
+        upper = self.properties[self.MAX_SIZE]
 
-        if new_capacity > upper:
-            if upper > capacity:
-                LOG.info(_('truncating growth to %s') % upper)
-                new_capacity = upper
-            else:
-                LOG.warn(_('can not exceed %s') % upper)
-                return
-        if new_capacity < lower:
-            if lower < capacity:
-                LOG.info(_('truncating shrinkage to %s') % lower)
-                new_capacity = lower
-            else:
-                LOG.warn(_('can not be less than %s') % lower)
-                return
+        new_capacity = _calculate_new_capacity(capacity, adjustment,
+                                               adjustment_type, lower, upper)
 
         if new_capacity == capacity:
             LOG.debug('no change in capacity %d' % capacity)
@@ -751,83 +715,6 @@ class AutoScalingGroup(InstanceGroup, CooldownMixin):
         return self._create_template(num_instances)
 
 
-class LaunchConfiguration(resource.Resource):
-
-    PROPERTIES = (
-        IMAGE_ID, INSTANCE_TYPE, KEY_NAME, USER_DATA, SECURITY_GROUPS,
-        KERNEL_ID, RAM_DISK_ID, BLOCK_DEVICE_MAPPINGS, NOVA_SCHEDULER_HINTS,
-    ) = (
-        'ImageId', 'InstanceType', 'KeyName', 'UserData', 'SecurityGroups',
-        'KernelId', 'RamDiskId', 'BlockDeviceMappings', 'NovaSchedulerHints',
-    )
-
-    _NOVA_SCHEDULER_HINT_KEYS = (
-        NOVA_SCHEDULER_HINT_KEY, NOVA_SCHEDULER_HINT_VALUE,
-    ) = (
-        'Key', 'Value',
-    )
-
-    properties_schema = {
-        IMAGE_ID: properties.Schema(
-            properties.Schema.STRING,
-            _('Glance image ID or name.'),
-            required=True
-        ),
-        INSTANCE_TYPE: properties.Schema(
-            properties.Schema.STRING,
-            _('Nova instance type (flavor).'),
-            required=True
-        ),
-        KEY_NAME: properties.Schema(
-            properties.Schema.STRING,
-            _('Optional Nova keypair name.')
-        ),
-        USER_DATA: properties.Schema(
-            properties.Schema.STRING,
-            _('User data to pass to instance.')
-        ),
-        SECURITY_GROUPS: properties.Schema(
-            properties.Schema.LIST,
-            _('Security group names to assign.')
-        ),
-        KERNEL_ID: properties.Schema(
-            properties.Schema.STRING,
-            _('Not Implemented.'),
-            implemented=False
-        ),
-        RAM_DISK_ID: properties.Schema(
-            properties.Schema.STRING,
-            _('Not Implemented.'),
-            implemented=False
-        ),
-        BLOCK_DEVICE_MAPPINGS: properties.Schema(
-            properties.Schema.STRING,
-            _('Not Implemented.'),
-            implemented=False
-        ),
-        NOVA_SCHEDULER_HINTS: properties.Schema(
-            properties.Schema.LIST,
-            _('Scheduler hints to pass to Nova (Heat extension).'),
-            schema=properties.Schema(
-                properties.Schema.MAP,
-                schema={
-                    NOVA_SCHEDULER_HINT_KEY: properties.Schema(
-                        properties.Schema.STRING,
-                        required=True
-                    ),
-                    NOVA_SCHEDULER_HINT_VALUE: properties.Schema(
-                        properties.Schema.STRING,
-                        required=True
-                    ),
-                },
-            )
-        ),
-    }
-
-    def FnGetRefId(self):
-        return unicode(self.physical_resource_name())
-
-
 class AutoScalingResourceGroup(AutoScalingGroup):
     """An autoscaling group that can scale arbitrary resources."""
 
@@ -843,6 +730,12 @@ class AutoScalingResourceGroup(AutoScalingGroup):
         MIN_IN_SERVICE, MAX_BATCH_SIZE, PAUSE_TIME,
     ) = (
         'min_in_service', 'max_batch_size', 'pause_time',
+    )
+
+    ATTRIBUTES = (
+        OUTPUTS, OUTPUTS_LIST,
+    ) = (
+        'outputs', 'outputs_list',
     )
 
     properties_schema = {
@@ -906,9 +799,15 @@ class AutoScalingResourceGroup(AutoScalingGroup):
         ),
     }
 
-    # Override the InstanceGroup attributes_schema; we don't want any
-    # attributes.
-    attributes_schema = {}
+    attributes_schema = {
+        OUTPUTS: attributes.Schema(
+            _("A map of resource names to the specified attribute of each "
+              "individual resource.")
+        ),
+        OUTPUTS_LIST: attributes.Schema(
+            _("A list of the specified attribute of each individual resource.")
+        ),
+    }
 
     def _get_instance_definition(self):
         rsrc = self.properties[self.RESOURCE]
@@ -939,220 +838,22 @@ class AutoScalingResourceGroup(AutoScalingGroup):
                      self)._create_template(num_instances, num_replace,
                                             template_version=template_version)
 
+    def FnGetAtt(self, key, *path):
+        if path:
+            attrs = ((rsrc.name,
+                      rsrc.FnGetAtt(*path)) for rsrc in self.get_instances())
+            if key == self.OUTPUTS:
+                return dict(attrs)
+            if key == self.OUTPUTS_LIST:
+                return [value for name, value in attrs]
 
-class ScalingPolicy(signal_responder.SignalResponder, CooldownMixin):
-    PROPERTIES = (
-        AUTO_SCALING_GROUP_NAME, SCALING_ADJUSTMENT, ADJUSTMENT_TYPE,
-        COOLDOWN,
-    ) = (
-        'AutoScalingGroupName', 'ScalingAdjustment', 'AdjustmentType',
-        'Cooldown',
-    )
-
-    EXACT_CAPACITY, CHANGE_IN_CAPACITY, PERCENT_CHANGE_IN_CAPACITY = (
-        'ExactCapacity', 'ChangeInCapacity', 'PercentChangeInCapacity')
-
-    ATTRIBUTES = (
-        ALARM_URL,
-    ) = (
-        'AlarmUrl',
-    )
-
-    properties_schema = {
-        AUTO_SCALING_GROUP_NAME: properties.Schema(
-            properties.Schema.STRING,
-            _('AutoScaling group name to apply policy to.'),
-            required=True
-        ),
-        SCALING_ADJUSTMENT: properties.Schema(
-            properties.Schema.NUMBER,
-            _('Size of adjustment.'),
-            required=True,
-            update_allowed=True
-        ),
-        ADJUSTMENT_TYPE: properties.Schema(
-            properties.Schema.STRING,
-            _('Type of adjustment (absolute or percentage).'),
-            required=True,
-            constraints=[
-                constraints.AllowedValues([CHANGE_IN_CAPACITY,
-                                           EXACT_CAPACITY,
-                                           PERCENT_CHANGE_IN_CAPACITY]),
-            ],
-            update_allowed=True
-        ),
-        COOLDOWN: properties.Schema(
-            properties.Schema.NUMBER,
-            _('Cooldown period, in seconds.'),
-            update_allowed=True
-        ),
-    }
-
-    attributes_schema = {
-        ALARM_URL: attributes.Schema(
-            _("A signed url to handle the alarm. (Heat extension).")
-        ),
-    }
-
-    def handle_create(self):
-        super(ScalingPolicy, self).handle_create()
-        self.resource_id_set(self._get_user_id())
-
-    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        """
-        If Properties has changed, update self.properties, so we get the new
-        values during any subsequent adjustment.
-        """
-        if prop_diff:
-            self.properties = json_snippet.properties(self.properties_schema,
-                                                      self.context)
-
-    def _get_adjustement_type(self):
-        return self.properties[self.ADJUSTMENT_TYPE]
-
-    def handle_signal(self, details=None):
-        if self.action in (self.SUSPEND, self.DELETE):
-            msg = _('Cannot signal resource during %s') % self.action
-            raise Exception(msg)
-
-        # ceilometer sends details like this:
-        # {u'alarm_id': ID, u'previous': u'ok', u'current': u'alarm',
-        #  u'reason': u'...'})
-        # in this policy we currently assume that this gets called
-        # only when there is an alarm. But the template writer can
-        # put the policy in all the alarm notifiers (nodata, and ok).
-        #
-        # our watchrule has upper case states so lower() them all.
-        if details is None:
-            alarm_state = 'alarm'
-        else:
-            alarm_state = details.get('current',
-                                      details.get('state', 'alarm')).lower()
-
-        LOG.info(_('%(name)s Alarm, new state %(state)s')
-                 % {'name': self.name, 'state': alarm_state})
-
-        if alarm_state != 'alarm':
-            return
-        if self._cooldown_inprogress():
-            LOG.info(_("%(name)s NOT performing scaling action, "
-                       "cooldown %(cooldown)s")
-                     % {'name': self.name,
-                        'cooldown': self.properties[self.COOLDOWN]})
-            return
-
-        asgn_id = self.properties[self.AUTO_SCALING_GROUP_NAME]
-        group = self.stack.resource_by_refid(asgn_id)
-        if group is None:
-            raise exception.NotFound(_('Alarm %(alarm)s could not find '
-                                       'scaling group named "%(group)s"') % {
-                                           'alarm': self.name,
-                                           'group': asgn_id})
-
-        LOG.info(_('%(name)s Alarm, adjusting Group %(group)s with id '
-                   '%(asgn_id)s by %(filter)s')
-                 % {'name': self.name, 'group': group.name, 'asgn_id': asgn_id,
-                    'filter': self.properties[self.SCALING_ADJUSTMENT]})
-        adjustment_type = self._get_adjustement_type()
-        group.adjust(self.properties[self.SCALING_ADJUSTMENT], adjustment_type)
-
-        self._cooldown_timestamp("%s : %s" %
-                                 (self.properties[self.ADJUSTMENT_TYPE],
-                                  self.properties[self.SCALING_ADJUSTMENT]))
-
-    def _resolve_attribute(self, name):
-        '''
-        heat extension: "AlarmUrl" returns the url to post to the policy
-        when there is an alarm.
-        '''
-        if name == self.ALARM_URL and self.resource_id is not None:
-            return unicode(self._get_signed_url())
-
-    def FnGetRefId(self):
-        if self.resource_id is not None:
-            return unicode(self._get_signed_url())
-        else:
-            return unicode(self.name)
-
-
-class AutoScalingPolicy(ScalingPolicy):
-    """A resource to manage scaling of `OS::Heat::AutoScalingGroup`.
-
-    **Note** while it may incidentally support
-    `AWS::AutoScaling::AutoScalingGroup` for now, please don't use it for that
-    purpose and use `AWS::AutoScaling::ScalingPolicy` instead.
-    """
-    PROPERTIES = (
-        AUTO_SCALING_GROUP_NAME, SCALING_ADJUSTMENT, ADJUSTMENT_TYPE,
-        COOLDOWN,
-    ) = (
-        'auto_scaling_group_id', 'scaling_adjustment', 'adjustment_type',
-        'cooldown',
-    )
-
-    EXACT_CAPACITY, CHANGE_IN_CAPACITY, PERCENT_CHANGE_IN_CAPACITY = (
-        'exact_capacity', 'change_in_capacity', 'percent_change_in_capacity')
-
-    ATTRIBUTES = (
-        ALARM_URL,
-    ) = (
-        'alarm_url',
-    )
-
-    properties_schema = {
-        AUTO_SCALING_GROUP_NAME: properties.Schema(
-            properties.Schema.STRING,
-            _('AutoScaling group ID to apply policy to.'),
-            required=True
-        ),
-        SCALING_ADJUSTMENT: properties.Schema(
-            properties.Schema.NUMBER,
-            _('Size of adjustment.'),
-            required=True,
-            update_allowed=True
-        ),
-        ADJUSTMENT_TYPE: properties.Schema(
-            properties.Schema.STRING,
-            _('Type of adjustment (absolute or percentage).'),
-            required=True,
-            constraints=[
-                constraints.AllowedValues([CHANGE_IN_CAPACITY,
-                                           EXACT_CAPACITY,
-                                           PERCENT_CHANGE_IN_CAPACITY]),
-            ],
-            update_allowed=True
-        ),
-        COOLDOWN: properties.Schema(
-            properties.Schema.NUMBER,
-            _('Cooldown period, in seconds.'),
-            update_allowed=True
-        ),
-    }
-
-    attributes_schema = {
-        ALARM_URL: attributes.Schema(
-            _("A signed url to handle the alarm.")
-        ),
-    }
-
-    def _get_adjustement_type(self):
-        adjustment_type = self.properties[self.ADJUSTMENT_TYPE]
-        return ''.join([t.capitalize() for t in adjustment_type.split('_')])
-
-    def _resolve_attribute(self, name):
-        if name == self.ALARM_URL and self.resource_id is not None:
-            return unicode(self._get_signed_url())
-
-    def FnGetRefId(self):
-        return resource.Resource.FnGetRefId(self)
+        raise exception.InvalidTemplateAttribute(resource=self.name,
+                                                 key=key)
 
 
 def resource_mapping():
     return {
-        'AWS::AutoScaling::LaunchConfiguration': LaunchConfiguration,
         'AWS::AutoScaling::AutoScalingGroup': AutoScalingGroup,
-        'AWS::AutoScaling::ScalingPolicy': ScalingPolicy,
         'OS::Heat::InstanceGroup': InstanceGroup,
         'OS::Heat::AutoScalingGroup': AutoScalingResourceGroup,
-        'OS::Heat::ScalingPolicy': AutoScalingPolicy,
     }

@@ -11,12 +11,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from neutronclient.common.exceptions import NeutronClientException
-
 from heat.engine import attributes
 from heat.engine import properties
 from heat.engine import resource
-from heat.engine.resources.neutron import neutron
 
 
 class NetworkInterface(resource.Resource):
@@ -49,7 +46,7 @@ class NetworkInterface(resource.Resource):
         GROUP_SET: properties.Schema(
             properties.Schema.LIST,
             _('List of security group IDs associated with this interface.'),
-            default=[]
+            update_allowed=True
         ),
         PRIVATE_IP_ADDRESS: properties.Schema(
             properties.Schema.STRING
@@ -90,6 +87,8 @@ class NetworkInterface(resource.Resource):
         ),
     }
 
+    default_client_name = 'neutron'
+
     @staticmethod
     def network_id_from_subnet_id(neutronclient, subnet_id):
         subnet_info = neutronclient.show_subnet(subnet_id)
@@ -103,7 +102,8 @@ class NetworkInterface(resource.Resource):
         client = self.neutron()
 
         subnet_id = self.properties[self.SUBNET_ID]
-        network_id = self.network_id_from_subnet_id(client, subnet_id)
+        network_id = self.client_plugin().network_id_from_subnet_id(
+            subnet_id)
 
         fixed_ip = {'subnet_id': subnet_id}
         if self.properties[self.PRIVATE_IP_ADDRESS]:
@@ -115,21 +115,45 @@ class NetworkInterface(resource.Resource):
             'network_id': network_id,
             'fixed_ips': [fixed_ip]
         }
-
-        if self.properties[self.GROUP_SET]:
-            sgs = neutron.NeutronResource.get_secgroup_uuids(
-                self.properties.get(self.GROUP_SET), self.neutron())
+        # if without group_set, don't set the 'security_groups' property,
+        # neutron will create the port with the 'default' securityGroup,
+        # if has the group_set and the value is [], which means to create the
+        # port without securityGroup(same as the behavior of neutron)
+        if self.properties[self.GROUP_SET] is not None:
+            sgs = self.client_plugin().get_secgroup_uuids(
+                self.properties.get(self.GROUP_SET))
             props['security_groups'] = sgs
         port = client.create_port({'port': props})['port']
         self.resource_id_set(port['id'])
 
     def handle_delete(self):
+        if self.resource_id is None:
+            return
+
         client = self.neutron()
         try:
             client.delete_port(self.resource_id)
-        except NeutronClientException as ex:
-            if ex.status_code != 404:
-                raise ex
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
+
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
+        if prop_diff:
+            update_props = {}
+            if self.GROUP_SET in prop_diff:
+                group_set = prop_diff.get(self.GROUP_SET)
+                # update should keep the same behavior as creation,
+                # if without the GroupSet in update template, we should
+                # update the security_groups property to referent
+                # the 'default' security group
+                if group_set is not None:
+                    sgs = self.client_plugin().get_secgroup_uuids(group_set)
+                else:
+                    sgs = self.client_plugin().get_secgroup_uuids(['default'])
+
+                update_props['security_groups'] = sgs
+
+                self.neutron().update_port(self.resource_id,
+                                           {'port': update_props})
 
     def _get_fixed_ip_address(self, ):
         if self.fixed_ip_address is None:
@@ -138,9 +162,8 @@ class NetworkInterface(resource.Resource):
                 port = client.show_port(self.resource_id)['port']
                 if port['fixed_ips'] and len(port['fixed_ips']) > 0:
                     self.fixed_ip_address = port['fixed_ips'][0]['ip_address']
-            except NeutronClientException as ex:
-                if ex.status_code != 404:
-                    raise ex
+            except Exception as ex:
+                self.client_plugin().ignore_not_found(ex)
 
         return self.fixed_ip_address
 

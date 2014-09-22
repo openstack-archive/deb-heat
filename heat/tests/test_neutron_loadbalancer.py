@@ -13,14 +13,17 @@
 
 import copy
 import mox
+from oslo.config import cfg
+import six
 
+from neutronclient.common import exceptions
+from neutronclient.neutron import v2_0 as neutronV20
 from neutronclient.v2_0 import client as neutronclient
 
 from heat.common import exception
 from heat.common import template_format
 from heat.engine.clients.os import nova
 from heat.engine.resources.neutron import loadbalancer
-from heat.engine.resources.neutron import neutron_utils
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
@@ -252,7 +255,7 @@ class HealthMonitorTest(HeatTestCase):
             'health_monitor': {
                 'delay': 3, 'max_retries': 5, 'type': u'HTTP',
                 'timeout': 10, 'admin_state_up': True}}
-        ).AndRaise(loadbalancer.NeutronClientException())
+        ).AndRaise(exceptions.NeutronClientException())
         self.m.ReplayAll()
 
         snippet = template_format.parse(health_monitor_template)
@@ -264,14 +267,14 @@ class HealthMonitorTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
     def test_delete(self):
         neutronclient.Client.delete_health_monitor('5678')
         neutronclient.Client.show_health_monitor('5678').AndRaise(
-            loadbalancer.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         rsrc = self.create_health_monitor()
         self.m.ReplayAll()
@@ -282,7 +285,7 @@ class HealthMonitorTest(HeatTestCase):
 
     def test_delete_already_gone(self):
         neutronclient.Client.delete_health_monitor('5678').AndRaise(
-            loadbalancer.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         rsrc = self.create_health_monitor()
         self.m.ReplayAll()
@@ -293,7 +296,7 @@ class HealthMonitorTest(HeatTestCase):
 
     def test_delete_failed(self):
         neutronclient.Client.delete_health_monitor('5678').AndRaise(
-            loadbalancer.NeutronClientException(status_code=400))
+            exceptions.NeutronClientException(status_code=400))
 
         rsrc = self.create_health_monitor()
         self.m.ReplayAll()
@@ -302,7 +305,7 @@ class HealthMonitorTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
@@ -325,7 +328,7 @@ class HealthMonitorTest(HeatTestCase):
                                   rsrc.FnGetAtt, 'subnet_id')
         self.assertEqual(
             'The Referenced Attribute (monitor subnet_id) is incorrect.',
-            str(error))
+            six.text_type(error))
         self.m.VerifyAll()
 
     def test_update(self):
@@ -355,8 +358,7 @@ class PoolTest(HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client,
                                'disassociate_health_monitor')
         self.m.StubOutWithMock(neutronclient.Client, 'create_vip')
-        self.m.StubOutWithMock(neutron_utils.neutronV20,
-                               'find_resourceid_by_name_or_id')
+        self.m.StubOutWithMock(neutronV20, 'find_resourceid_by_name_or_id')
         self.m.StubOutWithMock(neutronclient.Client, 'delete_vip')
         self.m.StubOutWithMock(neutronclient.Client, 'show_vip')
         self.stub_keystoneclient()
@@ -383,12 +385,12 @@ class PoolTest(HeatTestCase):
         stvippsn['vip']['subnet_id'] = 'sub123'
 
         if resolve_neutron and with_vip_subnet:
-            neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+            neutronV20.find_resourceid_by_name_or_id(
                 mox.IsA(neutronclient.Client),
                 'subnet',
                 'sub123'
             ).AndReturn('sub123')
-            neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+            neutronV20.find_resourceid_by_name_or_id(
                 mox.IsA(neutronclient.Client),
                 'subnet',
                 'sub9999'
@@ -398,7 +400,7 @@ class PoolTest(HeatTestCase):
                                             ).AndReturn({'vip': {'id': 'xyz'}})
 
         elif resolve_neutron and not with_vip_subnet:
-            neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+            neutronV20.find_resourceid_by_name_or_id(
                 mox.IsA(neutronclient.Client),
                 'subnet',
                 'sub123'
@@ -436,7 +438,7 @@ class PoolTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_pending(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
             'sub123'
@@ -473,8 +475,10 @@ class PoolTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
-    def test_create_failed_unexpected_status(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+    def test_create_failed_error_status(self):
+        cfg.CONF.set_override('action_retry_limit', 0)
+
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
             'sub123'
@@ -504,14 +508,13 @@ class PoolTest(HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'Error: neutron reported unexpected pool '
-            'resource[5678] status[ERROR]',
-            str(error))
+            'ResourceInError: Went to status ERROR due to "error in pool"',
+            six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
     def test_create_failed_unexpected_vip_status(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
             'sub123'
@@ -532,7 +535,7 @@ class PoolTest(HeatTestCase):
         neutronclient.Client.show_pool('5678').MultipleTimes().AndReturn(
             {'pool': {'status': 'ACTIVE'}})
         neutronclient.Client.show_vip('xyz').AndReturn(
-            {'vip': {'status': 'ERROR', 'name': 'xyz'}})
+            {'vip': {'status': 'SOMETHING', 'name': 'xyz'}})
 
         snippet = template_format.parse(pool_template)
         stack = utils.parse_stack(snippet)
@@ -543,14 +546,14 @@ class PoolTest(HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'Error: neutron reported unexpected vip '
-            'resource[xyz] status[ERROR]',
-            str(error))
+            'ResourceUnknownStatus: Pool creation failed due to vip - '
+            'Unknown status SOMETHING',
+            six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
     def test_create_failed(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
             'sub123'
@@ -561,7 +564,7 @@ class PoolTest(HeatTestCase):
                 'subnet_id': 'sub123', 'protocol': u'HTTP',
                 'name': utils.PhysName('test_stack', 'pool'),
                 'lb_method': 'ROUND_ROBIN', 'admin_state_up': True}}
-        ).AndRaise(loadbalancer.NeutronClientException())
+        ).AndRaise(exceptions.NeutronClientException())
         self.m.ReplayAll()
 
         snippet = template_format.parse(pool_template)
@@ -573,12 +576,12 @@ class PoolTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
     def test_create_with_session_persistence(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
             'sub123'
@@ -630,7 +633,7 @@ class PoolTest(HeatTestCase):
 
         error = self.assertRaises(exception.StackValidationFailed,
                                   resource.validate)
-        self.assertEqual(msg, str(error))
+        self.assertEqual(msg, six.text_type(error))
 
     def test_validation_not_failing_without_session_persistence(self):
         snippet = template_format.parse(pool_template)
@@ -642,7 +645,7 @@ class PoolTest(HeatTestCase):
         self.assertIsNone(resource.validate())
 
     def test_properties_are_prepared_for_session_persistence(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
             'sub123'
@@ -692,10 +695,10 @@ class PoolTest(HeatTestCase):
         rsrc = self.create_pool()
         neutronclient.Client.delete_vip('xyz')
         neutronclient.Client.show_vip('xyz').AndRaise(
-            loadbalancer.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
         neutronclient.Client.delete_pool('5678')
         neutronclient.Client.show_pool('5678').AndRaise(
-            loadbalancer.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
         scheduler.TaskRunner(rsrc.delete)()
@@ -704,9 +707,9 @@ class PoolTest(HeatTestCase):
 
     def test_delete_already_gone(self):
         neutronclient.Client.delete_vip('xyz').AndRaise(
-            loadbalancer.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
         neutronclient.Client.delete_pool('5678').AndRaise(
-            loadbalancer.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         rsrc = self.create_pool()
         self.m.ReplayAll()
@@ -717,7 +720,7 @@ class PoolTest(HeatTestCase):
 
     def test_delete_vip_failed(self):
         neutronclient.Client.delete_vip('xyz').AndRaise(
-            loadbalancer.NeutronClientException(status_code=400))
+            exceptions.NeutronClientException(status_code=400))
 
         rsrc = self.create_pool()
         self.m.ReplayAll()
@@ -726,15 +729,15 @@ class PoolTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
     def test_delete_failed(self):
         neutronclient.Client.delete_vip('xyz').AndRaise(
-            loadbalancer.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
         neutronclient.Client.delete_pool('5678').AndRaise(
-            loadbalancer.NeutronClientException(status_code=400))
+            exceptions.NeutronClientException(status_code=400))
 
         rsrc = self.create_pool()
         self.m.ReplayAll()
@@ -743,7 +746,7 @@ class PoolTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
@@ -776,7 +779,7 @@ class PoolTest(HeatTestCase):
                                   rsrc.FnGetAtt, 'net_id')
         self.assertEqual(
             'The Referenced Attribute (pool net_id) is incorrect.',
-            str(error))
+            six.text_type(error))
         self.m.VerifyAll()
 
     def test_update(self):
@@ -793,7 +796,7 @@ class PoolTest(HeatTestCase):
         self.m.VerifyAll()
 
     def test_update_monitors(self):
-        neutron_utils.neutronV20.find_resourceid_by_name_or_id(
+        neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
             'sub123'
@@ -921,7 +924,7 @@ class PoolMemberTest(HeatTestCase):
         rsrc = self.create_member()
         neutronclient.Client.delete_member(u'member5678')
         neutronclient.Client.show_member(u'member5678').AndRaise(
-            loadbalancer.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -932,7 +935,7 @@ class PoolMemberTest(HeatTestCase):
     def test_delete_missing_member(self):
         rsrc = self.create_member()
         neutronclient.Client.delete_member(u'member5678').AndRaise(
-            loadbalancer.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -993,7 +996,7 @@ class LoadBalancerTest(HeatTestCase):
     def test_update_missing_member(self):
         rsrc = self.create_load_balancer()
         neutronclient.Client.delete_member(u'member5678').AndRaise(
-            loadbalancer.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -1018,7 +1021,7 @@ class LoadBalancerTest(HeatTestCase):
     def test_delete_missing_member(self):
         rsrc = self.create_load_balancer()
         neutronclient.Client.delete_member(u'member5678').AndRaise(
-            loadbalancer.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()

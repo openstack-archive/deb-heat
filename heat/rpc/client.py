@@ -71,7 +71,7 @@ class EngineClient(object):
 
     def list_stacks(self, ctxt, limit=None, marker=None, sort_keys=None,
                     sort_dir=None, filters=None, tenant_safe=True,
-                    show_deleted=False):
+                    show_deleted=False, show_nested=False):
         """
         The list_stacks method returns attributes of all stacks.  It supports
         pagination (``limit`` and ``marker``), sorting (``sort_keys`` and
@@ -85,6 +85,7 @@ class EngineClient(object):
         :param filters: a dict with attribute:value to filter the list
         :param tenant_safe: if true, scope the request by the current tenant
         :param show_deleted: if true, show soft-deleted stacks
+        :param show_nested: if true, show nested stacks
         :returns: a list of stacks
         """
         return self.call(ctxt,
@@ -92,22 +93,25 @@ class EngineClient(object):
                                        sort_keys=sort_keys, marker=marker,
                                        sort_dir=sort_dir, filters=filters,
                                        tenant_safe=tenant_safe,
-                                       show_deleted=show_deleted))
+                                       show_deleted=show_deleted,
+                                       show_nested=show_nested))
 
     def count_stacks(self, ctxt, filters=None, tenant_safe=True,
-                     show_deleted=False):
+                     show_deleted=False, show_nested=False):
         """
         Return the number of stacks that match the given filters
         :param ctxt: RPC context.
         :param filters: a dict of ATTR:VALUE to match against stacks
         :param tenant_safe: if true, scope the request by the current tenant
         :param show_deleted: if true, count will include the deleted stacks
+        :param show_nested: if true, count will include nested stacks
         :returns: a integer representing the number of matched stacks
         """
         return self.call(ctxt, self.make_msg('count_stacks',
                                              filters=filters,
                                              tenant_safe=tenant_safe,
-                                             show_deleted=show_deleted))
+                                             show_deleted=show_deleted,
+                                             show_nested=show_nested))
 
     def show_stack(self, ctxt, stack_identity):
         """
@@ -152,10 +156,22 @@ class EngineClient(object):
         :param files: files referenced from the environment.
         :param args: Request parameters/args passed from API
         """
+        return self._create_stack(ctxt, stack_name, template, params, files,
+                                  args)
+
+    def _create_stack(self, ctxt, stack_name, template, params, files, args,
+                      owner_id=None):
+        """
+        Internal create_stack interface for engine-to-engine communication via
+        RPC.  Allows some additional options which should not be exposed to
+        users via the API:
+        :param owner_id: parent stack ID for nested stacks
+        """
         return self.call(ctxt,
                          self.make_msg('create_stack', stack_name=stack_name,
                                        template=template,
-                                       params=params, files=files, args=args))
+                                       params=params, files=files, args=args,
+                                       owner_id=owner_id))
 
     def update_stack(self, ctxt, stack_identity, template, params,
                      files, args):
@@ -342,6 +358,10 @@ class EngineClient(object):
         return self.call(ctxt, self.make_msg('stack_resume',
                                              stack_identity=stack_identity))
 
+    def stack_check(self, ctxt, stack_identity):
+        return self.call(ctxt, self.make_msg('stack_check',
+                                             stack_identity=stack_identity))
+
     def metadata_update(self, ctxt, stack_identity, resource_name, metadata):
         """
         Update the metadata for the given resource.
@@ -481,3 +501,22 @@ class EngineClient(object):
     def delete_software_deployment(self, cnxt, deployment_id):
         return self.call(cnxt, self.make_msg('delete_software_deployment',
                                              deployment_id=deployment_id))
+
+    def stack_snapshot(self, ctxt, stack_identity, name):
+        return self.call(ctxt, self.make_msg('stack_snapshot',
+                                             stack_identity=stack_identity,
+                                             name=name))
+
+    def show_snapshot(self, cnxt, stack_identity, snapshot_id):
+        return self.call(cnxt, self.make_msg('show_snapshot',
+                                             stack_identity=stack_identity,
+                                             snapshot_id=snapshot_id))
+
+    def delete_snapshot(self, cnxt, stack_identity, snapshot_id):
+        return self.call(cnxt, self.make_msg('delete_snapshot',
+                                             stack_identity=stack_identity,
+                                             snapshot_id=snapshot_id))
+
+    def stack_list_snapshots(self, cnxt, stack_identity):
+        return self.call(cnxt, self.make_msg('stack_list_snapshots',
+                                             stack_identity=stack_identity))

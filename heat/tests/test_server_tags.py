@@ -21,9 +21,7 @@ from heat.engine.clients.os import glance
 from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import parser
-from heat.engine.resources import glance_utils
 from heat.engine.resources import instance as instances
-from heat.engine.resources import nova_utils
 from heat.engine import scheduler
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
@@ -132,13 +130,9 @@ class ServerTagsTest(HeatTestCase):
         self.fc = fakes.FakeClient()
 
     def _mock_get_image_id_success(self, imageId_input, imageId):
-        g_cli_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
-        glance.GlanceClientPlugin._create().MultipleTimes().AndReturn(
-            g_cli_mock)
-        self.m.StubOutWithMock(glance_utils, 'get_image_id')
-        glance_utils.get_image_id(g_cli_mock, imageId_input).MultipleTimes().\
-            AndReturn(imageId)
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image_id')
+        glance.GlanceClientPlugin.get_image_id(
+            imageId_input).MultipleTimes().AndReturn(imageId)
 
     def _setup_test_instance(self, intags=None, nova_tags=None):
         stack_name = 'tag_test'
@@ -154,16 +148,17 @@ class ServerTagsTest(HeatTestCase):
                                       resource_defns['WebServer'], stack)
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('CentOS 5.2', 1)
         # need to resolve the template functions
-        server_userdata = nova_utils.build_userdata(
-            instance,
+        metadata = instance.metadata_get()
+        server_userdata = instance.client_plugin().build_userdata(
+            metadata,
             instance.t['Properties']['UserData'],
             'ec2-user')
-        self.m.StubOutWithMock(nova_utils, 'build_userdata')
-        nova_utils.build_userdata(
-            instance,
+        self.m.StubOutWithMock(nova.NovaClientPlugin, 'build_userdata')
+        nova.NovaClientPlugin.build_userdata(
+            metadata,
             instance.t['Properties']['UserData'],
             'ec2-user').AndReturn(server_userdata)
 
@@ -173,7 +168,8 @@ class ServerTagsTest(HeatTestCase):
             name=utils.PhysName(stack_name, instance.name),
             security_groups=None,
             userdata=server_userdata, scheduler_hints=None,
-            meta=nova_tags, nics=None, availability_zone=None).AndReturn(
+            meta=nova_tags, nics=None, availability_zone=None,
+            block_device_mapping=None).AndReturn(
                 self.fc.servers.list()[1])
 
         return instance
@@ -204,13 +200,12 @@ class ServerTagsTest(HeatTestCase):
 
         new_tags = [{'Key': 'Food', 'Value': 'yuk'}]
         new_metadata = dict((tm['Key'], tm['Value']) for tm in new_tags)
-        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
 
         self.m.StubOutWithMock(self.fc.servers, 'set_meta')
         self.fc.servers.set_meta(self.fc.servers.list()[1],
                                  new_metadata).AndReturn(None)
-        self._mock_get_image_id_success('CentOS 5.2', 1)
+        self.stub_ImageConstraint_validate()
+        self.stub_KeypairConstraint_validate()
         self.m.ReplayAll()
         update_template = copy.deepcopy(instance.t)
         update_template['Properties']['Tags'] = new_tags
@@ -230,6 +225,9 @@ class ServerTagsTest(HeatTestCase):
 
         # create the launch configuration
         conf = stack['Config']
+        self.stub_KeypairConstraint_validate()
+        self.stub_ImageConstraint_validate()
+        self.m.ReplayAll()
         self.assertIsNone(conf.validate())
         scheduler.TaskRunner(conf.create)()
         self.assertEqual((conf.CREATE, conf.COMPLETE), conf.state)
@@ -238,9 +236,11 @@ class ServerTagsTest(HeatTestCase):
 
         nova_tags['metering.groupname'] = utils.PhysName(stack.name,
                                                          group.name)
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('CentOS 5.2', 1)
         # need to resolve the template functions
         self.m.StubOutWithMock(self.fc.servers, 'create')
@@ -249,7 +249,8 @@ class ServerTagsTest(HeatTestCase):
             name=mox.IgnoreArg(),
             security_groups=None,
             userdata=mox.IgnoreArg(), scheduler_hints=None,
-            meta=nova_tags, nics=None, availability_zone=None).AndReturn(
+            meta=nova_tags, nics=None, availability_zone=None,
+            block_device_mapping=None).AndReturn(
                 self.fc.servers.list()[1])
 
         return group
@@ -275,6 +276,10 @@ class ServerTagsTest(HeatTestCase):
 
         # create the launch configuration
         conf = stack['Config']
+        self.stub_ImageConstraint_validate()
+        self.stub_KeypairConstraint_validate()
+        self.m.ReplayAll()
+
         self.assertIsNone(conf.validate())
         scheduler.TaskRunner(conf.create)()
         self.assertEqual((conf.CREATE, conf.COMPLETE), conf.state)
@@ -285,11 +290,14 @@ class ServerTagsTest(HeatTestCase):
         nova_tags['metering.groupname'] = group_refid
         nova_tags['AutoScalingGroupName'] = group_refid
 
+        self.m.VerifyAll()
+        self.m.UnsetStubs()
+
         self.m.StubOutWithMock(group, '_cooldown_timestamp')
         group._cooldown_timestamp(mox.IgnoreArg()).AndReturn(None)
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('CentOS 5.2', 1)
         # need to resolve the template functions
         self.m.StubOutWithMock(self.fc.servers, 'create')
@@ -298,7 +306,8 @@ class ServerTagsTest(HeatTestCase):
             name=mox.IgnoreArg(),
             security_groups=None,
             userdata=mox.IgnoreArg(), scheduler_hints=None,
-            meta=nova_tags, nics=None, availability_zone=None).AndReturn(
+            meta=nova_tags, nics=None, availability_zone=None,
+            block_device_mapping=None).AndReturn(
                 self.fc.servers.list()[1])
 
         return group

@@ -53,7 +53,7 @@ class CfnStackControllerTest(HeatTestCase):
                          u'Foo': u'bar'}
 
         # Create WSGI controller instance
-        class DummyConfig():
+        class DummyConfig(object):
             bind_port = 8000
         cfgopts = DummyConfig()
         self.controller = stacks.StackController(options=cfgopts)
@@ -160,7 +160,7 @@ class CfnStackControllerTest(HeatTestCase):
         self.assertEqual(expected, result)
         default_args = {'limit': None, 'sort_keys': None, 'marker': None,
                         'sort_dir': None, 'filters': None, 'tenant_safe': True,
-                        'show_deleted': False}
+                        'show_deleted': False, 'show_nested': False}
         mock_call.assert_called_once_with(
             dummy_req.context, ('list_stacks', default_args))
 
@@ -511,7 +511,8 @@ class CfnStackControllerTest(HeatTestCase):
               'template': self.template,
               'params': engine_parms,
               'files': {},
-              'args': engine_args})
+              'args': engine_args,
+              'owner_id': None})
         ).AndReturn(engine_resp)
 
         self.m.ReplayAll()
@@ -557,7 +558,8 @@ class CfnStackControllerTest(HeatTestCase):
               'template': self.template,
               'params': engine_parms,
               'files': {},
-              'args': engine_args})
+              'args': engine_args,
+              'owner_id': None})
         ).AndReturn(engine_resp)
 
         self.m.ReplayAll()
@@ -603,7 +605,8 @@ class CfnStackControllerTest(HeatTestCase):
               'template': self.template,
               'params': engine_parms,
               'files': {},
-              'args': engine_args})
+              'args': engine_args,
+              'owner_id': None})
         ).AndReturn(engine_resp)
 
         self.m.ReplayAll()
@@ -649,7 +652,8 @@ class CfnStackControllerTest(HeatTestCase):
               'template': self.template,
               'params': engine_parms,
               'files': {},
-              'args': engine_args})
+              'args': engine_args,
+              'owner_id': None})
         ).AndReturn(engine_resp)
 
         self.m.ReplayAll()
@@ -695,7 +699,8 @@ class CfnStackControllerTest(HeatTestCase):
               'template': self.template,
               'params': engine_parms,
               'files': {},
-              'args': engine_args})
+              'args': engine_args,
+              'owner_id': None})
         ).AndReturn(engine_resp)
 
         self.m.ReplayAll()
@@ -779,7 +784,8 @@ class CfnStackControllerTest(HeatTestCase):
               'template': self.template,
               'params': engine_parms,
               'files': {},
-              'args': engine_args})
+              'args': engine_args,
+              'owner_id': None})
         ).AndRaise(AttributeError())
 
         policy.Enforcer.enforce(dummy_req.context, 'CreateStack'
@@ -791,7 +797,8 @@ class CfnStackControllerTest(HeatTestCase):
               'template': self.template,
               'params': engine_parms,
               'files': {},
-              'args': engine_args})
+              'args': engine_args,
+              'owner_id': None})
         ).AndRaise(heat_exception.UnknownUserParameter(key='test'))
 
         policy.Enforcer.enforce(dummy_req.context, 'CreateStack'
@@ -803,7 +810,8 @@ class CfnStackControllerTest(HeatTestCase):
               'template': self.template,
               'params': engine_parms,
               'files': {},
-              'args': engine_args})
+              'args': engine_args,
+              'owner_id': None})
         ).AndRaise(heat_exception.UserParameterMissing(key='test'))
 
         self.m.ReplayAll()
@@ -842,7 +850,8 @@ class CfnStackControllerTest(HeatTestCase):
               'template': self.template,
               'params': engine_parms,
               'files': {},
-              'args': engine_args})
+              'args': engine_args,
+              'owner_id': None})
         ).AndRaise(heat_exception.StackExists(stack_name='test'))
 
         self.m.ReplayAll()
@@ -875,7 +884,8 @@ class CfnStackControllerTest(HeatTestCase):
               'template': self.template,
               'params': engine_parms,
               'files': {},
-              'args': engine_args})
+              'args': engine_args,
+              'owner_id': None})
         ).AndRaise(heat_exception.StackValidationFailed(
             message='Something went wrong'))
 

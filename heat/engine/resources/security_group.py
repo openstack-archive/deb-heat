@@ -11,7 +11,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from novaclient import exceptions as nova_exceptions
 import six
 
 from heat.common import exception
@@ -71,7 +70,7 @@ class SecurityGroup(resource.Resource):
         ),
         VPC_ID: properties.Schema(
             properties.Schema.STRING,
-            _('Physical ID of the VPC.')
+            _('Physical ID of the VPC. Not implemented.')
         ),
         SECURITY_GROUP_INGRESS: properties.Schema(
             properties.Schema.LIST,
@@ -92,7 +91,7 @@ class SecurityGroup(resource.Resource):
     }
 
     def handle_create(self):
-        if self.properties[self.VPC_ID]:
+        if self.is_using_neutron():
             self._handle_create_neutron()
         else:
             self._handle_create_nova()
@@ -112,7 +111,6 @@ class SecurityGroup(resource.Resource):
         }
 
     def _handle_create_neutron(self):
-        from neutronclient.common.exceptions import NeutronClientException
         client = self.neutron()
 
         sec = client.create_security_group({'security_group': {
@@ -141,8 +139,8 @@ class SecurityGroup(resource.Resource):
                         'security_group_rule':
                         self._convert_to_neutron_rule('ingress', i)
                     })
-                except NeutronClientException as ex:
-                    if ex.status_code == 409:
+                except Exception as ex:
+                    if self.client_plugin('neutron').is_conflict(ex):
                         # no worries, the rule is already there
                         pass
                     else:
@@ -161,8 +159,8 @@ class SecurityGroup(resource.Resource):
                         'security_group_rule':
                         self._convert_to_neutron_rule('egress', i)
                     })
-                except NeutronClientException as ex:
-                    if ex.status_code == 409:
+                except Exception as ex:
+                    if self.client_plugin('neutron').is_conflict(ex):
                         # no worries, the rule is already there
                         pass
                     else:
@@ -206,8 +204,9 @@ class SecurityGroup(resource.Resource):
                         i.get(self.RULE_TO_PORT),
                         i.get(self.RULE_CIDR_IP),
                         source_group_id)
-                except nova_exceptions.BadRequest as ex:
-                    if six.text_type(ex).find('already exists') >= 0:
+                except Exception as ex:
+                    if self.client_plugin('nova').is_bad_request(ex) and \
+                            six.text_type(ex).find('already exists') >= 0:
                         # no worries, the rule is already there
                         pass
                     else:
@@ -215,7 +214,7 @@ class SecurityGroup(resource.Resource):
                         raise
 
     def handle_delete(self):
-        if self.properties[self.VPC_ID]:
+        if self.is_using_neutron():
             self._handle_delete_neutron()
         else:
             self._handle_delete_nova()
@@ -224,46 +223,40 @@ class SecurityGroup(resource.Resource):
         if self.resource_id is not None:
             try:
                 sec = self.nova().security_groups.get(self.resource_id)
-            except nova_exceptions.NotFound:
-                pass
+            except Exception as e:
+                self.client_plugin('nova').ignore_not_found(e)
             else:
                 for rule in sec.rules:
                     try:
                         self.nova().security_group_rules.delete(rule['id'])
-                    except nova_exceptions.NotFound:
-                        pass
+                    except Exception as e:
+                        self.client_plugin('nova').ignore_not_found(e)
 
                 self.nova().security_groups.delete(self.resource_id)
-            self.resource_id_set(None)
 
     def _handle_delete_neutron(self):
-        from neutronclient.common.exceptions import NeutronClientException
         client = self.neutron()
 
         if self.resource_id is not None:
             try:
                 sec = client.show_security_group(
                     self.resource_id)['security_group']
-            except NeutronClientException as ex:
-                if ex.status_code != 404:
-                    raise
+            except Exception as ex:
+                self.client_plugin('neutron').ignore_not_found(ex)
             else:
                 for rule in sec['security_group_rules']:
                     try:
                         client.delete_security_group_rule(rule['id'])
-                    except NeutronClientException as ex:
-                        if ex.status_code != 404:
-                            raise
+                    except Exception as ex:
+                        self.client_plugin('neutron').ignore_not_found(ex)
 
                 try:
                     client.delete_security_group(self.resource_id)
-                except NeutronClientException as ex:
-                    if ex.status_code != 404:
-                        raise
-            self.resource_id_set(None)
+                except Exception as ex:
+                    self.client_plugin('neutron').ignore_not_found(ex)
 
     def FnGetRefId(self):
-        if self.properties[self.VPC_ID]:
+        if self.is_using_neutron():
             return super(SecurityGroup, self).FnGetRefId()
         else:
             return self.physical_resource_name()
@@ -273,8 +266,8 @@ class SecurityGroup(resource.Resource):
         if res:
             return res
 
-        if self.properties[self.SECURITY_GROUP_EGRESS] and not \
-                self.properties[self.VPC_ID]:
+        if (self.properties[self.SECURITY_GROUP_EGRESS] and
+                not self.is_using_neutron()):
             raise exception.EgressRuleNotAllowed()
 
 

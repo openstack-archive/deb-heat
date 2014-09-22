@@ -14,9 +14,8 @@
 #    under the License.
 
 import copy
+import six
 import uuid
-
-import heatclient.exc as heat_exp
 
 from heat.common import exception
 from heat.engine import attributes
@@ -160,6 +159,8 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         ),
     }
 
+    default_client_name = 'heat'
+
     def _signal_transport_cfn(self):
         return self.properties.get(
             self.SIGNAL_TRANSPORT) == self.CFN_SIGNAL
@@ -191,8 +192,8 @@ class SoftwareDeployment(signal_responder.SignalResponder):
     def _delete_derived_config(self, derived_config_id):
         try:
             self.heat().software_configs.delete(derived_config_id)
-        except heat_exp.HTTPNotFound:
-            pass
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
 
     def _get_derived_config(self, action):
 
@@ -404,8 +405,8 @@ class SoftwareDeployment(signal_responder.SignalResponder):
                 sd = self.heat().software_deployments.get(self.resource_id)
                 derived_config_id = sd.config_id
                 sd.delete()
-            except heat_exp.HTTPNotFound:
-                pass
+            except Exception as ex:
+                self.client_plugin().ignore_not_found(ex)
 
         if derived_config_id:
             self._delete_derived_config(derived_config_id)
@@ -440,6 +441,9 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             status_reasons[self.STATUS_CODE] = _(
                 'Deployment exited with non-zero status code: %s'
             ) % details.get(self.STATUS_CODE)
+            event_reason = 'deployment failed (%s)' % status_code
+        else:
+            event_reason = 'deployment succeeded'
 
         for output in sc.outputs or []:
             out_key = output['name']
@@ -448,6 +452,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
                 if output.get('error_output', False):
                     status = self.FAILED
                     status_reasons[out_key] = details[out_key]
+                    event_reason = 'deployment failed'
 
         for out_key in self.ATTRIBUTES:
             ov[out_key] = details.get(out_key)
@@ -455,20 +460,24 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         if status == self.FAILED:
             # build a status reason out of all of the values of outputs
             # flagged as error_output
-            status_reason = ', '.join([' : '.join((k, str(status_reasons[k])))
-                                       for k in status_reasons])
+            status_reasons = [' : '.join((k, six.text_type(status_reasons[k])))
+                              for k in status_reasons]
+            status_reason = ', '.join(status_reasons)
         else:
             status = self.COMPLETE
             status_reason = _('Outputs received')
         sd.update(output_values=ov, status=status, status_reason=status_reason)
+        # Return a string describing the outcome of handling the signal data
+        return event_reason
 
-    def FnGetAtt(self, key):
+    def FnGetAtt(self, key, *path):
         '''
         Resource attributes map to deployment outputs values
         '''
         sd = self.heat().software_deployments.get(self.resource_id)
         if key in sd.output_values:
-            return sd.output_values.get(key)
+            attribute = sd.output_values.get(key)
+            return attributes.select_from_attribute(attribute, path)
 
         # Since there is no value for this key yet, check the output schemas
         # to find out if the key is valid
@@ -477,6 +486,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         if key not in output_keys and key not in self.ATTRIBUTES:
             raise exception.InvalidTemplateAttribute(resource=self.name,
                                                      key=key)
+        return None
 
     def validate(self):
         '''

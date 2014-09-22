@@ -14,6 +14,7 @@
 from oslo.config import cfg
 import requests
 from requests import exceptions
+import six
 from six.moves import cStringIO
 from six.moves import urllib
 
@@ -21,7 +22,7 @@ from heat.common import urlfetch
 from heat.tests.common import HeatTestCase
 
 
-class Response:
+class Response(object):
     def __init__(self, buf=''):
         self.buf = buf
 
@@ -127,5 +128,5 @@ class UrlFetchTest(HeatTestCase):
         self.m.ReplayAll()
         exception = self.assertRaises(urlfetch.URLFetchError,
                                       urlfetch.get, url)
-        self.assertIn("Template exceeds", str(exception))
+        self.assertIn("Template exceeds", six.text_type(exception))
         self.m.VerifyAll()

@@ -124,14 +124,6 @@ class TestPolicyEnforcer(HeatTestCase):
             # Everything should be allowed
             enforcer.enforce(ctx, action)
 
-    def test_clear(self):
-        self.stub_policyfile('deny_stack_user.json')
-
-        enforcer = policy.Enforcer()
-        enforcer.load_rules(force_reload=True)
-        enforcer.clear()
-        self.assertEqual({}, enforcer.enforcer.rules)
-
     def test_set_rules_overwrite_true(self):
         self.stub_policyfile('deny_stack_user.json')
 
@@ -187,4 +179,13 @@ class TestPolicyEnforcer(HeatTestCase):
         self.assertFalse(enforcer.check_is_admin(ctx))
 
         ctx = utils.dummy_context(roles=['admin'])
+        self.assertTrue(enforcer.check_is_admin(ctx))
+
+    def test_enforce_creds(self):
+        enforcer = policy.Enforcer()
+        ctx = utils.dummy_context(roles=['admin'])
+        self.m.StubOutWithMock(base_policy.Enforcer, 'enforce')
+        base_policy.Enforcer.enforce('context_is_admin', {}, ctx.to_dict(),
+                                     False, exc=None).AndReturn(True)
+        self.m.ReplayAll()
         self.assertTrue(enforcer.check_is_admin(ctx))

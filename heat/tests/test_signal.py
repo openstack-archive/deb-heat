@@ -19,11 +19,11 @@ from oslo.config import cfg
 from heat.common import exception
 from heat.common import template_format
 from heat.db import api as db_api
-from heat.engine.clients.os import keystone
 from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import stack_user
+from heat.engine import template
 from heat.tests.common import HeatTestCase
 from heat.tests import fakes
 from heat.tests import generic_resource
@@ -57,29 +57,22 @@ class SignalTest(HeatTestCase):
                              'http://server.test:8000/v1/waitcondition')
 
         self.stack_id = 'STACKABCD1234'
-        self.fc = fakes.FakeKeystoneClient()
 
     def tearDown(self):
         super(SignalTest, self).tearDown()
 
     def create_stack(self, stack_name='test_stack', stub=True):
-        temp = template_format.parse(test_template_signal)
-        template = parser.Template(temp)
+        templ = template.Template(template_format.parse(test_template_signal))
         ctx = utils.dummy_context()
         ctx.tenant_id = 'test_tenant'
-        stack = parser.Stack(ctx, stack_name, template,
+        stack = parser.Stack(ctx, stack_name, templ,
                              disable_rollback=True)
 
         # Stub out the stack ID so we have a known value
         with utils.UUIDStub(self.stack_id):
             stack.store()
-
         if stub:
-            self.m.StubOutWithMock(stack_user.StackUser, 'keystone')
-            stack_user.StackUser.keystone().MultipleTimes().AndReturn(
-                self.fc)
-
-        self.m.ReplayAll()
+            self.stub_keystoneclient()
 
         return stack
 
@@ -213,10 +206,8 @@ class SignalTest(HeatTestCase):
         class FakeKeystoneClientFail(fakes.FakeKeystoneClient):
             def delete_stack_user(self, name):
                 raise kc_exceptions.NotFound()
+        self.stub_keystoneclient(fake_client=FakeKeystoneClientFail())
 
-        self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
-        keystone.KeystoneClientPlugin._create().AndReturn(
-            FakeKeystoneClientFail())
         self.m.ReplayAll()
 
         self.stack.create()
@@ -272,16 +263,6 @@ class SignalTest(HeatTestCase):
         none_details = None
         none_expected = 'No signal details provided'
 
-        # signal from a successful deployment
-        sds_details = {'deploy_stdout': 'foo', 'deploy_stderr': 'bar',
-                       'deploy_status_code': 0}
-        sds_expected = 'deployment succeeded'
-
-        # signal from a failed deployment
-        sdf_details = {'deploy_stdout': 'foo', 'deploy_stderr': 'bar',
-                       'deploy_status_code': -1}
-        sdf_expected = 'deployment failed (-1)'
-
         # to confirm we get a string reason
         self.m.StubOutWithMock(generic_resource.SignalResource,
                                '_add_event')
@@ -293,26 +274,38 @@ class SignalTest(HeatTestCase):
             'signal', 'COMPLETE', str_expected).AndReturn(None)
         generic_resource.SignalResource._add_event(
             'signal', 'COMPLETE', none_expected).AndReturn(None)
-        generic_resource.SignalResource._add_event(
-            'signal', 'COMPLETE', sds_expected).AndReturn(None)
-        generic_resource.SignalResource._add_event(
-            'signal', 'COMPLETE', sdf_expected).AndReturn(None)
 
         self.m.ReplayAll()
 
         for test_d in (ceilo_details, watch_details, str_details,
-                       none_details, sds_details, sdf_details):
+                       none_details):
             rsrc.signal(details=test_d)
 
         self.m.VerifyAll()
-        self.m.UnsetStubs()
 
-        # Since we unset the stubs above we must re-stub keystone to keep the
-        # test isolated from keystoneclient.
-        self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
-        keystone.KeystoneClientPlugin._create().AndReturn(self.fc)
+    def test_signal_plugin_reason(self):
+        # Ensure if handle_signal returns data, we use it as the reason
+        self.stack = self.create_stack()
+        self.stack.create()
 
+        rsrc = self.stack['signal_handler']
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+
+        self.m.StubOutWithMock(generic_resource.SignalResource,
+                               'handle_signal')
+        signal_details = {'status': 'COMPLETE'}
+        ret_expected = "Received COMPLETE signal"
+        generic_resource.SignalResource.handle_signal(
+            signal_details).AndReturn(ret_expected)
+
+        self.m.StubOutWithMock(generic_resource.SignalResource,
+                               '_add_event')
+        generic_resource.SignalResource._add_event(
+            'signal', 'COMPLETE', 'Signal: %s' % ret_expected).AndReturn(None)
         self.m.ReplayAll()
+
+        rsrc.signal(details=signal_details)
+        self.m.VerifyAll()
 
     def test_signal_wrong_resource(self):
         # assert that we get the correct exception when calling a
@@ -326,7 +319,7 @@ class SignalTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         err_metadata = {'Data': 'foo', 'Status': 'SUCCESS', 'UniqueId': '123'}
-        self.assertRaises(exception.ResourceFailure, rsrc.signal,
+        self.assertRaises(exception.ResourceActionNotSupported, rsrc.signal,
                           details=err_metadata)
 
         self.m.VerifyAll()

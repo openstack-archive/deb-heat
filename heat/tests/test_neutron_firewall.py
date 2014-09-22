@@ -12,7 +12,9 @@
 #    under the License.
 
 import copy
+import six
 
+from neutronclient.common import exceptions
 from neutronclient.v2_0 import client as neutronclient
 
 from heat.common import exception
@@ -117,7 +119,7 @@ class FirewallTest(HeatTestCase):
             'firewall': {
                 'name': 'test-firewall', 'admin_state_up': True,
                 'firewall_policy_id': 'policy-id'}}
-        ).AndRaise(firewall.NeutronClientException())
+        ).AndRaise(exceptions.NeutronClientException())
         self.m.ReplayAll()
 
         snippet = template_format.parse(firewall_template)
@@ -130,14 +132,14 @@ class FirewallTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
     def test_delete(self):
         neutronclient.Client.delete_firewall('5678')
         neutronclient.Client.show_firewall('5678').AndRaise(
-            firewall.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         rsrc = self.create_firewall()
         self.m.ReplayAll()
@@ -148,7 +150,7 @@ class FirewallTest(HeatTestCase):
 
     def test_delete_already_gone(self):
         neutronclient.Client.delete_firewall('5678').AndRaise(
-            firewall.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         rsrc = self.create_firewall()
         self.m.ReplayAll()
@@ -159,7 +161,7 @@ class FirewallTest(HeatTestCase):
 
     def test_delete_failed(self):
         neutronclient.Client.delete_firewall('5678').AndRaise(
-            firewall.NeutronClientException(status_code=400))
+            exceptions.NeutronClientException(status_code=400))
 
         rsrc = self.create_firewall()
         self.m.ReplayAll()
@@ -168,7 +170,7 @@ class FirewallTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
@@ -192,7 +194,7 @@ class FirewallTest(HeatTestCase):
                                   rsrc.FnGetAtt, 'subnet_id')
         self.assertEqual(
             'The Referenced Attribute (firewall subnet_id) is '
-            'incorrect.', str(error))
+            'incorrect.', six.text_type(error))
         self.m.VerifyAll()
 
     def test_update(self):
@@ -244,7 +246,7 @@ class FirewallPolicyTest(HeatTestCase):
             'firewall_policy': {
                 'name': 'test-firewall-policy', 'shared': True,
                 'audited': True, 'firewall_rules': ['rule-id-1', 'rule-id-2']}}
-        ).AndRaise(firewall.NeutronClientException())
+        ).AndRaise(exceptions.NeutronClientException())
         self.m.ReplayAll()
 
         snippet = template_format.parse(firewall_policy_template)
@@ -257,14 +259,14 @@ class FirewallPolicyTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
     def test_delete(self):
         neutronclient.Client.delete_firewall_policy('5678')
         neutronclient.Client.show_firewall_policy('5678').AndRaise(
-            firewall.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         rsrc = self.create_firewall_policy()
         self.m.ReplayAll()
@@ -275,7 +277,7 @@ class FirewallPolicyTest(HeatTestCase):
 
     def test_delete_already_gone(self):
         neutronclient.Client.delete_firewall_policy('5678').AndRaise(
-            firewall.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         rsrc = self.create_firewall_policy()
         self.m.ReplayAll()
@@ -286,7 +288,7 @@ class FirewallPolicyTest(HeatTestCase):
 
     def test_delete_failed(self):
         neutronclient.Client.delete_firewall_policy('5678').AndRaise(
-            firewall.NeutronClientException(status_code=400))
+            exceptions.NeutronClientException(status_code=400))
 
         rsrc = self.create_firewall_policy()
         self.m.ReplayAll()
@@ -295,7 +297,7 @@ class FirewallPolicyTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
@@ -318,7 +320,7 @@ class FirewallPolicyTest(HeatTestCase):
                                   rsrc.FnGetAtt, 'subnet_id')
         self.assertEqual(
             'The Referenced Attribute (firewall_policy subnet_id) is '
-            'incorrect.', str(error))
+            'incorrect.', six.text_type(error))
         self.m.VerifyAll()
 
     def test_update(self):
@@ -372,7 +374,7 @@ class FirewallRuleTest(HeatTestCase):
                 'name': 'test-firewall-rule', 'shared': True,
                 'action': 'allow', 'protocol': 'tcp', 'enabled': True,
                 'ip_version': "4"}}
-        ).AndRaise(firewall.NeutronClientException())
+        ).AndRaise(exceptions.NeutronClientException())
         self.m.ReplayAll()
 
         snippet = template_format.parse(firewall_rule_template)
@@ -385,14 +387,14 @@ class FirewallRuleTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
     def test_delete(self):
         neutronclient.Client.delete_firewall_rule('5678')
         neutronclient.Client.show_firewall_rule('5678').AndRaise(
-            firewall.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         rsrc = self.create_firewall_rule()
         self.m.ReplayAll()
@@ -403,7 +405,7 @@ class FirewallRuleTest(HeatTestCase):
 
     def test_delete_already_gone(self):
         neutronclient.Client.delete_firewall_rule('5678').AndRaise(
-            firewall.NeutronClientException(status_code=404))
+            exceptions.NeutronClientException(status_code=404))
 
         rsrc = self.create_firewall_rule()
         self.m.ReplayAll()
@@ -414,7 +416,7 @@ class FirewallRuleTest(HeatTestCase):
 
     def test_delete_failed(self):
         neutronclient.Client.delete_firewall_rule('5678').AndRaise(
-            firewall.NeutronClientException(status_code=400))
+            exceptions.NeutronClientException(status_code=400))
 
         rsrc = self.create_firewall_rule()
         self.m.ReplayAll()
@@ -423,7 +425,7 @@ class FirewallRuleTest(HeatTestCase):
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
             'NeutronClientException: An unknown exception occurred.',
-            str(error))
+            six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
@@ -446,7 +448,7 @@ class FirewallRuleTest(HeatTestCase):
                                   rsrc.FnGetAtt, 'subnet_id')
         self.assertEqual(
             'The Referenced Attribute (firewall_rule subnet_id) is '
-            'incorrect.', str(error))
+            'incorrect.', six.text_type(error))
         self.m.VerifyAll()
 
     def test_update(self):

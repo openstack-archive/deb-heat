@@ -20,6 +20,7 @@ import six
 from heat.api.aws import utils as aws_utils
 from heat.common import exception
 from heat.engine import function
+from heat.engine import resource
 
 
 class FindInMap(function.Function):
@@ -173,6 +174,15 @@ class GetAtt(function.Function):
         return itertools.chain(super(GetAtt, self).dependencies(path),
                                [self._resource(path)])
 
+    def validate(self):
+        super(GetAtt, self).validate()
+        res = self._resource()
+        attr = function.resolve(self._attribute)
+        if (type(res).FnGetAtt == resource.Resource.FnGetAtt and
+                attr not in res.attributes_schema.keys()):
+            raise exception.InvalidTemplateAttribute(
+                resource=self._resource_name, key=attr)
+
     def result(self):
         attribute = function.resolve(self._attribute)
 
@@ -289,6 +299,8 @@ class Join(function.Function):
 
     def result(self):
         strings = function.resolve(self._strings)
+        if strings is None:
+            strings = []
         if (isinstance(strings, basestring) or
                 not isinstance(strings, collections.Sequence)):
             raise TypeError(_('"%s" must operate on a list') % self.fn_name)
@@ -302,7 +314,8 @@ class Join(function.Function):
             if s is None:
                 return ''
             if not isinstance(s, basestring):
-                raise TypeError(_('Items to join must be strings'))
+                raise TypeError(
+                    _('Items to join must be strings %s') % (repr(s)[:200]))
             return s
 
         return delim.join(ensure_string(s) for s in strings)
@@ -425,7 +438,7 @@ class Replace(function.Function):
 
             return string.replace(placeholder, unicode(value))
 
-        return reduce(replace, mapping.iteritems(), template)
+        return reduce(replace, six.iteritems(mapping), template)
 
 
 class Base64(function.Function):
