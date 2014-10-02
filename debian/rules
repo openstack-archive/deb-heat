@@ -32,7 +32,7 @@ override_dh_clean:
 		debian/heat-common.config
 
 override_dh_install:
-	dh_install
+	dh_install --fail-missing
 	install -D -m 0640 etc/heat/heat.conf.sample $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
 	cat $(CURDIR)/debian/keystone_authtoken >>$(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
 	set -e && for pyvers in $(PYTHONS); do \
