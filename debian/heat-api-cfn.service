@@ -1,0 +1,16 @@
+[Unit]
+Description=OpenStack Heat API CFN
+Documentation=http://docs.openstack.org/
+After=postgresql.service mysql.service keystone.service rabbitmq-server.service ntp.service network.service
+
+[Service]
+User=heat
+Group=heat
+ExecStart=/etc/init.d/heat-api-cfn systemd-start
+ExecStop=/etc/init.d/heat-api-cfn systemd-stop
+PIDFile=/var/run/heat/heat-api-cfn.pid
+Restart=on-failure
+Type=forking
+
+[Install]
+WantedBy=multi-user.target
