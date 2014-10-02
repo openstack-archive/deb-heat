@@ -14,12 +14,15 @@
 import copy
 import mock
 import six
+import uuid
 
 from heat.common import exception
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources import resource_group
 from heat.engine import scheduler
+from heat.engine import stack as stackm
+from heat.engine import template as templatem
 from heat.tests import common
 from heat.tests import generic_resource
 from heat.tests import utils
@@ -208,7 +211,7 @@ class ResourceGroupTest(common.HeatTestCase):
             }
         }
 
-        self.assertEqual(templ, resg._assemble_nested(3))
+        self.assertEqual(templ, resg._assemble_nested(['0', '1', '2']))
 
     def test_assemble_nested_include(self):
         templ = copy.deepcopy(template)
@@ -226,9 +229,10 @@ class ResourceGroupTest(common.HeatTestCase):
                 }
             }
         }
-        self.assertEqual(expect, resg._assemble_nested(1))
+        self.assertEqual(expect, resg._assemble_nested(['0']))
         expect['resources']["0"]['properties'] = {"Foo": None}
-        self.assertEqual(expect, resg._assemble_nested(1, include_all=True))
+        self.assertEqual(
+            expect, resg._assemble_nested(['0'], include_all=True))
 
     def test_index_var(self):
         stack = utils.parse_stack(template_repl)
@@ -266,7 +270,7 @@ class ResourceGroupTest(common.HeatTestCase):
                 }
             }
         }
-        self.assertEqual(expect, resg._assemble_nested(3))
+        self.assertEqual(expect, resg._assemble_nested(['0', '1', '2']))
 
     def test_custom_index_var(self):
         templ = copy.deepcopy(template_repl)
@@ -288,7 +292,7 @@ class ResourceGroupTest(common.HeatTestCase):
                 }
             }
         }
-        self.assertEqual(expect, resg._assemble_nested(1))
+        self.assertEqual(expect, resg._assemble_nested(['0']))
 
         res_def = snip['Properties']['resource_def']
         res_def['properties']['Foo'] = "Bar___foo__"
@@ -310,7 +314,7 @@ class ResourceGroupTest(common.HeatTestCase):
                 }
             }
         }
-        self.assertEqual(expect, resg._assemble_nested(1))
+        self.assertEqual(expect, resg._assemble_nested(['0']))
 
     def test_assemble_no_properties(self):
         templ = copy.deepcopy(template)
@@ -428,6 +432,22 @@ class ResourceGroupTest(common.HeatTestCase):
         expected = ['ID-0', 'ID-1']
         self.assertEqual(expected, resg.FnGetAtt("refs"))
 
+    def test_aggregate_outputs(self):
+        """
+        Test outputs aggregation
+        """
+        resg = self._create_dummy_stack(template_attr)
+        expected = {'0': ['foo', 'bar'], '1': ['foo', 'bar']}
+        self.assertEqual(expected, resg.FnGetAtt('attributes', 'list'))
+
+    def test_aggregate_outputs_no_path(self):
+        """
+        Test outputs aggregation with missing path
+        """
+        resg = self._create_dummy_stack(template_attr)
+        self.assertRaises(exception.InvalidTemplateAttribute,
+                          resg.FnGetAtt, 'attributes')
+
     def test_index_refs(self):
         """Tests getting ids of individual resources."""
         resg = self._create_dummy_stack()
@@ -456,10 +476,61 @@ class ResourceGroupTest(common.HeatTestCase):
         resgrp.properties.data[resgrp.COUNT] = 2
 
         self.assertEqual('tmpl', resgrp.child_template())
-        resgrp._assemble_nested.assert_called_once_with(2)
+        resgrp._assemble_nested.assert_called_once_with(['0', '1'])
 
     def test_child_params(self):
         stack = utils.parse_stack(template2)
         snip = stack.t.resource_definitions(stack)['group1']
         resgrp = resource_group.ResourceGroup('test', snip, stack)
         self.assertEqual({}, resgrp.child_params())
+
+    def test_adopt(self):
+        tmpl = templatem.Template(template)
+        stack = stackm.Stack(utils.dummy_context(),
+                             'test_stack',
+                             tmpl,
+                             stack_id=str(uuid.uuid4()))
+
+        resg = stack['group1']
+
+        adopt_data = {
+            "status": "COMPLETE",
+            "name": "group1",
+            "resource_data": {},
+            "metadata": {},
+            "resource_id": "test-group1-id",
+            "action": "CREATE",
+            "type": "OS::Heat::ResourceGroup",
+            "resources": {
+                "0": {
+                    "status": "COMPLETE",
+                    "name": "0",
+                    "resource_data": {},
+                    "resource_id": "ID-0",
+                    "action": "CREATE",
+                    "type": "dummy.resource",
+                    "metadata": {}
+                },
+                "1": {
+                    "status": "COMPLETE",
+                    "name": "1",
+                    "resource_data": {},
+                    "resource_id": "ID-1",
+                    "action": "CREATE",
+                    "type": "dummy.resource",
+                    "metadata": {}
+                }
+            }
+        }
+        scheduler.TaskRunner(resg.adopt, adopt_data)()
+        self.assertEqual((resg.ADOPT, resg.COMPLETE), resg.state)
+        self.assertEqual(adopt_data['name'], resg.name)
+        # a new nested stack should be created
+        self.assertIsNotNone(resg.resource_id)
+        # verify all the resources in resource group are adopted.
+        self.assertEqual(adopt_data['resources']['0']['resource_id'],
+                         resg.FnGetAtt('resource.0'))
+        self.assertEqual(adopt_data['resources']['1']['resource_id'],
+                         resg.FnGetAtt('resource.1'))
+        self.assertRaises(exception.InvalidTemplateAttribute, resg.FnGetAtt,
+                          'resource.2')

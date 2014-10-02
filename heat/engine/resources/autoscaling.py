@@ -14,6 +14,7 @@
 import copy
 import math
 
+from oslo.utils import excutils
 import six
 
 from heat.common import environment_format
@@ -27,7 +28,6 @@ from heat.engine import properties
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.engine import stack_resource
-from heat.openstack.common import excutils
 from heat.openstack.common import log as logging
 from heat.scaling import cooldown
 from heat.scaling import template
@@ -671,7 +671,7 @@ class AutoScalingGroup(InstanceGroup, cooldown.CooldownMixin):
         the groupname and stack id.
         Note: the group name must match what is returned from FnGetRefId
         """
-        autoscaling_tag = [{self.TAG_KEY: 'AutoScalingGroupName',
+        autoscaling_tag = [{self.TAG_KEY: 'metering.AutoScalingGroupName',
                             self.TAG_VALUE: self.FnGetRefId()}]
         return super(AutoScalingGroup, self)._tags() + autoscaling_tag
 

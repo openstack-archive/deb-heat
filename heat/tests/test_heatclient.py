@@ -525,6 +525,40 @@ class KeystoneClientTest(HeatTestCase):
         self.assertEqual('atrust123', trust_context.trust_id)
         self.assertEqual('5678', trust_context.trustor_user_id)
 
+    def test_create_trust_context_trust_create_norole(self):
+
+        """Test create_trust_context when creating a trust."""
+
+        class MockTrust(object):
+            id = 'atrust123'
+
+        self._stub_admin_client()
+
+        self._stubs_v3()
+        cfg.CONF.set_override('deferred_auth_method', 'trusts')
+        cfg.CONF.set_override('trusts_delegated_roles', ['heat_stack_owner'])
+
+        self.mock_ks_v3_client.auth_ref = self.m.CreateMockAnything()
+        self.mock_ks_v3_client.auth_ref.user_id = '5678'
+        self.mock_ks_v3_client.auth_ref.project_id = '42'
+        self.mock_ks_v3_client.trusts = self.m.CreateMockAnything()
+        self.mock_ks_v3_client.trusts.create(
+            trustor_user='5678',
+            trustee_user='1234',
+            project='42',
+            impersonation=True,
+            role_names=['heat_stack_owner']).AndRaise(kc_exception.NotFound())
+
+        self.m.ReplayAll()
+
+        ctx = utils.dummy_context()
+        ctx.trust_id = None
+        heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
+        exc = self.assertRaises(exception.MissingCredentialError,
+                                heat_ks_client.create_trust_context)
+        expected = 'Missing required credential: roles [\'heat_stack_owner\']'
+        self.assertIn(expected, six.text_type(exc))
+
     def test_init_domain_cfg_not_set_fallback(self):
 
         """Test error path when config lacks domain config."""
@@ -1241,16 +1275,80 @@ class KeystoneClientTest(HeatTestCase):
 
         self._stub_domain_admin_client()
         self.mock_admin_client.projects = self.m.CreateMockAnything()
-        self.mock_admin_client.projects.delete(project='aprojectid')
-        self.mock_admin_client.projects.delete(project='aprojectid').AndRaise(
-            kc_exception.NotFound)
+        dummy = self.m.CreateMockAnything()
+        dummy.id = 'aproject123'
+        dummy.domain_id = 'adomain123'
+        dummy.delete().AndReturn(None)
+        self.mock_admin_client.projects.get(project='aprojectid').AndReturn(
+            dummy)
         self.m.ReplayAll()
 
         ctx = utils.dummy_context()
         ctx.trust_id = None
         heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
         heat_ks_client.delete_stack_domain_project(project_id='aprojectid')
-        # Second delete will raise ignored NotFound
+
+    def test_delete_stack_domain_project_notfound(self):
+
+        """Test the delete_stack_domain_project function."""
+
+        self._stub_domain_admin_client()
+        self.mock_admin_client.projects = self.m.CreateMockAnything()
+        dummy = self.m.CreateMockAnything()
+        dummy.id = 'aproject123'
+        dummy.domain_id = 'adomain123'
+        dummy.delete().AndRaise(kc_exception.NotFound)
+        self.mock_admin_client.projects.get(project='aprojectid').AndReturn(
+            dummy)
+        self.m.ReplayAll()
+
+        ctx = utils.dummy_context()
+        ctx.trust_id = None
+        heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
+        heat_ks_client.delete_stack_domain_project(project_id='aprojectid')
+
+    def test_delete_stack_domain_project_forbidden(self):
+
+        """Test the delete_stack_domain_project function."""
+
+        self._stub_domain_admin_client()
+        self.mock_admin_client.projects = self.m.CreateMockAnything()
+        self.mock_admin_client.projects.get(project='aprojectid').AndRaise(
+            kc_exception.Forbidden)
+        self.m.ReplayAll()
+
+        ctx = utils.dummy_context()
+        ctx.trust_id = None
+        heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
+        heat_ks_client.delete_stack_domain_project(project_id='aprojectid')
+
+    def test_delete_stack_domain_project_wrongdomain(self):
+
+        """Test the delete_stack_domain_project function."""
+
+        self._stub_domain_admin_client()
+        self.mock_admin_client.projects = self.m.CreateMockAnything()
+        dummy = self.m.CreateMockAnything()
+        dummy.id = 'aproject123'
+        dummy.domain_id = 'default'
+        self.mock_admin_client.projects.get(project='aprojectid').AndReturn(
+            dummy)
+        self.m.ReplayAll()
+
+        ctx = utils.dummy_context()
+        ctx.trust_id = None
+        heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
+        heat_ks_client.delete_stack_domain_project(project_id='aprojectid')
+
+    def test_delete_stack_domain_project_nodomain(self):
+
+        """Test the delete_stack_domain_project function."""
+
+        self._clear_domain_override()
+
+        ctx = utils.dummy_context()
+        ctx.trust_id = None
+        heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
         heat_ks_client.delete_stack_domain_project(project_id='aprojectid')
 
     def _stub_domain_user_pw_auth(self):
@@ -1460,3 +1558,18 @@ class KeystoneClientTestDomainName(KeystoneClientTest):
         self._stub_domain_admin_client_domain_get()
         p = super(KeystoneClientTestDomainName, self)
         p.test_disable_stack_domain_user_error_domain()
+
+    def test_delete_stack_domain_project(self):
+        self._stub_domain_admin_client_domain_get()
+        p = super(KeystoneClientTestDomainName, self)
+        p.test_delete_stack_domain_project()
+
+    def test_delete_stack_domain_project_notfound(self):
+        self._stub_domain_admin_client_domain_get()
+        p = super(KeystoneClientTestDomainName, self)
+        p.test_delete_stack_domain_project_notfound()
+
+    def test_delete_stack_domain_project_wrongdomain(self):
+        self._stub_domain_admin_client_domain_get()
+        p = super(KeystoneClientTestDomainName, self)
+        p.test_delete_stack_domain_project_wrongdomain()

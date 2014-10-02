@@ -17,10 +17,10 @@
 
 from keystoneclient.v2_0 import client as kc
 from oslo.config import cfg
+from oslo.utils import importutils
 
 from heat.common import exception
-from heat.openstack.common.gettextutils import _
-from heat.openstack.common import importutils
+from heat.common.i18n import _
 from heat.openstack.common import log as logging
 
 LOG = logging.getLogger('heat.common.keystoneclient')
@@ -222,6 +222,13 @@ class KeystoneClientV2(object):
     def delete_stack_domain_project(self, project_id):
         '''Pass through method since no project was created.'''
         pass
+
+    def create_stack_domain_user_keypair(self, user_id, project_id):
+        return self.create_ec2_keypair(user_id)
+
+    def delete_stack_domain_user_keypair(self, user_id, project_id,
+                                         credential_id):
+        return self.delete_ec2_keypair(user_id, credential_id)
 
     # ###################### #
     # V3 Unsupported Methods #

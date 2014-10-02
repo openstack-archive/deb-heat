@@ -22,6 +22,7 @@ import mox
 from novaclient import exceptions as nova_exceptions
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.common import template_format
 from heat.db import api as db_api
 from heat.engine.clients.os import glance
@@ -34,7 +35,6 @@ from heat.engine import resource
 from heat.engine.resources import server as servers
 from heat.engine import scheduler
 from heat.engine import template
-from heat.openstack.common.gettextutils import _
 from heat.openstack.common import uuidutils
 from heat.tests.common import HeatTestCase
 from heat.tests import fakes
@@ -410,7 +410,7 @@ class ServersTest(HeatTestCase):
                               return_server)
         self.assertEqual(
             'Server is not active - Unknown status BOGUS',
-            str(e))
+            six.text_type(e))
 
     def test_server_create_error_status(self):
         return_server = self.fc.servers.list()[1]
@@ -431,7 +431,7 @@ class ServersTest(HeatTestCase):
                               return_server)
         self.assertEqual(
             'Went to status ERROR due to "Message: NoValidHost, Code: 500"',
-            str(e))
+            six.text_type(e))
 
         self.m.VerifyAll()
 

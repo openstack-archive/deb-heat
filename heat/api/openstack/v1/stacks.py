@@ -15,12 +15,14 @@
 Stack endpoint for Heat v1 ReST API.
 """
 
+import six
 from six.moves.urllib import parse
 from webob import exc
 
 from heat.api.openstack.v1 import util
 from heat.api.openstack.v1.views import stacks_view
 from heat.common import environment_format
+from heat.common.i18n import _LW
 from heat.common import identifier
 from heat.common import param_utils
 from heat.common import serializers
@@ -55,9 +57,15 @@ class InstantiationData(object):
         'files',
     )
 
-    def __init__(self, data):
-        """Initialise from the request object."""
+    def __init__(self, data, patch=False):
+        """
+        Initialise from the request object.
+        If called from the PATCH api, insert a flag for the engine code
+        to distinguish.
+        """
         self.data = data
+        if patch:
+            self.data[engine_api.PARAM_EXISTING] = True
 
     @staticmethod
     def format_parse(data, data_type):
@@ -72,7 +80,7 @@ class InstantiationData(object):
             else:
                 return template_format.parse(data)
         except ValueError as parse_ex:
-            mdict = {'type': data_type, 'error': parse_ex}
+            mdict = {'type': data_type, 'error': six.text_type(parse_ex)}
             msg = _("%(type)s not in valid format: %(error)s") % mdict
             raise exc.HTTPBadRequest(msg)
 
@@ -157,6 +165,9 @@ class StackController(object):
             'status': 'mixed',
             'name': 'mixed',
             'action': 'mixed',
+            'tenant': 'mixed',
+            'username': 'mixed',
+            'owner_id': 'mixed',
         }
         whitelist = {
             'limit': 'single',
@@ -204,7 +215,7 @@ class StackController(object):
                                                      show_deleted=show_deleted,
                                                      show_nested=show_nested)
             except AttributeError as exc:
-                LOG.warning(_("Old Engine Version: %s") % exc)
+                LOG.warn(_LW("Old Engine Version: %s") % exc)
 
         return stacks_view.collection(req, stacks=stacks, count=count,
                                       tenant_safe=tenant_safe)
@@ -330,6 +341,22 @@ class StackController(object):
         """
         data = InstantiationData(body)
 
+        self.rpc_client.update_stack(req.context,
+                                     identity,
+                                     data.template(),
+                                     data.environment(),
+                                     data.files(),
+                                     data.args())
+
+        raise exc.HTTPAccepted()
+
+    @util.identified_stack
+    def update_patch(self, req, identity, body):
+        """
+        Update an existing stack with a new template by patching the parameters
+        Add the flag patch to the args so the engine code can distinguish
+        """
+        data = InstantiationData(body, patch=True)
         self.rpc_client.update_stack(req.context,
                                      identity,
                                      data.template(),

@@ -15,10 +15,12 @@ import base64
 import contextlib
 from datetime import datetime
 from oslo.config import cfg
+from oslo.utils import excutils
 import six
 import warnings
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.common import identifier
 from heat.common import short_id
 from heat.common import timeutils
@@ -27,13 +29,11 @@ from heat.engine import attributes
 from heat.engine import environment
 from heat.engine import event
 from heat.engine import function
-from heat.engine.properties import Properties
+from heat.engine import properties
 from heat.engine import resources
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.engine import support
-from heat.openstack.common import excutils
-from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 
 cfg.CONF.import_opt('action_retry_limit', 'heat.common.config')
@@ -747,15 +747,9 @@ class Resource(object):
         LOG.info(_('snapshotting %s') % str(self))
         return self._do_action(self.SNAPSHOT)
 
+    @scheduler.wrappertask
     def delete_snapshot(self, data):
-        handle_delete_snapshot = getattr(
-            self, 'handle_delete_snapshot', None)
-        if callable(handle_delete_snapshot):
-            handle_data = handle_delete_snapshot(data)
-            check = getattr(self, 'check_delete_snapshot_complete', None)
-            if callable(check):
-                while not check(handle_data):
-                    yield
+        yield self.action_handler_task('delete_snapshot', args=[data])
 
     def physical_resource_name(self):
         if self.id is None:
@@ -1065,18 +1059,18 @@ class Resource(object):
             as parameters, and the resource's attributes_schema is mapped as
             outputs
         '''
-        (parameters, properties) = (Properties.
-                                    schema_to_parameters_and_properties(
-                                        cls.properties_schema))
+        schema = cls.properties_schema
+        params, props = (properties.Properties.
+                         schema_to_parameters_and_properties(schema))
 
         resource_name = cls.__name__
         return {
             'HeatTemplateFormatVersion': '2012-12-12',
-            'Parameters': parameters,
+            'Parameters': params,
             'Resources': {
                 resource_name: {
                     'Type': resource_type,
-                    'Properties': properties
+                    'Properties': props
                 }
             },
             'Outputs': attributes.Attributes.as_outputs(resource_name, cls)

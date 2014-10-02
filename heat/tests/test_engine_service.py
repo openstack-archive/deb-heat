@@ -18,6 +18,7 @@ import json
 import sys
 import uuid
 
+from eventlet import event as grevent
 import mock
 import mox
 from oslo.config import cfg
@@ -54,6 +55,7 @@ from heat.tests import utils
 from heat.tests.v1_1 import fakes
 
 cfg.CONF.import_opt('engine_life_check_timeout', 'heat.common.config')
+cfg.CONF.import_opt('enable_stack_abandon', 'heat.common.config')
 
 wp_template = '''
 {
@@ -64,6 +66,30 @@ wp_template = '''
       "Description" : "KeyName",
       "Type" : "String",
       "Default" : "test"
+    }
+  },
+  "Resources" : {
+    "WebServer": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId" : "F17-x86_64-gold",
+        "InstanceType"   : "m1.large",
+        "KeyName"        : "test",
+        "UserData"       : "wordpress"
+      }
+    }
+  }
+}
+'''
+
+wp_template_no_default = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "WordPress",
+  "Parameters" : {
+    "KeyName" : {
+      "Description" : "KeyName",
+      "Type" : "String"
     }
   },
   "Resources" : {
@@ -180,6 +206,14 @@ def get_wordpress_stack(stack_name, ctx):
     template = templatem.Template(t)
     stack = parser.Stack(ctx, stack_name, template,
                          environment.Environment({'KeyName': 'test'}))
+    return stack
+
+
+def get_wordpress_stack_no_params(stack_name, ctx):
+    t = template_format.parse(wp_template)
+    template = parser.Template(t)
+    stack = parser.Stack(ctx, stack_name, template,
+                         environment.Environment({}))
     return stack
 
 
@@ -848,32 +882,39 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.man.thread_group_mgr.groups[sid].wait()
         self.m.VerifyAll()
 
+    def _stub_update_mocks(self, stack_to_load, stack_to_return):
+        self.m.StubOutWithMock(parser, 'Stack')
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx, stack=stack_to_load
+                          ).AndReturn(stack_to_return)
+
+        self.m.StubOutWithMock(templatem, 'Template')
+        self.m.StubOutWithMock(environment, 'Environment')
+
     def test_stack_update(self):
         stack_name = 'service_update_test_stack'
         params = {'foo': 'bar'}
         template = '{ "Template": "data" }'
-
         old_stack = get_wordpress_stack(stack_name, self.ctx)
         sid = old_stack.store()
         s = db_api.stack_get(self.ctx, sid)
 
         stack = get_wordpress_stack(stack_name, self.ctx)
 
-        self.m.StubOutWithMock(parser, 'Stack')
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(self.ctx, stack=s).AndReturn(old_stack)
-
-        self.m.StubOutWithMock(templatem, 'Template')
-        self.m.StubOutWithMock(environment, 'Environment')
+        self._stub_update_mocks(s, old_stack)
 
         templatem.Template(template, files=None).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.env, timeout_mins=60).AndReturn(stack)
+                     stack.t, stack.env,
+                     timeout_mins=60, disable_rollback=True).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
 
+        evt_mock = self.m.CreateMockAnything()
+        self.m.StubOutWithMock(grevent, 'Event')
+        grevent.Event().AndReturn(evt_mock)
         self.m.StubOutWithMock(threadgroup, 'ThreadGroup')
         threadgroup.ThreadGroup().AndReturn(DummyThreadGroup())
 
@@ -885,7 +926,129 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.assertEqual(old_stack.identifier(), result)
         self.assertIsInstance(result, dict)
         self.assertTrue(result['stack_id'])
+        self.assertEqual(self.man.thread_group_mgr.events[sid], [evt_mock])
         self.m.VerifyAll()
+
+    def test_stack_update_existing_parameters(self):
+        '''Use a template with default parameter and no input parameter
+        then update with a template without default and no input
+        parameter, using the existing parameter.
+        '''
+        stack_name = 'service_update_test_stack_existing_parameters'
+        no_params = {}
+        with_params = {'KeyName': 'foo'}
+
+        old_stack = get_wordpress_stack_no_params(stack_name, self.ctx)
+        sid = old_stack.store()
+        s = db_api.stack_get(self.ctx, sid)
+
+        t = template_format.parse(wp_template_no_default)
+        template = parser.Template(t)
+        env = environment.Environment({'parameters': with_params,
+                                       'resource_registry': {'rsc': 'test'}})
+        stack = parser.Stack(self.ctx, stack_name, template, env)
+
+        self._stub_update_mocks(s, old_stack)
+
+        templatem.Template(wp_template_no_default,
+                           files=None).AndReturn(stack.t)
+        environment.Environment(no_params).AndReturn(old_stack.env)
+        parser.Stack(self.ctx, stack.name,
+                     stack.t, old_stack.env,
+                     timeout_mins=60, disable_rollback=True).AndReturn(stack)
+
+        self.m.StubOutWithMock(stack, 'validate')
+        stack.validate().AndReturn(None)
+
+        evt_mock = self.m.CreateMockAnything()
+        self.m.StubOutWithMock(grevent, 'Event')
+        grevent.Event().AndReturn(evt_mock)
+        self.m.StubOutWithMock(threadgroup, 'ThreadGroup')
+        threadgroup.ThreadGroup().AndReturn(DummyThreadGroup())
+
+        self.m.ReplayAll()
+
+        api_args = {engine_api.PARAM_TIMEOUT: 60,
+                    engine_api.PARAM_EXISTING: True}
+        result = self.man.update_stack(self.ctx, old_stack.identifier(),
+                                       wp_template_no_default, no_params,
+                                       None, api_args)
+        self.assertEqual(old_stack.identifier(), result)
+        self.assertIsInstance(result, dict)
+        self.assertTrue(result['stack_id'])
+        self.assertEqual(self.man.thread_group_mgr.events[sid], [evt_mock])
+        self.m.VerifyAll()
+
+    def test_stack_update_reuses_api_params(self):
+        stack_name = 'service_update_test_stack'
+        params = {'foo': 'bar'}
+        template = '{ "Template": "data" }'
+
+        old_stack = get_wordpress_stack(stack_name, self.ctx)
+        old_stack.timeout_mins = 1
+        old_stack.disable_rollback = False
+        sid = old_stack.store()
+        s = db_api.stack_get(self.ctx, sid)
+
+        stack = get_wordpress_stack(stack_name, self.ctx)
+
+        self._stub_update_mocks(s, old_stack)
+
+        templatem.Template(template, files=None).AndReturn(stack.t)
+        environment.Environment(params).AndReturn(stack.env)
+        parser.Stack(self.ctx, stack.name,
+                     stack.t, stack.env,
+                     timeout_mins=1, disable_rollback=False).AndReturn(stack)
+
+        self.m.StubOutWithMock(stack, 'validate')
+        stack.validate().AndReturn(None)
+
+        self.m.StubOutWithMock(threadgroup, 'ThreadGroup')
+        threadgroup.ThreadGroup().AndReturn(DummyThreadGroup())
+
+        self.m.ReplayAll()
+
+        api_args = {}
+        result = self.man.update_stack(self.ctx, old_stack.identifier(),
+                                       template, params, None, api_args)
+        self.assertEqual(old_stack.identifier(), result)
+        self.assertIsInstance(result, dict)
+        self.assertTrue(result['stack_id'])
+        self.m.VerifyAll()
+
+    def test_stack_cancel_update_same_engine(self):
+        stack_name = 'service_update_cancel_test_stack'
+        old_stack = get_wordpress_stack(stack_name, self.ctx)
+        old_stack.state_set(old_stack.UPDATE, old_stack.IN_PROGRESS,
+                            'test_override')
+        old_stack.disable_rollback = False
+        old_stack.store()
+        load_mock = self.patchobject(parser.Stack, 'load')
+        load_mock.return_value = old_stack
+        lock_mock = self.patchobject(stack_lock.StackLock, 'try_acquire')
+        lock_mock.return_value = self.man.engine_id
+        self.patchobject(self.man.thread_group_mgr, 'send')
+        self.man.stack_cancel_update(self.ctx, old_stack.identifier())
+        self.man.thread_group_mgr.send.assert_called_once_with(old_stack.id,
+                                                               'cancel')
+
+    def test_stack_cancel_update_wrong_state_fails(self):
+        stack_name = 'service_update_cancel_test_stack'
+        old_stack = get_wordpress_stack(stack_name, self.ctx)
+        old_stack.state_set(old_stack.UPDATE, old_stack.COMPLETE,
+                            'test_override')
+        old_stack.store()
+        load_mock = self.patchobject(parser.Stack, 'load')
+        load_mock.return_value = old_stack
+
+        ex = self.assertRaises(
+            dispatcher.ExpectedException,
+            self.man.stack_cancel_update, self.ctx, old_stack.identifier())
+
+        self.assertEqual(ex.exc_info[0], exception.NotSupported)
+        self.assertIn("Cancelling update when stack is "
+                      "('UPDATE', 'COMPLETE')",
+                      six.text_type(ex.exc_info[1]))
 
     def test_stack_update_equals(self):
         stack_name = 'test_stack_update_equals_resource_limit'
@@ -906,17 +1069,13 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         stack = parser.Stack(self.ctx, stack_name, template)
 
-        self.m.StubOutWithMock(parser, 'Stack')
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(self.ctx, stack=s).AndReturn(old_stack)
-
-        self.m.StubOutWithMock(templatem, 'Template')
-        self.m.StubOutWithMock(environment, 'Environment')
+        self._stub_update_mocks(s, old_stack)
 
         templatem.Template(template, files=None).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.env, timeout_mins=60).AndReturn(stack)
+                     stack.t, stack.env,
+                     timeout_mins=60, disable_rollback=True).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -1110,17 +1269,13 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         stack = get_wordpress_stack(stack_name, self.ctx)
 
-        self.m.StubOutWithMock(parser, 'Stack')
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(self.ctx, stack=s).AndReturn(old_stack)
-
-        self.m.StubOutWithMock(templatem, 'Template')
-        self.m.StubOutWithMock(environment, 'Environment')
+        self._stub_update_mocks(s, old_stack)
 
         templatem.Template(template, files=None).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.env, timeout_mins=60).AndReturn(stack)
+                     stack.t, stack.env,
+                     timeout_mins=60, disable_rollback=True).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndRaise(exception.StackValidationFailed(
@@ -1166,21 +1321,18 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         self.ctx = utils.dummy_context(password=None)
 
-        self.m.StubOutWithMock(parser, 'Stack')
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        self.m.StubOutWithMock(templatem, 'Template')
-        self.m.StubOutWithMock(environment, 'Environment')
         self.m.StubOutWithMock(self.man, '_get_stack')
 
         self.man._get_stack(self.ctx, old_stack.identifier()).AndReturn(s)
 
-        parser.Stack.load(self.ctx, stack=s).AndReturn(old_stack)
+        self._stub_update_mocks(s, old_stack)
 
         templatem.Template(template, files=None).AndReturn(old_stack.t)
         environment.Environment(params).AndReturn(old_stack.env)
         parser.Stack(self.ctx, old_stack.name,
                      old_stack.t, old_stack.env,
-                     timeout_mins=60).AndReturn(old_stack)
+                     timeout_mins=60, disable_rollback=True
+                     ).AndReturn(old_stack)
 
         self.m.ReplayAll()
 
@@ -1608,7 +1760,7 @@ class StackServiceTest(HeatTestCase):
         thread = self.m.CreateMockAnything()
         thread.link(mox.IgnoreArg(), self.stack.id).AndReturn(None)
 
-        def run(stack_id, func, *args):
+        def run(stack_id, func, *args, **kwargs):
             func(*args)
             return thread
         self.eng.thread_group_mgr.start = run
@@ -1872,6 +2024,7 @@ class StackServiceTest(HeatTestCase):
 
     @stack_context('service_abandon_stack')
     def test_abandon_stack(self):
+        cfg.CONF.set_override('enable_stack_abandon', True)
         self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.ctx,
                           stack=mox.IgnoreArg()).AndReturn(self.stack)
@@ -1886,7 +2039,7 @@ class StackServiceTest(HeatTestCase):
                 'type': u'AWS::EC2::Instance'}}
         self.m.ReplayAll()
         ret = self.eng.abandon_stack(self.ctx, self.stack.identifier())
-        self.assertEqual(8, len(ret))
+        self.assertEqual(9, len(ret))
         self.assertEqual('CREATE', ret['action'])
         self.assertEqual('COMPLETE', ret['status'])
         self.assertEqual('service_abandon_stack', ret['name'])
@@ -1895,6 +2048,7 @@ class StackServiceTest(HeatTestCase):
         self.assertEqual(self.stack.t.t, ret['template'])
         self.assertIn('project_id', ret)
         self.assertIn('stack_user_project_id', ret)
+        self.assertIn('environment', ret)
         self.m.VerifyAll()
         self.eng.thread_group_mgr.groups[self.stack.id].wait()
 
@@ -1991,7 +2145,8 @@ class StackServiceTest(HeatTestCase):
 
     def test_list_resource_types_deprecated(self):
         resources = self.eng.list_resource_types(self.ctx, "DEPRECATED")
-        self.assertEqual(['OS::Neutron::RouterGateway'], resources)
+        self.assertEqual(['OS::Neutron::RouterGateway',
+                          'OS::Heat::CWLiteAlarm'], resources)
 
     def test_list_resource_types_supported(self):
         resources = self.eng.list_resource_types(self.ctx, "SUPPORTED")
@@ -2762,8 +2917,10 @@ class StackServiceTest(HeatTestCase):
     @mock.patch.object(service.db_api, 'stack_get_by_name')
     def test_validate_new_stack_checks_existing_stack(self, mock_stack_get):
         mock_stack_get.return_value = 'existing_db_stack'
+        tmpl = service.templatem.Template(
+            {'HeatTemplateFormatVersion': '2012-12-12'})
         self.assertRaises(exception.StackExists, self.eng._validate_new_stack,
-                          self.ctx, 'test_existing_stack', 'parsed_template')
+                          self.ctx, 'test_existing_stack', tmpl)
 
     @mock.patch.object(service.db_api, 'stack_count_all')
     def test_validate_new_stack_checks_stack_limit(self, mock_db_count):
@@ -2775,10 +2932,41 @@ class StackServiceTest(HeatTestCase):
                           self.eng._validate_new_stack,
                           self.ctx, 'test_existing_stack', template)
 
+    def test_validate_new_stack_checks_incorrect_keywords_in_resource(self):
+        template = {'heat_template_version': '2013-05-23',
+                    'resources': {
+                        'Res': {'Type': 'GenericResource1'}}}
+        parsed_template = service.templatem.Template(template)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               self.eng._validate_new_stack,
+                               self.ctx, 'test_existing_stack',
+                               parsed_template)
+        msg = \
+            u'u\'"Type" is not a valid keyword inside a resource definition\''
+        self.assertEqual(msg, six.text_type(ex))
+
+    def test_validate_new_stack_checks_incorrect_sections(self):
+        template = {'heat_template_version': '2013-05-23',
+                    'unknown_section': {
+                        'Res': {'Type': 'GenericResource1'}}}
+        parsed_template = service.templatem.Template(template)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               self.eng._validate_new_stack,
+                               self.ctx, 'test_existing_stack',
+                               parsed_template)
+        msg = u'The template section is invalid: unknown_section'
+        self.assertEqual(msg, six.text_type(ex))
+
     def test_validate_new_stack_checks_resource_limit(self):
         cfg.CONF.set_override('max_resources_per_stack', 5)
         template = {'HeatTemplateFormatVersion': '2012-12-12',
-                    'Resources': [1, 2, 3, 4, 5, 6]}
+                    'Resources': {
+                        'Res1': {'Type': 'GenericResource1'},
+                        'Res2': {'Type': 'GenericResource1'},
+                        'Res3': {'Type': 'GenericResource1'},
+                        'Res4': {'Type': 'GenericResource1'},
+                        'Res5': {'Type': 'GenericResource1'},
+                        'Res6': {'Type': 'GenericResource1'}}}
         parsed_template = service.templatem.Template(template)
         self.assertRaises(exception.RequestLimitExceeded,
                           self.eng._validate_new_stack,
@@ -3216,6 +3404,22 @@ class ThreadGroupManagerTest(HeatTestCase):
             self.cfg_mock.CONF.periodic_interval,
             self.f, *self.fargs, **self.fkwargs)
 
+    def test_tgm_add_event(self):
+        stack_id = 'add_events_test'
+        e1, e2 = mock.Mock(), mock.Mock()
+        thm = service.ThreadGroupManager()
+        thm.add_event(stack_id, e1)
+        thm.add_event(stack_id, e2)
+        self.assertEqual(thm.events[stack_id], [e1, e2])
+
+    def test_tgm_send(self):
+        stack_id = 'send_test'
+        e1, e2 = mock.MagicMock(), mock.Mock()
+        thm = service.ThreadGroupManager()
+        thm.add_event(stack_id, e1)
+        thm.add_event(stack_id, e2)
+        thm.send(stack_id, 'test_message')
+
 
 class ThreadGroupManagerStopTest(HeatTestCase):
     def test_tgm_stop(self):
@@ -3232,6 +3436,7 @@ class ThreadGroupManagerStopTest(HeatTestCase):
             done.append(thread)
 
         thm = service.ThreadGroupManager()
+        thm.add_event(stack_id, mock.Mock())
         thread = thm.start(stack_id, function)
         thread.link(linked, thread)
 
@@ -3239,6 +3444,7 @@ class ThreadGroupManagerStopTest(HeatTestCase):
 
         self.assertIn(thread, done)
         self.assertNotIn(stack_id, thm.groups)
+        self.assertNotIn(stack_id, thm.events)
 
 
 class SnapshotServiceTest(HeatTestCase):

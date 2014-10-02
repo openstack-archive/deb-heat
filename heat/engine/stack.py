@@ -18,11 +18,13 @@ import re
 import warnings
 
 from oslo.config import cfg
+from oslo.utils import encodeutils
 import six
 
 from heat.common import context as common_context
 from heat.common import exception
 from heat.common.exception import StackValidationFailed
+from heat.common.i18n import _
 from heat.common import identifier
 from heat.common import lifecycle_plugin_utils
 from heat.db import api as db_api
@@ -36,13 +38,19 @@ from heat.engine import resources
 from heat.engine import scheduler
 from heat.engine.template import Template
 from heat.engine import update
-from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
-from heat.openstack.common import strutils
+from heat.rpc import api as rpc_api
 
 LOG = logging.getLogger(__name__)
 
 ERROR_WAIT_TIME = 240
+
+
+class ForcedCancel(BaseException):
+    """Exception raised to cancel task execution."""
+
+    def __str__(self):
+        return "Operation cancelled"
 
 
 class Stack(collections.Mapping):
@@ -86,8 +94,8 @@ class Stack(collections.Mapping):
         self.context = context
         self.t = tmpl
         self.name = stack_name
-        self.action = action
-        self.status = status
+        self.action = self.CREATE if action is None else action
+        self.status = self.IN_PROGRESS if status is None else status
         self.status_reason = status_reason
         self.timeout_mins = timeout_mins
         self.disable_rollback = disable_rollback
@@ -450,7 +458,7 @@ class Stack(collections.Mapping):
                 raise ex
             except Exception as ex:
                 LOG.exception(ex)
-                raise StackValidationFailed(message=strutils.safe_decode(
+                raise StackValidationFailed(message=encodeutils.safe_decode(
                                             six.text_type(ex)))
             if result:
                 raise StackValidationFailed(message=result)
@@ -660,7 +668,7 @@ class Stack(collections.Mapping):
             post_func=rollback)
         creator(timeout=self.timeout_secs())
 
-    def update(self, newstack):
+    def update(self, newstack, event=None):
         '''
         Compare the current stack with newstack,
         and where necessary create/update/delete the resources until
@@ -673,11 +681,12 @@ class Stack(collections.Mapping):
         60 minutes, set in the constructor
         '''
         self.updated_time = datetime.utcnow()
-        updater = scheduler.TaskRunner(self.update_task, newstack)
+        updater = scheduler.TaskRunner(self.update_task, newstack,
+                                       event=event)
         updater()
 
     @scheduler.wrappertask
-    def update_task(self, newstack, action=UPDATE):
+    def update_task(self, newstack, action=UPDATE, event=None):
         if action not in (self.UPDATE, self.ROLLBACK):
             LOG.error(_("Unexpected action %s passed to update!") % action)
             self.state_set(self.UPDATE, self.FAILED,
@@ -725,7 +734,12 @@ class Stack(collections.Mapping):
                 updater.start(timeout=self.timeout_secs())
                 yield
                 while not updater.step():
-                    yield
+                    if event is None or not event.ready():
+                        yield
+                    else:
+                        message = event.wait()
+                        if message == rpc_api.THREAD_CANCEL:
+                            raise ForcedCancel()
             finally:
                 self.reset_dependencies()
 
@@ -738,6 +752,15 @@ class Stack(collections.Mapping):
         except scheduler.Timeout:
             stack_status = self.FAILED
             reason = 'Timed out'
+        except ForcedCancel as e:
+            reason = six.text_type(e)
+
+            stack_status = self.FAILED
+            if action == self.UPDATE:
+                update_task.updater.cancel_all()
+                yield self.update_task(oldstack, action=self.ROLLBACK)
+                return
+
         except exception.ResourceFailure as e:
             reason = six.text_type(e)
 
@@ -770,13 +793,17 @@ class Stack(collections.Mapping):
 
         notification.send(self)
 
-    def delete(self, action=DELETE, backup=False):
+    def delete(self, action=DELETE, backup=False, abandon=False):
         '''
         Delete all of the resources, and then the stack itself.
         The action parameter is used to differentiate between a user
         initiated delete and an automatic stack rollback after a failed
         create, which amount to the same thing, but the states are recorded
         differently.
+
+        Note abandon is a delete where all resources have been set to a
+        RETAIN deletion policy, but we also don't want to delete anything
+        required for those resources, e.g the stack_user_project.
         '''
         if action not in (self.DELETE, self.ROLLBACK):
             LOG.error(_("Unexpected action %s passed to delete!") % action)
@@ -784,8 +811,6 @@ class Stack(collections.Mapping):
                            "Invalid action %s" % action)
             return
 
-        # Note abandon is a delete with
-        # stack.set_deletion_policy(resource.RETAIN)
         stack_status = self.COMPLETE
         reason = 'Stack %s completed successfully' % action
         self.state_set(action, self.IN_PROGRESS, 'Stack %s started' %
@@ -873,8 +898,21 @@ class Stack(collections.Mapping):
                     trust_id = user_creds.get('trust_id')
                     if trust_id:
                         try:
-                            self.clients.client('keystone').delete_trust(
-                                trust_id)
+                            # If the trustor doesn't match the context user the
+                            # we have to use the stored context to cleanup the
+                            # trust, as although the user evidently has
+                            # permission to delete the stack, they don't have
+                            # rights to delete the trust unless an admin
+                            trustor_id = user_creds.get('trustor_user_id')
+                            if self.context.user_id != trustor_id:
+                                LOG.debug('Context user_id doesn\'t match '
+                                          'trustor, using stored context')
+                                sc = self.stored_context()
+                                sc.clients.client('keystone').delete_trust(
+                                    trust_id)
+                            else:
+                                self.clients.client('keystone').delete_trust(
+                                    trust_id)
                         except Exception as ex:
                             LOG.exception(ex)
                             stack_status = self.FAILED
@@ -897,7 +935,7 @@ class Stack(collections.Mapping):
                                "%s ") % self.id)
 
             # If the stack has a domain project, delete it
-            if self.stack_user_project_id:
+            if self.stack_user_project_id and not abandon:
                 try:
                     keystone = self.clients.client('keystone')
                     keystone.delete_stack_domain_project(
@@ -1041,6 +1079,7 @@ class Stack(collections.Mapping):
             'name': self.name,
             'id': self.id,
             'action': self.action,
+            'environment': self.env.user_env_as_dict(),
             'status': self.status,
             'template': self.t.t,
             'resources': dict((res.name, res.prepare_abandon())

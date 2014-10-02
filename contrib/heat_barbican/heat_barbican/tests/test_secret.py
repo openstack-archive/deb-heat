@@ -36,6 +36,15 @@ resources:
 '''
 
 
+class FakeSecret(object):
+
+    def __init__(self, name):
+        self.name = name
+
+    def store(self):
+        return self.name
+
+
 class TestSecret(HeatTestCase):
 
     def setUp(self):
@@ -64,30 +73,29 @@ class TestSecret(HeatTestCase):
 
     def _create_resource(self, name, snippet, stack):
         res = secret.Secret(name, snippet, stack)
-        self.barbican.secrets.store.return_value = name + '_id'
+        self.barbican.secrets.Secret.return_value = FakeSecret(name + '_id')
         scheduler.TaskRunner(res.create)()
         return res
 
     def test_create_secret(self):
         expected_state = (self.res.CREATE, self.res.COMPLETE)
         self.assertEqual(expected_state, self.res.state)
-        args = self.barbican.secrets.store.call_args[1]
+        args = self.barbican.secrets.Secret.call_args[1]
         self.assertEqual('foobar-secret', args['name'])
 
     def test_attributes(self):
         mock_secret = mock.Mock()
         mock_secret.status = 'test-status'
-        self.barbican.secrets.get.return_value = mock_secret
-        self.barbican.secrets.decrypt.return_value = 'foo'
+        self.barbican.secrets.Secret.return_value = mock_secret
+        mock_secret.payload = 'foo'
 
         self.assertEqual('test-status', self.res.FnGetAtt('status'))
         self.assertEqual('foo', self.res.FnGetAtt('decrypted_payload'))
 
-    @mock.patch.object(client, 'barbican_client', new=mock.Mock())
     def test_attributes_handles_exceptions(self):
-        client.barbican_client.HTTPClientError = Exception
-        self.barbican.secrets.get.side_effect = Exception('boom')
-        self.assertRaises(client.barbican_client.HTTPClientError,
+        self.barbican.barbican_client.HTTPClientError = Exception
+        self.barbican.secrets.Secret.side_effect = Exception('boom')
+        self.assertRaises(self.barbican.barbican_client.HTTPClientError,
                           self.res.FnGetAtt, 'order_ref')
 
     def test_create_secret_sets_resource_id(self):
@@ -105,7 +113,7 @@ class TestSecret(HeatTestCase):
                                             props)
         res = self._create_resource(defn.name, defn, self.stack)
 
-        args = self.barbican.secrets.store.call_args[1]
+        args = self.barbican.secrets.Secret.call_args[1]
         self.assertEqual('foobar', args[res.PAYLOAD])
         self.assertEqual(content_type, args[res.PAYLOAD_CONTENT_TYPE])
 
@@ -121,7 +129,7 @@ class TestSecret(HeatTestCase):
                                             props)
         res = self._create_resource(defn.name, defn, self.stack)
 
-        args = self.barbican.secrets.store.call_args[1]
+        args = self.barbican.secrets.Secret.call_args[1]
         self.assertEqual('foobar', args[res.PAYLOAD])
         self.assertEqual(content_type, args[res.PAYLOAD_CONTENT_TYPE])
 
@@ -162,18 +170,16 @@ class TestSecret(HeatTestCase):
 
         mock_delete.assert_called_once_with('foo_id')
 
-    @mock.patch.object(client, 'barbican_client', new=mock.Mock())
     def test_handle_delete_ignores_not_found_errors(self):
-        client.barbican_client.HTTPClientError = Exception
-        exc = client.barbican_client.HTTPClientError('Not Found.')
+        self.barbican.barbican_client.HTTPClientError = Exception
+        exc = self.barbican.barbican_client.HTTPClientError('Not Found.')
         self.barbican.secrets.delete.side_effect = exc
         scheduler.TaskRunner(self.res.delete)()
         self.assertTrue(self.barbican.secrets.delete.called)
 
-    @mock.patch.object(client, 'barbican_client', new=mock.Mock())
     def test_handle_delete_raises_resource_failure_on_error(self):
-        client.barbican_client.HTTPClientError = Exception
-        exc = client.barbican_client.HTTPClientError('Boom.')
+        self.barbican.barbican_client.HTTPClientError = Exception
+        exc = self.barbican.barbican_client.HTTPClientError('Boom.')
         self.barbican.secrets.delete.side_effect = exc
         exc = self.assertRaises(exception.ResourceFailure,
                                 scheduler.TaskRunner(self.res.delete))

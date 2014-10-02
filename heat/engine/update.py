@@ -13,11 +13,11 @@
 
 import six
 
+from heat.common.i18n import _
 from heat.db import api as db_api
 from heat.engine import dependencies
 from heat.engine import resource
 from heat.engine import scheduler
-from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
@@ -57,14 +57,14 @@ class StackUpdate(object):
             reverse=True,
             error_wait_time=self.error_wait_time)
 
-        update = scheduler.DependencyTaskGroup(self.dependencies(),
-                                               self._resource_update)
+        self.updater = scheduler.DependencyTaskGroup(self.dependencies(),
+                                                     self._resource_update)
 
         if not self.rollback:
             yield cleanup_prev()
 
         try:
-            yield update()
+            yield self.updater()
         finally:
             self.previous_stack.reset_dependencies()
 

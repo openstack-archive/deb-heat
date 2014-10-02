@@ -25,6 +25,7 @@ import warnings
 
 from heat.common import context
 from heat.common import exception
+from heat.common import heat_keystoneclient as hkc
 from heat.common import template_format
 from heat.common import urlfetch
 import heat.db.api as db_api
@@ -212,8 +213,8 @@ class TemplateTest(HeatTestCase):
             "heat_template_version" : "2012-12-12",
             }''')
         versions = {
-            ('heat_template_version', '2013-05-23'): hot_t.HOTemplate,
-            ('heat_template_version', '2013-06-23'): hot_t.HOTemplate
+            ('heat_template_version', '2013-05-23'): hot_t.HOTemplate20130523,
+            ('heat_template_version', '2013-06-23'): hot_t.HOTemplate20130523
         }
 
         temp_copy = copy.deepcopy(template._template_classes)
@@ -954,7 +955,7 @@ class StackTest(HeatTestCase):
 
     def test_state_defaults(self):
         stack = parser.Stack(self.ctx, 'test_stack', self.tmpl)
-        self.assertEqual((None, None), stack.state)
+        self.assertEqual(('CREATE', 'IN_PROGRESS'), stack.state)
         self.assertEqual('', stack.status_reason)
 
     def test_timeout_secs_default(self):
@@ -1106,11 +1107,11 @@ class StackTest(HeatTestCase):
             self.stack, self.stack['A'].nested().root_stack)
 
         keys = ['name', 'id', 'action', 'status', 'template', 'resources',
-                'project_id', 'stack_user_project_id']
+                'project_id', 'stack_user_project_id', 'environment']
 
-        self.assertEqual(8, len(ret))
+        self.assertEqual(len(keys), len(ret))
         nested_stack_data = ret['resources']['A']
-        self.assertEqual(8, len(nested_stack_data))
+        self.assertEqual(len(keys), len(nested_stack_data))
         for key in keys:
             self.assertIn(key, ret)
             self.assertIn(key, nested_stack_data)
@@ -1162,6 +1163,7 @@ class StackTest(HeatTestCase):
 
     def test_get_stack_abandon_data(self):
         tpl = {'HeatTemplateFormatVersion': '2012-12-12',
+               'Parameters': {'param1': {'Type': 'String'}},
                'Resources':
                {'A': {'Type': 'GenericResourceType'},
                 'B': {'Type': 'GenericResourceType'}}}
@@ -1171,20 +1173,23 @@ class StackTest(HeatTestCase):
         "B": {"status": "COMPLETE", "name": "B", "resource_data": {},
         "resource_id": null, "action": "INIT", "type": "GenericResourceType",
         "metadata": {}}}'''
+        env = environment.Environment({'parameters': {'param1': 'test'}})
         self.stack = parser.Stack(self.ctx, 'stack_details_test',
                                   parser.Template(tpl),
                                   tenant_id='123',
-                                  stack_user_project_id='234')
+                                  stack_user_project_id='234',
+                                  env=env)
         self.stack.store()
         info = self.stack.prepare_abandon()
-        self.assertIsNone(info['action'])
+        self.assertEqual('CREATE', info['action'])
         self.assertIn('id', info)
         self.assertEqual('stack_details_test', info['name'])
         self.assertEqual(json.loads(resources), info['resources'])
-        self.assertIsNone(info['status'])
+        self.assertEqual('IN_PROGRESS', info['status'])
         self.assertEqual(tpl, info['template'])
         self.assertEqual('123', info['project_id'])
         self.assertEqual('234', info['stack_user_project_id'])
+        self.assertEqual(env.params, info['environment']['parameters'])
 
     def test_set_param_id(self):
         self.stack = parser.Stack(self.ctx, 'param_arn_test',
@@ -1439,6 +1444,72 @@ class StackTest(HeatTestCase):
         self.assertEqual((parser.Stack.DELETE, parser.Stack.COMPLETE),
                          self.stack.state)
 
+    def test_delete_trust_trustor(self):
+        cfg.CONF.set_override('deferred_auth_method', 'trusts')
+
+        trustor_ctx = utils.dummy_context(user_id='thetrustor')
+        self.m.StubOutWithMock(hkc, 'KeystoneClient')
+        hkc.KeystoneClient(trustor_ctx).AndReturn(
+            FakeKeystoneClient(user_id='thetrustor'))
+        self.m.ReplayAll()
+
+        self.stack = parser.Stack(
+            trustor_ctx, 'delete_trust_nt', self.tmpl)
+        stack_id = self.stack.store()
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertIsNotNone(db_s)
+
+        user_creds_id = db_s.user_creds_id
+        self.assertIsNotNone(user_creds_id)
+        user_creds = db_api.user_creds_get(user_creds_id)
+        self.assertEqual('thetrustor', user_creds.get('trustor_user_id'))
+
+        self.stack.delete()
+
+        db_s = db_api.stack_get(trustor_ctx, stack_id)
+        self.assertIsNone(db_s)
+        self.assertEqual((parser.Stack.DELETE, parser.Stack.COMPLETE),
+                         self.stack.state)
+
+    def test_delete_trust_not_trustor(self):
+        cfg.CONF.set_override('deferred_auth_method', 'trusts')
+
+        # Stack gets created with trustor_ctx, deleted with other_ctx
+        # then the trust delete should be with stored_ctx
+        trustor_ctx = utils.dummy_context(user_id='thetrustor')
+        other_ctx = utils.dummy_context(user_id='nottrustor')
+        stored_ctx = utils.dummy_context(trust_id='thetrust')
+
+        self.m.StubOutWithMock(hkc, 'KeystoneClient')
+        hkc.KeystoneClient(trustor_ctx).AndReturn(
+            FakeKeystoneClient(user_id='thetrustor'))
+        self.m.StubOutWithMock(parser.Stack, 'stored_context')
+        parser.Stack.stored_context().AndReturn(stored_ctx)
+        hkc.KeystoneClient(stored_ctx).AndReturn(
+            FakeKeystoneClient(user_id='nottrustor'))
+        self.m.ReplayAll()
+
+        self.stack = parser.Stack(
+            trustor_ctx, 'delete_trust_nt', self.tmpl)
+        stack_id = self.stack.store()
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertIsNotNone(db_s)
+
+        user_creds_id = db_s.user_creds_id
+        self.assertIsNotNone(user_creds_id)
+        user_creds = db_api.user_creds_get(user_creds_id)
+        self.assertEqual('thetrustor', user_creds.get('trustor_user_id'))
+
+        loaded_stack = parser.Stack.load(other_ctx, self.stack.id)
+        loaded_stack.delete()
+
+        db_s = db_api.stack_get(other_ctx, stack_id)
+        self.assertIsNone(db_s)
+        self.assertEqual((parser.Stack.DELETE, parser.Stack.COMPLETE),
+                         loaded_stack.state)
+
     def test_delete_trust_backup(self):
         cfg.CONF.set_override('deferred_auth_method', 'trusts')
 
@@ -1521,6 +1592,57 @@ class StackTest(HeatTestCase):
         self.assertEqual((parser.Stack.DELETE, parser.Stack.FAILED),
                          self.stack.state)
         self.assertIn('Error deleting trust', self.stack.status_reason)
+
+    def test_delete_deletes_project(self):
+        fkc = FakeKeystoneClient()
+        fkc.delete_stack_domain_project = mock.Mock()
+
+        self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
+        keystone.KeystoneClientPlugin._create().AndReturn(fkc)
+        self.m.ReplayAll()
+
+        self.stack = parser.Stack(
+            self.ctx, 'delete_trust', self.tmpl)
+        stack_id = self.stack.store()
+
+        self.stack.set_stack_user_project_id(project_id='aproject456')
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertIsNotNone(db_s)
+
+        self.stack.delete()
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertIsNone(db_s)
+        self.assertEqual((parser.Stack.DELETE, parser.Stack.COMPLETE),
+                         self.stack.state)
+        fkc.delete_stack_domain_project.assert_called_once_with(
+            project_id='aproject456')
+
+    def test_abandon_nodelete_project(self):
+        fkc = FakeKeystoneClient()
+        fkc.delete_stack_domain_project = mock.Mock()
+
+        self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
+        keystone.KeystoneClientPlugin._create().AndReturn(fkc)
+        self.m.ReplayAll()
+
+        self.stack = parser.Stack(
+            self.ctx, 'delete_trust', self.tmpl)
+        stack_id = self.stack.store()
+
+        self.stack.set_stack_user_project_id(project_id='aproject456')
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertIsNotNone(db_s)
+
+        self.stack.delete(abandon=True)
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertIsNone(db_s)
+        self.assertEqual((parser.Stack.DELETE, parser.Stack.COMPLETE),
+                         self.stack.state)
+        self.assertFalse(fkc.delete_stack_domain_project.called)
 
     def test_suspend_resume(self):
         self.m.ReplayAll()
@@ -2605,6 +2727,39 @@ class StackTest(HeatTestCase):
                              mock_state.call_args_list[1][0][:2])
         self.m.VerifyAll()
 
+    def test_update_rollback_on_cancel_event(self):
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Resources': {'AResource': {'Type': 'ResourceWithPropsType',
+                                            'Properties': {'Foo': 'abc'}}}}
+
+        self.stack = parser.Stack(self.ctx, 'update_test_stack',
+                                  template.Template(tmpl),
+                                  disable_rollback=False)
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((parser.Stack.CREATE, parser.Stack.COMPLETE),
+                         self.stack.state)
+
+        tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
+                 'Resources': {'AResource': {'Type': 'ResourceWithPropsType',
+                                             'Properties': {'Foo': 'xyz'}},
+                               }}
+
+        updated_stack = parser.Stack(self.ctx, 'updated_stack',
+                                     template.Template(tmpl2),
+                                     disable_rollback=False)
+        evt_mock = mock.MagicMock()
+        evt_mock.ready.return_value = True
+        evt_mock.wait.return_value = 'cancel'
+
+        self.m.ReplayAll()
+
+        self.stack.update(updated_stack, event=evt_mock)
+        self.assertEqual((parser.Stack.ROLLBACK, parser.Stack.COMPLETE),
+                         self.stack.state)
+        self.assertEqual('abc', self.stack['AResource'].properties['Foo'])
+        self.m.VerifyAll()
+
     def test_update_rollback_fail(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Parameters': {'AParam': {'Type': 'String'}},
@@ -3630,7 +3785,7 @@ class StackTest(HeatTestCase):
 
         self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
         keystone.KeystoneClientPlugin._create().AndReturn(
-            FakeKeystoneClient())
+            FakeKeystoneClient(user_id='auser123'))
         self.m.ReplayAll()
 
         self.stack = parser.Stack(
@@ -4041,7 +4196,7 @@ class StackTest(HeatTestCase):
 
         self.assertEqual('Output validation error: The Referenced Attribute '
                          '(AResource Bar) is incorrect.',
-                         str(ex))
+                         six.text_type(ex))
 
     def test_incorrect_outputs_hot_get_attr(self):
         tmpl = {'heat_template_version': '2013-05-23',
@@ -4061,4 +4216,4 @@ class StackTest(HeatTestCase):
 
         self.assertEqual('Output validation error: The Referenced Attribute '
                          '(AResource Bar) is incorrect.',
-                         str(ex))
+                         six.text_type(ex))

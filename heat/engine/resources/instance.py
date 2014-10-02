@@ -17,6 +17,7 @@ from oslo.config import cfg
 import six
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
@@ -24,7 +25,6 @@ from heat.engine import resource
 from heat.engine.resources import volume
 from heat.engine import scheduler
 from heat.engine import signal_responder
-from heat.openstack.common.gettextutils import _
 from heat.openstack.common import log as logging
 
 cfg.CONF.import_opt('instance_user', 'heat.common.config')
@@ -434,10 +434,26 @@ class Instance(resource.Resource):
 
         return self.ipaddress or '0.0.0.0'
 
+    def _availability_zone(self):
+        '''
+        Return Server's Availability Zone, fetching it from Nova if necessary.
+        '''
+        availability_zone = self.properties[self.AVAILABILITY_ZONE]
+        if availability_zone is None:
+            try:
+                server = self.nova().servers.get(self.resource_id)
+                availability_zone = getattr(server,
+                                            'OS-EXT-AZ:availability_zone')
+            except Exception as e:
+                self.client_plugin().ignore_not_found(e)
+                return
+
+        return availability_zone
+
     def _resolve_attribute(self, name):
         res = None
         if name == self.AVAILABILITY_ZONE_ATTR:
-            res = self.properties[self.AVAILABILITY_ZONE]
+            res = self._availability_zone()
         elif name in self.ATTRIBUTES[1:]:
             res = self._ipaddress()
 
@@ -567,8 +583,8 @@ class Instance(resource.Resource):
         if self.properties[self.NOVA_SCHEDULER_HINTS]:
             for tm in self.properties[self.NOVA_SCHEDULER_HINTS]:
                 # adopted from novaclient shell
-                hint = tm[self.TAG_KEY]
-                hint_value = tm[self.TAG_VALUE]
+                hint = tm[self.NOVA_SCHEDULER_HINT_KEY]
+                hint_value = tm[self.NOVA_SCHEDULER_HINT_VALUE]
                 if hint in scheduler_hints:
                     if isinstance(scheduler_hints[hint], six.string_types):
                         scheduler_hints[hint] = [scheduler_hints[hint]]

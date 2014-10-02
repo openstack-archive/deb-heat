@@ -18,10 +18,10 @@ from time import time as wallclock
 import types
 
 import eventlet
+from oslo.utils import excutils
 import six
 
-from heat.openstack.common import excutils
-from heat.openstack.common.gettextutils import _
+from heat.common.i18n import _
 from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
@@ -375,13 +375,11 @@ class DependencyTaskGroup(object):
                 if self.aggregate_exceptions:
                     self._cancel_recursively(k, r)
                 else:
-                    for r in self._runners.itervalues():
-                        r.cancel(grace_period=self.error_wait_time)
+                    self.cancel_all(grace_period=self.error_wait_time)
                 raised_exceptions.append(exc_info)
             except:  # noqa
                 with excutils.save_and_reraise_exception():
-                    for r in self._runners.itervalues():
-                        r.cancel()
+                    self.cancel_all()
 
         if raised_exceptions:
             if self.aggregate_exceptions:
@@ -389,6 +387,10 @@ class DependencyTaskGroup(object):
             else:
                 exc_type, exc_val, traceback = raised_exceptions[0]
                 raise exc_type, exc_val, traceback
+
+    def cancel_all(self, grace_period=None):
+        for r in self._runners.itervalues():
+            r.cancel(grace_period=grace_period)
 
     def _cancel_recursively(self, key, runner):
         runner.cancel()

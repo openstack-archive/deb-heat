@@ -11,16 +11,19 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import glob
 import itertools
 import os.path
+import warnings
 
 from oslo.config import cfg
 import six
 
 from heat.common import environment_format as env_fmt
 from heat.common import exception
-from heat.openstack.common.gettextutils import _
+from heat.common.i18n import _
+from heat.engine import support
 from heat.openstack.common import log
 
 
@@ -214,6 +217,11 @@ class ResourceRegistry(object):
             LOG.info(_('Registering %(path)s -> %(value)s') % {
                 'path': descriptive_path,
                 'value': str(info.value)})
+
+        if isinstance(info, ClassResourceInfo):
+            if info.value.support_status.status != support.SUPPORTED:
+                warnings.warn(six.text_type(info.value.support_status.message))
+
         info.user_resource = (self.global_registry is not None)
         registry[name] = info
 
@@ -365,6 +373,19 @@ class Environment(object):
     def load(self, env_snippet):
         self.registry.load(env_snippet.get(env_fmt.RESOURCE_REGISTRY, {}))
         self.params.update(env_snippet.get(env_fmt.PARAMETERS, {}))
+
+    def patch_previous_parameters(self, previous_env, clear_parameters=[]):
+        """This instance of Environment is the new environment where
+        we are reusing as default the previous parameter values.
+        """
+        previous_parameters = copy.deepcopy(previous_env.params)
+        # clear the parameters from the previous set as requested
+        for p in clear_parameters:
+            previous_parameters.pop(p, None)
+
+        # patch the new set of parameters
+        previous_parameters.update(self.params)
+        self.params = previous_parameters
 
     def user_env_as_dict(self):
         """Get the environment as a dict, ready for storing in the db."""

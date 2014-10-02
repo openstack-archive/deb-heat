@@ -17,6 +17,7 @@ SQLAlchemy models for heat data.
 import uuid
 
 from oslo.db.sqlalchemy import models
+from oslo.utils import timeutils
 import six
 import sqlalchemy
 from sqlalchemy.ext.declarative import declarative_base
@@ -25,7 +26,6 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.orm.session import Session
 
 from heat.db.sqlalchemy.types import Json
-from heat.openstack.common import timeutils
 
 BASE = declarative_base()
 
@@ -61,8 +61,9 @@ class HeatBase(models.ModelBase, models.TimestampMixin):
             session = Session.object_session(self)
             if not session:
                 session = get_session()
+        session.begin()
         session.delete(self)
-        session.flush()
+        session.commit()
 
     def update_and_save(self, values, session=None):
         if not session:

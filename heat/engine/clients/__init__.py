@@ -12,11 +12,11 @@
 #    under the License.
 
 from oslo.config import cfg
+from oslo.utils import importutils
 from stevedore import extension
 import warnings
 
-from heat.openstack.common.gettextutils import _
-from heat.openstack.common import importutils
+from heat.common.i18n import _
 from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
@@ -145,7 +145,7 @@ _mgr = None
 
 
 def has_client(name):
-    return _mgr and name in _mgr
+    return _mgr and name in _mgr.names()
 
 
 def initialise():

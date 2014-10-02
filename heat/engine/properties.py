@@ -17,6 +17,7 @@ import six
 
 from heat.common import exception
 from heat.engine import constraints as constr
+from heat.engine import function
 from heat.engine import parameters
 from heat.engine import support
 
@@ -382,7 +383,13 @@ class Properties(collections.Mapping):
 
         if key in self.data:
             try:
-                value = self.resolve(self.data[key])
+                unresolved_value = self.data[key]
+                if validate:
+                    deps = function.dependencies(unresolved_value)
+                    if any(res.action == res.INIT for res in deps):
+                        validate = False
+
+                value = self.resolve(unresolved_value)
                 return prop.get_value(value, validate)
             # the resolver function could raise any number of exceptions,
             # so handle this generically
@@ -464,8 +471,7 @@ class Properties(collections.Mapping):
 
     @classmethod
     def schema_to_parameters_and_properties(cls, schema):
-
-        '''Generates properties with params resolved for a resource's
+        """Generates properties with params resolved for a resource's
         properties_schema.
 
         :param schema: A resource type's properties_schema
@@ -480,7 +486,8 @@ class Properties(collections.Mapping):
                      'bar': {'Type': 'Json'}},
                     {'foo': {'Fn::Split': {'Ref': 'foo'}},
                      'bar': {'Ref': 'bar'}}
-        '''
+
+        """
         def param_prop_def_items(name, schema):
             param_def = cls._param_def_from_prop(schema)
             prop_def = cls._prop_def_from_prop(name, schema)

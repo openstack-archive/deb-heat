@@ -269,6 +269,13 @@ neutron_floating_template_deprecated = '''
     "router": {
       "Type": "OS::Neutron::Router"
     },
+    "router_interface": {
+      "Type": "OS::Neutron::RouterInterface",
+      "Properties": {
+        "router_id": { "Ref" : "router" },
+        "subnet": "sub1234"
+      }
+    },
     "gateway": {
       "Type": "OS::Neutron::RouterGateway",
       "Properties": {
@@ -306,6 +313,50 @@ neutron_floating_template = '''
       "Type": "OS::Neutron::FloatingIPAssociation",
       "Properties": {
         "floatingip_id": { "Ref" : "floating_ip" },
+        "port_id": { "Ref" : "port_floating" }
+      }
+    },
+    "router": {
+      "Type": "OS::Neutron::Router"
+    },
+    "router_interface": {
+      "Type": "OS::Neutron::RouterInterface",
+      "Properties": {
+        "router_id": { "Ref" : "router" },
+        "subnet": "sub1234"
+      }
+    },
+    "gateway": {
+      "Type": "OS::Neutron::RouterGateway",
+      "Properties": {
+        "router_id": { "Ref" : "router" },
+        "network": "abcd1234"
+      }
+    }
+  }
+}
+'''
+
+neutron_floating_no_assoc_template = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Template to test Neutron resources",
+  "Parameters" : {},
+  "Resources" : {
+    "port_floating": {
+      "Type": "OS::Neutron::Port",
+      "Properties": {
+        "network": "xyz1234",
+        "fixed_ips": [{
+          "subnet": "sub1234",
+          "ip_address": "10.0.0.10"
+        }]
+      }
+    },
+    "floating_ip": {
+      "Type": "OS::Neutron::FloatingIP",
+      "Properties": {
+        "floating_network": "abcd1234",
         "port_id": { "Ref" : "port_floating" }
       }
     },
@@ -508,13 +559,13 @@ class NeutronTest(HeatTestCase):
         })
         self.assertEqual(
             'Went to status ERROR due to "Unknown"',
-            str(e))
+            six.text_type(e))
         e = self.assertRaises(resource.ResourceUnknownStatus, qr.is_built, {
             'status': 'FROBULATING'
         })
         self.assertEqual(
             'Resource is not built - Unknown status FROBULATING',
-            str(e))
+            six.text_type(e))
 
     def test_resolve_attribute(self):
         class SomeNeutronResource(qr):
@@ -1927,6 +1978,9 @@ class NeutronFloatingIPTest(HeatTestCase):
 
         self.assertIn(stack['floating_ip'], deps)
 
+        deps = stack.dependencies[stack['router_interface']]
+        self.assertIn(stack['floating_ip'], deps)
+
         fip = stack['floating_ip']
         scheduler.TaskRunner(fip.create)()
         self.assertEqual((fip.CREATE, fip.COMPLETE), fip.state)
@@ -2043,7 +2097,7 @@ class NeutronFloatingIPTest(HeatTestCase):
 
         self.m.VerifyAll()
 
-    def test_floatip_port(self):
+    def test_floatip_association_port(self):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
@@ -2237,6 +2291,122 @@ class NeutronFloatingIPTest(HeatTestCase):
         scheduler.TaskRunner(fipa.delete)()
         self.assertIsNone(scheduler.TaskRunner(p.delete)())
         scheduler.TaskRunner(fip.delete)()
+
+        self.m.VerifyAll()
+
+    def test_floatip_port(self):
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'xyz1234'
+        ).AndReturn('xyz1234')
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnet',
+            'sub1234'
+        ).AndReturn('sub1234')
+        neutronclient.Client.create_port({'port': {
+            'network_id': u'xyz1234',
+            'fixed_ips': [
+                {'subnet_id': u'sub1234', 'ip_address': u'10.0.0.10'}
+            ],
+            'name': utils.PhysName('test_stack', 'port_floating'),
+            'admin_state_up': True}}
+        ).AndReturn({'port': {
+            "status": "BUILD",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+        }})
+        neutronclient.Client.show_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn({'port': {
+            "status": "ACTIVE",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+        }})
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'abcd1234'
+        ).AndReturn('abcd1234')
+        neutronclient.Client.create_floatingip({
+            'floatingip': {
+                'floating_network_id': u'abcd1234',
+                'port_id': u'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+            }
+        }).AndReturn({'floatingip': {
+            "status": "ACTIVE",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+        }})
+
+        # update with new port_id
+        neutronclient.Client.update_floatingip(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+            {
+                'floatingip': {
+                    'port_id': u'2146dfbf-ba77-4083-8e86-d052f671ece5',
+                    'fixed_ip_address': None}}
+        ).AndReturn({'floatingip': {
+            "status": "ACTIVE",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+        }})
+
+        # update with None port_id
+        neutronclient.Client.update_floatingip(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+            {
+                'floatingip': {
+                    'port_id': None,
+                    'fixed_ip_address': None}}
+        ).AndReturn({'floatingip': {
+            "status": "ACTIVE",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+        }})
+
+        neutronclient.Client.delete_floatingip(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn(None)
+
+        neutronclient.Client.delete_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn(None)
+
+        neutronclient.Client.show_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndRaise(qe.PortNotFoundClient(status_code=404))
+
+        self.m.ReplayAll()
+
+        t = template_format.parse(neutron_floating_no_assoc_template)
+        stack = utils.parse_stack(t)
+
+        p = stack['port_floating']
+        scheduler.TaskRunner(p.create)()
+        self.assertEqual((p.CREATE, p.COMPLETE), p.state)
+
+        fip = stack['floating_ip']
+        scheduler.TaskRunner(fip.create)()
+        self.assertEqual((fip.CREATE, fip.COMPLETE), fip.state)
+
+        # test update FloatingIp with port_id
+        props = copy.deepcopy(fip.properties.data)
+        update_port_id = '2146dfbf-ba77-4083-8e86-d052f671ece5'
+        props['port_id'] = update_port_id
+        update_snippet = rsrc_defn.ResourceDefinition(fip.name, fip.type(),
+                                                      stack.t.parse(stack,
+                                                                    props))
+        scheduler.TaskRunner(fip.update, update_snippet)()
+        self.assertEqual((fip.UPDATE, fip.COMPLETE), fip.state)
+
+        # test update FloatingIp with None port_id
+        props = copy.deepcopy(fip.properties.data)
+        del(props['port_id'])
+        update_snippet = rsrc_defn.ResourceDefinition(fip.name, fip.type(),
+                                                      stack.t.parse(stack,
+                                                                    props))
+        scheduler.TaskRunner(fip.update, update_snippet)()
+        self.assertEqual((fip.UPDATE, fip.COMPLETE), fip.state)
+
+        scheduler.TaskRunner(fip.delete)()
+        scheduler.TaskRunner(p.delete)()
 
         self.m.VerifyAll()
 
@@ -2530,6 +2700,64 @@ class NeutronPortTest(HeatTestCase):
         update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
                                                       new_props)
         self.assertIsNone(port.handle_update(update_snippet, {}, {}))
+
+        self.m.VerifyAll()
+
+    def test_port_needs_update(self):
+        props = {'network_id': u'net1234',
+                 'name': utils.PhysName('test_stack', 'port'),
+                 'admin_state_up': True,
+                 'device_owner': u'network:dhcp'}
+
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'net1234'
+        ).AndReturn('net1234')
+        neutronclient.Client.create_port(
+            {'port': props}
+        ).AndReturn({'port': {
+            "status": "BUILD",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+        }})
+        neutronclient.Client.show_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn({'port': {
+            "status": "ACTIVE",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766",
+            "fixed_ips": {
+                "subnet_id": "d0e971a6-a6b4-4f4c-8c88-b75e9c120b7e",
+                "ip_address": "10.0.0.2"
+            }
+        }})
+
+        self.m.ReplayAll()
+
+        # create port
+        t = template_format.parse(neutron_port_template)
+        t['Resources']['port']['Properties'].pop('fixed_ips')
+        stack = utils.parse_stack(t)
+
+        port = stack['port']
+        scheduler.TaskRunner(port.create)()
+
+        new_props = props.copy()
+
+        # test always replace
+        new_props['replacement_policy'] = 'REPLACE_ALWAYS'
+        update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
+                                                      new_props)
+        self.assertRaises(resource.UpdateReplace, port._needs_update,
+                          update_snippet, port.frozen_definition(),
+                          new_props, props, None)
+
+        # test deferring to Resource._needs_update
+        new_props['replacement_policy'] = 'AUTO'
+        update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
+                                                      new_props)
+        self.assertTrue(port._needs_update(update_snippet,
+                                           port.frozen_definition(),
+                                           new_props, props, None))
 
         self.m.VerifyAll()
 

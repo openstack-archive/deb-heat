@@ -21,6 +21,7 @@ import uuid
 import fixtures
 import mock
 import mox
+from oslo.utils import timeutils
 
 from heat.common import context
 from heat.common import exception
@@ -33,7 +34,6 @@ from heat.engine import parser
 from heat.engine.resource import Resource
 from heat.engine.resources import instance as instances
 from heat.engine import scheduler
-from heat.openstack.common import timeutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 from heat.tests.v1_1 import fakes
@@ -190,7 +190,7 @@ class SqlAlchemyTest(HeatTestCase):
     def test_filter_and_page_query_whitelists_sort_keys(self,
                                                         mock_paginate_query):
         query = mock.Mock()
-        sort_keys = ['name', 'foo']
+        sort_keys = ['stack_name', 'foo']
         db_api._filter_and_page_query(self.ctx, query, sort_keys=sort_keys)
 
         args, _ = mock_paginate_query.call_args
@@ -200,7 +200,7 @@ class SqlAlchemyTest(HeatTestCase):
     def test_events_filter_and_page_query_whitelists_sort_keys(
             self, mock_paginate_query):
         query = mock.Mock()
-        sort_keys = ['created_at', 'foo']
+        sort_keys = ['event_time', 'foo']
         db_api._events_filter_and_page_query(self.ctx, query,
                                              sort_keys=sort_keys)
 
@@ -260,28 +260,28 @@ class SqlAlchemyTest(HeatTestCase):
         self.assertRaises(exception.Invalid, db_api._paginate_query,
                           self.ctx, query, model, sort_keys=['foo'])
 
-    def test_filter_sort_keys_returns_empty_list_if_no_keys(self):
+    def test_get_sort_keys_returns_empty_list_if_no_keys(self):
         sort_keys = None
-        whitelist = None
+        mapping = {}
 
-        filtered_keys = db_api._filter_sort_keys(sort_keys, whitelist)
+        filtered_keys = db_api._get_sort_keys(sort_keys, mapping)
         self.assertEqual([], filtered_keys)
 
-    def test_filter_sort_keys_whitelists_single_key(self):
+    def test_get_sort_keys_whitelists_single_key(self):
         sort_key = 'foo'
-        whitelist = ['foo']
+        mapping = {'foo': 'Foo'}
 
-        filtered_keys = db_api._filter_sort_keys(sort_key, whitelist)
-        self.assertEqual(['foo'], filtered_keys)
+        filtered_keys = db_api._get_sort_keys(sort_key, mapping)
+        self.assertEqual(['Foo'], filtered_keys)
 
-    def test_filter_sort_keys_whitelists_multiple_keys(self):
+    def test_get_sort_keys_whitelists_multiple_keys(self):
         sort_keys = ['foo', 'bar', 'nope']
-        whitelist = ['foo', 'bar']
+        mapping = {'foo': 'Foo', 'bar': 'Bar'}
 
-        filtered_keys = db_api._filter_sort_keys(sort_keys, whitelist)
-        self.assertIn('foo', filtered_keys)
-        self.assertIn('bar', filtered_keys)
-        self.assertNotIn('nope', filtered_keys)
+        filtered_keys = db_api._get_sort_keys(sort_keys, mapping)
+        self.assertIn('Foo', filtered_keys)
+        self.assertIn('Bar', filtered_keys)
+        self.assertEqual(2, len(filtered_keys))
 
     def test_encryption(self):
         stack_name = 'test_encryption'
@@ -515,7 +515,7 @@ class SqlAlchemyTest(HeatTestCase):
         stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
 
         st_db = db_api.stack_get_all(self.ctx,
-                                     sort_keys='created_at')
+                                     sort_keys='creation_time')
         self.assertEqual(3, len(st_db))
         self.assertEqual(stacks[0].id, st_db[0].id)
         self.assertEqual(stacks[1].id, st_db[1].id)
@@ -523,7 +523,8 @@ class SqlAlchemyTest(HeatTestCase):
 
     @mock.patch.object(db_api.utils, 'paginate_query')
     def test_stack_get_all_filters_sort_keys(self, mock_paginate):
-        sort_keys = ['name', 'status', 'created_at', 'updated_at', 'username']
+        sort_keys = ['stack_name', 'stack_status', 'creation_time',
+                     'updated_time', 'stack_owner']
         db_api.stack_get_all(self.ctx, sort_keys=sort_keys)
 
         args = mock_paginate.call_args[0]
@@ -844,12 +845,12 @@ class SqlAlchemyTest(HeatTestCase):
             db_api.software_config_get,
             self.ctx,
             config_id)
-        self.assertIn(config_id, str(err))
+        self.assertIn(config_id, six.text_type(err))
 
         err = self.assertRaises(
             exception.NotFound, db_api.software_config_delete,
             self.ctx, config_id)
-        self.assertIn(config_id, str(err))
+        self.assertIn(config_id, six.text_type(err))
 
     def _deployment_values(self):
         tenant_id = self.ctx.tenant_id
@@ -1190,6 +1191,48 @@ class DBAPIRawTemplateTest(HeatTestCase):
         template = db_api.raw_template_get(self.ctx, tp.id)
         self.assertEqual(tp.id, template.id)
         self.assertEqual(tp.template, template.template)
+
+    def test_raw_template_update(self):
+        another_wp_template = '''
+        {
+          "AWSTemplateFormatVersion" : "2010-09-09",
+          "Description" : "WordPress",
+          "Parameters" : {
+            "KeyName" : {
+              "Description" : "KeyName",
+              "Type" : "String",
+              "Default" : "test"
+            }
+          },
+          "Resources" : {
+            "WebServer": {
+              "Type": "AWS::EC2::Instance",
+              "Properties": {
+                "ImageId" : "fedora-20.x86_64.qcow2",
+                "InstanceType"   : "m1.xlarge",
+                "KeyName"        : "test",
+                "UserData"       : "wordpress"
+              }
+            }
+          }
+        }
+        '''
+        new_t = template_format.parse(another_wp_template)
+        new_files = {
+            'foo': 'bar',
+            'myfile': 'file:///home/somefile'
+        }
+        new_values = {
+            'template': new_t,
+            'files': new_files
+        }
+        orig_tp = create_raw_template(self.ctx)
+        updated_tp = db_api.raw_template_update(self.ctx,
+                                                orig_tp.id, new_values)
+
+        self.assertEqual(updated_tp.id, orig_tp.id)
+        self.assertEqual(updated_tp.template, new_t)
+        self.assertEqual(updated_tp.files, new_files)
 
 
 class DBAPIUserCredsTest(HeatTestCase):

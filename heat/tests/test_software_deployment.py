@@ -18,11 +18,11 @@ import mock
 import six
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.engine import parser
 from heat.engine.resources.software_config import software_deployment as sd
 from heat.engine import rsrc_defn
 from heat.engine import template
-from heat.openstack.common import gettextutils
 from heat.tests.common import HeatTestCase
 from heat.tests import utils
 
@@ -150,7 +150,7 @@ class SoftwareDeploymentTest(HeatTestCase):
 
     def mock_software_config(self):
         sc = mock.MagicMock()
-        sc.to_dict.return_value = {
+        config = {
             'id': '48e8ade1-9196-42d5-89a2-f709fde42632',
             'group': 'Test::Group',
             'name': 'myconfig',
@@ -167,6 +167,62 @@ class SoftwareDeploymentTest(HeatTestCase):
             }],
             'outputs': [],
         }
+        sc.to_dict.return_value = config
+        sc.group = 'Test::Group'
+        sc.config = config['config']
+        self.software_configs.get.return_value = sc
+        return sc
+
+    def mock_software_component(self):
+        sc = mock.MagicMock()
+        config = {
+            'id': '48e8ade1-9196-42d5-89a2-f709fde42632',
+            'group': 'component',
+            'name': 'myconfig',
+            'config': {
+                'configs': [
+                    {
+                        'actions': ['CREATE'],
+                        'config': 'the config',
+                        'tool': 'a_tool'
+                    },
+                    {
+                        'actions': ['DELETE'],
+                        'config': 'the config',
+                        'tool': 'a_tool'
+                    },
+                    {
+                        'actions': ['UPDATE'],
+                        'config': 'the config',
+                        'tool': 'a_tool'
+                    },
+                    {
+                        'actions': ['SUSPEND'],
+                        'config': 'the config',
+                        'tool': 'a_tool'
+                    },
+                    {
+                        'actions': ['RESUME'],
+                        'config': 'the config',
+                        'tool': 'a_tool'
+                    }
+                ]
+            },
+            'options': {},
+            'inputs': [{
+                'name': 'foo',
+                'type': 'String',
+                'default': 'baa',
+            }, {
+                'name': 'bar',
+                'type': 'String',
+                'default': 'baz',
+            }],
+            'outputs': [],
+        }
+        sc.to_dict.return_value = config
+        sc.group = 'component'
+        sc.config = config['config']
         self.software_configs.get.return_value = sc
         return sc
 
@@ -195,6 +251,97 @@ class SoftwareDeploymentTest(HeatTestCase):
         self.assertEqual({
             'config': 'the config',
             'group': 'Test::Group',
+            'name': '00_run_me_first',
+            'inputs': [{
+                'default': 'baa',
+                'name': 'foo',
+                'type': 'String',
+                'value': 'bar'
+            }, {
+                'default': 'baz',
+                'name': 'bar',
+                'type': 'String',
+                'value': 'baz'
+            }, {
+                'name': 'bink',
+                'type': 'String',
+                'value': 'bonk'
+            }, {
+                'description': 'ID of the server being deployed to',
+                'name': 'deploy_server_id',
+                'type': 'String',
+                'value': '9f1f0e00-05d2-4ca5-8602-95021f19c9d0'
+            }, {
+                'description': 'Name of the current action being deployed',
+                'name': 'deploy_action',
+                'type': 'String',
+                'value': 'CREATE'
+            }, {
+                'description': 'ID of the stack this deployment belongs to',
+                'name': 'deploy_stack_id',
+                'type': 'String',
+                'value': ('software_deployment_test_stack'
+                          '/42f6f66b-631a-44e7-8d01-e22fb54574a9')
+            }, {
+                'description': 'Name of this deployment resource in the stack',
+                'name': 'deploy_resource_name',
+                'type': 'String',
+                'value': 'deployment_mysql'
+            }],
+            'options': {},
+            'outputs': []
+        }, self.software_configs.create.call_args[1])
+
+        self.assertEqual(
+            {'action': 'CREATE',
+             'config_id': derived_sc.id,
+             'server_id': '9f1f0e00-05d2-4ca5-8602-95021f19c9d0',
+             'stack_user_project_id': '65728b74-cfe7-4f17-9c15-11d4f686e591',
+             'status': 'COMPLETE',
+             'status_reason': 'Not waiting for outputs signal'},
+            self.deployments.create.call_args[1])
+
+    def test_handle_create_for_component(self):
+        self._create_stack(self.template_no_signal)
+
+        self.mock_software_component()
+        derived_sc = self.mock_derived_software_config()
+        sd = self.mock_deployment()
+
+        self.deployment.handle_create()
+
+        self.assertEqual(sd.id, self.deployment.resource_id)
+        self.assertEqual({
+            'config': {
+                'configs': [
+                    {
+                        'actions': ['CREATE'],
+                        'config': 'the config',
+                        'tool': 'a_tool'
+                    },
+                    {
+                        'actions': ['DELETE'],
+                        'config': 'the config',
+                        'tool': 'a_tool'
+                    },
+                    {
+                        'actions': ['UPDATE'],
+                        'config': 'the config',
+                        'tool': 'a_tool'
+                    },
+                    {
+                        'actions': ['SUSPEND'],
+                        'config': 'the config',
+                        'tool': 'a_tool'
+                    },
+                    {
+                        'actions': ['RESUME'],
+                        'config': 'the config',
+                        'tool': 'a_tool'
+                    }
+                ]
+            },
+            'group': 'component',
             'name': '00_run_me_first',
             'inputs': [{
                 'default': 'baa',
@@ -374,6 +521,8 @@ class SoftwareDeploymentTest(HeatTestCase):
     def test_handle_update(self):
         self._create_stack(self.template)
 
+        self.mock_software_config()
+
         derived_sc = self.mock_derived_software_config()
         sd = self.mock_deployment()
         rsrc = self.stack['deployment_mysql']
@@ -538,7 +687,7 @@ class SoftwareDeploymentTest(HeatTestCase):
         }, args)
 
         # Test bug 1332355, where details contains a translateable message
-        details = {'failed': gettextutils.Message('need more memory.')}
+        details = {'failed': _('need more memory.')}
         self.deployment.handle_signal(details)
         args = sd.update.call_args[1]
         self.assertEqual({
@@ -619,7 +768,152 @@ class SoftwareDeploymentTest(HeatTestCase):
 
     def test_handle_action(self):
         self._create_stack(self.template)
+
+        self.mock_software_config()
+
         for action in ('DELETE', 'SUSPEND', 'RESUME'):
             self.assertIsNone(self.deployment._handle_action(action))
         for action in ('CREATE', 'UPDATE'):
             self.assertIsNotNone(self.deployment._handle_action(action))
+
+    def test_handle_action_for_component(self):
+        self._create_stack(self.template)
+
+        self.mock_software_component()
+
+        for action in ('CREATE', 'UPDATE', 'DELETE', 'SUSPEND', 'RESUME'):
+            self.assertIsNotNone(self.deployment._handle_action(action))
+
+
+class SoftwareDeploymentsTest(HeatTestCase):
+
+    template = {
+        'heat_template_version': '2013-05-23',
+        'resources': {
+            'deploy_mysql': {
+                'type': 'OS::Heat::SoftwareDeployments',
+                'properties': {
+                    'config': 'config_uuid',
+                    'servers': {'server1': 'uuid1', 'server2': 'uuid2'},
+                    'input_values': {'foo': 'bar'},
+                    'name': '10_config'
+                }
+            }
+        }
+    }
+
+    def setUp(self):
+        HeatTestCase.setUp(self)
+        heat = mock.MagicMock()
+        self.deployments = heat.return_value.software_deployments
+
+    def test_build_resource_definition(self):
+        stack = utils.parse_stack(self.template)
+        snip = stack.t.resource_definitions(stack)['deploy_mysql']
+        resg = sd.SoftwareDeployments('test', snip, stack)
+        expect = {
+            'type': 'OS::Heat::SoftwareDeployment',
+            'properties': {
+                'actions': ['CREATE', 'UPDATE'],
+                'config': 'config_uuid',
+                'input_values': {'foo': 'bar'},
+                'name': '10_config',
+                'signal_transport': 'CFN_SIGNAL'
+            }
+        }
+        self.assertEqual(
+            expect, resg._build_resource_definition())
+        self.assertEqual(
+            expect, resg._build_resource_definition(include_all=True))
+
+    def test_resource_names(self):
+        stack = utils.parse_stack(self.template)
+        snip = stack.t.resource_definitions(stack)['deploy_mysql']
+        resg = sd.SoftwareDeployments('test', snip, stack)
+        self.assertEqual(
+            set(('server1', 'server2')),
+            set(resg._resource_names())
+        )
+
+        self.assertEqual(
+            set(('s1', 's2', 's3')),
+            set(resg._resource_names({
+                'servers': {'s1': 'u1', 's2': 'u2', 's3': 'u3'}}))
+        )
+
+    def test_assemble_nested(self):
+        """
+        Tests that the nested stack that implements the group is created
+        appropriately based on properties.
+        """
+        stack = utils.parse_stack(self.template)
+        snip = stack.t.resource_definitions(stack)['deploy_mysql']
+        resg = sd.SoftwareDeployments('test', snip, stack)
+        templ = {
+            "heat_template_version": "2013-05-23",
+            "resources": {
+                "server1": {
+                    'type': 'OS::Heat::SoftwareDeployment',
+                    'properties': {
+                        'server': 'uuid1',
+                        'actions': ['CREATE', 'UPDATE'],
+                        'config': 'config_uuid',
+                        'input_values': {'foo': 'bar'},
+                        'name': '10_config',
+                        'signal_transport': 'CFN_SIGNAL'
+                    }
+                },
+                "server2": {
+                    'type': 'OS::Heat::SoftwareDeployment',
+                    'properties': {
+                        'server': 'uuid2',
+                        'actions': ['CREATE', 'UPDATE'],
+                        'config': 'config_uuid',
+                        'input_values': {'foo': 'bar'},
+                        'name': '10_config',
+                        'signal_transport': 'CFN_SIGNAL'
+                    }
+                }
+            }
+        }
+
+        self.assertEqual(templ, resg._assemble_nested(['server1', 'server2']))
+
+    def test_attributes(self):
+        stack = utils.parse_stack(self.template)
+        snip = stack.t.resource_definitions(stack)['deploy_mysql']
+        resg = sd.SoftwareDeployments('test', snip, stack)
+        nested = self.patchobject(resg, 'nested')
+        server1 = mock.MagicMock()
+        server2 = mock.MagicMock()
+        nested.return_value = {
+            'server1': server1,
+            'server2': server2
+        }
+
+        server1.FnGetAtt.return_value = 'Thing happened on server1'
+        server2.FnGetAtt.return_value = 'ouch'
+        self.assertEqual({
+            'server1': 'Thing happened on server1',
+            'server2': 'ouch'
+        }, resg.FnGetAtt('deploy_stdouts'))
+
+        server1.FnGetAtt.return_value = ''
+        server2.FnGetAtt.return_value = 'Its gone Pete Tong'
+        self.assertEqual({
+            'server1': '',
+            'server2': 'Its gone Pete Tong'
+        }, resg.FnGetAtt('deploy_stderrs'))
+
+        server1.FnGetAtt.return_value = 0
+        server2.FnGetAtt.return_value = 1
+        self.assertEqual({
+            'server1': 0,
+            'server2': 1
+        }, resg.FnGetAtt('deploy_status_codes'))
+
+        server1.FnGetAtt.assert_has_calls([
+            mock.call('deploy_stdout'),
+            mock.call('deploy_stderr'),
+            mock.call('deploy_status_code'),
+        ])
