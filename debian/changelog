@@ -1,6 +1,6 @@
 heat (2014.2~rc1-2) experimental; urgency=medium
 
-  * Also package /usr/bin/{cinder-keystone-setup,heat-keystone-setup-domain}.
+  * Also package /usr/bin/heat-keystone-setup-domain.
   * Using the --fail-missing option when calling dh_install.
 
  -- Thomas Goirand <zigo@debian.org>  Thu, 02 Oct 2014 20:27:08 +0800

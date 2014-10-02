@@ -1,7 +1,6 @@
 /usr/bin/heat-db-setup
 /usr/bin/heat-keystone-setup
 /usr/bin/heat-manage
-/usr/bin/cinder-keystone-setup
 /usr/bin/heat-keystone-setup-domain
 etc/heat/api-paste.ini
 etc/heat/environment.d/default.yaml
