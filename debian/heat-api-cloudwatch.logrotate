@@ -1,4 +1,4 @@
-/var/log/heat/api-cloudwatch.log {
+/var/log/heat/heat-api-cloudwatch.log {
     daily
     missingok
     compress 

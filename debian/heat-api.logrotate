@@ -1,4 +1,4 @@
-/var/log/heat/api.log {
+/var/log/heat/heat-api.log {
     daily
     missingok
     compress 
