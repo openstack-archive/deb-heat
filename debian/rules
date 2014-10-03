@@ -7,7 +7,7 @@ include /usr/share/openstack-pkg-tools/pkgos.make
 export OSLO_PACKAGE_VERSION=$(VERSION)
 
 %:
-	dh $@ --buildsystem=python_distutils --with python2,sphinxdoc
+	dh $@ --buildsystem=python_distutils --with python2,sphinxdoc,systemd
 
 ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 override_dh_auto_test:
@@ -30,6 +30,7 @@ override_dh_clean:
 	rm -f \
 		debian/heat-common.postinst \
 		debian/heat-common.config
+	rm -f debian/*.init debian/*.service debian/*.upstart
 
 override_dh_install:
 	dh_install --fail-missing -Xbin/cinder-keystone-setup

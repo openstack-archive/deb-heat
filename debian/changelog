@@ -1,3 +1,10 @@
+heat (2014.2~rc1-3) UNRELEASED; urgency=medium
+
+  * Now using templated init script for sysv-rc, generated systemd unit and
+    upstart jobs, using openstack-pkg-tools >= 13.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 03 Oct 2014 13:49:28 +0800
+
 heat (2014.2~rc1-2) experimental; urgency=medium
 
   * Also package /usr/bin/heat-keystone-setup-domain.
