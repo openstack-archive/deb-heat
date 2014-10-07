@@ -1,8 +1,0 @@
-/var/log/heat/api-cfn.log {
-    daily
-    missingok
-    compress
-    delaycompress
-    notifempty
-    copytruncate
-}

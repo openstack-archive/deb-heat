@@ -1,4 +1,4 @@
-/var/log/heat/engine.log {
+/var/log/heat/*.log {
     daily
     missingok
     compress 
