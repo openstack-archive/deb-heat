@@ -30,7 +30,7 @@ override_dh_clean:
 	rm -f \
 		debian/heat-common.postinst \
 		debian/heat-common.config
-	rm debian/*.init debian/*.service debian/*.upstart
+	rm -f debian/*.init debian/*.service debian/*.upstart
 
 override_dh_install:
 	dh_install
