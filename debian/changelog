@@ -5,6 +5,7 @@ heat (2014.2~rc3-1) experimental; urgency=medium
   * Now using templated init script for sysv-rc, generated systemd unit and
     upstart jobs, using openstack-pkg-tools >= 13.
   * Mangling upstream rc and beta versions in watch file.
+  * Standards-Version is now 3.9.6.
 
  -- Thomas Goirand <zigo@debian.org>  Sun, 05 Oct 2014 14:28:41 +0800
 
