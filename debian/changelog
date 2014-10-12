@@ -1,6 +1,7 @@
 heat (2014.2~rc3-1) experimental; urgency=medium
 
   * New upstream release.
+  * Fixed (build-)depends for this release.
   * Now using templated init script for sysv-rc, generated systemd unit and
     upstart jobs, using openstack-pkg-tools >= 13.
   * Mangling upstream rc and beta versions in watch file.
