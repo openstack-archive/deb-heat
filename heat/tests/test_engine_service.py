@@ -546,6 +546,39 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.assertEqual(ex.exc_info[0], exception.StackValidationFailed)
         self.m.VerifyAll()
 
+    def test_stack_adopt_with_params(self):
+        template = {
+            "heat_template_version": "2013-05-23",
+            "parameters": {"app_dbx": {"type": "string"}},
+            "resources": {"res1": {"type": "GenericResourceType"}}}
+
+        environment = {'parameters': {"app_dbx": "test"}}
+        adopt_data = {
+            "status": "COMPLETE",
+            "name": "rtrove1",
+            "environment": environment,
+            "template": template,
+            "action": "CREATE",
+            "id": "8532f0d3-ea84-444e-b2bb-2543bb1496a4",
+            "resources": {"res1": {
+                    "status": "COMPLETE",
+                    "name": "database_password",
+                    "resource_id": "yBpuUROjfGQ2gKOD",
+                    "action": "CREATE",
+                    "type": "GenericResourceType",
+                    "metadata": {}}}}
+
+        res._register_class('GenericResourceType',
+                            generic_rsrc.GenericResource)
+        result = self.man.create_stack(self.ctx, "test_adopt_stack",
+                                       template, {}, None,
+                                       {'adopt_stack_data': str(adopt_data)})
+
+        stack = db_api.stack_get(self.ctx, result['stack_id'])
+        self.assertEqual(template, stack.raw_template.template)
+        self.assertEqual(environment['parameters'],
+                         stack.parameters['parameters'])
+
     def test_stack_create_invalid_stack_name(self):
         stack_name = 'service_create/test_stack'
         stack = get_wordpress_stack('test_stack', self.ctx)
@@ -1389,21 +1422,24 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                          six.text_type(ex))
 
 
-class StackServiceUpdateSuspendedNotSupportedTest(HeatTestCase):
+class StackServiceUpdateActionsNotSupportedTest(HeatTestCase):
 
     scenarios = [
         ('suspend_in_progress', dict(action='SUSPEND', status='IN_PROGRESS')),
         ('suspend_complete', dict(action='SUSPEND', status='COMPLETE')),
         ('suspend_failed', dict(action='SUSPEND', status='FAILED')),
+        ('delete_in_progress', dict(action='DELETE', status='IN_PROGRESS')),
+        ('delete_complete', dict(action='DELETE', status='COMPLETE')),
+        ('delete_failed', dict(action='DELETE', status='FAILED')),
     ]
 
     def setUp(self):
-        super(StackServiceUpdateSuspendedNotSupportedTest, self).setUp()
+        super(StackServiceUpdateActionsNotSupportedTest, self).setUp()
         self.ctx = utils.dummy_context()
         self.patch('heat.engine.service.warnings')
         self.man = service.EngineService('a-host', 'a-topic')
 
-    def test_stack_update_suspended(self):
+    def test_stack_update_actions_not_supported(self):
         stack_name = '%s-%s' % (self.action, self.status)
 
         old_stack = get_wordpress_stack(stack_name, self.ctx)
@@ -1759,6 +1795,8 @@ class StackServiceTest(HeatTestCase):
 
         thread = self.m.CreateMockAnything()
         thread.link(mox.IgnoreArg(), self.stack.id).AndReturn(None)
+        thread.link(mox.IgnoreArg(), self.stack.id,
+                    mox.IgnoreArg()).AndReturn(None)
 
         def run(stack_id, func, *args, **kwargs):
             func(*args)
@@ -3411,6 +3449,17 @@ class ThreadGroupManagerTest(HeatTestCase):
         thm.add_event(stack_id, e1)
         thm.add_event(stack_id, e2)
         self.assertEqual(thm.events[stack_id], [e1, e2])
+
+    def test_tgm_remove_event(self):
+        stack_id = 'add_events_test'
+        e1, e2 = mock.Mock(), mock.Mock()
+        thm = service.ThreadGroupManager()
+        thm.add_event(stack_id, e1)
+        thm.add_event(stack_id, e2)
+        thm.remove_event(None, stack_id, e2)
+        self.assertEqual(thm.events[stack_id], [e1])
+        thm.remove_event(None, stack_id, e1)
+        self.assertNotIn(stack_id, thm.events)
 
     def test_tgm_send(self):
         stack_id = 'send_test'

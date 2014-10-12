@@ -118,7 +118,9 @@ class ThreadGroupManager(object):
         """
         lock = stack_lock.StackLock(cnxt, stack, engine_id)
         with lock.thread_lock(stack.id):
-            self.start_with_acquired_lock(stack, lock, func, *args, **kwargs)
+            th = self.start_with_acquired_lock(stack, lock,
+                                               func, *args, **kwargs)
+            return th
 
     def start_with_acquired_lock(self, stack, lock, func, *args, **kwargs):
         """
@@ -143,6 +145,7 @@ class ThreadGroupManager(object):
 
         th = self.start(stack.id, func, *args, **kwargs)
         th.link(release, stack.id)
+        return th
 
     def add_timer(self, stack_id, func, *args, **kwargs):
         """
@@ -156,6 +159,11 @@ class ThreadGroupManager(object):
 
     def add_event(self, stack_id, event):
         self.events[stack_id].append(event)
+
+    def remove_event(self, gt, stack_id, event):
+        for e in self.events.pop(stack_id, []):
+            if e is not event:
+                self.add_event(stack_id, e)
 
     def stop_timers(self, stack_id):
         if stack_id in self.groups:
@@ -183,7 +191,7 @@ class ThreadGroupManager(object):
                 eventlet.sleep()
 
     def send(self, stack_id, message):
-        for event in self.events.get(stack_id, []):
+        for event in self.events.pop(stack_id, []):
             event.send(message)
 
 
@@ -535,7 +543,14 @@ class EngineService(service.Service):
         tmpl = templatem.Template(template, files=files)
         self._validate_new_stack(cnxt, stack_name, tmpl)
 
+        # If it is stack-adopt, use parameters from adopt_stack_data
         common_params = api.extract_args(args)
+
+        if rpc_api.PARAM_ADOPT_STACK_DATA in common_params:
+            params[rpc_api.STACK_PARAMETERS] = common_params[
+                rpc_api.PARAM_ADOPT_STACK_DATA]['environment'][
+                    rpc_api.STACK_PARAMETERS]
+
         env = environment.Environment(params)
         stack = parser.Stack(cnxt, stack_name, tmpl, env,
                              owner_id=owner_id,
@@ -654,6 +669,10 @@ class EngineService(service.Service):
             msg = _('Updating a stack when it is suspended')
             raise exception.NotSupported(feature=msg)
 
+        if current_stack.action == current_stack.DELETE:
+            msg = _('Updating a stack when it is deleting')
+            raise exception.NotSupported(feature=msg)
+
         # Now parse the template and any parameters for the updated
         # stack definition.
         tmpl = templatem.Template(template, files=files)
@@ -679,12 +698,13 @@ class EngineService(service.Service):
         updated_stack.validate()
 
         event = eventlet.event.Event()
+        th = self.thread_group_mgr.start_with_lock(cnxt, current_stack,
+                                                   self.engine_id,
+                                                   current_stack.update,
+                                                   updated_stack,
+                                                   event=event)
+        th.link(self.thread_group_mgr.remove_event, current_stack.id, event)
         self.thread_group_mgr.add_event(current_stack.id, event)
-        self.thread_group_mgr.start_with_lock(cnxt, current_stack,
-                                              self.engine_id,
-                                              current_stack.update,
-                                              updated_stack,
-                                              event=event)
         return dict(current_stack.identifier())
 
     @request_context
