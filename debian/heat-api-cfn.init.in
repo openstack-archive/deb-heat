@@ -13,6 +13,6 @@
 
 # PATH should only include /usr/* if it runs after the mountnfs.sh script
 PATH=/sbin:/usr/sbin:/bin:/usr/bin
-DESC="Heat API"
+DESC="Heat API CFN"
 PROJECT_NAME=heat
 NAME=${PROJECT_NAME}-api-cfn
