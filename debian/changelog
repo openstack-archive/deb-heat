@@ -1,3 +1,10 @@
+heat (2014.2-2) experimental; urgency=medium
+
+  * Do not duplicate the [keystone_authtoken] in heat.conf. This was a leftover
+    from the missing [keystone_authtoken] in Icehouse.
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 22 Oct 2014 00:38:56 +0800
+
 heat (2014.2-1) experimental; urgency=medium
 
   * New upstream release.
