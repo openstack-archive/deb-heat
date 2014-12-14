@@ -1,6 +1,7 @@
 heat (2014.2.1-1) experimental; urgency=medium
 
   * New upstream release.
+  * Depending on openstack-pkg-tools (>= 20~).
 
  -- Thomas Goirand <zigo@debian.org>  Sun, 14 Dec 2014 10:33:44 +0000
 
