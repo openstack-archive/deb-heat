@@ -234,6 +234,18 @@ class ResourceGroupTest(common.HeatTestCase):
         self.assertEqual(
             expect, resg._assemble_nested(['0'], include_all=True))
 
+    def test_assemble_nested_zero(self):
+        templ = copy.deepcopy(template)
+        templ['resources']['group1']['properties']['count'] = 0
+        stack = utils.parse_stack(templ)
+        snip = stack.t.resource_definitions(stack)['group1']
+        resg = resource_group.ResourceGroup('test', snip, stack)
+        expect = {
+            "heat_template_version": "2013-05-23",
+            "resources": {}
+        }
+        self.assertEqual(expect, resg._assemble_nested([]))
+
     def test_index_var(self):
         stack = utils.parse_stack(template_repl)
         snip = stack.t.resource_definitions(stack)['group1']
@@ -367,6 +379,41 @@ class ResourceGroupTest(common.HeatTestCase):
         self.assertEqual((resg.UPDATE, resg.COMPLETE), resg.nested().state)
         self.assertEqual(3, len(resg.nested()))
 
+    def test_update_nochange(self):
+        """Test update with no properties change."""
+        resg = self._create_dummy_stack()
+        self.assertEqual(2, len(resg.nested()))
+        resource_names = [r.name for r in resg.nested().iter_resources()]
+        self.assertEqual(['0', '1'], sorted(resource_names))
+        new_snip = copy.deepcopy(resg.t)
+        scheduler.TaskRunner(resg.update, new_snip)()
+        self.stack = resg.nested()
+        self.assertEqual((resg.CREATE, resg.COMPLETE), resg.state)
+        self.assertEqual((resg.CREATE, resg.COMPLETE), resg.nested().state)
+        self.assertEqual(2, len(resg.nested()))
+        resource_names = [r.name for r in resg.nested().iter_resources()]
+        self.assertEqual(['0', '1'], sorted(resource_names))
+
+    def test_update_nochange_resource_needs_update(self):
+        """Test update when the resource definition has changed."""
+        # Test the scenario when the ResourceGroup update happens without
+        # any changed properties, this can happen if the definition of
+        # a contained provider resource changes (files map changes), then
+        # the group and underlying nested stack should end up updated.
+        resg = self._create_dummy_stack()
+        self.assertEqual(2, len(resg.nested()))
+        resource_names = [r.name for r in resg.nested().iter_resources()]
+        self.assertEqual(['0', '1'], sorted(resource_names))
+        new_snip = copy.deepcopy(resg.t)
+        resg._needs_update = mock.Mock(return_value=True)
+        scheduler.TaskRunner(resg.update, new_snip)()
+        self.stack = resg.nested()
+        self.assertEqual((resg.UPDATE, resg.COMPLETE), resg.state)
+        self.assertEqual((resg.UPDATE, resg.COMPLETE), resg.nested().state)
+        self.assertEqual(2, len(resg.nested()))
+        resource_names = [r.name for r in resg.nested().iter_resources()]
+        self.assertEqual(['0', '1'], sorted(resource_names))
+
     def test_aggregate_attribs(self):
         """
         Test attribute aggregation and that we mimic the nested resource's
@@ -461,10 +508,7 @@ class ResourceGroupTest(common.HeatTestCase):
         resg = stack['group1']
         scheduler.TaskRunner(resg.create)()
         self.stack = resg.nested()
-        if expect_count > 0:
-            self.assertEqual(expect_count, len(resg.nested()))
-        else:
-            self.assertIsNone(resg.nested())
+        self.assertEqual(expect_count, len(resg.nested()))
         self.assertEqual((resg.CREATE, resg.COMPLETE), resg.state)
         return resg
 

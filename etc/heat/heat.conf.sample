@@ -35,7 +35,9 @@
 # (string value)
 #deferred_auth_method=password
 
-# Subset of trustor roles to be delegated to heat. (list
+# Subset of trustor roles to be delegated to heat. If
+# trusts_delegated_roles is set to [], all roles of a user
+# will be delegated to heat when creating a stack. (list
 # value)
 #trusts_delegated_roles=heat_stack_owner
 
@@ -159,11 +161,11 @@
 # Options defined in oslo.messaging
 #
 
-# Use durable queues in amqp. (boolean value)
+# Use durable queues in AMQP. (boolean value)
 # Deprecated group/name - [DEFAULT]/rabbit_durable_queues
 #amqp_durable_queues=false
 
-# Auto-delete queues in amqp. (boolean value)
+# Auto-delete queues in AMQP. (boolean value)
 #amqp_auto_delete=false
 
 # Size of RPC connection pool. (integer value)
@@ -211,8 +213,8 @@
 #qpid_topology_version=1
 
 # SSL version to use (valid only if SSL enabled). valid values
-# are TLSv1, SSLv23 and SSLv3. SSLv2 may be available on some
-# distributions. (string value)
+# are TLSv1 and SSLv23. SSLv2 and SSLv3 may be available on
+# some distributions. (string value)
 #kombu_ssl_version=
 
 # SSL key file (valid only if SSL enabled). (string value)
@@ -249,7 +251,7 @@
 # The RabbitMQ password. (string value)
 #rabbit_password=guest
 
-# the RabbitMQ login method (string value)
+# The RabbitMQ login method. (string value)
 #rabbit_login_method=AMQPLAIN
 
 # The RabbitMQ virtual host. (string value)
@@ -272,7 +274,8 @@
 # value)
 #rabbit_ha_queues=false
 
-# If passed, use a fake RabbitMQ provider. (boolean value)
+# Deprecated, use rpc_backend=kombu+memory or rpc_backend=fake
+# (boolean value)
 #fake_rabbit=false
 
 # ZeroMQ bind address. Should be a wildcard (*), an ethernet
@@ -585,7 +588,7 @@
 
 # Type of endpoint in Identity service catalog to use for
 # communication with the OpenStack service. (string value)
-#endpoint_type=publicURL
+#endpoint_type=<None>
 
 # Optional CA cert file to use in SSL connections. (string
 # value)
@@ -601,7 +604,7 @@
 
 # If set, then the server's certificate will not be verified.
 # (boolean value)
-#insecure=false
+#insecure=<None>
 
 
 [clients_cinder]
@@ -612,7 +615,7 @@
 
 # Type of endpoint in Identity service catalog to use for
 # communication with the OpenStack service. (string value)
-#endpoint_type=publicURL
+#endpoint_type=<None>
 
 # Optional CA cert file to use in SSL connections. (string
 # value)
@@ -628,7 +631,7 @@
 
 # If set, then the server's certificate will not be verified.
 # (boolean value)
-#insecure=false
+#insecure=<None>
 
 
 #
@@ -647,7 +650,7 @@
 
 # Type of endpoint in Identity service catalog to use for
 # communication with the OpenStack service. (string value)
-#endpoint_type=publicURL
+#endpoint_type=<None>
 
 # Optional CA cert file to use in SSL connections. (string
 # value)
@@ -663,7 +666,7 @@
 
 # If set, then the server's certificate will not be verified.
 # (boolean value)
-#insecure=false
+#insecure=<None>
 
 
 [clients_heat]
@@ -674,7 +677,7 @@
 
 # Type of endpoint in Identity service catalog to use for
 # communication with the OpenStack service. (string value)
-#endpoint_type=publicURL
+#endpoint_type=<None>
 
 # Optional CA cert file to use in SSL connections. (string
 # value)
@@ -690,7 +693,7 @@
 
 # If set, then the server's certificate will not be verified.
 # (boolean value)
-#insecure=false
+#insecure=<None>
 
 
 #
@@ -699,7 +702,7 @@
 
 # Optional heat url in format like
 # http://0.0.0.0:8004/v1/%(tenant_id)s. (string value)
-#url=<None>
+#url=
 
 
 [clients_keystone]
@@ -710,7 +713,7 @@
 
 # Type of endpoint in Identity service catalog to use for
 # communication with the OpenStack service. (string value)
-#endpoint_type=publicURL
+#endpoint_type=<None>
 
 # Optional CA cert file to use in SSL connections. (string
 # value)
@@ -726,7 +729,7 @@
 
 # If set, then the server's certificate will not be verified.
 # (boolean value)
-#insecure=false
+#insecure=<None>
 
 
 [clients_neutron]
@@ -737,7 +740,7 @@
 
 # Type of endpoint in Identity service catalog to use for
 # communication with the OpenStack service. (string value)
-#endpoint_type=publicURL
+#endpoint_type=<None>
 
 # Optional CA cert file to use in SSL connections. (string
 # value)
@@ -753,7 +756,7 @@
 
 # If set, then the server's certificate will not be verified.
 # (boolean value)
-#insecure=false
+#insecure=<None>
 
 
 [clients_nova]
@@ -764,7 +767,7 @@
 
 # Type of endpoint in Identity service catalog to use for
 # communication with the OpenStack service. (string value)
-#endpoint_type=publicURL
+#endpoint_type=<None>
 
 # Optional CA cert file to use in SSL connections. (string
 # value)
@@ -780,7 +783,7 @@
 
 # If set, then the server's certificate will not be verified.
 # (boolean value)
-#insecure=false
+#insecure=<None>
 
 
 #
@@ -799,7 +802,7 @@
 
 # Type of endpoint in Identity service catalog to use for
 # communication with the OpenStack service. (string value)
-#endpoint_type=publicURL
+#endpoint_type=<None>
 
 # Optional CA cert file to use in SSL connections. (string
 # value)
@@ -815,7 +818,7 @@
 
 # If set, then the server's certificate will not be verified.
 # (boolean value)
-#insecure=false
+#insecure=<None>
 
 
 [clients_trove]
@@ -826,7 +829,7 @@
 
 # Type of endpoint in Identity service catalog to use for
 # communication with the OpenStack service. (string value)
-#endpoint_type=publicURL
+#endpoint_type=<None>
 
 # Optional CA cert file to use in SSL connections. (string
 # value)
@@ -842,7 +845,7 @@
 
 # If set, then the server's certificate will not be verified.
 # (boolean value)
-#insecure=false
+#insecure=<None>
 
 
 [database]
@@ -898,8 +901,9 @@
 # Deprecated group/name - [DATABASE]/sql_max_pool_size
 #max_pool_size=<None>
 
-# Maximum db connection retries during startup. Set to -1 to
-# specify an infinite retry count. (integer value)
+# Maximum number of database connection retries during
+# startup. Set to -1 to specify an infinite retry count.
+# (integer value)
 # Deprecated group/name - [DEFAULT]/sql_max_retries
 # Deprecated group/name - [DATABASE]/sql_max_retries
 #max_retries=10
@@ -1281,6 +1285,55 @@
 # Matchmaker ring file (JSON). (string value)
 # Deprecated group/name - [DEFAULT]/matchmaker_ringfile
 #ringfile=/etc/oslo/matchmaker_ring.json
+
+
+[oslo_messaging_amqp]
+
+#
+# Options defined in oslo.messaging
+#
+# NOTE: Options in this group are supported when using oslo.messaging >=1.5.0.
+
+# address prefix used when sending to a specific server
+# (string value)
+#server_request_prefix=exclusive
+
+# address prefix used when broadcasting to all servers (string
+# value)
+#broadcast_prefix=broadcast
+
+# address prefix when sending to any server in group (string
+# value)
+#group_request_prefix=unicast
+
+# Name for the AMQP container (string value)
+#container_name=<None>
+
+# Timeout for inactive connections (in seconds) (integer
+# value)
+#idle_timeout=0
+
+# Debug: dump AMQP frames to stdout (boolean value)
+#trace=false
+
+# CA certificate PEM file for verifing server certificate
+# (string value)
+#ssl_ca_file=
+
+# Identifying certificate PEM file to present to clients
+# (string value)
+#ssl_cert_file=
+
+# Private key PEM file used to sign cert_file certificate
+# (string value)
+#ssl_key_file=
+
+# Password for decrypting ssl_key_file (if encrypted) (string
+# value)
+#ssl_key_password=<None>
+
+# Accept clients using either SSL or plain TCP (boolean value)
+#allow_insecure_clients=false
 
 
 [paste_deploy]

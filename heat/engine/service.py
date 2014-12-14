@@ -345,6 +345,14 @@ class EngineService(service.Service):
                           'deprecated and will be removed in the Juno '
                           'release.', DeprecationWarning)
 
+        if cfg.CONF.trusts_delegated_roles:
+            warnings.warn('If trusts_delegated_roles is set, only the subset '
+                          'of roles it specifies will be delegated to heat. '
+                          'You may wish to update your config to [], as an '
+                          'empty list means delegate all roles of the '
+                          'trustor.',
+                          Warning)
+
     def create_periodic_tasks(self):
         LOG.debug("Starting periodic watch tasks pid=%s" % os.getpid())
         # Note with multiple workers, the parent process hasn't called start()
@@ -794,7 +802,7 @@ class EngineService(service.Service):
                 return {'Error': six.text_type(ex)}
 
         # validate parameters
-        tmpl_params = tmpl.parameters(None, {})
+        tmpl_params = tmpl.parameters(None, user_params=env.params)
         tmpl_params.validate(validate_value=False, context=cnxt)
         is_real_param = lambda p: p.name not in tmpl_params.PSEUDO_PARAMETERS
         params = tmpl_params.map(api.format_validate_parameter, is_real_param)
