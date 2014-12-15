@@ -1,3 +1,9 @@
+heat (2014.2.1-2) experimental; urgency=medium
+
+  * Added missing python-oslo.serialization (build-)depends.
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 15 Dec 2014 17:12:39 +0800
+
 heat (2014.2.1-1) experimental; urgency=medium
 
   * New upstream release.
