@@ -33,6 +33,8 @@ override_dh_clean:
 	rm -f debian/*.init debian/*.service debian/*.upstart
 
 override_dh_install:
+	PYTHONPATH=. bash tools/config/generate_sample.sh -b . -p heat -o etc/heat
+
 	dh_install --fail-missing -Xbin/cinder-keystone-setup
 	install -D -m 0640 etc/heat/heat.conf.sample $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
 	sed -i 's|[# ]*auth_protocol[# ]*=.*|auth_protocol=http|' $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
