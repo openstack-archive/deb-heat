@@ -14,17 +14,16 @@
 import hashlib
 
 from oslo.config import cfg
+from oslo.serialization import jsonutils as json
 from oslo.utils import importutils
 import requests
 import webob
 
 from heat.api.aws import exception
-from heat.api.aws.exception import HeatAPIException
 from heat.common.i18n import _
 from heat.common.i18n import _LE
 from heat.common.i18n import _LI
 from heat.common import wsgi
-from heat.openstack.common import jsonutils as json
 from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
@@ -127,7 +126,7 @@ class EC2Token(wsgi.Middleware):
                 try:
                     LOG.debug("Attempt authorize on %s" % auth_uri)
                     return self._authorize(req, auth_uri)
-                except HeatAPIException as e:
+                except exception.HeatAPIException as e:
                     LOG.debug("Authorize failed: %s" % e.__class__)
                     last_failure = e
             raise last_failure or exception.HeatAccessDeniedError()

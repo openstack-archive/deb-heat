@@ -13,6 +13,7 @@
 
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
@@ -60,7 +61,10 @@ class LaunchConfiguration(resource.Resource):
         INSTANCE_TYPE: properties.Schema(
             properties.Schema.STRING,
             _('Nova instance type (flavor).'),
-            required=True
+            required=True,
+            constraints=[
+                constraints.CustomConstraint('nova.flavor')
+            ]
         ),
         KEY_NAME: properties.Schema(
             properties.Schema.STRING,
@@ -120,6 +124,10 @@ class LaunchConfiguration(resource.Resource):
                                 properties.Schema.STRING,
                                 _('The ID of the snapshot to create '
                                   'a volume from.'),
+                                constraints=[
+                                    constraints.CustomConstraint(
+                                        'cinder.snapshot')
+                                ]
                             ),
                             VOLUME_SIZE: properties.Schema(
                                 properties.Schema.STRING,

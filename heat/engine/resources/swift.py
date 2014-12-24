@@ -10,9 +10,12 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+import six
 
 from six.moves.urllib import parse as urlparse
 
+from heat.common.i18n import _
+from heat.common.i18n import _LW
 from heat.engine import attributes
 from heat.engine import properties
 from heat.engine import resource
@@ -149,8 +152,11 @@ class SwiftContainer(resource.Resource):
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
 
+    def handle_check(self):
+        self.swift().get_container(self.resource_id)
+
     def FnGetRefId(self):
-        return unicode(self.resource_id)
+        return six.text_type(self.resource_id)
 
     def _resolve_attribute(self, key):
         parsed = list(urlparse.urlparse(self.swift().url))
@@ -167,7 +173,7 @@ class SwiftContainer(resource.Resource):
                 headers = self.swift().head_container(self.resource_id)
             except Exception as ex:
                 if self.client_plugin().is_client_exception(ex):
-                    LOG.warn(_("Head container failed: %s") % ex)
+                    LOG.warn(_LW("Head container failed: %s"), ex)
                     return None
                 raise
             else:

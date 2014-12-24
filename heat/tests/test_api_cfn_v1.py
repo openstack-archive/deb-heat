@@ -13,6 +13,7 @@
 
 import json
 import os
+import six
 
 import mock
 from oslo.config import cfg
@@ -22,16 +23,16 @@ import heat.api.cfn.v1.stacks as stacks
 from heat.common import exception as heat_exception
 from heat.common import identifier
 from heat.common import policy
-from heat.common.wsgi import Request
+from heat.common import wsgi
 from heat.rpc import api as rpc_api
 from heat.rpc import client as rpc_client
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 
 policy_path = os.path.dirname(os.path.realpath(__file__)) + "/policy/"
 
 
-class CfnStackControllerTest(HeatTestCase):
+class CfnStackControllerTest(common.HeatTestCase):
     '''
     Tests the API class which acts as the WSGI controller,
     the endpoint processing API requests after they are routed
@@ -66,7 +67,7 @@ class CfnStackControllerTest(HeatTestCase):
         params = params or {}
         qs = "&".join(["=".join([k, str(params[k])]) for k in params])
         environ = {'REQUEST_METHOD': 'GET', 'QUERY_STRING': qs}
-        req = Request(environ)
+        req = wsgi.Request(environ)
         req.context = utils.dummy_context()
         return req
 
@@ -512,7 +513,11 @@ class CfnStackControllerTest(HeatTestCase):
               'params': engine_parms,
               'files': {},
               'args': engine_args,
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndReturn(engine_resp)
 
         self.m.ReplayAll()
@@ -559,7 +564,11 @@ class CfnStackControllerTest(HeatTestCase):
               'params': engine_parms,
               'files': {},
               'args': engine_args,
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndReturn(engine_resp)
 
         self.m.ReplayAll()
@@ -606,7 +615,11 @@ class CfnStackControllerTest(HeatTestCase):
               'params': engine_parms,
               'files': {},
               'args': engine_args,
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndReturn(engine_resp)
 
         self.m.ReplayAll()
@@ -653,7 +666,11 @@ class CfnStackControllerTest(HeatTestCase):
               'params': engine_parms,
               'files': {},
               'args': engine_args,
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndReturn(engine_resp)
 
         self.m.ReplayAll()
@@ -700,7 +717,11 @@ class CfnStackControllerTest(HeatTestCase):
               'params': engine_parms,
               'files': {},
               'args': engine_args,
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndReturn(engine_resp)
 
         self.m.ReplayAll()
@@ -785,7 +806,11 @@ class CfnStackControllerTest(HeatTestCase):
               'params': engine_parms,
               'files': {},
               'args': engine_args,
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndRaise(AttributeError())
 
         policy.Enforcer.enforce(dummy_req.context, 'CreateStack'
@@ -798,7 +823,11 @@ class CfnStackControllerTest(HeatTestCase):
               'params': engine_parms,
               'files': {},
               'args': engine_args,
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndRaise(heat_exception.UnknownUserParameter(key='test'))
 
         policy.Enforcer.enforce(dummy_req.context, 'CreateStack'
@@ -811,7 +840,11 @@ class CfnStackControllerTest(HeatTestCase):
               'params': engine_parms,
               'files': {},
               'args': engine_args,
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndRaise(heat_exception.UserParameterMissing(key='test'))
 
         self.m.ReplayAll()
@@ -851,7 +884,11 @@ class CfnStackControllerTest(HeatTestCase):
               'params': engine_parms,
               'files': {},
               'args': engine_args,
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndRaise(heat_exception.StackExists(stack_name='test'))
 
         self.m.ReplayAll()
@@ -885,7 +922,11 @@ class CfnStackControllerTest(HeatTestCase):
               'params': engine_parms,
               'files': {},
               'args': engine_args,
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndRaise(heat_exception.StackValidationFailed(
             message='Something went wrong'))
 
@@ -1274,7 +1315,7 @@ class CfnStackControllerTest(HeatTestCase):
         expected = {'DescribeStackEventsResponse':
                     {'DescribeStackEventsResult':
                      {'StackEvents':
-                      [{'EventId': unicode(event_id),
+                      [{'EventId': six.text_type(event_id),
                         'StackId': u'arn:openstack:heat::t:stacks/wordpress/6',
                         'ResourceStatus': u'TEST_IN_PROGRESS',
                         'ResourceType': u'AWS::EC2::Instance',
@@ -1369,9 +1410,10 @@ class CfnStackControllerTest(HeatTestCase):
         args = {
             'stack_identity': identity,
             'resource_name': dummy_req.params.get('LogicalResourceId'),
+            'with_attr': None,
         }
         rpc_client.EngineClient.call(
-            dummy_req.context, ('describe_stack_resource', args)
+            dummy_req.context, ('describe_stack_resource', args), version='1.2'
         ).AndReturn(engine_resp)
 
         self.m.ReplayAll()
@@ -1433,9 +1475,10 @@ class CfnStackControllerTest(HeatTestCase):
         args = {
             'stack_identity': identity,
             'resource_name': dummy_req.params.get('LogicalResourceId'),
+            'with_attr': None,
         }
         rpc_client.EngineClient.call(
-            dummy_req.context, ('describe_stack_resource', args)
+            dummy_req.context, ('describe_stack_resource', args), version='1.2'
         ).AndRaise(heat_exception.ResourceNotFound(
             resource_name='test', stack_name='test'))
 

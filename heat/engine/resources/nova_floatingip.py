@@ -10,19 +10,25 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+import six
 
 from oslo.utils import excutils
 
 from heat.common.i18n import _
+from heat.common.i18n import _LE
 from heat.engine import attributes
+from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
+from heat.engine import support
 from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
 
 
 class NovaFloatingIp(resource.Resource):
+    support_status = support.SupportStatus(version='2014.1')
+
     PROPERTIES = (POOL,) = ('pool',)
 
     ATTRIBUTES = (
@@ -68,10 +74,9 @@ class NovaFloatingIp(resource.Resource):
             with excutils.save_and_reraise_exception():
                 if self.client_plugin().is_not_found(e):
                     if pool is None:
-                        msg = _('Could not allocate floating IP. Probably '
-                                'there is no default floating IP pool is '
-                                'configured.')
-                        LOG.error(msg)
+                        LOG.error(_LE('Could not allocate floating IP. '
+                                      'Probably there is no default floating'
+                                      ' IP pool is configured.'))
 
         self.resource_id_set(floating_ip.id)
         self._floating_ip = floating_ip
@@ -89,10 +94,12 @@ class NovaFloatingIp(resource.Resource):
             self.POOL_ATTR: getattr(floating_ip, self.POOL_ATTR, None),
             self.IP: floating_ip.ip
         }
-        return unicode(attributes[key])
+        return six.text_type(attributes[key])
 
 
 class NovaFloatingIpAssociation(resource.Resource):
+    support_status = support.SupportStatus(version='2014.1')
+
     PROPERTIES = (
         SERVER, FLOATING_IP
     ) = (
@@ -104,7 +111,10 @@ class NovaFloatingIpAssociation(resource.Resource):
             properties.Schema.STRING,
             _('Server to assign floating IP to.'),
             required=True,
-            update_allowed=True
+            update_allowed=True,
+            constraints=[
+                constraints.CustomConstraint('nova.server')
+            ]
         ),
         FLOATING_IP: properties.Schema(
             properties.Schema.STRING,
@@ -113,6 +123,8 @@ class NovaFloatingIpAssociation(resource.Resource):
             update_allowed=True
         ),
     }
+
+    default_client_name = 'nova'
 
     def FnGetRefId(self):
         return self.physical_resource_name_or_FnGetRefId()

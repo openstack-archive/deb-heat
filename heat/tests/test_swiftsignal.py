@@ -19,8 +19,10 @@ import uuid
 import mock
 import six
 from swiftclient import client as swiftclient_client
-from testtools.matchers import MatchesRegex
+from swiftclient import exceptions as swiftclient_exceptions
+from testtools import matchers
 
+from heat.common import exception
 from heat.common import template_format
 from heat.engine.clients.os import swift
 from heat.engine import environment
@@ -28,7 +30,8 @@ from heat.engine import resource
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.engine import stack
-from heat.tests.common import HeatTestCase
+from heat.engine import template as templatem
+from heat.tests import common
 from heat.tests import utils
 
 
@@ -81,7 +84,7 @@ obj_header = {
 
 def create_stack(template, stack_id=None):
     tmpl = template_format.parse(template)
-    template = stack.Template(tmpl)
+    template = templatem.Template(tmpl)
     ctx = utils.dummy_context(tenant_id='test_tenant')
     st = stack.Stack(ctx, 'test_st', template,
                      environment.Environment(),
@@ -111,7 +114,7 @@ def cont_index(obj_name, num_version_hist):
     return (container_header, objects)
 
 
-class SwiftSignalHandleTest(HeatTestCase):
+class SwiftSignalHandleTest(common.HeatTestCase):
     def setUp(self):
         super(SwiftSignalHandleTest, self).setUp()
         utils.setup_dummy_db()
@@ -141,7 +144,8 @@ class SwiftSignalHandleTest(HeatTestCase):
                   "\?temp_url_sig=[0-9a-f]{40}&temp_url_expires=[0-9]{10}"
                   % st.id)
         res_id = st.resources['test_wait_condition_handle'].resource_id
-        self.assertThat(res_id, MatchesRegex(regexp))
+        self.assertEqual(res_id, handle.physical_resource_name())
+        self.assertThat(handle.FnGetRefId(), matchers.MatchesRegex(regexp))
 
         # Since the account key is mocked out above
         self.assertFalse(mock_swift_object.post_account.called)
@@ -149,6 +153,113 @@ class SwiftSignalHandleTest(HeatTestCase):
         header = {'x-versions-location': st.id}
         self.assertEqual({'headers': header},
                          mock_swift_object.put_container.call_args[1])
+
+    @mock.patch.object(swift.SwiftClientPlugin, '_create')
+    @mock.patch.object(resource.Resource, 'physical_resource_name')
+    def test_delete_empty_container(self, mock_name, mock_swift):
+        st = create_stack(swiftsignalhandle_template)
+        handle = st['test_wait_condition_handle']
+
+        mock_swift_object = mock.Mock()
+        mock_swift.return_value = mock_swift_object
+        mock_swift_object.head_account.return_value = {
+            'x-account-meta-temp-url-key': "1234"
+        }
+        mock_swift_object.url = "http://fake-host.com:8080/v1/AUTH_1234"
+        obj_name = "%s-%s-abcdefghijkl" % (st.name, handle.name)
+        mock_name.return_value = obj_name
+        st.create()
+
+        exc = swiftclient_exceptions.ClientException("Object DELETE failed",
+                                                     http_status=404)
+        mock_swift_object.delete_object.side_effect = (None, None, None, exc)
+        exc = swiftclient_exceptions.ClientException("Container DELETE failed",
+                                                     http_status=404)
+        mock_swift_object.delete_container.side_effect = exc
+        rsrc = st.resources['test_wait_condition_handle']
+        scheduler.TaskRunner(rsrc.delete)()
+        self.assertEqual(('DELETE', 'COMPLETE'), rsrc.state)
+        self.assertEqual(4, mock_swift_object.delete_object.call_count)
+
+    @mock.patch.object(swift.SwiftClientPlugin, '_create')
+    @mock.patch.object(resource.Resource, 'physical_resource_name')
+    def test_delete_object_error(self, mock_name, mock_swift):
+        st = create_stack(swiftsignalhandle_template)
+        handle = st['test_wait_condition_handle']
+
+        mock_swift_object = mock.Mock()
+        mock_swift.return_value = mock_swift_object
+        mock_swift_object.head_account.return_value = {
+            'x-account-meta-temp-url-key': "1234"
+        }
+        mock_swift_object.url = "http://fake-host.com:8080/v1/AUTH_1234"
+        obj_name = "%s-%s-abcdefghijkl" % (st.name, handle.name)
+        mock_name.return_value = obj_name
+        st.create()
+
+        exc = swiftclient_exceptions.ClientException("Overlimit",
+                                                     http_status=413)
+        mock_swift_object.delete_object.side_effect = (None, None, None, exc)
+        rsrc = st.resources['test_wait_condition_handle']
+        exc = self.assertRaises(exception.ResourceFailure,
+                                scheduler.TaskRunner(rsrc.delete))
+        self.assertEqual('ClientException: Overlimit: 413', six.text_type(exc))
+
+    @mock.patch.object(swift.SwiftClientPlugin, '_create')
+    @mock.patch.object(resource.Resource, 'physical_resource_name')
+    def test_delete_container_error(self, mock_name, mock_swift):
+        st = create_stack(swiftsignalhandle_template)
+        handle = st['test_wait_condition_handle']
+
+        mock_swift_object = mock.Mock()
+        mock_swift.return_value = mock_swift_object
+        mock_swift_object.head_account.return_value = {
+            'x-account-meta-temp-url-key': "1234"
+        }
+        mock_swift_object.url = "http://fake-host.com:8080/v1/AUTH_1234"
+        obj_name = "%s-%s-abcdefghijkl" % (st.name, handle.name)
+        mock_name.return_value = obj_name
+        st.create()
+
+        exc = swiftclient_exceptions.ClientException("Object DELETE failed",
+                                                     http_status=404)
+        mock_swift_object.delete_object.side_effect = (None, None, None, exc)
+
+        exc = swiftclient_exceptions.ClientException("Overlimit",
+                                                     http_status=413)
+        mock_swift_object.delete_container.side_effect = (exc,)
+
+        rsrc = st.resources['test_wait_condition_handle']
+        exc = self.assertRaises(exception.ResourceFailure,
+                                scheduler.TaskRunner(rsrc.delete))
+        self.assertEqual('ClientException: Overlimit: 413', six.text_type(exc))
+
+    @mock.patch.object(swift.SwiftClientPlugin, '_create')
+    @mock.patch.object(resource.Resource, 'physical_resource_name')
+    def test_delete_non_empty_container(self, mock_name, mock_swift):
+        st = create_stack(swiftsignalhandle_template)
+        handle = st['test_wait_condition_handle']
+
+        mock_swift_object = mock.Mock()
+        mock_swift.return_value = mock_swift_object
+        mock_swift_object.head_account.return_value = {
+            'x-account-meta-temp-url-key': "1234"
+        }
+        mock_swift_object.url = "http://fake-host.com:8080/v1/AUTH_1234"
+        obj_name = "%s-%s-abcdefghijkl" % (st.name, handle.name)
+        mock_name.return_value = obj_name
+        st.create()
+
+        exc = swiftclient_exceptions.ClientException("Object DELETE failed",
+                                                     http_status=404)
+        mock_swift_object.delete_object.side_effect = (None, None, None, exc)
+        exc = swiftclient_exceptions.ClientException("Container DELETE failed",
+                                                     http_status=409)
+        mock_swift_object.delete_container.side_effect = exc
+        rsrc = st.resources['test_wait_condition_handle']
+        scheduler.TaskRunner(rsrc.delete)()
+        self.assertEqual(('DELETE', 'COMPLETE'), rsrc.state)
+        self.assertEqual(4, mock_swift_object.delete_object.call_count)
 
     @mock.patch.object(swift.SwiftClientPlugin, '_create')
     def test_handle_update(self, mock_swift):
@@ -172,7 +283,7 @@ class SwiftSignalHandleTest(HeatTestCase):
         self.assertRaises(resource.UpdateReplace, updater)
 
 
-class SwiftSignalTest(HeatTestCase):
+class SwiftSignalTest(common.HeatTestCase):
     def setUp(self):
         super(SwiftSignalTest, self).setUp()
         utils.setup_dummy_db()
@@ -221,20 +332,6 @@ class SwiftSignalTest(HeatTestCase):
 
         st.create()
         self.assertIn('not a valid SwiftSignalHandle.  The container name',
-                      six.text_type(st.status_reason))
-
-    @mock.patch.object(swift.SwiftClientPlugin, 'get_signal_url')
-    def test_validate_handle_url_bad_tenant(self, mock_handle_url):
-        stack_id = '1234'
-        mock_handle_url.return_value = (
-            "http://fake-host.com:8080/v1/AUTH_foo/%s/"
-            "test_st-test_wait_condition_handle?temp_url_sig="
-            "12d8f9f2c923fbeb555041d4ed63d83de6768e95&"
-            "temp_url_expires=1404762741" % stack_id)
-        st = create_stack(swiftsignal_template, stack_id=stack_id)
-
-        st.create()
-        self.assertIn('not a valid SwiftSignalHandle.  The tenant',
                       six.text_type(st.status_reason))
 
     @mock.patch.object(swift.SwiftClientPlugin, '_create')
@@ -582,7 +679,7 @@ class SwiftSignalTest(HeatTestCase):
 
         st.create()
         self.assertEqual(('CREATE', 'COMPLETE'), st.state)
-        self.assertEqual(handle.FnGetAtt('token'), '')
+        self.assertEqual('', handle.FnGetAtt('token'))
 
     @mock.patch.object(swift.SwiftClientPlugin, '_create')
     @mock.patch.object(resource.Resource, 'physical_resource_name')
@@ -612,7 +709,7 @@ class SwiftSignalTest(HeatTestCase):
                     'test_st-test_wait_condition_handle-abcdefghijkl\?temp_'
                     'url_sig=[0-9a-f]{40}&temp_url_expires=[0-9]{10}') % st.id
         self.assertThat(handle.FnGetAtt('endpoint'),
-                        MatchesRegex(expected))
+                        matchers.MatchesRegex(expected))
 
     @mock.patch.object(swift.SwiftClientPlugin, '_create')
     @mock.patch.object(resource.Resource, 'physical_resource_name')
@@ -642,7 +739,8 @@ class SwiftSignalTest(HeatTestCase):
                     'AUTH_test_tenant/%s/test_st-test_wait_condition_'
                     'handle-abcdefghijkl\?temp_url_sig=[0-9a-f]{40}&'
                     'temp_url_expires=[0-9]{10}\'') % st.id
-        self.assertThat(handle.FnGetAtt('curl_cli'), MatchesRegex(expected))
+        self.assertThat(handle.FnGetAtt('curl_cli'),
+                        matchers.MatchesRegex(expected))
 
     @mock.patch.object(swift.SwiftClientPlugin, '_create')
     @mock.patch.object(resource.Resource, 'physical_resource_name')

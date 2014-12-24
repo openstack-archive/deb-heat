@@ -10,8 +10,11 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+import six
 
 from heat.common import exception
+from heat.common.i18n import _
+from heat.common.i18n import _LI
 
 from heat.engine import attributes
 from heat.engine import constraints
@@ -113,16 +116,16 @@ class AWSScalingPolicy(signal_responder.SignalResponder,
             alarm_state = details.get('current',
                                       details.get('state', 'alarm')).lower()
 
-        LOG.info(_('%(name)s Alarm, new state %(state)s')
-                 % {'name': self.name, 'state': alarm_state})
+        LOG.info(_LI('%(name)s Alarm, new state %(state)s'),
+                 {'name': self.name, 'state': alarm_state})
 
         if alarm_state != 'alarm':
             return
         if self._cooldown_inprogress():
-            LOG.info(_("%(name)s NOT performing scaling action, "
-                       "cooldown %(cooldown)s")
-                     % {'name': self.name,
-                        'cooldown': self.properties[self.COOLDOWN]})
+            LOG.info(_LI("%(name)s NOT performing scaling action, "
+                         "cooldown %(cooldown)s"),
+                     {'name': self.name,
+                      'cooldown': self.properties[self.COOLDOWN]})
             return
 
         asgn_id = self.properties[self.AUTO_SCALING_GROUP_NAME]
@@ -133,10 +136,10 @@ class AWSScalingPolicy(signal_responder.SignalResponder,
                                            'alarm': self.name,
                                            'group': asgn_id})
 
-        LOG.info(_('%(name)s Alarm, adjusting Group %(group)s with id '
-                   '%(asgn_id)s by %(filter)s')
-                 % {'name': self.name, 'group': group.name, 'asgn_id': asgn_id,
-                    'filter': self.properties[self.SCALING_ADJUSTMENT]})
+        LOG.info(_LI('%(name)s Alarm, adjusting Group %(group)s with id '
+                     '%(asgn_id)s by %(filter)s'),
+                 {'name': self.name, 'group': group.name, 'asgn_id': asgn_id,
+                  'filter': self.properties[self.SCALING_ADJUSTMENT]})
         adjustment_type = self._get_adjustement_type()
         group.adjust(self.properties[self.SCALING_ADJUSTMENT], adjustment_type)
 
@@ -150,13 +153,13 @@ class AWSScalingPolicy(signal_responder.SignalResponder,
         when there is an alarm.
         '''
         if name == self.ALARM_URL and self.resource_id is not None:
-            return unicode(self._get_signed_url())
+            return six.text_type(self._get_signed_url())
 
     def FnGetRefId(self):
         if self.resource_id is not None:
-            return unicode(self._get_signed_url())
+            return six.text_type(self._get_signed_url())
         else:
-            return unicode(self.name)
+            return six.text_type(self.name)
 
 
 def resource_mapping():

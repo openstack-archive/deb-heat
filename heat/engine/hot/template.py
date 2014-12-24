@@ -13,6 +13,7 @@
 import collections
 import six
 
+from heat.common import exception
 from heat.common.i18n import _
 from heat.engine.cfn import functions as cfn_funcs
 from heat.engine.cfn import template as cfn_template
@@ -118,6 +119,38 @@ class HOTemplate20130523(template.Template):
             else:
                 raise ke
 
+    def _translate_section(self, section, sub_section, data, mapping):
+        cfn_objects = {}
+        obj_name = section[:-1]
+        err_msg = _('"%%s" is not a valid keyword inside a %s '
+                    'definition') % obj_name
+        for name, attrs in six.iteritems(data):
+            cfn_object = {}
+
+            if not attrs:
+                args = {'object_name': obj_name, 'sub_section': sub_section}
+                message = _('Each %(object_name)s must contain a '
+                            '%(sub_section)s key.') % args
+                raise exception.StackValidationFailed(message=message)
+            try:
+                for attr, attr_value in six.iteritems(attrs):
+                    cfn_attr = self._translate(attr, mapping, err_msg)
+                    cfn_object[cfn_attr] = attr_value
+
+                cfn_objects[name] = cfn_object
+            except AttributeError:
+                message = _('"%(section)s" must contain a map of '
+                            '%(obj_name)s maps. Found a [%(_type)s] '
+                            'instead') % {'section': section,
+                                          '_type': type(attrs),
+                                          'obj_name': obj_name}
+                raise exception.StackValidationFailed(message=message)
+            except KeyError as e:
+                # an invalid keyword was found
+                raise exception.StackValidationFailed(message=six.text_type(e))
+
+        return cfn_objects
+
     def _translate_resources(self, resources):
         """Get the resources of the template translated into CFN format."""
         HOT_TO_CFN_ATTRS = {'type': 'Type',
@@ -127,52 +160,32 @@ class HOTemplate20130523(template.Template):
                             'deletion_policy': 'DeletionPolicy',
                             'update_policy': 'UpdatePolicy'}
 
-        cfn_resources = {}
-
-        for resource_name, attrs in six.iteritems(resources):
-            cfn_resource = {}
-
-            for attr, attr_value in six.iteritems(attrs):
-                cfn_attr = self._translate(attr, HOT_TO_CFN_ATTRS,
-                                           _('"%s" is not a valid keyword '
-                                             'inside a resource definition'))
-                cfn_resource[cfn_attr] = attr_value
-
-            cfn_resources[resource_name] = cfn_resource
-
-        return cfn_resources
+        return self._translate_section('resources', 'type', resources,
+                                       HOT_TO_CFN_ATTRS)
 
     def _translate_outputs(self, outputs):
         """Get the outputs of the template translated into CFN format."""
         HOT_TO_CFN_ATTRS = {'description': 'Description',
                             'value': 'Value'}
 
-        cfn_outputs = {}
+        return self._translate_section('outputs', 'value', outputs,
+                                       HOT_TO_CFN_ATTRS)
 
-        for output_name, attrs in six.iteritems(outputs):
-            cfn_output = {}
+    def param_schemata(self, param_defaults=None):
+        parameter_section = self.t.get(self.PARAMETERS) or {}
+        pdefaults = param_defaults or {}
+        for name, schema in six.iteritems(parameter_section):
+            if name in pdefaults:
+                parameter_section[name]['default'] = pdefaults[name]
 
-            for attr, attr_value in six.iteritems(attrs):
-                cfn_attr = self._translate(attr, HOT_TO_CFN_ATTRS,
-                                           _('"%s" is not a valid keyword '
-                                             'inside an output definition'))
-                cfn_output[cfn_attr] = attr_value
-
-            cfn_outputs[output_name] = cfn_output
-
-        return cfn_outputs
-
-    def param_schemata(self):
-        parameter_section = self.t.get(self.PARAMETERS)
-        if parameter_section is None:
-            parameter_section = {}
         params = six.iteritems(parameter_section)
         return dict((name, parameters.HOTParamSchema.from_dict(name, schema))
                     for name, schema in params)
 
-    def parameters(self, stack_identifier, user_params):
+    def parameters(self, stack_identifier, user_params, param_defaults=None):
         return parameters.HOTParameters(stack_identifier, self,
-                                        user_params=user_params)
+                                        user_params=user_params,
+                                        param_defaults=param_defaults)
 
     def resource_definitions(self, stack):
         allowed_keys = set(_RESOURCE_KEYS)
@@ -185,14 +198,16 @@ class HOTemplate20130523(template.Template):
                     field = data[key]
                     if not isinstance(field, valid_types):
                         args = {'name': name, 'key': key, 'typename': typename}
-                        msg = _('Resource %(name)s %(key)s type'
+                        msg = _('Resource %(name)s %(key)s type '
                                 'must be %(typename)s') % args
                         raise TypeError(msg)
                     return field
                 else:
                     return default
 
-            resource_type = get_check_type(RES_TYPE, basestring, 'string')
+            resource_type = get_check_type(RES_TYPE,
+                                           six.string_types,
+                                           'string')
             if resource_type is None:
                 args = {'name': name, 'type_key': RES_TYPE}
                 msg = _('Resource %(name)s is missing "%(type_key)s"') % args
@@ -212,11 +227,11 @@ class HOTemplate20130523(template.Template):
                                      collections.Sequence,
                                      'list or string',
                                      default=[])
-            if isinstance(depends, basestring):
+            if isinstance(depends, six.string_types):
                 depends = [depends]
 
             deletion_policy = get_check_type(RES_DELETION_POLICY,
-                                             basestring,
+                                             six.string_types,
                                              'string')
 
             update_policy = get_check_type(RES_UPDATE_POLICY,
@@ -229,11 +244,14 @@ class HOTemplate20130523(template.Template):
                     raise ValueError(_('"%s" is not a valid keyword '
                                        'inside a resource definition') % key)
 
-            defn = rsrc_defn.ResourceDefinition(name, resource_type,
-                                                properties, metadata,
-                                                depends,
-                                                deletion_policy,
-                                                update_policy)
+            defn = rsrc_defn.ResourceDefinition(
+                name, resource_type,
+                properties=properties,
+                metadata=metadata,
+                depends=depends,
+                deletion_policy=deletion_policy,
+                update_policy=update_policy,
+                description=None)
             return name, defn
 
         resources = self.t.get(self.RESOURCES) or {}

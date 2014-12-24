@@ -23,7 +23,7 @@ from heat.engine.clients.os import nova
 from heat.engine.clients.os import sahara
 from heat.engine.resources import sahara_templates as st
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 
 node_group_template = """
@@ -37,6 +37,7 @@ resources:
         plugin_name: vanilla
         hadoop_version: 2.3.0
         flavor: m1.large
+        volume_type: lvm
         floating_ip_pool: some_pool_name
         node_processes:
           - namenode
@@ -69,7 +70,7 @@ class FakeClusterTemplate(object):
         self.name = "node-group-template"
 
 
-class SaharaNodeGroupTemplateTest(HeatTestCase):
+class SaharaNodeGroupTemplateTest(common.HeatTestCase):
     def setUp(self):
         super(SaharaNodeGroupTemplateTest, self).setUp()
         self.patchobject(st.constraints.CustomConstraint,
@@ -114,6 +115,11 @@ class SaharaNodeGroupTemplateTest(HeatTestCase):
         expected_kwargs = {'description': "",
                            'volumes_per_node': None,
                            'volumes_size': None,
+                           'volume_type': 'lvm',
+                           'security_groups': None,
+                           'auto_security_group': None,
+                           'availability_zone': None,
+                           'volumes_availability_zone': None,
                            'node_processes': ['namenode', 'jobtracker'],
                            'floating_ip_pool': 'some_pool_id',
                            'node_configs': None,
@@ -152,7 +158,7 @@ class SaharaNodeGroupTemplateTest(HeatTestCase):
                          six.text_type(ex))
 
 
-class SaharaClusterTemplateTest(HeatTestCase):
+class SaharaClusterTemplateTest(common.HeatTestCase):
     def setUp(self):
         super(SaharaClusterTemplateTest, self).setUp()
         self.patchobject(st.constraints.CustomConstraint, '_is_valid'

@@ -14,6 +14,7 @@ import collections
 import copy
 import itertools
 import operator
+import six
 
 from heat.common import exception
 
@@ -37,7 +38,7 @@ class ResourceDefinitionCore(object):
 
     def __init__(self, name, resource_type, properties=None, metadata=None,
                  depends=None, deletion_policy=None, update_policy=None,
-                 description=''):
+                 description=None):
         """
         Initialise with the parsed definition of a resource.
 
@@ -56,7 +57,7 @@ class ResourceDefinitionCore(object):
         depends = depends or []
         self.name = name
         self.resource_type = resource_type
-        self.description = description
+        self.description = description or ''
         self._properties = properties
         self._metadata = metadata
         self._depends = depends
@@ -66,7 +67,7 @@ class ResourceDefinitionCore(object):
         self._hash = hash(self.resource_type)
         self._rendering = None
 
-        assert isinstance(description, basestring)
+        assert isinstance(self.description, six.string_types)
 
         if properties is not None:
             assert isinstance(properties, (collections.Mapping,
@@ -80,7 +81,7 @@ class ResourceDefinitionCore(object):
 
         assert isinstance(depends, (collections.Sequence,
                                     function.Function))
-        assert not isinstance(depends, basestring)
+        assert not isinstance(depends, six.string_types)
         self._hash ^= _hash_data(depends)
 
         if deletion_policy is not None:
@@ -132,12 +133,13 @@ class ResourceDefinitionCore(object):
         def reparse_snippet(snippet):
             return template.parse(stack, copy.deepcopy(snippet))
 
-        return type(self)(self.name, self.resource_type,
-                          reparse_snippet(self._properties),
-                          reparse_snippet(self._metadata),
-                          reparse_snippet(self._depends),
-                          reparse_snippet(self._deletion_policy),
-                          reparse_snippet(self._update_policy))
+        return type(self)(
+            self.name, self.resource_type,
+            properties=reparse_snippet(self._properties),
+            metadata=reparse_snippet(self._metadata),
+            depends=reparse_snippet(self._depends),
+            deletion_policy=reparse_snippet(self._deletion_policy),
+            update_policy=reparse_snippet(self._update_policy))
 
     def dependencies(self, stack):
         """
@@ -392,7 +394,7 @@ def _hash_data(data):
     if isinstance(data, function.Function):
         data = copy.deepcopy(data)
 
-    if not isinstance(data, basestring):
+    if not isinstance(data, six.string_types):
         if isinstance(data, collections.Sequence):
             return hash(tuple(_hash_data(d) for d in data))
 

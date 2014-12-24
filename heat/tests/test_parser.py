@@ -18,7 +18,7 @@ import time
 
 from keystoneclient import exceptions as kc_exceptions
 import mock
-from mox import IgnoreArg
+import mox
 from oslo.config import cfg
 import six
 import warnings
@@ -29,7 +29,6 @@ from heat.common import heat_keystoneclient as hkc
 from heat.common import template_format
 from heat.common import urlfetch
 import heat.db.api as db_api
-import heat.engine.cfn.functions
 from heat.engine.cfn import functions as cfn_funcs
 from heat.engine.cfn import template as cfn_t
 from heat.engine.clients.os import keystone
@@ -43,11 +42,11 @@ from heat.engine import resource
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.engine import template
-from heat.tests.common import HeatTestCase
-from heat.tests.fakes import FakeKeystoneClient
+from heat.tests import common
+from heat.tests import fakes
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
-from heat.tests.v1_1 import fakes
+from heat.tests.v1_1 import fakes as fakes_v1_1
 
 
 def join(raw):
@@ -55,7 +54,7 @@ def join(raw):
     return function.resolve(tmpl.parse(None, raw))
 
 
-class ParserTest(HeatTestCase):
+class ParserTest(common.HeatTestCase):
 
     def test_list(self):
         raw = ['foo', 'bar', 'baz']
@@ -162,7 +161,7 @@ class DummyClass(object):
         self.metadata = metadata
 
 
-class TemplateTest(HeatTestCase):
+class TemplateTest(common.HeatTestCase):
 
     def setUp(self):
         super(TemplateTest, self).setUp()
@@ -381,7 +380,7 @@ Mappings:
 
         p_snippet = {"Ref": "baz"}
         parsed = tmpl.parse(stack, p_snippet)
-        self.assertTrue(isinstance(parsed, heat.engine.cfn.functions.ParamRef))
+        self.assertTrue(isinstance(parsed, cfn_funcs.ParamRef))
 
     def test_select_from_list(self):
         tmpl = parser.Template(empty_template)
@@ -471,7 +470,7 @@ Mappings:
         stack = parser.Stack(self.ctx, 'test_stack',
                              parser.Template(empty_template))
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        fc = fakes.FakeClient()
+        fc = fakes_v1_1.FakeClient()
         nova.NovaClientPlugin._create().AndReturn(fc)
         self.m.ReplayAll()
         self.assertEqual(["nova1"], self.resolve(snippet, tmpl, stack))
@@ -656,7 +655,7 @@ Mappings:
         self.assertEqual(cfn_tpl['Resources'], empty.t['Resources'])
 
 
-class TemplateFnErrorTest(HeatTestCase):
+class TemplateFnErrorTest(common.HeatTestCase):
     scenarios = [
         ('select_from_list_not_int',
          dict(expect=TypeError,
@@ -778,7 +777,7 @@ class TemplateFnErrorTest(HeatTestCase):
         self.assertIn(self.snippet.keys()[0], six.text_type(error))
 
 
-class ResolveDataTest(HeatTestCase):
+class ResolveDataTest(common.HeatTestCase):
 
     def setUp(self):
         super(ResolveDataTest, self).setUp()
@@ -909,7 +908,7 @@ class ResolveDataTest(HeatTestCase):
                          self.resolve(snippet))
 
 
-class StackTest(HeatTestCase):
+class StackTest(common.HeatTestCase):
     def setUp(self):
         super(StackTest, self).setUp()
 
@@ -1140,12 +1139,12 @@ class StackTest(HeatTestCase):
                               stack.timeout, True, stack.disable_rollback,
                               'parent', owner_id=None,
                               stack_user_project_id=None,
-                              created_time=IgnoreArg(),
+                              created_time=mox.IgnoreArg(),
                               updated_time=None,
                               user_creds_id=stack.user_creds_id,
                               tenant_id='test_tenant_id',
                               use_stored_context=False,
-                              username=IgnoreArg())
+                              username=mox.IgnoreArg())
 
         self.m.ReplayAll()
         parser.Stack.load(self.ctx, stack_id=self.stack.id,
@@ -1202,8 +1201,8 @@ class StackTest(HeatTestCase):
                          exp_prefix + 'None')
         self.stack.store()
         identifier = self.stack.identifier()
-        self.assertEqual(self.stack.parameters['AWS::StackId'],
-                         exp_prefix + self.stack.id)
+        self.assertEqual(exp_prefix + self.stack.id,
+                         self.stack.parameters['AWS::StackId'])
         self.assertEqual(self.stack.parameters['AWS::StackId'],
                          identifier.arn())
         self.m.VerifyAll()
@@ -1452,7 +1451,7 @@ class StackTest(HeatTestCase):
         trustor_ctx = utils.dummy_context(user_id='thetrustor')
         self.m.StubOutWithMock(hkc, 'KeystoneClient')
         hkc.KeystoneClient(trustor_ctx).AndReturn(
-            FakeKeystoneClient(user_id='thetrustor'))
+            fakes.FakeKeystoneClient(user_id='thetrustor'))
         self.m.ReplayAll()
 
         self.stack = parser.Stack(
@@ -1485,11 +1484,11 @@ class StackTest(HeatTestCase):
 
         self.m.StubOutWithMock(hkc, 'KeystoneClient')
         hkc.KeystoneClient(trustor_ctx).AndReturn(
-            FakeKeystoneClient(user_id='thetrustor'))
+            fakes.FakeKeystoneClient(user_id='thetrustor'))
         self.m.StubOutWithMock(parser.Stack, 'stored_context')
         parser.Stack.stored_context().AndReturn(stored_ctx)
         hkc.KeystoneClient(stored_ctx).AndReturn(
-            FakeKeystoneClient(user_id='nottrustor'))
+            fakes.FakeKeystoneClient(user_id='nottrustor'))
         self.m.ReplayAll()
 
         self.stack = parser.Stack(
@@ -1515,7 +1514,7 @@ class StackTest(HeatTestCase):
     def test_delete_trust_backup(self):
         cfg.CONF.set_override('deferred_auth_method', 'trusts')
 
-        class FakeKeystoneClientFail(FakeKeystoneClient):
+        class FakeKeystoneClientFail(fakes.FakeKeystoneClient):
             def delete_trust(self, trust_id):
                 raise Exception("Shouldn't delete")
 
@@ -1541,7 +1540,7 @@ class StackTest(HeatTestCase):
     def test_delete_trust_nested(self):
         cfg.CONF.set_override('deferred_auth_method', 'trusts')
 
-        class FakeKeystoneClientFail(FakeKeystoneClient):
+        class FakeKeystoneClientFail(fakes.FakeKeystoneClient):
             def delete_trust(self, trust_id):
                 raise Exception("Shouldn't delete")
 
@@ -1565,13 +1564,13 @@ class StackTest(HeatTestCase):
         self.assertIsNone(db_s)
         user_creds = db_api.user_creds_get(user_creds_id)
         self.assertIsNotNone(user_creds)
-        self.assertEqual(self.stack.state,
-                         (parser.Stack.DELETE, parser.Stack.COMPLETE))
+        self.assertEqual((parser.Stack.DELETE, parser.Stack.COMPLETE),
+                         self.stack.state)
 
     def test_delete_trust_fail(self):
         cfg.CONF.set_override('deferred_auth_method', 'trusts')
 
-        class FakeKeystoneClientFail(FakeKeystoneClient):
+        class FakeKeystoneClientFail(fakes.FakeKeystoneClient):
             def delete_trust(self, trust_id):
                 raise kc_exceptions.Forbidden("Denied!")
 
@@ -1596,7 +1595,7 @@ class StackTest(HeatTestCase):
         self.assertIn('Error deleting trust', self.stack.status_reason)
 
     def test_delete_deletes_project(self):
-        fkc = FakeKeystoneClient()
+        fkc = fakes.FakeKeystoneClient()
         fkc.delete_stack_domain_project = mock.Mock()
 
         self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
@@ -1622,7 +1621,7 @@ class StackTest(HeatTestCase):
             project_id='aproject456')
 
     def test_abandon_nodelete_project(self):
-        fkc = FakeKeystoneClient()
+        fkc = fakes.FakeKeystoneClient()
         fkc.delete_stack_domain_project = mock.Mock()
 
         self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
@@ -1656,16 +1655,20 @@ class StackTest(HeatTestCase):
         self.stack.create()
         self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
                          self.stack.state)
+        self.assertIsNone(self.stack.updated_time)
 
         self.stack.suspend()
 
         self.assertEqual((self.stack.SUSPEND, self.stack.COMPLETE),
                          self.stack.state)
+        stack_suspend_time = self.stack.updated_time
+        self.assertIsNotNone(stack_suspend_time)
 
         self.stack.resume()
 
         self.assertEqual((self.stack.RESUME, self.stack.COMPLETE),
                          self.stack.state)
+        self.assertNotEqual(stack_suspend_time, self.stack.updated_time)
 
         self.m.VerifyAll()
 
@@ -2205,10 +2208,12 @@ class StackTest(HeatTestCase):
 
         self.m.StubOutWithMock(generic_rsrc.ResWithComplexPropsAndAttrs,
                                'handle_update')
-        generic_rsrc.ResWithComplexPropsAndAttrs.handle_update(
-            IgnoreArg(), IgnoreArg(), prop_diff1)
-        generic_rsrc.ResWithComplexPropsAndAttrs.handle_update(
-            IgnoreArg(), IgnoreArg(), prop_diff2)
+        generic_rsrc.ResWithComplexPropsAndAttrs.handle_update(mox.IgnoreArg(),
+                                                               mox.IgnoreArg(),
+                                                               prop_diff1)
+        generic_rsrc.ResWithComplexPropsAndAttrs.handle_update(mox.IgnoreArg(),
+                                                               mox.IgnoreArg(),
+                                                               prop_diff2)
 
         self.m.ReplayAll()
 
@@ -3666,38 +3671,13 @@ class StackTest(HeatTestCase):
         self.assertIsInstance(stack, parser.Stack)
 
     def test_stack_name_invalid(self):
-        self.assertRaises(ValueError, parser.Stack, self.ctx, '_foo',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, '1bad',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, '.kcats',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, 'test stack',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, ' teststack',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, '^-^',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, '\"stack\"',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, '1234',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, 'cat|dog',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, '$(foo)',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, 'test/stack',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, 'test\stack',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, 'test::stack',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, 'test;stack',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, 'test~stack',
-                          self.tmpl)
-        self.assertRaises(ValueError, parser.Stack, self.ctx, '#test',
-                          self.tmpl)
+        stack_names = ['_foo', '1bad', '.kcats', 'test stack', ' teststack',
+                       '^-^', '\"stack\"', '1234', 'cat|dog', '$(foo)',
+                       'test/stack', 'test\stack', 'test::stack', 'test;stack',
+                       'test~stack', '#test']
+        for stack_name in stack_names:
+            self.assertRaises(exception.StackValidationFailed, parser.Stack,
+                              self.ctx, stack_name, self.tmpl)
 
     def test_resource_state_get_att(self):
         tmpl = {
@@ -3850,7 +3830,7 @@ class StackTest(HeatTestCase):
 
         self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
         keystone.KeystoneClientPlugin._create().AndReturn(
-            FakeKeystoneClient(user_id='auser123'))
+            fakes.FakeKeystoneClient(user_id='auser123'))
         self.m.ReplayAll()
 
         self.stack = parser.Stack(
@@ -4039,7 +4019,7 @@ class StackTest(HeatTestCase):
 
     def test_stack_user_project_id_delete_fail(self):
 
-        class FakeKeystoneClientFail(FakeKeystoneClient):
+        class FakeKeystoneClientFail(fakes.FakeKeystoneClient):
             def delete_stack_domain_project(self, project_id):
                 raise kc_exceptions.Forbidden("Denied!")
 
@@ -4263,6 +4243,104 @@ class StackTest(HeatTestCase):
                          '(AResource Bar) is incorrect.',
                          six.text_type(ex))
 
+    def test_incorrect_outputs_cfn_incorrect_reference(self):
+        tmpl = template_format.parse("""
+        HeatTemplateFormatVersion: '2012-12-12'
+        Outputs:
+          Output:
+            Value:
+              Fn::GetAtt:
+                - Resource
+                - Foo
+        """)
+        self.stack = parser.Stack(self.ctx, 'stack_with_incorrect_outputs',
+                                  template.Template(tmpl))
+
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               self.stack.validate)
+
+        self.assertIn('The specified reference "Resource" '
+                      '(in unknown) is incorrect.', six.text_type(ex))
+
+    def test_incorrect_outputs_incorrect_reference(self):
+        tmpl = template_format.parse("""
+        heat_template_version: 2013-05-23
+        outputs:
+          output:
+            value: { get_attr: [resource, foo] }
+        """)
+        self.stack = parser.Stack(self.ctx, 'stack_with_incorrect_outputs',
+                                  template.Template(tmpl))
+
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               self.stack.validate)
+
+        self.assertIn('The specified reference "resource" '
+                      '(in unknown) is incorrect.', six.text_type(ex))
+
+    def test_incorrect_outputs_cfn_empty_output(self):
+        tmpl = template_format.parse("""
+        HeatTemplateFormatVersion: '2012-12-12'
+        Resources:
+          AResource:
+            Type: ResourceWithPropsType
+            Properties:
+              Foo: abc
+        Outputs:
+          Resource_attr:
+        """)
+        self.stack = parser.Stack(self.ctx, 'stack_with_correct_outputs',
+                                  template.Template(tmpl))
+
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               self.stack.validate)
+
+        self.assertIn('Each Output must contain a Value key.',
+                      six.text_type(ex))
+
+    def test_incorrect_outputs_cfn_string_data(self):
+        tmpl = template_format.parse("""
+        HeatTemplateFormatVersion: '2012-12-12'
+        Resources:
+          AResource:
+            Type: ResourceWithPropsType
+            Properties:
+              Foo: abc
+        Outputs:
+          Resource_attr:
+            This is wrong data
+        """)
+        self.stack = parser.Stack(self.ctx, 'stack_with_correct_outputs',
+                                  template.Template(tmpl))
+
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               self.stack.validate)
+
+        self.assertIn('Outputs must contain Output. '
+                      'Found a [%s] instead' % six.text_type,
+                      six.text_type(ex))
+
+    def test_incorrect_outputs_cfn_list_data(self):
+        tmpl = template_format.parse("""
+        HeatTemplateFormatVersion: '2012-12-12'
+        Resources:
+          AResource:
+            Type: ResourceWithPropsType
+            Properties:
+              Foo: abc
+        Outputs:
+          Resource_attr:
+            - Data is not what it seems
+        """)
+        self.stack = parser.Stack(self.ctx, 'stack_with_correct_outputs',
+                                  template.Template(tmpl))
+
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               self.stack.validate)
+
+        self.assertIn('Outputs must contain Output. '
+                      'Found a [%s] instead' % type([]), six.text_type(ex))
+
     def test_incorrect_outputs_hot_get_attr(self):
         tmpl = {'heat_template_version': '2013-05-23',
                 'resources': {
@@ -4282,3 +4360,65 @@ class StackTest(HeatTestCase):
         self.assertEqual('Output validation error: The Referenced Attribute '
                          '(AResource Bar) is incorrect.',
                          six.text_type(ex))
+
+    def test_restore(self):
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Resources': {
+                'A': {'Type': 'GenericResourceType'},
+                'B': {'Type': 'GenericResourceType'}}}
+        self.stack = parser.Stack(self.ctx, 'stack_details_test',
+                                  parser.Template(tmpl))
+        self.stack.store()
+        self.stack.create()
+
+        data = copy.deepcopy(self.stack.prepare_abandon())
+        fake_snapshot = collections.namedtuple(
+            'Snapshot', ('data', 'stack_id'))(data, self.stack.id)
+
+        new_tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                    'Resources': {'A': {'Type': 'GenericResourceType'}}}
+        updated_stack = parser.Stack(self.ctx, 'updated_stack',
+                                     template.Template(new_tmpl))
+        self.stack.update(updated_stack)
+        self.assertEqual(1, len(self.stack.resources))
+
+        self.stack.restore(fake_snapshot)
+
+        self.assertEqual((parser.Stack.RESTORE, parser.Stack.COMPLETE),
+                         self.stack.state)
+        self.assertEqual(2, len(self.stack.resources))
+
+    def test_hot_restore(self):
+
+        class ResourceWithRestore(generic_rsrc.ResWithComplexPropsAndAttrs):
+
+            def handle_restore(self, defn, data):
+                props = dict(
+                    (key, value) for (key, value) in
+                    six.iteritems(defn.properties(self.properties_schema))
+                    if value is not None)
+                value = data['resource_data']['a_string']
+                props['a_string'] = value
+                return defn.freeze(properties=props)
+
+        resource._register_class('ResourceWithRestore', ResourceWithRestore)
+        tpl = {'heat_template_version': '2013-05-23',
+               'resources':
+               {'A': {'type': 'ResourceWithRestore'}}}
+        self.stack = parser.Stack(self.ctx, 'stack_details_test',
+                                  parser.Template(tpl))
+        self.stack.store()
+        self.stack.create()
+
+        data = self.stack.prepare_abandon()
+        data['resources']['A']['resource_data']['a_string'] = 'foo'
+        fake_snapshot = collections.namedtuple(
+            'Snapshot', ('data', 'stack_id'))(data, self.stack.id)
+
+        self.stack.restore(fake_snapshot)
+
+        self.assertEqual((parser.Stack.RESTORE, parser.Stack.COMPLETE),
+                         self.stack.state)
+
+        self.assertEqual(
+            'foo', self.stack.resources['A'].properties['a_string'])

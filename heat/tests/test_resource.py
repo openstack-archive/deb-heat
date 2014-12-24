@@ -30,10 +30,11 @@ from heat.engine import dependencies
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
+from heat.engine import resources
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.engine import template
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
 
@@ -43,7 +44,7 @@ import neutronclient.common.exceptions as neutron_exp
 empty_template = {"HeatTemplateFormatVersion": "2012-12-12"}
 
 
-class ResourceTest(HeatTestCase):
+class ResourceTest(common.HeatTestCase):
     def setUp(self):
         super(ResourceTest, self).setUp()
 
@@ -64,11 +65,12 @@ class ResourceTest(HeatTestCase):
         self.patch('heat.engine.resource.warnings')
 
     def test_get_class_ok(self):
-        cls = resource.get_class('GenericResourceType')
+        cls = resources.global_env().get_class('GenericResourceType')
         self.assertEqual(generic_rsrc.GenericResource, cls)
 
     def test_get_class_noexist(self):
-        self.assertRaises(exception.StackValidationFailed, resource.get_class,
+        self.assertRaises(exception.StackValidationFailed,
+                          resources.global_env().get_class,
                           'NoExistResourceType')
 
     def test_resource_new_ok(self):
@@ -77,6 +79,15 @@ class ResourceTest(HeatTestCase):
         res = resource.Resource('aresource', snippet, self.stack)
         self.assertIsInstance(res, generic_rsrc.GenericResource)
         self.assertEqual("INIT", res.action)
+
+    def test_resource_invalid_name(self):
+        snippet = rsrc_defn.ResourceDefinition('wrong/name',
+                                               'GenericResourceType')
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               resource.Resource, 'wrong/name',
+                               snippet, self.stack)
+        self.assertEqual('Resource name may not contain "/"',
+                         six.text_type(ex))
 
     def test_resource_new_stack_not_stored(self):
         snippet = rsrc_defn.ResourceDefinition('aresource',
@@ -272,6 +283,31 @@ class ResourceTest(HeatTestCase):
                                              {'a_string': 'foo'})
         self.assertRaises(
             resource.UpdateReplace, scheduler.TaskRunner(res.update, utmpl))
+
+    def test_update_replace_in_failed_without_nested(self):
+        tmpl = rsrc_defn.ResourceDefinition('test_resource',
+                                            'GenericResourceType',
+                                            {'Foo': 'abc'})
+        res = generic_rsrc.ResourceWithProps('test_resource', tmpl, self.stack)
+        res.update_allowed_properties = ('Foo',)
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_create')
+        generic_rsrc.ResourceWithProps.handle_create().AndRaise(
+            exception.ResourceFailure)
+        self.m.ReplayAll()
+
+        self.assertRaises(exception.ResourceFailure,
+                          scheduler.TaskRunner(res.create))
+        self.assertEqual((res.CREATE, res.FAILED), res.state)
+
+        utmpl = rsrc_defn.ResourceDefinition('test_resource',
+                                             'GenericResourceType',
+                                             {'Foo': 'xyz'})
+        # resource in failed status and hasn't nested will enter
+        # UpdateReplace flow
+        self.assertRaises(
+            resource.UpdateReplace, scheduler.TaskRunner(res.update, utmpl))
+
+        self.m.VerifyAll()
 
     def test_updated_time_changes_only_on_update_calls(self):
         tmpl = rsrc_defn.ResourceDefinition('test_resource',
@@ -842,6 +878,28 @@ class ResourceTest(HeatTestCase):
         self.assertEqual(res.FAILED, res.status)
         self.assertIn('boom', res.status_reason)
 
+    def test_verify_check_conditions(self):
+        valid_foos = ['foo1', 'foo2']
+        checks = [
+            {'attr': 'foo1', 'expected': 'bar1', 'current': 'baz1'},
+            {'attr': 'foo2', 'expected': valid_foos, 'current': 'foo2'},
+            {'attr': 'foo3', 'expected': 'bar3', 'current': 'baz3'},
+            {'attr': 'foo4', 'expected': 'foo4', 'current': 'foo4'},
+            {'attr': 'foo5', 'expected': valid_foos, 'current': 'baz5'},
+        ]
+        tmpl = rsrc_defn.ResourceDefinition('test_res', 'GenericResourceType')
+        res = generic_rsrc.ResourceWithProps('test_res', tmpl, self.stack)
+
+        exc = self.assertRaises(exception.Error,
+                                res._verify_check_conditions, checks)
+        exc_text = six.text_type(exc)
+        self.assertNotIn("'foo2':", exc_text)
+        self.assertNotIn("'foo4':", exc_text)
+        self.assertIn("'foo1': expected 'bar1', got 'baz1'", exc_text)
+        self.assertIn("'foo3': expected 'bar3', got 'baz3'", exc_text)
+        self.assertIn("'foo5': expected '['foo1', 'foo2']', got 'baz5'",
+                      exc_text)
+
     def test_suspend_resume_ok(self):
         tmpl = rsrc_defn.ResourceDefinition('test_resource',
                                             'GenericResourceType',
@@ -1062,7 +1120,7 @@ class ResourceTest(HeatTestCase):
         self._test_skip_validation_if_custom_constraint(tmpl)
 
 
-class ResourceAdoptTest(HeatTestCase):
+class ResourceAdoptTest(common.HeatTestCase):
     def setUp(self):
         super(ResourceAdoptTest, self).setUp()
         resource._register_class('GenericResourceType',
@@ -1151,7 +1209,7 @@ class ResourceAdoptTest(HeatTestCase):
         self.assertEqual(expected, res.status_reason)
 
 
-class ResourceDependenciesTest(HeatTestCase):
+class ResourceDependenciesTest(common.HeatTestCase):
     def setUp(self):
         super(ResourceDependenciesTest, self).setUp()
 
@@ -1627,7 +1685,7 @@ class ResourceDependenciesTest(HeatTestCase):
         self.assertIn('"wibble" (in foo)', six.text_type(ex))
 
 
-class MetadataTest(HeatTestCase):
+class MetadataTest(common.HeatTestCase):
     def setUp(self):
         super(MetadataTest, self).setUp()
         self.stack = parser.Stack(utils.dummy_context(),
@@ -1661,7 +1719,7 @@ class MetadataTest(HeatTestCase):
         self.assertEqual(test_data, self.res.metadata)
 
 
-class ReducePhysicalResourceNameTest(HeatTestCase):
+class ReducePhysicalResourceNameTest(common.HeatTestCase):
     scenarios = [
         ('one', dict(
             limit=10,

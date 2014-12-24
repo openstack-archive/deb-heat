@@ -18,6 +18,7 @@ import six
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LI
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
@@ -25,6 +26,7 @@ from heat.engine import resource
 from heat.engine.resources import volume
 from heat.engine import scheduler
 from heat.engine import signal_responder
+from heat.engine import support
 from heat.openstack.common import log as logging
 
 cfg.CONF.import_opt('instance_user', 'heat.common.config')
@@ -33,6 +35,17 @@ LOG = logging.getLogger(__name__)
 
 
 class Restarter(signal_responder.SignalResponder):
+
+    support_status = support.SupportStatus(
+        support.DEPRECATED,
+        _('The HARestarter resource type is unsupported and will be removed '
+          'in a future release of Heat, once it has support for auto-healing '
+          'any type of resource. Note that HARestarter does *not* actually '
+          'restart servers - it deletes and then recreates them. It also does '
+          'the same to all dependent resources, and may therefore exhibit '
+          'unexpected and undesirable behaviour. Avoid.')
+    )
+
     PROPERTIES = (
         INSTANCE_ID,
     ) = (
@@ -49,7 +62,10 @@ class Restarter(signal_responder.SignalResponder):
         INSTANCE_ID: properties.Schema(
             properties.Schema.STRING,
             _('Instance ID to be restarted.'),
-            required=True
+            required=True,
+            constraints=[
+                constraints.CustomConstraint('nova.server')
+            ]
         ),
     }
 
@@ -58,16 +74,6 @@ class Restarter(signal_responder.SignalResponder):
             _("A signed url to handle the alarm (Heat extension).")
         ),
     }
-
-    def _find_resource(self, resource_id):
-        '''
-        Return the resource with the specified instance ID, or None if it
-        cannot be found.
-        '''
-        for resource in self.stack.itervalues():
-            if resource.resource_id == resource_id:
-                return resource
-        return None
 
     def handle_create(self):
         super(Restarter, self).handle_create()
@@ -83,21 +89,23 @@ class Restarter(signal_responder.SignalResponder):
         else:
             alarm_state = details.get('state', 'alarm').lower()
 
-        LOG.info(_('%(name)s Alarm, new state %(state)s')
-                 % {'name': self.name, 'state': alarm_state})
+        LOG.info(_LI('%(name)s Alarm, new state %(state)s'),
+                 {'name': self.name, 'state': alarm_state})
 
         if alarm_state != 'alarm':
             return
 
-        victim = self._find_resource(self.properties[self.INSTANCE_ID])
+        target_id = self.properties[self.INSTANCE_ID]
+        victim = self.stack.resource_by_refid(target_id)
         if victim is None:
-            LOG.info(_('%(name)s Alarm, can not find instance %(instance)s')
-                     % {'name': self.name,
-                        'instance': self.properties[self.INSTANCE_ID]})
+            LOG.info(_LI('%(name)s Alarm, can not find instance '
+                         '%(instance)s'),
+                     {'name': self.name,
+                      'instance': target_id})
             return
 
-        LOG.info(_('%(name)s Alarm, restarting resource: %(victim)s')
-                 % {'name': self.name, 'victim': victim.name})
+        LOG.info(_LI('%(name)s Alarm, restarting resource: %(victim)s'),
+                 {'name': self.name, 'victim': victim.name})
         self.stack.restart_resource(victim.name)
 
     def _resolve_attribute(self, name):
@@ -106,7 +114,7 @@ class Restarter(signal_responder.SignalResponder):
         when there is an alarm.
         '''
         if name == self.ALARM_URL and self.resource_id is not None:
-            return unicode(self._get_signed_url())
+            return six.text_type(self._get_signed_url())
 
 
 class Instance(resource.Resource):
@@ -182,7 +190,10 @@ class Instance(resource.Resource):
             properties.Schema.STRING,
             _('Nova instance type (flavor).'),
             required=True,
-            update_allowed=True
+            update_allowed=True,
+            constraints=[
+                constraints.CustomConstraint('nova.flavor')
+            ]
         ),
         KEY_NAME: properties.Schema(
             properties.Schema.STRING,
@@ -314,7 +325,10 @@ class Instance(resource.Resource):
                     VOLUME_ID: properties.Schema(
                         properties.Schema.STRING,
                         _('The ID of the volume to be attached.'),
-                        required=True
+                        required=True,
+                        constraints=[
+                            constraints.CustomConstraint('cinder.volume')
+                        ]
                     ),
                 }
             )
@@ -352,6 +366,10 @@ class Instance(resource.Resource):
                                 properties.Schema.STRING,
                                 _('The ID of the snapshot to create '
                                   'a volume from.'),
+                                constraints=[
+                                    constraints.CustomConstraint(
+                                        'cinder.snapshot')
+                                ]
                             ),
                             VOLUME_SIZE: properties.Schema(
                                 properties.Schema.STRING,
@@ -457,9 +475,9 @@ class Instance(resource.Resource):
         elif name in self.ATTRIBUTES[1:]:
             res = self._ipaddress()
 
-        LOG.info(_('%(name)s._resolve_attribute(%(attname)s) == %(res)s'),
+        LOG.info(_LI('%(name)s._resolve_attribute(%(attname)s) == %(res)s'),
                  {'name': self.name, 'attname': name, 'res': res})
-        return unicode(res) if res else None
+        return six.text_type(res) if res else None
 
     def _port_data_delete(self):
         # delete the port data which implicit-created
@@ -480,7 +498,7 @@ class Instance(resource.Resource):
             unsorted_nics = []
             for entry in network_interfaces:
                 nic = (entry
-                       if not isinstance(entry, basestring)
+                       if not isinstance(entry, six.string_types)
                        else {'NetworkInterfaceId': entry,
                              'DeviceIndex': len(unsorted_nics)})
                 unsorted_nics.append(nic)

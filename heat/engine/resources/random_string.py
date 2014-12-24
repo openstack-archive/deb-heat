@@ -14,7 +14,7 @@
 import random
 import string
 
-from six.moves import xrange
+import six
 
 from heat.common import exception
 from heat.common.i18n import _
@@ -31,6 +31,9 @@ class RandomString(resource.Resource):
 
     This is useful for configuring passwords and secrets on services.
     '''
+
+    support_status = support.SupportStatus(version='2014.1')
+
     PROPERTIES = (
         LENGTH, SEQUENCE, CHARACTER_CLASSES, CHARACTER_SEQUENCES,
         SALT,
@@ -167,7 +170,7 @@ class RandomString(resource.Resource):
     @staticmethod
     def _deprecated_random_string(sequence, length):
         rand = random.SystemRandom()
-        return ''.join(rand.choice(sequence) for x in xrange(length))
+        return ''.join(rand.choice(sequence) for x in six.moves.xrange(length))
 
     def _generate_random_string(self, char_sequences, char_classes, length):
         random_string = ""
@@ -267,11 +270,17 @@ class RandomString(resource.Resource):
             random_string = self._deprecated_random_string(char_seq, length)
 
         self.data_set('value', random_string, redact=True)
-        self.resource_id_set(random_string)
+        self.resource_id_set(self.physical_resource_name())
 
     def _resolve_attribute(self, name):
         if name == self.VALUE:
             return self.data().get(self.VALUE)
+
+    def FnGetRefId(self):
+        if self.resource_id is not None:
+            return self.data().get('value')
+        else:
+            return six.text_type(self.name)
 
 
 def resource_mapping():

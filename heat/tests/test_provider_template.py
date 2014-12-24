@@ -20,6 +20,7 @@ import yaml
 import mock
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.common import template_format
 from heat.common import urlfetch
 from heat.engine import attributes
@@ -31,7 +32,7 @@ from heat.engine import resources
 from heat.engine.resources import template_resource
 from heat.engine import rsrc_defn
 from heat.engine import support
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
 
@@ -43,7 +44,7 @@ class MyCloudResource(generic_rsrc.GenericResource):
     pass
 
 
-class ProviderTemplateTest(HeatTestCase):
+class ProviderTemplateTest(common.HeatTestCase):
     def setUp(self):
         super(ProviderTemplateTest, self).setUp()
         resource._register_class('OS::ResourceType',
@@ -434,14 +435,16 @@ class ProviderTemplateTest(HeatTestCase):
                                                       definition, stack)
         self.assertIsNone(temp_res.validate())
 
-    def test_get_template_resource(self):
-        # assertion: if the name matches {.yaml|.template} we get the
-        # TemplateResource class.
+    def test_get_error_for_invalid_template_name(self):
+        # assertion: if the name matches {.yaml|.template} and is valid
+        # we get the TemplateResource class, otherwise error will be raised.
         env_str = {'resource_registry': {'resources': {'fred': {
             "OS::ResourceType": "some_magic.yaml"}}}}
         env = environment.Environment(env_str)
-        cls = env.get_class('OS::ResourceType', 'fred')
-        self.assertEqual(template_resource.TemplateResource, cls)
+        ex = self.assertRaises(exception.NotFound, env.get_class,
+                               'OS::ResourceType', 'fred')
+        self.assertIn('Could not fetch remote template "some_magic.yaml"',
+                      six.text_type(ex))
 
     def test_get_template_resource_class(self):
         test_templ_name = 'file:///etc/heatr/frodo.yaml'
@@ -661,8 +664,38 @@ class ProviderTemplateTest(HeatTestCase):
         self.assertRaises(exception.StackValidationFailed, temp_res.validate)
         self.m.VerifyAll()
 
+    def test_incorrect_template_provided_with_url(self):
+        wrong_template = '''
+         <head prefix="og: http://ogp.me/ns# fb: http://ogp.me/ns/fb#
+        '''
 
-class NestedProvider(HeatTestCase):
+        env = environment.Environment()
+        test_templ_name = 'http://heatr/bad_tmpl.yaml'
+        env.load({'resource_registry':
+                  {'Test::Tmpl': test_templ_name}})
+        stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                             parser.Template(empty_template), env=env,
+                             stack_id=str(uuid.uuid4()))
+
+        self.m.StubOutWithMock(urlfetch, "get")
+        urlfetch.get(test_templ_name,
+                     allowed_schemes=('http', 'https'))\
+            .AndReturn(wrong_template)
+        self.m.ReplayAll()
+
+        definition = rsrc_defn.ResourceDefinition('test_t_res',
+                                                  'Test::Tmpl')
+        temp_res = template_resource.TemplateResource('test_t_res',
+                                                      definition,
+                                                      stack)
+        err = self.assertRaises(exception.StackValidationFailed,
+                                temp_res.validate)
+        self.assertIn('Error parsing template: ', six.text_type(err))
+
+        self.m.VerifyAll()
+
+
+class NestedProvider(common.HeatTestCase):
     """Prove that we can use the registry in a nested provider."""
 
     def setUp(self):
@@ -750,7 +783,100 @@ resource_registry:
         self.assertEqual((stack.CREATE, stack.COMPLETE), stack.state)
 
 
-class ProviderTemplateUpdateTest(HeatTestCase):
+class NestedAttributes(common.HeatTestCase):
+    """Prove that we can use the template resource references."""
+
+    main_templ = '''
+heat_template_version: 2014-10-16
+resources:
+  secret2:
+    type: My::NestedSecret
+outputs:
+  old_way:
+    value: { get_attr: [secret2, nested_str]}
+  test_attr1:
+    value: { get_attr: [secret2, resource.secret1, value]}
+  test_attr2:
+    value: { get_attr: [secret2, resource.secret1.value]}
+  test_ref:
+    value: { get_resource: secret2 }
+'''
+
+    env_templ = '''
+resource_registry:
+  "My::NestedSecret": nested.yaml
+'''
+
+    def setUp(self):
+        super(NestedAttributes, self).setUp()
+        utils.setup_dummy_db()
+
+    def _create_dummy_stack(self, nested_templ):
+        env = environment.Environment()
+        env.load(yaml.load(self.env_templ))
+        templ = parser.Template(template_format.parse(self.main_templ),
+                                files={'nested.yaml': nested_templ})
+        stack = parser.Stack(utils.dummy_context(),
+                             utils.random_name(),
+                             templ, env=env)
+        stack.store()
+        stack.create()
+        self.assertEqual((stack.CREATE, stack.COMPLETE), stack.state)
+        return stack
+
+    def test_stack_ref(self):
+        nested_templ = '''
+heat_template_version: 2014-10-16
+resources:
+  secret1:
+    type: OS::Heat::RandomString
+'''
+        stack = self._create_dummy_stack(nested_templ)
+        test_ref = stack.output('test_ref')
+        self.assertIn('arn:openstack:heat:', test_ref)
+
+    def test_transparent_ref(self):
+        """With the addition of OS::stack_id we can now use the nested resource
+        more transparently.
+        """
+        nested_templ = '''
+heat_template_version: 2014-10-16
+resources:
+  secret1:
+    type: OS::Heat::RandomString
+outputs:
+  OS::stack_id:
+    value: {get_resource: secret1}
+  nested_str:
+    value: {get_attr: [secret1, value]}
+'''
+        stack = self._create_dummy_stack(nested_templ)
+        test_ref = stack.output('test_ref')
+        test_attr = stack.output('old_way')
+
+        self.assertNotIn('arn:openstack:heat', test_ref)
+        self.assertEqual(test_attr, test_ref)
+
+    def test_nested_attributes(self):
+        nested_templ = '''
+heat_template_version: 2014-10-16
+resources:
+  secret1:
+    type: OS::Heat::RandomString
+outputs:
+  nested_str:
+    value: {get_attr: [secret1, value]}
+'''
+        stack = self._create_dummy_stack(nested_templ)
+        old_way = stack.output('old_way')
+        test_attr1 = stack.output('test_attr1')
+        test_attr2 = stack.output('test_attr2')
+
+        self.assertEqual(old_way, test_attr1)
+        self.assertEqual(old_way, test_attr2)
+
+
+class ProviderTemplateUpdateTest(common.HeatTestCase):
     main_template = '''
 HeatTemplateFormatVersion: '2012-12-12'
 Resources:
@@ -847,7 +973,7 @@ Outputs:
     Value: {'Fn::GetAtt': [NestedResource, value]}
 '''
 
-    EXPECTED = (REPLACE, UPDATE, NOCHANGE) = ('replace', 'update', 'nochange')
+    EXPECTED = (UPDATE, NOCHANGE) = ('update', 'nochange')
     scenarios = [
         ('no_changes', dict(template=main_template,
                             provider=initial_tmpl,
@@ -860,10 +986,10 @@ Outputs:
                                  expect=UPDATE)),
         ('provider_props_change', dict(template=main_template,
                                        provider=prop_change_tmpl,
-                                       expect=REPLACE)),
+                                       expect=NOCHANGE)),
         ('provider_attr_change', dict(template=main_template,
                                       provider=attr_change_tmpl,
-                                      expect=REPLACE)),
+                                      expect=NOCHANGE)),
     ]
 
     def setUp(self):
@@ -889,25 +1015,18 @@ Outputs:
         updated_stack = parser.Stack(self.ctx, stack.name, tmpl)
         stack.update(updated_stack)
         self.assertEqual(('UPDATE', 'COMPLETE'), stack.state)
-        if self.expect == self.REPLACE:
-            self.assertNotEqual(initial_id,
-                                stack.output('identifier'))
-            self.assertNotEqual(initial_val,
-                                stack.output('value'))
-        elif self.expect == self.NOCHANGE:
-            self.assertEqual(initial_id,
-                             stack.output('identifier'))
+        self.assertEqual(initial_id,
+                         stack.output('identifier'))
+        if self.expect == self.NOCHANGE:
             self.assertEqual(initial_val,
                              stack.output('value'))
         else:
-            self.assertEqual(initial_id,
-                             stack.output('identifier'))
             self.assertNotEqual(initial_val,
                                 stack.output('value'))
         self.m.VerifyAll()
 
 
-class ProviderTemplateAdoptTest(HeatTestCase):
+class ProviderTemplateAdoptTest(common.HeatTestCase):
     main_template = '''
 HeatTemplateFormatVersion: '2012-12-12'
 Resources:

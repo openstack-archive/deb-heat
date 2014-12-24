@@ -16,7 +16,10 @@ CloudFormation Compatible Functions
 ===================================
 
 There are a number of functions that you can use to help you write
-CloudFormation compatible templates.
+CloudFormation compatible templates.  While most CloudFormation functions are
+supported in HOT version '2013-05-23', *Fn::Select* is the only CloudFormation
+function supported in HOT templates since version '2014-10-16' which is
+introduced in Juno.
 
 All of these functions (except *Ref*) start with *Fn::*.
 
@@ -41,7 +44,10 @@ Returns the nova instance ID. For example, ``d8093de0-850f-4513-b202-7979de6c0d5
 ----------
 Fn::Base64
 ----------
-This returns the Base64 representation of the input string.
+This is a placeholder for a function to convert an input string to Base64.
+This function in Heat actually performs no conversion.  It is included for
+the benefit of CFN templates that convert UserData to Base64.  Heat only
+accepts UserData in plain text.
 
 Parameters
 ~~~~~~~~~~
@@ -53,9 +59,9 @@ Usage
 
 ::
 
-  {Base64: "convert this string please."}
+  {"Fn::Base64": "convert this string please."}
 
-Returns the Base64 of the input string.
+Returns the original input string.
 
 -------------
 Fn::FindInMap

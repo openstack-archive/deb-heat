@@ -13,8 +13,8 @@
 """Utilities for Resources that use the OpenStack Nova API."""
 
 import email
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+from email.mime import multipart
+from email.mime import text
 import json
 from novaclient import exceptions as nova_exceptions
 import os
@@ -28,6 +28,7 @@ import warnings
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LW
 from heat.engine import scheduler
 from heat.openstack.common import log as logging
 
@@ -55,20 +56,20 @@ def refresh_server(server):
     try:
         server.get()
     except nova_exceptions.OverLimit as exc:
-        msg = _("Server %(name)s (%(id)s) received an OverLimit "
-                "response during server.get(): %(exception)s")
-        LOG.warning(msg % {'name': server.name,
-                           'id': server.id,
-                           'exception': exc})
+        LOG.warn(_LW("Server %(name)s (%(id)s) received an OverLimit "
+                     "response during server.get(): %(exception)s"),
+                 {'name': server.name,
+                  'id': server.id,
+                  'exception': exc})
     except nova_exceptions.ClientException as exc:
         http_status = (getattr(exc, 'http_status', None) or
                        getattr(exc, 'code', None))
         if http_status in (500, 503):
-            msg = _('Server "%(name)s" (%(id)s) received the following '
-                    'exception during server.get(): %(exception)s')
-            LOG.warning(msg % {'name': server.name,
-                               'id': server.id,
-                               'exception': exc})
+            LOG.warn(_LW('Server "%(name)s" (%(id)s) received the following '
+                         'exception during server.get(): %(exception)s'),
+                     {'name': server.name,
+                      'id': server.id,
+                      'exception': exc})
         else:
             raise
 
@@ -154,7 +155,7 @@ def build_userdata(resource, userdata=None, instance_user=None,
     def make_subpart(content, filename, subtype=None):
         if subtype is None:
             subtype = os.path.splitext(filename)[0]
-        msg = MIMEText(content, _subtype=subtype)
+        msg = text.MIMEText(content, _subtype=subtype)
         msg.add_header('Content-Disposition', 'attachment',
                        filename=filename)
         return msg
@@ -242,7 +243,7 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
                             'cfn-boto-cfg', 'x-cfninitdata'))
 
     subparts = [make_subpart(*args) for args in attachments]
-    mime_blob = MIMEMultipart(_subparts=subparts)
+    mime_blob = multipart.MIMEMultipart(_subparts=subparts)
 
     return mime_blob.as_string()
 
@@ -379,8 +380,8 @@ def server_to_ipaddress(client, server):
     try:
         server = client.servers.get(server)
     except nova_exceptions.NotFound as ex:
-        LOG.warn(_('Instance (%(server)s) not found: %(ex)s')
-                 % {'server': server, 'ex': ex})
+        LOG.warn(_LW('Instance (%(server)s) not found: %(ex)s'),
+                 {'server': server, 'ex': ex})
     else:
         for n in server.networks:
             if len(server.networks[n]) > 0:

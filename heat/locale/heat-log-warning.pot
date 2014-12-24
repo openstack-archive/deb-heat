@@ -6,9 +6,9 @@
 #, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: heat 2014.2.dev102.gb8ed388\n"
+"Project-Id-Version: heat 2015.1.dev522.g8c1da0b\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2014-09-25 06:13+0000\n"
+"POT-Creation-Date: 2014-12-08 06:00+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -17,12 +17,12 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 1.3\n"
 
-#: heat/api/cloudwatch/watch.py:219
+#: heat/api/cloudwatch/watch.py:202
 #, python-format
 msgid "Invalid filter key %s, ignoring"
 msgstr ""
 
-#: heat/api/openstack/v1/stacks.py:217
+#: heat/api/openstack/v1/stacks.py:227
 #, python-format
 msgid "Old Engine Version: %s"
 msgstr ""
@@ -33,89 +33,235 @@ msgid ""
 "falling back to using default"
 msgstr ""
 
-#: heat/common/heat_keystoneclient.py:306
+#: heat/common/heat_keystoneclient.py:313
 #, python-format
 msgid "Truncating the username %s to the last 64 characters."
 msgstr ""
 
-#: heat/common/heat_keystoneclient.py:404
+#: heat/common/heat_keystoneclient.py:424
 msgid ""
 "Falling back to legacy non-domain user create, configure domain in "
 "heat.conf"
 msgstr ""
 
-#: heat/common/heat_keystoneclient.py:458
+#: heat/common/heat_keystoneclient.py:477
 msgid ""
 "Falling back to legacy non-domain user delete, configure domain in "
 "heat.conf"
 msgstr ""
 
-#: heat/common/heat_keystoneclient.py:479
-#: heat/common/heat_keystoneclient.py:496
+#: heat/common/heat_keystoneclient.py:498
+#: heat/common/heat_keystoneclient.py:515
 msgid "Falling back to legacy non-domain project, configure domain in heat.conf"
 msgstr ""
 
-#: heat/common/heat_keystoneclient.py:587
-#: heat/common/heat_keystoneclient.py:604
+#: heat/common/heat_keystoneclient.py:527
+#, python-format
+msgid "Unable to get details for project %s, not deleting"
+msgstr ""
+
+#: heat/common/heat_keystoneclient.py:532
+msgid "Not deleting non heat-domain project"
+msgstr ""
+
+#: heat/common/heat_keystoneclient.py:606
+#: heat/common/heat_keystoneclient.py:623
 msgid "Falling back to legacy non-domain keypair, configure domain in heat.conf"
 msgstr ""
 
-#: heat/common/heat_keystoneclient.py:623
+#: heat/common/heat_keystoneclient.py:642
 msgid "Falling back to legacy non-domain disable, configure domain in heat.conf"
 msgstr ""
 
-#: heat/common/heat_keystoneclient.py:633
+#: heat/common/heat_keystoneclient.py:652
 msgid "Falling back to legacy non-domain enable, configure domain in heat.conf"
 msgstr ""
 
-#: heat/openstack/common/loopingcall.py:82
+#: heat/common/profiler.py:35
+msgid ""
+"OSProfiler is enabled.\n"
+"It means that person who knows any of hmac_keys that are specified in "
+"/etc/heat/api-paste.ini can trace his requests. \n"
+"In real life only operator can read this file so there is no security "
+"issue. Note that even if person can trigger profiler, only admin user can"
+" retrieve trace information.\n"
+"To disable OSprofiler set in heat.conf:\n"
+"[profiler]\n"
+"enabled=false"
+msgstr ""
+
+#: heat/common/wsgi.py:700
+msgid "Unable to serialize exception response"
+msgstr ""
+
+#: heat/engine/environment.py:199 heat/engine/environment.py:205
 #, python-format
-msgid "task run outlasted interval by %s sec"
+msgid "Removing %(item)s from %(path)s"
 msgstr ""
 
-#: heat/openstack/common/network_utils.py:149
-msgid "tcp_keepidle not available on your system"
+#: heat/engine/environment.py:218
+#, python-format
+msgid "Changing %(path)s from %(was)s to %(now)s"
 msgstr ""
 
-#: heat/openstack/common/network_utils.py:156
-msgid "tcp_keepintvl not available on your system"
+#: heat/engine/resource.py:910
+#, python-format
+msgid "db error %s"
 msgstr ""
 
-#: heat/openstack/common/network_utils.py:163
-msgid "tcp_keepknt not available on your system"
+#: heat/engine/resource.py:1096
+#, python-format
+msgid "Resource %s does not implement metadata update"
 msgstr ""
 
-#: heat/openstack/common/service.py:364
+#: heat/engine/service.py:275
+#, python-format
+msgid "periodic_task db error watch rule removed? %(ex)s"
+msgstr ""
+
+#: heat/engine/service.py:1101
+#, python-format
+msgid "Access denied to resource %s"
+msgstr ""
+
+#: heat/engine/service.py:1358
+#, python-format
+msgid "show_watch (all) db error %s"
+msgstr ""
+
+#: heat/engine/service.py:1387
+#, python-format
+msgid "show_metric (all) db error %s"
+msgstr ""
+
+#: heat/engine/signal_responder.py:68
+msgid "Cannot generate signed url, no stored access/secret key"
+msgstr ""
+
+#: heat/engine/stack.py:239
+msgid "Unable to set parameters StackId identifier"
+msgstr ""
+
+#: heat/engine/stack_lock.py:119
+#, python-format
+msgid "Lock was already released on stack %s!"
+msgstr ""
+
+#: heat/engine/stack_resource.py:115
+#, python-format
+msgid "Preview of '%s' not yet implemented"
+msgstr ""
+
+#: heat/engine/stack_user.py:99
+msgid "Reverting to legacy user delete path"
+msgstr ""
+
+#: heat/engine/watchrule.py:81
+#, python-format
+msgid "WatchRule.load (%(watch_name)s) db error %(ex)s"
+msgstr ""
+
+#: heat/engine/watchrule.py:268
+#, python-format
+msgid "Could not process watch state %s for stack"
+msgstr ""
+
+#: heat/engine/watchrule.py:352
+#, python-format
+msgid "Unable to override state %(state)s for watch %(name)s"
+msgstr ""
+
+#: heat/engine/clients/__init__.py:68
+#, python-format
+msgid "Requested client \"%s\" not found"
+msgstr ""
+
+#: heat/engine/clients/os/nova.py:110 heat/engine/resources/nova_utils.py:59
+#, python-format
+msgid ""
+"Server %(name)s (%(id)s) received an OverLimit response during "
+"server.get(): %(exception)s"
+msgstr ""
+
+#: heat/engine/clients/os/nova.py:118 heat/engine/resources/nova_utils.py:68
+#, python-format
+msgid ""
+"Server \"%(name)s\" (%(id)s) received the following exception during "
+"server.get(): %(exception)s"
+msgstr ""
+
+#: heat/engine/clients/os/nova.py:407 heat/engine/resources/nova_utils.py:383
+#, python-format
+msgid "Instance (%(server)s) not found: %(ex)s"
+msgstr ""
+
+#: heat/engine/clients/os/nova.py:418
+#, python-format
+msgid "Server (%(server)s) not found: %(ex)s"
+msgstr ""
+
+#: heat/engine/resources/eip.py:396
+msgid "Skipping association, resource not specified"
+msgstr ""
+
+#: heat/engine/resources/os_database.py:340
+#, python-format
+msgid ""
+"Stack %(name)s (%(id)s) received an OverLimit response during "
+"instance.get(): %(exception)s"
+msgstr ""
+
+#: heat/engine/resources/swift.py:175
+#, python-format
+msgid "Head container failed: %s"
+msgstr ""
+
+#: heat/engine/resources/wait_condition.py:69
+#, python-format
+msgid "Overwriting Metadata item for id %s!"
+msgstr ""
+
+#: heat/engine/resources/neutron/port.py:323
+#, python-format
+msgid "Failed to fetch resource attributes: %s"
+msgstr ""
+
+#: heat/openstack/common/loopingcall.py:87
+#, python-format
+msgid "task %(func_name)s run outlasted interval by %(delay).2f sec"
+msgstr ""
+
+#: heat/openstack/common/service.py:356
 #, python-format
 msgid "pid %d not in child list"
 msgstr ""
 
-#: heat/tests/generic_resource.py:34
+#: heat/tests/generic_resource.py:36
 #, python-format
 msgid "Creating generic resource (Type \"%s\")"
 msgstr ""
 
-#: heat/tests/generic_resource.py:38
+#: heat/tests/generic_resource.py:40
 #, python-format
 msgid "Updating generic resource (Type \"%s\")"
 msgstr ""
 
-#: heat/tests/generic_resource.py:42
+#: heat/tests/generic_resource.py:44
 #, python-format
 msgid "Deleting generic resource (Type \"%s\")"
 msgstr ""
 
-#: heat/tests/generic_resource.py:49
+#: heat/tests/generic_resource.py:51
 #, python-format
 msgid "Suspending generic resource (Type \"%s\")"
 msgstr ""
 
-#: heat/tests/generic_resource.py:53
+#: heat/tests/generic_resource.py:55
 #, python-format
 msgid "Resuming generic resource (Type \"%s\")"
 msgstr ""
 
-#: heat/tests/generic_resource.py:139
+#: heat/tests/generic_resource.py:144
 #, python-format
 msgid "Signaled resource (Type \"%(type)s\") %(details)s"
 msgstr ""

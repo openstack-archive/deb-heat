@@ -16,6 +16,7 @@ from glanceclient import exc
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LI
 from heat.engine.clients import client_plugin
 from heat.engine import constraints
 from heat.openstack.common import log as logging
@@ -54,6 +55,9 @@ class GlanceClientPlugin(client_plugin.ClientPlugin):
     def is_over_limit(self, ex):
         return isinstance(ex, exc.HTTPOverLimit)
 
+    def is_conflict(self, ex):
+        return isinstance(ex, exc.HTTPConflict)
+
     def get_image_id(self, image_identifier):
         '''
         Return an id for the specified image name or identifier.
@@ -89,11 +93,11 @@ class GlanceClientPlugin(client_plugin.ClientPlugin):
                 _("Error retrieving image list from glance: %s") % ex)
         num_matches = len(image_list)
         if num_matches == 0:
-            LOG.info(_("Image %s was not found in glance") %
+            LOG.info(_LI("Image %s was not found in glance"),
                      image_identifier)
             raise exception.ImageNotFound(image_name=image_identifier)
         elif num_matches > 1:
-            LOG.info(_("Multiple images %s were found in glance with name") %
+            LOG.info(_LI("Multiple images %s were found in glance with name"),
                      image_identifier)
             raise exception.PhysicalResourceNameAmbiguity(
                 name=image_identifier)

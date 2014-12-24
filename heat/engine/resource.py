@@ -13,14 +13,18 @@
 
 import base64
 import contextlib
-from datetime import datetime
+import datetime as dt
 from oslo.config import cfg
+from oslo.utils import encodeutils
 from oslo.utils import excutils
 import six
 import warnings
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LE
+from heat.common.i18n import _LI
+from heat.common.i18n import _LW
 from heat.common import identifier
 from heat.common import short_id
 from heat.common import timeutils
@@ -35,20 +39,13 @@ from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.engine import support
 from heat.openstack.common import log as logging
+from heat.rpc import client as rpc_client
 
 cfg.CONF.import_opt('action_retry_limit', 'heat.common.config')
 
 LOG = logging.getLogger(__name__)
 
-
-def get_types(support_status):
-    '''Return a list of valid resource types.'''
-    return resources.global_env().get_types(support_status)
-
-
-def get_class(resource_type, resource_name=None):
-    '''Return the Resource class for a given resource type.'''
-    return resources.global_env().get_class(resource_type, resource_name)
+datetime = dt.datetime
 
 
 def _register_class(resource_type, resource_class):
@@ -72,10 +69,13 @@ class ResourceInError(exception.HeatException):
 
 
 class ResourceUnknownStatus(exception.HeatException):
-    msg_fmt = _('%(result)s - Unknown status %(resource_status)s')
+    msg_fmt = _('%(result)s - Unknown status %(resource_status)s due to '
+                '"%(status_reason)s"')
 
-    def __init__(self, result=_('Resource failed'), **kwargs):
-        super(ResourceUnknownStatus, self).__init__(result=result, **kwargs)
+    def __init__(self, result=_('Resource failed'),
+                 status_reason=_('Unknown'), **kwargs):
+        super(ResourceUnknownStatus, self).__init__(
+            result=result, status_reason=status_reason, **kwargs)
 
 
 class Resource(object):
@@ -147,17 +147,24 @@ class Resource(object):
                 return res_info.template_name not in ancestor_list
 
             registry = stack.env.registry
-            ResourceClass = registry.get_class(definition.resource_type,
-                                               resource_name=name,
-                                               accept_fn=accept_class)
+            try:
+                ResourceClass = registry.get_class(definition.resource_type,
+                                                   resource_name=name,
+                                                   accept_fn=accept_class)
+            except exception.NotFound:
+                ResourceClass = template_resource.TemplateResource
             assert issubclass(ResourceClass, Resource)
 
         return super(Resource, cls).__new__(ResourceClass)
 
     def __init__(self, name, definition, stack):
-        if '/' in name:
-            raise ValueError(_('Resource name may not contain "/"'))
 
+        def _validate_name(res_name):
+            if '/' in res_name:
+                message = _('Resource name may not contain "/"')
+                raise exception.StackValidationFailed(message=message)
+
+        _validate_name(name)
         self.stack = stack
         self.context = stack.context
         self.name = name
@@ -183,10 +190,17 @@ class Resource(object):
         self._stored_properties_data = None
         self.created_time = None
         self.updated_time = None
+        self._rpc_client = None
 
         resource = stack.db_resource_get(name)
         if resource:
             self._load_data(resource)
+
+    def rpc_client(self):
+        '''Return a client for making engine RPC calls.'''
+        if not self._rpc_client:
+            self._rpc_client = rpc_client.EngineClient()
+        return self._rpc_client
 
     def _load_data(self, resource):
         '''Load the resource state from its DB representation.'''
@@ -362,11 +376,27 @@ class Resource(object):
     def __str__(self):
         if self.stack.id:
             if self.resource_id:
-                return '%s "%s" [%s] %s' % (self.__class__.__name__, self.name,
+                text = '%s "%s" [%s] %s' % (self.__class__.__name__, self.name,
                                             self.resource_id, str(self.stack))
-            return '%s "%s" %s' % (self.__class__.__name__, self.name,
-                                   str(self.stack))
-        return '%s "%s"' % (self.__class__.__name__, self.name)
+            else:
+                text = '%s "%s" %s' % (self.__class__.__name__, self.name,
+                                       str(self.stack))
+        else:
+            text = '%s "%s"' % (self.__class__.__name__, self.name)
+        return encodeutils.safe_encode(text)
+
+    def __unicode__(self):
+        if self.stack.id:
+            if self.resource_id:
+                text = '%s "%s" [%s] %s' % (self.__class__.__name__, self.name,
+                                            self.resource_id,
+                                            unicode(self.stack))
+            else:
+                text = '%s "%s" %s' % (self.__class__.__name__, self.name,
+                                       unicode(self.stack))
+        else:
+            text = '%s "%s"' % (self.__class__.__name__, self.name)
+        return encodeutils.safe_decode(text)
 
     def add_dependencies(self, deps):
         for dep in self.t.dependencies(self.stack):
@@ -438,7 +468,7 @@ class Resource(object):
                 LOG.debug('%s', six.text_type(ex))
         except Exception as ex:
             LOG.info('%(action)s: %(info)s', {"action": action,
-                                              "info": str(self)},
+                                              "info": six.text_type(self)},
                      exc_info=True)
             failure = exception.ResourceFailure(ex, self, action)
             self.state_set(action, self.FAILED, six.text_type(failure))
@@ -448,7 +478,7 @@ class Resource(object):
                 try:
                     self.state_set(action, self.FAILED, '%s aborted' % action)
                 except Exception:
-                    LOG.exception(_('Error marking resource as failed'))
+                    LOG.exception(_LE('Error marking resource as failed'))
         else:
             self.state_set(action, self.COMPLETE)
 
@@ -525,10 +555,10 @@ class Resource(object):
         action = self.CREATE
         if (self.action, self.status) != (self.INIT, self.COMPLETE):
             exc = exception.Error(_('State %s invalid for create')
-                                  % str(self.state))
+                                  % six.text_type(self.state))
             raise exception.ResourceFailure(exc, self, action)
 
-        LOG.info(_('creating %s') % str(self))
+        LOG.info(_LI('creating %s'), six.text_type(self))
 
         # Re-resolve the template, since if the resource Ref's
         # the StackId pseudo parameter, it will change after
@@ -677,7 +707,7 @@ class Resource(object):
             exc = Exception(_('Resource update already requested'))
             raise exception.ResourceFailure(exc, self, action)
 
-        LOG.info(_('updating %s') % str(self))
+        LOG.info(_LI('updating %s'), six.text_type(self))
 
         self.updated_time = datetime.utcnow()
         with self._action_recorder(action, UpdateReplace):
@@ -702,13 +732,29 @@ class Resource(object):
         original state with the added message that check was not performed.
         """
         action = self.CHECK
-        LOG.info(_('Checking %s') % six.text_type(self))
+        LOG.info(_LI('Checking %s'), six.text_type(self))
 
         if hasattr(self, 'handle_%s' % action.lower()):
             return self._do_action(action)
         else:
             reason = '%s not supported for %s' % (action, self.type())
             self.state_set(action, self.COMPLETE, reason)
+
+    def _verify_check_conditions(self, checks):
+        def valid(check):
+            if isinstance(check['expected'], list):
+                return check['current'] in check['expected']
+            else:
+                return check['current'] == check['expected']
+
+        msg = _("'%(attr)s': expected '%(expected)s', got '%(current)s'")
+        invalid_checks = [
+            msg % check
+            for check in checks
+            if not valid(check)
+        ]
+        if invalid_checks:
+            raise exception.Error('; '.join(invalid_checks))
 
     def suspend(self):
         '''
@@ -720,10 +766,10 @@ class Resource(object):
         # Don't try to suspend the resource unless it's in a stable state
         if (self.action == self.DELETE or self.status != self.COMPLETE):
             exc = exception.Error(_('State %s invalid for suspend')
-                                  % str(self.state))
+                                  % six.text_type(self.state))
             raise exception.ResourceFailure(exc, self, action)
 
-        LOG.info(_('suspending %s') % str(self))
+        LOG.info(_LI('suspending %s'), six.text_type(self))
         return self._do_action(action)
 
     def resume(self):
@@ -736,15 +782,15 @@ class Resource(object):
         # Can't resume a resource unless it's SUSPEND_COMPLETE
         if self.state != (self.SUSPEND, self.COMPLETE):
             exc = exception.Error(_('State %s invalid for resume')
-                                  % str(self.state))
+                                  % six.text_type(self.state))
             raise exception.ResourceFailure(exc, self, action)
 
-        LOG.info(_('resuming %s') % str(self))
+        LOG.info(_LI('resuming %s'), six.text_type(self))
         return self._do_action(action)
 
     def snapshot(self):
         '''Snapshot the resource and return the created data, if any.'''
-        LOG.info(_('snapshotting %s') % str(self))
+        LOG.info(_LI('snapshotting %s'), six.text_type(self))
         return self._do_action(self.SNAPSHOT)
 
     @scheduler.wrappertask
@@ -790,7 +836,7 @@ class Resource(object):
         return name[0:2] + '-' + name[-postfix_length:]
 
     def validate(self):
-        LOG.info(_('Validating %s') % str(self))
+        LOG.info(_LI('Validating %s'), six.text_type(self))
 
         function.validate(self.t)
         self.validate_deletion_policy(self.t.deletion_policy())
@@ -823,7 +869,7 @@ class Resource(object):
 
         initial_state = self.state
 
-        LOG.info(_('deleting %s') % str(self))
+        LOG.info(_LI('deleting %s'), six.text_type(self))
 
         with self._action_recorder(action):
             if self.abandon_in_progress:
@@ -864,7 +910,7 @@ class Resource(object):
                 rs = db_api.resource_get(self.context, self.id)
                 rs.update_and_save({'nova_instance': self.resource_id})
             except Exception as ex:
-                LOG.warn(_('db error %s') % ex)
+                LOG.warn(_LW('db error %s'), ex)
 
     def _store(self):
         '''Create the resource in the database.'''
@@ -885,7 +931,7 @@ class Resource(object):
             self.created_time = new_rs.created_at
             self._rsrc_metadata = metadata
         except Exception as ex:
-            LOG.error(_('DB error %s') % ex)
+            LOG.error(_LE('DB error %s'), ex)
 
     def _add_event(self, action, status, reason):
         '''Add a state change event to the database.'''
@@ -912,7 +958,7 @@ class Resource(object):
                     'properties_data': self._stored_properties_data,
                     'nova_instance': self.resource_id})
             except Exception as ex:
-                LOG.error(_('DB error %s') % ex)
+                LOG.error(_LE('DB error %s'), ex)
 
         # store resource in DB on transition to CREATE_IN_PROGRESS
         # all other transitions (other than to DELETE_COMPLETE)
@@ -1012,7 +1058,7 @@ class Resource(object):
         def get_string_details():
             if details is None:
                 return 'No signal details provided'
-            if isinstance(details, basestring):
+            if isinstance(details, six.string_types):
                 return details
             if isinstance(details, dict):
                 if all(k in details for k in ('previous', 'current',
@@ -1036,8 +1082,8 @@ class Resource(object):
                 reason_string = get_string_details()
             self._add_event('signal', self.status, reason_string)
         except Exception as ex:
-            LOG.exception(_('signal %(name)s : %(msg)s') % {'name': str(self),
-                                                            'msg': ex})
+            LOG.exception(_LE('signal %(name)s : %(msg)s')
+                          % {'name': six.text_type(self), 'msg': ex})
             failure = exception.ResourceFailure(ex, self)
             raise failure
 
@@ -1050,8 +1096,8 @@ class Resource(object):
         No-op for resources which don't explicitly override this method
         '''
         if new_metadata:
-            LOG.warning(_("Resource %s does not implement metadata update")
-                        % self.name)
+            LOG.warn(_LW("Resource %s does not implement metadata update"),
+                     self.name)
 
     @classmethod
     def resource_to_template(cls, resource_type):

@@ -13,21 +13,27 @@
 
 """Client Libraries for Rackspace Resources."""
 
+import hashlib
+import random
+import time
 import urlparse
 
 from oslo.config import cfg
 
 from heat.common import exception
-from heat.common.i18n import _
+from heat.common.i18n import _LI
+from heat.common.i18n import _LW
 from heat.engine.clients import client_plugin
 from heat.engine.clients.os import cinder
 from heat.engine.clients.os import glance
 from heat.engine.clients.os import nova
+from heat.engine.clients.os import swift
 from heat.engine.clients.os import trove
 
 from heat.openstack.common import log as logging
 
 from glanceclient import client as gc
+from swiftclient import utils as swiftclient_utils
 from troveclient import client as tc
 
 LOG = logging.getLogger(__name__)
@@ -52,7 +58,7 @@ class RackspaceClientPlugin(client_plugin.ClientPlugin):
         """Create an authenticated client context."""
         self.pyrax = pyrax.create_context("rackspace")
         self.pyrax.auth_endpoint = self.context.auth_url
-        LOG.info(_("Authenticating username: %s") %
+        LOG.info(_LI("Authenticating username: %s") %
                  self.context.username)
         tenant = self.context.tenant_id
         tenant_name = self.context.tenant
@@ -60,9 +66,9 @@ class RackspaceClientPlugin(client_plugin.ClientPlugin):
                                    tenant_id=tenant,
                                    tenant_name=tenant_name)
         if not self.pyrax.authenticated:
-            LOG.warn(_("Pyrax Authentication Failed."))
+            LOG.warn(_LW("Pyrax Authentication Failed."))
             raise exception.AuthorizationFailure()
-        LOG.info(_("User %s authenticated successfully."),
+        LOG.info(_LI("User %s authenticated successfully."),
                  self.context.username)
 
 
@@ -170,14 +176,52 @@ class RackspaceCinderClient(cinder.CinderClientPlugin):
         return client
 
 
-class RackspaceSwiftClient(RackspaceClientPlugin):
+class RackspaceSwiftClient(swift.SwiftClientPlugin):
 
-    def _create(self):
-        # Rackspace doesn't include object-store in the default catalog
-        # for "reasons". The pyrax client takes care of this, but it
-        # returns a wrapper over the upstream python-swiftclient so we
-        # unwrap here and things just work
-        return self._get_client("object_store").connection
+    def is_valid_temp_url_path(self, path):
+        '''Return True if path is a valid Swift TempURL path, False otherwise.
+
+        A Swift TempURL path must:
+        - Be five parts, ['', 'v1', 'account', 'container', 'object']
+        - Be a v1 request
+        - Have account, container, and object values
+        - Have an object value with more than just '/'s
+
+        :param path: The TempURL path
+        :type path: string
+        '''
+        parts = path.split('/', 4)
+        return bool(len(parts) == 5 and
+                    not parts[0] and
+                    parts[1] == 'v1' and
+                    parts[2] and
+                    parts[3] and
+                    parts[4].strip('/'))
+
+    def get_temp_url(self, container_name, obj_name, timeout=None):
+        '''
+        Return a Swift TempURL.
+        '''
+        def tenant_uuid():
+            for role in self.context.auth_token_info['user']['roles']:
+                if role['name'] == 'object-store:default':
+                    return role['tenantId']
+
+        key_header = 'x-account-meta-temp-url-key'
+        if key_header in self.client().head_account():
+            key = self.client().head_account()[key_header]
+        else:
+            key = hashlib.sha224(str(random.getrandbits(256))).hexdigest()[:32]
+            self.client().post_account({key_header: key})
+
+        method = 'PUT'
+        path = '/v1/%s/%s/%s' % (tenant_uuid(), container_name, obj_name)
+        if timeout is None:
+            timeout = swift.MAX_EPOCH - 60 - time.time()
+        tempurl = swiftclient_utils.generate_temp_url(path, timeout, key,
+                                                      method)
+        sw_url = urlparse.urlparse(self.client().url)
+        return '%s://%s%s' % (sw_url.scheme, sw_url.netloc, tempurl)
 
 
 class RackspaceGlanceClient(glance.GlanceClientPlugin):

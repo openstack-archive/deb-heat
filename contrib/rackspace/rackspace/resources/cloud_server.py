@@ -15,9 +15,11 @@ import copy
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LW
 from heat.engine import attributes
 from heat.engine import properties
 from heat.engine.resources import server
+from heat.engine import support
 from heat.openstack.common import log as logging
 
 try:
@@ -31,6 +33,11 @@ LOG = logging.getLogger(__name__)
 
 class CloudServer(server.Server):
     """Resource for Rackspace Cloud Servers."""
+
+    support_status = support.SupportStatus(
+        support.DEPRECATED,
+        _('Use OS::Nova::Server instead.'),
+    )
 
     # Managed Cloud automation statuses
     MC_STATUS_IN_PROGRESS = 'In Progress'
@@ -181,7 +188,7 @@ class CloudServer(server.Server):
             reason = server.metadata.get('rackconnect_unprocessable_reason',
                                          None)
             if reason is not None:
-                LOG.warning(_("RackConnect unprocessable reason: %s") % reason)
+                LOG.warn(_LW("RackConnect unprocessable reason: %s"), reason)
 
             msg = _("RackConnect automation has completed")
             self._add_event(self.action, self.status, msg)
@@ -196,7 +203,7 @@ class CloudServer(server.Server):
 
     def check_create_complete(self, server):
         """Check if server creation is complete and handle server configs."""
-        if not self._check_active(server):
+        if not super(CloudServer, self).check_create_complete(server):
             return False
 
         self.client_plugin().refresh_server(server)
@@ -232,6 +239,26 @@ class CloudServer(server.Server):
                           redact=True)
 
         return server
+
+    def handle_check(self):
+        server = self._check_server_status()
+        checks = []
+
+        if 'rack_connect' in self.context.roles:
+            rc_status = self._check_rack_connect_complete(server)
+            checks.append(
+                {'attr': 'rackconnect complete', 'expected': True,
+                 'current': rc_status}
+            )
+
+        if 'rax_managed' in self.context.roles:
+            mc_status = self._check_managed_cloud_complete(server)
+            checks.append(
+                {'attr': 'managed_cloud complete', 'expected': True,
+                 'current': mc_status}
+            )
+
+        self._verify_check_conditions(checks)
 
 
 def resource_mapping():

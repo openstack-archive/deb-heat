@@ -15,17 +15,18 @@ from glanceclient import exc as glance_exceptions
 import six
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.common import template_format
 from heat.engine.clients.os import glance
 from heat.engine.clients.os import nova
 from heat.engine import environment
-from heat.engine.hot.template import HOTemplate20130523
+from heat.engine.hot import template as tmpl
 from heat.engine import parser
 from heat.engine import resources
 from heat.engine import service
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
-from heat.tests.v1_1 import fakes
+from heat.tests.v1_1 import fakes as fakes_v1_1
 
 test_template_volumeattach = '''
 {
@@ -838,12 +839,12 @@ resources:
 '''
 
 
-class validateTest(HeatTestCase):
+class validateTest(common.HeatTestCase):
     def setUp(self):
         super(validateTest, self).setUp()
         resources.initialise()
-        self.fc = fakes.FakeClient()
-        self.gc = fakes.FakeClient()
+        self.fc = fakes_v1_1.FakeClient()
+        self.gc = fakes_v1_1.FakeClient()
         resources.initialise()
         self.ctx = utils.dummy_context()
         self.patch('heat.engine.service.warnings')
@@ -1070,7 +1071,7 @@ class validateTest(HeatTestCase):
         engine = service.EngineService('a', 't')
         res = dict(engine.validate_template(None, t, {}))
         self.assertEqual({'Error': 'Resources must contain Resource. '
-                          'Found a [string] instead'},
+                          'Found a [%s] instead' % six.text_type},
                          res)
 
     def test_invalid_section_cfn(self):
@@ -1228,7 +1229,7 @@ class validateTest(HeatTestCase):
         self.assertEqual({'Error': 'u\'"DependsOn" is not a valid keyword '
                                    'inside a resource definition\''}, res)
 
-    def test_validate_template_with_invalid_resource_deletion_polciy(self):
+    def test_validate_template_with_invalid_resource_deletion_policy(self):
         hot_tpl = template_format.parse('''
         heat_template_version: 2013-05-23
         resources:
@@ -1382,7 +1383,7 @@ class validateTest(HeatTestCase):
 
     def test_validate_duplicate_parameters_in_group(self):
         t = template_format.parse(test_template_duplicate_parameters)
-        template = HOTemplate20130523(t)
+        template = tmpl.HOTemplate20130523(t)
         stack = parser.Stack(self.ctx, 'test_stack', template,
                              environment.Environment({
                                  'KeyName': 'test',
@@ -1397,7 +1398,7 @@ class validateTest(HeatTestCase):
 
     def test_validate_invalid_parameter_in_group(self):
         t = template_format.parse(test_template_invalid_parameter_name)
-        template = HOTemplate20130523(t)
+        template = tmpl.HOTemplate20130523(t)
         stack = parser.Stack(self.ctx, 'test_stack', template,
                              environment.Environment({
                                  'KeyName': 'test',
@@ -1413,7 +1414,7 @@ class validateTest(HeatTestCase):
 
     def test_validate_no_parameters_in_group(self):
         t = template_format.parse(test_template_no_parameters)
-        template = HOTemplate20130523(t)
+        template = tmpl.HOTemplate20130523(t)
         stack = parser.Stack(self.ctx, 'test_stack', template)
         exc = self.assertRaises(exception.StackValidationFailed,
                                 stack.validate)

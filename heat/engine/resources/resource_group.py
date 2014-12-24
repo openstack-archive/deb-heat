@@ -13,13 +13,16 @@
 
 import collections
 import copy
+import six
 
 from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
+from heat.engine.resources import template_resource
 from heat.engine import stack_resource
+from heat.engine import support
 from heat.engine import template
 
 template_template = {
@@ -65,16 +68,24 @@ class ResourceGroup(stack_resource.StackResource):
     used for substitution can be customized by using the `index_var` property.
     """
 
+    support_status = support.SupportStatus(version='2014.1')
+
     PROPERTIES = (
-        COUNT, INDEX_VAR, RESOURCE_DEF,
+        COUNT, INDEX_VAR, RESOURCE_DEF, REMOVAL_POLICIES
     ) = (
-        'count', 'index_var', 'resource_def',
+        'count', 'index_var', 'resource_def', 'removal_policies'
     )
 
     _RESOURCE_DEF_KEYS = (
         RESOURCE_DEF_TYPE, RESOURCE_DEF_PROPERTIES,
     ) = (
         'type', 'properties',
+    )
+
+    _REMOVAL_POLICIES_KEYS = (
+        REMOVAL_RSRC_LIST,
+    ) = (
+        'resource_list',
     )
 
     ATTRIBUTES = (
@@ -103,7 +114,8 @@ class ResourceGroup(stack_resource.StackResource):
             default="%index%",
             constraints=[
                 constraints.Length(min=3)
-            ]
+            ],
+            support_status=support.SupportStatus(version='2014.2')
         ),
         RESOURCE_DEF: properties.Schema(
             properties.Schema.MAP,
@@ -121,7 +133,39 @@ class ResourceGroup(stack_resource.StackResource):
                     _('Property values for the resources in the group')
                 ),
             },
-            required=True
+            required=True,
+            update_allowed=True
+        ),
+        REMOVAL_POLICIES: properties.Schema(
+            properties.Schema.LIST,
+            _('Policies for removal of resources on update'),
+            schema=properties.Schema(
+                properties.Schema.MAP,
+                _('Policy to be processed when doing an update which '
+                  'requires removal of specific resources.'),
+                schema={
+                    REMOVAL_RSRC_LIST: properties.Schema(
+                        properties.Schema.LIST,
+                        _('List of resources to be removed '
+                          'when doing an update which requires removal of '
+                          'specific resources. '
+                          'The resource may be specified several ways: '
+                          '(1) The resource name, as in the nested stack, '
+                          '(2) The resource reference returned from '
+                          'get_resource in a template, as available via '
+                          'the \'refs\' attribute '
+                          'Note this is destructive on update when specified; '
+                          'even if the count is not being reduced, and once '
+                          'a resource name is removed, it\'s name is never '
+                          'reused in subsequent updates'
+                          ),
+                        default=[]
+                    ),
+                },
+            ),
+            update_allowed=True,
+            default=[],
+            support_status=support.SupportStatus(version='2015.1')
         ),
     }
 
@@ -142,14 +186,59 @@ class ResourceGroup(stack_resource.StackResource):
         test_tmpl = self._assemble_nested(["0"], include_all=True)
         val_templ = template.Template(test_tmpl)
         res_def = val_templ.resource_definitions(self.stack)["0"]
-        res_class = self.stack.env.get_class(res_def.resource_type)
+        try:
+            res_class = self.stack.env.get_class(res_def.resource_type)
+        except exception.NotFound:
+            res_class = template_resource.TemplateResource
         res_inst = res_class("%s:resource_def" % self.name, res_def,
                              self.stack)
         res_inst.validate()
 
-    def _resource_names(self, properties=None):
-        p = properties or self.properties
-        return [str(n) for n in range(p.get(self.COUNT, 0))]
+    def _name_blacklist(self):
+        """Resolve the remove_policies to names for removal."""
+
+        # To avoid reusing names after removal, we store a comma-separated
+        # blacklist in the resource data
+        db_rsrc_names = self.data().get('name_blacklist')
+        if db_rsrc_names:
+            current_blacklist = db_rsrc_names.split(',')
+        else:
+            current_blacklist = []
+
+        # Now we iterate over the removal policies, and update the blacklist
+        # with any additional names
+        rsrc_names = list(current_blacklist)
+        for r in self.properties[self.REMOVAL_POLICIES]:
+            if self.REMOVAL_RSRC_LIST in r:
+                # Tolerate string or int list values
+                for n in r[self.REMOVAL_RSRC_LIST]:
+                    str_n = six.text_type(n)
+                    if str_n in self.nested() and str_n not in rsrc_names:
+                        rsrc_names.append(str_n)
+                        continue
+                    rsrc = self.nested().resource_by_refid(str_n)
+                    if rsrc and str_n not in rsrc_names:
+                        rsrc_names.append(rsrc.name)
+
+        # If the blacklist has changed, update the resource data
+        if rsrc_names != current_blacklist:
+            self.data_set('name_blacklist', ','.join(rsrc_names))
+        return rsrc_names
+
+    def _resource_names(self):
+        name_blacklist = self._name_blacklist()
+        req_count = self.properties.get(self.COUNT)
+
+        def gen_names():
+            count = 0
+            index = 0
+            while count < req_count:
+                if str(index) not in name_blacklist:
+                    yield str(index)
+                    count += 1
+                index += 1
+
+        return list(gen_names())
 
     def handle_create(self):
         names = self._resource_names()
@@ -217,7 +306,7 @@ class ResourceGroup(stack_resource.StackResource):
     def _handle_repl_val(self, res_name, val):
         repl_var = self.properties[self.INDEX_VAR]
         recurse = lambda x: self._handle_repl_val(res_name, x)
-        if isinstance(val, basestring):
+        if isinstance(val, six.string_types):
             return val.replace(repl_var, res_name)
         elif isinstance(val, collections.Mapping):
             return dict(zip(val, map(recurse, val.values())))

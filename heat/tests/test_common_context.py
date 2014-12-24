@@ -14,18 +14,17 @@
 import mock
 import os
 from oslo.config import cfg
+from oslo.middleware import request_id
 import webob
 
 from heat.common import context
 from heat.common import exception
-from heat.openstack.common.middleware import request_id
-from heat.openstack.common import policy as base_policy
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 
 policy_path = os.path.dirname(os.path.realpath(__file__)) + "/policy/"
 
 
-class TestRequestContext(HeatTestCase):
+class TestRequestContext(common.HeatTestCase):
 
     def setUp(self):
         self.ctx = {'username': 'mick',
@@ -42,7 +41,8 @@ class TestRequestContext(HeatTestCase):
                     'user_id': 'fooUser',
                     'tenant': 'atenant',
                     'auth_url': 'http://xyz',
-                    'aws_creds': 'blah'}
+                    'aws_creds': 'blah',
+                    'region_name': 'regionOne'}
 
         super(TestRequestContext, self).setUp()
 
@@ -59,7 +59,11 @@ class TestRequestContext(HeatTestCase):
             roles=self.ctx.get('roles'),
             show_deleted=self.ctx.get('show_deleted'),
             is_admin=self.ctx.get('is_admin'),
-            auth_token_info=self.ctx.get('auth_token_info'))
+            auth_token_info=self.ctx.get('auth_token_info'),
+            trustor_user_id=self.ctx.get('trustor_user_id'),
+            trust_id=self.ctx.get('trust_id'),
+            user=self.ctx.get('user'),
+            region_name=self.ctx.get('region_name'))
         ctx_dict = ctx.to_dict()
         del(ctx_dict['request_id'])
         self.assertEqual(self.ctx, ctx_dict)
@@ -104,7 +108,7 @@ class TestRequestContext(HeatTestCase):
             self.assertFalse(ctx.is_admin)
 
 
-class RequestContextMiddlewareTest(HeatTestCase):
+class RequestContextMiddlewareTest(common.HeatTestCase):
 
     scenarios = [(
         'empty_headers',
@@ -239,10 +243,7 @@ class RequestContextMiddlewareTest(HeatTestCase):
             cfg.StrOpt('project', default='heat'),
         ]
         cfg.CONF.register_opts(opts)
-        pf = policy_path + 'check_admin.json'
-        self.m.StubOutWithMock(base_policy.Enforcer, '_get_policy_path')
-        base_policy.Enforcer._get_policy_path().MultipleTimes().AndReturn(pf)
-        self.m.ReplayAll()
+        cfg.CONF.set_override('policy_file', 'check_admin.json')
 
     def test_context_middleware(self):
 

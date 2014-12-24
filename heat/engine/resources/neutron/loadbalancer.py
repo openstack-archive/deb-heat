@@ -12,6 +12,7 @@
 #    under the License.
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
@@ -498,6 +499,8 @@ class PoolMember(neutron.NeutronResource):
     A resource to handle load balancer members.
     """
 
+    support_status = support.SupportStatus(version='2014.1')
+
     PROPERTIES = (
         POOL_ID, ADDRESS, PROTOCOL_PORT, WEIGHT, ADMIN_STATE_UP,
     ) = (
@@ -695,8 +698,7 @@ class LoadBalancer(resource.Resource):
 
     def handle_delete(self):
         client = self.neutron()
-        for member in self.properties[self.MEMBERS] or []:
-            member_id = self.data().get(member)
+        for member, member_id in self.data().items():
             try:
                 client.delete_member(member_id)
             except Exception as ex:

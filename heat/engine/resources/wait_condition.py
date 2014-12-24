@@ -12,9 +12,14 @@
 #    under the License.
 
 import json
+import six
 import uuid
 
 from heat.common import exception
+from heat.common.i18n import _
+from heat.common.i18n import _LE
+from heat.common.i18n import _LI
+from heat.common.i18n import _LW
 from heat.common import identifier
 from heat.engine import attributes
 from heat.engine import constraints
@@ -22,6 +27,7 @@ from heat.engine import properties
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import signal_responder
+from heat.engine import support
 from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
@@ -61,8 +67,8 @@ class BaseWaitConditionHandle(signal_responder.SignalResponder):
         if self._metadata_format_ok(metadata):
             rsrc_metadata = self.metadata_get(refresh=True)
             if metadata[self.UNIQUE_ID] in rsrc_metadata:
-                LOG.warning(_("Overwriting Metadata item for id %s!")
-                            % metadata[self.UNIQUE_ID])
+                LOG.warn(_LW("Overwriting Metadata item for id %s!"),
+                         metadata[self.UNIQUE_ID])
             safe_metadata = {}
             for k in self.METADATA_KEYS:
                 if k == self.UNIQUE_ID:
@@ -74,7 +80,7 @@ class BaseWaitConditionHandle(signal_responder.SignalResponder):
                              (safe_metadata[self.STATUS],
                               safe_metadata[self.REASON]))
         else:
-            LOG.error(_("Metadata failed validation for %s") % self.name)
+            LOG.error(_LE("Metadata failed validation for %s"), self.name)
             raise ValueError(_("Metadata format invalid"))
         return signal_reason
 
@@ -95,6 +101,9 @@ class BaseWaitConditionHandle(signal_responder.SignalResponder):
 
 
 class HeatWaitConditionHandle(BaseWaitConditionHandle):
+
+    support_status = support.SupportStatus(version='2014.2')
+
     METADATA_KEYS = (
         DATA, REASON, STATUS, UNIQUE_ID
     ) = (
@@ -212,6 +221,9 @@ class WaitConditionHandle(BaseWaitConditionHandle):
     then the cfn-signal will use this url to post to and
     WaitCondition will poll it to see if has been written to.
     '''
+
+    support_status = support.SupportStatus(version='2014.1')
+
     METADATA_KEYS = (
         DATA, REASON, STATUS, UNIQUE_ID
     ) = (
@@ -228,9 +240,9 @@ class WaitConditionHandle(BaseWaitConditionHandle):
         '''
         if self.resource_id:
             wc = signal_responder.WAITCONDITION
-            return unicode(self._get_signed_url(signal_type=wc))
+            return six.text_type(self._get_signed_url(signal_type=wc))
         else:
-            return unicode(self.name)
+            return six.text_type(self.name)
 
     def metadata_update(self, new_metadata=None):
         """DEPRECATED. Should use handle_signal instead."""
@@ -261,6 +273,9 @@ class UpdateWaitConditionHandle(WaitConditionHandle):
     out new configurations and be confident that they are rolled out once
     UPDATE COMPLETE is reached.
     '''
+
+    support_status = support.SupportStatus(version='2014.1')
+
     def update(self, after, before=None, prev_resource=None):
         raise resource.UpdateReplace(self.name)
 
@@ -285,6 +300,9 @@ class WaitConditionTimeout(exception.Error):
 
 
 class HeatWaitCondition(resource.Resource):
+
+    support_status = support.SupportStatus(version='2014.2')
+
     PROPERTIES = (
         HANDLE, TIMEOUT, COUNT,
     ) = (
@@ -345,20 +363,20 @@ class HeatWaitCondition(resource.Resource):
                 yield
             except scheduler.Timeout:
                 timeout = WaitConditionTimeout(self, handle)
-                LOG.info(_('%(name)s Timed out (%(timeout)s)')
-                         % {'name': str(self), 'timeout': str(timeout)})
+                LOG.info(_LI('%(name)s Timed out (%(timeout)s)'),
+                         {'name': str(self), 'timeout': str(timeout)})
                 raise timeout
 
             handle_status = handle.get_status()
 
             if any(s != handle.STATUS_SUCCESS for s in handle_status):
                 failure = WaitConditionFailure(self, handle)
-                LOG.info(_('%(name)s Failed (%(failure)s)')
-                         % {'name': str(self), 'failure': str(failure)})
+                LOG.info(_LI('%(name)s Failed (%(failure)s)'),
+                         {'name': str(self), 'failure': str(failure)})
                 raise failure
 
             if len(handle_status) >= self.properties[self.COUNT]:
-                LOG.info(_("%s Succeeded") % str(self))
+                LOG.info(_LI("%s Succeeded"), str(self))
                 return
 
     def handle_create(self):
@@ -400,10 +418,13 @@ class HeatWaitCondition(resource.Resource):
                          'key': key,
                          'res': res})
 
-            return unicode(json.dumps(res))
+            return six.text_type(json.dumps(res))
 
 
 class WaitCondition(HeatWaitCondition):
+
+    support_status = support.SupportStatus(version='2014.1')
+
     PROPERTIES = (
         HANDLE, TIMEOUT, COUNT,
     ) = (

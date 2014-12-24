@@ -11,10 +11,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from heat.common.template_format import yaml
-from heat.common.template_format import yaml_dumper
+from heat.common.i18n import _
+from heat.common import template_format
 from heat.engine import properties
 from heat.engine.resources.software_config import software_config
+from heat.engine import support
+from heat.rpc import api as rpc_api
 
 
 class CloudConfig(software_config.SoftwareConfig):
@@ -31,6 +33,8 @@ class CloudConfig(software_config.SoftwareConfig):
     replacement of all servers which reference it.
     '''
 
+    support_status = support.SupportStatus(version='2014.1')
+
     PROPERTIES = (
         CLOUD_CONFIG
     ) = (
@@ -46,12 +50,15 @@ class CloudConfig(software_config.SoftwareConfig):
     }
 
     def handle_create(self):
-        props = {self.NAME: self.physical_resource_name()}
-        cloud_config = yaml.dump(self.properties.get(
-            self.CLOUD_CONFIG), Dumper=yaml_dumper)
-        props[self.CONFIG] = '#cloud-config\n%s' % cloud_config
-        sc = self.heat().software_configs.create(**props)
-        self.resource_id_set(sc.id)
+        cloud_config = template_format.yaml.dump(self.properties.get(
+            self.CLOUD_CONFIG), Dumper=template_format.yaml_dumper)
+        props = {
+            self.NAME: self.physical_resource_name(),
+            self.CONFIG: '#cloud-config\n%s' % cloud_config,
+            self.GROUP: 'Heat::Ungrouped'
+        }
+        sc = self.rpc_client().create_software_config(self.context, **props)
+        self.resource_id_set(sc[rpc_api.SOFTWARE_CONFIG_ID])
 
 
 def resource_mapping():

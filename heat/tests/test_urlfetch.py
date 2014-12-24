@@ -15,11 +15,9 @@ from oslo.config import cfg
 import requests
 from requests import exceptions
 import six
-from six.moves import cStringIO
-from six.moves import urllib
 
 from heat.common import urlfetch
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 
 
 class Response(object):
@@ -35,7 +33,7 @@ class Response(object):
         pass
 
 
-class UrlFetchTest(HeatTestCase):
+class UrlFetchTest(common.HeatTestCase):
     def setUp(self):
         super(UrlFetchTest, self).setUp()
         self.m.StubOutWithMock(requests, 'get')
@@ -50,8 +48,9 @@ class UrlFetchTest(HeatTestCase):
         data = '{ "foo": "bar" }'
         url = 'file:///etc/profile'
 
-        self.m.StubOutWithMock(urllib.request, 'urlopen')
-        urllib.request.urlopen(url).AndReturn(cStringIO(data))
+        self.m.StubOutWithMock(six.moves.urllib.request, 'urlopen')
+        six.moves.urllib.request.urlopen(url).AndReturn(
+            six.moves.cStringIO(data))
         self.m.ReplayAll()
 
         self.assertEqual(data, urlfetch.get(url, allowed_schemes=['file']))
@@ -60,8 +59,9 @@ class UrlFetchTest(HeatTestCase):
     def test_file_scheme_failure(self):
         url = 'file:///etc/profile'
 
-        self.m.StubOutWithMock(urllib.request, 'urlopen')
-        urllib.request.urlopen(url).AndRaise(urllib.error.URLError('oops'))
+        self.m.StubOutWithMock(six.moves.urllib.request, 'urlopen')
+        six.moves.urllib.request.urlopen(url).AndRaise(
+            six.moves.urllib.error.URLError('oops'))
         self.m.ReplayAll()
 
         self.assertRaises(urlfetch.URLFetchError,

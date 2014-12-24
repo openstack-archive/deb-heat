@@ -19,6 +19,7 @@ import six
 from stevedore import extension
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.db import api as db_api
 from heat.openstack.common import log as logging
 
@@ -33,7 +34,7 @@ _template_classes = None
 def get_version(template_data, available_versions):
     version_keys = set(key for key, version in available_versions)
     candidate_keys = set(k for k, v in six.iteritems(template_data) if
-                         isinstance(v, basestring))
+                         isinstance(v, six.string_types))
 
     keys_present = version_keys & candidate_keys
 
@@ -52,17 +53,19 @@ def _get_template_extension_manager():
     return extension.ExtensionManager(
         namespace='heat.templates',
         invoke_on_load=False,
-        verify_requirements=True)
+        verify_requirements=True,
+        on_load_failure_callback=raise_extension_exception)
+
+
+def raise_extension_exception(extmanager, ep, err):
+    raise TemplatePluginNotRegistered(name=ep.name, error=six.text_type(err))
+
+
+class TemplatePluginNotRegistered(exception.HeatException):
+    msg_fmt = _("Could not load %(name)s: %(error)s")
 
 
 def get_template_class(template_data):
-    global _template_classes
-
-    if _template_classes is None:
-        mgr = _get_template_extension_manager()
-        _template_classes = dict((tuple(name.split('.')), mgr[name].plugin)
-                                 for name in mgr.names())
-
     available_versions = _template_classes.keys()
     version = get_version(template_data, available_versions)
     version_type = version[0]
@@ -88,6 +91,12 @@ class Template(collections.Mapping):
 
     def __new__(cls, template, *args, **kwargs):
         '''Create a new Template of the appropriate class.'''
+        global _template_classes
+
+        if _template_classes is None:
+            mgr = _get_template_extension_manager()
+            _template_classes = dict((tuple(name.split('.')), mgr[name].plugin)
+                                     for name in mgr.names())
 
         if cls != Template:
             TemplateClass = cls
@@ -139,12 +148,12 @@ class Template(collections.Mapping):
         return len(self.SECTIONS) - len(self.SECTIONS_NO_DIRECT_ACCESS)
 
     @abc.abstractmethod
-    def param_schemata(self):
+    def param_schemata(self, param_defaults=None):
         '''Return a dict of parameters.Schema objects for the parameters.'''
         pass
 
     @abc.abstractmethod
-    def parameters(self, stack_identifier, user_params):
+    def parameters(self, stack_identifier, user_params, param_defaults=None):
         '''Return a parameters.Parameters object for the stack.'''
         pass
 
@@ -187,16 +196,13 @@ class Template(collections.Mapping):
         # check resources
         for res in self[self.RESOURCES].values():
             try:
-                if not res.get('Type'):
-                    message = _('Every Resource object must '
-                                'contain a Type member.')
+                if not res or not res.get('Type'):
+                    message = _('Each Resource must contain '
+                                'a Type key.')
                     raise exception.StackValidationFailed(message=message)
             except AttributeError:
-                type_res = type(res)
-                if isinstance(res, unicode):
-                    type_res = "string"
                 message = _('Resources must contain Resource. '
-                            'Found a [%s] instead') % type_res
+                            'Found a [%s] instead') % type(res)
                 raise exception.StackValidationFailed(message=message)
 
 
@@ -210,7 +216,7 @@ def parse(functions, stack, snippet):
             if Func is not None:
                 return Func(stack, fn_name, recurse(args))
         return dict((k, recurse(v)) for k, v in six.iteritems(snippet))
-    elif (not isinstance(snippet, basestring) and
+    elif (not isinstance(snippet, six.string_types) and
           isinstance(snippet, collections.Iterable)):
         return [recurse(v) for v in snippet]
     else:

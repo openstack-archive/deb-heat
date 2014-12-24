@@ -12,12 +12,16 @@
 #    under the License.
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.neutron import neutron
+from heat.engine import support
 
 
 class SecurityGroup(neutron.NeutronResource):
+
+    support_status = support.SupportStatus(version='2014.1')
 
     PROPERTIES = (
         NAME, DESCRIPTION, RULES,
@@ -89,7 +93,8 @@ class SecurityGroup(neutron.NeutronResource):
             properties.Schema.STRING,
             _('The remote group ID to be associated with this security group '
               'rule. If no value is specified then this rule will use this '
-              'security group for the remote_group_id.')
+              'security group for the remote_group_id. The remote mode '
+              'parameter must be set to "remote_group_id".')
         ),
         RULE_REMOTE_IP_PREFIX: properties.Schema(
             properties.Schema.STRING,

@@ -20,15 +20,14 @@ from oslo.config import cfg
 
 from heat.common import template_format
 from heat.db import api as db_api
-from heat.engine.clients.os import glance
 from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine.resources import instance
 from heat.engine import template
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
-from heat.tests.v1_1 import fakes as v1fakes
+from heat.tests.v1_1 import fakes as fakes_v1_1
 
 
 as_template = '''
@@ -99,14 +98,14 @@ as_template = '''
 '''
 
 
-class AutoScalingTest(HeatTestCase):
+class AutoScalingTest(common.HeatTestCase):
     params = {'KeyName': 'test', 'ImageId': 'foo'}
 
     def setUp(self):
         super(AutoScalingTest, self).setUp()
 
         self.ctx = utils.dummy_context()
-        self.fc = v1fakes.FakeClient()
+        self.fc = fakes_v1_1.FakeClient()
 
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://server.test:8000/v1/waitcondition')
@@ -129,7 +128,6 @@ class AutoScalingTest(HeatTestCase):
 
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
-        self.m.StubOutWithMock(glance.ImageConstraint, "validate")
 
     def test_lb(self):
 
@@ -197,20 +195,6 @@ class AutoScalingTest(HeatTestCase):
         vip_ret_block['vip']['id'] = str(uuid.uuid4())
         vip_ret_block['vip']['status'] = 'ACTIVE'
 
-        port_block = {
-            'port': {
-                'network_id': network_body['network']['id'],
-                'fixed_ips': [
-                    {
-                        'subnet_id': subnet_body['subnet']['id'],
-                    }
-                ],
-                'admin_state_up': True
-            }
-        }
-        port_ret_block = copy.deepcopy(port_block)
-        port_ret_block['port']['id'] = str(uuid.uuid4())
-
         membera_block = {
             'member': {
                 'protocol_port': 8080,
@@ -241,14 +225,6 @@ class AutoScalingTest(HeatTestCase):
         memberc_ret_block = copy.deepcopy(memberc_block)
         memberc_ret_block['member']['id'] = str(uuid.uuid4())
 
-        class id_type(object):
-
-            def __init__(self, id, name):
-                self.id = id
-                self.name = name
-
-        instances = {}
-
         neutronclient.Client.create_health_monitor(mon_block).\
             AndReturn(mon_ret_block)
 
@@ -277,17 +253,13 @@ class AutoScalingTest(HeatTestCase):
             .AndReturn(False)
         instance.Instance.check_create_complete(mox.IgnoreArg())\
             .AndReturn(True)
-
-        glance.ImageConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
-
+        self.stub_ImageConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         nova.NovaClientPlugin.server_to_ipaddress(
             mox.IgnoreArg()).AndReturn('1.2.3.4')
 
         neutronclient.Client.create_member(membera_block).\
             AndReturn(membera_ret_block)
-
-        instances[instid] = membera_ret_block['member']['id']
 
         # Start of update
         parser.Stack.validate()
@@ -297,7 +269,6 @@ class AutoScalingTest(HeatTestCase):
             .AndReturn(False)
         instance.Instance.check_create_complete(mox.IgnoreArg())\
             .AndReturn(True)
-        instances[instid] = memberb_ret_block['member']['id']
 
         instid = str(uuid.uuid4())
         instance.Instance.handle_create().AndReturn(instid)

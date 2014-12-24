@@ -11,7 +11,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from heat.tests.common import HeatTestCase
+import six
+
+from heat.tests import common
 
 from heat.common import exception
 from heat.engine.cfn import functions as cfn_funcs
@@ -20,7 +22,7 @@ from heat.engine import properties
 from heat.engine import rsrc_defn
 
 
-class ResourceDefinitionTest(HeatTestCase):
+class ResourceDefinitionTest(common.HeatTestCase):
 
     def make_me_one_with_everything(self):
         return rsrc_defn.ResourceDefinition(
@@ -62,7 +64,7 @@ class ResourceDefinitionTest(HeatTestCase):
         rd = self.make_me_one_with_everything()
         metadata = rd.metadata()
         self.assertEqual({'Baz': 'quux'}, metadata)
-        self.assertIsInstance(metadata['Baz'], basestring)
+        self.assertIsInstance(metadata['Baz'], six.string_types)
 
     def test_dependencies_default(self):
         rd = rsrc_defn.ResourceDefinition('rsrc', 'SomeType')
@@ -175,7 +177,7 @@ class ResourceDefinitionTest(HeatTestCase):
         self.assertNotEqual(hash(rd1), hash(rd2))
 
 
-class ResourceDefinitionSnippetTest(HeatTestCase):
+class ResourceDefinitionSnippetTest(common.HeatTestCase):
     def test_type(self):
         rd = rsrc_defn.ResourceDefinition('rsrc', 'SomeType')
         self.assertEqual({'Type': 'SomeType'}, rd)

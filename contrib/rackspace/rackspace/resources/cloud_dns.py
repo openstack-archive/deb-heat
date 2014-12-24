@@ -72,7 +72,7 @@ class CloudDns(resource.Resource):
             _('How long other servers should cache recorddata.'),
             default=3600,
             constraints=[
-                constraints.Range(min=301),
+                constraints.Range(min=300),
             ],
             update_allowed=True
         ),
@@ -127,7 +127,7 @@ class CloudDns(resource.Resource):
                           'recorddata.'),
                         default=3600,
                         constraints=[
-                            constraints.Range(min=301),
+                            constraints.Range(min=300),
                         ]
                     ),
                     RECORD_TYPE: properties.Schema(
@@ -163,6 +163,9 @@ class CloudDns(resource.Resource):
         dom = self.cloud_dns().create(**args)
         self.resource_id_set(dom.id)
 
+    def handle_check(self):
+        self.cloud_dns().get(self.resource_id)
+
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         """Update a Rackspace CloudDns Instance."""
         LOG.debug("CloudDns handle_update called.")
@@ -174,6 +177,7 @@ class CloudDns(resource.Resource):
             # handle records separately
             records = prop_diff.pop(self.RECORDS, {})
 
+        if prop_diff:
             # Handle top level domain properties
             dom.update(**prop_diff)
 

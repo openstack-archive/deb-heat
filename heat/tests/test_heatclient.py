@@ -25,7 +25,7 @@ from oslo.config import cfg
 
 from heat.common import exception
 from heat.common import heat_keystoneclient
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 
 cfg.CONF.import_opt('region_name_for_services', 'heat.common.config')
@@ -33,7 +33,7 @@ cfg.CONF.import_group('keystone_authtoken',
                       'keystonemiddleware.auth_token')
 
 
-class KeystoneClientTest(HeatTestCase):
+class KeystoneClientTest(common.HeatTestCase):
     """Test cases for heat.common.heat_keystoneclient."""
 
     def setUp(self):
@@ -74,10 +74,13 @@ class KeystoneClientTest(HeatTestCase):
             project_name='service',
             username='heat').AndReturn(self.mock_admin_client)
         self.mock_admin_client.domains = self.mock_ks_v3_client_domain_mngr
-        self.mock_admin_client.authenticate().AndReturn(auth_ok)
         if auth_ok:
+            self.mock_admin_client.authenticate().AndReturn(auth_ok)
             self.mock_admin_client.auth_ref = self.m.CreateMockAnything()
             self.mock_admin_client.auth_ref.user_id = '1234'
+        else:
+            self.mock_admin_client.authenticate().AndRaise(
+                kc_exception.Unauthorized)
 
     def _stub_domain_admin_client(self, auth_ok=True):
         kc_v3.Client(
@@ -497,8 +500,7 @@ class KeystoneClientTest(HeatTestCase):
         self._test_create_trust_context_trust_create(delegate_roles)
 
     def test_create_trust_context_trust_create_deletegate_all_roles(self):
-        delegate_roles = []
-        self._test_create_trust_context_trust_create(delegate_roles)
+        self._test_create_trust_context_trust_create()
 
     def _test_create_trust_context_trust_create(self, delegate_roles=None):
 
@@ -511,7 +513,8 @@ class KeystoneClientTest(HeatTestCase):
 
         self._stubs_v3()
         cfg.CONF.set_override('deferred_auth_method', 'trusts')
-        cfg.CONF.set_override('trusts_delegated_roles', delegate_roles)
+        if delegate_roles:
+            cfg.CONF.set_override('trusts_delegated_roles', delegate_roles)
 
         trustor_roles = ['heat_stack_owner', 'admin', '__member__']
         trustee_roles = delegate_roles or trustor_roles
@@ -1413,7 +1416,7 @@ class KeystoneClientTest(HeatTestCase):
         self.assertIsNone(heat_ks_client.delete_stack_domain_project(
             project_id='aprojectid'))
 
-    def _test_url_for(self, service_url, expected_kwargs, **kwargs):
+    def _test_url_for(self, service_url, expected_kwargs, ctx=None, **kwargs):
         """
         Helper function for testing url_for depending on different ways to
         pass region name.
@@ -1424,9 +1427,9 @@ class KeystoneClientTest(HeatTestCase):
             .AndReturn(service_url)
 
         self.m.ReplayAll()
-        ctx = utils.dummy_context()
+        ctx = ctx or utils.dummy_context()
         heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
-        self.assertEqual(heat_ks_client.url_for(**kwargs), service_url)
+        self.assertEqual(service_url, heat_ks_client.url_for(**kwargs))
         self.m.VerifyAll()
 
     def test_url_for(self):
@@ -1451,7 +1454,7 @@ class KeystoneClientTest(HeatTestCase):
         kwargs = {
             'region_name': 'RegionTwo'
         }
-        self._test_url_for(service_url, kwargs, **kwargs)
+        self._test_url_for(service_url, kwargs, None, **kwargs)
 
     def test_url_for_with_region_name_from_config(self):
         """
@@ -1466,6 +1469,26 @@ class KeystoneClientTest(HeatTestCase):
         }
         service_url = 'http://regionone.example.com:1234/v1'
         self._test_url_for(service_url, kwargs)
+
+    def test_url_for_with_region_name_from_context(self):
+        """
+        Test that default region name for services from context is passed
+        if region name is not specified in arguments.
+        """
+        cfg.CONF.set_override('region_name_for_services', 'RegionOne')
+        service_url = 'http://regiontwo.example.com:1234/v1'
+        region_name_for_services = 'RegionTwo'
+        expected_kwargs = {
+            'region_name': region_name_for_services
+        }
+        ctx = utils.dummy_context('test_username',
+                                  'test_tenant_id',
+                                  'password',
+                                  None,
+                                  None,
+                                  None,
+                                  region_name_for_services)
+        self._test_url_for(service_url, expected_kwargs, ctx)
 
 
 class KeystoneClientTestDomainName(KeystoneClientTest):

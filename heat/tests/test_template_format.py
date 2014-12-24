@@ -20,11 +20,11 @@ import yaml
 from heat.common import config
 from heat.common import exception
 from heat.common import template_format
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 
 
-class JsonToYamlTest(HeatTestCase):
+class JsonToYamlTest(common.HeatTestCase):
 
     def setUp(self):
         super(JsonToYamlTest, self).setUp()
@@ -76,7 +76,7 @@ class JsonToYamlTest(HeatTestCase):
             yield (json_str, yml_str, f.name)
 
 
-class YamlMinimalTest(HeatTestCase):
+class YamlMinimalTest(common.HeatTestCase):
 
     def _parse_template(self, tmpl_str, msg_str):
         parse_ex = self.assertRaises(ValueError,
@@ -133,13 +133,13 @@ Outputs: {}
         self.assertEqual(expected, template_format.parse(tmpl_str))
 
 
-class YamlParseExceptions(HeatTestCase):
+class YamlParseExceptions(common.HeatTestCase):
 
     scenarios = [
         ('scanner', dict(raised_exception=yaml.scanner.ScannerError())),
         ('parser', dict(raised_exception=yaml.parser.ParserError())),
         ('reader',
-         dict(raised_exception=yaml.reader.ReaderError('', '', '', '', ''))),
+         dict(raised_exception=yaml.reader.ReaderError('', 42, 'x', '', ''))),
     ]
 
     def test_parse_to_value_exception(self):
@@ -148,11 +148,13 @@ class YamlParseExceptions(HeatTestCase):
         with mock.patch.object(yaml, 'load') as yaml_loader:
             yaml_loader.side_effect = self.raised_exception
 
-            self.assertRaises(ValueError,
-                              template_format.parse, text)
+            err = self.assertRaises(ValueError,
+                                    template_format.parse, text)
+
+            self.assertIn('Error parsing template: ', six.text_type(err))
 
 
-class JsonYamlResolvedCompareTest(HeatTestCase):
+class JsonYamlResolvedCompareTest(common.HeatTestCase):
 
     def setUp(self):
         super(JsonYamlResolvedCompareTest, self).setUp()

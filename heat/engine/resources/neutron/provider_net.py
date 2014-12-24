@@ -12,13 +12,18 @@
 #    under the License.
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.neutron import net
+from heat.engine import support
 
 
 class ProviderNet(net.Net):
+
+    support_status = support.SupportStatus(version='2014.1')
+
     PROPERTIES = (
         NAME, PROVIDER_NETWORK_TYPE, PROVIDER_PHYSICAL_NETWORK,
         PROVIDER_SEGMENTATION_ID, ADMIN_STATE_UP, SHARED,

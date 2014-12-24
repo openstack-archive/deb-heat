@@ -21,9 +21,10 @@ import sqlalchemy
 
 from heat.common import context
 from heat.db import api as db_api
+from heat.db.sqlalchemy import models
 from heat.engine import environment
-from heat.engine import parser
 from heat.engine import resource
+from heat.engine import stack
 from heat.engine import template
 
 get_engine = db_api.get_engine
@@ -51,7 +52,7 @@ def setup_dummy_db():
     options.cfg.set_defaults(options.database_opts, sqlite_synchronous=False)
     options.set_defaults(cfg.CONF, connection="sqlite://", sqlite_db='heat.db')
     engine = get_engine()
-    db_api.db_sync(engine)
+    models.BASE.metadata.create_all(engine)
     engine.connect()
 
 
@@ -68,7 +69,7 @@ def reset_dummy_db():
 
 def dummy_context(user='test_username', tenant_id='test_tenant_id',
                   password='password', roles=None, user_id=None,
-                  trust_id=None):
+                  trust_id=None, region_name=None):
     roles = roles or []
     return context.RequestContext.from_dict({
         'tenant_id': tenant_id,
@@ -80,21 +81,22 @@ def dummy_context(user='test_username', tenant_id='test_tenant_id',
         'is_admin': False,
         'auth_url': 'http://server.test:5000/v2.0',
         'auth_token': 'abcd1234',
-        'trust_id': trust_id
+        'trust_id': trust_id,
+        'region_name': region_name
     })
 
 
-def parse_stack(t, params=None, stack_name='test_stack', stack_id=None,
-                timeout_mins=None):
+def parse_stack(t, params=None, files=None, stack_name='test_stack',
+                stack_id=None, timeout_mins=None):
     params = params or {}
+    files = files or {}
     ctx = dummy_context()
-    templ = template.Template(t)
-    stack = parser.Stack(ctx, stack_name, templ,
-                         environment.Environment(params), stack_id,
-                         timeout_mins=timeout_mins)
-    stack.store()
-
-    return stack
+    templ = template.Template(t, files=files)
+    stk = stack.Stack(ctx, stack_name, templ,
+                      environment.Environment(params), stack_id,
+                      timeout_mins=timeout_mins)
+    stk.store()
+    return stk
 
 
 class PhysName(object):
@@ -111,7 +113,7 @@ class PhysName(object):
 
     def __eq__(self, physical_name):
         try:
-            stack, res, short_id = str(physical_name).rsplit('-', 2)
+            stk, res, short_id = str(physical_name).rsplit('-', 2)
         except ValueError:
             return False
 

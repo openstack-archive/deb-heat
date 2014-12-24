@@ -22,7 +22,8 @@ import sys
 import six
 from six.moves.urllib import parse as urlparse
 
-from heat.openstack.common.gettextutils import _
+from heat.common.i18n import _
+from heat.common.i18n import _LE
 from heat.openstack.common import log as logging
 
 
@@ -112,7 +113,7 @@ class HeatException(Exception):
             exc_info = sys.exc_info()
             #kwargs doesn't match a variable in the message
             #log the issue and the kwargs
-            LOG.exception(_('Exception in string format operation'))
+            LOG.exception(_LE('Exception in string format operation'))
             for name, value in six.iteritems(kwargs):
                 LOG.error("%s: %s" % (name, value))  # noqa
 
@@ -231,6 +232,22 @@ class ImageNotFound(HeatException):
     msg_fmt = _("The Image (%(image_name)s) could not be found.")
 
 
+class ServerNotFound(HeatException):
+    msg_fmt = _("The server (%(server)s) could not be found.")
+
+
+class VolumeNotFound(HeatException):
+    msg_fmt = _("The Volume (%(volume)s) could not be found.")
+
+
+class VolumeSnapshotNotFound(HeatException):
+    msg_fmt = _("The VolumeSnapshot (%(snapshot)s) could not be found.")
+
+
+class VolumeTypeNotFound(HeatException):
+    msg_fmt = _("The VolumeType (%(volume_type)s) could not be found.")
+
+
 class PhysicalResourceNameAmbiguity(HeatException):
     msg_fmt = _(
         "Multiple physical resources were found with name (%(name)s).")
@@ -301,11 +318,13 @@ class ResourceActionNotSupported(HeatException):
 
 
 class ResourcePropertyConflict(HeatException):
-    msg_fmt = _('Cannot define the following properties at the same time: %s.')
+    msg_fmt = _('Cannot define the following properties '
+                'at the same time: %(props)s.')
 
-    def __init__(self, *args):
-        self.msg_fmt = self.msg_fmt % ", ".join(args)
-        super(ResourcePropertyConflict, self).__init__()
+    def __init__(self, *args, **kwargs):
+        if args:
+            kwargs.update({'props': ", ".join(args)})
+        super(ResourcePropertyConflict, self).__init__(**kwargs)
 
 
 class HTTPExceptionDisguise(Exception):

@@ -14,6 +14,7 @@
 import mock
 
 from heat.common import template_format
+from heat.engine.clients.os import nova
 from heat.engine.resources import instance
 from heat.engine import scheduler
 from heat.tests import common
@@ -47,6 +48,8 @@ class RestarterTest(common.HeatTestCase):
         resource_defns = stack.t.resource_definitions(stack)
         restarter = instance.Restarter(
             'restarter', resource_defns['restarter'], stack)
+        nova.NovaClientPlugin.get_server = mock.Mock(
+            return_value=mock.MagicMock())
         restarter.handle_create = mock.Mock(return_value=None)
         return restarter
 
@@ -54,6 +57,10 @@ class RestarterTest(common.HeatTestCase):
         inst = mock.Mock(spec=instance.Instance)
         inst.resource_id = '1234'
         inst.name = 'instance'
+        inst.action = inst.CREATE
+        inst.status = inst.COMPLETE
+        inst.state = (inst.action, inst.status)
+        inst.FnGetRefId = lambda: inst.resource_id
         stack.resources['instance'] = inst
 
     def test_create(self):

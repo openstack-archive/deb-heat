@@ -11,9 +11,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
 import email
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+from email.mime import multipart
+from email.mime import text
 import json
 import logging
 import os
@@ -28,7 +29,10 @@ import six
 from six.moves.urllib import parse as urlparse
 
 from heat.common import exception
+from heat.common.i18n import _
+from heat.common.i18n import _LW
 from heat.engine.clients import client_plugin
+from heat.engine import constraints
 from heat.engine import scheduler
 
 LOG = logging.getLogger(__name__)
@@ -86,6 +90,9 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
     def is_bad_request(self, ex):
         return isinstance(ex, exceptions.BadRequest)
 
+    def is_conflict(self, ex):
+        return isinstance(ex, exceptions.Conflict)
+
     def is_unprocessable_entity(self, ex):
         http_status = (getattr(ex, 'http_status', None) or
                        getattr(ex, 'code', None))
@@ -100,19 +107,20 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
         try:
             server.get()
         except exceptions.OverLimit as exc:
-            msg = _("Server %(name)s (%(id)s) received an OverLimit "
-                    "response during server.get(): %(exception)s")
-            LOG.warning(msg % {'name': server.name,
-                               'id': server.id,
-                               'exception': exc})
+            LOG.warn(_LW("Server %(name)s (%(id)s) received an OverLimit "
+                         "response during server.get(): %(exception)s"),
+                     {'name': server.name,
+                      'id': server.id,
+                      'exception': exc})
         except exceptions.ClientException as exc:
             if ((getattr(exc, 'http_status', getattr(exc, 'code', None)) in
                  (500, 503))):
-                msg = _('Server "%(name)s" (%(id)s) received the following '
-                        'exception during server.get(): %(exception)s')
-                LOG.warning(msg % {'name': server.name,
-                                   'id': server.id,
-                                   'exception': exc})
+                LOG.warn(_LW('Server "%(name)s" (%(id)s) received the '
+                             'following exception during server.get(): '
+                             '%(exception)s'),
+                         {'name': server.name,
+                          'id': server.id,
+                          'exception': exc})
             else:
                 raise
 
@@ -193,7 +201,7 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
         def make_subpart(content, filename, subtype=None):
             if subtype is None:
                 subtype = os.path.splitext(filename)[0]
-            msg = MIMEText(content, _subtype=subtype)
+            msg = text.MIMEText(content, _subtype=subtype)
             msg.add_header('Content-Disposition', 'attachment',
                            filename=filename)
             return msg
@@ -280,7 +288,7 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
                                 'cfn-boto-cfg', 'x-cfninitdata'))
 
         subparts = [make_subpart(*args) for args in attachments]
-        mime_blob = MIMEMultipart(_subparts=subparts)
+        mime_blob = multipart.MIMEMultipart(_subparts=subparts)
 
         return mime_blob.as_string()
 
@@ -307,7 +315,7 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
             else:
                 # Some clouds append extra (STATUS) strings to the status
                 short_server_status = server.status.split('(')[0]
-                if short_server_status == "DELETED":
+                if short_server_status in ("DELETED", "SOFT_DELETED"):
                     break
                 if short_server_status == "ERROR":
                     fault = getattr(server, 'fault', {})
@@ -346,9 +354,11 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
                 dict(flavor=flavor, status=server.status))
 
     @scheduler.wrappertask
-    def rebuild(self, server, image_id, preserve_ephemeral=False):
+    def rebuild(self, server, image_id, password=None,
+                preserve_ephemeral=False):
         """Rebuild the server and call check_rebuild to verify."""
-        server.rebuild(image_id, preserve_ephemeral=preserve_ephemeral)
+        server.rebuild(image_id, password=password,
+                       preserve_ephemeral=preserve_ephemeral)
         yield self.check_rebuild(server, image_id)
 
     def check_rebuild(self, server, image_id):
@@ -369,6 +379,10 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
         Serialize non-string metadata values before sending them to
         Nova.
         """
+        if not isinstance(metadata, collections.Mapping):
+            raise exception.StackValidationFailed(message=_(
+                "nova server metadata needs to be a Map."))
+
         return dict((key, (value if isinstance(value,
                                                six.string_types)
                            else json.dumps(value))
@@ -392,15 +406,87 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
         try:
             server = self.client().servers.get(server)
         except exceptions.NotFound as ex:
-            LOG.warn(_('Instance (%(server)s) not found: %(ex)s')
-                     % {'server': server, 'ex': ex})
+            LOG.warn(_LW('Instance (%(server)s) not found: %(ex)s'),
+                     {'server': server, 'ex': ex})
         else:
             for n in server.networks:
                 if len(server.networks[n]) > 0:
                     return server.networks[n][0]
+
+    def get_server(self, server):
+        try:
+            return self.client().servers.get(server)
+        except exceptions.NotFound as ex:
+            LOG.warn(_LW('Server (%(server)s) not found: %(ex)s'),
+                     {'server': server, 'ex': ex})
+            raise exception.ServerNotFound(server=server)
 
     def absolute_limits(self):
         """Return the absolute limits as a dictionary."""
         limits = self.client().limits.get()
         return dict([(limit.name, limit.value)
                     for limit in list(limits.absolute)])
+
+    def get_console_urls(self, server):
+        """Return dict-like structure of server's console urls.
+
+        The actual console url is lazily resolved on access.
+
+        """
+
+        class ConsoleUrls(collections.Mapping):
+            def __init__(self, server):
+                self.console_methods = {
+                    'novnc': server.get_vnc_console,
+                    'xvpvnc': server.get_vnc_console,
+                    'spice-html5': server.get_spice_console,
+                    'rdp-html5': server.get_rdp_console,
+                    'serial': server.get_serial_console
+                }
+
+            def __getitem__(self, key):
+                try:
+                    url = self.console_methods[key](key)['console']['url']
+                except exceptions.BadRequest as e:
+                    unavailable = 'Unavailable console type'
+                    if unavailable in e.message:
+                        url = e.message
+                    else:
+                        raise
+                return url
+
+            def __len__(self):
+                return len(self.console_methods)
+
+            def __iter__(self):
+                return (key for key in self.console_methods)
+
+        return ConsoleUrls(server)
+
+
+class ServerConstraint(constraints.BaseCustomConstraint):
+
+    expected_exceptions = (exception.ServerNotFound,)
+
+    def validate_with_client(self, client, server):
+        client.client_plugin('nova').get_server(server)
+
+
+class KeypairConstraint(constraints.BaseCustomConstraint):
+
+    expected_exceptions = (exception.UserKeyPairMissing,)
+
+    def validate_with_client(self, client, key_name):
+        if not key_name:
+            # Don't validate empty key, which can happen when you
+            # use a KeyPair resource
+            return True
+        client.client_plugin('nova').get_keypair(key_name)
+
+
+class FlavorConstraint(constraints.BaseCustomConstraint):
+
+    expected_exceptions = (exception.FlavorMissing,)
+
+    def validate_with_client(self, client, flavor):
+        client.client_plugin('nova').get_flavor_id(flavor)

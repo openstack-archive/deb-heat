@@ -27,13 +27,13 @@ from heat.engine.clients.os import neutron
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources.neutron import net
-from heat.engine.resources.neutron.neutron import NeutronResource as qr
+from heat.engine.resources.neutron import neutron as nr
 from heat.engine.resources.neutron import provider_net
 from heat.engine.resources.neutron import router
 from heat.engine.resources.neutron import subnet
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 
 
@@ -363,6 +363,13 @@ neutron_floating_no_assoc_template = '''
     "router": {
       "Type": "OS::Neutron::Router"
     },
+    "router_interface": {
+      "Type": "OS::Neutron::RouterInterface",
+      "Properties": {
+        "router_id": { "Ref" : "router" },
+        "subnet": "sub1234"
+      }
+    },
     "gateway": {
       "Type": "OS::Neutron::RouterGateway",
       "Properties": {
@@ -466,6 +473,14 @@ neutron_subnet_and_external_gateway_template = '''
         "enable_dhcp": false
       }
     },
+    "floating_ip": {
+      "Type": "OS::Neutron::FloatingIP",
+      "Properties": {
+        "floating_network": {
+          "Ref": "net_external"
+        },
+      }
+    },
     "router": {
       "Type": "OS::Neutron::Router",
       "Properties": {
@@ -500,75 +515,75 @@ stpnb = copy.deepcopy(stpna)
 stpnb['network']['status'] = "BUILD"
 
 
-class NeutronTest(HeatTestCase):
+class NeutronTest(common.HeatTestCase):
 
     def test_validate_properties(self):
         vs = {'router:external': True}
         data = {'admin_state_up': False,
                 'value_specs': vs}
         p = properties.Properties(net.Net.properties_schema, data)
-        self.assertIsNone(qr.validate_properties(p))
+        self.assertIsNone(nr.NeutronResource.validate_properties(p))
 
         vs['shared'] = True
         self.assertEqual('shared not allowed in value_specs',
-                         qr.validate_properties(p))
+                         nr.NeutronResource.validate_properties(p))
         vs.pop('shared')
 
         vs['name'] = 'foo'
         self.assertEqual('name not allowed in value_specs',
-                         qr.validate_properties(p))
+                         nr.NeutronResource.validate_properties(p))
         vs.pop('name')
 
         vs['tenant_id'] = '1234'
         self.assertEqual('tenant_id not allowed in value_specs',
-                         qr.validate_properties(p))
+                         nr.NeutronResource.validate_properties(p))
         vs.pop('tenant_id')
 
         vs['foo'] = '1234'
-        self.assertIsNone(qr.validate_properties(p))
+        self.assertIsNone(nr.NeutronResource.validate_properties(p))
 
     def test_validate_depr_properties_required(self):
         data = {'network_id': '1234',
                 'network': 'abc'}
         p = properties.Properties(subnet.Subnet.properties_schema, data)
         self.assertRaises(exception.ResourcePropertyConflict,
-                          qr._validate_depr_property_required,
+                          nr.NeutronResource._validate_depr_property_required,
                           p, 'network', 'network_id')
         data = {}
         p = properties.Properties(subnet.Subnet.properties_schema, data)
         self.assertRaises(exception.StackValidationFailed,
-                          qr._validate_depr_property_required,
+                          nr.NeutronResource._validate_depr_property_required,
                           p, 'network', 'network_id')
 
     def test_prepare_properties(self):
         data = {'admin_state_up': False,
                 'value_specs': {'router:external': True}}
         p = properties.Properties(net.Net.properties_schema, data)
-        props = qr.prepare_properties(p, 'resource_name')
+        props = nr.NeutronResource.prepare_properties(p, 'resource_name')
         self.assertEqual({'name': 'resource_name',
                           'router:external': True,
                           'admin_state_up': False,
                           'shared': False}, props)
 
     def test_is_built(self):
-        self.assertTrue(qr.is_built({'status': 'ACTIVE'}))
-        self.assertTrue(qr.is_built({'status': 'DOWN'}))
-        self.assertFalse(qr.is_built({'status': 'BUILD'}))
-        e = self.assertRaises(resource.ResourceInError, qr.is_built, {
-            'status': 'ERROR'
-        })
+        self.assertTrue(nr.NeutronResource.is_built({'status': 'ACTIVE'}))
+        self.assertTrue(nr.NeutronResource.is_built({'status': 'DOWN'}))
+        self.assertFalse(nr.NeutronResource.is_built({'status': 'BUILD'}))
+        e = self.assertRaises(
+            resource.ResourceInError,
+            nr.NeutronResource.is_built, {'status': 'ERROR'})
         self.assertEqual(
             'Went to status ERROR due to "Unknown"',
             six.text_type(e))
-        e = self.assertRaises(resource.ResourceUnknownStatus, qr.is_built, {
-            'status': 'FROBULATING'
-        })
-        self.assertEqual(
-            'Resource is not built - Unknown status FROBULATING',
-            six.text_type(e))
+        e = self.assertRaises(
+            resource.ResourceUnknownStatus,
+            nr.NeutronResource.is_built, {'status': 'FROBULATING'})
+        self.assertEqual('Resource is not built - Unknown status '
+                         'FROBULATING due to "Unknown"',
+                         six.text_type(e))
 
     def test_resolve_attribute(self):
-        class SomeNeutronResource(qr):
+        class SomeNeutronResource(nr.NeutronResource):
             properties_schema = {}
 
         tmpl = rsrc_defn.ResourceDefinition('test_res', 'Foo')
@@ -593,7 +608,9 @@ class NeutronTest(HeatTestCase):
         security_groups = ['b62c3079-6946-44f5-a67b-6b9091884d4f',
                            '9887157c-d092-40f5-b547-6361915fce7d']
         self.assertEqual(security_groups,
-                         qr.get_secgroup_uuids(security_groups, None, None))
+                         nr.NeutronResource.get_secgroup_uuids(security_groups,
+                                                               None,
+                                                               None))
         # test get_secgroup_uuids with name
         secgroups = ['security_group_1']
         expected_groups = ['0389f747-7785-4757-b7bb-2ab07e4b09c3']
@@ -616,8 +633,9 @@ class NeutronTest(HeatTestCase):
             fake_groups_list)
         self.m.ReplayAll()
         self.assertEqual(expected_groups,
-                         qr.get_secgroup_uuids(secgroups, nclient,
-                                               ctx.tenant_id))
+                         nr.NeutronResource.get_secgroup_uuids(secgroups,
+                                                               nclient,
+                                                               ctx.tenant_id))
         self.m.VerifyAll()
         self.m.UnsetStubs()
         # test there are two securityGroups with same name, but there is
@@ -645,8 +663,9 @@ class NeutronTest(HeatTestCase):
             fake_groups_list)
         self.m.ReplayAll()
         self.assertEqual(expected_groups,
-                         qr.get_secgroup_uuids(secgroups, nclient,
-                                               ctx.tenant_id))
+                         nr.NeutronResource.get_secgroup_uuids(secgroups,
+                                                               nclient,
+                                                               ctx.tenant_id))
         self.m.VerifyAll()
         self.m.UnsetStubs()
         # test there are two securityGroups with same name, and the two
@@ -673,13 +692,13 @@ class NeutronTest(HeatTestCase):
         neutronclient.Client.list_security_groups().AndReturn(fake_groups_list)
         self.m.ReplayAll()
         self.assertRaises(exception.PhysicalResourceNameAmbiguity,
-                          qr.get_secgroup_uuids,
+                          nr.NeutronResource.get_secgroup_uuids,
                           secgroups, nclient, ctx.tenant_id)
         self.m.VerifyAll()
         self.m.UnsetStubs()
 
 
-class NeutronNetTest(HeatTestCase):
+class NeutronNetTest(common.HeatTestCase):
 
     def setUp(self):
         super(NeutronNetTest, self).setUp()
@@ -878,7 +897,7 @@ class NeutronNetTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class NeutronProviderNetTest(HeatTestCase):
+class NeutronProviderNetTest(common.HeatTestCase):
 
     def setUp(self):
         super(NeutronProviderNetTest, self).setUp()
@@ -996,7 +1015,7 @@ class NeutronProviderNetTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class NeutronSubnetTest(HeatTestCase):
+class NeutronSubnetTest(common.HeatTestCase):
 
     def setUp(self):
         super(NeutronSubnetTest, self).setUp()
@@ -1296,7 +1315,7 @@ class NeutronSubnetTest(HeatTestCase):
         }, p)
 
 
-class NeutronRouterTest(HeatTestCase):
+class NeutronRouterTest(common.HeatTestCase):
 
     def setUp(self):
         super(NeutronRouterTest, self).setUp()
@@ -1518,6 +1537,8 @@ class NeutronRouterTest(HeatTestCase):
         stack = utils.parse_stack(t)
         deps = stack.dependencies[stack['subnet_external']]
         self.assertIn(stack['router'], deps)
+        required_by = set(stack.dependencies.required_by(stack['router']))
+        self.assertIn(stack['floating_ip'], required_by)
 
     def test_router_interface(self):
         self._test_router_interface()
@@ -1913,7 +1934,7 @@ class NeutronRouterTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class NeutronFloatingIPTest(HeatTestCase):
+class NeutronFloatingIPTest(common.HeatTestCase):
 
     def setUp(self):
         super(NeutronFloatingIPTest, self).setUp()
@@ -1986,8 +2007,9 @@ class NeutronFloatingIPTest(HeatTestCase):
         self.m.ReplayAll()
 
         if r_iface:
-            deps = stack.dependencies[stack['router_interface']]
-            self.assertIn(stack['floating_ip'], deps)
+            required_by = set(stack.dependencies.required_by(
+                stack['router_interface']))
+            self.assertIn(stack['floating_ip_assoc'], required_by)
         else:
             deps = stack.dependencies[stack['gateway']]
             self.assertIn(stack['floating_ip'], deps)
@@ -2030,7 +2052,8 @@ class NeutronFloatingIPTest(HeatTestCase):
                 {'subnet_id': u'sub1234', 'ip_address': u'10.0.0.10'}
             ],
             'name': utils.PhysName('test_stack', 'port_floating'),
-            'admin_state_up': True}}
+            'admin_state_up': True,
+            'binding:vnic_type': 'normal'}}
         ).AndReturn({'port': {
             "status": "BUILD",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
@@ -2066,7 +2089,10 @@ class NeutronFloatingIPTest(HeatTestCase):
                     'admin_state_up': True,
                     'name': 'test_port',
                     'device_id': 'd6b4d3a5-c700-476f-b609-1493dd9dadc2',
-                    'device_owner': 'network:floatingip'
+                    'device_owner': 'network:floatingip',
+                    'security_groups': [
+                        '8a2f582a-e1cd-480f-b85d-b02631c10656'],
+                    'binding:vnic_type': 'normal'
                 }
             }
         ).AndReturn(None)
@@ -2100,7 +2126,8 @@ class NeutronFloatingIPTest(HeatTestCase):
             }],
             "name": "test_port",
             "device_id": "d6b4d3a5-c700-476f-b609-1493dd9dadc2",
-            'device_owner': 'network:floatingip'
+            'device_owner': 'network:floatingip',
+            'security_groups': ['8a2f582a-e1cd-480f-b85d-b02631c10656']
         }
         update_snippet = rsrc_defn.ResourceDefinition(p.name, p.type(), props)
 
@@ -2137,7 +2164,8 @@ class NeutronFloatingIPTest(HeatTestCase):
                 {'subnet_id': u'sub1234', 'ip_address': u'10.0.0.10'}
             ],
             'name': utils.PhysName('test_stack', 'port_floating'),
-            'admin_state_up': True}}
+            'admin_state_up': True,
+            'binding:vnic_type': 'normal'}}
         ).AndReturn({'port': {
             "status": "BUILD",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
@@ -2322,7 +2350,8 @@ class NeutronFloatingIPTest(HeatTestCase):
                 {'subnet_id': u'sub1234', 'ip_address': u'10.0.0.10'}
             ],
             'name': utils.PhysName('test_stack', 'port_floating'),
-            'admin_state_up': True}}
+            'admin_state_up': True,
+            'binding:vnic_type': 'normal'}}
         ).AndReturn({'port': {
             "status": "BUILD",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
@@ -2389,6 +2418,11 @@ class NeutronFloatingIPTest(HeatTestCase):
         t = template_format.parse(neutron_floating_no_assoc_template)
         stack = utils.parse_stack(t)
 
+        # check dependencies for fip resource
+        required_by = set(stack.dependencies.required_by(
+            stack['router_interface']))
+        self.assertIn(stack['floating_ip'], required_by)
+
         p = stack['port_floating']
         scheduler.TaskRunner(p.create)()
         self.assertEqual((p.CREATE, p.COMPLETE), p.state)
@@ -2422,7 +2456,7 @@ class NeutronFloatingIPTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class NeutronPortTest(HeatTestCase):
+class NeutronPortTest(common.HeatTestCase):
 
     def setUp(self):
         super(NeutronPortTest, self).setUp()
@@ -2446,7 +2480,8 @@ class NeutronPortTest(HeatTestCase):
             ],
             'name': utils.PhysName('test_stack', 'port'),
             'admin_state_up': True,
-            'device_owner': u'network:dhcp'}}
+            'device_owner': u'network:dhcp',
+            'binding:vnic_type': 'normal'}}
         ).AndReturn({'port': {
             "status": "BUILD",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
@@ -2488,7 +2523,8 @@ class NeutronPortTest(HeatTestCase):
             ],
             'name': utils.PhysName('test_stack', 'port'),
             'admin_state_up': True,
-            'device_owner': u'network:dhcp'}}
+            'device_owner': u'network:dhcp',
+            'binding:vnic_type': 'normal'}}
         ).AndReturn({'port': {
             "status": "BUILD",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
@@ -2520,7 +2556,8 @@ class NeutronPortTest(HeatTestCase):
             'network_id': u'net1234',
             'name': utils.PhysName('test_stack', 'port'),
             'admin_state_up': True,
-            'device_owner': u'network:dhcp'}}
+            'device_owner': u'network:dhcp',
+            'binding:vnic_type': 'normal'}}
         ).AndReturn({'port': {
             "status": "BUILD",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
@@ -2559,7 +2596,8 @@ class NeutronPortTest(HeatTestCase):
                 'mac_address': u'00-B0-D0-86-BB-F7'
             }],
             'name': utils.PhysName('test_stack', 'port'),
-            'admin_state_up': True}}
+            'admin_state_up': True,
+            'binding:vnic_type': 'normal'}}
         ).AndReturn({'port': {
             "status": "BUILD",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
@@ -2592,7 +2630,8 @@ class NeutronPortTest(HeatTestCase):
                 'ip_address': u'10.0.3.21',
             }],
             'name': utils.PhysName('test_stack', 'port'),
-            'admin_state_up': True}}
+            'admin_state_up': True,
+            'binding:vnic_type': 'normal'}}
         ).AndReturn({'port': {
             "status": "BUILD",
             "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
@@ -2616,7 +2655,7 @@ class NeutronPortTest(HeatTestCase):
         scheduler.TaskRunner(port.create)()
         self.m.VerifyAll()
 
-    def test_security_groups(self):
+    def _mock_create_with_security_groups(self, port_prop):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
@@ -2627,20 +2666,10 @@ class NeutronPortTest(HeatTestCase):
             'subnet',
             'sub1234'
         ).AndReturn('sub1234')
-        neutronclient.Client.create_port({'port': {
-            'network_id': u'net1234',
-            'security_groups': ['8a2f582a-e1cd-480f-b85d-b02631c10656',
-                                '024613dc-b489-4478-b46f-ada462738740'],
-            'fixed_ips': [
-                {'subnet_id': u'sub1234', 'ip_address': u'10.0.3.21'}
-            ],
-            'name': utils.PhysName('test_stack', 'port'),
-            'admin_state_up': True,
-            'device_owner': u'network:dhcp'}}
-        ).AndReturn({'port': {
-            "status": "BUILD",
-            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
-        }})
+        neutronclient.Client.create_port({'port': port_prop}).AndReturn(
+            {'port': {
+                "status": "BUILD",
+                "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"}})
         neutronclient.Client.show_port(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
         ).AndReturn({'port': {
@@ -2649,6 +2678,21 @@ class NeutronPortTest(HeatTestCase):
         }})
 
         self.m.ReplayAll()
+
+    def test_security_groups(self):
+        port_prop = {
+            'network_id': u'net1234',
+            'security_groups': ['8a2f582a-e1cd-480f-b85d-b02631c10656',
+                                '024613dc-b489-4478-b46f-ada462738740'],
+            'fixed_ips': [
+                {'subnet_id': u'sub1234', 'ip_address': u'10.0.3.21'}
+            ],
+            'name': utils.PhysName('test_stack', 'port'),
+            'admin_state_up': True,
+            'device_owner': u'network:dhcp',
+            'binding:vnic_type': 'normal'}
+
+        self._mock_create_with_security_groups(port_prop)
 
         t = template_format.parse(neutron_port_template)
         t['Resources']['port']['Properties']['security_groups'] = [
@@ -2661,15 +2705,47 @@ class NeutronPortTest(HeatTestCase):
 
         self.m.VerifyAll()
 
+    def test_security_groups_empty_list(self):
+        port_prop = {
+            'network_id': u'net1234',
+            'security_groups': [],
+            'fixed_ips': [
+                {'subnet_id': u'sub1234', 'ip_address': u'10.0.3.21'}
+            ],
+            'name': utils.PhysName('test_stack', 'port'),
+            'admin_state_up': True,
+            'device_owner': u'network:dhcp',
+            'binding:vnic_type': 'normal'}
+
+        self._mock_create_with_security_groups(port_prop)
+
+        t = template_format.parse(neutron_port_template)
+        t['Resources']['port']['Properties']['security_groups'] = []
+        stack = utils.parse_stack(t)
+
+        port = stack['port']
+        scheduler.TaskRunner(port.create)()
+
+        self.m.VerifyAll()
+
     def test_create_and_update_port(self):
         props = {'network_id': u'net1234',
                  'name': utils.PhysName('test_stack', 'port'),
                  'admin_state_up': True,
-                 'device_owner': u'network:dhcp'}
+                 'device_owner': u'network:dhcp',
+                 'binding:vnic_type': 'normal'}
         new_props = props.copy()
         new_props['name'] = "new_name"
+        new_props['security_groups'] = [
+            '8a2f582a-e1cd-480f-b85d-b02631c10656']
         new_props_update = new_props.copy()
         new_props_update.pop('network_id')
+
+        new_props1 = new_props.copy()
+        new_props1.pop('security_groups')
+        new_props_update1 = new_props_update.copy()
+        new_props_update1['security_groups'] = [
+            '0389f747-7785-4757-b7bb-2ab07e4b09c3']
 
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
@@ -2697,6 +2773,25 @@ class NeutronPortTest(HeatTestCase):
             {'port': new_props_update}
         ).AndReturn(None)
 
+        fake_groups_list = {
+            'security_groups': [
+                {
+                    'tenant_id': 'dc4b074874244f7693dd65583733a758',
+                    'id': '0389f747-7785-4757-b7bb-2ab07e4b09c3',
+                    'name': 'default',
+                    'security_group_rules': [],
+                    'description': 'no protocol'
+                }
+            ]
+        }
+        self.m.StubOutWithMock(neutronclient.Client, 'list_security_groups')
+        neutronclient.Client.list_security_groups().AndReturn(
+            fake_groups_list)
+        neutronclient.Client.update_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+            {'port': new_props_update1}
+        ).AndReturn(None)
+
         self.m.ReplayAll()
 
         # create port
@@ -2711,6 +2806,10 @@ class NeutronPortTest(HeatTestCase):
         update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
                                                       new_props)
         self.assertIsNone(port.handle_update(update_snippet, {}, {}))
+        # update again to test port without security group
+        update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
+                                                      new_props1)
+        self.assertIsNone(port.handle_update(update_snippet, {}, {}))
 
         self.m.VerifyAll()
 
@@ -2718,7 +2817,8 @@ class NeutronPortTest(HeatTestCase):
         props = {'network_id': u'net1234',
                  'name': utils.PhysName('test_stack', 'port'),
                  'admin_state_up': True,
-                 'device_owner': u'network:dhcp'}
+                 'device_owner': u'network:dhcp',
+                 'binding:vnic_type': 'normal'}
 
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
@@ -2791,7 +2891,8 @@ class NeutronPortTest(HeatTestCase):
             'network_id': u'net1234',
             'name': utils.PhysName('test_stack', 'port'),
             'admin_state_up': True,
-            'device_owner': u'network:dhcp'}}
+            'device_owner': u'network:dhcp',
+            'binding:vnic_type': 'normal'}}
         ).AndReturn({'port': {
             'status': 'BUILD',
             'id': 'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
@@ -2853,7 +2954,8 @@ class NeutronPortTest(HeatTestCase):
             'network_id': u'net1234',
             'name': utils.PhysName('test_stack', 'port'),
             'admin_state_up': True,
-            'device_owner': u'network:dhcp'}}
+            'device_owner': u'network:dhcp',
+            'binding:vnic_type': 'normal'}}
         ).AndReturn({'port': {
             'status': 'BUILD',
             'id': 'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
@@ -2891,8 +2993,99 @@ class NeutronPortTest(HeatTestCase):
         self.assertIn(log_msg, self.LOG.output)
         self.m.VerifyAll()
 
+    def test_vnic_create_update(self):
+        port_prop = {
+            'network_id': u'net1234',
+            'fixed_ips': [
+                {'subnet_id': u'sub1234', 'ip_address': u'10.0.3.21'}
+            ],
+            'name': utils.PhysName('test_stack', 'port'),
+            'admin_state_up': True,
+            'device_owner': 'network:dhcp',
+            'binding:vnic_type': 'direct'
+        }
+        new_port_prop = port_prop.copy()
+        new_port_prop['binding:vnic_type'] = 'normal'
+        new_port_prop['name'] = "new_name"
+        new_port_prop['security_groups'] = [
+            '8a2f582a-e1cd-480f-b85d-b02631c10656']
+        new_port_prop.pop('network_id')
 
-class NetworkConstraintTest(HeatTestCase):
+        prop_update = new_port_prop.copy()
+        new_port_prop['replacement_policy'] = 'AUTO'
+        new_port_prop['network'] = u'net1234'
+
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'net1234'
+        ).AndReturn('net1234')
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnet',
+            'sub1234'
+        ).AndReturn('sub1234')
+        neutronclient.Client.create_port({'port': port_prop}).AndReturn(
+            {'port': {
+                "status": "BUILD",
+                "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"}})
+        neutronclient.Client.show_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn({'port': {
+            "status": "ACTIVE",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+        }})
+        neutronclient.Client.update_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+            {'port': prop_update}
+        ).AndReturn(None)
+        neutronclient.Client.show_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn({'port': {
+            "status": "ACTIVE",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+        }})
+
+        prop_update2 = prop_update.copy()
+        prop_update2['binding:vnic_type'] = 'direct'
+        neutronclient.Client.update_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+            {'port': prop_update2}
+        ).AndReturn(None)
+
+        neutronclient.Client.show_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn({'port': {
+            "status": "ACTIVE",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+        }})
+        self.m.ReplayAll()
+        t = template_format.parse(neutron_port_template)
+        t['Resources']['port']['Properties']['binding:vnic_type'] = 'direct'
+        stack = utils.parse_stack(t)
+        port = stack['port']
+        scheduler.TaskRunner(port.create)()
+        self.assertEqual('direct', port.properties['binding:vnic_type'])
+
+        # update to normal
+        update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
+                                                      new_port_prop)
+        scheduler.TaskRunner(port.update, update_snippet)()
+        self.assertEqual((port.UPDATE, port.COMPLETE), port.state)
+        self.assertEqual('normal', port.properties['binding:vnic_type'])
+
+        # update back to direct
+        new_port_prop['binding:vnic_type'] = 'direct'
+        update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
+                                                      new_port_prop)
+        scheduler.TaskRunner(port.update, update_snippet)()
+        self.assertEqual((port.UPDATE, port.COMPLETE), port.state)
+        self.assertEqual('direct', port.properties['binding:vnic_type'])
+
+        self.m.VerifyAll()
+
+
+class NetworkConstraintTest(common.HeatTestCase):
 
     def test_validate(self):
         nc = self.m.CreateMockAnything()
@@ -2916,7 +3109,7 @@ class NetworkConstraintTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class PortConstraintTest(HeatTestCase):
+class PortConstraintTest(common.HeatTestCase):
 
     def test_validate(self):
         nc = self.m.CreateMockAnything()
@@ -2940,7 +3133,7 @@ class PortConstraintTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class RouterConstraintTest(HeatTestCase):
+class RouterConstraintTest(common.HeatTestCase):
 
     def test_validate(self):
         nc = self.m.CreateMockAnything()
@@ -2964,7 +3157,7 @@ class RouterConstraintTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class SubnetConstraintTest(HeatTestCase):
+class SubnetConstraintTest(common.HeatTestCase):
 
     def test_validate(self):
         nc = self.m.CreateMockAnything()

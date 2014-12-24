@@ -11,10 +11,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from troveclient.openstack.common.apiclient import exceptions as troveexc
 import uuid
 
+import mock
 import six
+from troveclient.openstack.common.apiclient import exceptions as troveexc
 
 from heat.common import exception
 from heat.common import template_format
@@ -22,9 +23,11 @@ from heat.engine.clients.os import neutron
 from heat.engine.clients.os import nova
 from heat.engine.clients.os import trove
 from heat.engine import parser
+from heat.engine import resource
 from heat.engine.resources import os_database
+from heat.engine import rsrc_defn
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 
 
@@ -95,7 +98,7 @@ class FakeVersion(object):
         self.name = name
 
 
-class OSDBInstanceTest(HeatTestCase):
+class OSDBInstanceTest(common.HeatTestCase):
     def setUp(self):
         super(OSDBInstanceTest, self).setUp()
         self.stub_keystoneclient()
@@ -124,6 +127,7 @@ class OSDBInstanceTest(HeatTestCase):
         trove.TroveClientPlugin.get_flavor_id('1GB').AndReturn(1)
         self.m.StubOutWithMock(self.fc, 'instances')
         self.m.StubOutWithMock(self.fc.instances, 'create')
+        self.m.StubOutWithMock(self.fc.instances, 'get')
 
     def _stubout_create(self, instance, fake_dbinstance):
         self._stubout_common_create()
@@ -141,7 +145,9 @@ class OSDBInstanceTest(HeatTestCase):
                                  datastore_version="MariaDB-5.5",
                                  nics=[]
                                  ).AndReturn(fake_dbinstance)
-        self.m.ReplayAll()
+
+    def _stubout_check_create_complete(self, fake_dbinstance):
+        self.fc.instances.get(fake_dbinstance.id).AndReturn(fake_dbinstance)
 
     def _stubout_validate(self, instance, neutron=None):
         trove.TroveClientPlugin._create().AndReturn(self.fc)
@@ -159,9 +165,56 @@ class OSDBInstanceTest(HeatTestCase):
         t = template_format.parse(db_template)
         instance = self._setup_test_clouddbinstance('dbinstance_create', t)
         self._stubout_create(instance, fake_dbinstance)
+        self._stubout_check_create_complete(fake_dbinstance)
+        self.m.ReplayAll()
         scheduler.TaskRunner(instance.create)()
         self.assertEqual((instance.CREATE, instance.COMPLETE), instance.state)
         self.m.VerifyAll()
+
+    def test_create_failed(self):
+        mock_stack = mock.Mock()
+        mock_stack.db_resource_get.return_value = None
+        res_def = mock.Mock(spec=rsrc_defn.ResourceDefinition)
+        osdb_res = os_database.OSDBInstance("test", res_def, mock_stack)
+
+        trove_mock = mock.Mock()
+        self.patchobject(osdb_res, 'trove', return_value=trove_mock)
+
+        # test for bad statuses
+        mock_input = mock.Mock()
+        mock_input.status = 'ERROR'
+        trove_mock.instances.get.return_value = mock_input
+        error_string = ('Went to status ERROR due to "The last operation for '
+                        'the database instance failed due to an error."')
+        exc = self.assertRaises(resource.ResourceInError,
+                                osdb_res.check_create_complete,
+                                mock_input)
+        self.assertIn(error_string, six.text_type(exc))
+
+        mock_input = mock.Mock()
+        mock_input.status = 'FAILED'
+        trove_mock.instances.get.return_value = mock_input
+        error_string = ('Went to status FAILED due to "The database instance '
+                        'was created, but heat failed to set up the '
+                        'datastore. If a database instance is in the FAILED '
+                        'state, it should be deleted and a new one should '
+                        'be created."')
+        exc = self.assertRaises(resource.ResourceInError,
+                                osdb_res.check_create_complete,
+                                mock_input)
+        self.assertIn(error_string, six.text_type(exc))
+
+        # test if error string is not defined
+
+        osdb_res.TROVE_STATUS_REASON = {}
+        mock_input = mock.Mock()
+        mock_input.status = 'ERROR'
+        error_string = ('Went to status ERROR due to "Unknown"')
+        trove_mock.instances.get.return_value = mock_input
+        exc = self.assertRaises(resource.ResourceInError,
+                                osdb_res.check_create_complete,
+                                mock_input)
+        self.assertIn(error_string, six.text_type(exc))
 
     def test_osdatabase_restore_point(self):
         fake_dbinstance = FakeDBInstance()
@@ -190,6 +243,7 @@ class OSDBInstanceTest(HeatTestCase):
                                  datastore_version="MariaDB-5.5",
                                  nics=[]
                                  ).AndReturn(fake_dbinstance)
+        self.fc.instances.get(fake_dbinstance.id).AndReturn(fake_dbinstance)
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.create)()
@@ -204,8 +258,7 @@ class OSDBInstanceTest(HeatTestCase):
         self._stubout_create(instance, fake_dbinstance)
 
         # Simulate an OverLimit exception
-        self.m.StubOutWithMock(fake_dbinstance, 'get')
-        fake_dbinstance.get().AndRaise(
+        self.fc.instances.get(fake_dbinstance.id).AndRaise(
             troveexc.RequestEntityTooLarge)
 
         self.m.ReplayAll()
@@ -220,25 +273,54 @@ class OSDBInstanceTest(HeatTestCase):
         t = template_format.parse(db_template)
         instance = self._setup_test_clouddbinstance('dbinstance_create', t)
         self._stubout_create(instance, fake_dbinstance)
+        self._stubout_check_create_complete(fake_dbinstance)
+        self.m.ReplayAll()
         self.assertRaises(exception.ResourceFailure,
                           scheduler.TaskRunner(instance.create))
         self.m.VerifyAll()
+
+    def _get_db_instance(self):
+        fake_dbinstance = FakeDBInstance()
+        t = template_format.parse(db_template)
+        res = self._setup_test_clouddbinstance('trove_check', t)
+        res.trove = mock.Mock()
+        res.trove().instances.get.return_value = fake_dbinstance
+        res.flavor = 'Foo Flavor'
+        res.volume = 'Foo Volume'
+        res.datastore_type = 'Foo Type'
+        res.datastore_version = 'Foo Version'
+        return (res, fake_dbinstance)
+
+    def test_osdatabase_check(self):
+        (res, fake_instance) = self._get_db_instance()
+        scheduler.TaskRunner(res.check)()
+        self.assertEqual((res.CHECK, res.COMPLETE), res.state)
+
+    def test_osdatabase_check_not_active(self):
+        (res, fake_instance) = self._get_db_instance()
+        fake_instance.status = 'FOOBAR'
+
+        exc = self.assertRaises(exception.ResourceFailure,
+                                scheduler.TaskRunner(res.check))
+        self.assertIn('FOOBAR', six.text_type(exc))
+        self.assertEqual((res.CHECK, res.FAILED), res.state)
 
     def test_osdatabase_delete(self):
         fake_dbinstance = FakeDBInstance()
         t = template_format.parse(db_template)
         instance = self._setup_test_clouddbinstance('dbinstance_del', t)
         self._stubout_create(instance, fake_dbinstance)
-        scheduler.TaskRunner(instance.create)()
-        self.m.StubOutWithMock(self.fc.instances, 'get')
-        self.fc.instances.get(12345).AndReturn(fake_dbinstance)
+        self._stubout_check_create_complete(fake_dbinstance)
+        self.fc.instances.get(fake_dbinstance.id).AndReturn(fake_dbinstance)
         self.m.StubOutWithMock(fake_dbinstance, 'delete')
         fake_dbinstance.delete().AndReturn(None)
-        self.m.StubOutWithMock(fake_dbinstance, 'get')
-        fake_dbinstance.get().AndReturn(None)
-        fake_dbinstance.get().AndRaise(troveexc.NotFound(404))
+        self.fc.instances.get(fake_dbinstance.id).AndReturn(None)
+        self.fc.instances.get(fake_dbinstance.id).AndRaise(
+            troveexc.NotFound(404))
 
         self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.create)()
         scheduler.TaskRunner(instance.delete)()
         self.m.VerifyAll()
 
@@ -247,20 +329,23 @@ class OSDBInstanceTest(HeatTestCase):
         t = template_format.parse(db_template)
         instance = self._setup_test_clouddbinstance('dbinstance_del', t)
         self._stubout_create(instance, fake_dbinstance)
-        scheduler.TaskRunner(instance.create)()
-        self.m.StubOutWithMock(self.fc.instances, 'get')
-        self.fc.instances.get(12345).AndReturn(fake_dbinstance)
+        self._stubout_check_create_complete(fake_dbinstance)
+
+        # delete call
+        self.fc.instances.get(fake_dbinstance.id).AndReturn(fake_dbinstance)
         self.m.StubOutWithMock(fake_dbinstance, 'delete')
         fake_dbinstance.delete().AndReturn(None)
 
         # Simulate an OverLimit exception
-        self.m.StubOutWithMock(fake_dbinstance, 'get')
-        fake_dbinstance.get().AndRaise(
+        self.fc.instances.get(fake_dbinstance.id).AndRaise(
             troveexc.RequestEntityTooLarge)
-        fake_dbinstance.get().AndReturn(None)
-        fake_dbinstance.get().AndRaise(troveexc.NotFound(404))
+        self.fc.instances.get(fake_dbinstance.id).AndReturn(None)
+        self.fc.instances.get(fake_dbinstance.id).AndRaise(
+            troveexc.NotFound(404))
 
         self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.create)()
         scheduler.TaskRunner(instance.delete)()
         self.m.VerifyAll()
 
@@ -269,10 +354,10 @@ class OSDBInstanceTest(HeatTestCase):
         t = template_format.parse(db_template)
         instance = self._setup_test_clouddbinstance('dbinstance_del', t)
         self._stubout_create(instance, fake_dbinstance)
+        self._stubout_check_create_complete(fake_dbinstance)
+        self.m.ReplayAll()
         scheduler.TaskRunner(instance.create)()
         instance.resource_id = None
-
-        self.m.ReplayAll()
         scheduler.TaskRunner(instance.delete)()
         self.assertIsNone(instance.resource_id)
         self.m.VerifyAll()
@@ -282,12 +367,14 @@ class OSDBInstanceTest(HeatTestCase):
         t = template_format.parse(db_template)
         instance = self._setup_test_clouddbinstance('dbinstance_del', t)
         self._stubout_create(instance, fake_dbinstance)
-        scheduler.TaskRunner(instance.create)()
-        self.m.StubOutWithMock(self.fc.instances, 'get')
-        self.fc.instances.get(12345).AndRaise(
+        self._stubout_check_create_complete(fake_dbinstance)
+
+        self.fc.instances.get(fake_dbinstance.id).AndRaise(
             troveexc.NotFound(404))
 
         self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.create)()
         scheduler.TaskRunner(instance.delete)()
         self.m.VerifyAll()
 
@@ -521,6 +608,7 @@ class OSDBInstanceTest(HeatTestCase):
                                  nics=[{'port-id': 'someportid',
                                         'v4-fixed-ip': '1.2.3.4'}]
                                  ).AndReturn(fake_dbinstance)
+        self._stubout_check_create_complete(fake_dbinstance)
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.create)()
@@ -544,6 +632,7 @@ class OSDBInstanceTest(HeatTestCase):
                                  datastore_version=None,
                                  nics=[{'net-id': net_id}]
                                  ).AndReturn(fake_dbinstance)
+        self._stubout_check_create_complete(fake_dbinstance)
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.create)()
@@ -576,6 +665,7 @@ class OSDBInstanceTest(HeatTestCase):
                                  datastore_version=None,
                                  nics=[{'net-id': 'somenetid'}]
                                  ).AndReturn(fake_dbinstance)
+        self._stubout_check_create_complete(fake_dbinstance)
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.create)()

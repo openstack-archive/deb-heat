@@ -12,8 +12,11 @@
 #    under the License.
 
 import json
+import six
 
 from heat.common import exception
+from heat.common.i18n import _
+from heat.common.i18n import _LI
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
@@ -84,10 +87,10 @@ class Volume(resource.Resource):
 
     default_client_name = 'cinder'
 
-    def _display_name(self):
+    def _name(self):
         return self.physical_resource_name()
 
-    def _display_description(self):
+    def _description(self):
         return self.physical_resource_name()
 
     def _create_arguments(self):
@@ -104,6 +107,15 @@ class Volume(resource.Resource):
             'metadata': tags
         }
 
+    def _fetch_name_and_description(self, api_version, name=None,
+                                    description=None):
+        if api_version == 1:
+            return {'display_name': name or self._name(),
+                    'display_description': description or self._description()}
+        else:
+            return {'name': name or self._name(),
+                    'description': description or self._description()}
+
     def handle_create(self):
         backup_id = self.properties.get(self.BACKUP_ID)
         cinder = self.cinder()
@@ -111,14 +123,14 @@ class Volume(resource.Resource):
             vol_id = cinder.restores.restore(backup_id).volume_id
 
             vol = cinder.volumes.get(vol_id)
-            vol.update(
-                display_name=self._display_name(),
-                display_description=self._display_description())
+            kwargs = self._fetch_name_and_description(
+                cinder.volume_api_version)
+            vol.update(**kwargs)
         else:
-            vol = cinder.volumes.create(
-                display_name=self._display_name(),
-                display_description=self._display_description(),
-                **self._create_arguments())
+            kwargs = self._create_arguments()
+            kwargs.update(self._fetch_name_and_description(
+                cinder.volume_api_version))
+            vol = cinder.volumes.create(**kwargs)
         self.resource_id_set(vol.id)
 
         return vol
@@ -137,6 +149,14 @@ class Volume(resource.Resource):
             raise resource.ResourceUnknownStatus(
                 resource_status=vol.status,
                 result=_('Volume create failed'))
+
+    def handle_check(self):
+        vol = self.cinder().volumes.get(self.resource_id)
+        statuses = ['available', 'in-use']
+        checks = [
+            {'attr': 'status', 'expected': statuses, 'current': vol.status},
+        ]
+        self._verify_check_conditions(checks)
 
     def _backup(self):
         backup = self.cinder().backups.create(self.resource_id)
@@ -160,8 +180,10 @@ class Volume(resource.Resource):
 
                 if vol.status == 'in-use':
                     raise exception.Error(_('Volume in use'))
-
-                vol.delete()
+                # if the volume is already in deleting status,
+                # just wait for the deletion to complete
+                if vol.status != 'deleting':
+                    vol.delete()
                 while True:
                     yield
                     vol.get()
@@ -226,13 +248,13 @@ class VolumeExtendTask(object):
             vol.get()
 
         if vol.status != 'available':
-            LOG.info(_("Resize failed: Volume %(vol)s is in %(status)s state."
-                       ) % {'vol': vol.id, 'status': vol.status})
+            LOG.info(_LI("Resize failed: Volume %(vol)s is in %(status)s "
+                         "state."), {'vol': vol.id, 'status': vol.status})
             raise resource.ResourceUnknownStatus(
                 resource_status=vol.status,
                 result=_('Volume resize failed'))
 
-        LOG.info(_('%s - complete') % str(self))
+        LOG.info(_LI('%s - complete'), str(self))
 
 
 class VolumeAttachTask(object):
@@ -281,14 +303,15 @@ class VolumeAttachTask(object):
             vol.get()
 
         if vol.status != 'in-use':
-            LOG.info(_("Attachment failed - volume %(vol)s "
-                       "is in %(status)s status") % {"vol": vol.id,
-                                                     "status": vol.status})
+            LOG.info(_LI("Attachment failed - volume %(vol)s "
+                         "is in %(status)s status"),
+                     {"vol": vol.id,
+                      "status": vol.status})
             raise resource.ResourceUnknownStatus(
                 resource_status=vol.status,
                 result=_('Volume attachment failed'))
 
-        LOG.info(_('%s - complete') % str(self))
+        LOG.info(_LI('%s - complete'), str(self))
 
 
 class VolumeDetachTask(object):
@@ -351,13 +374,13 @@ class VolumeDetachTask(object):
                 yield
                 vol.get()
 
-            LOG.info(_('%(name)s - status: %(status)s')
-                     % {'name': str(self), 'status': vol.status})
+            LOG.info(_LI('%(name)s - status: %(status)s'),
+                     {'name': str(self), 'status': vol.status})
             if vol.status != 'available':
-                LOG.info(_("Detachment failed - volume %(vol)s "
-                           "is in %(status)s status") % {
-                               "vol": vol.id,
-                               "status": vol.status})
+                LOG.info(_LI("Detachment failed - volume %(vol)s "
+                             "is in %(status)s status"),
+                         {"vol": vol.id,
+                          "status": vol.status})
                 raise resource.ResourceUnknownStatus(
                     resource_status=vol.status,
                     result=_('Volume detachment failed'))
@@ -378,12 +401,12 @@ class VolumeDetachTask(object):
             return True
 
         while server_has_attachment(self.server_id, self.attachment_id):
-            LOG.info(_("Server %(srv)s still has attachment %(att)s.")
-                     % {'att': self.attachment_id, 'srv': self.server_id})
+            LOG.info(_LI("Server %(srv)s still has attachment %(att)s."),
+                     {'att': self.attachment_id, 'srv': self.server_id})
             yield
 
-        LOG.info(_("Volume %(vol)s is detached from server %(srv)s")
-                 % {'vol': vol.id, 'srv': self.server_id})
+        LOG.info(_LI("Volume %(vol)s is detached from server %(srv)s"),
+                 {'vol': vol.id, 'srv': self.server_id})
 
 
 class VolumeAttachment(resource.Resource):
@@ -398,13 +421,19 @@ class VolumeAttachment(resource.Resource):
             properties.Schema.STRING,
             _('The ID of the instance to which the volume attaches.'),
             immutable=True,
-            required=True
+            required=True,
+            constraints=[
+                constraints.CustomConstraint('nova.server')
+            ]
         ),
         VOLUME_ID: properties.Schema(
             properties.Schema.STRING,
             _('The ID of the volume to be attached.'),
             immutable=True,
-            required=True
+            required=True,
+            constraints=[
+                constraints.CustomConstraint('cinder.volume')
+            ]
         ),
         DEVICE: properties.Schema(
             properties.Schema.STRING,
@@ -439,7 +468,12 @@ class VolumeAttachment(resource.Resource):
     def handle_delete(self):
         server_id = self.properties[self.INSTANCE_ID]
         detach_task = VolumeDetachTask(self.stack, server_id, self.resource_id)
-        scheduler.TaskRunner(detach_task)()
+        detach_runner = scheduler.TaskRunner(detach_task)
+        detach_runner.start()
+        return detach_runner
+
+    def check_delete_complete(self, detach_runner):
+        return detach_runner.step()
 
 
 class CinderVolume(Volume):
@@ -447,21 +481,23 @@ class CinderVolume(Volume):
     PROPERTIES = (
         AVAILABILITY_ZONE, SIZE, SNAPSHOT_ID, BACKUP_ID, NAME,
         DESCRIPTION, VOLUME_TYPE, METADATA, IMAGE_REF, IMAGE,
-        SOURCE_VOLID,
+        SOURCE_VOLID, CINDER_SCHEDULER_HINTS,
     ) = (
         'availability_zone', 'size', 'snapshot_id', 'backup_id', 'name',
         'description', 'volume_type', 'metadata', 'imageRef', 'image',
-        'source_volid',
+        'source_volid', 'scheduler_hints',
     )
 
     ATTRIBUTES = (
-        AVAILABILITY_ZONE_ATTR, SIZE_ATTR, SNAPSHOT_ID_ATTR, DISPLAY_NAME,
-        DISPLAY_DESCRIPTION, VOLUME_TYPE_ATTR, METADATA_ATTR,
+        AVAILABILITY_ZONE_ATTR, SIZE_ATTR, SNAPSHOT_ID_ATTR, DISPLAY_NAME_ATTR,
+        DISPLAY_DESCRIPTION_ATTR, VOLUME_TYPE_ATTR, METADATA_ATTR,
         SOURCE_VOLID_ATTR, STATUS, CREATED_AT, BOOTABLE, METADATA_VALUES_ATTR,
+        ENCRYPTED_ATTR, ATTACHMENTS,
     ) = (
         'availability_zone', 'size', 'snapshot_id', 'display_name',
         'display_description', 'volume_type', 'metadata',
         'source_volid', 'status', 'created_at', 'bootable', 'metadata_values',
+        'encrypted', 'attachments',
     )
 
     properties_schema = {
@@ -480,7 +516,10 @@ class CinderVolume(Volume):
         ),
         SNAPSHOT_ID: properties.Schema(
             properties.Schema.STRING,
-            _('If specified, the snapshot to create the volume from.')
+            _('If specified, the snapshot to create the volume from.'),
+            constraints=[
+                constraints.CustomConstraint('cinder.snapshot')
+            ]
         ),
         BACKUP_ID: properties.Schema(
             properties.Schema.STRING,
@@ -499,7 +538,11 @@ class CinderVolume(Volume):
         VOLUME_TYPE: properties.Schema(
             properties.Schema.STRING,
             _('If specified, the type of volume to use, mapping to a '
-              'specific backend.')
+              'specific backend.'),
+            constraints=[
+                constraints.CustomConstraint('cinder.vtype')
+            ],
+            update_allowed=True
         ),
         METADATA: properties.Schema(
             properties.Schema.MAP,
@@ -523,7 +566,16 @@ class CinderVolume(Volume):
         ),
         SOURCE_VOLID: properties.Schema(
             properties.Schema.STRING,
-            _('If specified, the volume to use as source.')
+            _('If specified, the volume to use as source.'),
+            constraints=[
+                constraints.CustomConstraint('cinder.volume')
+            ]
+        ),
+        CINDER_SCHEDULER_HINTS: properties.Schema(
+            properties.Schema.MAP,
+            _('Arbitrary key-value pairs specified by the client to help '
+              'the Cinder scheduler creating a volume.'),
+            support_status=support.SupportStatus(version='2015.1')
         ),
     }
 
@@ -537,10 +589,10 @@ class CinderVolume(Volume):
         SNAPSHOT_ID_ATTR: attributes.Schema(
             _('The snapshot the volume was created from, if any.')
         ),
-        DISPLAY_NAME: attributes.Schema(
+        DISPLAY_NAME_ATTR: attributes.Schema(
             _('Name of the volume.')
         ),
-        DISPLAY_DESCRIPTION: attributes.Schema(
+        DISPLAY_DESCRIPTION_ATTR: attributes.Schema(
             _('Description of the volume.')
         ),
         VOLUME_TYPE_ATTR: attributes.Schema(
@@ -564,17 +616,23 @@ class CinderVolume(Volume):
         METADATA_VALUES_ATTR: attributes.Schema(
             _('Key/value pairs associated with the volume in raw dict form.')
         ),
+        ENCRYPTED_ATTR: attributes.Schema(
+            _('Boolean indicating if the volume is encrypted or not.')
+        ),
+        ATTACHMENTS: attributes.Schema(
+            _('The list of attachments of the volume.')
+        ),
     }
 
     _volume_creating_status = ['creating', 'restoring-backup', 'downloading']
 
-    def _display_name(self):
+    def _name(self):
         name = self.properties[self.NAME]
         if name:
             return name
-        return super(CinderVolume, self)._display_name()
+        return super(CinderVolume, self)._name()
 
-    def _display_description(self):
+    def _description(self):
         return self.properties[self.DESCRIPTION]
 
     def _create_arguments(self):
@@ -589,44 +647,61 @@ class CinderVolume(Volume):
             arguments['imageRef'] = self.properties[self.IMAGE_REF]
 
         optionals = (self.SNAPSHOT_ID, self.VOLUME_TYPE, self.SOURCE_VOLID,
-                     self.METADATA)
+                     self.METADATA, self.CINDER_SCHEDULER_HINTS)
         arguments.update((prop, self.properties[prop]) for prop in optionals
                          if self.properties[prop])
+
         return arguments
 
     def _resolve_attribute(self, name):
         vol = self.cinder().volumes.get(self.resource_id)
-        if name == 'metadata':
-            return unicode(json.dumps(vol.metadata))
-        elif name == 'metadata_values':
+        if name == self.METADATA_ATTR:
+            return six.text_type(json.dumps(vol.metadata))
+        elif name == self.METADATA_VALUES_ATTR:
             return vol.metadata
-        return unicode(getattr(vol, name))
+        if self.cinder().volume_api_version >= 2:
+            if name == self.DISPLAY_NAME_ATTR:
+                return vol.name
+            elif name == self.DISPLAY_DESCRIPTION_ATTR:
+                return vol.description
+        return six.text_type(getattr(vol, name))
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         vol = None
         checkers = []
+        cinder = self.cinder()
         # update the name and description for cinder volume
         if self.NAME in prop_diff or self.DESCRIPTION in prop_diff:
-            vol = self.cinder().volumes.get(self.resource_id)
-            kwargs = {}
+            vol = cinder.volumes.get(self.resource_id)
             update_name = (prop_diff.get(self.NAME) or
                            self.properties.get(self.NAME))
             update_description = (prop_diff.get(self.DESCRIPTION) or
                                   self.properties.get(self.DESCRIPTION))
-            kwargs['display_name'] = update_name
-            kwargs['display_description'] = update_description
-            self.cinder().volumes.update(vol, **kwargs)
+            kwargs = self._fetch_name_and_description(
+                cinder.volume_api_version, update_name, update_description)
+            cinder.volumes.update(vol, **kwargs)
         # update the metadata for cinder volume
         if self.METADATA in prop_diff:
             if not vol:
-                vol = self.cinder().volumes.get(self.resource_id)
+                vol = cinder.volumes.get(self.resource_id)
             metadata = prop_diff.get(self.METADATA)
-            self.cinder().volumes.update_all_metadata(vol, metadata)
-
+            cinder.volumes.update_all_metadata(vol, metadata)
+        # retype
+        if self.VOLUME_TYPE in prop_diff:
+            if self.cinder().volume_api_version == 1:
+                LOG.info(_LI('Volume type update not supported '
+                             'by Cinder API V1.'))
+                raise exception.NotSupported(
+                    feature=_('Using Cinder API V1, volume_type update'))
+            else:
+                if not vol:
+                    vol = cinder.volumes.get(self.resource_id)
+                new_vol_type = prop_diff.get(self.VOLUME_TYPE)
+                cinder.volumes.retype(vol, new_vol_type, 'never')
         # extend volume size
         if self.SIZE in prop_diff:
             if not vol:
-                vol = self.cinder().volumes.get(self.resource_id)
+                vol = cinder.volumes.get(self.resource_id)
 
             new_size = prop_diff[self.SIZE]
             if new_size < vol.size:
@@ -704,6 +779,30 @@ class CinderVolume(Volume):
     def check_delete_snapshot_complete(self, delete_task):
         return delete_task.step()
 
+    def validate(self):
+        """Validate provided params."""
+        res = super(CinderVolume, self).validate()
+        if res is not None:
+            return res
+
+        # Scheduler hints are only supported from Cinder API v2
+        if self.properties.get(self.CINDER_SCHEDULER_HINTS) \
+                and self.cinder().volume_api_version == 1:
+            raise exception.StackValidationFailed(
+                message=_('Scheduler hints are not supported by the current '
+                          'volume API.'))
+
+    def handle_restore(self, defn, restore_data):
+        backup_id = restore_data['resource_data']['backup_id']
+        ignore_props = (
+            self.IMAGE_REF, self.IMAGE, self.SOURCE_VOLID, self.SIZE)
+        props = dict(
+            (key, value) for (key, value) in
+            six.iteritems(defn.properties(self.properties_schema))
+            if key not in ignore_props and value is not None)
+        props[self.BACKUP_ID] = backup_id
+        return defn.freeze(properties=props)
+
 
 class CinderVolumeAttachment(VolumeAttachment):
 
@@ -724,7 +823,10 @@ class CinderVolumeAttachment(VolumeAttachment):
             properties.Schema.STRING,
             _('The ID of the volume to be attached.'),
             required=True,
-            update_allowed=True
+            update_allowed=True,
+            constraints=[
+                constraints.CustomConstraint('cinder.volume')
+            ]
         ),
         DEVICE: properties.Schema(
             properties.Schema.STRING,
@@ -750,7 +852,7 @@ class CinderVolumeAttachment(VolumeAttachment):
             if self.DEVICE in prop_diff:
                 device = prop_diff.get(self.DEVICE)
 
-            server_id = self.properties.get(self.INSTANCE_ID)
+            server_id = self._stored_properties_data.get(self.INSTANCE_ID)
             detach_task = VolumeDetachTask(self.stack, server_id,
                                            self.resource_id)
             checkers.append(scheduler.TaskRunner(detach_task))

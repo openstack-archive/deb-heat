@@ -11,20 +11,20 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import collections
 import copy
+import mock
 import six
 
 from heat.common import exception
 from heat.engine.clients.os import nova
 from heat.engine.resources import nova_keypair
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
-from heat.tests.v1_1 import fakes
+from heat.tests.v1_1 import fakes as fakes_v1_1
 
 
-class NovaKeyPairTest(HeatTestCase):
+class NovaKeyPairTest(common.HeatTestCase):
 
     kp_template = {
         "heat_template_version": "2013-05-23",
@@ -136,13 +136,28 @@ class NovaKeyPairTest(HeatTestCase):
         self.assertEqual((test_res.DELETE, test_res.COMPLETE), test_res.state)
         self.m.VerifyAll()
 
+    def test_check_key(self):
+        res = self._get_test_resource(self.kp_template)
+        res.nova = mock.Mock()
+        scheduler.TaskRunner(res.check)()
+        self.assertEqual((res.CHECK, res.COMPLETE), res.state)
+
+    def test_check_key_fail(self):
+        res = self._get_test_resource(self.kp_template)
+        res.nova = mock.Mock()
+        res.nova().keypairs.get.side_effect = Exception("boom")
+        exc = self.assertRaises(exception.ResourceFailure,
+                                scheduler.TaskRunner(res.check))
+        self.assertIn("boom", six.text_type(exc))
+        self.assertEqual((res.CHECK, res.FAILED), res.state)
+
     def test_delete_key_not_found(self):
         """Test delete non-existent key."""
         test_res = self._get_test_resource(self.kp_template)
         test_res.resource_id = "key_name"
         test_res.state_set(test_res.CREATE, test_res.COMPLETE)
         (self.fake_keypairs.delete("key_name")
-            .AndRaise(fakes.fake_exception()))
+            .AndRaise(fakes_v1_1.fake_exception()))
         self.m.ReplayAll()
         scheduler.TaskRunner(test_res.delete)()
         self.assertEqual((test_res.DELETE, test_res.COMPLETE), test_res.state)
@@ -177,27 +192,4 @@ class NovaKeyPairTest(HeatTestCase):
                          tp_test.FnGetAtt('public_key'))
         self.assertEqual((tp_test.CREATE, tp_test.COMPLETE), tp_test.state)
         self.assertEqual(tp_test.resource_id, created_key.name)
-        self.m.VerifyAll()
-
-
-class KeypairConstraintTest(HeatTestCase):
-
-    def test_validation(self):
-        client = fakes.FakeClient()
-        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        nova.NovaClientPlugin._create().AndReturn(client)
-        client.keypairs = self.m.CreateMockAnything()
-
-        key = collections.namedtuple("Key", ["name"])
-        key.name = "foo"
-        client.keypairs.get('bar').AndRaise(fakes.fake_exception())
-        client.keypairs.get(key.name).AndReturn(key)
-        self.m.ReplayAll()
-
-        constraint = nova_keypair.KeypairConstraint()
-        ctx = utils.dummy_context()
-        self.assertFalse(constraint.validate("bar", ctx))
-        self.assertTrue(constraint.validate("foo", ctx))
-        self.assertTrue(constraint.validate("", ctx))
-
         self.m.VerifyAll()

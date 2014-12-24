@@ -17,9 +17,6 @@ from heat.common import exception
 from heat.common.i18n import _
 from heat.common import identifier
 from heat.db import api as db_api
-from heat.openstack.common import log as logging
-
-LOG = logging.getLogger(__name__)
 
 
 class Event(object):
@@ -52,7 +49,7 @@ class Event(object):
     @classmethod
     def load(cls, context, event_id, event=None, stack=None):
         '''Retrieve an Event from the database.'''
-        from heat.engine import parser
+        from heat.engine import stack as parser
 
         ev = event if event is not None else\
             db_api.event_get(context, event_id)

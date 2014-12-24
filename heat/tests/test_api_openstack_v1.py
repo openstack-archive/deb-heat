@@ -32,10 +32,10 @@ from heat.common import exception as heat_exc
 from heat.common import identifier
 from heat.common import policy
 from heat.common import urlfetch
-from heat.common.wsgi import Request
+from heat.common import wsgi
 from heat.rpc import api as rpc_api
 from heat.rpc import client as rpc_client
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 
 
@@ -59,7 +59,7 @@ def to_remote_error(error):
     return remote_error
 
 
-class InstantiationDataTest(HeatTestCase):
+class InstantiationDataTest(common.HeatTestCase):
 
     def test_format_parse(self):
         data = {"AWSTemplateFormatVersion": "2010-09-09",
@@ -163,6 +163,7 @@ blarg: wibble
     def test_parameters(self):
         params = {'foo': 'bar', 'blarg': 'wibble'}
         body = {'parameters': params,
+                'parameter_defaults': {},
                 'resource_registry': {}}
         data = stacks.InstantiationData(body)
         self.assertEqual(body, data.environment())
@@ -178,6 +179,7 @@ blarg: wibble
                 'environment': {'parameters': {'blarg': 'wibble'}}}
         expect = {'parameters': {'blarg': 'wibble',
                                  'foo': 'bar'},
+                  'parameter_defaults': {},
                   'resource_registry': {}}
         data = stacks.InstantiationData(body)
         self.assertEqual(expect, data.environment())
@@ -192,6 +194,7 @@ blarg: wibble
         expect = {'parameters': {'blarg': 'wibble',
                                  'foo': 'bar',
                                  'tester': 'Yes'},
+                  'parameter_defaults': {},
                   'resource_registry': {}}
         data = stacks.InstantiationData(body)
         self.assertEqual(expect, data.environment())
@@ -206,7 +209,8 @@ blarg: wibble
         env = {'foo': 'bar', 'blarg': 'wibble'}
         body = {'not the environment': env}
         data = stacks.InstantiationData(body)
-        self.assertEqual({'parameters': {}, 'resource_registry': {}},
+        self.assertEqual({'parameters': {}, 'parameter_defaults': {},
+                          'resource_registry': {}},
                          data.environment())
 
     def test_args(self):
@@ -253,7 +257,7 @@ class ControllerTest(object):
             qs = "&".join(["=".join([k, str(params[k])]) for k in params])
             environ['QUERY_STRING'] = qs
 
-        req = Request(environ)
+        req = wsgi.Request(environ)
         req.context = utils.dummy_context('api_test_user', self.tenant)
         self.context = req.context
         return req
@@ -272,7 +276,7 @@ class ControllerTest(object):
         environ = self._environ(path)
         environ['REQUEST_METHOD'] = method
 
-        req = Request(environ)
+        req = wsgi.Request(environ)
         req.context = utils.dummy_context('api_test_user', self.tenant)
         self.context = req.context
         req.body = data
@@ -313,7 +317,7 @@ class ControllerTest(object):
 
 
 @mock.patch.object(policy.Enforcer, 'enforce')
-class StackControllerTest(ControllerTest, HeatTestCase):
+class StackControllerTest(ControllerTest, common.HeatTestCase):
     '''
     Tests the API class which acts as the WSGI controller,
     the endpoint processing API requests after they are routed
@@ -710,10 +714,15 @@ class StackControllerTest(ControllerTest, HeatTestCase):
              {'stack_name': identity.stack_name,
               'template': template,
               'params': {'parameters': parameters,
+                         'parameter_defaults': {},
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30},
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -766,11 +775,16 @@ class StackControllerTest(ControllerTest, HeatTestCase):
              {'stack_name': identity.stack_name,
               'template': template,
               'params': {'parameters': parameters,
+                         'parameter_defaults': {},
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30,
                        'adopt_stack_data': str(adopt_data)},
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -804,7 +818,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
                                        body=body)
         self.assertEqual(400, resp.status_code)
         self.assertEqual('400 Bad Request', resp.status)
-        self.assertIn('Adopt data must be a dict.', resp.text)
+        self.assertIn('Invalid adopt data', resp.text)
         self.m.VerifyAll()
 
     def test_create_with_files(self, mock_enforce):
@@ -827,10 +841,15 @@ class StackControllerTest(ControllerTest, HeatTestCase):
              {'stack_name': identity.stack_name,
              'template': template,
               'params': {'parameters': parameters,
+                         'parameter_defaults': {},
                          'resource_registry': {}},
               'files': {'my.yaml': 'This is the file contents.'},
               'args': {'timeout_mins': 30},
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -865,10 +884,15 @@ class StackControllerTest(ControllerTest, HeatTestCase):
              {'stack_name': stack_name,
               'template': template,
               'params': {'parameters': parameters,
+                         'parameter_defaults': {},
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30},
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndRaise(to_remote_error(AttributeError()))
         rpc_client.EngineClient.call(
             req.context,
@@ -876,10 +900,15 @@ class StackControllerTest(ControllerTest, HeatTestCase):
              {'stack_name': stack_name,
               'template': template,
               'params': {'parameters': parameters,
+                         'parameter_defaults': {},
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30},
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndRaise(to_remote_error(unknown_parameter))
         rpc_client.EngineClient.call(
             req.context,
@@ -887,10 +916,15 @@ class StackControllerTest(ControllerTest, HeatTestCase):
              {'stack_name': stack_name,
               'template': template,
               'params': {'parameters': parameters,
+                         'parameter_defaults': {},
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30},
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndRaise(to_remote_error(missing_parameter))
         self.m.ReplayAll()
         resp = request_with_middleware(fault.FaultWrapper,
@@ -935,10 +969,15 @@ class StackControllerTest(ControllerTest, HeatTestCase):
              {'stack_name': stack_name,
               'template': template,
               'params': {'parameters': parameters,
+                         'parameter_defaults': {},
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30},
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndRaise(to_remote_error(error))
         self.m.ReplayAll()
 
@@ -989,10 +1028,15 @@ class StackControllerTest(ControllerTest, HeatTestCase):
              {'stack_name': stack_name,
               'template': template,
               'params': {'parameters': parameters,
+                         'parameter_defaults': {},
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30},
-              'owner_id': None})
+              'owner_id': None,
+              'nested_depth': 0,
+              'user_creds_id': None,
+              'stack_user_project_id': None}),
+            version='1.2'
         ).AndRaise(to_remote_error(error))
         self.m.ReplayAll()
 
@@ -1383,6 +1427,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
              {'stack_identity': dict(identity),
               'template': template,
               'params': {'parameters': parameters,
+                         'parameter_defaults': {},
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30}})
@@ -1418,6 +1463,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
              {'stack_identity': dict(identity),
               'template': template,
               'params': {u'parameters': parameters,
+                         u'parameter_defaults': {},
                          u'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30}})
@@ -1477,6 +1523,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
              {'stack_identity': dict(identity),
               'template': template,
               'params': {'parameters': {},
+                         'parameter_defaults': {},
                          'resource_registry': {}},
               'files': {},
               'args': {rpc_api.PARAM_EXISTING: True,
@@ -1512,6 +1559,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
              {'stack_identity': dict(identity),
               'template': template,
               'params': {'parameters': parameters,
+                         'parameter_defaults': {},
                          'resource_registry': {}},
               'files': {},
               'args': {rpc_api.PARAM_EXISTING: True,
@@ -1549,6 +1597,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
              {'stack_identity': dict(identity),
               'template': template,
               'params': {'parameters': {},
+                         'parameter_defaults': {},
                          'resource_registry': {}},
               'files': {},
               'args': {rpc_api.PARAM_EXISTING: True,
@@ -1588,6 +1637,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
              {'stack_identity': dict(identity),
               'template': template,
               'params': {'parameters': parameters,
+                         'parameter_defaults': {},
                          'resource_registry': {}},
               'files': {},
               'args': {rpc_api.PARAM_EXISTING: True,
@@ -1725,6 +1775,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
             ('validate_template',
              {'template': template,
               'params': {'parameters': {},
+                         'parameter_defaults': {},
                          'resource_registry': {}}})
         ).AndReturn(engine_response)
         self.m.ReplayAll()
@@ -1748,6 +1799,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
             ('validate_template',
              {'template': template,
               'params': {'parameters': {},
+                         'parameter_defaults': {},
                          'resource_registry': {}}})
         ).AndReturn({'Error': 'fubar'})
         self.m.ReplayAll()
@@ -1929,7 +1981,7 @@ class StackControllerTest(ControllerTest, HeatTestCase):
         self.assertIn('403 Forbidden', six.text_type(resp))
 
 
-class StackSerializerTest(HeatTestCase):
+class StackSerializerTest(common.HeatTestCase):
 
     def setUp(self):
         super(StackSerializerTest, self).setUp()
@@ -1947,7 +1999,7 @@ class StackSerializerTest(HeatTestCase):
 
 
 @mock.patch.object(policy.Enforcer, 'enforce')
-class ResourceControllerTest(ControllerTest, HeatTestCase):
+class ResourceControllerTest(ControllerTest, common.HeatTestCase):
     '''
     Tests the API class which acts as the WSGI controller,
     the endpoint processing API requests after they are routed
@@ -2113,7 +2165,9 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         rpc_client.EngineClient.call(
             req.context,
             ('describe_stack_resource',
-             {'stack_identity': stack_identity, 'resource_name': res_name})
+             {'stack_identity': stack_identity, 'resource_name': res_name,
+              'with_attr': None}),
+            version='1.2'
         ).AndReturn(engine_resp)
         self.m.ReplayAll()
 
@@ -2175,7 +2229,9 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         rpc_client.EngineClient.call(
             req.context,
             ('describe_stack_resource',
-             {'stack_identity': stack_identity, 'resource_name': res_name})
+             {'stack_identity': stack_identity, 'resource_name': res_name,
+              'with_attr': None}),
+            version='1.2'
         ).AndReturn(engine_resp)
         self.m.ReplayAll()
 
@@ -2208,7 +2264,9 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         rpc_client.EngineClient.call(
             req.context,
             ('describe_stack_resource',
-             {'stack_identity': stack_identity, 'resource_name': res_name})
+             {'stack_identity': stack_identity, 'resource_name': res_name,
+              'with_attr': None}),
+            version='1.2'
         ).AndRaise(to_remote_error(error))
         self.m.ReplayAll()
 
@@ -2222,6 +2280,47 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         self.assertEqual(404, resp.json['code'])
         self.assertEqual('StackNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
+
+    def test_show_with_single_attribute(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant, 'foo', '1')
+        res_identity = identifier.ResourceIdentifier(resource_name=res_name,
+                                                     **stack_identity)
+        mock_describe = mock.Mock(return_value={'foo': 'bar'})
+        self.controller.rpc_client.describe_stack_resource = mock_describe
+
+        req = self._get(res_identity._tenant_path(), {'with_attr': 'baz'})
+        resp = self.controller.show(req, tenant_id=self.tenant,
+                                    stack_name=stack_identity.stack_name,
+                                    stack_id=stack_identity.stack_id,
+                                    resource_name=res_name)
+
+        self.assertEqual({'resource': {'foo': 'bar'}}, resp)
+        args, kwargs = mock_describe.call_args
+        self.assertIn('baz', kwargs['with_attr'])
+
+    def test_show_with_multiple_attributes(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
+        res_name = 'WikiDatabase'
+        stack_identity = identifier.HeatIdentifier(self.tenant, 'foo', '1')
+        res_identity = identifier.ResourceIdentifier(resource_name=res_name,
+                                                     **stack_identity)
+        mock_describe = mock.Mock(return_value={'foo': 'bar'})
+        self.controller.rpc_client.describe_stack_resource = mock_describe
+
+        req = self._get(res_identity._tenant_path())
+        req.environ['QUERY_STRING'] = 'with_attr=a1&with_attr=a2&with_attr=a3'
+        resp = self.controller.show(req, tenant_id=self.tenant,
+                                    stack_name=stack_identity.stack_name,
+                                    stack_id=stack_identity.stack_id,
+                                    resource_name=res_name)
+
+        self.assertEqual({'resource': {'foo': 'bar'}}, resp)
+        args, kwargs = mock_describe.call_args
+        self.assertIn('a1', kwargs['with_attr'])
+        self.assertIn('a2', kwargs['with_attr'])
+        self.assertIn('a3', kwargs['with_attr'])
 
     def test_show_nonexist_resource(self, mock_enforce):
         self._mock_enforce_setup(mock_enforce, 'show', True)
@@ -2238,7 +2337,9 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         rpc_client.EngineClient.call(
             req.context,
             ('describe_stack_resource',
-             {'stack_identity': stack_identity, 'resource_name': res_name})
+             {'stack_identity': stack_identity, 'resource_name': res_name,
+              'with_attr': None}),
+            version='1.2'
         ).AndRaise(to_remote_error(error))
         self.m.ReplayAll()
 
@@ -2268,7 +2369,9 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         rpc_client.EngineClient.call(
             req.context,
             ('describe_stack_resource',
-             {'stack_identity': stack_identity, 'resource_name': res_name})
+             {'stack_identity': stack_identity, 'resource_name': res_name,
+              'with_attr': None}),
+            version='1.2'
         ).AndRaise(to_remote_error(error))
         self.m.ReplayAll()
 
@@ -2331,7 +2434,9 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         rpc_client.EngineClient.call(
             req.context,
             ('describe_stack_resource',
-             {'stack_identity': stack_identity, 'resource_name': res_name})
+             {'stack_identity': stack_identity, 'resource_name': res_name,
+              'with_attr': None}),
+            version='1.2'
         ).AndReturn(engine_resp)
         self.m.ReplayAll()
 
@@ -2360,7 +2465,9 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         rpc_client.EngineClient.call(
             req.context,
             ('describe_stack_resource',
-             {'stack_identity': stack_identity, 'resource_name': res_name})
+             {'stack_identity': stack_identity, 'resource_name': res_name,
+              'with_attr': None}),
+            version='1.2'
         ).AndRaise(to_remote_error(error))
         self.m.ReplayAll()
 
@@ -2390,7 +2497,9 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
         rpc_client.EngineClient.call(
             req.context,
             ('describe_stack_resource',
-             {'stack_identity': stack_identity, 'resource_name': res_name})
+             {'stack_identity': stack_identity, 'resource_name': res_name,
+              'with_attr': None}),
+            version='1.2'
         ).AndRaise(to_remote_error(error))
         self.m.ReplayAll()
 
@@ -2452,7 +2561,7 @@ class ResourceControllerTest(ControllerTest, HeatTestCase):
 
 
 @mock.patch.object(policy.Enforcer, 'enforce')
-class EventControllerTest(ControllerTest, HeatTestCase):
+class EventControllerTest(ControllerTest, common.HeatTestCase):
     '''
     Tests the API class which acts as the WSGI controller,
     the endpoint processing API requests after they are routed
@@ -3035,7 +3144,7 @@ class EventControllerTest(ControllerTest, HeatTestCase):
         self.assertIn('403 Forbidden', six.text_type(resp))
 
 
-class RoutesTest(HeatTestCase):
+class RoutesTest(common.HeatTestCase):
 
     def assertRoute(self, mapper, path, method, action, controller,
                     params=None):
@@ -3240,6 +3349,19 @@ class RoutesTest(HeatTestCase):
                 'tenant_id': 'aaaa',
                 'stack_name': 'teststack',
                 'stack_id': 'bbbb'
+            })
+
+        self.assertRoute(
+            self.m,
+            '/aaaa/stacks/teststack/bbbb/snapshots/cccc/restore',
+            'POST',
+            'restore_snapshot',
+            'StackController',
+            {
+                'tenant_id': 'aaaa',
+                'stack_name': 'teststack',
+                'stack_id': 'bbbb',
+                'snapshot_id': 'cccc'
             })
 
     def test_stack_data_template(self):
@@ -3496,7 +3618,7 @@ class RoutesTest(HeatTestCase):
 
 
 @mock.patch.object(policy.Enforcer, 'enforce')
-class ActionControllerTest(ControllerTest, HeatTestCase):
+class ActionControllerTest(ControllerTest, common.HeatTestCase):
     '''
     Tests the API class which acts as the WSGI controller,
     the endpoint processing API requests after they are routed
@@ -3694,7 +3816,7 @@ class ActionControllerTest(ControllerTest, HeatTestCase):
 
 
 @mock.patch.object(policy.Enforcer, 'enforce')
-class BuildInfoControllerTest(ControllerTest, HeatTestCase):
+class BuildInfoControllerTest(ControllerTest, common.HeatTestCase):
 
     def setUp(self):
         super(BuildInfoControllerTest, self).setUp()
@@ -3746,7 +3868,7 @@ class BuildInfoControllerTest(ControllerTest, HeatTestCase):
         self.assertIn('403 Forbidden', six.text_type(resp))
 
 
-class SoftwareConfigControllerTest(ControllerTest, HeatTestCase):
+class SoftwareConfigControllerTest(ControllerTest, common.HeatTestCase):
 
     def setUp(self):
         super(SoftwareConfigControllerTest, self).setUp()
@@ -3870,7 +3992,7 @@ class SoftwareConfigControllerTest(ControllerTest, HeatTestCase):
             self.assertEqual('NotFound', resp.json['error']['type'])
 
 
-class SoftwareDeploymentControllerTest(ControllerTest, HeatTestCase):
+class SoftwareDeploymentControllerTest(ControllerTest, common.HeatTestCase):
 
     def setUp(self):
         super(SoftwareDeploymentControllerTest, self).setUp()

@@ -14,19 +14,18 @@
 import re
 
 import six
-from testtools.matchers import HasLength
-from testtools.matchers import MatchesRegex
+from testtools import matchers
 
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import parser
-from heat.engine.resources.random_string import RandomString
+from heat.engine.resources import random_string as rs
 from heat.engine import template
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 
 
-class TestRandomString(HeatTestCase):
+class TestRandomString(common.HeatTestCase):
 
     template_random_string = '''
 HeatTemplateFormatVersion: '2012-12-12'
@@ -112,44 +111,48 @@ Resources:
         assert_min('[a-zA-Z0-9]', random_string, 32)
         self.assertRaises(exception.InvalidTemplateAttribute,
                           secret1.FnGetAtt, 'foo')
-        self.assertEqual(random_string, secret1.FnGetRefId())
+        self.assertEqual(secret1.FnGetRefId(), random_string)
 
         secret2 = stack['secret2']
         random_string = secret2.FnGetAtt('value')
         assert_min('[a-zA-Z0-9]', random_string, 10)
-        self.assertEqual(random_string, secret2.FnGetRefId())
+        self.assertEqual(secret2.FnGetRefId(), random_string)
 
         secret3 = stack['secret3']
         random_string = secret3.FnGetAtt('value')
         assert_min('[0-7]', random_string, 100)
-        self.assertEqual(random_string, secret3.FnGetRefId())
+        self.assertEqual(secret3.FnGetRefId(), random_string)
 
         secret4 = stack['secret4']
         random_string = secret4.FnGetAtt('value')
-        self.assertEqual(len(random_string), 32)
+        self.assertEqual(32, len(random_string))
         assert_min('[0-9]', random_string, 1)
         assert_min('[A-Z]', random_string, 1)
         assert_min('[a-z]', random_string, 20)
         assert_min('[(),\[\]{}]', random_string, 1)
         assert_min('[$_]', random_string, 2)
         assert_min('@', random_string, 5)
-        self.assertEqual(random_string, secret4.FnGetRefId())
+        self.assertEqual(secret4.FnGetRefId(), random_string)
 
         secret5 = stack['secret5']
         random_string = secret5.FnGetAtt('value')
-        self.assertEqual(len(random_string), 25)
+        self.assertEqual(25, len(random_string))
         assert_min('[0-9]', random_string, 1)
         assert_min('[A-Z]', random_string, 1)
         assert_min('[a-z]', random_string, 20)
-        self.assertEqual(random_string, secret5.FnGetRefId())
+        self.assertEqual(secret5.FnGetRefId(), random_string)
 
         secret6 = stack['secret6']
         random_string = secret6.FnGetAtt('value')
-        self.assertEqual(len(random_string), 10)
+        self.assertEqual(10, len(random_string))
         assert_min('[(),\[\]{}]', random_string, 1)
         assert_min('[$_]', random_string, 2)
         assert_min('@', random_string, 5)
-        self.assertEqual(random_string, secret6.FnGetRefId())
+        self.assertEqual(secret6.FnGetRefId(), random_string)
+
+        # Prove the name is returned before create sets the ID
+        secret6.resource_id = None
+        self.assertEqual('secret6', secret6.FnGetRefId())
 
     def test_invalid_property_combination(self):
         template_random_string = '''
@@ -194,6 +197,21 @@ Resources:
                          "character class and character sequence minimums",
                          six.text_type(exc))
 
+    def test_max_length(self):
+        template_random_string = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Resources:
+  secret:
+    Type: OS::Heat::RandomString
+    Properties:
+      length: 512
+'''
+        stack = self.create_stack(template_random_string)
+        secret = stack['secret']
+        random_string = secret.FnGetAtt('value')
+        self.assertEqual(512, len(random_string))
+        self.assertEqual(secret.FnGetRefId(), random_string)
+
     def test_exceeds_max_length(self):
         template_random_string = '''
 HeatTemplateFormatVersion: '2012-12-12'
@@ -209,7 +227,7 @@ Resources:
                       six.text_type(exc))
 
 
-class TestGenerateRandomString(HeatTestCase):
+class TestGenerateRandomString(common.HeatTestCase):
 
     scenarios = [
         ('lettersdigits', dict(
@@ -232,9 +250,10 @@ class TestGenerateRandomString(HeatTestCase):
         # run each test multiple times to confirm random generator
         # doesn't generate a matching pattern by chance
         for i in range(1, 32):
-            sequence = RandomString._sequences[self.seq]
-            r = RandomString._deprecated_random_string(sequence, self.length)
+            sequence = rs.RandomString._sequences[self.seq]
+            r = rs.RandomString._deprecated_random_string(sequence,
+                                                          self.length)
 
-            self.assertThat(r, HasLength(self.length))
+            self.assertThat(r, matchers.HasLength(self.length))
             regex = '%s{%s}' % (self.pattern, self.length)
-            self.assertThat(r, MatchesRegex(regex))
+            self.assertThat(r, matchers.MatchesRegex(regex))

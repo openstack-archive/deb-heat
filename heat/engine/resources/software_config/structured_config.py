@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -17,9 +15,13 @@ import collections
 import functools
 import six
 
+from heat.common import exception
+from heat.common.i18n import _
+from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.software_config import software_config as sc
 from heat.engine.resources.software_config import software_deployment as sd
+from heat.engine import support
 
 
 class StructuredConfig(sc.SoftwareConfig):
@@ -31,6 +33,8 @@ class StructuredConfig(sc.SoftwareConfig):
     configuration syntax. The resulting configuration is transferred,
     stored and returned by the software_configs API as parsed JSON.
     '''
+
+    support_status = support.SupportStatus(version='2014.1')
 
     PROPERTIES = (
         GROUP,
@@ -75,6 +79,8 @@ class StructuredDeployment(sd.SoftwareDeployment):
     different input_key property value can be specified.
     '''
 
+    support_status = support.SupportStatus(version='2014.1')
+
     PROPERTIES = (
         CONFIG,
         SERVER,
@@ -82,7 +88,8 @@ class StructuredDeployment(sd.SoftwareDeployment):
         DEPLOY_ACTIONS,
         NAME,
         SIGNAL_TRANSPORT,
-        INPUT_KEY
+        INPUT_KEY,
+        INPUT_VALUES_VALIDATE
     ) = (
         sd.SoftwareDeployment.CONFIG,
         sd.SoftwareDeployment.SERVER,
@@ -90,7 +97,8 @@ class StructuredDeployment(sd.SoftwareDeployment):
         sd.SoftwareDeployment.DEPLOY_ACTIONS,
         sd.SoftwareDeployment.NAME,
         sd.SoftwareDeployment.SIGNAL_TRANSPORT,
-        'input_key'
+        'input_key',
+        'input_values_validate'
     )
 
     _sd_ps = sd.SoftwareDeployment.properties_schema
@@ -106,6 +114,17 @@ class StructuredDeployment(sd.SoftwareDeployment):
             properties.Schema.STRING,
             _('Name of key to use for substituting inputs during deployment'),
             default='get_input',
+        ),
+        INPUT_VALUES_VALIDATE: properties.Schema(
+            properties.Schema.STRING,
+            _('Perform a check on the input values passed to verify that '
+              'each required input has a corresponding value. '
+              'When the property is set to STRICT and no value is passed, '
+              'an exception is raised.'),
+            default='LAX',
+            constraints=[
+                constraints.AllowedValues(['LAX', 'STRICT']),
+            ],
         )
     }
 
@@ -113,24 +132,43 @@ class StructuredDeployment(sd.SoftwareDeployment):
                               derived_inputs, derived_options):
         cfg = source.get(sc.SoftwareConfig.CONFIG)
         input_key = self.properties.get(self.INPUT_KEY)
+        check_input_val = self.properties.get(self.INPUT_VALUES_VALIDATE)
 
         inputs = dict((i['name'], i['value']) for i in derived_inputs)
 
-        return self.parse(inputs, input_key, cfg)
+        return self.parse(inputs, input_key, cfg, check_input_val)
 
     @staticmethod
-    def parse(inputs, input_key, snippet):
+    def get_input_key_arg(snippet, input_key):
+        if len(snippet) != 1:
+            return None
+        fn_name, fn_arg = next(six.iteritems(snippet))
+        if (fn_name == input_key and isinstance(fn_arg, six.string_types)):
+            return fn_arg
+
+    @staticmethod
+    def get_input_key_value(fn_arg, inputs, check_input_val='LAX'):
+        if check_input_val == 'STRICT' and fn_arg not in inputs:
+            raise exception.UserParameterMissing(key=fn_arg)
+        return inputs.get(fn_arg)
+
+    @staticmethod
+    def parse(inputs, input_key, snippet, check_input_val='LAX'):
         parse = functools.partial(
-            StructuredDeployment.parse, inputs, input_key)
+            StructuredDeployment.parse,
+            inputs,
+            input_key,
+            check_input_val=check_input_val)
 
         if isinstance(snippet, collections.Mapping):
-            if len(snippet) == 1:
-                fn_name, args = next(six.iteritems(snippet))
-                if fn_name == input_key:
-                    if isinstance(args, basestring):
-                        return inputs.get(args)
+            fn_arg = StructuredDeployment.get_input_key_arg(snippet, input_key)
+            if fn_arg is not None:
+                return StructuredDeployment.get_input_key_value(fn_arg, inputs,
+                                                                check_input_val
+                                                                )
+
             return dict((k, parse(v)) for k, v in six.iteritems(snippet))
-        elif (not isinstance(snippet, basestring) and
+        elif (not isinstance(snippet, six.string_types) and
               isinstance(snippet, collections.Iterable)):
             return [parse(v) for v in snippet]
         else:
@@ -147,6 +185,7 @@ class StructuredDeployments(sd.SoftwareDeployments):
         NAME,
         SIGNAL_TRANSPORT,
         INPUT_KEY,
+        INPUT_VALUES_VALIDATE,
     ) = (
         sd.SoftwareDeployments.SERVERS,
         sd.SoftwareDeployments.CONFIG,
@@ -154,7 +193,8 @@ class StructuredDeployments(sd.SoftwareDeployments):
         sd.SoftwareDeployments.DEPLOY_ACTIONS,
         sd.SoftwareDeployments.NAME,
         sd.SoftwareDeployments.SIGNAL_TRANSPORT,
-        StructuredDeployment.INPUT_KEY
+        StructuredDeployment.INPUT_KEY,
+        StructuredDeployment.INPUT_VALUES_VALIDATE
     )
 
     _sds_ps = sd.SoftwareDeployments.properties_schema
@@ -167,6 +207,8 @@ class StructuredDeployments(sd.SoftwareDeployments):
         SIGNAL_TRANSPORT: _sds_ps[SIGNAL_TRANSPORT],
         NAME: _sds_ps[NAME],
         INPUT_KEY: StructuredDeployment.properties_schema[INPUT_KEY],
+        INPUT_VALUES_VALIDATE:
+        StructuredDeployment.properties_schema[INPUT_VALUES_VALIDATE],
     }
 
     def _build_resource_definition(self, include_all=False):
@@ -180,6 +222,7 @@ class StructuredDeployments(sd.SoftwareDeployments):
                 self.SIGNAL_TRANSPORT: p[self.SIGNAL_TRANSPORT],
                 self.NAME: p[self.NAME],
                 self.INPUT_KEY: p[self.INPUT_KEY],
+                self.INPUT_VALUES_VALIDATE: p[self.INPUT_VALUES_VALIDATE],
             }
         }
 

@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -19,6 +18,7 @@ import sys
 from oslo.config import cfg
 import six
 
+from heat.common.i18n import _LE
 from heat.common import plugin_loader
 from heat.openstack.common import log
 
@@ -75,7 +75,7 @@ class PluginMapping(object):
         passed to the mapping functions.
 
         '''
-        if isinstance(names, basestring):
+        if isinstance(names, six.string_types):
             names = [names]
 
         self.names = ['%s_mapping' % name for name in names]
@@ -94,15 +94,15 @@ class PluginMapping(object):
                 try:
                     mapping_dict = mapping_func(*self.args, **self.kwargs)
                 except Exception:
-                    LOG.error(_('Failed to load %(mapping_name)s '
-                                'from %(module)s') % fmt_data)
+                    LOG.error(_LE('Failed to load %(mapping_name)s '
+                                  'from %(module)s'), fmt_data)
                     raise
                 else:
                     if isinstance(mapping_dict, collections.Mapping):
                         return mapping_dict
                     elif mapping_dict is not None:
-                        LOG.error(_('Invalid type for %(mapping_name)s '
-                                    'from %(module)s') % fmt_data)
+                        LOG.error(_LE('Invalid type for %(mapping_name)s '
+                                      'from %(module)s'), fmt_data)
 
         return {}
 

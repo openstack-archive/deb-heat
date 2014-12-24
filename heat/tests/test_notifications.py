@@ -15,16 +15,17 @@ import mock
 from oslo.utils import timeutils
 
 from heat.common import exception
+from heat.common import grouputils
 from heat.common import template_format
 from heat.engine.clients.os import glance
+from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
 # imports for mocking
-from heat.engine.resources import autoscaling
+from heat.engine.resources.aws import autoscaling_group as aws_asg
 from heat.engine.resources import instance
 from heat.engine.resources import loadbalancer
-from heat.engine.resources import nova_keypair
 from heat.engine.resources import user
 from heat.engine.resources import wait_condition as waitc
 from heat.engine import signal_responder as signal
@@ -32,7 +33,7 @@ from heat.engine import stack_resource
 from heat.tests import common
 from heat.tests import generic_resource
 # reuse the same template than autoscaling tests
-from heat.tests.test_autoscaling import as_template
+from heat.tests import test_autoscaling as test_as
 from heat.tests import utils
 
 
@@ -150,7 +151,7 @@ class ScaleNotificationTest(common.HeatTestCase):
         env = environment.Environment()
         env.load({u'parameters':
                   {u'KeyName': 'foo', 'ImageId': 'cloudimage'}})
-        t = template_format.parse(as_template)
+        t = template_format.parse(test_as.as_template)
         template = parser.Template(t)
         self.stack_name = utils.random_name()
         stack = parser.Stack(self.ctx, self.stack_name, template,
@@ -158,16 +159,20 @@ class ScaleNotificationTest(common.HeatTestCase):
         stack.store()
         self.created_time = stack.created_time
         self.create_at = timeutils.isotime(self.created_time)
+        self.stub_SnapshotConstraint_validate()
+        self.m.ReplayAll()
         stack.create()
         self.stack = stack
         group = stack['WebServerGroup']
         self.assertEqual((group.CREATE, group.COMPLETE), group.state)
+        self.m.VerifyAll()
         return group
 
     def mock_stack_except_for_group(self):
         self.m_validate = self.patchobject(parser.Stack, 'validate')
-        self.patchobject(nova_keypair.KeypairConstraint, 'validate')
+        self.patchobject(nova.KeypairConstraint, 'validate')
         self.patchobject(glance.ImageConstraint, 'validate')
+        self.patchobject(nova.FlavorConstraint, 'validate')
         self.patchobject(instance.Instance, 'handle_create')\
             .return_value = True
         self.patchobject(instance.Instance, 'check_create_complete')\
@@ -252,7 +257,7 @@ class ScaleNotificationTest(common.HeatTestCase):
                                               end_capacity=2,
                                               )
         group.adjust(1)
-        self.assertEqual(2, len(group.get_instance_names()))
+        self.assertEqual(2, grouputils.get_size(group))
         mock_notify.assert_has_calls(expected)
 
         expected = self.expected_notifs_calls(group,
@@ -261,7 +266,7 @@ class ScaleNotificationTest(common.HeatTestCase):
                                               end_capacity=1,
                                               )
         group.adjust(-1)
-        self.assertEqual(1, len(group.get_instance_names()))
+        self.assertEqual(1, grouputils.get_size(group))
         mock_notify.assert_has_calls(expected)
 
     @mock.patch('heat.engine.notification.stack.send')
@@ -272,7 +277,7 @@ class ScaleNotificationTest(common.HeatTestCase):
         group = self.create_autoscaling_stack_and_get_group()
 
         err_message = 'Boooom'
-        m_as = self.patchobject(autoscaling.AutoScalingGroup, 'resize')
+        m_as = self.patchobject(aws_asg.AutoScalingGroup, 'resize')
         m_as.side_effect = exception.Error(err_message)
 
         info, error = self.expected_notifs_calls(group,
@@ -280,6 +285,6 @@ class ScaleNotificationTest(common.HeatTestCase):
                                                  start_capacity=1,
                                                  with_error=err_message)
         self.assertRaises(exception.Error, group.adjust, 2)
-        self.assertEqual(1, len(group.get_instance_names()))
+        self.assertEqual(1, grouputils.get_size(group))
         mock_error.assert_has_calls([error])
         mock_info.assert_has_calls([info])

@@ -12,6 +12,7 @@
 #    under the License.
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.engine import attributes
 from heat.engine import properties
 from heat.engine.resources.neutron import neutron
@@ -224,7 +225,7 @@ class RouterInterface(neutron.NeutronResource):
         subnet_id_value = properties.get(depr_subnet_key)
         if subnet_value and subnet_id_value:
             raise exception.ResourcePropertyConflict(subnet_key,
-                                                     subnet_key)
+                                                     depr_subnet_key)
         if not subnet_value and not subnet_id_value:
             return False
         return True

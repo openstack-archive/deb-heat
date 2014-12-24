@@ -10,13 +10,14 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+import six
 
-from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
+from heat.engine import support
 
 
 class KeyPair(resource.Resource):
@@ -33,6 +34,8 @@ class KeyPair(resource.Resource):
     save.
     """
 
+    support_status = support.SupportStatus(version='2014.1')
+
     PROPERTIES = (
         NAME, SAVE_PRIVATE_KEY, PUBLIC_KEY,
     ) = (
@@ -40,7 +43,7 @@ class KeyPair(resource.Resource):
     )
 
     ATTRIBUTES = (
-        PUBLIC_KEY_ATTR, PRIVATE_KEY,
+        PUBLIC_KEY_ATTR, PRIVATE_KEY_ATTR,
     ) = (
         'public_key', 'private_key',
     )
@@ -69,10 +72,10 @@ class KeyPair(resource.Resource):
     }
 
     attributes_schema = {
-        PUBLIC_KEY: attributes.Schema(
+        PUBLIC_KEY_ATTR: attributes.Schema(
             _('The public key.')
         ),
-        PRIVATE_KEY: attributes.Schema(
+        PRIVATE_KEY_ATTR: attributes.Schema(
             _('The private key if it has been saved.'),
             cache_mode=attributes.Schema.CACHE_NONE
         ),
@@ -121,25 +124,16 @@ class KeyPair(resource.Resource):
             except Exception as e:
                 self.client_plugin().ignore_not_found(e)
 
+    def handle_check(self):
+        self.nova().keypairs.get(self.resource_id)
+
     def _resolve_attribute(self, key):
-        attr_fn = {'private_key': self.private_key,
-                   'public_key': self.public_key}
-        return unicode(attr_fn[key])
+        attr_fn = {self.PRIVATE_KEY_ATTR: self.private_key,
+                   self.PUBLIC_KEY_ATTR: self.public_key}
+        return six.text_type(attr_fn[key])
 
     def FnGetRefId(self):
         return self.resource_id
-
-
-class KeypairConstraint(constraints.BaseCustomConstraint):
-
-    expected_exceptions = (exception.UserKeyPairMissing,)
-
-    def validate_with_client(self, client, value):
-        if not value:
-            # Don't validate empty key, which can happen when you use a KeyPair
-            # resource
-            return True
-        client.client_plugin('nova').get_keypair(value)
 
 
 def resource_mapping():

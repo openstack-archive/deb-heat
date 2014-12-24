@@ -25,6 +25,7 @@ from oslo.config import cfg
 from oslo import messaging
 from oslo.messaging.rpc import client as rpc_client
 from oslo.messaging.rpc import dispatcher
+from oslo.serialization import jsonutils
 import six
 
 from heat.common import exception
@@ -37,22 +38,21 @@ from heat.engine.clients.os import keystone
 from heat.engine.clients.os import nova
 from heat.engine import dependencies
 from heat.engine import environment
-from heat.engine import parser
-from heat.engine.properties import Properties
+from heat.engine import properties
 from heat.engine import resource as res
 from heat.engine.resources import instance as instances
 from heat.engine import service
+from heat.engine import stack as parser
 from heat.engine import stack_lock
 from heat.engine import template as templatem
 from heat.engine import watchrule
-from heat.openstack.common import jsonutils
 from heat.openstack.common import threadgroup
-from heat.rpc import api as engine_api
-from heat.tests.common import HeatTestCase
+from heat.rpc import api as rpc_api
+from heat.tests import common
 from heat.tests import fakes as test_fakes
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
-from heat.tests.v1_1 import fakes
+from heat.tests.v1_1 import fakes as fakes_v1_1
 
 cfg.CONF.import_opt('engine_life_check_timeout', 'heat.common.config')
 cfg.CONF.import_opt('enable_stack_abandon', 'heat.common.config')
@@ -211,7 +211,7 @@ def get_wordpress_stack(stack_name, ctx):
 
 def get_wordpress_stack_no_params(stack_name, ctx):
     t = template_format.parse(wp_template)
-    template = parser.Template(t)
+    template = templatem.Template(t)
     stack = parser.Stack(ctx, stack_name, template,
                          environment.Environment({}))
     return stack
@@ -238,7 +238,7 @@ def setup_mock_for_image_constraint(mocks, imageId_input,
 
 
 def setup_mocks(mocks, stack, mock_image_constraint=True):
-    fc = fakes.FakeClient()
+    fc = fakes_v1_1.FakeClient()
     mocks.StubOutWithMock(instances.Instance, 'nova')
     instances.Instance.nova().MultipleTimes().AndReturn(fc)
     mocks.StubOutWithMock(nova.NovaClientPlugin, '_create')
@@ -287,12 +287,12 @@ def setup_stack(stack_name, ctx, create_res=True):
 def clean_up_stack(stack, delete_res=True):
     if delete_res:
         m = mox.Mox()
-        fc = fakes.FakeClient()
+        fc = fakes_v1_1.FakeClient()
         m.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().MultipleTimes().AndReturn(fc)
         m.StubOutWithMock(fc.client, 'get_servers_9999')
         get = fc.client.get_servers_9999
-        get().AndRaise(fakes.fake_exception())
+        get().AndRaise(fakes_v1_1.fake_exception())
         m.ReplayAll()
     stack.delete()
     if delete_res:
@@ -353,6 +353,11 @@ class DummyThreadGroup(object):
         pass
 
     def add_thread(self, callback, *args, **kwargs):
+        # just to make _start_with_trace() easier to test:
+        # callback == _start_with_trace
+        # args[0] == trace_info
+        # args[1] == actual_callback
+        callback = args[1]
         self.threads.append(callback)
         return DummyThread()
 
@@ -363,7 +368,7 @@ class DummyThreadGroup(object):
         pass
 
 
-class StackCreateTest(HeatTestCase):
+class StackCreateTest(common.HeatTestCase):
     def setUp(self):
         super(StackCreateTest, self).setUp()
 
@@ -445,7 +450,7 @@ class StackCreateTest(HeatTestCase):
 
         self.m.StubOutWithMock(fc.client, 'get_servers_9999')
         get = fc.client.get_servers_9999
-        get().AndRaise(fakes.fake_exception())
+        get().AndRaise(fakes_v1_1.fake_exception())
         mox.Replay(get)
         stack.delete()
 
@@ -457,7 +462,7 @@ class StackCreateTest(HeatTestCase):
         self.assertEqual('COMPLETE', db_s.status, )
 
 
-class StackServiceCreateUpdateDeleteTest(HeatTestCase):
+class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
 
     def setUp(self):
         super(StackServiceCreateUpdateDeleteTest, self).setUp()
@@ -479,7 +484,9 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         templatem.Template(template, files=None).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.env, owner_id=None).AndReturn(stack)
+                     stack.t, stack.env, owner_id=None,
+                     nested_depth=0, user_creds_id=None,
+                     stack_user_project_id=None).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -510,7 +517,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         stack_name = 'service_create_test_stack_exceeds_max'
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self._test_stack_create, stack_name)
-        self.assertEqual(ex.exc_info[0], exception.RequestLimitExceeded)
+        self.assertEqual(exception.RequestLimitExceeded, ex.exc_info[0])
         self.assertIn("You have reached the maximum stacks per tenant",
                       six.text_type(ex.exc_info[1]))
 
@@ -530,7 +537,10 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         parser.Stack(self.ctx, stack.name,
                      stack.t,
                      stack.env,
-                     owner_id=None).AndReturn(stack)
+                     owner_id=None,
+                     nested_depth=0,
+                     user_creds_id=None,
+                     stack_user_project_id=None).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndRaise(exception.StackValidationFailed(
@@ -543,16 +553,15 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
             self.man.create_stack,
             self.ctx, stack_name,
             template, params, None, {})
-        self.assertEqual(ex.exc_info[0], exception.StackValidationFailed)
+        self.assertEqual(exception.StackValidationFailed, ex.exc_info[0])
         self.m.VerifyAll()
 
-    def test_stack_adopt_with_params(self):
+    def _get_stack_adopt_data_and_template(self, environment=None):
         template = {
             "heat_template_version": "2013-05-23",
             "parameters": {"app_dbx": {"type": "string"}},
             "resources": {"res1": {"type": "GenericResourceType"}}}
 
-        environment = {'parameters': {"app_dbx": "test"}}
         adopt_data = {
             "status": "COMPLETE",
             "name": "rtrove1",
@@ -567,7 +576,13 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                     "action": "CREATE",
                     "type": "GenericResourceType",
                     "metadata": {}}}}
+        return template, adopt_data
 
+    def test_stack_adopt_with_params(self):
+        cfg.CONF.set_override('enable_stack_adopt', True)
+        environment = {'parameters': {"app_dbx": "test"}}
+        template, adopt_data = self._get_stack_adopt_data_and_template(
+            environment)
         res._register_class('GenericResourceType',
                             generic_rsrc.GenericResource)
         result = self.man.create_stack(self.ctx, "test_adopt_stack",
@@ -579,11 +594,28 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.assertEqual(environment['parameters'],
                          stack.parameters['parameters'])
 
+    def test_stack_adopt_disabled(self):
+        # to test disable stack adopt
+        cfg.CONF.set_override('enable_stack_adopt', False)
+        environment = {'parameters': {"app_dbx": "test"}}
+        template, adopt_data = self._get_stack_adopt_data_and_template(
+            environment)
+        res._register_class('GenericResourceType',
+                            generic_rsrc.GenericResource)
+        ex = self.assertRaises(
+            dispatcher.ExpectedException,
+            self.man.create_stack,
+            self.ctx, "test_adopt_stack_disabled",
+            template, {}, None,
+            {'adopt_stack_data': str(adopt_data)})
+        self.assertEqual(exception.NotSupported, ex.exc_info[0])
+        self.assertIn('Stack Adopt', six.text_type(ex.exc_info[1]))
+
     def test_stack_create_invalid_stack_name(self):
         stack_name = 'service_create/test_stack'
         stack = get_wordpress_stack('test_stack', self.ctx)
 
-        self.assertRaises(ValueError,
+        self.assertRaises(dispatcher.ExpectedException,
                           self.man.create_stack,
                           self.ctx, stack_name, stack.t.t, {}, None, {})
 
@@ -594,7 +626,18 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         tmpl['Resources']['Web/Server'] = tmpl['Resources']['WebServer']
         del tmpl['Resources']['WebServer']
 
-        self.assertRaises(ValueError,
+        self.assertRaises(dispatcher.ExpectedException,
+                          self.man.create_stack,
+                          self.ctx, stack_name,
+                          stack.t.t, {}, None, {})
+
+    def test_stack_create_AuthorizationFailure(self):
+        stack_name = 'service_create_test_stack_AuthorizationFailure'
+        stack = get_wordpress_stack(stack_name, self.ctx)
+        self.m.StubOutWithMock(parser.Stack, 'create_stack_user_project_id')
+        parser.Stack.create_stack_user_project_id().AndRaise(
+            exception.AuthorizationFailure)
+        self.assertRaises(dispatcher.ExpectedException,
                           self.man.create_stack,
                           self.ctx, stack_name,
                           stack.t.t, {}, None, {})
@@ -618,12 +661,16 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         templatem.Template(template, files=None).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(ctx_no_pwd, stack.name,
-                     stack.t, stack.env, owner_id=None).AndReturn(stack)
+                     stack.t, stack.env, owner_id=None,
+                     nested_depth=0, user_creds_id=None,
+                     stack_user_project_id=None).AndReturn(stack)
 
         templatem.Template(template, files=None).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(ctx_no_user, stack.name,
-                     stack.t, stack.env, owner_id=None).AndReturn(stack)
+                     stack.t, stack.env, owner_id=None,
+                     nested_depth=0, user_creds_id=None,
+                     stack_user_project_id=None).AndReturn(stack)
 
         self.m.ReplayAll()
 
@@ -631,7 +678,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                                self.man.create_stack,
                                ctx_no_pwd, stack_name,
                                template, params, None, {}, None)
-        self.assertEqual(ex.exc_info[0], exception.MissingCredentialError)
+        self.assertEqual(exception.MissingCredentialError, ex.exc_info[0])
         self.assertEqual(
             'Missing required credential: X-Auth-Key',
             six.text_type(ex.exc_info[1]))
@@ -640,7 +687,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                                self.man.create_stack,
                                ctx_no_user, stack_name,
                                template, params, None, {})
-        self.assertEqual(ex.exc_info[0], exception.MissingCredentialError)
+        self.assertEqual(exception.MissingCredentialError, ex.exc_info[0])
         self.assertEqual(
             'Missing required credential: X-Auth-User',
             six.text_type(ex.exc_info[1]))
@@ -669,7 +716,10 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         parser.Stack(self.ctx, stack.name,
                      stack.t,
                      stack.env,
-                     owner_id=None).AndReturn(stack)
+                     owner_id=None,
+                     nested_depth=0,
+                     user_creds_id=None,
+                     stack_user_project_id=None).AndReturn(stack)
 
         self.m.ReplayAll()
 
@@ -697,7 +747,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.man.create_stack, self.ctx, stack_name,
                                tpl, params, None, {})
-        self.assertEqual(ex.exc_info[0], exception.RequestLimitExceeded)
+        self.assertEqual(exception.RequestLimitExceeded, ex.exc_info[0])
         self.assertIn(exception.StackResourceLimitExceeded.msg_fmt,
                       six.text_type(ex.exc_info[1]))
 
@@ -710,7 +760,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         setup_mock_for_image_constraint(self.m, 'CentOS 5.2')
         self.m.ReplayAll()
 
-        resource.properties = Properties(
+        resource.properties = properties.Properties(
             resource.properties_schema,
             {
                 'ImageId': 'CentOS 5.2',
@@ -720,7 +770,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
             context=self.ctx)
         stack.validate()
 
-        resource.properties = Properties(
+        resource.properties = properties.Properties(
             resource.properties_schema,
             {
                 'KeyName': 'test',
@@ -753,7 +803,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.man.delete_stack,
                                self.ctx, stack.identifier())
-        self.assertEqual(ex.exc_info[0], exception.StackNotFound)
+        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
         self.m.VerifyAll()
 
     def test_stack_delete_acquired_lock(self):
@@ -852,7 +902,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.man.delete_stack,
                                self.ctx, stack.identifier())
-        self.assertEqual(ex.exc_info[0], exception.StopActionFailed)
+        self.assertEqual(exception.StopActionFailed, ex.exc_info[0])
         self.m.VerifyAll()
 
     def test_stack_delete_other_engine_active_lock_succeeded(self):
@@ -959,7 +1009,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         self.assertEqual(old_stack.identifier(), result)
         self.assertIsInstance(result, dict)
         self.assertTrue(result['stack_id'])
-        self.assertEqual(self.man.thread_group_mgr.events[sid], [evt_mock])
+        self.assertEqual([evt_mock], self.man.thread_group_mgr.events[sid])
         self.m.VerifyAll()
 
     def test_stack_update_existing_parameters(self):
@@ -976,7 +1026,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
         s = db_api.stack_get(self.ctx, sid)
 
         t = template_format.parse(wp_template_no_default)
-        template = parser.Template(t)
+        template = templatem.Template(t)
         env = environment.Environment({'parameters': with_params,
                                        'resource_registry': {'rsc': 'test'}})
         stack = parser.Stack(self.ctx, stack_name, template, env)
@@ -1001,15 +1051,15 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
 
         self.m.ReplayAll()
 
-        api_args = {engine_api.PARAM_TIMEOUT: 60,
-                    engine_api.PARAM_EXISTING: True}
+        api_args = {rpc_api.PARAM_TIMEOUT: 60,
+                    rpc_api.PARAM_EXISTING: True}
         result = self.man.update_stack(self.ctx, old_stack.identifier(),
                                        wp_template_no_default, no_params,
                                        None, api_args)
         self.assertEqual(old_stack.identifier(), result)
         self.assertIsInstance(result, dict)
         self.assertTrue(result['stack_id'])
-        self.assertEqual(self.man.thread_group_mgr.events[sid], [evt_mock])
+        self.assertEqual([evt_mock], self.man.thread_group_mgr.events[sid])
         self.m.VerifyAll()
 
     def test_stack_update_reuses_api_params(self):
@@ -1078,7 +1128,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
             dispatcher.ExpectedException,
             self.man.stack_cancel_update, self.ctx, old_stack.identifier())
 
-        self.assertEqual(ex.exc_info[0], exception.NotSupported)
+        self.assertEqual(exception.NotSupported, ex.exc_info[0])
         self.assertIn("Cancelling update when stack is "
                       "('UPDATE', 'COMPLETE')",
                       six.text_type(ex.exc_info[1]))
@@ -1286,7 +1336,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                                self.man.update_stack, self.ctx,
                                old_stack.identifier(), tpl, params,
                                None, {})
-        self.assertEqual(ex.exc_info[0], exception.RequestLimitExceeded)
+        self.assertEqual(exception.RequestLimitExceeded, ex.exc_info[0])
         self.assertIn(exception.StackResourceLimitExceeded.msg_fmt,
                       six.text_type(ex.exc_info[1]))
 
@@ -1322,7 +1372,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
             self.man.update_stack,
             self.ctx, old_stack.identifier(),
             template, params, None, api_args)
-        self.assertEqual(ex.exc_info[0], exception.StackValidationFailed)
+        self.assertEqual(exception.StackValidationFailed, ex.exc_info[0])
         self.m.VerifyAll()
 
     def test_stack_update_nonexist(self):
@@ -1337,7 +1387,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                                self.man.update_stack,
                                self.ctx, stack.identifier(), template,
                                params, None, {})
-        self.assertEqual(ex.exc_info[0], exception.StackNotFound)
+        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
         self.m.VerifyAll()
 
     def test_stack_update_no_credentials(self):
@@ -1374,7 +1424,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                                self.man.update_stack, self.ctx,
                                old_stack.identifier(),
                                template, params, None, api_args)
-        self.assertEqual(ex.exc_info[0], exception.MissingCredentialError)
+        self.assertEqual(exception.MissingCredentialError, ex.exc_info[0])
         self.assertEqual(
             'Missing required credential: X-Auth-Key',
             six.text_type(ex.exc_info[1]))
@@ -1422,7 +1472,7 @@ class StackServiceCreateUpdateDeleteTest(HeatTestCase):
                          six.text_type(ex))
 
 
-class StackServiceUpdateActionsNotSupportedTest(HeatTestCase):
+class StackServiceUpdateActionsNotSupportedTest(common.HeatTestCase):
 
     scenarios = [
         ('suspend_in_progress', dict(action='SUSPEND', status='IN_PROGRESS')),
@@ -1461,11 +1511,11 @@ class StackServiceUpdateActionsNotSupportedTest(HeatTestCase):
                                self.man.update_stack,
                                self.ctx, old_stack.identifier(), template,
                                params, None, {})
-        self.assertEqual(ex.exc_info[0], exception.NotSupported)
+        self.assertEqual(exception.NotSupported, ex.exc_info[0])
         self.m.VerifyAll()
 
 
-class StackServiceActionsTest(HeatTestCase):
+class StackServiceActionsTest(common.HeatTestCase):
 
     def setUp(self):
         super(StackServiceActionsTest, self).setUp()
@@ -1522,7 +1572,7 @@ class StackServiceActionsTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.man.stack_suspend, self.ctx,
                                stack.identifier())
-        self.assertEqual(ex.exc_info[0], exception.StackNotFound)
+        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
         self.m.VerifyAll()
 
     def test_stack_resume_nonexist(self):
@@ -1534,7 +1584,7 @@ class StackServiceActionsTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.man.stack_resume, self.ctx,
                                stack.identifier())
-        self.assertEqual(ex.exc_info[0], exception.StackNotFound)
+        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
         self.m.VerifyAll()
 
     def _mock_thread_start(self, stack_id, func, *args, **kwargs):
@@ -1554,7 +1604,7 @@ class StackServiceActionsTest(HeatTestCase):
         self.assertTrue(stack.check.called)
 
 
-class StackServiceAuthorizeTest(HeatTestCase):
+class StackServiceAuthorizeTest(common.HeatTestCase):
 
     def setUp(self):
         super(StackServiceAuthorizeTest, self).setUp()
@@ -1605,7 +1655,7 @@ class StackServiceAuthorizeTest(HeatTestCase):
         fc = setup_mocks(self.m, stack)
         self.m.StubOutWithMock(fc.client, 'get_servers_9999')
         get = fc.client.get_servers_9999
-        get().AndRaise(fakes.fake_exception())
+        get().AndRaise(fakes_v1_1.fake_exception())
 
         self.m.ReplayAll()
         stack.store()
@@ -1649,7 +1699,7 @@ class StackServiceAuthorizeTest(HeatTestCase):
             self.ctx, self.stack, 'WebServer'))
 
 
-class StackServiceTest(HeatTestCase):
+class StackServiceTest(common.HeatTestCase):
 
     def setUp(self):
         super(StackServiceTest, self).setUp()
@@ -1721,14 +1771,14 @@ class StackServiceTest(HeatTestCase):
     def test_stack_identify_nonexist(self):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.eng.identify_stack, self.ctx, 'wibble')
-        self.assertEqual(ex.exc_info[0], exception.StackNotFound)
+        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
 
     @stack_context('service_create_existing_test_stack', False)
     def test_stack_create_existing(self):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.eng.create_stack, self.ctx,
                                self.stack.name, self.stack.t.t, {}, None, {})
-        self.assertEqual(ex.exc_info[0], exception.StackExists)
+        self.assertEqual(exception.StackExists, ex.exc_info[0])
 
     @stack_context('service_name_tenants_test_stack', False)
     def test_stack_by_name_tenants(self):
@@ -1820,7 +1870,7 @@ class StackServiceTest(HeatTestCase):
         # pointing to an orphaned stack object.
         self.stack = parser.Stack.load(self.ctx, stack_id=result['stack_id'])
 
-        self.assertEqual(self.stack.identifier(), result)
+        self.assertEqual(result, self.stack.identifier())
         self.assertIsInstance(result, dict)
         self.assertTrue(result['stack_id'])
         events = self.eng.list_events(self.ctx, self.stack.identifier())
@@ -2024,6 +2074,34 @@ class StackServiceTest(HeatTestCase):
                                                    mock.ANY,
                                                    )
 
+    @mock.patch.object(db_api, 'stack_get_all')
+    def test_stack_list_show_nested(self, mock_stack_get_all):
+        self.eng.list_stacks(self.ctx, show_nested=True)
+        mock_stack_get_all.assert_called_once_with(mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   True,
+                                                   )
+
+    @mock.patch.object(db_api, 'stack_get_all')
+    def test_stack_list_show_deleted(self, mock_stack_get_all):
+        self.eng.list_stacks(self.ctx, show_deleted=True)
+        mock_stack_get_all.assert_called_once_with(mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   True,
+                                                   mock.ANY,
+                                                   )
+
     @mock.patch.object(db_api, 'stack_count_all')
     def test_count_stacks_passes_filter_info(self, mock_stack_count_all):
         self.eng.count_stacks(self.ctx, filters={'foo': 'bar'})
@@ -2059,6 +2137,15 @@ class StackServiceTest(HeatTestCase):
                                                      tenant_safe=True,
                                                      show_deleted=False,
                                                      show_nested=True)
+
+    @mock.patch.object(db_api, 'stack_count_all')
+    def test_count_stack_show_deleted(self, mock_stack_count_all):
+        self.eng.count_stacks(self.ctx, show_deleted=True)
+        mock_stack_count_all.assert_called_once_with(mock.ANY,
+                                                     filters=mock.ANY,
+                                                     tenant_safe=True,
+                                                     show_deleted=True,
+                                                     show_nested=False)
 
     @stack_context('service_abandon_stack')
     def test_abandon_stack(self):
@@ -2105,7 +2192,7 @@ class StackServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.eng.show_stack,
                                self.ctx, non_exist_identifier)
-        self.assertEqual(ex.exc_info[0], exception.StackNotFound)
+        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
         self.m.VerifyAll()
 
     def test_stack_describe_bad_tenant(self):
@@ -2124,7 +2211,7 @@ class StackServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.eng.show_stack,
                                self.ctx, non_exist_identifier)
-        self.assertEqual(ex.exc_info[0], exception.InvalidTenant)
+        self.assertEqual(exception.InvalidTenant, ex.exc_info[0])
 
         self.m.VerifyAll()
 
@@ -2183,8 +2270,9 @@ class StackServiceTest(HeatTestCase):
 
     def test_list_resource_types_deprecated(self):
         resources = self.eng.list_resource_types(self.ctx, "DEPRECATED")
-        self.assertEqual(['OS::Neutron::RouterGateway',
-                          'OS::Heat::CWLiteAlarm'], resources)
+        self.assertEqual({'OS::Neutron::RouterGateway',
+                          'OS::Heat::CWLiteAlarm',
+                          'OS::Heat::HARestarter'}, set(resources))
 
     def test_list_resource_types_supported(self):
         resources = self.eng.list_resource_types(self.ctx, "SUPPORTED")
@@ -2202,6 +2290,12 @@ class StackServiceTest(HeatTestCase):
                     'update_allowed': False,
                     'immutable': False,
                 },
+                'FooInt': {
+                    'type': 'integer',
+                    'required': False,
+                    'update_allowed': False,
+                    'immutable': False,
+                },
             },
             'attributes': {
                 'foo': {'description': 'A generic attribute'},
@@ -2212,10 +2306,33 @@ class StackServiceTest(HeatTestCase):
         schema = self.eng.resource_schema(self.ctx, type_name=type_name)
         self.assertEqual(expected, schema)
 
+    def _no_template_file(self, function):
+        env = environment.Environment()
+        info = environment.ResourceInfo(env.registry,
+                                        ['ResourceWithWrongRefOnFile'],
+                                        'not_existing.yaml')
+        mock_iterable = mock.MagicMock(return_value=iter([info]))
+        with mock.patch('heat.engine.environment.ResourceRegistry.iterable_by',
+                        new=mock_iterable):
+            ex = self.assertRaises(exception.StackValidationFailed,
+                                   function,
+                                   self.ctx,
+                                   type_name='ResourceWithWrongRefOnFile')
+            msg = 'Could not fetch remote template "not_existing.yaml"'
+            self.assertIn(msg, six.text_type(ex))
+
+    def test_resource_schema_no_template_file(self):
+        self._no_template_file(self.eng.resource_schema)
+
+    def test_generate_template_no_template_file(self):
+        self._no_template_file(self.eng.generate_template)
+
     def test_resource_schema_nonexist(self):
-        self.assertRaises(exception.ResourceTypeNotFound,
-                          self.eng.resource_schema,
-                          self.ctx, type_name='Bogus')
+        ex = self.assertRaises(exception.ResourceTypeNotFound,
+                               self.eng.resource_schema,
+                               self.ctx, type_name='Bogus')
+        msg = 'The Resource Type (Bogus) could not be found.'
+        self.assertEqual(msg, six.text_type(ex))
 
     @stack_context('service_stack_resource_describe__test_stack')
     def test_stack_resource_describe(self):
@@ -2225,7 +2342,7 @@ class StackServiceTest(HeatTestCase):
         self.m.ReplayAll()
 
         r = self.eng.describe_stack_resource(self.ctx, self.stack.identifier(),
-                                             'WebServer')
+                                             'WebServer', with_attr=None)
 
         self.assertIn('resource_identity', r)
         self.assertIn('description', r)
@@ -2240,6 +2357,7 @@ class StackServiceTest(HeatTestCase):
         self.assertIn('resource_type', r)
         self.assertIn('physical_resource_id', r)
         self.assertIn('resource_name', r)
+        self.assertIn('attributes', r)
         self.assertEqual('WebServer', r['resource_name'])
 
         self.m.VerifyAll()
@@ -2259,7 +2377,7 @@ class StackServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.eng.describe_stack_resource,
                                self.ctx, non_exist_identifier, 'WebServer')
-        self.assertEqual(ex.exc_info[0], exception.StackNotFound)
+        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
 
         self.m.VerifyAll()
 
@@ -2273,7 +2391,7 @@ class StackServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.eng.describe_stack_resource,
                                self.ctx, self.stack.identifier(), 'foo')
-        self.assertEqual(ex.exc_info[0], exception.ResourceNotFound)
+        self.assertEqual(exception.ResourceNotFound, ex.exc_info[0])
 
         self.m.VerifyAll()
 
@@ -2288,7 +2406,7 @@ class StackServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.eng.describe_stack_resource,
                                self.ctx, self.stack.identifier(), 'foo')
-        self.assertEqual(ex.exc_info[0], exception.Forbidden)
+        self.assertEqual(exception.Forbidden, ex.exc_info[0])
 
         self.m.VerifyAll()
 
@@ -2358,7 +2476,7 @@ class StackServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.eng.describe_stack_resources,
                                self.ctx, non_exist_identifier, 'WebServer')
-        self.assertEqual(ex.exc_info[0], exception.StackNotFound)
+        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
 
     @stack_context('find_phys_res_stack')
     def test_find_physical_resource(self):
@@ -2377,7 +2495,7 @@ class StackServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.eng.find_physical_resource,
                                self.ctx, 'foo')
-        self.assertEqual(ex.exc_info[0], exception.PhysicalResourceNotFound)
+        self.assertEqual(exception.PhysicalResourceNotFound, ex.exc_info[0])
 
     @stack_context('service_resources_list_test_stack')
     def test_stack_resources_list(self):
@@ -2453,7 +2571,7 @@ class StackServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.eng.list_stack_resources,
                                self.ctx, non_exist_identifier)
-        self.assertEqual(ex.exc_info[0], exception.StackNotFound)
+        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
 
         self.m.VerifyAll()
 
@@ -2506,7 +2624,7 @@ class StackServiceTest(HeatTestCase):
                                dict(self.stack.identifier()),
                                'resource_does_not_exist',
                                test_data)
-        self.assertEqual(ex.exc_info[0], exception.ResourceNotFound)
+        self.assertEqual(exception.ResourceNotFound, ex.exc_info[0])
         self.m.VerifyAll()
         self.stack.delete()
 
@@ -2576,7 +2694,7 @@ class StackServiceTest(HeatTestCase):
                                self.eng.metadata_update,
                                self.ctx, non_exist_identifier,
                                'WebServer', test_metadata)
-        self.assertEqual(ex.exc_info[0], exception.StackNotFound)
+        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
         self.m.VerifyAll()
 
     @stack_context('service_metadata_err_resource_test_stack', False)
@@ -2591,7 +2709,7 @@ class StackServiceTest(HeatTestCase):
                                self.eng.metadata_update,
                                self.ctx, dict(self.stack.identifier()),
                                'NooServer', test_metadata)
-        self.assertEqual(ex.exc_info[0], exception.ResourceNotFound)
+        self.assertEqual(exception.ResourceNotFound, ex.exc_info[0])
 
         self.m.VerifyAll()
 
@@ -2685,10 +2803,10 @@ class StackServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.eng.show_watch,
                                self.ctx, watch_name="nonexistent")
-        self.assertEqual(ex.exc_info[0], exception.WatchRuleNotFound)
+        self.assertEqual(exception.WatchRuleNotFound, ex.exc_info[0])
 
         # Check the response has all keys defined in the engine API
-        for key in engine_api.WATCH_KEYS:
+        for key in rpc_api.WATCH_KEYS:
             self.assertIn(key, result[0])
 
     @stack_context('service_show_watch_metric_test_stack', False)
@@ -2734,7 +2852,7 @@ class StackServiceTest(HeatTestCase):
         self.assertEqual(2, len(result))
 
         # Check the response has all keys defined in the engine API
-        for key in engine_api.WATCH_DATA_KEYS:
+        for key in rpc_api.WATCH_DATA_KEYS:
             self.assertIn(key, result[0])
 
     @stack_context('service_show_watch_state_test_stack')
@@ -2776,7 +2894,7 @@ class StackServiceTest(HeatTestCase):
         result = self.eng.set_watch_state(self.ctx,
                                           watch_name="OverrideAlarm",
                                           state=state)
-        self.assertEqual(state, result[engine_api.WATCH_STATE_VALUE])
+        self.assertEqual(state, result[rpc_api.WATCH_STATE_VALUE])
         self.assertEqual(
             [], self.eng.thread_group_mgr.groups[self.stack.id].threads)
 
@@ -2784,7 +2902,7 @@ class StackServiceTest(HeatTestCase):
         result = self.eng.set_watch_state(self.ctx,
                                           watch_name="OverrideAlarm",
                                           state=state)
-        self.assertEqual(state, result[engine_api.WATCH_STATE_VALUE])
+        self.assertEqual(state, result[rpc_api.WATCH_STATE_VALUE])
         self.assertEqual(
             [], self.eng.thread_group_mgr.groups[self.stack.id].threads)
 
@@ -2792,7 +2910,7 @@ class StackServiceTest(HeatTestCase):
         result = self.eng.set_watch_state(self.ctx,
                                           watch_name="OverrideAlarm",
                                           state=state)
-        self.assertEqual(state, result[engine_api.WATCH_STATE_VALUE])
+        self.assertEqual(state, result[rpc_api.WATCH_STATE_VALUE])
         self.assertEqual(
             [dummy_action.signal],
             self.eng.thread_group_mgr.groups[self.stack.id].threads)
@@ -2845,7 +2963,7 @@ class StackServiceTest(HeatTestCase):
                                self.eng.set_watch_state,
                                self.ctx, watch_name="nonexistent",
                                state=state)
-        self.assertEqual(ex.exc_info[0], exception.WatchRuleNotFound)
+        self.assertEqual(exception.WatchRuleNotFound, ex.exc_info[0])
         self.m.VerifyAll()
 
     def test_stack_list_all_empty(self):
@@ -2939,7 +3057,7 @@ class StackServiceTest(HeatTestCase):
         self.eng._validate_new_stack = mock.Mock(side_effect=exc)
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self._preview_stack)
-        self.assertEqual(ex.exc_info[0], exception.StackExists)
+        self.assertEqual(exception.StackExists, ex.exc_info[0])
 
     @mock.patch.object(service.api, 'format_stack_preview', new=mock.Mock())
     @mock.patch.object(service.parser, 'Stack')
@@ -2950,12 +3068,12 @@ class StackServiceTest(HeatTestCase):
         mock_parser.return_value = mock_parsed_stack
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self._preview_stack)
-        self.assertEqual(ex.exc_info[0], exception.StackValidationFailed)
+        self.assertEqual(exception.StackValidationFailed, ex.exc_info[0])
 
     @mock.patch.object(service.db_api, 'stack_get_by_name')
     def test_validate_new_stack_checks_existing_stack(self, mock_stack_get):
         mock_stack_get.return_value = 'existing_db_stack'
-        tmpl = service.templatem.Template(
+        tmpl = templatem.Template(
             {'HeatTemplateFormatVersion': '2012-12-12'})
         self.assertRaises(exception.StackExists, self.eng._validate_new_stack,
                           self.ctx, 'test_existing_stack', tmpl)
@@ -2964,7 +3082,7 @@ class StackServiceTest(HeatTestCase):
     def test_validate_new_stack_checks_stack_limit(self, mock_db_count):
         cfg.CONF.set_override('max_stacks_per_tenant', 99)
         mock_db_count.return_value = 99
-        template = service.templatem.Template(
+        template = templatem.Template(
             {'HeatTemplateFormatVersion': '2012-12-12'})
         self.assertRaises(exception.RequestLimitExceeded,
                           self.eng._validate_new_stack,
@@ -2974,7 +3092,7 @@ class StackServiceTest(HeatTestCase):
         template = {'heat_template_version': '2013-05-23',
                     'resources': {
                         'Res': {'Type': 'GenericResource1'}}}
-        parsed_template = service.templatem.Template(template)
+        parsed_template = templatem.Template(template)
         ex = self.assertRaises(exception.StackValidationFailed,
                                self.eng._validate_new_stack,
                                self.ctx, 'test_existing_stack',
@@ -2987,7 +3105,7 @@ class StackServiceTest(HeatTestCase):
         template = {'heat_template_version': '2013-05-23',
                     'unknown_section': {
                         'Res': {'Type': 'GenericResource1'}}}
-        parsed_template = service.templatem.Template(template)
+        parsed_template = templatem.Template(template)
         ex = self.assertRaises(exception.StackValidationFailed,
                                self.eng._validate_new_stack,
                                self.ctx, 'test_existing_stack',
@@ -3005,13 +3123,13 @@ class StackServiceTest(HeatTestCase):
                         'Res4': {'Type': 'GenericResource1'},
                         'Res5': {'Type': 'GenericResource1'},
                         'Res6': {'Type': 'GenericResource1'}}}
-        parsed_template = service.templatem.Template(template)
+        parsed_template = templatem.Template(template)
         self.assertRaises(exception.RequestLimitExceeded,
                           self.eng._validate_new_stack,
                           self.ctx, 'test_existing_stack', parsed_template)
 
 
-class SoftwareConfigServiceTest(HeatTestCase):
+class SoftwareConfigServiceTest(common.HeatTestCase):
 
     def setUp(self):
         super(SoftwareConfigServiceTest, self).setUp()
@@ -3034,7 +3152,7 @@ class SoftwareConfigServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.engine.show_software_config,
                                self.ctx, config_id)
-        self.assertEqual(ex.exc_info[0], exception.NotFound)
+        self.assertEqual(exception.NotFound, ex.exc_info[0])
 
         config = self._create_software_config()
         config_id = config['id']
@@ -3074,7 +3192,7 @@ class SoftwareConfigServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.engine.show_software_config,
                                self.ctx, config_id)
-        self.assertEqual(ex.exc_info[0], exception.NotFound)
+        self.assertEqual(exception.NotFound, ex.exc_info[0])
 
     def _create_software_deployment(self, config_id=None, input_values=None,
                                     action='INIT',
@@ -3195,7 +3313,7 @@ class SoftwareConfigServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.engine.show_software_deployment,
                                self.ctx, deployment_id)
-        self.assertEqual(ex.exc_info[0], exception.NotFound)
+        self.assertEqual(exception.NotFound, ex.exc_info[0])
 
         deployment = self._create_software_deployment()
         self.assertIsNotNone(deployment)
@@ -3320,7 +3438,7 @@ class SoftwareConfigServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.engine.delete_software_deployment,
                                self.ctx, deployment_id)
-        self.assertEqual(ex.exc_info[0], exception.NotFound)
+        self.assertEqual(exception.NotFound, ex.exc_info[0])
 
         deployment = self._create_software_deployment()
         self.assertIsNotNone(deployment)
@@ -3386,7 +3504,7 @@ class SoftwareConfigServiceTest(HeatTestCase):
             'http://192.168.2.2/foo/bar', jsonutils.dumps(result_metadata))
 
 
-class ThreadGroupManagerTest(HeatTestCase):
+class ThreadGroupManagerTest(common.HeatTestCase):
     def setUp(self):
         super(ThreadGroupManagerTest, self).setUp()
         self.f = 'function'
@@ -3427,9 +3545,10 @@ class ThreadGroupManagerTest(HeatTestCase):
         ret = thm.start(stack_id, self.f, *self.fargs, **self.fkwargs)
 
         self.assertEqual(self.tg_mock, thm.groups['test'])
-        self.tg_mock.add_thread.assert_called_with(self.f, *self.fargs,
-                                                   **self.fkwargs)
-        self.assertEqual(self.tg_mock.add_thread(), ret)
+        self.tg_mock.add_thread.assert_called_with(
+            thm._start_with_trace, None,
+            self.f, *self.fargs, **self.fkwargs)
+        self.assertEqual(ret, self.tg_mock.add_thread())
 
     def test_tgm_add_timer(self):
         stack_id = 'test'
@@ -3437,7 +3556,7 @@ class ThreadGroupManagerTest(HeatTestCase):
         thm = service.ThreadGroupManager()
         thm.add_timer(stack_id, self.f, *self.fargs, **self.fkwargs)
 
-        self.assertEqual(thm.groups[stack_id], self.tg_mock)
+        self.assertEqual(self.tg_mock, thm.groups[stack_id])
         self.tg_mock.add_timer.assert_called_with(
             self.cfg_mock.CONF.periodic_interval,
             self.f, *self.fargs, **self.fkwargs)
@@ -3448,7 +3567,7 @@ class ThreadGroupManagerTest(HeatTestCase):
         thm = service.ThreadGroupManager()
         thm.add_event(stack_id, e1)
         thm.add_event(stack_id, e2)
-        self.assertEqual(thm.events[stack_id], [e1, e2])
+        self.assertEqual([e1, e2], thm.events[stack_id])
 
     def test_tgm_remove_event(self):
         stack_id = 'add_events_test'
@@ -3457,7 +3576,7 @@ class ThreadGroupManagerTest(HeatTestCase):
         thm.add_event(stack_id, e1)
         thm.add_event(stack_id, e2)
         thm.remove_event(None, stack_id, e2)
-        self.assertEqual(thm.events[stack_id], [e1])
+        self.assertEqual([e1], thm.events[stack_id])
         thm.remove_event(None, stack_id, e1)
         self.assertNotIn(stack_id, thm.events)
 
@@ -3470,7 +3589,7 @@ class ThreadGroupManagerTest(HeatTestCase):
         thm.send(stack_id, 'test_message')
 
 
-class ThreadGroupManagerStopTest(HeatTestCase):
+class ThreadGroupManagerStopTest(common.HeatTestCase):
     def test_tgm_stop(self):
         stack_id = 'test'
         done = []
@@ -3496,7 +3615,7 @@ class ThreadGroupManagerStopTest(HeatTestCase):
         self.assertNotIn(stack_id, thm.events)
 
 
-class SnapshotServiceTest(HeatTestCase):
+class SnapshotServiceTest(common.HeatTestCase):
 
     def setUp(self):
         super(SnapshotServiceTest, self).setUp()
@@ -3508,13 +3627,13 @@ class SnapshotServiceTest(HeatTestCase):
         utils.setup_dummy_db()
         self.addCleanup(self.m.VerifyAll)
 
-    def _create_stack(self):
+    def _create_stack(self, stub=True):
         stack = get_wordpress_stack('stack', self.ctx)
         sid = stack.store()
 
         s = db_api.stack_get(self.ctx, sid)
-        self.m.StubOutWithMock(parser.Stack, 'load')
-
+        if stub:
+            self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.ctx, stack=s).MultipleTimes().AndReturn(stack)
         return stack
 
@@ -3523,7 +3642,7 @@ class SnapshotServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.engine.show_snapshot,
                                self.ctx, None, snapshot_id)
-        self.assertEqual(ex.exc_info[0], exception.NotFound)
+        self.assertEqual(exception.NotFound, ex.exc_info[0])
 
     def test_create_snapshot(self):
         stack = self._create_stack()
@@ -3531,6 +3650,7 @@ class SnapshotServiceTest(HeatTestCase):
         snapshot = self.engine.stack_snapshot(
             self.ctx, stack.identifier(), 'snap1')
         self.assertIsNotNone(snapshot['id'])
+        self.assertIsNotNone(snapshot['creation_time'])
         self.assertEqual('snap1', snapshot['name'])
         self.assertEqual("IN_PROGRESS", snapshot['status'])
         self.engine.thread_group_mgr.groups[stack.id].wait()
@@ -3540,6 +3660,8 @@ class SnapshotServiceTest(HeatTestCase):
         self.assertEqual("SNAPSHOT", snapshot['data']['action'])
         self.assertEqual("COMPLETE", snapshot['data']['status'])
         self.assertEqual(stack.id, snapshot['data']['id'])
+        self.assertIsNotNone(stack.updated_time)
+        self.assertIsNotNone(snapshot['creation_time'])
 
     def test_delete_snapshot_not_found(self):
         stack = self._create_stack()
@@ -3548,7 +3670,7 @@ class SnapshotServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.engine.delete_snapshot,
                                self.ctx, stack.identifier(), snapshot_id)
-        self.assertEqual(ex.exc_info[0], exception.NotFound)
+        self.assertEqual(exception.NotFound, ex.exc_info[0])
 
     def test_delete_snapshot(self):
         stack = self._create_stack()
@@ -3562,7 +3684,7 @@ class SnapshotServiceTest(HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.engine.show_snapshot, self.ctx,
                                stack.identifier(), snapshot_id)
-        self.assertEqual(ex.exc_info[0], exception.NotFound)
+        self.assertEqual(exception.NotFound, ex.exc_info[0])
 
     def test_list_snapshots(self):
         stack = self._create_stack()
@@ -3580,5 +3702,31 @@ class SnapshotServiceTest(HeatTestCase):
             "name": "snap1",
             "status": "COMPLETE",
             "status_reason": "Stack SNAPSHOT completed successfully",
-            "data": stack.prepare_abandon()}
+            "data": stack.prepare_abandon(),
+            "creation_time": snapshot['creation_time']}
         self.assertEqual([expected], snapshots)
+
+    def test_restore_snapshot(self):
+        stack = self._create_stack()
+        self.m.ReplayAll()
+        snapshot = self.engine.stack_snapshot(
+            self.ctx, stack.identifier(), 'snap1')
+        self.engine.thread_group_mgr.groups[stack.id].wait()
+        snapshot_id = snapshot['id']
+        self.engine.stack_restore(self.ctx, stack.identifier(), snapshot_id)
+        self.engine.thread_group_mgr.groups[stack.id].wait()
+        self.assertEqual((stack.RESTORE, stack.COMPLETE), stack.state)
+
+    def test_restore_snapshot_other_stack(self):
+        stack1 = self._create_stack()
+        stack2 = self._create_stack(stub=False)
+        self.m.ReplayAll()
+        snapshot1 = self.engine.stack_snapshot(
+            self.ctx, stack1.identifier(), 'snap1')
+        self.engine.thread_group_mgr.groups[stack1.id].wait()
+        snapshot_id = snapshot1['id']
+        self.engine.stack_restore(self.ctx, stack2.identifier(), snapshot_id)
+        self.engine.thread_group_mgr.groups[stack2.id].wait()
+        self.assertEqual((stack2.RESTORE, stack2.FAILED), stack2.state)
+        self.assertEqual("Can't restore snapshot from other stack",
+                         stack2.status_reason)

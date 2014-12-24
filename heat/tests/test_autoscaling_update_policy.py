@@ -17,9 +17,10 @@ import six
 
 import mox
 from oslo.config import cfg
-from testtools.matchers import MatchesRegex
+from testtools import matchers
 
 from heat.common import exception
+from heat.common import grouputils
 from heat.common import template_format
 from heat.engine.clients.os import nova
 from heat.engine import function
@@ -28,9 +29,9 @@ from heat.engine import parser
 from heat.engine.resources import instance
 from heat.engine.resources import loadbalancer as lb
 from heat.engine.resources import wait_condition as wc
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
-from heat.tests.v1_1 import fakes as fakes11
+from heat.tests.v1_1 import fakes as fakes_v1_1
 
 
 asg_tmpl_without_updt_policy = '''
@@ -201,11 +202,11 @@ asg_tmpl_with_updt_policy = '''
 '''
 
 
-class AutoScalingGroupTest(HeatTestCase):
+class AutoScalingGroupTest(common.HeatTestCase):
 
     def setUp(self):
         super(AutoScalingGroupTest, self).setUp()
-        self.fc = fakes11.FakeClient()
+        self.fc = fakes_v1_1.FakeClient()
         self.stub_keystoneclient(username='test_stack.CfnLBUser')
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://127.0.0.1:8000/v1/waitcondition')
@@ -319,6 +320,7 @@ class AutoScalingGroupTest(HeatTestCase):
         stack = utils.parse_stack(tmpl)
         self.stub_ImageConstraint_validate()
         self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         stack.validate()
@@ -331,6 +333,7 @@ class AutoScalingGroupTest(HeatTestCase):
         stack = utils.parse_stack(tmpl)
         self.stub_ImageConstraint_validate()
         self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         stack.validate()
@@ -353,6 +356,7 @@ class AutoScalingGroupTest(HeatTestCase):
         stack = utils.parse_stack(tmpl)
         self.stub_ImageConstraint_validate()
         self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         stack.validate()
@@ -370,6 +374,7 @@ class AutoScalingGroupTest(HeatTestCase):
     def test_parse_with_bad_update_policy(self):
         self.stub_ImageConstraint_validate()
         self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
         tmpl = template_format.parse(asg_tmpl_with_bad_updt_policy)
         stack = utils.parse_stack(tmpl)
@@ -380,6 +385,7 @@ class AutoScalingGroupTest(HeatTestCase):
     def test_parse_with_bad_pausetime_in_update_policy(self):
         self.stub_ImageConstraint_validate()
         self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
         tmpl = template_format.parse(asg_tmpl_with_default_updt_policy)
         group = tmpl['Resources']['WebServerGroup']
@@ -451,6 +457,7 @@ class AutoScalingGroupTest(HeatTestCase):
 
         self.stub_KeypairConstraint_validate()
         self.stub_ImageConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         stack.validate()
@@ -461,6 +468,7 @@ class AutoScalingGroupTest(HeatTestCase):
         size = int(stack['WebServerGroup'].properties['MinSize'])
         self._stub_grp_create(size)
         self.stub_ImageConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
         stack.create()
         self.m.VerifyAll()
@@ -481,7 +489,8 @@ class AutoScalingGroupTest(HeatTestCase):
         # test that physical resource name of launch configuration is used
         conf = stack['LaunchConfig']
         conf_name_pattern = '%s-LaunchConfig-[a-zA-Z0-9]+$' % stack.name
-        self.assertThat(conf.FnGetRefId(), MatchesRegex(conf_name_pattern))
+        self.assertThat(conf.FnGetRefId(),
+                        matchers.MatchesRegex(conf_name_pattern))
 
         # get launch conf name here to compare result after update
         conf_name = self.get_launch_conf_name(stack, 'WebServerGroup')
@@ -494,8 +503,8 @@ class AutoScalingGroupTest(HeatTestCase):
         self.m.UnsetStubs()
 
         # saves info from initial list of instances for comparison later
-        init_instances = current_grp.get_instances()
-        init_names = current_grp.get_instance_names()
+        init_instances = grouputils.get_members(current_grp)
+        init_names = grouputils.get_member_names(current_grp)
         init_images = [(i.name, i.t['Properties']['ImageId'])
                        for i in init_instances]
         init_flavors = [(i.name, i.t['Properties']['InstanceType'])
@@ -517,6 +526,7 @@ class AutoScalingGroupTest(HeatTestCase):
         self.stub_wallclock()
         self.stub_ImageConstraint_validate()
         self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         stack.validate()
@@ -527,7 +537,7 @@ class AutoScalingGroupTest(HeatTestCase):
 
         # test that the update policy is updated
         updated_grp = stack['WebServerGroup']
-        updt_instances = updated_grp.get_instances()
+        updt_instances = grouputils.get_members(updated_grp)
         self.assertTrue('AutoScalingRollingUpdate'
                         in updated_grp.update_policy)
         updated_policy = updated_grp.update_policy['AutoScalingRollingUpdate']
@@ -540,8 +550,8 @@ class AutoScalingGroupTest(HeatTestCase):
         self.assertNotEqual(conf_name, updated_conf_name)
 
         # test that the group size are the same
-        updt_instances = updated_grp.get_instances()
-        updt_names = updated_grp.get_instance_names()
+        updt_instances = grouputils.get_members(updated_grp)
+        updt_names = grouputils.get_member_names(updated_grp)
         self.assertEqual(len(init_names), len(updt_names))
 
         # test that appropriate number of instance names are the same
@@ -660,7 +670,7 @@ class AutoScalingGroupTest(HeatTestCase):
                                       num_updates_expected_on_updt=9,
                                       num_creates_expected_on_updt=1,
                                       num_deletes_expected_on_updt=1,
-                                      num_reloads_expected_on_updt=12,
+                                      num_reloads_expected_on_updt=13,
                                       update_replace=True,
                                       update_image_id=update_image)
 
@@ -717,6 +727,7 @@ class AutoScalingGroupTest(HeatTestCase):
         stack = utils.parse_stack(tmpl)
         self.stub_ImageConstraint_validate()
         self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         stack.validate()
@@ -727,6 +738,7 @@ class AutoScalingGroupTest(HeatTestCase):
         size = int(stack['WebServerGroup'].properties['MinSize'])
         self._stub_grp_create(size)
         self.stub_ImageConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
         stack.create()
         self.m.VerifyAll()
@@ -746,7 +758,8 @@ class AutoScalingGroupTest(HeatTestCase):
         # test that physical resource name of launch configuration is used
         conf = stack['LaunchConfig']
         conf_name_pattern = '%s-LaunchConfig-[a-zA-Z0-9]+$' % stack.name
-        self.assertThat(conf.FnGetRefId(), MatchesRegex(conf_name_pattern))
+        self.assertThat(conf.FnGetRefId(),
+                        matchers.MatchesRegex(conf_name_pattern))
 
         # test the number of instances created
         nested = stack['WebServerGroup'].nested()
@@ -780,6 +793,7 @@ class AutoScalingGroupTest(HeatTestCase):
         size = int(stack['WebServerGroup'].properties['MinSize'])
         self._stub_grp_create(size)
         self.stub_ImageConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
         stack.create()
         self.m.VerifyAll()
@@ -804,20 +818,26 @@ class AutoScalingGroupTest(HeatTestCase):
         self.m.UnsetStubs()
 
         # modify the pause time and test for error
-        new_pause_time = 'PT30M'
+        # the following test, effective_capacity is 12
+        # batch_count = (effective_capacity + batch_size -1)//batch_size
+        # = (12 + 2 - 1)//2 = 6
+        # if (batch_count - 1)* pause_time > stack.time_out, to raise error
+        # (6 - 1)*14*60 > 3600, so to raise error
+        new_pause_time = 'PT14M'
+        min_in_service = 10
         updt_template = json.loads(copy.deepcopy(asg_tmpl_with_updt_policy))
         group = updt_template['Resources']['WebServerGroup']
         policy = group['UpdatePolicy']['AutoScalingRollingUpdate']
         policy['PauseTime'] = new_pause_time
+        policy['MinInstancesInService'] = min_in_service
         config = updt_template['Resources']['LaunchConfig']
         config['Properties']['ImageId'] = 'F17-x86_64-cfntools'
         updated_tmpl = template_format.parse(json.dumps(updt_template))
         updated_stack = utils.parse_stack(updated_tmpl)
-        self._stub_grp_replace(num_creates_expected_on_updt=0,
-                               num_deletes_expected_on_updt=0,
-                               num_reloads_expected_on_updt=1)
+
         self.stub_KeypairConstraint_validate()
         self.stub_ImageConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
         stack.update(updated_stack)
         self.m.VerifyAll()

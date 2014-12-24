@@ -11,13 +11,17 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.common.i18n import _
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources.neutron import neutron
-from heat.engine.resources.vpc import VPC
+from heat.engine.resources import vpc
+from heat.engine import support
 
 
 class RouteTable(resource.Resource):
+
+    support_status = support.SupportStatus(version='2014.1')
 
     PROPERTIES = (
         VPC_ID, TAGS,
@@ -73,7 +77,7 @@ class RouteTable(resource.Resource):
             return False
 
         network_id = self.properties.get(self.VPC_ID)
-        default_router = VPC.router_for_vpc(client, network_id)
+        default_router = vpc.VPC.router_for_vpc(client, network_id)
         if default_router and default_router.get('external_gateway_info'):
             # the default router for the VPC is connected
             # to the external router, so do it for this too.
@@ -146,7 +150,7 @@ class SubnetRouteTableAssociation(resource.Resource):
         subnet = client.show_subnet(
             subnet_id)['subnet']
         network_id = subnet['network_id']
-        return VPC.router_for_vpc(client, network_id)
+        return vpc.VPC.router_for_vpc(client, network_id)
 
     def handle_delete(self):
         client = self.client()

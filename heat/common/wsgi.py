@@ -34,6 +34,7 @@ from eventlet.green import ssl
 import eventlet.greenio
 import eventlet.wsgi
 from oslo.config import cfg
+from oslo import i18n
 from oslo.utils import importutils
 from paste import deploy
 import routes
@@ -44,8 +45,11 @@ import webob.exc
 
 from heat.api.aws import exception as aws_exception
 from heat.common import exception
+from heat.common.i18n import _
+from heat.common.i18n import _LE
+from heat.common.i18n import _LI
+from heat.common.i18n import _LW
 from heat.common import serializers
-from heat.openstack.common import gettextutils
 
 
 URL_LENGTH_LIMIT = 50000
@@ -259,7 +263,7 @@ class Server(object):
         """
         def kill_children(*args):
             """Kills the entire process group."""
-            self.LOG.error(_('SIGTERM received'))
+            self.LOG.error(_LE('SIGTERM received'))
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             self.running = False
             os.killpg(0, signal.SIGTERM)
@@ -268,7 +272,7 @@ class Server(object):
             """
             Shuts down the server(s), but allows running requests to complete
             """
-            self.LOG.error(_('SIGHUP received'))
+            self.LOG.error(_LE('SIGHUP received'))
             signal.signal(signal.SIGHUP, signal.SIG_IGN)
             os.killpg(0, signal.SIGHUP)
             signal.signal(signal.SIGHUP, hup)
@@ -285,7 +289,7 @@ class Server(object):
             self.pool.spawn_n(self._single_run, application, self.sock)
             return
 
-        self.LOG.info(_("Starting %d workers") % conf.workers)
+        self.LOG.info(_LI("Starting %d workers") % conf.workers)
         signal.signal(signal.SIGTERM, kill_children)
         signal.signal(signal.SIGHUP, hup)
         while len(self.children) < conf.workers:
@@ -296,14 +300,14 @@ class Server(object):
             try:
                 pid, status = os.wait()
                 if os.WIFEXITED(status) or os.WIFSIGNALED(status):
-                    self.LOG.error(_('Removing dead child %s') % pid)
+                    self.LOG.error(_LE('Removing dead child %s') % pid)
                     self.children.remove(pid)
                     self.run_child()
             except OSError as err:
                 if err.errno not in (errno.EINTR, errno.ECHILD):
                     raise
             except KeyboardInterrupt:
-                self.LOG.info(_('Caught keyboard interrupt. Exiting.'))
+                self.LOG.info(_LI('Caught keyboard interrupt. Exiting.'))
                 os.killpg(0, signal.SIGTERM)
                 break
         eventlet.greenio.shutdown_safe(self.sock)
@@ -326,10 +330,10 @@ class Server(object):
             signal.signal(signal.SIGHUP, signal.SIG_DFL)
             signal.signal(signal.SIGTERM, signal.SIG_DFL)
             self.run_server()
-            self.LOG.info(_('Child %d exiting normally') % os.getpid())
+            self.LOG.info(_LI('Child %d exiting normally') % os.getpid())
             return
         else:
-            self.LOG.info(_('Started child %s') % pid)
+            self.LOG.info(_LI('Started child %s') % pid)
             self.children.append(pid)
 
     def run_server(self):
@@ -352,7 +356,7 @@ class Server(object):
 
     def _single_run(self, application, sock):
         """Start a WSGI server in a new green thread."""
-        self.LOG.info(_("Starting single process server"))
+        self.LOG.info(_LI("Starting single process server"))
         eventlet.wsgi.server(sock, application,
                              custom_pool=self.pool,
                              url_length_limit=URL_LENGTH_LIMIT,
@@ -521,7 +525,7 @@ class Request(webob.Request):
         """
         if not self.accept_language:
             return None
-        all_languages = gettextutils.get_available_languages('heat')
+        all_languages = i18n.get_available_languages('heat')
         return self.accept_language.best_match(all_languages)
 
 
@@ -626,13 +630,13 @@ class Resource(object):
             action_args.update(deserialized_request)
 
             logging.debug(
-                _('Calling %(controller)s : %(action)s'),
+                ('Calling %(controller)s : %(action)s'),
                 {'controller': self.controller, 'action': action})
 
             action_result = self.dispatch(self.controller, action,
                                           request, **action_args)
         except TypeError as err:
-            logging.error(_('Exception handling resource: %s') % err)
+            logging.error(_LE('Exception handling resource: %s') % err)
             msg = _('The server could not comply with the request since '
                     'it is either malformed or otherwise incorrect.')
             err = webob.exc.HTTPBadRequest(msg)
@@ -654,7 +658,7 @@ class Resource(object):
                 raise
             if isinstance(err, webob.exc.HTTPServerError):
                 logging.error(
-                    _("Returning %(code)s to user: %(explanation)s"),
+                    _LE("Returning %(code)s to user: %(explanation)s"),
                     {'code': err.code, 'explanation': err.explanation})
             http_exc = translate_exception(err, request.best_match_language())
             raise exception.HTTPExceptionDisguise(http_exc)
@@ -693,7 +697,7 @@ class Resource(object):
                     err_body = action_result.get_unserialized_body()
                     serializer.default(action_result, err_body)
                 except Exception:
-                    logging.warning(_("Unable to serialize exception "
+                    logging.warning(_LW("Unable to serialize exception "
                                     "response"))
 
             return action_result
@@ -728,16 +732,16 @@ class Resource(object):
 
 def log_exception(err, exc_info):
     args = {'exc_info': exc_info} if cfg.CONF.verbose or cfg.CONF.debug else {}
-    logging.error(_("Unexpected error occurred serving API: %s") % err,
+    logging.error(_LE("Unexpected error occurred serving API: %s") % err,
                   **args)
 
 
 def translate_exception(exc, locale):
     """Translates all translatable elements of the given exception."""
     if isinstance(exc, exception.HeatException):
-        exc.message = gettextutils.translate(exc.message, locale)
+        exc.message = i18n.translate(exc.message, locale)
     else:
-        exc.message = gettextutils.translate(six.text_type(exc), locale)
+        exc.message = i18n.translate(six.text_type(exc), locale)
 
     if isinstance(exc, webob.exc.HTTPError):
         # If the explanation is not a Message, that means that the
@@ -746,13 +750,13 @@ def translate_exception(exc, locale):
         # exception is converted to a response, let's actually swap it with
         # message, since message is what gets passed in at construction time
         # in the API
-        if not isinstance(exc.explanation, gettextutils.Message):
+        if not isinstance(exc.explanation, i18n._message.Message):
             exc.explanation = six.text_type(exc)
             exc.detail = ''
         else:
             exc.explanation = \
-                gettextutils.translate(exc.explanation, locale)
-            exc.detail = gettextutils.translate(exc.detail, locale)
+                i18n.translate(exc.explanation, locale)
+            exc.detail = i18n.translate(exc.detail, locale)
     return exc
 
 

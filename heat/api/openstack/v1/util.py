@@ -11,7 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from functools import wraps
+import functools
 
 import six
 from webob import exc
@@ -21,11 +21,14 @@ from heat.common import identifier
 
 
 def policy_enforce(handler):
-    '''
-    Decorator for a handler method that checks the path matches the
-    request context and enforce policy defined in policy.json
-    '''
-    @wraps(handler)
+    """Decorator that enforces policies.
+
+    Checks the path matches the request context and enforce policy defined in
+    policy.json.
+
+    This is a handler method decorator.
+    """
+    @functools.wraps(handler)
     def handle_stack_method(controller, req, tenant_id, **kwargs):
         if req.context.tenant_id != tenant_id:
             raise exc.HTTPForbidden()
@@ -40,12 +43,12 @@ def policy_enforce(handler):
 
 
 def identified_stack(handler):
-    '''
-    Decorator for a handler method that passes a stack identifier in place of
-    the various path components.
-    '''
+    """Decorator that passes a stack identifier instead of path components.
+
+    This is a handler method decorator.
+    """
     @policy_enforce
-    @wraps(handler)
+    @functools.wraps(handler)
     def handle_stack_method(controller, req, stack_name, stack_id, **kwargs):
         stack_identity = identifier.HeatIdentifier(req.context.tenant_id,
                                                    stack_name,
@@ -56,7 +59,7 @@ def identified_stack(handler):
 
 
 def make_url(req, identity):
-    '''Return the URL for the supplied identity dictionary.'''
+    """Return the URL for the supplied identity dictionary."""
     try:
         stack_identity = identifier.HeatIdentifier(**identity)
     except ValueError:
@@ -67,12 +70,12 @@ def make_url(req, identity):
 
 
 def make_link(req, identity, relationship='self'):
-    '''Return a link structure for the supplied identity dictionary.'''
+    """Return a link structure for the supplied identity dictionary."""
     return {'href': make_url(req, identity), 'rel': relationship}
 
 
 def get_allowed_params(params, whitelist):
-    '''Extract from ``params`` all entries listed in ``whitelist``
+    """Extract from ``params`` all entries listed in ``whitelist``.
 
     The returning dict will contain an entry for a key if, and only if,
     there's an entry in ``whitelist`` for that key and at least one entry in
@@ -83,7 +86,7 @@ def get_allowed_params(params, whitelist):
     :param whitelist: an array of strings to whitelist
 
     :returns: a dict with {key: value} pairs
-    '''
+    """
     allowed_params = {}
 
     for key, get_type in six.iteritems(whitelist):

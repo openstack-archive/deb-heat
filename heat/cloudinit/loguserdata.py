@@ -13,7 +13,7 @@
 #    under the License.
 
 import datetime
-from distutils.version import LooseVersion
+from distutils import version
 import errno
 import logging
 import os
@@ -27,15 +27,16 @@ LOG = logging.getLogger('heat-provision')
 
 
 def chk_ci_version():
-    v = LooseVersion(pkg_resources.get_distribution('cloud-init').version)
-    return v >= LooseVersion('0.6.0')
+    v = version.LooseVersion(
+        pkg_resources.get_distribution('cloud-init').version)
+    return v >= version.LooseVersion('0.6.0')
 
 
 def init_logging():
     LOG.setLevel(logging.INFO)
     LOG.addHandler(logging.StreamHandler())
     fh = logging.FileHandler("/var/log/heat-provision.log")
-    os.chmod(fh.baseFilename, 0o600)
+    os.chmod(fh.baseFilename, int("600", 8))
     LOG.addHandler(fh)
 
 
@@ -55,14 +56,16 @@ def call(args):
         if data:
             for x in data:
                 ls.write(x)
-    except OSError as ex:
+    except OSError:
+        ex_type, ex, tb = sys.exc_info()
         if ex.errno == errno.ENOEXEC:
             LOG.error('Userdata empty or not executable: %s', ex)
             return os.EX_OK
         else:
             LOG.error('OS error running userdata: %s', ex)
             return os.EX_OSERR
-    except Exception as ex:
+    except Exception:
+        ex_type, ex, tb = sys.exc_info()
         LOG.error('Unknown error running userdata: %s', ex)
         return os.EX_SOFTWARE
     return p.returncode
@@ -72,12 +75,12 @@ def main():
 
     if not chk_ci_version():
         # pre 0.6.0 - user data executed via cloudinit, not this helper
-        LOG.error('Unable to log provisioning, need a newer version of'
-                  ' cloud-init')
+        LOG.error('Unable to log provisioning, need a newer version of '
+                  'cloud-init')
         return -1
 
     userdata_path = os.path.join(VAR_PATH, 'cfn-userdata')
-    os.chmod(userdata_path, 0o700)
+    os.chmod(userdata_path, int("700", 8))
 
     LOG.info('Provision began: %s', datetime.datetime.now())
     returncode = call([userdata_path])
@@ -96,5 +99,8 @@ if __name__ == '__main__':
 
     provision_log = os.path.join(VAR_PATH, 'provision-finished')
     # touch the file so it is timestamped with when finished
-    with file(provision_log, 'a'):
+    pl = file(provision_log, 'a')
+    try:
         os.utime(provision_log, None)
+    finally:
+        pl.close()

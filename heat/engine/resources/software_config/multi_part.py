@@ -12,14 +12,16 @@
 #    under the License.
 
 import email
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+from email.mime import multipart
+from email.mime import text
 import os
 
 from heat.common.i18n import _
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.software_config import software_config
+from heat.engine import support
+from heat.rpc import api as rpc_api
 
 
 class MultipartMime(software_config.SoftwareConfig):
@@ -40,6 +42,8 @@ class MultipartMime(software_config.SoftwareConfig):
     cloud-init is boot-only configuration, any changes to the definition
     will result in the replacement of all servers which reference it.
     '''
+
+    support_status = support.SupportStatus(version='2014.1')
 
     PROPERTIES = (
         PARTS, CONFIG, FILENAME, TYPE, SUBTYPE
@@ -90,10 +94,13 @@ class MultipartMime(software_config.SoftwareConfig):
     message = None
 
     def handle_create(self):
-        props = {self.NAME: self.physical_resource_name()}
-        props[self.CONFIG] = self.get_message()
-        sc = self.heat().software_configs.create(**props)
-        self.resource_id_set(sc.id)
+        props = {
+            self.NAME: self.physical_resource_name(),
+            self.CONFIG: self.get_message(),
+            self.GROUP: 'Heat::Ungrouped'
+        }
+        sc = self.rpc_client().create_software_config(self.context, **props)
+        self.resource_id_set(sc[rpc_api.SOFTWARE_CONFIG_ID])
 
     def get_message(self):
         if self.message:
@@ -104,10 +111,14 @@ class MultipartMime(software_config.SoftwareConfig):
             config = item.get(self.CONFIG)
             part_type = item.get(self.TYPE, self.TEXT)
             part = config
+
             try:
-                part = self.heat().software_configs.get(config).config
+                sc = self.rpc_client().show_software_config(
+                    self.context, config)
             except Exception as ex:
-                self.client_plugin().ignore_not_found(ex)
+                self.rpc_client().ignore_error_named(ex, 'NotFound')
+            else:
+                part = sc[rpc_api.SOFTWARE_CONFIG_CONFIG]
 
             if part_type == self.MULTIPART:
                 self._append_multiparts(subparts, part)
@@ -116,7 +127,7 @@ class MultipartMime(software_config.SoftwareConfig):
                 subtype = item.get(self.SUBTYPE, '')
                 self._append_part(subparts, part, subtype, filename)
 
-        mime_blob = MIMEMultipart(_subparts=subparts)
+        mime_blob = multipart.MIMEMultipart(_subparts=subparts)
         self.message = mime_blob.as_string()
         return self.message
 
@@ -143,7 +154,8 @@ class MultipartMime(software_config.SoftwareConfig):
 
     @staticmethod
     def _create_message(part, subtype, filename):
-        msg = MIMEText(part, _subtype=subtype) if subtype else MIMEText(part)
+        msg = (text.MIMEText(part, _subtype=subtype)
+               if subtype else text.MIMEText(part))
         if filename:
             msg.add_header('Content-Disposition', 'attachment',
                            filename=filename)

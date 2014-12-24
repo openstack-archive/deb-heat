@@ -11,14 +11,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from datetime import datetime
-from datetime import timedelta
-from json import dumps
-from json import loads
+import datetime
+import json
 import six
 import uuid
 
-import fixtures
 import mock
 import mox
 from oslo.utils import timeutils
@@ -31,12 +28,12 @@ from heat.engine.clients.os import glance
 from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import parser
-from heat.engine.resource import Resource
+from heat.engine import resource as rsrc
 from heat.engine.resources import instance as instances
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
-from heat.tests.v1_1 import fakes
+from heat.tests.v1_1 import fakes as fakes_v1_1
 
 
 wp_template = '''
@@ -68,7 +65,7 @@ UUIDs = (UUID1, UUID2, UUID3) = sorted([str(uuid.uuid4())
                                         for x in range(3)])
 
 
-class MyResource(Resource):
+class MyResource(rsrc.Resource):
     properties_schema = {
         'ServerName': {'Type': 'String', 'Required': True},
         'Flavor': {'Type': 'String', 'Required': True},
@@ -86,10 +83,10 @@ class MyResource(Resource):
         self.data_set('my_secret', my_secret, True)
 
 
-class SqlAlchemyTest(HeatTestCase):
+class SqlAlchemyTest(common.HeatTestCase):
     def setUp(self):
         super(SqlAlchemyTest, self).setUp()
-        self.fc = fakes.FakeClient()
+        self.fc = fakes_v1_1.FakeClient()
         self.ctx = utils.dummy_context()
 
     def tearDown(self):
@@ -114,7 +111,7 @@ class SqlAlchemyTest(HeatTestCase):
         return (template, stack)
 
     def _mock_create(self, mocks):
-        fc = fakes.FakeClient()
+        fc = fakes_v1_1.FakeClient()
         mocks.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().MultipleTimes().AndReturn(fc)
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
@@ -133,12 +130,12 @@ class SqlAlchemyTest(HeatTestCase):
         return fc
 
     def _mock_delete(self, mocks):
-        fc = fakes.FakeClient()
+        fc = fakes_v1_1.FakeClient()
         mocks.StubOutWithMock(instances.Instance, 'nova')
         instances.Instance.nova().MultipleTimes().AndReturn(fc)
         mocks.StubOutWithMock(fc.client, 'get_servers_9999')
         get = fc.client.get_servers_9999
-        get().MultipleTimes().AndRaise(fakes.fake_exception())
+        get().MultipleTimes().AndRaise(fakes_v1_1.fake_exception())
 
     @mock.patch.object(db_api, '_paginate_query')
     def test_filter_and_page_query_paginates_query(self, mock_paginate_query):
@@ -313,12 +310,13 @@ class SqlAlchemyTest(HeatTestCase):
         self._mock_create(self.m)
         self.m.ReplayAll()
         stack.create()
-        rsrc = stack['WebServer']
-        rsrc.data_set('test', 'test_data')
-        self.assertEqual('test_data', db_api.resource_data_get(rsrc, 'test'))
-        db_api.resource_data_delete(rsrc, 'test')
+        resource = stack['WebServer']
+        resource.data_set('test', 'test_data')
+        self.assertEqual('test_data', db_api.resource_data_get(resource,
+                                                               'test'))
+        db_api.resource_data_delete(resource, 'test')
         self.assertRaises(exception.NotFound,
-                          db_api.resource_data_get, rsrc, 'test')
+                          db_api.resource_data_get, resource, 'test')
 
     def test_stack_get_by_name(self):
         stack = self._setup_test_stack('stack', UUID1,
@@ -744,6 +742,7 @@ class SqlAlchemyTest(HeatTestCase):
 
     def test_user_creds_password(self):
         self.ctx.trust_id = None
+        self.ctx.region_name = 'regionOne'
         db_creds = db_api.user_creds_create(self.ctx)
         load_creds = db_api.user_creds_get(db_creds.id)
 
@@ -751,12 +750,22 @@ class SqlAlchemyTest(HeatTestCase):
         self.assertEqual('password', load_creds.get('password'))
         self.assertEqual('test_tenant', load_creds.get('tenant'))
         self.assertEqual('test_tenant_id', load_creds.get('tenant_id'))
+        self.assertEqual('regionOne', load_creds.get('region_name'))
         self.assertIsNotNone(load_creds.get('created_at'))
         self.assertIsNone(load_creds.get('updated_at'))
         self.assertEqual('http://server.test:5000/v2.0',
                          load_creds.get('auth_url'))
         self.assertIsNone(load_creds.get('trust_id'))
         self.assertIsNone(load_creds.get('trustor_user_id'))
+
+    def test_user_creds_password_too_long(self):
+        self.ctx.trust_id = None
+        self.ctx.password = 'O123456789O1234567' * 20
+        error = self.assertRaises(exception.Error,
+                                  db_api.user_creds_create,
+                                  self.ctx)
+        self.assertIn('Length of OS_PASSWORD after encryption exceeds '
+                      'Heat limit (255 chars)', six.text_type(error))
 
     def test_user_creds_trust(self):
         self.ctx.username = None
@@ -782,12 +791,14 @@ class SqlAlchemyTest(HeatTestCase):
         self.ctx.username = None
         self.ctx.password = None
         self.ctx.trust_id = None
+        self.ctx.region_name = None
         db_creds = db_api.user_creds_create(self.ctx)
         load_creds = db_api.user_creds_get(db_creds.id)
 
         self.assertIsNone(load_creds.get('username'))
         self.assertIsNone(load_creds.get('password'))
         self.assertIsNone(load_creds.get('trust_id'))
+        self.assertIsNone(load_creds.get('region_name'))
 
     def test_software_config_create(self):
         tenant_id = self.ctx.tenant_id
@@ -1121,7 +1132,7 @@ def create_resource(ctx, stack, **kwargs):
         'action': 'create',
         'status': 'complete',
         'status_reason': 'create_complete',
-        'rsrc_metadata': loads('{"foo": "123"}'),
+        'rsrc_metadata': json.loads('{"foo": "123"}'),
         'stack_id': stack.id
     }
     values.update(kwargs)
@@ -1155,7 +1166,7 @@ def create_event(ctx, **kwargs):
 def create_watch_rule(ctx, stack, **kwargs):
     values = {
         'name': 'test_rule',
-        'rule': loads('{"foo": "123"}'),
+        'rule': json.loads('{"foo": "123"}'),
         'state': 'normal',
         'last_evaluated': timeutils.utcnow(),
         'stack_id': stack.id,
@@ -1166,14 +1177,14 @@ def create_watch_rule(ctx, stack, **kwargs):
 
 def create_watch_data(ctx, watch_rule, **kwargs):
     values = {
-        'data': loads('{"foo": "bar"}'),
+        'data': json.loads('{"foo": "bar"}'),
         'watch_rule_id': watch_rule.id
     }
     values.update(kwargs)
     return db_api.watch_data_create(ctx, values)
 
 
-class DBAPIRawTemplateTest(HeatTestCase):
+class DBAPIRawTemplateTest(common.HeatTestCase):
     def setUp(self):
         super(DBAPIRawTemplateTest, self).setUp()
         self.ctx = utils.dummy_context()
@@ -1230,12 +1241,12 @@ class DBAPIRawTemplateTest(HeatTestCase):
         updated_tp = db_api.raw_template_update(self.ctx,
                                                 orig_tp.id, new_values)
 
-        self.assertEqual(updated_tp.id, orig_tp.id)
-        self.assertEqual(updated_tp.template, new_t)
-        self.assertEqual(updated_tp.files, new_files)
+        self.assertEqual(orig_tp.id, updated_tp.id)
+        self.assertEqual(new_t, updated_tp.template)
+        self.assertEqual(new_files, updated_tp.files)
 
 
-class DBAPIUserCredsTest(HeatTestCase):
+class DBAPIUserCredsTest(common.HeatTestCase):
     def setUp(self):
         super(DBAPIUserCredsTest, self).setUp()
         self.ctx = utils.dummy_context()
@@ -1284,7 +1295,7 @@ class DBAPIUserCredsTest(HeatTestCase):
         self.assertIn(exp_msg, six.text_type(err))
 
 
-class DBAPIStackTest(HeatTestCase):
+class DBAPIStackTest(common.HeatTestCase):
     def setUp(self):
         super(DBAPIStackTest, self).setUp()
         self.ctx = utils.dummy_context()
@@ -1498,19 +1509,13 @@ class DBAPIStackTest(HeatTestCase):
                          db_api.stack_count_all(self.ctx, tenant_safe=False))
 
     def test_purge_deleted(self):
-        now = datetime.now()
-        delta = timedelta(seconds=3600 * 7)
+        now = datetime.datetime.now()
+        delta = datetime.timedelta(seconds=3600 * 7)
         deleted = [now - delta * i for i in range(1, 6)]
         templates = [create_raw_template(self.ctx) for i in range(5)]
         creds = [create_user_creds(self.ctx) for i in range(5)]
         stacks = [create_stack(self.ctx, templates[i], creds[i],
                                deleted_at=deleted[i]) for i in range(5)]
-
-        class MyDatetime(object):
-            def now(self):
-                return now
-        self.useFixture(fixtures.MonkeyPatch('heat.db.sqlalchemy.api.datetime',
-                                             MyDatetime()))
 
         db_api.purge_deleted(age=1, granularity='days')
         self._deleted_stack_existance(utils.dummy_context(), stacks,
@@ -1542,7 +1547,7 @@ class DBAPIStackTest(HeatTestCase):
         self.assertEqual('a' * 255, stack.status_reason)
 
 
-class DBAPIResourceTest(HeatTestCase):
+class DBAPIResourceTest(common.HeatTestCase):
     def setUp(self):
         super(DBAPIResourceTest, self).setUp()
         self.ctx = utils.dummy_context()
@@ -1559,7 +1564,7 @@ class DBAPIResourceTest(HeatTestCase):
         self.assertEqual('create', ret_res.action)
         self.assertEqual('complete', ret_res.status)
         self.assertEqual('create_complete', ret_res.status_reason)
-        self.assertEqual('{"foo": "123"}', dumps(ret_res.rsrc_metadata))
+        self.assertEqual('{"foo": "123"}', json.dumps(ret_res.rsrc_metadata))
         self.assertEqual(self.stack.id, ret_res.stack_id)
 
     def test_resource_get(self):
@@ -1634,7 +1639,7 @@ class DBAPIResourceTest(HeatTestCase):
         self.assertEqual('a' * 255, ret_res.status_reason)
 
 
-class DBAPIStackLockTest(HeatTestCase):
+class DBAPIStackLockTest(common.HeatTestCase):
     def setUp(self):
         super(DBAPIStackLockTest, self).setUp()
         self.ctx = utils.dummy_context()
@@ -1694,7 +1699,7 @@ class DBAPIStackLockTest(HeatTestCase):
         self.assertTrue(observed)
 
 
-class DBAPIResourceDataTest(HeatTestCase):
+class DBAPIResourceDataTest(common.HeatTestCase):
     def setUp(self):
         super(DBAPIResourceDataTest, self).setUp()
         self.ctx = utils.dummy_context()
@@ -1745,7 +1750,7 @@ class DBAPIResourceDataTest(HeatTestCase):
         self.assertIsNotNone(res_data)
 
 
-class DBAPIEventTest(HeatTestCase):
+class DBAPIEventTest(common.HeatTestCase):
     def setUp(self):
         super(DBAPIEventTest, self).setUp()
         self.ctx = utils.dummy_context()
@@ -1864,7 +1869,7 @@ class DBAPIEventTest(HeatTestCase):
         self.assertEqual('a' * 255, ret_event.resource_status_reason)
 
 
-class DBAPIWatchRuleTest(HeatTestCase):
+class DBAPIWatchRuleTest(common.HeatTestCase):
     def setUp(self):
         super(DBAPIWatchRuleTest, self).setUp()
         self.ctx = utils.dummy_context()
@@ -1877,7 +1882,7 @@ class DBAPIWatchRuleTest(HeatTestCase):
         ret_wr = db_api.watch_rule_get(self.ctx, watch_rule.id)
         self.assertIsNotNone(ret_wr)
         self.assertEqual('test_rule', ret_wr.name)
-        self.assertEqual('{"foo": "123"}', dumps(ret_wr.rule))
+        self.assertEqual('{"foo": "123"}', json.dumps(ret_wr.rule))
         self.assertEqual('normal', ret_wr.state)
         self.assertEqual(self.stack.id, ret_wr.stack_id)
 
@@ -1920,13 +1925,13 @@ class DBAPIWatchRuleTest(HeatTestCase):
         watch_rule = create_watch_rule(self.ctx, self.stack)
         values = {
             'name': 'test_rule_1',
-            'rule': loads('{"foo": "bar"}'),
+            'rule': json.loads('{"foo": "bar"}'),
             'state': 'nodata',
         }
         db_api.watch_rule_update(self.ctx, watch_rule.id, values)
         watch_rule = db_api.watch_rule_get(self.ctx, watch_rule.id)
         self.assertEqual('test_rule_1', watch_rule.name)
-        self.assertEqual('{"foo": "bar"}', dumps(watch_rule.rule))
+        self.assertEqual('{"foo": "bar"}', json.dumps(watch_rule.rule))
         self.assertEqual('nodata', watch_rule.state)
 
         self.assertRaises(exception.NotFound, db_api.watch_rule_update,
@@ -1944,7 +1949,7 @@ class DBAPIWatchRuleTest(HeatTestCase):
         self.assertEqual([], db_api.watch_data_get_all(self.ctx))
 
 
-class DBAPIWatchDataTest(HeatTestCase):
+class DBAPIWatchDataTest(common.HeatTestCase):
     def setUp(self):
         super(DBAPIWatchDataTest, self).setUp()
         self.ctx = utils.dummy_context()
@@ -1958,14 +1963,14 @@ class DBAPIWatchDataTest(HeatTestCase):
         ret_data = db_api.watch_data_get_all(self.ctx)
         self.assertEqual(1, len(ret_data))
 
-        self.assertEqual('{"foo": "bar"}', dumps(ret_data[0].data))
+        self.assertEqual('{"foo": "bar"}', json.dumps(ret_data[0].data))
         self.assertEqual(self.watch_rule.id, ret_data[0].watch_rule_id)
 
     def test_watch_data_get_all(self):
         values = [
-            {'data': loads('{"foo": "d1"}')},
-            {'data': loads('{"foo": "d2"}')},
-            {'data': loads('{"foo": "d3"}')}
+            {'data': json.loads('{"foo": "d1"}')},
+            {'data': json.loads('{"foo": "d2"}')},
+            {'data': json.loads('{"foo": "d3"}')}
         ]
         [create_watch_data(self.ctx, self.watch_rule, **val) for val in values]
         watch_data = db_api.watch_data_get_all(self.ctx)

@@ -26,7 +26,6 @@ from heat.common.i18n import _
 from heat.common import template_format
 from heat.db import api as db_api
 from heat.engine.clients.os import glance
-from heat.engine.clients.os import heat_plugin
 from heat.engine.clients.os import nova
 from heat.engine.clients.os import swift
 from heat.engine import environment
@@ -36,8 +35,7 @@ from heat.engine.resources import server as servers
 from heat.engine import scheduler
 from heat.engine import template
 from heat.openstack.common import uuidutils
-from heat.tests.common import HeatTestCase
-from heat.tests import fakes
+from heat.tests import common
 from heat.tests import utils
 from heat.tests.v1_1 import fakes as fakes_v1_1
 
@@ -67,8 +65,38 @@ wp_template = '''
 }
 '''
 
+subnet_template = '''
+heat_template_version: 2013-05-23
+resources:
+  server:
+    type: OS::Nova::Server
+    properties:
+      image: F17-x86_64-gold
+      flavor: m1.large
+      networks:
+      - { uuid: 12345 }
+  subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      network: 12345
+'''
 
-class ServersTest(HeatTestCase):
+no_subnet_template = '''
+heat_template_version: 2013-05-23
+resources:
+  server:
+    type: OS::Nova::Server
+    properties:
+      image: F17-x86_64-gold
+      flavor: m1.large
+  subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      network: 12345
+'''
+
+
+class ServersTest(common.HeatTestCase):
     def setUp(self):
         super(ServersTest, self).setUp()
         self.fc = fakes_v1_1.FakeClient()
@@ -90,14 +118,51 @@ class ServersTest(HeatTestCase):
         yield max_personality_size
         yield max_server_meta
 
-    def _setup_test_stack(self, stack_name):
-        t = template_format.parse(wp_template)
+    def _setup_test_stack(self, stack_name, test_templ=wp_template):
+        t = template_format.parse(test_templ)
         templ = template.Template(t)
         stack = parser.Stack(utils.dummy_context(), stack_name, templ,
                              environment.Environment({'key_name': 'test'}),
                              stack_id=str(uuid.uuid4()),
                              stack_user_project_id='8888')
         return (templ, stack)
+
+    def _prepare_server_check(self):
+        templ, stack = self._setup_test_stack('server_check')
+        server = self.fc.servers.list()[1]
+        res = stack['WebServer']
+        res.nova = mock.Mock()
+        res.nova().servers.get = mock.Mock(return_value=server)
+        return res
+
+    def test_check(self):
+        res = self._prepare_server_check()
+        res._check_server_status = mock.Mock()
+        scheduler.TaskRunner(res.check)()
+        self.assertEqual((res.CHECK, res.COMPLETE), res.state)
+
+    def test_check_fail(self):
+        res = self._prepare_server_check()
+        res._check_server_status = mock.Mock(side_effect=Exception('boom'))
+
+        exc = self.assertRaises(exception.ResourceFailure,
+                                scheduler.TaskRunner(res.check))
+        self.assertIn('boom', six.text_type(exc))
+        self.assertEqual((res.CHECK, res.FAILED), res.state)
+
+    def test_check_server_status(self):
+        res = self._prepare_server_check()
+        server = res._check_server_status()
+        self.assertEqual(self.fc.servers.list()[1], server)
+
+    def test_check_server_status_not_active(self):
+        res = self._prepare_server_check()
+        res._check_active = mock.Mock(return_value=False)
+        res.nova().servers.get().status = 'FOO'
+
+        exc = self.assertRaises(exception.Error,
+                                scheduler.TaskRunner(res._check_server_status))
+        self.assertIn('FOO', six.text_type(exc))
 
     def _get_test_template(self, stack_name, server_name=None,
                            image_id=None):
@@ -187,6 +252,27 @@ class ServersTest(HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self.stub_VolumeConstraint_validate()
+
+    def test_subnet_dependency(self):
+        template, stack = self._setup_test_stack('subnet-test',
+                                                 subnet_template)
+        server_rsrc = stack['server']
+        subnet_rsrc = stack['subnet']
+        deps = []
+        server_rsrc.add_dependencies(deps)
+        self.assertEqual(4, len(deps))
+        self.assertEqual(subnet_rsrc, deps[3])
+
+    def test_subnet_nodeps(self):
+        template, stack = self._setup_test_stack('subnet-test',
+                                                 no_subnet_template)
+        server_rsrc = stack['server']
+        subnet_rsrc = stack['subnet']
+        deps = []
+        server_rsrc.add_dependencies(deps)
+        self.assertEqual(2, len(deps))
+        self.assertNotIn(subnet_rsrc, deps)
 
     def test_server_create(self):
         return_server = self.fc.servers.list()[1]
@@ -303,18 +389,18 @@ class ServersTest(HeatTestCase):
                          server.FnGetAtt('addresses')['public'][0]['port'])
         self.assertEqual('5678',
                          server.FnGetAtt('addresses')['public'][1]['port'])
-        self.assertEqual(
-            server.FnGetAtt('addresses')['public'][0]['addr'], public_ip)
-        self.assertEqual(
-            server.FnGetAtt('networks')['public'][0], public_ip)
+        self.assertEqual(public_ip,
+                         server.FnGetAtt('addresses')['public'][0]['addr'])
+        self.assertEqual(public_ip,
+                         server.FnGetAtt('networks')['public'][0])
 
         private_ip = return_server.networks['private'][0]
         self.assertEqual('1013',
                          server.FnGetAtt('addresses')['private'][0]['port'])
-        self.assertEqual(
-            server.FnGetAtt('addresses')['private'][0]['addr'], private_ip)
-        self.assertEqual(
-            server.FnGetAtt('networks')['private'][0], private_ip)
+        self.assertEqual(private_ip,
+                         server.FnGetAtt('addresses')['private'][0]['addr'])
+        self.assertEqual(private_ip,
+                         server.FnGetAtt('networks')['private'][0])
         self.assertIn(
             server.FnGetAtt('first_address'), (private_ip, public_ip))
 
@@ -408,9 +494,8 @@ class ServersTest(HeatTestCase):
         e = self.assertRaises(resource.ResourceUnknownStatus,
                               server.check_create_complete,
                               return_server)
-        self.assertEqual(
-            'Server is not active - Unknown status BOGUS',
-            six.text_type(e))
+        self.assertEqual('Server is not active - Unknown status BOGUS due to '
+                         '"Unknown"', six.text_type(e))
 
     def test_server_create_error_status(self):
         return_server = self.fc.servers.list()[1]
@@ -481,12 +566,11 @@ class ServersTest(HeatTestCase):
         server = servers.Server('WebServer',
                                 resource_defns['WebServer'], stack)
 
-        self.m.StubOutWithMock(heat_plugin.HeatClientPlugin, '_create')
-        heat_client = mock.Mock()
-        heat_plugin.HeatClientPlugin._create().AndReturn(heat_client)
-        sc = mock.Mock()
-        sc.config = 'wordpress from config'
-        heat_client.software_configs.get.return_value = sc
+        self.rpc_client = mock.MagicMock()
+        server._rpc_client = self.rpc_client
+
+        sc = {'config': 'wordpress from config'}
+        self.rpc_client.show_software_config.return_value = sc
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
@@ -522,11 +606,10 @@ class ServersTest(HeatTestCase):
         server = servers.Server('WebServer',
                                 resource_defns['WebServer'], stack)
 
-        self.m.StubOutWithMock(heat_plugin.HeatClientPlugin, '_create')
-        heat_client = mock.Mock()
-        heat_plugin.HeatClientPlugin._create().AndReturn(heat_client)
-        heat_client.software_configs.get.side_effect = \
-            heat_plugin.exc.HTTPNotFound()
+        self.rpc_client = mock.MagicMock()
+        server._rpc_client = self.rpc_client
+
+        self.rpc_client.show_software_config.side_effect = exception.NotFound
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
@@ -836,6 +919,7 @@ class ServersTest(HeatTestCase):
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
+        self.stub_VolumeConstraint_validate()
         self.m.ReplayAll()
 
         def create_server(device_name):
@@ -894,10 +978,9 @@ class ServersTest(HeatTestCase):
         resource_defns = templ.resource_definitions(stack)
         server = servers.Server('server_validate_test',
                                 resource_defns['WebServer'], stack)
+        self.stub_ImageConstraint_validate()
+        self.stub_FlavorConstraint_validate()
 
-        self.m.StubOutWithMock(glance.ImageConstraint, "validate")
-        glance.ImageConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
         self.m.ReplayAll()
 
         self.assertIsNone(server.validate())
@@ -1054,6 +1137,31 @@ class ServersTest(HeatTestCase):
 
         self.m.VerifyAll()
 
+    def test_server_soft_delete(self):
+        return_server = self.fc.servers.list()[1]
+        server = self._create_test_server(return_server,
+                                          'create_delete')
+        server.resource_id = '1234'
+
+        # this makes sure the auto increment worked on server creation
+        self.assertTrue(server.id > 0)
+
+        server_get = self.fc.client.get_servers_1234()
+        self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
+
+        def make_soft_delete():
+            server_get[1]["server"]['status'] = "SOFT_DELETED"
+
+        get = self.fc.client.get_servers_1234
+        get().AndReturn(server_get)
+        get().AndReturn(server_get)
+        get().WithSideEffects(make_soft_delete).AndReturn(server_get)
+        mox.Replay(get)
+
+        scheduler.TaskRunner(server.delete)()
+        self.assertEqual((server.DELETE, server.COMPLETE), server.state)
+        self.m.VerifyAll()
+
     def test_server_update_metadata(self):
         return_server = self.fc.servers.list()[1]
         server = self._create_test_server(return_server,
@@ -1178,6 +1286,26 @@ class ServersTest(HeatTestCase):
         self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
         self.m.VerifyAll()
 
+    def test_server_update_server_admin_password(self):
+        """
+        Server.handle_update supports changing the admin password.
+        """
+        return_server = self.fc.servers.list()[1]
+        return_server.id = '5678'
+        server = self._create_test_server(return_server,
+                                          'change_password')
+        new_password = 'new_password'
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['admin_pass'] = new_password
+
+        self.patchobject(self.fc.servers, 'get', return_value=return_server)
+        self.patchobject(return_server, 'change_password')
+
+        scheduler.TaskRunner(server.update, update_template)()
+        self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
+        return_server.change_password.assert_called_once_with(new_password)
+        self.assertEqual(1, return_server.change_password.call_count)
+
     def test_server_update_server_flavor(self):
         """
         Server.handle_update supports changing the flavor, and makes
@@ -1257,7 +1385,7 @@ class ServersTest(HeatTestCase):
                                 resource_defns['WebServer'], stack)
 
         update_template = copy.deepcopy(server.t)
-        update_template['Properties']['flavor'] = 'm1.smigish'
+        update_template['Properties']['flavor'] = 'm1.small'
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(resource.UpdateReplace, updater)
 
@@ -1278,7 +1406,7 @@ class ServersTest(HeatTestCase):
         # the update then the updated policy is followed for a flavor
         # update
         update_template['Properties']['flavor_update_policy'] = 'REPLACE'
-        update_template['Properties']['flavor'] = 'm1.smigish'
+        update_template['Properties']['flavor'] = 'm1.small'
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(resource.UpdateReplace, updater)
 
@@ -1294,9 +1422,8 @@ class ServersTest(HeatTestCase):
         image_id = self.getUniqueString()
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
-        self.m.StubOutWithMock(glance.ImageConstraint, "validate")
-        glance.ImageConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.stub_ImageConstraint_validate()
+
         self.m.ReplayAll()
 
         update_template = copy.deepcopy(server.t)
@@ -1304,7 +1431,8 @@ class ServersTest(HeatTestCase):
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(resource.UpdateReplace, updater)
 
-    def _test_server_update_image_rebuild(self, status, policy='REBUILD'):
+    def _test_server_update_image_rebuild(self, status, policy='REBUILD',
+                                          password=None):
         # Server.handle_update supports changing the image, and makes
         # the change making a rebuild API call against Nova.
         return_server = self.fc.servers.list()[1]
@@ -1317,8 +1445,11 @@ class ServersTest(HeatTestCase):
         # current test demonstrate updating when image_update_policy was not
         # changed, so image_update_policy will be used from self.properties
         server.t['Properties']['image_update_policy'] = policy
+
         update_template = copy.deepcopy(server.t)
         update_template['Properties']['image'] = new_image
+        if password:
+            update_template['Properties']['admin_pass'] = password
 
         self.m.StubOutWithMock(self.fc.servers, 'get')
         self.fc.servers.get('1234').MultipleTimes().AndReturn(return_server)
@@ -1326,10 +1457,12 @@ class ServersTest(HeatTestCase):
         # 744 is a static lookup from the fake images list
         if 'REBUILD' == policy:
             self.fc.servers.rebuild(
-                return_server, 744, password=None, preserve_ephemeral=False)
+                return_server, 744, password=password,
+                preserve_ephemeral=False)
         else:
             self.fc.servers.rebuild(
-                return_server, 744, password=None, preserve_ephemeral=True)
+                return_server, 744, password=password,
+                preserve_ephemeral=True)
         self.m.StubOutWithMock(self.fc.client, 'post_servers_1234_action')
         for stat in status:
             def activate_status(serv):
@@ -1358,6 +1491,11 @@ class ServersTest(HeatTestCase):
         # It is possible for us to miss the REBUILD status.
         self._test_server_update_image_rebuild(
             policy='REBUILD_PRESERVE_EPHEMERAL', status=('ACTIVE'))
+
+    def test_server_update_image_rebuild_with_new_password(self):
+        # Normally we will see 'REBUILD' first and then 'ACTIVE".
+        self._test_server_update_image_rebuild(password='new_admin_password',
+                                               status=('REBUILD', 'ACTIVE'))
 
     def test_server_update_image_rebuild_failed(self):
         # If the status after a rebuild is not REBUILD or ACTIVE, it means the
@@ -1404,9 +1542,7 @@ class ServersTest(HeatTestCase):
         server = self._create_test_server(return_server,
                                           'update_prop')
 
-        self.m.StubOutWithMock(glance.ImageConstraint, "validate")
-        glance.ImageConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        self.stub_ImageConstraint_validate()
         self.m.ReplayAll()
 
         update_template = copy.deepcopy(server.t)
@@ -1811,7 +1947,6 @@ class ServersTest(HeatTestCase):
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('server_create_image_err',
                                 resource_defns['WebServer'], stack)
-
         exc = self.assertRaises(exception.StackValidationFailed,
                                 server.validate)
         self.assertIn("Value '10a' is not an integer", six.text_type(exc))
@@ -1830,6 +1965,8 @@ class ServersTest(HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self.stub_VolumeConstraint_validate()
+        self.stub_SnapshotConstraint_validate()
         self.m.ReplayAll()
 
         self.assertRaises(exception.ResourcePropertyConflict, server.validate)
@@ -1872,6 +2009,7 @@ class ServersTest(HeatTestCase):
                                 resource_defns['WebServer'], stack)
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
+        self.stub_VolumeConstraint_validate()
         self.m.ReplayAll()
 
         ex = self.assertRaises(exception.StackValidationFailed,
@@ -2041,7 +2179,26 @@ class ServersTest(HeatTestCase):
         mox.Replay(get)
         self.m.ReplayAll()
 
-        self.assertEqual(server._resolve_attribute("accessIPv4"), '')
+        self.assertEqual('', server._resolve_attribute("accessIPv4"))
+        self.m.VerifyAll()
+
+    def test_resolve_attribute_console_url(self):
+        server = self.fc.servers.list()[0]
+        tmpl, stack = self._setup_test_stack('console_url_stack')
+        ws = servers.Server(
+            'WebServer', tmpl.resource_definitions(stack)['WebServer'], stack)
+        ws.resource_id = server.id
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get(server.id).AndReturn(server)
+        self.m.ReplayAll()
+
+        console_urls = ws._resolve_attribute('console_urls')
+        self.assertIsInstance(console_urls, collections.Mapping)
+        supported_consoles = ('novnc', 'xvpvnc', 'spice-html5', 'rdp-html5',
+                              'serial')
+        self.assertEqual(set(supported_consoles), set(console_urls.keys()))
         self.m.VerifyAll()
 
     def test_default_instance_user(self):
@@ -2624,28 +2781,65 @@ class ServersTest(HeatTestCase):
         # this call is Act stage of this test. We calling server.validate()
         # to verify that no excessive calls to Nova are made during validation.
         self.assertIsNone(server.validate())
+
         self.m.VerifyAll()
 
+    def test_server_restore(self):
+        t = template_format.parse(wp_template)
+        template = parser.Template(t)
+        stack = parser.Stack(utils.dummy_context(), "server_restore", template)
+        stack.store()
 
-class FlavorConstraintTest(HeatTestCase):
-
-    def test_validate(self):
-        client = fakes.FakeClient()
-        self.stub_keystoneclient()
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        nova.NovaClientPlugin._create().AndReturn(client)
-        client.flavors = self.m.CreateMockAnything()
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
 
-        flavor = collections.namedtuple("Flavor", ["id", "name"])
-        flavor.id = "1234"
-        flavor.name = "foo"
-        client.flavors.list().MultipleTimes().AndReturn([flavor])
+        return_server = self.fc.servers.list()[1]
+        return_server.id = 1234
+
+        self.m.StubOutWithMock(self.fc.servers, 'create')
+        self.fc.servers.create(
+            image=744, flavor=3, key_name='test',
+            name=utils.PhysName("server_restore", "WebServer"),
+            security_groups=[],
+            userdata=mox.IgnoreArg(), scheduler_hints=None,
+            meta=None, nics=None, availability_zone=None,
+            block_device_mapping=None, config_drive=None,
+            disk_config=None, reservation_id=None, files={},
+            admin_pass=None).AndReturn(return_server)
+        self.fc.servers.create(
+            image=1, flavor=3, key_name='test',
+            name=utils.PhysName("server_restore", "WebServer"),
+            security_groups=[],
+            userdata=mox.IgnoreArg(), scheduler_hints=None,
+            meta=None, nics=None, availability_zone=None,
+            block_device_mapping=None, config_drive=None,
+            disk_config=None, reservation_id=None, files={},
+            admin_pass=None).AndReturn(return_server)
+
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image_id')
+        glance.GlanceClientPlugin.get_image_id(
+            'F17-x86_64-gold').MultipleTimes().AndReturn(744)
+        glance.GlanceClientPlugin.get_image_id(
+            'CentOS 5.2').MultipleTimes().AndReturn(1)
+
         self.m.ReplayAll()
 
-        constraint = servers.FlavorConstraint()
-        ctx = utils.dummy_context()
-        self.assertFalse(constraint.validate("bar", ctx))
-        self.assertTrue(constraint.validate("foo", ctx))
-        self.assertTrue(constraint.validate("1234", ctx))
+        scheduler.TaskRunner(stack.create)()
+
+        self.assertEqual((stack.CREATE, stack.COMPLETE), stack.state)
+
+        scheduler.TaskRunner(stack.snapshot)()
+
+        self.assertEqual((stack.SNAPSHOT, stack.COMPLETE), stack.state)
+
+        data = stack.prepare_abandon()
+        resource_data = data['resources']['WebServer']['resource_data']
+        resource_data['snapshot_image_id'] = 'CentOS 5.2'
+        fake_snapshot = collections.namedtuple(
+            'Snapshot', ('data', 'stack_id'))(data, stack.id)
+
+        stack.restore(fake_snapshot)
+
+        self.assertEqual((stack.RESTORE, stack.COMPLETE), stack.state)
 
         self.m.VerifyAll()

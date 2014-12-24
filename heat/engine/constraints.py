@@ -19,6 +19,7 @@ from oslo.utils import strutils
 import six
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.engine import resources
 
 
@@ -437,7 +438,7 @@ class AllowedValues(Constraint):
     def __init__(self, allowed, description=None):
         super(AllowedValues, self).__init__(description)
         if (not isinstance(allowed, collections.Sequence) or
-                isinstance(allowed, basestring)):
+                isinstance(allowed, six.string_types)):
             raise exception.InvalidSchemaError(
                 message=_('AllowedValues must be a list'))
         self.allowed = tuple(allowed)
@@ -482,7 +483,7 @@ class AllowedPattern(Constraint):
 
     def __init__(self, pattern, description=None):
         super(AllowedPattern, self).__init__(description)
-        if not isinstance(pattern, basestring):
+        if not isinstance(pattern, six.string_types):
             raise exception.InvalidSchemaError(
                 message=_('AllowedPattern must be a string'))
         self.pattern = pattern

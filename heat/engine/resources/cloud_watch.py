@@ -14,6 +14,7 @@
 from oslo.config import cfg
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
@@ -175,6 +176,10 @@ class CloudWatchAlarm(resource.Resource):
                                       watch_name=self.physical_resource_name())
         # Just set to NODATA, which will be re-evaluated next periodic task
         wr.state_set(wr.NODATA)
+
+    def handle_check(self):
+        watch_name = self.physical_resource_name()
+        watchrule.WatchRule.load(self.context, watch_name=watch_name)
 
     def FnGetRefId(self):
         return self.physical_resource_name_or_FnGetRefId()

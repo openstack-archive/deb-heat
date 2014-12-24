@@ -13,10 +13,13 @@
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LI
+from heat.common.i18n import _LW
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
+from heat.engine import support
 from heat.openstack.common import log as logging
 from heat.openstack.common import uuidutils
 
@@ -28,14 +31,24 @@ class OSDBInstance(resource.Resource):
     OpenStack cloud database instance resource.
     '''
 
+    support_status = support.SupportStatus(version='2014.1')
+
     TROVE_STATUS = (
         ERROR, FAILED, ACTIVE,
     ) = (
         'ERROR', 'FAILED', 'ACTIVE',
     )
 
-    BAD_STATUSES = (ERROR, FAILED)
+    TROVE_STATUS_REASON = {
+        FAILED: _('The database instance was created, but heat failed to set '
+                  'up the datastore. If a database instance is in the FAILED '
+                  'state, it should be deleted and a new one should be '
+                  'created.'),
+        ERROR: _('The last operation for the database instance failed due to '
+                 'an error.'),
+    }
 
+    BAD_STATUSES = (ERROR, FAILED)
     PROPERTIES = (
         NAME, FLAVOR, SIZE, DATABASES, USERS, AVAILABILITY_ZONE,
         RESTORE_POINT, DATASTORE_TYPE, DATASTORE_VERSION, NICS,
@@ -321,14 +334,17 @@ class OSDBInstance(resource.Resource):
 
     def _refresh_instance(self, instance):
         try:
-            instance.get()
+            instance = self.trove().instances.get(instance.id)
+            return instance
         except Exception as exc:
             if self.client_plugin().is_over_limit(exc):
-                msg = _("Stack %(name)s (%(id)s) received an OverLimit "
-                        "response during instance.get(): %(exception)s")
-                LOG.warning(msg % {'name': self.stack.name,
-                                   'id': self.stack.id,
-                                   'exception': exc})
+                LOG.warn(_LW("Stack %(name)s (%(id)s) received an "
+                             "OverLimit response during instance.get():"
+                             " %(exception)s"),
+                         {'name': self.stack.name,
+                          'id': self.stack.id,
+                          'exception': exc})
+                return instance
             else:
                 raise
 
@@ -336,24 +352,33 @@ class OSDBInstance(resource.Resource):
         '''
         Check if cloud DB instance creation is complete.
         '''
-        self._refresh_instance(instance)  # get updated attributes
+        instance = self._refresh_instance(instance)  # get updated attributes
         if instance.status in self.BAD_STATUSES:
             raise resource.ResourceInError(
-                resource_status=instance.status)
+                resource_status=instance.status,
+                status_reason=self.TROVE_STATUS_REASON.get(instance.status,
+                                                           _("Unknown")))
 
         if instance.status != self.ACTIVE:
             return False
-
-        msg = _("Database instance %(database)s created (flavor:%(flavor)s, "
-                "volume:%(volume)s, datastore:%(datastore_type)s, "
-                "datastore_version:%(datastore_version)s)")
-
-        LOG.info(msg % {'database': self._dbinstance_name(),
-                        'flavor': self.flavor,
-                        'volume': self.volume,
-                        'datastore_type': self.datastore_type,
-                        'datastore_version': self.datastore_version})
+        LOG.info(_LI("Database instance %(database)s created (flavor:%("
+                     "flavor)s,volume:%(volume)s, datastore:%("
+                     "datastore_type)s, datastore_version:%("
+                     "datastore_version)s)"),
+                 {'database': self._dbinstance_name(),
+                  'flavor': self.flavor,
+                  'volume': self.volume,
+                  'datastore_type': self.datastore_type,
+                  'datastore_version': self.datastore_version})
         return True
+
+    def handle_check(self):
+        instance = self.trove().instances.get(self.resource_id)
+        status = instance.status
+        checks = [
+            {'attr': 'status', 'expected': self.ACTIVE, 'current': status},
+        ]
+        self._verify_check_conditions(checks)
 
     def handle_delete(self):
         '''

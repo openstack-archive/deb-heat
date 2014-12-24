@@ -14,12 +14,13 @@
 import itertools
 import json
 import re
+import six
 
 from oslo.config import cfg
 import yaml
 
 from heat.common import exception
-from heat.openstack.common.gettextutils import _
+from heat.common.i18n import _
 
 cfg.CONF.import_opt('max_template_size', 'heat.common.config')
 
@@ -54,10 +55,17 @@ def simple_parse(tmpl_str):
         try:
             tpl = yaml.load(tmpl_str, Loader=yaml_loader)
         except yaml.YAMLError as yea:
-            raise ValueError(yea)
+            yea = six.text_type(yea)
+            msg = _('Error parsing template: %s') % yea
+            raise ValueError(msg)
         else:
             if tpl is None:
                 tpl = {}
+
+    if not isinstance(tpl, dict):
+        raise ValueError(_('The template is not a JSON object '
+                           'or YAML mapping.'))
+
     return tpl
 
 
@@ -72,9 +80,6 @@ def parse(tmpl_str):
                cfg.CONF.max_template_size)
         raise exception.RequestLimitExceeded(message=msg)
     tpl = simple_parse(tmpl_str)
-    if not isinstance(tpl, dict):
-        raise ValueError(_('The template is not a JSON object '
-                           'or YAML mapping.'))
     # Looking for supported version keys in the loaded template
     if not ('HeatTemplateFormatVersion' in tpl
             or 'heat_template_version' in tpl

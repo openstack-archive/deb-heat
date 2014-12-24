@@ -13,7 +13,7 @@
 
 """Keystone Client functionality for use by resources."""
 
-from collections import namedtuple
+import collections
 import copy
 import json
 from oslo.utils import importutils
@@ -34,7 +34,7 @@ from heat.openstack.common import log as logging
 
 LOG = logging.getLogger('heat.common.keystoneclient')
 
-AccessKey = namedtuple('AccessKey', ['id', 'access', 'secret'])
+AccessKey = collections.namedtuple('AccessKey', ['id', 'access', 'secret'])
 
 _default_keystone_backend = "heat.common.heat_keystoneclient.KeystoneClientV3"
 
@@ -128,9 +128,10 @@ class KeystoneClientV3(object):
             admin_creds = self._service_admin_creds()
             admin_creds.update(self._ssl_options())
             c = kc_v3.Client(**admin_creds)
-            if c.authenticate():
+            try:
+                c.authenticate()
                 self._admin_client = c
-            else:
+            except kc_exception.Unauthorized:
                 LOG.error(_LE("Admin client authentication failed"))
                 raise exception.AuthorizationFailure()
         return self._admin_client
@@ -148,9 +149,10 @@ class KeystoneClientV3(object):
                 auth_kwargs = {'domain_id': self.stack_domain}
             else:
                 auth_kwargs = {'domain_name': self.stack_domain}
-            if c.authenticate(**auth_kwargs):
+            try:
+                c.authenticate(**auth_kwargs)
                 self._domain_admin_client = c
-            else:
+            except kc_exception.Unauthorized:
                 LOG.error(_LE("Domain admin client authentication failed"))
                 raise exception.AuthorizationFailure()
         return self._domain_admin_client
@@ -201,7 +203,11 @@ class KeystoneClientV3(object):
         # If auth_ref has already be specified via auth_token_info, don't
         # authenticate as we want to reuse, rather than request a new token
         if 'auth_ref' not in kwargs:
-            client.authenticate()
+            try:
+                client.authenticate()
+            except kc_exception.Unauthorized:
+                LOG.error(_LE("Keystone client authentication failed"))
+                raise exception.AuthorizationFailure()
 
         # If we are authenticating with a trust set the context auth_token
         # with the trust scoped token
@@ -320,15 +326,13 @@ class KeystoneClientV3(object):
         if len(domains) == 1:
             return domains[0].id
         elif len(domains) == 0:
-            LOG.error(_LE("Can't find domain id for %(domain)s!"), {
-                      'domain': domain_name})
-            raise exception.Error(_("Failed to find domain %s")
-                                  % domain_name)
+            msg = _('Can\'t find domain id for %s!')
+            LOG.error(msg, domain_name)
+            raise exception.Error(msg % domain_name)
         else:
-            LOG.error(_LE("Unexpected response looking for %(domain)s!"), {
-                      'domain': domain_name})
-            raise exception.Error(_("Unexpected response looking for "
-                                    "domain %s") % domain_name)
+            msg = _('Multiple domain ids were found for %s!')
+            LOG.error(msg, domain_name)
+            raise exception.Error(msg % domain_name)
 
     def create_stack_user(self, username, password=''):
         """Create a user defined as part of a stack.
@@ -403,8 +407,8 @@ class KeystoneClientV3(object):
         body = {'auth': {'scope':
                          {'project': {'id': project_id}},
                          'identity': {'password': {'user': {
-                         'domain': domain,
-                         'password': password, 'name': username}},
+                             'domain': domain,
+                             'password': password, 'name': username}},
                              'methods': ['password']}}}
         t = sess.post(token_url, headers=headers, json=body,
                       authenticated=False)
@@ -526,12 +530,12 @@ class KeystoneClientV3(object):
         try:
             project = self.domain_admin_client.projects.get(project=project_id)
         except kc_exception.Forbidden:
-            LOG.warning(_('Unable to get details for project %s, not deleting')
-                        % project_id)
+            LOG.warning(_LW('Unable to get details for project %s, '
+                            'not deleting') % project_id)
             return
 
         if project.domain_id != self.stack_domain_id:
-            LOG.warning(_('Not deleting non heat-domain project'))
+            LOG.warning(_LW('Not deleting non heat-domain project'))
             return
 
         try:
@@ -658,7 +662,8 @@ class KeystoneClientV3(object):
         self.domain_admin_client.users.update(user=user_id, enabled=True)
 
     def url_for(self, **kwargs):
-        default_region_name = cfg.CONF.region_name_for_services
+        default_region_name = (self.context.region_name or
+                               cfg.CONF.region_name_for_services)
         kwargs.setdefault('region_name', default_region_name)
         return self.client.service_catalog.url_for(**kwargs)
 

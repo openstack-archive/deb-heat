@@ -10,9 +10,11 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+import six
 
 from six.moves.urllib import parse as urlparse
 
+from heat.common.i18n import _
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
@@ -154,7 +156,7 @@ class S3Bucket(resource.Resource):
             self.client_plugin().ignore_not_found(ex)
 
     def FnGetRefId(self):
-        return unicode(self.resource_id)
+        return six.text_type(self.resource_id)
 
     def _resolve_attribute(self, name):
         url = self.swift().get_auth()[0]

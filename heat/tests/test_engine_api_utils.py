@@ -11,27 +11,29 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from datetime import datetime
+import datetime as dt
 import uuid
 
 import json
 import mock
 import six
 
-from heat.common.identifier import EventIdentifier
+from heat.common import identifier
 from heat.common import template_format
 from heat.engine import api
-from heat.engine.event import Event
+from heat.engine import event
 from heat.engine import parameters
 from heat.engine import parser
 from heat.engine import resource
 from heat.rpc import api as rpc_api
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
 
+datetime = dt.datetime
 
-class FormatTest(HeatTestCase):
+
+class FormatTest(common.HeatTestCase):
     def setUp(self):
         super(FormatTest, self).setUp()
 
@@ -53,11 +55,12 @@ class FormatTest(HeatTestCase):
 
     def _dummy_event(self, event_id):
         resource = self.stack['generic1']
-        return Event(utils.dummy_context(), self.stack, 'CREATE', 'COMPLETE',
-                     'state changed', 'z3455xyc-9f88-404d-a85b-5315293e67de',
-                     resource.properties, resource.name, resource.type(),
-                     uuid='abc123yc-9f88-404d-a85b-531529456xyz',
-                     id=event_id)
+        return event.Event(utils.dummy_context(), self.stack, 'CREATE',
+                           'COMPLETE', 'state changed',
+                           'z3455xyc-9f88-404d-a85b-5315293e67de',
+                           resource.properties, resource.name, resource.type(),
+                           uuid='abc123yc-9f88-404d-a85b-531529456xyz',
+                           id=event_id)
 
     def test_format_stack_resource(self):
         res = self.stack['generic1']
@@ -73,10 +76,14 @@ class FormatTest(HeatTestCase):
             rpc_api.RES_ID,
             rpc_api.RES_STACK_ID,
             rpc_api.RES_STACK_NAME,
-            rpc_api.RES_REQUIRED_BY))
+            rpc_api.RES_REQUIRED_BY,
+        ))
 
-        resource_details_keys = resource_keys.union(set(
-            (rpc_api.RES_DESCRIPTION, rpc_api.RES_METADATA)))
+        resource_details_keys = resource_keys.union(set((
+            rpc_api.RES_DESCRIPTION,
+            rpc_api.RES_METADATA,
+            rpc_api.RES_SCHEMA_ATTRIBUTES,
+        )))
 
         formatted = api.format_stack_resource(res, True)
         self.assertEqual(resource_details_keys, set(formatted.keys()))
@@ -92,6 +99,49 @@ class FormatTest(HeatTestCase):
         formatted = api.format_stack_resource(res, True, with_props=True)
         formatted_props = formatted[rpc_api.RES_SCHEMA_PROPERTIES]
         self.assertEqual('formatted_res_props', formatted_props)
+
+    @mock.patch.object(api, 'format_resource_attributes')
+    def test_format_stack_resource_with_attributes(self, mock_format_attrs):
+        mock_format_attrs.return_value = 'formatted_resource_attrs'
+        res = self.stack['generic1']
+
+        formatted = api.format_stack_resource(res, True, with_attr=['a', 'b'])
+        formatted_attrs = formatted[rpc_api.RES_SCHEMA_ATTRIBUTES]
+        self.assertEqual('formatted_resource_attrs', formatted_attrs)
+
+    def test_format_resource_attributes(self):
+        res = self.stack['generic1']
+        formatted_attributes = api.format_resource_attributes(res)
+        self.assertEqual(2, len(formatted_attributes))
+        self.assertIn('foo', formatted_attributes)
+        self.assertIn('Foo', formatted_attributes)
+
+    def test_format_resource_attributes_show_attribute(self):
+        res = mock.Mock()
+        res.attributes = {'a': 'a_value', 'show': {'b': 'b_value'}}
+
+        formatted_attributes = api.format_resource_attributes(res)
+        self.assertIn('b', formatted_attributes)
+        self.assertNotIn('a', formatted_attributes)
+
+    def test_format_resource_attributes_show_attribute_fail(self):
+        res = mock.Mock()
+        res.attributes = {'a': 'a_value', 'show': ''}
+
+        formatted_attributes = api.format_resource_attributes(res)
+        self.assertIn('a', formatted_attributes)
+        self.assertIn('show', formatted_attributes)
+
+    def test_format_resource_attributes_force_attributes(self):
+        res = self.stack['generic1']
+        force_attrs = ['a1', 'a2']
+
+        formatted_attributes = api.format_resource_attributes(res, force_attrs)
+        self.assertEqual(4, len(formatted_attributes))
+        self.assertIn('foo', formatted_attributes)
+        self.assertIn('Foo', formatted_attributes)
+        self.assertIn('a1', formatted_attributes)
+        self.assertIn('a2', formatted_attributes)
 
     def _get_formatted_resource_properties(self, res_name):
         tmpl = parser.Template(template_format.parse('''
@@ -194,10 +244,11 @@ class FormatTest(HeatTestCase):
         self.assertEqual(event_keys, set(formatted.keys()))
 
         event_id_formatted = formatted[rpc_api.EVENT_ID]
-        event_identifier = EventIdentifier(event_id_formatted['tenant'],
-                                           event_id_formatted['stack_name'],
-                                           event_id_formatted['stack_id'],
-                                           event_id_formatted['path'])
+        event_identifier = identifier.EventIdentifier(
+            event_id_formatted['tenant'],
+            event_id_formatted['stack_name'],
+            event_id_formatted['stack_id'],
+            event_id_formatted['path'])
         self.assertEqual(event_id, event_identifier.event_id)
 
     @mock.patch.object(api, 'format_stack_resource')
@@ -310,7 +361,7 @@ class FormatTest(HeatTestCase):
         self.assertEqual(expected, info)
 
 
-class FormatValidateParameterTest(HeatTestCase):
+class FormatValidateParameterTest(common.HeatTestCase):
 
     base_template = '''
     {
@@ -852,7 +903,7 @@ class FormatValidateParameterTest(HeatTestCase):
         self.assertEqual(self.expected, param_formated)
 
 
-class FormatSoftwareConfigDeploymentTest(HeatTestCase):
+class FormatSoftwareConfigDeploymentTest(common.HeatTestCase):
 
     def _dummy_software_config(self):
         config = mock.Mock()
@@ -908,7 +959,7 @@ class FormatSoftwareConfigDeploymentTest(HeatTestCase):
         self.assertIsNone(api.format_software_deployment(None))
 
 
-class TestExtractArgs(HeatTestCase):
+class TestExtractArgs(common.HeatTestCase):
     def test_timeout_extract(self):
         p = {'timeout_mins': '5'}
         args = api.extract_args(p)
@@ -944,11 +995,9 @@ class TestExtractArgs(HeatTestCase):
         self.assertTrue(args.get('adopt_stack_data'))
 
     def test_invalid_adopt_stack_data(self):
-        p = {'adopt_stack_data': json.dumps("foo")}
-        error = self.assertRaises(ValueError, api.extract_args, p)
-        self.assertEqual(
-            'Unexpected adopt data "foo". Adopt data must be a dict.',
-            six.text_type(error))
+        params = {'adopt_stack_data': json.dumps("foo")}
+        exc = self.assertRaises(ValueError, api.extract_args, params)
+        self.assertIn('Invalid adopt data', six.text_type(exc))
 
     def test_adopt_stack_data_extract_not_present(self):
         args = api.extract_args({})

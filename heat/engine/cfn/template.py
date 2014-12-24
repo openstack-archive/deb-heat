@@ -1,4 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -15,6 +14,7 @@
 import collections
 import six
 
+from heat.common.i18n import _
 from heat.engine.cfn import functions as cfn_funcs
 from heat.engine import function
 from heat.engine import parameters
@@ -69,14 +69,20 @@ class CfnTemplate(template.Template):
         # to be consistent with an empty json section.
         return self.t.get(section) or default
 
-    def param_schemata(self):
+    def param_schemata(self, param_defaults=None):
         params = self.t.get(self.PARAMETERS) or {}
+        pdefaults = param_defaults or {}
+        for name, schema in six.iteritems(params):
+            if name in pdefaults:
+                params[name][parameters.DEFAULT] = pdefaults[name]
+
         return dict((name, parameters.Schema.from_dict(name, schema))
                     for name, schema in six.iteritems(params))
 
-    def parameters(self, stack_identifier, user_params):
+    def parameters(self, stack_identifier, user_params, param_defaults=None):
         return parameters.Parameters(stack_identifier, self,
-                                     user_params=user_params)
+                                     user_params=user_params,
+                                     param_defaults=param_defaults)
 
     def resource_definitions(self, stack):
         def rsrc_defn_item(name, snippet):
@@ -87,14 +93,16 @@ class CfnTemplate(template.Template):
                     field = data[key]
                     if not isinstance(field, valid_types):
                         args = {'name': name, 'key': key, 'typename': typename}
-                        msg = _('Resource %(name)s %(key)s type'
+                        msg = _('Resource %(name)s %(key)s type '
                                 'must be %(typename)s') % args
                         raise TypeError(msg)
                     return field
                 else:
                     return default
 
-            resource_type = get_check_type(RES_TYPE, basestring, 'string')
+            resource_type = get_check_type(RES_TYPE,
+                                           six.string_types,
+                                           'string')
             if resource_type is None:
                 args = {'name': name, 'type_key': RES_TYPE}
                 msg = _('Resource %(name)s is missing "%(type_key)s"') % args
@@ -114,11 +122,11 @@ class CfnTemplate(template.Template):
                                      collections.Sequence,
                                      'list or string',
                                      default=[])
-            if isinstance(depends, basestring):
+            if isinstance(depends, six.string_types):
                 depends = [depends]
 
             deletion_policy = get_check_type(RES_DELETION_POLICY,
-                                             basestring,
+                                             six.string_types,
                                              'string')
 
             update_policy = get_check_type(RES_UPDATE_POLICY,
@@ -127,16 +135,18 @@ class CfnTemplate(template.Template):
                                            'object')
 
             description = get_check_type(RES_DESCRIPTION,
-                                         basestring,
+                                         six.string_types,
                                          'string',
                                          default='')
 
-            defn = rsrc_defn.ResourceDefinition(name, resource_type,
-                                                properties, metadata,
-                                                depends,
-                                                deletion_policy,
-                                                update_policy,
-                                                description=description)
+            defn = rsrc_defn.ResourceDefinition(
+                name, resource_type,
+                properties=properties,
+                metadata=metadata,
+                depends=depends,
+                deletion_policy=deletion_policy,
+                update_policy=update_policy,
+                description=description)
             return name, defn
 
         resources = self.t.get(self.RESOURCES) or {}

@@ -21,13 +21,14 @@ from neutronclient.neutron import v2_0 as neutronV20
 from neutronclient.v2_0 import client as neutronclient
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.common import template_format
 from heat.engine.clients.os import nova
 from heat.engine.resources.neutron import loadbalancer
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
-from heat.tests.v1_1 import fakes as nova_fakes
+from heat.tests.v1_1 import fakes as fakes_v1_1
 
 
 health_monitor_template = '''
@@ -220,7 +221,7 @@ pool_with_health_monitors_template = '''
 '''
 
 
-class HealthMonitorTest(HeatTestCase):
+class HealthMonitorTest(common.HeatTestCase):
 
     def setUp(self):
         super(HealthMonitorTest, self).setUp()
@@ -345,7 +346,7 @@ class HealthMonitorTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class PoolTest(HeatTestCase):
+class PoolTest(common.HeatTestCase):
 
     def setUp(self):
         super(PoolTest, self).setUp()
@@ -545,10 +546,9 @@ class PoolTest(HeatTestCase):
         self.m.ReplayAll()
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
-        self.assertEqual(
-            'ResourceUnknownStatus: Pool creation failed due to vip - '
-            'Unknown status SOMETHING',
-            six.text_type(error))
+        self.assertEqual('ResourceUnknownStatus: Pool creation failed due to '
+                         'vip - Unknown status SOMETHING due to "Unknown"',
+                         six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
 
@@ -842,11 +842,11 @@ class PoolTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class PoolMemberTest(HeatTestCase):
+class PoolMemberTest(common.HeatTestCase):
 
     def setUp(self):
         super(PoolMemberTest, self).setUp()
-        self.fc = nova_fakes.FakeClient()
+        self.fc = fakes_v1_1.FakeClient()
         self.m.StubOutWithMock(neutronclient.Client, 'create_member')
         self.m.StubOutWithMock(neutronclient.Client, 'delete_member')
         self.m.StubOutWithMock(neutronclient.Client, 'update_member')
@@ -944,11 +944,11 @@ class PoolMemberTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class LoadBalancerTest(HeatTestCase):
+class LoadBalancerTest(common.HeatTestCase):
 
     def setUp(self):
         super(LoadBalancerTest, self).setUp()
-        self.fc = nova_fakes.FakeClient()
+        self.fc = fakes_v1_1.FakeClient()
         self.m.StubOutWithMock(neutronclient.Client, 'create_member')
         self.m.StubOutWithMock(neutronclient.Client, 'delete_member')
         self.stub_keystoneclient()
@@ -1030,7 +1030,7 @@ class LoadBalancerTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class PoolUpdateHealthMonitorsTest(HeatTestCase):
+class PoolUpdateHealthMonitorsTest(common.HeatTestCase):
 
     def setUp(self):
         super(PoolUpdateHealthMonitorsTest, self).setUp()
@@ -1088,7 +1088,7 @@ class PoolUpdateHealthMonitorsTest(HeatTestCase):
         self._create_pool_with_health_monitors()
 
         neutronclient.Client.disassociate_health_monitor(
-            '5678', mox.IsA(unicode))
+            '5678', mox.IsA(six.string_types))
 
         self.m.ReplayAll()
         snippet = template_format.parse(pool_with_health_monitors_template)

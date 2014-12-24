@@ -13,17 +13,18 @@
 
 import email
 
-import heatclient.exc as exc
 import mock
+import uuid
 
+from heat.common import exception as exc
 from heat.engine import parser
 from heat.engine.resources.software_config import multi_part as mp
 from heat.engine import template
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 
 
-class MultipartMimeTest(HeatTestCase):
+class MultipartMimeTest(common.HeatTestCase):
 
     def setUp(self):
         super(MultipartMimeTest, self).setUp()
@@ -43,9 +44,8 @@ class MultipartMimeTest(HeatTestCase):
                             'parts': parts
                         }}}}))
         self.config = stack['config_mysql']
-        heat = mock.MagicMock()
-        self.config.heat = heat
-        self.software_configs = heat.return_value.software_configs
+        self.rpc_client = mock.MagicMock()
+        self.config._rpc_client = self.rpc_client
 
     def test_resource_mapping(self):
         mapping = mp.resource_mapping()
@@ -55,14 +55,18 @@ class MultipartMimeTest(HeatTestCase):
         self.assertIsInstance(self.config, mp.MultipartMime)
 
     def test_handle_create(self):
-        sc = mock.MagicMock()
         config_id = 'c8a19429-7fde-47ea-a42f-40045488226c'
-        sc.id = config_id
-        self.software_configs.create.return_value = sc
+        sc = {'id': config_id}
+        self.rpc_client.create_software_config.return_value = sc
+        self.config.id = uuid.uuid4().hex
         self.config.handle_create()
         self.assertEqual(config_id, self.config.resource_id)
-        args = self.software_configs.create.call_args[1]
-        self.assertEqual(self.config.message, args['config'])
+        kwargs = self.rpc_client.create_software_config.call_args[1]
+        self.assertEqual({
+            'name': self.config.physical_resource_name(),
+            'config': self.config.message,
+            'group': 'Heat::Ungrouped'
+        }, kwargs)
 
     def test_get_message_not_none(self):
         self.config.message = 'Not none'
@@ -82,8 +86,14 @@ class MultipartMimeTest(HeatTestCase):
             'type': 'text'
         }]
         self.init_config(parts=parts)
-        self.software_configs.get.return_value.config = '#!/bin/bash'
+        self.rpc_client.show_software_config.return_value = {
+            'config': '#!/bin/bash'
+        }
         result = self.config.get_message()
+        self.assertEqual(
+            '1e0e5a60-2843-4cfd-9137-d90bdf18eef5',
+            self.rpc_client.show_software_config.call_args[0][1])
+
         message = email.message_from_string(result)
         self.assertTrue(message.is_multipart())
         subs = message.get_payload()
@@ -96,8 +106,13 @@ class MultipartMimeTest(HeatTestCase):
             'type': 'text'
         }]
         self.init_config(parts=parts)
-        self.software_configs.get.side_effect = exc.HTTPNotFound()
+        self.rpc_client.show_software_config.side_effect = exc.NotFound()
         result = self.config.get_message()
+
+        self.assertEqual(
+            '#!/bin/bash',
+            self.rpc_client.show_software_config.call_args[0][1])
+
         message = email.message_from_string(result)
         self.assertTrue(message.is_multipart())
         subs = message.get_payload()
@@ -111,8 +126,15 @@ class MultipartMimeTest(HeatTestCase):
             'filename': '/opt/stack/configure.d/55-heat-config'
         }]
         self.init_config(parts=parts)
-        self.software_configs.get.return_value.config = '#!/bin/bash'
+        self.rpc_client.show_software_config.return_value = {
+            'config': '#!/bin/bash'
+        }
         result = self.config.get_message()
+
+        self.assertEqual(
+            '1e0e5a60-2843-4cfd-9137-d90bdf18eef5',
+            self.rpc_client.show_software_config.call_args[0][1])
+
         message = email.message_from_string(result)
         self.assertTrue(message.is_multipart())
         subs = message.get_payload()
@@ -138,8 +160,17 @@ class MultipartMimeTest(HeatTestCase):
             'type': 'multipart'
         }]
         self.init_config(parts=parts)
-        self.software_configs.get.return_value.config = multipart
+
+        self.rpc_client.show_software_config.return_value = {
+            'config': multipart
+        }
+
         result = self.config.get_message()
+
+        self.assertEqual(
+            '1e0e5a60-2843-4cfd-9137-d90bdf18eef5',
+            self.rpc_client.show_software_config.call_args[0][1])
+
         message = email.message_from_string(result)
         self.assertTrue(message.is_multipart())
         subs = message.get_payload()
@@ -155,8 +186,18 @@ class MultipartMimeTest(HeatTestCase):
             {'config': '9cab10ef-16ce-4be9-8b25-a67b7313eddb',
              'type': 'text'}]
         self.init_config(parts=parts)
-        self.software_configs.get.return_value.config = '#!/bin/bash'
+        self.rpc_client.show_software_config.return_value = {
+            'config': '#!/bin/bash'
+        }
         result = self.config.get_message()
+
+        self.assertEqual(
+            '1e0e5a60-2843-4cfd-9137-d90bdf18eef5',
+            self.rpc_client.show_software_config.call_args_list[0][0][1])
+        self.assertEqual(
+            '9cab10ef-16ce-4be9-8b25-a67b7313eddb',
+            self.rpc_client.show_software_config.call_args_list[1][0][1])
+
         message = email.message_from_string(result)
         self.assertTrue(message.is_multipart())
         subs = message.get_payload()

@@ -31,7 +31,7 @@ from heat.engine import resource
 from heat.engine.resources import wait_condition as wc
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 
 test_template_waitcondition = '''
@@ -131,7 +131,7 @@ resources:
 '''
 
 
-class WaitConditionTest(HeatTestCase):
+class WaitConditionTest(common.HeatTestCase):
 
     def setUp(self):
         super(WaitConditionTest, self).setUp()
@@ -292,7 +292,7 @@ class WaitConditionTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         wc_att = rsrc.FnGetAtt('Data')
-        self.assertEqual(unicode({}), wc_att)
+        self.assertEqual(six.text_type({}), wc_att)
 
         handle = self.stack['WaitHandle']
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), handle.state)
@@ -404,7 +404,7 @@ class WaitConditionTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class WaitConditionHandleTest(HeatTestCase):
+class WaitConditionHandleTest(common.HeatTestCase):
     def setUp(self):
         super(WaitConditionHandleTest, self).setUp()
         cfg.CONF.set_default('heat_waitcondition_server_url',
@@ -467,7 +467,7 @@ class WaitConditionHandleTest(HeatTestCase):
             'Signature=',
             'fHyt3XFnHq8%2FSwYaVcHdJka1hz6jdK5mHtgbo8OOKbQ%3D'])
 
-        self.assertEqual(unicode(expected_url), rsrc.FnGetRefId())
+        self.assertEqual(six.text_type(expected_url), rsrc.FnGetRefId())
         self.m.VerifyAll()
 
     def test_handle_signal(self):
@@ -575,7 +575,7 @@ class WaitConditionHandleTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class WaitConditionUpdateTest(HeatTestCase):
+class WaitConditionUpdateTest(common.HeatTestCase):
     def setUp(self):
         super(WaitConditionUpdateTest, self).setUp()
         cfg.CONF.set_default('heat_waitcondition_server_url',
@@ -757,7 +757,7 @@ class WaitConditionUpdateTest(HeatTestCase):
         self.stack.create()
 
         rsrc = self.stack['WaitForTheHandle']
-        self.assertEqual(rsrc.state, (rsrc.CREATE, rsrc.COMPLETE))
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         self.m.VerifyAll()
         self.m.UnsetStubs()
@@ -767,7 +767,7 @@ class WaitConditionUpdateTest(HeatTestCase):
             resource.UpdateReplace, wait_condition_handle.update, None, None)
 
 
-class HeatWaitConditionTest(HeatTestCase):
+class HeatWaitConditionTest(common.HeatTestCase):
 
     def setUp(self):
         super(HeatWaitConditionTest, self).setUp()
@@ -895,7 +895,7 @@ class HeatWaitConditionTest(HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         wc_att = rsrc.FnGetAtt('data')
-        self.assertEqual(unicode({}), wc_att)
+        self.assertEqual(six.text_type({}), wc_att)
 
         handle = self.stack['wait_handle']
         self.assertEqual((handle.CREATE, handle.COMPLETE), handle.state)

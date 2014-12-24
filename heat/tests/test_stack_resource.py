@@ -11,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import datetime
 import six
 import uuid
 
@@ -20,12 +21,12 @@ import mox
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import environment
-from heat.engine import parser
 from heat.engine import resource
 from heat.engine import scheduler
+from heat.engine import stack as parser
 from heat.engine import stack_resource
 from heat.engine import template as templatem
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
 
@@ -69,6 +70,63 @@ simple_template = '''
 }
 '''
 
+main_template = '''
+heat_template_version: 2013-05-23
+resources:
+  volume_server:
+    type: nested.yaml
+'''
+
+my_wrong_nested_template = '''
+heat_template_version: 2013-05-23
+resources:
+  server:
+    type: OS::Nova::Server
+    properties:
+      image: F17-x86_64-gold
+      flavor: m1.small
+  volume:
+    type: OS::Cinder::Volume
+    properties:
+      size: 10
+      description: Volume for stack
+  volume_attachment:
+    type: OS::Cinder::VolumeAttachment
+    properties:
+      volume_id: { get_resource: volume }
+      instance_uuid: { get_resource: instance }
+'''
+
+resource_group_template = '''
+heat_template_version: 2013-05-23
+resources:
+  my_resource_group:
+    type: OS::Heat::ResourceGroup
+    properties:
+      resource_def:
+        type: idontexist
+'''
+
+heat_autoscaling_group_template = '''
+heat_template_version: 2013-05-23
+resources:
+  my_autoscaling_group:
+    type: OS::Heat::AutoScalingGroup
+    properties:
+      resource:
+        type: idontexist
+      desired_capacity: 2
+      max_size: 4
+      min_size: 1
+'''
+
+nova_server_template = '''
+heat_template_version: 2013-05-23
+resources:
+  group_server:
+    type: idontexist
+'''
+
 
 class MyStackResource(stack_resource.StackResource,
                       generic_rsrc.GenericResource):
@@ -100,7 +158,7 @@ class MyImplementedStackResource(MyStackResource):
         return self.nested_params
 
 
-class StackResourceTest(HeatTestCase):
+class StackResourceTest(common.HeatTestCase):
     def setUp(self):
         super(StackResourceTest, self).setUp()
         resource._register_class('some_magic_type',
@@ -108,9 +166,9 @@ class StackResourceTest(HeatTestCase):
         resource._register_class('GenericResource',
                                  generic_rsrc.GenericResource)
         self.ws_resname = "provider_resource"
-        t = parser.Template({'HeatTemplateFormatVersion': '2012-12-12',
-                             'Resources':
-                             {self.ws_resname: ws_res_snippet}})
+        t = templatem.Template(
+            {'HeatTemplateFormatVersion': '2012-12-12',
+             'Resources': {self.ws_resname: ws_res_snippet}})
         self.parent_stack = parser.Stack(utils.dummy_context(), 'test_stack',
                                          t, stack_id=str(uuid.uuid4()),
                                          user_creds_id='uc123',
@@ -152,7 +210,7 @@ class StackResourceTest(HeatTestCase):
         self.stack = self.parent_resource.nested()
         self.assertEqual({"foo": "bar"}, self.stack.t.files)
 
-    @mock.patch.object(stack_resource.StackResource, '_nested_environment')
+    @mock.patch('heat.engine.environment.get_child_environment')
     @mock.patch.object(stack_resource.parser, 'Stack')
     def test_preview_with_implemented_child_resource(self, mock_stack_class,
                                                      mock_env_class):
@@ -173,13 +231,14 @@ class StackResourceTest(HeatTestCase):
         parent_resource._validate_nested_resources = validation_mock
 
         result = parent_resource.preview()
-        mock_env_class.assert_called_once_with(params)
+        mock_env_class.assert_called_once_with(self.parent_stack.env,
+                                               params)
         self.assertEqual('preview_nested_stack', result)
         mock_stack_class.assert_called_once_with(
             mock.ANY,
             'test_stack-test',
             mock.ANY,
-            'environment',
+            env='environment',
             timeout_mins=None,
             disable_rollback=True,
             parent_resource=parent_resource,
@@ -187,9 +246,10 @@ class StackResourceTest(HeatTestCase):
             user_creds_id=self.parent_stack.user_creds_id,
             stack_user_project_id=self.parent_stack.stack_user_project_id,
             adopt_stack_data=None,
+            nested_depth=1
         )
 
-    @mock.patch.object(stack_resource.StackResource, '_nested_environment')
+    @mock.patch('heat.engine.environment.get_child_environment')
     @mock.patch.object(stack_resource.parser, 'Stack')
     def test_preview_with_implemented_dict_child_resource(self,
                                                           mock_stack_class,
@@ -211,13 +271,14 @@ class StackResourceTest(HeatTestCase):
         parent_resource._validate_nested_resources = validation_mock
 
         result = parent_resource.preview()
-        mock_env_class.assert_called_once_with(params)
+        mock_env_class.assert_called_once_with(self.parent_stack.env,
+                                               params)
         self.assertEqual('preview_nested_stack', result)
         mock_stack_class.assert_called_once_with(
             mock.ANY,
             'test_stack-test',
             mock.ANY,
-            'environment',
+            env='environment',
             timeout_mins=None,
             disable_rollback=True,
             parent_resource=parent_resource,
@@ -225,6 +286,7 @@ class StackResourceTest(HeatTestCase):
             user_creds_id=self.parent_stack.user_creds_id,
             stack_user_project_id=self.parent_stack.stack_user_project_id,
             adopt_stack_data=None,
+            nested_depth=1
         )
 
     def test_preview_propagates_files(self):
@@ -270,6 +332,75 @@ class StackResourceTest(HeatTestCase):
         self.assertRaises(exception.RequestLimitExceeded,
                           stk_resource.preview)
 
+    @mock.patch.object(stack_resource.parser, 'Stack')
+    def test_preview_doesnt_validate_nested_stack(self, mock_stack_class):
+        nested_stack = mock.Mock()
+        mock_stack_class.return_value = nested_stack
+
+        tmpl = self.parent_stack.t.t
+        self.parent_resource.child_template = mock.Mock(return_value=tmpl)
+        self.parent_resource.child_params = mock.Mock(return_value={})
+        self.parent_resource.preview()
+
+        self.assertFalse(nested_stack.validate.called)
+        self.assertTrue(nested_stack.preview_resources.called)
+
+    def test_validate_error_reference(self):
+        stack_name = 'validate_error_reference'
+        tmpl = template_format.parse(main_template)
+        files = {'nested.yaml': my_wrong_nested_template}
+        stack = parser.Stack(utils.dummy_context(), stack_name,
+                             templatem.Template(tmpl, files=files))
+        rsrc = stack['volume_server']
+        raise_exc_msg = ('The specified reference "instance" ('
+                         'in volume_attachment.Properties.instance_uuid) '
+                         'is incorrect')
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                rsrc.validate)
+        self.assertIn(raise_exc_msg, six.text_type(exc))
+
+    def _test_validate_unknown_resource_type(self, stack_name,
+                                             tmpl, resource_name):
+        raise_exc_msg = ('Unknown resource Type : idontexist')
+        stack = parser.Stack(utils.dummy_context(), stack_name, tmpl)
+        rsrc = stack[resource_name]
+
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                rsrc.validate)
+        self.assertIn(raise_exc_msg, six.text_type(exc))
+
+    def test_validate_resource_group(self):
+        # test validate without nested template
+        stack_name = 'validate_resource_group_template'
+        t = template_format.parse(resource_group_template)
+        tmpl = templatem.Template(t)
+        self._test_validate_unknown_resource_type(stack_name, tmpl,
+                                                  'my_resource_group')
+
+        # validate with nested template
+        res_prop = t['resources']['my_resource_group']['properties']
+        res_prop['resource_def']['type'] = 'nova_server.yaml'
+        files = {'nova_server.yaml': nova_server_template}
+        tmpl = templatem.Template(t, files=files)
+        self._test_validate_unknown_resource_type(stack_name, tmpl,
+                                                  'my_resource_group')
+
+    def test_validate_heat_autoscaling_group(self):
+        # test validate without nested template
+        stack_name = 'validate_heat_autoscaling_group_template'
+        t = template_format.parse(heat_autoscaling_group_template)
+        tmpl = templatem.Template(t)
+        self._test_validate_unknown_resource_type(stack_name, tmpl,
+                                                  'my_autoscaling_group')
+
+        # validate with nested template
+        res_prop = t['resources']['my_autoscaling_group']['properties']
+        res_prop['resource']['type'] = 'nova_server.yaml'
+        files = {'nova_server.yaml': nova_server_template}
+        tmpl = templatem.Template(t, files=files)
+        self._test_validate_unknown_resource_type(stack_name, tmpl,
+                                                  'my_autoscaling_group')
+
     def test__validate_nested_resources_checks_num_of_resources(self):
         stack_resource.cfg.CONF.set_override('max_resources_per_stack', 2)
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
@@ -292,6 +423,7 @@ class StackResourceTest(HeatTestCase):
                          self.stack.name)
         self.assertEqual(self.templ, self.stack.t.t)
         self.assertEqual(self.stack.id, self.parent_resource.resource_id)
+        self.assertEqual(1, self.stack.nested_depth)
         self.assertIsNone(self.stack.timeout_mins)
         self.assertEqual('aprojectid', self.stack.stack_user_project_id)
 
@@ -388,6 +520,9 @@ class StackResourceTest(HeatTestCase):
         new_templ = self.simple_template.copy()
         inst_snippet = new_templ["Resources"]["WebServer"].copy()
         new_templ["Resources"]["WebServer2"] = inst_snippet
+        self.parent_resource.updated_time = \
+            datetime.datetime(2014, 10, 24, 15, 40)
+
         updater = self.parent_resource.update_with_template(
             new_templ, {})
         updater.run_to_completion()
@@ -397,11 +532,15 @@ class StackResourceTest(HeatTestCase):
         self.assertEqual(set(["WebServer", "WebServer2"]),
                          set(self.stack.keys()))
         self.assertIsNone(self.stack.timeout_mins)
+        self.assertIsNotNone(self.stack.updated_time)
 
         # The stack's owner_id is maintained.
         saved_stack = parser.Stack.load(
             self.parent_stack.context, self.stack.id)
         self.assertEqual(self.parent_stack.id, saved_stack.owner_id)
+        # Check the stack's updated_time is saved and same as the resource
+        self.assertEqual(self.parent_resource.updated_time,
+                         saved_stack.updated_time)
 
     def test_update_with_template_timeout_mins(self):
         self.assertIsNone(self.parent_stack.timeout_mins)
@@ -485,11 +624,44 @@ class StackResourceTest(HeatTestCase):
         parser.Stack.load(self.parent_resource.context,
                           self.parent_resource.resource_id,
                           parent_resource=self.parent_resource,
-                          show_deleted=False).AndReturn('s')
+                          show_deleted=False,
+                          force_reload=False).AndReturn('s')
         self.m.ReplayAll()
 
         self.parent_resource.nested()
         self.m.VerifyAll()
+
+    def test_load_nested_force_reload(self):
+        create_creator = self.parent_resource.create_with_template(
+            self.templ, {"KeyName": "key"})
+        create_creator.run_to_completion()
+        expected_state = (parser.Stack.CREATE, parser.Stack.COMPLETE)
+        self.assertEqual(expected_state, self.parent_resource.nested().state)
+
+        stack = parser.Stack.load(
+            self.parent_resource.context,
+            self.parent_resource.resource_id,
+            parent_resource=self.parent_resource,
+            show_deleted=False)
+        stack.state_set(parser.Stack.CREATE, parser.Stack.FAILED, "foo")
+        self.assertEqual(expected_state, self.parent_resource.nested().state)
+        expected_state = (parser.Stack.CREATE, parser.Stack.FAILED)
+        self.assertEqual(expected_state,
+                         self.parent_resource.nested(force_reload=True).state)
+
+    def test_load_nested_deleted(self):
+        create_creator = self.parent_resource.create_with_template(
+            self.templ, {"KeyName": "key"})
+        create_creator.run_to_completion()
+        expected_state = (parser.Stack.CREATE, parser.Stack.COMPLETE)
+        self.assertEqual(expected_state, self.parent_resource.nested().state)
+
+        delete_deletor = self.parent_resource.delete_nested()
+        delete_deletor.run_to_completion()
+        expected_state = (parser.Stack.DELETE, parser.Stack.COMPLETE)
+        self.assertEqual(expected_state,
+                         self.parent_resource.nested(force_reload=True,
+                                                     show_deleted=True).state)
 
     def test_load_nested_non_exist(self):
         self.parent_resource.create_with_template(self.templ,
@@ -501,7 +673,8 @@ class StackResourceTest(HeatTestCase):
         parser.Stack.load(self.parent_resource.context,
                           self.parent_resource.resource_id,
                           parent_resource=self.parent_resource,
-                          show_deleted=False)
+                          show_deleted=False,
+                          force_reload=False)
         self.m.ReplayAll()
 
         self.assertRaises(exception.NotFound, self.parent_resource.nested)
@@ -528,7 +701,8 @@ class StackResourceTest(HeatTestCase):
             self.parent_resource.context,
             self.parent_resource.resource_id,
             parent_resource=self.parent_resource,
-            show_deleted=False).AndRaise(exception.NotFound(''))
+            show_deleted=False, force_reload=False
+        ).AndRaise(exception.NotFound(''))
         self.m.ReplayAll()
 
         self.assertIsNone(self.parent_resource.delete_nested())
@@ -597,6 +771,24 @@ class StackResourceTest(HeatTestCase):
 
         self.m.VerifyAll()
 
+    def test_need_update_in_failed_state_for_nested_resource(self):
+        """
+        The resource in FAILED state and has nested stack,
+        should need update.
+        """
+        self.parent_resource.set_template(self.templ, {"KeyName": "test"})
+        scheduler.TaskRunner(self.parent_resource.create)()
+        self.parent_resource.state_set('CREATE', 'FAILED')
+
+        need_update = self.parent_resource._needs_update(
+            self.parent_resource.t,
+            self.parent_resource.t,
+            self.parent_resource.properties,
+            self.parent_resource.properties,
+            self.parent_resource)
+
+        self.assertEqual(True, need_update)
+
     def test_create_complete_state_err(self):
         """
         check_create_complete should raise error when create task is
@@ -618,13 +810,14 @@ class StackResourceTest(HeatTestCase):
         environment.Environment().AndReturn(env)
 
         self.m.StubOutWithMock(parser, 'Stack')
-        parser.Stack(ctx, phy_id, templ, env, timeout_mins=None,
+        parser.Stack(ctx, phy_id, templ, env=env, timeout_mins=None,
                      disable_rollback=True,
                      parent_resource=self.parent_resource,
                      owner_id=self.parent_stack.id,
                      user_creds_id=self.parent_stack.user_creds_id,
                      adopt_stack_data=None,
-                     stack_user_project_id='aprojectid').AndReturn(self.stack)
+                     stack_user_project_id='aprojectid',
+                     nested_depth=1).AndReturn(self.stack)
 
         st_set = self.stack.state_set
         self.m.StubOutWithMock(self.stack, 'state_set')

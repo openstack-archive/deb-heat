@@ -16,6 +16,7 @@ import collections
 import six
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.engine import constraints as constr
 from heat.engine import function
 from heat.engine import parameters
@@ -242,8 +243,11 @@ class Property(object):
     def _get_string(self, value):
         if value is None:
             value = self.has_default() and self.default() or ''
-        if not isinstance(value, basestring):
-            raise ValueError(_('Value must be a string'))
+        if not isinstance(value, six.string_types):
+            if isinstance(value, (bool, int)):
+                value = six.text_type(value)
+            else:
+                raise ValueError(_('Value must be a string'))
         return value
 
     def _get_children(self, child_values, keys=None, validate=False):
@@ -274,7 +278,7 @@ class Property(object):
         if value is None:
             value = self.has_default() and self.default() or []
         if (not isinstance(value, collections.Sequence) or
-                isinstance(value, basestring)):
+                isinstance(value, six.string_types)):
             raise TypeError(_('"%s" is not a list') % repr(value))
 
         return [v[1] for v in self._get_children(enumerate(value),

@@ -13,6 +13,9 @@
 
 import uuid
 
+import mock
+
+from heat.common import exception
 from heat.common import template_format
 from heat.engine import environment
 from heat.engine import parser
@@ -210,6 +213,24 @@ class RackspaceDnsTest(common.HeatTestCase):
         self.assertEqual((instance.CREATE, instance.COMPLETE), instance.state)
         self.m.VerifyAll()
 
+    def test_check(self):
+        t = template_format.parse(domain_only_template)
+        instance = self._setup_test_cloud_dns_instance('dnsinstance_create', t)
+
+        mock_get = mock.Mock()
+        instance.cloud_dns = mock.Mock()
+        instance.cloud_dns.return_value.get = mock_get
+        scheduler.TaskRunner(instance.check)()
+        self.assertEqual('CHECK', instance.action)
+        self.assertEqual('COMPLETE', instance.status)
+
+        mock_get.side_effect = cloud_dns.NotFound('boom')
+        exc = self.assertRaises(exception.ResourceFailure,
+                                scheduler.TaskRunner(instance.check))
+        self.assertEqual('CHECK', instance.action)
+        self.assertEqual('FAILED', instance.status)
+        self.assertIn('boom', str(exc))
+
     def test_update(self, updateRecords=None):
         """
         Helper function for testing domain updates.
@@ -256,3 +277,46 @@ class RackspaceDnsTest(common.HeatTestCase):
                      'data': '192.0.2.8',
                      'ttl': 3600}]
         self.test_update(updateRecords=a_record)
+
+    def test_update_record_only(self):
+        """Helper function for testing domain updates."""
+        fake_dns_instance = FakeDnsInstance()
+        t = template_format.parse(domain_only_template)
+        instance = self._setup_test_cloud_dns_instance('dnsinstance_update', t)
+        instance.resource_id = 4
+        update_records = [{'type': 'A',
+                           'name': 'ftp.example.com',
+                           'data': '192.0.2.8',
+                           'ttl': 3600}]
+
+        mock_client = self.m.CreateMockAnything()
+        self.m.StubOutWithMock(instance, 'cloud_dns')
+        instance.cloud_dns().AndReturn(mock_client)
+        self.m.StubOutWithMock(mock_client, "get")
+        mock_domain = self.m.CreateMockAnything()
+        mock_client.get(fake_dns_instance.resource_id).AndReturn(mock_domain)
+
+        # mock_domain.update shouldn't be called in this scenario, so
+        # stub it out but don't record a call to it
+        self.m.StubOutWithMock(mock_domain, "update")
+
+        fake_records = list()
+        mock_domain.list_records().AndReturn(fake_records)
+        mock_domain.add_records([{
+            'comment': None,
+            'priority': None,
+            'type': 'A',
+            'name': 'ftp.example.com',
+            'data': '192.0.2.8',
+            'ttl': 3600}])
+        self.m.ReplayAll()
+
+        uprops = dict(instance.properties)
+        uprops['records'] = update_records
+        ut = rsrc_defn.ResourceDefinition(instance.name,
+                                          instance.type(),
+                                          uprops)
+
+        scheduler.TaskRunner(instance.update, ut)()
+        self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
+        self.m.VerifyAll()

@@ -10,16 +10,20 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+import six
 
 from oslo.utils import excutils
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LE
+from heat.common.i18n import _LI
+from heat.common.i18n import _LW
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
-from heat.engine.resources.vpc import VPC
+from heat.engine.resources import vpc
 from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
@@ -50,7 +54,10 @@ class ElasticIp(resource.Resource):
         INSTANCE_ID: properties.Schema(
             properties.Schema.STRING,
             _('Instance ID to associate with EIP.'),
-            update_allowed=True
+            update_allowed=True,
+            constraints=[
+                constraints.CustomConstraint('nova.server')
+            ]
         ),
     }
 
@@ -88,29 +95,30 @@ class ElasticIp(resource.Resource):
         """Allocate a floating IP for the current tenant."""
         ips = None
         if self.properties[self.DOMAIN]:
-            from heat.engine.resources.internet_gateway import InternetGateway
+            from heat.engine.resources import internet_gateway
 
-            ext_net = InternetGateway.get_external_network_id(self.neutron())
+            ext_net = internet_gateway.InternetGateway.get_external_network_id(
+                self.neutron())
             props = {'floating_network_id': ext_net}
             ips = self.neutron().create_floatingip({
                 'floatingip': props})['floatingip']
             self.ipaddress = ips['floating_ip_address']
             self.resource_id_set(ips['id'])
-            LOG.info(_('ElasticIp create %s') % str(ips))
+            LOG.info(_LI('ElasticIp create %s'), str(ips))
         else:
             try:
                 ips = self.nova().floating_ips.create()
             except Exception as e:
                 with excutils.save_and_reraise_exception():
                     if self.client_plugin('nova').is_not_found(e):
-                        msg = _("No default floating IP pool configured. "
-                                "Set 'default_floating_pool' in nova.conf.")
-                        LOG.error(msg)
+                        LOG.error(_LE("No default floating IP pool configured."
+                                      " Set 'default_floating_pool' in "
+                                      "nova.conf."))
 
             if ips:
                 self.ipaddress = ips.ip
                 self.resource_id_set(ips.id)
-                LOG.info(_('ElasticIp create %s') % str(ips))
+                LOG.info(_LI('ElasticIp create %s'), str(ips))
 
         instance_id = self.properties[self.INSTANCE_ID]
         if instance_id:
@@ -168,11 +176,11 @@ class ElasticIp(resource.Resource):
                         server.remove_floating_ip(self._ipaddress())
 
     def FnGetRefId(self):
-        return unicode(self._ipaddress())
+        return six.text_type(self._ipaddress())
 
     def _resolve_attribute(self, name):
         if name == self.ALLOCATION_ID:
-            return unicode(self.resource_id)
+            return six.text_type(self.resource_id)
 
 
 class ElasticIpAssociation(resource.Resource):
@@ -186,7 +194,10 @@ class ElasticIpAssociation(resource.Resource):
         INSTANCE_ID: properties.Schema(
             properties.Schema.STRING,
             _('Instance ID to associate with EIP specified by EIP property.'),
-            update_allowed=True
+            update_allowed=True,
+            constraints=[
+                constraints.CustomConstraint('nova.server')
+            ]
         ),
         EIP: properties.Schema(
             properties.Schema.STRING,
@@ -246,7 +257,7 @@ class ElasticIpAssociation(resource.Resource):
         return port_id, port_rsrc
 
     def _neutron_add_gateway_router(self, float_id, network_id):
-        router = VPC.router_for_vpc(self.neutron(), network_id)
+        router = vpc.VPC.router_for_vpc(self.neutron(), network_id)
         if router is not None:
             floatingip = self.neutron().show_floatingip(float_id)
             floating_net_id = \
@@ -316,7 +327,7 @@ class ElasticIpAssociation(resource.Resource):
             self._floatingIp_detach(nova_ignore_not_found=True)
             port_id, port_rsrc = self._get_port_info(ni_id, instance_id)
             if not port_id or not port_rsrc:
-                LOG.error(_('Port not specified.'))
+                LOG.error(_LE('Port not specified.'))
                 raise exception.NotFound(_('Failed to update, can not found '
                                            'port info.'))
 
@@ -339,7 +350,7 @@ class ElasticIpAssociation(resource.Resource):
             port_id, port_rsrc = self._get_port_info(ni_id_update,
                                                      instance_id_update)
             if not port_id or not port_rsrc:
-                LOG.error(_('Port not specified.'))
+                LOG.error(_LE('Port not specified.'))
                 raise exception.NotFound(_('Failed to update, can not found '
                                            'port info.'))
 
@@ -350,7 +361,7 @@ class ElasticIpAssociation(resource.Resource):
     def _validate_update_properties(self, prop_diff):
         # according to aws doc, when update allocation_id or eip,
         # if you also change the InstanceId or NetworkInterfaceId,
-         # should go to Replacement flow
+        # should go to Replacement flow
         if self.ALLOCATION_ID in prop_diff or self.EIP in prop_diff:
             instance_id = prop_diff.get(self.INSTANCE_ID)
             ni_id = prop_diff.get(self.NETWORK_INTERFACE_ID)
@@ -383,7 +394,7 @@ class ElasticIpAssociation(resource.Resource):
             instance_id = self.properties[self.INSTANCE_ID]
             port_id, port_rsrc = self._get_port_info(ni_id, instance_id)
             if not port_id or not port_rsrc:
-                LOG.warn(_('Skipping association, resource not specified'))
+                LOG.warn(_LW('Skipping association, resource not specified'))
                 return
 
             float_id = self.properties[self.ALLOCATION_ID]

@@ -18,18 +18,19 @@ from oslo.config import cfg
 from oslo.utils import timeutils
 
 from heat.common import exception
+from heat.common import grouputils
 from heat.common import short_id
 from heat.common import template_format
 from heat.engine import resource
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.engine import stack_resource
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import generic_resource
 from heat.tests import utils
 
 
-class AutoScalingGroupTest(HeatTestCase):
+class AutoScalingGroupTest(common.HeatTestCase):
 
     as_template = '''
         heat_template_version: 2013-05-23
@@ -66,7 +67,7 @@ class AutoScalingGroupTest(HeatTestCase):
         properties['min_size'] = 0
         properties['max_size'] = 0
         rsrc = self.create_stack(self.parsed)['my-group']
-        self.assertEqual(0, len(rsrc.get_instances()))
+        self.assertEqual(0, grouputils.get_size(rsrc))
         rsrc.delete()
 
     def test_scaling_adjust_down_empty(self):
@@ -74,7 +75,7 @@ class AutoScalingGroupTest(HeatTestCase):
         properties['min_size'] = 1
         properties['max_size'] = 1
         rsrc = self.create_stack(self.parsed)['my-group']
-        resources = rsrc.get_instances()
+        resources = grouputils.get_members(rsrc)
         self.assertEqual(1, len(resources))
 
         # Reduce the min size to 0, should complete without adjusting
@@ -84,22 +85,22 @@ class AutoScalingGroupTest(HeatTestCase):
                                                       rsrc.type(),
                                                       props)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
-        self.assertEqual(resources, rsrc.get_instances())
+        self.assertEqual(resources, grouputils.get_members(rsrc))
 
         # trigger adjustment to reduce to 0, there should be no more instances
         rsrc.adjust(-1)
-        self.assertEqual(0, len(rsrc.get_instances()))
+        self.assertEqual(0, grouputils.get_size(rsrc))
 
     def test_scaling_group_suspend(self):
         rsrc = self.create_stack(self.parsed)['my-group']
-        self.assertEqual(1, len(rsrc.get_instances()))
+        self.assertEqual(1, grouputils.get_size(rsrc))
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         scheduler.TaskRunner(rsrc.suspend)()
         self.assertEqual((rsrc.SUSPEND, rsrc.COMPLETE), rsrc.state)
 
     def test_scaling_group_resume(self):
         rsrc = self.create_stack(self.parsed)['my-group']
-        self.assertEqual(1, len(rsrc.get_instances()))
+        self.assertEqual(1, grouputils.get_size(rsrc))
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         rsrc.state_set(rsrc.SUSPEND, rsrc.COMPLETE)
         for i in rsrc.nested().values():
@@ -119,7 +120,7 @@ class AutoScalingGroupTest(HeatTestCase):
                           scheduler.TaskRunner(rsrc.create))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
 
-        self.assertEqual(0, len(rsrc.get_instances()))
+        self.assertEqual(0, grouputils.get_size(rsrc))
 
     def test_scaling_group_update_ok_maxsize(self):
         properties = self.parsed['resources']['my-group']['properties']
@@ -127,7 +128,7 @@ class AutoScalingGroupTest(HeatTestCase):
         properties['max_size'] = 3
 
         rsrc = self.create_stack(self.parsed)['my-group']
-        resources = rsrc.get_instances()
+        resources = grouputils.get_members(rsrc)
         self.assertEqual(1, len(resources))
 
         # Reduce the max size to 2, should complete without adjusting
@@ -137,7 +138,7 @@ class AutoScalingGroupTest(HeatTestCase):
                                                       rsrc.type(),
                                                       props)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
-        self.assertEqual(resources, rsrc.get_instances())
+        self.assertEqual(resources, grouputils.get_members(rsrc))
         self.assertEqual(2, rsrc.properties['max_size'])
 
     def test_scaling_group_update_ok_minsize(self):
@@ -146,7 +147,7 @@ class AutoScalingGroupTest(HeatTestCase):
         properties['max_size'] = 3
 
         rsrc = self.create_stack(self.parsed)['my-group']
-        self.assertEqual(1, len(rsrc.get_instances()))
+        self.assertEqual(1, grouputils.get_size(rsrc))
 
         props = copy.copy(rsrc.properties.data)
         props['min_size'] = 2
@@ -154,7 +155,7 @@ class AutoScalingGroupTest(HeatTestCase):
                                                       rsrc.type(),
                                                       props)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
-        self.assertEqual(2, len(rsrc.get_instances()))
+        self.assertEqual(2, grouputils.get_size(rsrc))
         self.assertEqual(2, rsrc.properties['min_size'])
 
     def test_scaling_group_update_ok_desired(self):
@@ -162,7 +163,7 @@ class AutoScalingGroupTest(HeatTestCase):
         properties['min_size'] = 1
         properties['max_size'] = 3
         rsrc = self.create_stack(self.parsed)['my-group']
-        self.assertEqual(1, len(rsrc.get_instances()))
+        self.assertEqual(1, grouputils.get_size(rsrc))
 
         props = copy.copy(rsrc.properties.data)
         props['desired_capacity'] = 2
@@ -170,14 +171,14 @@ class AutoScalingGroupTest(HeatTestCase):
                                                       rsrc.type(),
                                                       props)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
-        self.assertEqual(2, len(rsrc.get_instances()))
+        self.assertEqual(2, grouputils.get_size(rsrc))
         self.assertEqual(2, rsrc.properties['desired_capacity'])
 
     def test_scaling_group_update_ok_desired_remove(self):
         properties = self.parsed['resources']['my-group']['properties']
         properties['desired_capacity'] = 2
         rsrc = self.create_stack(self.parsed)['my-group']
-        resources = rsrc.get_instances()
+        resources = grouputils.get_members(rsrc)
         self.assertEqual(2, len(resources))
 
         props = copy.copy(rsrc.properties.data)
@@ -186,7 +187,7 @@ class AutoScalingGroupTest(HeatTestCase):
                                                       rsrc.type(),
                                                       props)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
-        self.assertEqual(resources, rsrc.get_instances())
+        self.assertEqual(resources, grouputils.get_members(rsrc))
         self.assertIsNone(rsrc.properties['desired_capacity'])
 
     def test_scaling_group_scale_up_failure(self):
@@ -194,27 +195,27 @@ class AutoScalingGroupTest(HeatTestCase):
         mock_create = self.patchobject(generic_resource.ResourceWithProps,
                                        'handle_create')
         rsrc = stack['my-group']
-        self.assertEqual(1, len(rsrc.get_instances()))
+        self.assertEqual(1, grouputils.get_size(rsrc))
 
         mock_create.side_effect = exception.Error('Bang')
         self.assertRaises(exception.Error, rsrc.adjust, 1)
-        self.assertEqual(1, len(rsrc.get_instances()))
+        self.assertEqual(1, grouputils.get_size(rsrc))
 
     def test_scaling_group_truncate_adjustment(self):
         # Create initial group, 2 instances
         properties = self.parsed['resources']['my-group']['properties']
         properties['desired_capacity'] = 2
         rsrc = self.create_stack(self.parsed)['my-group']
-        self.assertEqual(2, len(rsrc.get_instances()))
+        self.assertEqual(2, grouputils.get_size(rsrc))
 
         rsrc.adjust(4)
-        self.assertEqual(5, len(rsrc.get_instances()))
+        self.assertEqual(5, grouputils.get_size(rsrc))
 
         rsrc.adjust(-5)
-        self.assertEqual(1, len(rsrc.get_instances()))
+        self.assertEqual(1, grouputils.get_size(rsrc))
 
         rsrc.adjust(0)
-        self.assertEqual(1, len(rsrc.get_instances()))
+        self.assertEqual(1, grouputils.get_size(rsrc))
 
     def _do_test_scaling_group_percent(self, decrease, lowest,
                                        increase, create, highest):
@@ -222,15 +223,15 @@ class AutoScalingGroupTest(HeatTestCase):
         properties = self.parsed['resources']['my-group']['properties']
         properties['desired_capacity'] = 2
         rsrc = self.create_stack(self.parsed)['my-group']
-        self.assertEqual(2, len(rsrc.get_instances()))
+        self.assertEqual(2, grouputils.get_size(rsrc))
 
         # reduce by decrease %
         rsrc.adjust(decrease, 'percentage_change_in_capacity')
-        self.assertEqual(lowest, len(rsrc.get_instances()))
+        self.assertEqual(lowest, grouputils.get_size(rsrc))
 
         # raise by increase %
         rsrc.adjust(increase, 'percentage_change_in_capacity')
-        self.assertEqual(highest, len(rsrc.get_instances()))
+        self.assertEqual(highest, grouputils.get_size(rsrc))
 
     def test_scaling_group_percent(self):
         self._do_test_scaling_group_percent(-50, 1, 200, 2, 3)
@@ -264,8 +265,21 @@ class AutoScalingGroupTest(HeatTestCase):
         self.assertEqual(dict((n, n) for n in member_names),
                          rsrc.FnGetAtt('outputs', 'Bar'))
 
+    def test_attribute_current_size(self):
+        rsrc = self.create_stack(self.parsed)['my-group']
+        mock_instances = self.patchobject(grouputils, 'get_size')
+        mock_instances.return_value = 3
 
-class HeatScalingGroupWithCFNScalingPolicyTest(HeatTestCase):
+        self.assertEqual(3, rsrc.FnGetAtt('current_size'))
+
+    def test_attribute_current_size_with_path(self):
+        rsrc = self.create_stack(self.parsed)['my-group']
+        mock_instances = self.patchobject(grouputils, 'get_size')
+        mock_instances.return_value = 4
+        self.assertEqual(4, rsrc.FnGetAtt('current_size', 'name'))
+
+
+class HeatScalingGroupWithCFNScalingPolicyTest(common.HeatTestCase):
     as_template = '''
         heat_template_version: 2013-05-23
         description: AutoScaling Test
@@ -307,9 +321,9 @@ class HeatScalingGroupWithCFNScalingPolicyTest(HeatTestCase):
         stack = self.create_stack(self.parsed)
         scale_up = stack['scale-up']
         group = stack['my-group']
-        self.assertEqual(1, len(group.get_instances()))
+        self.assertEqual(1, grouputils.get_size(group))
         scale_up.signal()
-        self.assertEqual(2, len(group.get_instances()))
+        self.assertEqual(2, grouputils.get_size(group))
 
     def test_no_instance_list(self):
         """
@@ -322,7 +336,7 @@ class HeatScalingGroupWithCFNScalingPolicyTest(HeatTestCase):
                           group.FnGetAtt, 'InstanceList')
 
 
-class ScalingPolicyTest(HeatTestCase):
+class ScalingPolicyTest(common.HeatTestCase):
     # TODO(Qiming): Add more tests to the scaling policy
     as_template = '''
         heat_template_version: 2013-05-23
@@ -366,9 +380,9 @@ class ScalingPolicyTest(HeatTestCase):
 
         self.assertEqual("1234", policy.FnGetRefId())
 
-        self.assertEqual(1, len(group.get_instance_names()))
+        self.assertEqual(1, grouputils.get_size(group))
         policy.signal()
-        self.assertEqual(2, len(group.get_instance_names()))
+        self.assertEqual(2, grouputils.get_size(group))
 
     def test_signal_with_cooldown(self):
         self.parsed['resources']['my-policy']['properties']['cooldown'] = 60
@@ -377,22 +391,23 @@ class ScalingPolicyTest(HeatTestCase):
         policy = stack['my-policy']
         group = stack['my-group']
 
-        self.assertEqual(1, len(group.get_instance_names()))
+        self.assertEqual(1, grouputils.get_size(group))
         policy.signal()
-        self.assertEqual(2, len(group.get_instance_names()))
+        self.assertEqual(2, grouputils.get_size(group))
         policy.signal()
         # The second signal shouldn't have changed it because of cooldown
-        self.assertEqual(2, len(group.get_instance_names()))
+        self.assertEqual(2, grouputils.get_size(group))
 
         past = timeutils.strtime(timeutils.utcnow() -
                                  datetime.timedelta(seconds=65))
         policy.metadata_set({past: 'ChangeInCapacity : 1'})
 
         policy.signal()
-        self.assertEqual(3, len(group.get_instance_names()))
+
+        self.assertEqual(3, grouputils.get_size(group))
 
 
-class RollingUpdatesTest(HeatTestCase):
+class RollingUpdatesTest(common.HeatTestCase):
 
     as_template = '''
         heat_template_version: 2013-05-23

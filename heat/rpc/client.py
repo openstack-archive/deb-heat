@@ -18,7 +18,7 @@ Client side of the heat engine RPC API.
 """
 
 from heat.common import messaging
-from heat.rpc import api
+from heat.rpc import api as rpc_api
 
 
 class EngineClient(object):
@@ -34,7 +34,7 @@ class EngineClient(object):
 
     def __init__(self):
         self._client = messaging.get_rpc_client(
-            topic=api.ENGINE_TOPIC,
+            topic=rpc_api.ENGINE_TOPIC,
             version=self.BASE_RPC_API_VERSION)
 
     @staticmethod
@@ -56,6 +56,25 @@ class EngineClient(object):
         else:
             client = self._client
         return client.cast(ctxt, method, **kwargs)
+
+    def local_error_name(self, error):
+        """
+        Returns the name of the error with any _Remote postfix removed.
+
+        :param error: Remote raised error to derive the name from.
+        """
+        error_name = error.__class__.__name__
+        return error_name.split('_Remote')[0]
+
+    def ignore_error_named(self, error, name):
+        """
+        Raises the error unless its local name matches the supplied name
+
+        :param error: Remote raised error to derive the local name from.
+        :param name: Name to compare local name to.
+        """
+        if self.local_error_name(error) != name:
+            raise error
 
     def identify_stack(self, ctxt, stack_name):
         """
@@ -160,18 +179,26 @@ class EngineClient(object):
                                   args)
 
     def _create_stack(self, ctxt, stack_name, template, params, files, args,
-                      owner_id=None):
+                      owner_id=None, nested_depth=0, user_creds_id=None,
+                      stack_user_project_id=None):
         """
         Internal create_stack interface for engine-to-engine communication via
         RPC.  Allows some additional options which should not be exposed to
         users via the API:
         :param owner_id: parent stack ID for nested stacks
+        :param nested_depth: nested depth for nested stacks
+        :param user_creds_id: user_creds record for nested stack
+        :param stack_user_project_id: stack user project for nested stack
         """
-        return self.call(ctxt,
-                         self.make_msg('create_stack', stack_name=stack_name,
-                                       template=template,
-                                       params=params, files=files, args=args,
-                                       owner_id=owner_id))
+        return self.call(
+            ctxt, self.make_msg('create_stack', stack_name=stack_name,
+                                template=template,
+                                params=params, files=files, args=args,
+                                owner_id=owner_id,
+                                nested_depth=nested_depth,
+                                user_creds_id=user_creds_id,
+                                stack_user_project_id=stack_user_project_id),
+            version='1.2')
 
     def update_stack(self, ctxt, stack_identity, template, params,
                      files, args):
@@ -305,16 +332,20 @@ class EngineClient(object):
                                              sort_keys=sort_keys,
                                              sort_dir=sort_dir))
 
-    def describe_stack_resource(self, ctxt, stack_identity, resource_name):
+    def describe_stack_resource(self, ctxt, stack_identity, resource_name,
+                                with_attr=None):
         """
         Get detailed resource information about a particular resource.
         :param ctxt: RPC context.
         :param stack_identity: Name of the stack.
         :param resource_name: the Resource.
         """
-        return self.call(ctxt, self.make_msg('describe_stack_resource',
-                                             stack_identity=stack_identity,
-                                             resource_name=resource_name))
+        return self.call(ctxt,
+                         self.make_msg('describe_stack_resource',
+                                       stack_identity=stack_identity,
+                                       resource_name=resource_name,
+                                       with_attr=with_attr),
+                         version='1.2')
 
     def find_physical_resource(self, ctxt, physical_resource_id):
         """
@@ -524,3 +555,8 @@ class EngineClient(object):
     def stack_list_snapshots(self, cnxt, stack_identity):
         return self.call(cnxt, self.make_msg('stack_list_snapshots',
                                              stack_identity=stack_identity))
+
+    def stack_restore(self, cnxt, stack_identity, snapshot_id):
+        return self.call(cnxt, self.make_msg('stack_restore',
+                                             stack_identity=stack_identity,
+                                             snapshot_id=snapshot_id))

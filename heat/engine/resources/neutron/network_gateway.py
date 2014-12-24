@@ -15,6 +15,7 @@
 #    limitations under the License.
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
@@ -26,6 +27,8 @@ class NetworkGateway(neutron.NeutronResource):
     '''
     A resource for the Network Gateway resource in Neutron Network Gateway.
     '''
+
+    support_status = support.SupportStatus(version='2014.1')
 
     PROPERTIES = (
         NAME, DEVICES, CONNECTIONS,
@@ -170,6 +173,8 @@ class NetworkGateway(neutron.NeutronResource):
         ret = self.neutron().create_network_gateway(
             {'network_gateway': props})['network_gateway']
 
+        self.resource_id_set(ret['id'])
+
         for connection in connections:
             self.client_plugin().resolve_network(
                 connection, self.NETWORK, 'network_id')
@@ -178,8 +183,6 @@ class NetworkGateway(neutron.NeutronResource):
             self.neutron().connect_network_gateway(
                 ret['id'], connection
             )
-
-        self.resource_id_set(ret['id'])
 
     def handle_delete(self):
         if not self.resource_id:

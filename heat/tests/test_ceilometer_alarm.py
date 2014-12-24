@@ -23,12 +23,12 @@ from heat.common import exception
 from heat.common import template_format
 from heat.engine.clients.os import ceilometer
 from heat.engine import parser
-from heat.engine.properties import schemata
+from heat.engine import properties as props
 from heat.engine import resource
 from heat.engine.resources.ceilometer import alarm
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import generic_resource
 from heat.tests import utils
 
@@ -125,7 +125,7 @@ class FakeCeilometerClient(object):
     alarms = FakeCeilometerAlarms()
 
 
-class CeilometerAlarmTest(HeatTestCase):
+class CeilometerAlarmTest(common.HeatTestCase):
     def setUp(self):
         super(CeilometerAlarmTest, self).setUp()
 
@@ -161,15 +161,31 @@ class CeilometerAlarmTest(HeatTestCase):
         al['ok_actions'] = None
         al['repeat_actions'] = True
         al['enabled'] = True
-        al['evaluation_periods'] = 1
-        al['period'] = 60
-        al['threshold'] = 50
-        if 'matching_metadata' in al:
-            al['matching_metadata'] = dict(
-                ('metadata.metering.%s' % k, v)
-                for k, v in al['matching_metadata'].items())
+        rule = dict(
+            period=60,
+            evaluation_periods=1,
+            threshold=50)
+        for field in ['period', 'evaluation_periods', 'threshold']:
+            del al[field]
+        for field in ['statistic', 'comparison_operator', 'meter_name']:
+            rule[field] = al[field]
+            del al[field]
+        if 'query' in al and al['query']:
+            query = al['query']
         else:
-            al['matching_metadata'] = {}
+            query = []
+        if 'query' in al:
+            del al['query']
+        if 'matching_metadata' in al and al['matching_metadata']:
+            for k, v in al['matching_metadata'].items():
+                key = 'metadata.metering.' + k
+                query.append(dict(field=key, op='eq', value=six.text_type(v)))
+        if 'matching_metadata' in al:
+            del al['matching_metadata']
+        if query:
+            rule['query'] = query
+        al['threshold_rule'] = rule
+        al['type'] = 'threshold'
         self.m.StubOutWithMock(self.fa.alarms, 'create')
         self.fa.alarms.create(**al).AndReturn(FakeCeilometerAlarm())
         return stack
@@ -184,23 +200,38 @@ class CeilometerAlarmTest(HeatTestCase):
         properties = t['Resources']['MEMAlarmHigh']['Properties']
         properties['alarm_actions'] = ['signal_handler']
         properties['matching_metadata'] = {'a': 'v'}
+        properties['query'] = [dict(field='b', op='eq', value='w')]
 
         self.stack = self.create_stack(template=json.dumps(t))
         self.m.StubOutWithMock(self.fa.alarms, 'update')
-        schema = schemata(alarm.CeilometerAlarm.properties_schema)
+        schema = props.schemata(alarm.CeilometerAlarm.properties_schema)
+        exns = ['period', 'evaluation_periods', 'threshold',
+                'statistic', 'comparison_operator', 'meter_name',
+                'matching_metadata', 'query']
         al2 = dict((k, mox.IgnoreArg())
-                   for k, s in schema.items() if s.update_allowed)
+                   for k, s in schema.items()
+                   if s.update_allowed and k not in exns)
         al2['alarm_id'] = mox.IgnoreArg()
-        del al2['enabled']
-        del al2['repeat_actions']
+        al2['type'] = 'threshold'
+        al2['threshold_rule'] = dict(
+            meter_name=properties['meter_name'],
+            period=90,
+            evaluation_periods=2,
+            threshold=39,
+            statistic='max',
+            comparison_operator='lt',
+            query=[
+                dict(field='c', op='ne', value='z'),
+                dict(field='metadata.metering.x', op='eq', value='y')
+            ])
         self.fa.alarms.update(**al2).AndReturn(None)
 
         self.m.ReplayAll()
         self.stack.create()
         rsrc = self.stack['MEMAlarmHigh']
 
-        props = copy.copy(rsrc.properties.data)
-        props.update({
+        properties = copy.copy(rsrc.properties.data)
+        properties.update({
             'comparison_operator': 'lt',
             'description': 'fruity',
             'evaluation_periods': '2',
@@ -212,10 +243,12 @@ class CeilometerAlarmTest(HeatTestCase):
             'insufficient_data_actions': [],
             'alarm_actions': [],
             'ok_actions': ['signal_handler'],
+            'matching_metadata': {'x': 'y'},
+            'query': [dict(field='c', op='ne', value='z')]
         })
         snippet = rsrc_defn.ResourceDefinition(rsrc.name,
                                                rsrc.type(),
-                                               props)
+                                               properties)
 
         scheduler.TaskRunner(rsrc.update, snippet)()
 
@@ -237,11 +270,11 @@ class CeilometerAlarmTest(HeatTestCase):
         self.stack.create()
         rsrc = self.stack['MEMAlarmHigh']
 
-        props = copy.copy(rsrc.properties.data)
-        props['meter_name'] = 'temp'
+        properties = copy.copy(rsrc.properties.data)
+        properties['meter_name'] = 'temp'
         snippet = rsrc_defn.ResourceDefinition(rsrc.name,
                                                rsrc.type(),
-                                               props)
+                                               properties)
 
         updater = scheduler.TaskRunner(rsrc.update, snippet)
         self.assertRaises(resource.UpdateReplace, updater)
@@ -285,6 +318,46 @@ class CeilometerAlarmTest(HeatTestCase):
         self.assertIsInstance(rsrc.properties['evaluation_periods'], int)
         self.assertIsInstance(rsrc.properties['period'], int)
         self.assertIsInstance(rsrc.properties['threshold'], int)
+
+        self.m.VerifyAll()
+
+    def test_alarm_metadata_prefix(self):
+        t = template_format.parse(alarm_template)
+        properties = t['Resources']['MEMAlarmHigh']['Properties']
+        # Test for bug/1383521, where meter_name is in NOVA_METERS
+        properties[alarm.CeilometerAlarm.METER_NAME] = 'memory.usage'
+        properties['matching_metadata'] =\
+            {'metadata.user_metadata.groupname': 'foo'}
+
+        self.stack = self.create_stack(template=json.dumps(t))
+
+        rsrc = self.stack['MEMAlarmHigh']
+        rsrc.properties.data = rsrc.cfn_to_ceilometer(self.stack, properties)
+        self.assertIsNone(rsrc.properties.data.get('matching_metadata'))
+        query = rsrc.properties.data['threshold_rule']['query']
+        expected_query = [{'field': u'metadata.user_metadata.groupname',
+                           'value': u'foo', 'op': 'eq'}]
+        self.assertEqual(expected_query, query)
+
+    def test_mem_alarm_high_correct_matching_metadata(self):
+        t = template_format.parse(alarm_template)
+        properties = t['Resources']['MEMAlarmHigh']['Properties']
+        properties['matching_metadata'] = {'fro': 'bar',
+                                           'bro': True,
+                                           'dro': 1234,
+                                           'pro': '{"Mem": {"Ala": {"Hig"}}}',
+                                           'tro': [1, 2, 3, 4]}
+
+        self.stack = self.create_stack(template=json.dumps(t))
+
+        self.m.ReplayAll()
+        self.stack.create()
+        rsrc = self.stack['MEMAlarmHigh']
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        rsrc.properties.data = rsrc.cfn_to_ceilometer(self.stack, properties)
+        self.assertIsNone(rsrc.properties.data.get('matching_metadata'))
+        for key in rsrc.properties.data['threshold_rule']['query']:
+            self.assertIsInstance(key['value'], six.text_type)
 
         self.m.VerifyAll()
 
@@ -379,7 +452,7 @@ class CeilometerAlarmTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class CombinationAlarmTest(HeatTestCase):
+class CombinationAlarmTest(common.HeatTestCase):
 
     def setUp(self):
         super(CombinationAlarmTest, self).setUp()

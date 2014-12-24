@@ -23,6 +23,9 @@ import six
 from heat.common import environment_format as env_fmt
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LE
+from heat.common.i18n import _LI
+from heat.common.i18n import _LW
 from heat.engine import support
 from heat.openstack.common import log
 
@@ -44,7 +47,7 @@ class ResourceInfo(object):
         if name.endswith(('.yaml', '.template')):
             # a template url for the resource "Type"
             return TemplateResourceInfo(registry, path, value)
-        elif not isinstance(value, basestring):
+        elif not isinstance(value, six.string_types):
             return ClassResourceInfo(registry, path, value)
         elif value.endswith(('.yaml', '.template')):
             # a registered template
@@ -118,8 +121,10 @@ class TemplateResourceInfo(ResourceInfo):
 
     def get_class(self):
         from heat.engine.resources import template_resource
+        env = self.registry.environment
         return template_resource.generate_class(str(self.name),
-                                                self.template_name)
+                                                self.template_name,
+                                                env)
 
 
 class MapResourceInfo(ResourceInfo):
@@ -153,9 +158,10 @@ class GlobResourceInfo(MapResourceInfo):
 class ResourceRegistry(object):
     """By looking at the environment, find the resource implementation."""
 
-    def __init__(self, global_registry):
+    def __init__(self, global_registry, env):
         self._registry = {'resources': {}}
         self.global_registry = global_registry
+        self.environment = env
 
     def load(self, json_snippet):
         self._load_registry([], json_snippet)
@@ -193,13 +199,13 @@ class ResourceRegistry(object):
                 for res_name in registry.keys():
                     if isinstance(registry[res_name], ResourceInfo) and \
                        res_name.startswith(name[:-1]):
-                        LOG.warn(_('Removing %(item)s from %(path)s') % {
+                        LOG.warn(_LW('Removing %(item)s from %(path)s'), {
                             'item': res_name,
                             'path': descriptive_path})
                         del registry[res_name]
             else:
                 # delete this entry.
-                LOG.warn(_('Removing %(item)s from %(path)s') % {
+                LOG.warn(_LW('Removing %(item)s from %(path)s'), {
                     'item': name,
                     'path': descriptive_path})
                 registry.pop(name, None)
@@ -212,9 +218,10 @@ class ResourceRegistry(object):
                 'path': descriptive_path,
                 'was': str(registry[name].value),
                 'now': str(info.value)}
-            LOG.warn(_('Changing %(path)s from %(was)s to %(now)s') % details)
+            LOG.warn(_LW('Changing %(path)s from %(was)s to %(now)s'),
+                     details)
         else:
-            LOG.info(_('Registering %(path)s -> %(value)s') % {
+            LOG.info(_LI('Registering %(path)s -> %(value)s'), {
                 'path': descriptive_path,
                 'value': str(info.value)})
 
@@ -300,7 +307,7 @@ class ResourceRegistry(object):
             msg = _('Non-empty resource type is required '
                     'for resource "%s"') % resource_name
             raise exception.StackValidationFailed(message=msg)
-        elif not isinstance(resource_type, basestring):
+        elif not isinstance(resource_type, six.string_types):
             msg = _('Resource "%s" type is not a string') % resource_name
             raise exception.StackValidationFailed(message=msg)
 
@@ -359,20 +366,28 @@ class Environment(object):
         else:
             global_registry = None
 
-        self.registry = ResourceRegistry(global_registry)
+        self.registry = ResourceRegistry(global_registry, self)
         self.registry.load(env.get(env_fmt.RESOURCE_REGISTRY, {}))
+
+        if env_fmt.PARAMETER_DEFAULTS in env:
+            self.param_defaults = env[env_fmt.PARAMETER_DEFAULTS]
+        else:
+            self.param_defaults = {}
 
         if env_fmt.PARAMETERS in env:
             self.params = env[env_fmt.PARAMETERS]
         else:
             self.params = dict((k, v) for (k, v) in six.iteritems(env)
-                               if k != env_fmt.RESOURCE_REGISTRY)
+                               if k not in (env_fmt.PARAMETER_DEFAULTS,
+                                            env_fmt.RESOURCE_REGISTRY))
         self.constraints = {}
         self.stack_lifecycle_plugins = []
 
     def load(self, env_snippet):
         self.registry.load(env_snippet.get(env_fmt.RESOURCE_REGISTRY, {}))
         self.params.update(env_snippet.get(env_fmt.PARAMETERS, {}))
+        self.param_defaults.update(
+            env_snippet.get(env_fmt.PARAMETER_DEFAULTS, {}))
 
     def patch_previous_parameters(self, previous_env, clear_parameters=[]):
         """This instance of Environment is the new environment where
@@ -390,7 +405,8 @@ class Environment(object):
     def user_env_as_dict(self):
         """Get the environment as a dict, ready for storing in the db."""
         return {env_fmt.RESOURCE_REGISTRY: self.registry.as_dict(),
-                env_fmt.PARAMETERS: self.params}
+                env_fmt.PARAMETERS: self.params,
+                env_fmt.PARAMETER_DEFAULTS: self.param_defaults}
 
     def register_class(self, resource_type, resource_class):
         self.registry.register_class(resource_type, resource_class)
@@ -421,6 +437,28 @@ class Environment(object):
         return self.stack_lifecycle_plugins
 
 
+def get_child_environment(parent_env, child_params):
+    """Build a child environment using the parent environment and params.
+    This is built from the child_params and the parent env so some
+    resources can use user-provided parameters as if they come from an
+    environment.
+    """
+    new_env = Environment()
+    new_env.registry = copy.copy(parent_env.registry)
+    new_env.environment = new_env
+    child_env = {
+        env_fmt.PARAMETERS: {},
+        env_fmt.PARAMETER_DEFAULTS: parent_env.param_defaults}
+    if child_params is not None:
+        if env_fmt.PARAMETERS not in child_params:
+            child_env[env_fmt.PARAMETERS] = child_params
+        else:
+            child_env.update(child_params)
+
+    new_env.load(child_env)
+    return new_env
+
+
 def read_global_environment(env, env_dir=None):
     if env_dir is None:
         cfg.CONF.import_opt('environment_dir', 'heat.common.config')
@@ -429,22 +467,22 @@ def read_global_environment(env, env_dir=None):
     try:
         env_files = glob.glob(os.path.join(env_dir, '*'))
     except OSError as osex:
-        LOG.error(_('Failed to read %s') % env_dir)
+        LOG.error(_LE('Failed to read %s'), env_dir)
         LOG.exception(osex)
         return
 
     for file_path in env_files:
         try:
             with open(file_path) as env_fd:
-                LOG.info(_('Loading %s') % file_path)
+                LOG.info(_LI('Loading %s'), file_path)
                 env_body = env_fmt.parse(env_fd.read())
                 env_fmt.default_for_missing(env_body)
                 env.load(env_body)
         except ValueError as vex:
-            LOG.error(_('Failed to parse %(file_path)s') % {
+            LOG.error(_LE('Failed to parse %(file_path)s'), {
                       'file_path': file_path})
             LOG.exception(vex)
         except IOError as ioex:
-            LOG.error(_('Failed to read %(file_path)s') % {
+            LOG.error(_LE('Failed to read %(file_path)s'), {
                       'file_path': file_path})
             LOG.exception(ioex)

@@ -13,6 +13,7 @@
 
 import copy
 import re
+import six
 
 import mock
 import mox
@@ -28,9 +29,9 @@ from heat.engine.resources import loadbalancer as lb
 from heat.engine.resources import wait_condition as wc
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
-from heat.tests.v1_1 import fakes
+from heat.tests.v1_1 import fakes as fakes_v1_1
 
 
 lb_template = '''
@@ -100,10 +101,10 @@ lb_template_nokey = '''
 '''
 
 
-class LoadBalancerTest(HeatTestCase):
+class LoadBalancerTest(common.HeatTestCase):
     def setUp(self):
         super(LoadBalancerTest, self).setUp()
-        self.fc = fakes.FakeClient()
+        self.fc = fakes_v1_1.FakeClient()
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.m.StubOutWithMock(resource.Resource, 'metadata_set')
@@ -223,7 +224,7 @@ class LoadBalancerTest(HeatTestCase):
 
     def assertRegexpMatches(self, text, expected_regexp, msg=None):
         """Fail the test unless the text matches the regular expression."""
-        if isinstance(expected_regexp, basestring):
+        if isinstance(expected_regexp, six.string_types):
             expected_regexp = re.compile(expected_regexp)
         if not expected_regexp.search(text):
             msg = msg or "Regexp didn't match"

@@ -14,9 +14,11 @@
 import six
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
+from heat.engine import support
 from heat.engine import watchrule
 
 
@@ -114,11 +116,20 @@ class CeilometerAlarm(resource.Resource):
 
     PROPERTIES = (
         COMPARISON_OPERATOR, EVALUATION_PERIODS, METER_NAME, PERIOD,
-        STATISTIC, THRESHOLD, MATCHING_METADATA,
+        STATISTIC, THRESHOLD, MATCHING_METADATA, QUERY,
     ) = (
         'comparison_operator', 'evaluation_periods', 'meter_name', 'period',
-        'statistic', 'threshold', 'matching_metadata',
+        'statistic', 'threshold', 'matching_metadata', 'query',
     )
+
+    QUERY_FACTOR_FIELDS = (
+        QF_FIELD, QF_OP, QF_VALUE,
+    ) = (
+        'field', 'op', 'value',
+    )
+
+    QF_OP_VALS = constraints.AllowedValues(['le', 'ge', 'eq',
+                                            'lt', 'gt', 'ne'])
 
     properties_schema = {
         COMPARISON_OPERATOR: properties.Schema(
@@ -164,38 +175,92 @@ class CeilometerAlarm(resource.Resource):
             properties.Schema.MAP,
             _('Meter should match this resource metadata (key=value) '
               'additionally to the meter_name.'),
-            default={}
+            default={},
+            update_allowed=True
         ),
+        QUERY: properties.Schema(
+            properties.Schema.LIST,
+            _('A list of query factors, each comparing '
+              'a Sample attribute with a value. '
+              'Implicitly combined with matching_metadata, if any.'),
+            update_allowed=True,
+            support_status=support.SupportStatus(version='2015.1'),
+            schema=properties.Schema(
+                properties.Schema.MAP,
+                schema={
+                    QF_FIELD: properties.Schema(
+                        properties.Schema.STRING,
+                        _('Name of attribute to compare. '
+                          'Names of the form metadata.user_metadata.X '
+                          'or metadata.metering.X are equivalent to what '
+                          'you can address through matching_metadata; '
+                          'the former for Nova meters, '
+                          'the latter for all others. '
+                          'To see the attributes of your Samples, '
+                          'use `ceilometer --debug sample-list`. ')
+                    ),
+                    QF_OP: properties.Schema(
+                        properties.Schema.STRING,
+                        _('Comparison operator'),
+                        constraints=[QF_OP_VALS]
+                    ),
+                    QF_VALUE: properties.Schema(
+                        properties.Schema.STRING,
+                        _('String value with which to compare')
+                    )
+                }
+            )
+        )
     }
     properties_schema.update(common_properties_schema)
 
     default_client_name = 'ceilometer'
 
     def cfn_to_ceilometer(self, stack, properties):
+        """Apply all relevant compatibility xforms."""
+
         kwargs = actions_to_urls(stack, properties)
+        kwargs['type'] = 'threshold'
         if kwargs.get(self.METER_NAME) in NOVA_METERS:
             prefix = 'user_metadata.'
         else:
             prefix = 'metering.'
-        for k, v in iter(properties.items()):
-            if k == self.MATCHING_METADATA:
-                # make sure we have matching_metadata that looks like this:
-                # matching_metadata: {metadata.$prefix.x}
-                kwargs[k] = {}
-                for m_k, m_v in six.iteritems(v):
-                    if m_k.startswith('metadata.%s' % prefix):
-                        kwargs[k][m_k] = m_v
-                    elif m_k.startswith(prefix):
-                        kwargs[k]['metadata.%s' % m_k] = m_v
-                    else:
-                        kwargs[k]['metadata.%s%s' % (prefix, m_k)] = m_v
+
+        rule = {}
+        for field in ['period', 'evaluation_periods', 'threshold',
+                      'statistic', 'comparison_operator', 'meter_name']:
+            if field in kwargs:
+                rule[field] = kwargs[field]
+                del kwargs[field]
+        mmd = properties.get(self.MATCHING_METADATA) or {}
+        query = properties.get(self.QUERY) or []
+
+        # make sure the matching_metadata appears in the query like this:
+        # {field: metadata.$prefix.x, ...}
+        for m_k, m_v in six.iteritems(mmd):
+            if m_k.startswith('metadata.%s' % prefix):
+                key = m_k
+            elif m_k.startswith(prefix):
+                key = 'metadata.%s' % m_k
+            else:
+                key = 'metadata.%s%s' % (prefix, m_k)
+            # NOTE(prazumovsky): type of query value must be a string, but
+            # matching_metadata value type can not be a string, so we
+            # must convert value to a string type.
+            query.append(dict(field=key, op='eq', value=six.text_type(m_v)))
+        if self.MATCHING_METADATA in kwargs:
+            del kwargs[self.MATCHING_METADATA]
+        if self.QUERY in kwargs:
+            del kwargs[self.QUERY]
+        if query:
+            rule['query'] = query
+        kwargs['threshold_rule'] = rule
         return kwargs
 
     def handle_create(self):
         props = self.cfn_to_ceilometer(self.stack,
                                        self.properties)
         props['name'] = self.physical_resource_name()
-
         alarm = self.ceilometer().alarms.create(**props)
         self.resource_id_set(alarm.alarm_id)
 
@@ -213,6 +278,7 @@ class CeilometerAlarm(resource.Resource):
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
             kwargs = {'alarm_id': self.resource_id}
+            kwargs.update(self.properties)
             kwargs.update(prop_diff)
             alarms_client = self.ceilometer().alarms
             alarms_client.update(**self.cfn_to_ceilometer(self.stack, kwargs))
@@ -243,6 +309,8 @@ class CeilometerAlarm(resource.Resource):
 
 
 class CombinationAlarm(resource.Resource):
+
+    support_status = support.SupportStatus(version='2014.1')
 
     PROPERTIES = (
         ALARM_IDS, OPERATOR,

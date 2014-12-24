@@ -19,7 +19,9 @@ The IDs each comprise 12 (lower-case) alphanumeric characters.
 import base64
 import uuid
 
-from six.moves import xrange
+import six
+
+from heat.common.i18n import _
 
 
 def _to_byte_string(value, num_bits):
@@ -28,7 +30,7 @@ def _to_byte_string(value, num_bits):
     Padding is added at the end (i.e. after the least-significant bit) if
     required.
     """
-    shifts = xrange(num_bits - 8, -8, -8)
+    shifts = six.moves.xrange(num_bits - 8, -8, -8)
     byte_at = lambda off: (value >> off if off >= 0 else value << -off) & 0xff
     return ''.join(chr(byte_at(offset)) for offset in shifts)
 
@@ -38,7 +40,7 @@ def get_id(source_uuid):
 
     The supplied UUID must be a version 4 UUID object.
     """
-    if isinstance(source_uuid, basestring):
+    if isinstance(source_uuid, six.string_types):
         source_uuid = uuid.UUID(source_uuid)
     if source_uuid.version != 4:
         raise ValueError(_('Invalid UUID version (%d)') % source_uuid.version)

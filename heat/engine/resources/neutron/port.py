@@ -11,6 +11,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.common.i18n import _
+from heat.common.i18n import _LW
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
@@ -29,12 +31,12 @@ class Port(neutron.NeutronResource):
         NETWORK_ID, NETWORK, NAME, VALUE_SPECS,
         ADMIN_STATE_UP, FIXED_IPS, MAC_ADDRESS,
         DEVICE_ID, SECURITY_GROUPS, ALLOWED_ADDRESS_PAIRS,
-        DEVICE_OWNER, REPLACEMENT_POLICY,
+        DEVICE_OWNER, REPLACEMENT_POLICY, VNIC_TYPE,
     ) = (
         'network_id', 'network', 'name', 'value_specs',
         'admin_state_up', 'fixed_ips', 'mac_address',
         'device_id', 'security_groups', 'allowed_address_pairs',
-        'device_owner', 'replacement_policy',
+        'device_owner', 'replacement_policy', 'binding:vnic_type',
     )
 
     _FIXED_IP_KEYS = (
@@ -127,7 +129,6 @@ class Port(neutron.NeutronResource):
         SECURITY_GROUPS: properties.Schema(
             properties.Schema.LIST,
             _('Security group IDs to associate with this port.'),
-            default=[],
             update_allowed=True
         ),
         ALLOWED_ADDRESS_PAIRS: properties.Schema(
@@ -165,6 +166,19 @@ class Port(neutron.NeutronResource):
             default='REPLACE_ALWAYS',
             constraints=[
                 constraints.AllowedValues(['REPLACE_ALWAYS', 'AUTO']),
+            ],
+            update_allowed=True
+        ),
+        VNIC_TYPE: properties.Schema(
+            properties.Schema.STRING,
+            _('The vnic type to be bound on the neutron port. '
+              'To support SR-IOV PCI passthrough networking, you can request '
+              'that the neutron port to be realized as normal (virtual nic), '
+              'direct (pci passthrough), or macvtap '
+              '(virtual interface with a tap-like software interface).'),
+            default='normal',
+            constraints=[
+                constraints.AllowedValues(['normal', 'direct', 'macvtap']),
             ],
             update_allowed=True
         ),
@@ -245,7 +259,7 @@ class Port(neutron.NeutronResource):
         port = self.neutron().create_port({'port': props})['port']
         self.resource_id_set(port['id'])
 
-    def _prepare_port_properties(self, props):
+    def _prepare_port_properties(self, props, prepare_for_update=False):
         for fixed_ip in props.get(self.FIXED_IPS, []):
             for key, value in fixed_ip.items():
                 if value is None:
@@ -260,11 +274,18 @@ class Port(neutron.NeutronResource):
                     pair[self.ALLOWED_ADDRESS_PAIR_MAC_ADDRESS] is None):
                 del pair[self.ALLOWED_ADDRESS_PAIR_MAC_ADDRESS]
 
-        if props.get(self.SECURITY_GROUPS):
+        # if without 'security_groups', don't set the 'security_groups'
+        # property when creating, neutron will create the port with the
+        # 'default' securityGroup. If has the 'security_groups' and the
+        # value is [], which means to create the port without securityGroup.
+        if props.get(self.SECURITY_GROUPS) is not None:
             props[self.SECURITY_GROUPS] = self.client_plugin().\
                 get_secgroup_uuids(props.get(self.SECURITY_GROUPS))
         else:
-            props.pop(self.SECURITY_GROUPS, None)
+            # And the update should has the same behavior.
+            if prepare_for_update:
+                props[self.SECURITY_GROUPS] = self.client_plugin().\
+                    get_secgroup_uuids(['default'])
 
         if not props[self.FIXED_IPS]:
             del(props[self.FIXED_IPS])
@@ -299,7 +320,7 @@ class Port(neutron.NeutronResource):
                         subnets.append(self.neutron().show_subnet(
                             subnet_id)['subnet'])
             except Exception as ex:
-                LOG.warn(_("Failed to fetch resource attributes: %s") % ex)
+                LOG.warn(_LW("Failed to fetch resource attributes: %s"), ex)
                 return
             return subnets
         return super(Port, self)._resolve_attribute(name)
@@ -316,7 +337,7 @@ class Port(neutron.NeutronResource):
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         props = self.prepare_update_properties(json_snippet)
 
-        self._prepare_port_properties(props)
+        self._prepare_port_properties(props, prepare_for_update=True)
         LOG.debug('updating port with %s' % props)
         self.neutron().update_port(self.resource_id, {'port': props})
 

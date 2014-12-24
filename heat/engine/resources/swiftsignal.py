@@ -12,18 +12,19 @@
 #    under the License.
 
 import json
+import six
 import urlparse
-
-from swiftclient import client as swiftclient_client
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LI
 from heat.engine import attributes
 from heat.engine.clients.os import swift
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine import scheduler
+from heat.engine import support
 from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
@@ -49,6 +50,9 @@ class SwiftSignalTimeout(exception.Error):
 
 
 class SwiftSignalHandle(resource.Resource):
+
+    support_status = support.SupportStatus(version='2014.2')
+    default_client_name = "swift"
 
     properties_schema = {}
 
@@ -85,10 +89,11 @@ class SwiftSignalHandle(resource.Resource):
     }
 
     def handle_create(self):
-        sc = self.client_plugin('swift')
-        url = sc.get_signal_url(self.stack.id, self.physical_resource_name())
-        self.data_set('endpoint', url)
-        self.resource_id_set(url)
+        cplugin = self.client_plugin()
+        url = cplugin.get_signal_url(self.stack.id,
+                                     self.physical_resource_name())
+        self.data_set(self.ENDPOINT, url)
+        self.resource_id_set(self.physical_resource_name())
 
     def update(self, after, before=None, prev_resource=None):
         raise resource.UpdateReplace(self.name)
@@ -98,12 +103,43 @@ class SwiftSignalHandle(resource.Resource):
             if key == self.TOKEN:
                 return ''  # HeatWaitConditionHandle compatibility
             elif key == self.ENDPOINT:
-                return self.data().get('endpoint')
+                return self.data().get(self.ENDPOINT)
             elif key == self.CURL_CLI:
-                return ('curl -i -X PUT \'%s\'' % self.data().get('endpoint'))
+                return ('curl -i -X PUT \'%s\'' %
+                        self.data().get(self.ENDPOINT))
+
+    def handle_delete(self):
+        cplugin = self.client_plugin()
+        client = cplugin.client()
+
+        # Delete all versioned objects
+        while True:
+            try:
+                client.delete_object(self.stack.id,
+                                     self.physical_resource_name())
+            except Exception as exc:
+                cplugin.ignore_not_found(exc)
+                break
+
+        # Delete the container if it is empty
+        try:
+            client.delete_container(self.stack.id)
+        except Exception as exc:
+            if cplugin.is_not_found(exc) or cplugin.is_conflict(exc):
+                pass
+            else:
+                raise
+
+        self.data_delete(self.ENDPOINT)
+
+    def FnGetRefId(self):
+        return self.data().get(self.ENDPOINT)
 
 
 class SwiftSignal(resource.Resource):
+
+    support_status = support.SupportStatus(version='2014.2')
+    default_client_name = "swift"
 
     PROPERTIES = (HANDLE, TIMEOUT, COUNT,) = ('handle', 'timeout', 'count',)
 
@@ -180,13 +216,10 @@ class SwiftSignal(resource.Resource):
         parts = self.url.path.split('/')
         msg = _('"%(url)s" is not a valid SwiftSignalHandle.  The %(part)s '
                 'is invalid')
-        sc = self.client_plugin('swift')
-        if not sc.is_valid_temp_url_path(self.url.path):
+        cplugin = self.client_plugin()
+        if not cplugin.is_valid_temp_url_path(self.url.path):
             raise ValueError(msg % {'url': self.url.path,
                                     'part': 'Swift TempURL path'})
-        if not parts[2].endswith(self.context.tenant_id):
-            raise ValueError(msg % {'url': self.url.path,
-                                    'part': 'tenant'})
         if not parts[3] == self.stack.id:
             raise ValueError(msg % {'url': self.url.path,
                                     'part': 'container name'})
@@ -213,23 +246,22 @@ class SwiftSignal(resource.Resource):
             for status in statuses:
                 if status == self.STATUS_FAILURE:
                     failure = SwiftSignalFailure(self)
-                    LOG.info(_('%(name)s Failed (%(failure)s)')
-                             % {'name': str(self), 'failure': str(failure)})
+                    LOG.info(_LI('%(name)s Failed (%(failure)s)'),
+                             {'name': str(self), 'failure': str(failure)})
                     raise failure
                 elif status != self.STATUS_SUCCESS:
                     raise exception.Error(_("Unknown status: %s") % status)
 
             if len(statuses) >= count:
-                LOG.info(_("%s Succeeded") % str(self))
+                LOG.info(_LI("%s Succeeded"), str(self))
                 return
 
     def get_signals(self):
         try:
-            container = self.swift().get_container(self.stack.id)
-        except swiftclient_client.ClientException as exc:
-            if exc.http_status == 404:  # Swift container was deleted by user
-                return None
-            raise exc
+            container = self.client().get_container(self.stack.id)
+        except Exception as exc:
+            self.client_plugin().ignore_not_found(exc)
+            return
 
         index = container[1]
         if not index:  # Swift objects were deleted by user
@@ -244,11 +276,10 @@ class SwiftSignal(resource.Resource):
         obj_bodies = []
         for obj in filtered:
             try:
-                signal = self.swift().get_object(self.stack.id, obj['name'])
-            except swiftclient_client.ClientException as exc:
-                if exc.http_status == 404:  # Swift object disappeared
-                    continue
-                raise exc
+                signal = self.client().get_object(self.stack.id, obj['name'])
+            except Exception as exc:
+                self.client_plugin().ignore_not_found()
+                continue
 
             body = signal[1]
             if body == swift.IN_PROGRESS:  # Ignore the initial object
@@ -268,14 +299,15 @@ class SwiftSignal(resource.Resource):
         for signal in obj_bodies:
 
             # Remove previous signals with the same ID
-            id = self.UNIQUE_ID
-            ids = [s.get(id) for s in signals if id in s]
-            if ids and id in signal and ids.count(signal[id]) > 0:
-                [signals.remove(s) for s in signals if s.get(id) == signal[id]]
+            sig_id = self.UNIQUE_ID
+            ids = [s.get(sig_id) for s in signals if sig_id in s]
+            if ids and sig_id in signal and ids.count(signal[sig_id]) > 0:
+                [signals.remove(s) for s in signals
+                 if s.get(sig_id) == signal[sig_id]]
 
             # Make sure all fields are set, since all are optional
             signal.setdefault(self.DATA, None)
-            unique_id = signal.setdefault(self.UNIQUE_ID, signal_num)
+            unique_id = signal.setdefault(sig_id, signal_num)
             reason = 'Signal %s recieved' % unique_id
             signal.setdefault(self.REASON, reason)
             signal.setdefault(self.STATUS, self.STATUS_SUCCESS)
@@ -307,7 +339,7 @@ class SwiftSignal(resource.Resource):
 
     def _resolve_attribute(self, key):
         if key == self.DATA:
-            return unicode(json.dumps(self.get_data()))
+            return six.text_type(json.dumps(self.get_data()))
 
 
 def resource_mapping():

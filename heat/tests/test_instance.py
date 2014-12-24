@@ -22,6 +22,7 @@ from neutronclient.v2_0 import client as neutronclient
 
 from heat.common import exception
 from heat.common import template_format
+from heat.engine.clients.os import cinder
 from heat.engine.clients.os import glance
 from heat.engine.clients.os import neutron
 from heat.engine.clients.os import nova
@@ -30,9 +31,9 @@ from heat.engine import parser
 from heat.engine import resource
 from heat.engine.resources import instance as instances
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
-from heat.tests.v1_1 import fakes
+from heat.tests.v1_1 import fakes as fakes_v1_1
 
 
 wp_template = '''
@@ -71,10 +72,10 @@ wp_template = '''
 '''
 
 
-class InstancesTest(HeatTestCase):
+class InstancesTest(common.HeatTestCase):
     def setUp(self):
         super(InstancesTest, self).setUp()
-        self.fc = fakes.FakeClient()
+        self.fc = fakes_v1_1.FakeClient()
 
     def _setup_test_stack(self, stack_name):
         t = template_format.parse(wp_template)
@@ -115,6 +116,7 @@ class InstancesTest(HeatTestCase):
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
+        self.stub_SnapshotConstraint_validate()
 
         if stub_create:
             self.m.StubOutWithMock(self.fc.servers, 'create')
@@ -203,6 +205,33 @@ class InstancesTest(HeatTestCase):
                                           'DeleteOnTermination': True}},
         ]))
 
+    def test_validate_Volumes_property(self):
+        stack_name = 'validate_volumes'
+        tmpl, stack = self._setup_test_stack(stack_name)
+        volumes = [{'Device': 'vdb', 'VolumeId': '1234'}]
+        wsp = tmpl.t['Resources']['WebServer']['Properties']
+        wsp['Volumes'] = volumes
+        resource_defns = tmpl.resource_definitions(stack)
+        instance = instances.Instance('validate_volumes',
+                                      resource_defns['WebServer'], stack)
+
+        self._mock_get_image_id_success('F17-x86_64-gold', 1)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
+        self.stub_SnapshotConstraint_validate()
+        self.m.StubOutWithMock(cinder.CinderClientPlugin, 'get_volume')
+        ex = exception.VolumeNotFound(volume='1234')
+        cinder.CinderClientPlugin.get_volume('1234').AndRaise(ex)
+        self.m.ReplayAll()
+
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                instance.validate)
+        self.assertIn("VolumeId Error validating value '1234': "
+                      "The Volume (1234) could not be found.",
+                      six.text_type(exc))
+
+        self.m.VerifyAll()
+
     def test_validate_BlockDeviceMappings_VolumeSize_valid_str(self):
         stack_name = 'val_VolumeSize_valid'
         tmpl, stack = self._setup_test_stack(stack_name)
@@ -216,36 +245,13 @@ class InstancesTest(HeatTestCase):
                                       resource_defns['WebServer'], stack)
 
         self._mock_get_image_id_success('F17-x86_64-gold', 1)
+        self.stub_SnapshotConstraint_validate()
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
 
         self.m.ReplayAll()
 
         self.assertIsNone(instance.validate())
-
-        self.m.VerifyAll()
-
-    def test_validate_BlockDeviceMappings_VolumeSize_invalid_str(self):
-        stack_name = 'val_VolumeSize_valid'
-        tmpl, stack = self._setup_test_stack(stack_name)
-        bdm = [{'DeviceName': 'vdb',
-                'Ebs': {'SnapshotId': '1234',
-                        'VolumeSize': 10}}]
-        wsp = tmpl.t['Resources']['WebServer']['Properties']
-        wsp['BlockDeviceMappings'] = bdm
-        resource_defns = tmpl.resource_definitions(stack)
-        instance = instances.Instance('validate_volume_size',
-                                      resource_defns['WebServer'], stack)
-
-        self._mock_get_image_id_success('F17-x86_64-gold', 1)
-        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
-
-        self.m.ReplayAll()
-
-        exc = self.assertRaises(exception.StackValidationFailed,
-                                instance.validate)
-        self.assertIn("Value must be a string", six.text_type(exc))
 
         self.m.VerifyAll()
 
@@ -469,9 +475,8 @@ class InstancesTest(HeatTestCase):
         e = self.assertRaises(resource.ResourceUnknownStatus,
                               instance.check_create_complete,
                               (return_server, self.FakeVolumeAttach()))
-        self.assertEqual(
-            'Instance is not active - Unknown status BOGUS',
-            six.text_type(e))
+        self.assertEqual('Instance is not active - Unknown status BOGUS '
+                         'due to "Unknown"', six.text_type(e))
 
     def test_instance_create_error_status(self):
         return_server = self.fc.servers.list()[1]
@@ -528,6 +533,7 @@ class InstancesTest(HeatTestCase):
         nova.NovaClientPlugin._create().AndReturn(self.fc)
 
         self._mock_get_image_id_success('1', 1)
+        self.stub_SnapshotConstraint_validate()
         self.m.ReplayAll()
 
         self.assertIsNone(instance.validate())
@@ -557,7 +563,7 @@ class InstancesTest(HeatTestCase):
             d2['server']['status'] = vm_delete_status
             get().AndReturn((200, d2))
         else:
-            get().AndRaise(fakes.fake_exception())
+            get().AndRaise(fakes_v1_1.fake_exception())
 
         self.m.ReplayAll()
 

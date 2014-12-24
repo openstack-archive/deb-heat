@@ -22,6 +22,7 @@ from webob import exc
 from heat.api.openstack.v1 import util
 from heat.api.openstack.v1.views import stacks_view
 from heat.common import environment_format
+from heat.common.i18n import _
 from heat.common.i18n import _LW
 from heat.common import identifier
 from heat.common import param_utils
@@ -30,7 +31,7 @@ from heat.common import template_format
 from heat.common import urlfetch
 from heat.common import wsgi
 from heat.openstack.common import log as logging
-from heat.rpc import api as engine_api
+from heat.rpc import api as rpc_api
 from heat.rpc import client as rpc_client
 
 LOG = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ class InstantiationData(object):
         """
         self.data = data
         if patch:
-            self.data[engine_api.PARAM_EXISTING] = True
+            self.data[rpc_api.PARAM_EXISTING] = True
 
     @staticmethod
     def format_parse(data, data_type):
@@ -97,19 +98,13 @@ class InstantiationData(object):
         Get template file contents, either inline, from stack adopt data or
         from a URL, in JSON or YAML format.
         """
-        if engine_api.PARAM_ADOPT_STACK_DATA in self.data:
-            adopt_data = self.data[engine_api.PARAM_ADOPT_STACK_DATA]
+        if rpc_api.PARAM_ADOPT_STACK_DATA in self.data:
+            adopt_data = self.data[rpc_api.PARAM_ADOPT_STACK_DATA]
             try:
                 adopt_data = template_format.simple_parse(adopt_data)
-
-                if not isinstance(adopt_data, dict):
-                    raise exc.HTTPBadRequest(
-                        _('Adopt data %s invalid. Adopt data must be a dict.')
-                        % adopt_data)
-
                 return adopt_data['template']
             except (ValueError, KeyError) as ex:
-                err_reason = _('Invalid data: %s') % ex
+                err_reason = _('Invalid adopt data: %s') % ex
                 raise exc.HTTPBadRequest(err_reason)
         elif self.PARAM_TEMPLATE in self.data:
             template_data = self.data[self.PARAM_TEMPLATE]
@@ -195,15 +190,15 @@ class StackController(object):
         filter_params = util.get_allowed_params(req.params, filter_whitelist)
 
         show_deleted = False
-        if engine_api.PARAM_SHOW_DELETED in params:
-            params[engine_api.PARAM_SHOW_DELETED] = param_utils.extract_bool(
-                params[engine_api.PARAM_SHOW_DELETED])
-            show_deleted = params[engine_api.PARAM_SHOW_DELETED]
+        if rpc_api.PARAM_SHOW_DELETED in params:
+            params[rpc_api.PARAM_SHOW_DELETED] = param_utils.extract_bool(
+                params[rpc_api.PARAM_SHOW_DELETED])
+            show_deleted = params[rpc_api.PARAM_SHOW_DELETED]
         show_nested = False
-        if engine_api.PARAM_SHOW_NESTED in params:
-            params[engine_api.PARAM_SHOW_NESTED] = param_utils.extract_bool(
-                params[engine_api.PARAM_SHOW_NESTED])
-            show_nested = params[engine_api.PARAM_SHOW_NESTED]
+        if rpc_api.PARAM_SHOW_NESTED in params:
+            params[rpc_api.PARAM_SHOW_NESTED] = param_utils.extract_bool(
+                params[rpc_api.PARAM_SHOW_NESTED])
+            show_nested = params[rpc_api.PARAM_SHOW_NESTED]
         # get the with_count value, if invalid, raise ValueError
         with_count = False
         if req.params.get('with_count'):
@@ -292,7 +287,7 @@ class StackController(object):
 
         formatted_stack = stacks_view.format_stack(
             req,
-            {engine_api.STACK_ID: result}
+            {rpc_api.STACK_ID: result}
         )
         return {'stack': formatted_stack}
 
@@ -468,6 +463,11 @@ class StackController(object):
             'snapshots': self.rpc_client.stack_list_snapshots(
                 req.context, identity)
         }
+
+    @util.identified_stack
+    def restore_snapshot(self, req, identity, snapshot_id):
+        self.rpc_client.stack_restore(req.context, identity, snapshot_id)
+        raise exc.HTTPAccepted()
 
 
 class StackSerializer(serializers.JSONResponseSerializer):

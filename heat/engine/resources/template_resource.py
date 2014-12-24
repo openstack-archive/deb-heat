@@ -17,6 +17,7 @@ from requests import exceptions
 import six
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.common import template_format
 from heat.common import urlfetch
 from heat.engine import attributes
@@ -26,19 +27,13 @@ from heat.engine import stack_resource
 from heat.engine import template
 
 
-def generate_class(name, template_name):
-    try:
-        data = urlfetch.get(template_name, allowed_schemes=('file',))
-    except IOError:
-        return TemplateResource
+def generate_class(name, template_name, env):
+    data = TemplateResource.get_template_file(template_name, ('file',))
     tmpl = template.Template(template_format.parse(data))
-    properties_schema = properties.Properties.schema_from_params(
-        tmpl.param_schemata())
-    attributes_schema = attributes.Attributes.schema_from_outputs(
-        tmpl[tmpl.OUTPUTS])
+    props, attrs = TemplateResource.get_schemas(tmpl, env.param_defaults)
     cls = type(name, (TemplateResource,),
-               {"properties_schema": properties_schema,
-                "attributes_schema": attributes_schema})
+               {'properties_schema': props,
+                'attributes_schema': attrs})
     return cls
 
 
@@ -77,20 +72,35 @@ class TemplateResource(stack_resource.StackResource):
         if self.validation_exception is None:
             self._generate_schema(self.t)
 
+    @staticmethod
+    def get_template_file(template_name, allowed_schemes):
+        try:
+            return urlfetch.get(template_name, allowed_schemes=allowed_schemes)
+        except (IOError, exceptions.RequestException) as r_exc:
+            args = {'name': template_name, 'exc': six.text_type(r_exc)}
+            msg = _('Could not fetch remote template '
+                    '"%(name)s": %(exc)s') % args
+            raise exception.NotFound(msg_fmt=msg)
+
+    @staticmethod
+    def get_schemas(tmpl, param_defaults):
+        return ((properties.Properties.schema_from_params(
+                tmpl.param_schemata(param_defaults))),
+                (attributes.Attributes.schema_from_outputs(
+                tmpl[tmpl.OUTPUTS])))
+
     def _generate_schema(self, definition):
         self._parsed_nested = None
         try:
             tmpl = template.Template(self.child_template())
-        except ValueError as download_error:
+        except (exception.NotFound, ValueError) as download_error:
             self.validation_exception = download_error
             tmpl = template.Template(
                 {"HeatTemplateFormatVersion": "2012-12-12"})
 
         # re-generate the properties and attributes from the template.
-        self.properties_schema = (properties.Properties
-                                  .schema_from_params(tmpl.param_schemata()))
-        self.attributes_schema = (attributes.Attributes
-                                  .schema_from_outputs(tmpl[tmpl.OUTPUTS]))
+        self.properties_schema, self.attributes_schema = self.get_schemas(
+            tmpl, self.stack.env.param_defaults)
 
         self.properties = definition.properties(self.properties_schema,
                                                 self.context)
@@ -156,13 +166,10 @@ class TemplateResource(stack_resource.StackResource):
         t_data = self.stack.t.files.get(self.template_name)
         if not t_data and self.template_name.endswith((".yaml", ".template")):
             try:
-                t_data = urlfetch.get(self.template_name,
-                                      allowed_schemes=self.allowed_schemes)
-            except (exceptions.RequestException, IOError) as r_exc:
-                reported_excp = ValueError(_("Could not fetch remote template "
-                                             "'%(name)s': %(exc)s") % {
-                                                 'name': self.template_name,
-                                                 'exc': str(r_exc)})
+                t_data = self.get_template_file(self.template_name,
+                                                self.allowed_schemes)
+            except exception.NotFound as err:
+                reported_excp = err
 
         if t_data is None:
             if self.nested() is not None:
@@ -260,5 +267,47 @@ class TemplateResource(stack_resource.StackResource):
 
     def FnGetRefId(self):
         if not self.nested():
-            return unicode(self.name)
+            return six.text_type(self.name)
+
+        if 'OS::stack_id' in self.nested().outputs:
+            return self.nested().output('OS::stack_id')
+
         return self.nested().identifier().arn()
+
+    def FnGetAtt(self, key, *path):
+        stack = self.nested()
+        if stack is None:
+            return None
+
+        def _get_inner_resource(resource_name):
+            if self.nested():
+                try:
+                    return self.nested()[resource_name]
+                except KeyError:
+                    raise exception.ResourceNotFound(
+                        resource_name=resource_name,
+                        stack_name=self.nested().name)
+
+        def get_rsrc_attr(resource_name, *attr_path):
+            resource = _get_inner_resource(resource_name)
+            return resource.FnGetAtt(*attr_path)
+
+        def get_rsrc_id(resource_name):
+            resource = _get_inner_resource(resource_name)
+            return resource.FnGetRefId()
+
+        # first look for explicit resource.x.y
+        if key.startswith('resource.'):
+            npath = key.split(".", 2)[1:] + list(path)
+            if len(npath) > 1:
+                return get_rsrc_attr(*npath)
+            else:
+                return get_rsrc_id(*npath)
+
+        # then look for normal outputs
+        if key in stack.outputs:
+            return attributes.select_from_attribute(stack.output(key), path)
+
+        # otherwise the key must be wrong.
+        raise exception.InvalidTemplateAttribute(resource=self.name,
+                                                 key=key)

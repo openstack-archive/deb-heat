@@ -18,21 +18,23 @@ from glanceclient import exc as glance_exc
 from heatclient import exc as heat_exc
 from keystoneclient import exceptions as keystone_exc
 from neutronclient.common import exceptions as neutron_exc
+from saharaclient.api import base as sahara_base
 from swiftclient import exceptions as swift_exc
-from troveclient.client import exceptions as trove_exc
+from troveclient import client as troveclient
 
 from heatclient import client as heatclient
 import mock
 from oslo.config import cfg
-from testtools.testcase import skip
+from testtools import testcase
 
 from heat.engine import clients
 from heat.engine.clients import client_plugin
-from heat.tests.common import HeatTestCase
-from heat.tests.v1_1 import fakes
+from heat.tests import common
+from heat.tests import utils
+from heat.tests.v1_1 import fakes as fakes_v1_1
 
 
-class ClientsTest(HeatTestCase):
+class ClientsTest(common.HeatTestCase):
 
     def test_clients_get_heat_url(self):
         con = mock.Mock()
@@ -128,7 +130,7 @@ class FooClientsPlugin(client_plugin.ClientPlugin):
         pass
 
 
-class ClientPluginTest(HeatTestCase):
+class ClientPluginTest(common.HeatTestCase):
 
     def test_get_client_option(self):
         con = mock.Mock()
@@ -202,9 +204,9 @@ class ClientPluginTest(HeatTestCase):
         self.assertRaises(TypeError, client_plugin.ClientPlugin, c)
 
 
-class TestClientPluginsInitialise(HeatTestCase):
+class TestClientPluginsInitialise(common.HeatTestCase):
 
-    @skip('skipped until keystone can read context auth_ref')
+    @testcase.skip('skipped until keystone can read context auth_ref')
     def test_create_all_clients(self):
         con = mock.Mock()
         con.auth_url = "http://auth.example.com:5000/v2.0"
@@ -234,13 +236,14 @@ class TestClientPluginsInitialise(HeatTestCase):
             self.assertTrue(clients.has_client(plugin_name))
 
 
-class TestIsNotFound(HeatTestCase):
+class TestIsNotFound(common.HeatTestCase):
 
     scenarios = [
         ('ceilometer_not_found', dict(
             is_not_found=True,
             is_over_limit=False,
             is_client_exception=True,
+            is_conflict=False,
             plugin='ceilometer',
             exception=lambda: ceil_exc.HTTPNotFound(details='gone'),
         )),
@@ -248,6 +251,7 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=True,
             is_over_limit=False,
             is_client_exception=True,
+            is_conflict=False,
             plugin='ceilometer',
             exception=lambda: c_a_exc.NotFound(details='gone'),
         )),
@@ -255,6 +259,7 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=False,
             is_client_exception=False,
+            is_conflict=False,
             plugin='ceilometer',
             exception=lambda: Exception()
         )),
@@ -262,13 +267,23 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=True,
             is_client_exception=True,
+            is_conflict=False,
             plugin='ceilometer',
             exception=lambda: ceil_exc.HTTPOverLimit(details='over'),
+        )),
+        ('ceilometer_conflict', dict(
+            is_not_found=False,
+            is_over_limit=False,
+            is_client_exception=True,
+            is_conflict=True,
+            plugin='ceilometer',
+            exception=lambda: ceil_exc.HTTPConflict(),
         )),
         ('cinder_not_found', dict(
             is_not_found=True,
             is_over_limit=False,
             is_client_exception=True,
+            is_conflict=False,
             plugin='cinder',
             exception=lambda: cinder_exc.NotFound(code=404),
         )),
@@ -276,6 +291,7 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=False,
             is_client_exception=False,
+            is_conflict=False,
             plugin='cinder',
             exception=lambda: Exception()
         )),
@@ -283,13 +299,23 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=True,
             is_client_exception=True,
+            is_conflict=False,
             plugin='cinder',
             exception=lambda: cinder_exc.OverLimit(code=413),
+        )),
+        ('cinder_conflict', dict(
+            is_not_found=False,
+            is_over_limit=False,
+            is_client_exception=True,
+            is_conflict=True,
+            plugin='cinder',
+            exception=lambda: cinder_exc.ClientException(code=409),
         )),
         ('glance_not_found', dict(
             is_not_found=True,
             is_over_limit=False,
             is_client_exception=True,
+            is_conflict=False,
             plugin='glance',
             exception=lambda: glance_exc.HTTPNotFound(details='gone'),
         )),
@@ -297,6 +323,7 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=False,
             is_client_exception=False,
+            is_conflict=False,
             plugin='glance',
             exception=lambda: Exception()
         )),
@@ -304,13 +331,23 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=True,
             is_client_exception=True,
+            is_conflict=False,
             plugin='glance',
             exception=lambda: glance_exc.HTTPOverLimit(details='over'),
+        )),
+        ('glance_conflict', dict(
+            is_not_found=False,
+            is_over_limit=False,
+            is_client_exception=True,
+            is_conflict=True,
+            plugin='glance',
+            exception=lambda: glance_exc.HTTPConflict(),
         )),
         ('heat_not_found', dict(
             is_not_found=True,
             is_over_limit=False,
             is_client_exception=True,
+            is_conflict=False,
             plugin='heat',
             exception=lambda: heat_exc.HTTPNotFound(message='gone'),
         )),
@@ -318,6 +355,7 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=False,
             is_client_exception=False,
+            is_conflict=False,
             plugin='heat',
             exception=lambda: Exception()
         )),
@@ -325,13 +363,23 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=True,
             is_client_exception=True,
+            is_conflict=False,
             plugin='heat',
             exception=lambda: heat_exc.HTTPOverLimit(message='over'),
+        )),
+        ('heat_conflict', dict(
+            is_not_found=False,
+            is_over_limit=False,
+            is_client_exception=True,
+            is_conflict=True,
+            plugin='heat',
+            exception=lambda: heat_exc.HTTPConflict(),
         )),
         ('keystone_not_found', dict(
             is_not_found=True,
             is_over_limit=False,
             is_client_exception=True,
+            is_conflict=False,
             plugin='keystone',
             exception=lambda: keystone_exc.NotFound(details='gone'),
         )),
@@ -339,6 +387,7 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=False,
             is_client_exception=False,
+            is_conflict=False,
             plugin='keystone',
             exception=lambda: Exception()
         )),
@@ -346,14 +395,25 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=True,
             is_client_exception=True,
+            is_conflict=False,
             plugin='keystone',
             exception=lambda: keystone_exc.RequestEntityTooLarge(
                 details='over'),
+        )),
+        ('keystone_conflict', dict(
+            is_not_found=False,
+            is_over_limit=False,
+            is_client_exception=True,
+            is_conflict=True,
+            plugin='keystone',
+            exception=lambda: keystone_exc.Conflict(
+                message='Conflict'),
         )),
         ('neutron_not_found', dict(
             is_not_found=True,
             is_over_limit=False,
             is_client_exception=True,
+            is_conflict=False,
             plugin='neutron',
             exception=lambda: neutron_exc.NotFound,
         )),
@@ -361,6 +421,7 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=True,
             is_over_limit=False,
             is_client_exception=True,
+            is_conflict=False,
             plugin='neutron',
             exception=lambda: neutron_exc.NetworkNotFoundClient(),
         )),
@@ -368,6 +429,7 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=True,
             is_over_limit=False,
             is_client_exception=True,
+            is_conflict=False,
             plugin='neutron',
             exception=lambda: neutron_exc.PortNotFoundClient(),
         )),
@@ -375,6 +437,7 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=True,
             is_over_limit=False,
             is_client_exception=True,
+            is_conflict=False,
             plugin='neutron',
             exception=lambda: neutron_exc.NeutronClientException(
                 status_code=404),
@@ -383,6 +446,7 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=False,
             is_client_exception=False,
+            is_conflict=False,
             plugin='neutron',
             exception=lambda: Exception()
         )),
@@ -390,22 +454,34 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=True,
             is_client_exception=True,
+            is_conflict=False,
             plugin='neutron',
             exception=lambda: neutron_exc.NeutronClientException(
                 status_code=413),
+        )),
+        ('neutron_conflict', dict(
+            is_not_found=False,
+            is_over_limit=False,
+            is_client_exception=True,
+            is_conflict=True,
+            plugin='neutron',
+            exception=lambda: neutron_exc.NeutronClientException(
+                status_code=409),
         )),
         ('nova_not_found', dict(
             is_not_found=True,
             is_over_limit=False,
             is_client_exception=True,
+            is_conflict=False,
             is_unprocessable_entity=False,
             plugin='nova',
-            exception=lambda: fakes.fake_exception(),
+            exception=lambda: fakes_v1_1.fake_exception(),
         )),
         ('nova_exception', dict(
             is_not_found=False,
             is_over_limit=False,
             is_client_exception=False,
+            is_conflict=False,
             is_unprocessable_entity=False,
             plugin='nova',
             exception=lambda: Exception()
@@ -414,22 +490,34 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=True,
             is_client_exception=True,
+            is_conflict=False,
             is_unprocessable_entity=False,
             plugin='nova',
-            exception=lambda: fakes.fake_exception(413),
+            exception=lambda: fakes_v1_1.fake_exception(413),
         )),
         ('nova_unprocessable_entity', dict(
             is_not_found=False,
             is_over_limit=False,
             is_client_exception=True,
+            is_conflict=False,
             is_unprocessable_entity=True,
             plugin='nova',
-            exception=lambda: fakes.fake_exception(422),
+            exception=lambda: fakes_v1_1.fake_exception(422),
+        )),
+        ('nova_conflict', dict(
+            is_not_found=False,
+            is_over_limit=False,
+            is_client_exception=True,
+            is_conflict=True,
+            is_unprocessable_entity=False,
+            plugin='nova',
+            exception=lambda: fakes_v1_1.fake_exception(409),
         )),
         ('swift_not_found', dict(
             is_not_found=True,
             is_over_limit=False,
             is_client_exception=True,
+            is_conflict=False,
             plugin='swift',
             exception=lambda: swift_exc.ClientException(
                 msg='gone', http_status=404),
@@ -438,6 +526,7 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=False,
             is_client_exception=False,
+            is_conflict=False,
             plugin='swift',
             exception=lambda: Exception()
         )),
@@ -445,21 +534,33 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=True,
             is_client_exception=True,
+            is_conflict=False,
             plugin='swift',
             exception=lambda: swift_exc.ClientException(
                 msg='ouch', http_status=413),
+        )),
+        ('swift_conflict', dict(
+            is_not_found=False,
+            is_over_limit=False,
+            is_client_exception=True,
+            is_conflict=True,
+            plugin='swift',
+            exception=lambda: swift_exc.ClientException(
+                msg='conflict', http_status=409),
         )),
         ('trove_not_found', dict(
             is_not_found=True,
             is_over_limit=False,
             is_client_exception=True,
+            is_conflict=False,
             plugin='trove',
-            exception=lambda: trove_exc.NotFound(message='gone'),
+            exception=lambda: troveclient.exceptions.NotFound(message='gone'),
         )),
         ('trove_exception', dict(
             is_not_found=False,
             is_over_limit=False,
             is_client_exception=False,
+            is_conflict=False,
             plugin='trove',
             exception=lambda: Exception()
         )),
@@ -467,9 +568,54 @@ class TestIsNotFound(HeatTestCase):
             is_not_found=False,
             is_over_limit=True,
             is_client_exception=True,
+            is_conflict=False,
             plugin='trove',
-            exception=lambda: trove_exc.RequestEntityTooLarge(
+            exception=lambda: troveclient.exceptions.RequestEntityTooLarge(
                 message='over'),
+        )),
+        ('trove_conflict', dict(
+            is_not_found=False,
+            is_over_limit=False,
+            is_client_exception=True,
+            is_conflict=True,
+            plugin='trove',
+            exception=lambda: troveclient.exceptions.Conflict(
+                message='Conflict'),
+        )),
+        ('sahara_not_found', dict(
+            is_not_found=True,
+            is_over_limit=False,
+            is_client_exception=True,
+            is_conflict=False,
+            plugin='sahara',
+            exception=lambda: sahara_base.APIException(
+                error_message='gone1', error_code=404),
+        )),
+        ('sahara_exception', dict(
+            is_not_found=False,
+            is_over_limit=False,
+            is_client_exception=False,
+            is_conflict=False,
+            plugin='sahara',
+            exception=lambda: Exception()
+        )),
+        ('sahara_overlimit', dict(
+            is_not_found=False,
+            is_over_limit=True,
+            is_client_exception=True,
+            is_conflict=False,
+            plugin='sahara',
+            exception=lambda: sahara_base.APIException(
+                error_message='over1', error_code=413),
+        )),
+        ('sahara_conflict', dict(
+            is_not_found=False,
+            is_over_limit=False,
+            is_client_exception=True,
+            is_conflict=True,
+            plugin='sahara',
+            exception=lambda: sahara_base.APIException(
+                error_message='conflict1', error_code=409),
         )),
     ]
 
@@ -521,6 +667,16 @@ class TestIsNotFound(HeatTestCase):
             if ice != actual:
                 raise
 
+    def test_is_conflict(self):
+        con = mock.Mock()
+        c = clients.Clients(con)
+        client_plugin = c.client_plugin(self.plugin)
+        try:
+            raise self.exception()
+        except Exception as e:
+            if self.is_conflict != client_plugin.is_conflict(e):
+                raise
+
     def test_is_unprocessable_entity(self):
         con = mock.Mock()
         c = clients.Clients(con)
@@ -533,3 +689,24 @@ class TestIsNotFound(HeatTestCase):
                 iue = self.is_unprocessable_entity
                 if iue != client_plugin.is_unprocessable_entity(e):
                     raise
+
+
+class ClientAPIVersionTest(common.HeatTestCase):
+
+    def test_cinder_api_v1_and_v2(self):
+        self.stub_keystoneclient()
+        ctx = utils.dummy_context()
+        client = clients.Clients(ctx).client('cinder')
+        self.assertEqual(2, client.volume_api_version)
+
+    def test_cinder_api_v1_only(self):
+        self.stub_keystoneclient(only_services=['volume'])
+        ctx = utils.dummy_context()
+        client = clients.Clients(ctx).client('cinder')
+        self.assertEqual(1, client.volume_api_version)
+
+    def test_cinder_api_v2_only(self):
+        self.stub_keystoneclient(only_services=['volumev2'])
+        ctx = utils.dummy_context()
+        client = clients.Clients(ctx).client('cinder')
+        self.assertEqual(2, client.volume_api_version)

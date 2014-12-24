@@ -16,18 +16,20 @@
 
 import mock
 from oslo.utils import importutils
+import six
 
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import resource
+from heat.engine import rsrc_defn
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 
-from testtools import skipIf
+import testtools
 
 from ..resources import docker_container  # noqa
-from .fake_docker_client import FakeDockerClient  # noqa
+import fake_docker_client as fakeclient  # noqa
 
 docker = importutils.try_import('docker')
 
@@ -52,7 +54,7 @@ template = '''
 '''
 
 
-class DockerContainerTest(HeatTestCase):
+class DockerContainerTest(common.HeatTestCase):
 
     def setUp(self):
         super(DockerContainerTest, self).setUp()
@@ -67,7 +69,8 @@ class DockerContainerTest(HeatTestCase):
             resource_name,
             stack.t.resource_definitions(stack)[resource_name], stack)
         self.m.StubOutWithMock(resource, 'get_client')
-        resource.get_client().MultipleTimes().AndReturn(FakeDockerClient())
+        resource.get_client().MultipleTimes().AndReturn(
+            fakeclient.FakeDockerClient())
         self.assertIsNone(resource.validate())
         self.m.ReplayAll()
         scheduler.TaskRunner(resource.create)()
@@ -96,7 +99,8 @@ class DockerContainerTest(HeatTestCase):
         resource = docker_container.DockerContainer(
             'Blog', definition, stack)
         self.m.StubOutWithMock(resource, 'get_client')
-        resource.get_client().MultipleTimes().AndReturn(FakeDockerClient())
+        resource.get_client().MultipleTimes().AndReturn(
+            fakeclient.FakeDockerClient())
         self.assertIsNone(resource.validate())
         self.m.ReplayAll()
         scheduler.TaskRunner(resource.create)()
@@ -105,6 +109,26 @@ class DockerContainerTest(HeatTestCase):
         client = resource.get_client()
         self.assertEqual(['samalba/wordpress'], client.pulled_images)
         self.assertEqual('super-blog', client.container_create[0]['name'])
+
+    @mock.patch.object(docker_container.DockerContainer, 'get_client')
+    def test_create_failed(self, test_client):
+        mock_client = mock.Mock()
+        mock_client.inspect_container.return_value = {
+            "State": {
+                "ExitCode": -1
+            }
+        }
+        mock_client.logs.return_value = "Container startup failed"
+        test_client.return_value = mock_client
+        mock_stack = mock.Mock()
+        mock_stack.db_resource_get.return_value = None
+        res_def = mock.Mock(spec=rsrc_defn.ResourceDefinition)
+        docker_res = docker_container.DockerContainer("test", res_def,
+                                                      mock_stack)
+        exc = self.assertRaises(resource.ResourceInError,
+                                docker_res.check_create_complete,
+                                'foo')
+        self.assertIn("Container startup failed", six.text_type(exc))
 
     def test_start_with_bindings_and_links(self):
         t = template_format.parse(template)
@@ -116,7 +140,8 @@ class DockerContainerTest(HeatTestCase):
         resource = docker_container.DockerContainer(
             'Blog', definition, stack)
         self.m.StubOutWithMock(resource, 'get_client')
-        resource.get_client().MultipleTimes().AndReturn(FakeDockerClient())
+        resource.get_client().MultipleTimes().AndReturn(
+            fakeclient.FakeDockerClient())
         self.assertIsNone(resource.validate())
         self.m.ReplayAll()
         scheduler.TaskRunner(resource.create)()
@@ -160,7 +185,7 @@ class DockerContainerTest(HeatTestCase):
         scheduler.TaskRunner(container.delete)()
         self.m.VerifyAll()
 
-    @skipIf(docker is None, 'docker-py not available')
+    @testtools.skipIf(docker is None, 'docker-py not available')
     def test_resource_delete_exception(self):
         response = mock.MagicMock()
         response.status_code = 404

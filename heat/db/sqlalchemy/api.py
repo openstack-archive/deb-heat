@@ -12,16 +12,17 @@
 #    under the License.
 
 '''Implementation of SQLAlchemy backend.'''
-from datetime import datetime
-from datetime import timedelta
+import datetime
+import six
 import sys
 
 from oslo.config import cfg
 from oslo.db.sqlalchemy import session as db_session
 from oslo.db.sqlalchemy import utils
+import osprofiler.sqlalchemy
 import sqlalchemy
 from sqlalchemy import orm
-from sqlalchemy.orm.session import Session
+from sqlalchemy.orm import session as orm_session
 
 from heat.common import crypt
 from heat.common import exception
@@ -33,6 +34,7 @@ from heat.rpc import api as rpc_api
 
 CONF = cfg.CONF
 CONF.import_opt('max_events_per_stack', 'heat.common.config')
+CONF.import_group('profiler', 'heat.common.config')
 
 _facade = None
 
@@ -42,6 +44,12 @@ def get_facade():
 
     if not _facade:
         _facade = db_session.EngineFacade.from_config(CONF)
+        if CONF.profiler.profiler_enabled:
+            if CONF.profiler.trace_sqlalchemy:
+                osprofiler.sqlalchemy.add_tracing(sqlalchemy,
+                                                  _facade.get_engine(),
+                                                  "db")
+
     return _facade
 
 get_engine = lambda: get_facade().get_engine()
@@ -314,7 +322,7 @@ def _get_sort_keys(sort_keys, mapping):
     :param mapping: a mapping from keys to DB column names
     :returns: filtered list of sort keys
     '''
-    if isinstance(sort_keys, basestring):
+    if isinstance(sort_keys, six.string_types):
         sort_keys = [sort_keys]
     return [mapping[key] for key in sort_keys or [] if key in mapping]
 
@@ -420,7 +428,7 @@ def stack_delete(context, stack_id):
                                  '%(id)s %(msg)s') % {
                                      'id': stack_id,
                                      'msg': 'that does not exist'})
-    session = Session.object_session(s)
+    session = orm_session.Session.object_session(s)
 
     for r in s.resources:
         session.delete(r)
@@ -474,6 +482,9 @@ def user_creds_create(context):
     else:
         user_creds_ref.update(values)
         method, password = _encrypt(values['password'])
+        if len(six.text_type(password)) > 255:
+            raise exception.Error(_("Length of OS_PASSWORD after encryption"
+                                    " exceeds Heat limit (255 chars)"))
         user_creds_ref.password = password
         user_creds_ref.decrypt_method = method
     user_creds_ref.save(_session(context))
@@ -499,7 +510,7 @@ def user_creds_delete(context, user_creds_id):
         raise exception.NotFound(
             _('Attempt to delete user creds with id '
               '%(id)s that does not exist') % {'id': user_creds_id})
-    session = Session.object_session(creds)
+    session = orm_session.Session.object_session(creds)
     session.delete(creds)
     session.flush()
 
@@ -665,7 +676,7 @@ def watch_rule_delete(context, watch_id):
                                  '%(id)s %(msg)s') % {
                                      'id': watch_id,
                                      'msg': 'that does not exist'})
-    session = Session.object_session(wr)
+    session = orm_session.Session.object_session(wr)
 
     for d in wr.watch_data:
         session.delete(d)
@@ -707,7 +718,7 @@ def software_config_get(context, config_id):
 
 def software_config_delete(context, config_id):
     config = software_config_get(context, config_id)
-    session = Session.object_session(config)
+    session = orm_session.Session.object_session(config)
     session.delete(config)
     session.flush()
 
@@ -754,7 +765,7 @@ def software_deployment_update(context, deployment_id, values):
 
 def software_deployment_delete(context, deployment_id):
     deployment = software_deployment_get(context, deployment_id)
-    session = Session.object_session(deployment)
+    session = orm_session.Session.object_session(deployment)
     session.delete(deployment)
     session.flush()
 
@@ -787,7 +798,7 @@ def snapshot_update(context, snapshot_id, values):
 
 def snapshot_delete(context, snapshot_id):
     snapshot = snapshot_get(context, snapshot_id)
-    session = Session.object_session(snapshot)
+    session = orm_session.Session.object_session(snapshot)
     session.delete(snapshot)
     session.flush()
 
@@ -816,7 +827,7 @@ def purge_deleted(age, granularity='days'):
     elif granularity == 'minutes':
         age = age * 60
 
-    time_line = datetime.now() - timedelta(seconds=age)
+    time_line = datetime.datetime.now() - datetime.timedelta(seconds=age)
     engine = get_engine()
     meta = sqlalchemy.MetaData()
     meta.bind = engine

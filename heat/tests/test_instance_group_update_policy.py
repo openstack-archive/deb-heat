@@ -15,17 +15,18 @@ import copy
 import json
 
 import mox
-from testtools.matchers import MatchesRegex
+from testtools import matchers
 
 from heat.common import exception
+from heat.common import grouputils
 from heat.common import template_format
 from heat.engine.clients.os import nova
 from heat.engine import function
 from heat.engine import parser
 from heat.engine.resources import instance
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
-from heat.tests.v1_1 import fakes
+from heat.tests.v1_1 import fakes as fakes_v1_1
 
 
 ig_tmpl_without_updt_policy = '''
@@ -155,17 +156,18 @@ ig_tmpl_with_updt_policy = '''
 '''
 
 
-class InstanceGroupTest(HeatTestCase):
+class InstanceGroupTest(common.HeatTestCase):
 
     def setUp(self):
         super(InstanceGroupTest, self).setUp()
-        self.fc = fakes.FakeClient()
+        self.fc = fakes_v1_1.FakeClient()
 
     def _stub_validate(self):
         self.m.StubOutWithMock(parser.Stack, 'validate')
         parser.Stack.validate().MultipleTimes()
         self.stub_ImageConstraint_validate()
         self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
 
     def _stub_grp_create(self, capacity):
         """
@@ -239,6 +241,7 @@ class InstanceGroupTest(HeatTestCase):
         stack = utils.parse_stack(tmpl)
         self.stub_ImageConstraint_validate()
         self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         stack.validate()
@@ -251,6 +254,7 @@ class InstanceGroupTest(HeatTestCase):
         stack = utils.parse_stack(tmpl)
         self.stub_ImageConstraint_validate()
         self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         stack.validate()
@@ -271,6 +275,7 @@ class InstanceGroupTest(HeatTestCase):
         stack = utils.parse_stack(tmpl)
         self.stub_ImageConstraint_validate()
         self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         stack.validate()
@@ -364,6 +369,7 @@ class InstanceGroupTest(HeatTestCase):
         stack = utils.parse_stack(tmpl)
         self.stub_KeypairConstraint_validate()
         self.stub_ImageConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         stack.validate()
@@ -393,7 +399,8 @@ class InstanceGroupTest(HeatTestCase):
         # test that physical resource name of launch configuration is used
         conf = stack['JobServerConfig']
         conf_name_pattern = '%s-JobServerConfig-[a-zA-Z0-9]+$' % stack.name
-        self.assertThat(conf.FnGetRefId(), MatchesRegex(conf_name_pattern))
+        self.assertThat(conf.FnGetRefId(),
+                        matchers.MatchesRegex(conf_name_pattern))
 
         # get launch conf name here to compare result after update
         conf_name = self.get_launch_conf_name(stack, 'JobServerGroup')
@@ -406,8 +413,8 @@ class InstanceGroupTest(HeatTestCase):
         self.m.UnsetStubs()
 
         # saves info from initial list of instances for comparison later
-        init_instances = current_grp.get_instances()
-        init_names = current_grp.get_instance_names()
+        init_instances = grouputils.get_members(current_grp)
+        init_names = grouputils.get_member_names(current_grp)
         init_images = [(i.name, i.t['Properties']['ImageId'])
                        for i in init_instances]
         init_flavors = [(i.name, i.t['Properties']['InstanceType'])
@@ -444,8 +451,8 @@ class InstanceGroupTest(HeatTestCase):
         self.assertNotEqual(conf_name, updated_conf_name)
 
         # test that the group size are the same
-        updt_instances = updated_grp.get_instances()
-        updt_names = updated_grp.get_instance_names()
+        updt_instances = grouputils.get_members(updated_grp)
+        updt_names = grouputils.get_member_names(updated_grp)
         self.assertEqual(len(init_names), len(updt_names))
 
         # test that the appropriate number of instance names are the same
@@ -628,7 +635,8 @@ class InstanceGroupTest(HeatTestCase):
         # test that physical resource name of launch configuration is used
         conf = stack['JobServerConfig']
         conf_name_pattern = '%s-JobServerConfig-[a-zA-Z0-9]+$' % stack.name
-        self.assertThat(conf.FnGetRefId(), MatchesRegex(conf_name_pattern))
+        self.assertThat(conf.FnGetRefId(),
+                        matchers.MatchesRegex(conf_name_pattern))
 
         # test the number of instances created
         nested = stack['JobServerGroup'].nested()
@@ -689,6 +697,7 @@ class InstanceGroupTest(HeatTestCase):
 
         self.stub_KeypairConstraint_validate()
         self.stub_ImageConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
         stack.update(updated_stack)
         self.assertEqual(('UPDATE', 'FAILED'), stack.state)

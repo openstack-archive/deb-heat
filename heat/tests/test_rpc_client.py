@@ -20,9 +20,11 @@ Unit Tests for heat.rpc.client
 
 import copy
 import mock
+from oslo.messaging._drivers import common as rpc_common
 import stubout
 import testtools
 
+from heat.common import exception
 from heat.common import identifier
 from heat.common import messaging
 from heat.rpc import client as rpc_client
@@ -42,6 +44,40 @@ class EngineRpcAPITestCase(testtools.TestCase):
                                                        'wordpress'))
         self.rpcapi = rpc_client.EngineClient()
         super(EngineRpcAPITestCase, self).setUp()
+
+    def _to_remote_error(self, error):
+        """Converts the given exception to the one with the _Remote suffix.
+        """
+        exc_info = (type(error), error, None)
+        serialized = rpc_common.serialize_remote_exception(exc_info)
+        remote_error = rpc_common.deserialize_remote_exception(
+            serialized, ["heat.common.exception"])
+        return remote_error
+
+    def test_local_error_name(self):
+        ex = exception.NotFound()
+        self.assertEqual('NotFound', self.rpcapi.local_error_name(ex))
+
+        exr = self._to_remote_error(ex)
+        self.assertEqual('NotFound_Remote', exr.__class__.__name__)
+        self.assertEqual('NotFound', self.rpcapi.local_error_name(exr))
+
+    def test_ignore_error_named(self):
+        ex = exception.NotFound()
+        exr = self._to_remote_error(ex)
+
+        self.rpcapi.ignore_error_named(ex, 'NotFound')
+        self.rpcapi.ignore_error_named(exr, 'NotFound')
+        self.assertRaises(
+            exception.NotFound,
+            self.rpcapi.ignore_error_named,
+            ex,
+            'NotSupported')
+        self.assertRaises(
+            exception.NotFound,
+            self.rpcapi.ignore_error_named,
+            exr,
+            'NotSupported')
 
     def _test_engine_api(self, method, rpc_method, **kwargs):
         ctxt = utils.dummy_context()
@@ -118,6 +154,9 @@ class EngineRpcAPITestCase(testtools.TestCase):
                       args={'timeout_mins': u'30'})
         call_kwargs = copy.deepcopy(kwargs)
         call_kwargs['owner_id'] = None
+        call_kwargs['nested_depth'] = 0
+        call_kwargs['user_creds_id'] = None
+        call_kwargs['stack_user_project_id'] = None
         expected_message = self.rpcapi.make_msg('create_stack', **call_kwargs)
         kwargs['expected_message'] = expected_message
         self._test_engine_api('create_stack', 'call', **kwargs)
@@ -169,7 +208,8 @@ class EngineRpcAPITestCase(testtools.TestCase):
     def test_describe_stack_resource(self):
         self._test_engine_api('describe_stack_resource', 'call',
                               stack_identity=self.identity,
-                              resource_name='LogicalResourceId')
+                              resource_name='LogicalResourceId',
+                              with_attr=None)
 
     def test_find_physical_resource(self):
         self._test_engine_api('find_physical_resource', 'call',

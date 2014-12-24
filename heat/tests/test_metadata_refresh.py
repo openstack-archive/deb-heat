@@ -24,7 +24,7 @@ from heat.engine.resources import server
 from heat.engine.resources import wait_condition as wc
 from heat.engine import scheduler
 from heat.engine import service
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 
 
@@ -142,7 +142,7 @@ resources:
 '''
 
 
-class MetadataRefreshTest(HeatTestCase):
+class MetadataRefreshTest(common.HeatTestCase):
     '''
     The point of the test is to confirm that metadata gets updated
     when FnGetAtt() returns something different.
@@ -164,6 +164,7 @@ class MetadataRefreshTest(HeatTestCase):
 
         self.stub_ImageConstraint_validate()
         self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
 
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
@@ -207,7 +208,7 @@ class MetadataRefreshTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class WaitCondMetadataUpdateTest(HeatTestCase):
+class WaitCondMetadataUpdateTest(common.HeatTestCase):
     def setUp(self):
         super(WaitCondMetadataUpdateTest, self).setUp()
         self.stub_keystoneclient()
@@ -227,6 +228,7 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
 
         self.stub_ImageConstraint_validate()
         self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
 
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
@@ -294,7 +296,7 @@ class WaitCondMetadataUpdateTest(HeatTestCase):
         self.m.VerifyAll()
 
 
-class MetadataRefreshTestServer(HeatTestCase):
+class MetadataRefreshTestServer(common.HeatTestCase):
     '''
     The point of the test is to confirm that metadata gets updated
     when FnGetAtt() returns something different when using a native
@@ -319,6 +321,7 @@ class MetadataRefreshTestServer(HeatTestCase):
 
         self.stub_ImageConstraint_validate()
         self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
 
         self.m.StubOutWithMock(server.Server, 'handle_create')
         self.m.StubOutWithMock(server.Server, 'check_create_complete')

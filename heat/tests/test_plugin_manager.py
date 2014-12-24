@@ -1,5 +1,4 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -18,7 +17,7 @@ import types
 import six
 
 from heat.engine import plugin_manager
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 
 
 def legacy_test_mapping():
@@ -45,7 +44,7 @@ class MappingTestError(Exception):
     pass
 
 
-class TestPluginManager(HeatTestCase):
+class TestPluginManager(common.HeatTestCase):
 
     @staticmethod
     def module():

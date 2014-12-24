@@ -12,12 +12,15 @@
 #    under the License.
 
 import copy
+import six
 import uuid
 
 from oslo.config import cfg
+from oslo.serialization import jsonutils
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LI
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
@@ -26,9 +29,9 @@ from heat.engine.resources.neutron import subnet
 from heat.engine import scheduler
 from heat.engine import stack_user
 from heat.engine import support
-from heat.openstack.common import jsonutils
 from heat.openstack.common import log as logging
 from heat.openstack.common import uuidutils
+from heat.rpc import api as rpc_api
 
 cfg.CONF.import_opt('instance_user', 'heat.common.config')
 
@@ -85,10 +88,10 @@ class Server(stack_user.StackUser):
 
     ATTRIBUTES = (
         NAME_ATTR, SHOW, ADDRESSES, NETWORKS_ATTR, FIRST_ADDRESS,
-        INSTANCE_NAME, ACCESSIPV4, ACCESSIPV6,
+        INSTANCE_NAME, ACCESSIPV4, ACCESSIPV6, CONSOLE_URLS,
     ) = (
         'name', 'show', 'addresses', 'networks', 'first_address',
-        'instance_name', 'accessIPv4', 'accessIPv6',
+        'instance_name', 'accessIPv4', 'accessIPv6', 'console_urls',
     )
 
     properties_schema = {
@@ -122,12 +125,18 @@ class Server(stack_user.StackUser):
                         properties.Schema.STRING,
                         _('The ID of the volume to boot from. Only one '
                           'of volume_id or snapshot_id should be '
-                          'provided.')
+                          'provided.'),
+                        constraints=[
+                            constraints.CustomConstraint('cinder.volume')
+                        ]
                     ),
                     BLOCK_DEVICE_MAPPING_SNAPSHOT_ID: properties.Schema(
                         properties.Schema.STRING,
                         _('The ID of the snapshot to create a volume '
-                          'from.')
+                          'from.'),
+                        constraints=[
+                            constraints.CustomConstraint('cinder.snapshot')
+                        ]
                     ),
                     BLOCK_DEVICE_MAPPING_VOLUME_SIZE: properties.Schema(
                         properties.Schema.INTEGER,
@@ -147,7 +156,10 @@ class Server(stack_user.StackUser):
             properties.Schema.STRING,
             _('The ID or name of the flavor to boot onto.'),
             required=True,
-            update_allowed=True
+            update_allowed=True,
+            constraints=[
+                constraints.CustomConstraint('nova.flavor')
+            ]
         ),
         FLAVOR_UPDATE_POLICY: properties.Schema(
             properties.Schema.STRING,
@@ -342,6 +354,14 @@ class Server(stack_user.StackUser):
             _('The manually assigned alternative public IPv6 address '
               'of the server.')
         ),
+        CONSOLE_URLS: attributes.Schema(
+            _("URLs of server's consoles. "
+              "To get a specific console type, the requested type "
+              "can be specified as parameter to the get_attr function, "
+              "e.g. get_attr: [ <server>, console_urls, novnc ]. "
+              "Currently supported types are "
+              "novnc, xvpvnc, spice-html5, rdp-html5, serial.")
+        ),
     }
 
     # Server host name limit to 53 characters by due to typical default
@@ -468,6 +488,15 @@ class Server(stack_user.StackUser):
         return self.properties.get(
             self.SOFTWARE_CONFIG_TRANSPORT) == self.POLL_TEMP_URL
 
+    def get_software_config(self, ud_content):
+        try:
+            sc = self.rpc_client().show_software_config(
+                self.context, ud_content)
+            return sc[rpc_api.SOFTWARE_CONFIG_CONFIG]
+        except Exception as ex:
+            self.rpc_client().ignore_error_named(ex, 'NotFound')
+            return ud_content
+
     def handle_create(self):
         security_groups = self.properties.get(self.SECURITY_GROUPS)
 
@@ -476,11 +505,7 @@ class Server(stack_user.StackUser):
         if self.user_data_software_config() or self.user_data_raw():
             if uuidutils.is_uuid_like(ud_content):
                 # attempt to load the userdata from software config
-                try:
-                    ud_content = self.heat().software_configs.get(
-                        ud_content).config
-                except Exception as ex:
-                    self.client_plugin('heat').ignore_not_found(ex)
+                ud_content = self.get_software_config(ud_content)
 
         metadata = self.metadata_get(True) or {}
 
@@ -579,6 +604,16 @@ class Server(stack_user.StackUser):
                 resource_status=server.status,
                 result=_('Server is not active'))
 
+    def _check_server_status(self):
+        server = self.nova().servers.get(self.resource_id)
+        status = self.client_plugin().get_status(server)
+        checks = [{'attr': 'status', 'expected': 'ACTIVE', 'current': status}]
+        self._verify_check_conditions(checks)
+        return server
+
+    def handle_check(self):
+        self._check_server_status()
+
     @classmethod
     def _build_block_device_mapping(cls, bdm):
         if not bdm:
@@ -668,6 +703,8 @@ class Server(stack_user.StackUser):
             return server.accessIPv6
         if name == self.SHOW:
             return server._info
+        if name == self.CONSOLE_URLS:
+            return self.client_plugin('nova').get_console_urls(server)
 
     def add_dependencies(self, deps):
         super(Server, self).add_dependencies(deps)
@@ -676,13 +713,18 @@ class Server(stack_user.StackUser):
         # It is not known which subnet a server might be assigned
         # to so all subnets in a network should be created before
         # the servers in that network.
+        nets = self.properties.get(self.NETWORKS)
+        if not nets:
+            return
         for res in self.stack.itervalues():
-            if (res.has_interface('OS::Neutron::Subnet')):
-                subnet_net = res.properties.get(subnet.Subnet.NETWORK_ID)
-                for net in self.properties.get(self.NETWORKS):
-                    # we do not need to worry about NETWORK_ID values which are
-                    # names instead of UUIDs since these were not created
-                    # by this stack
+            if res.has_interface('OS::Neutron::Subnet'):
+                subnet_net = (res.properties.get(subnet.Subnet.NETWORK_ID)
+                              or res.properties.get(subnet.Subnet.NETWORK))
+                for net in nets:
+                    # worry about network_id because that could be the match
+                    # assigned to the subnet as well and could have been
+                    # created by this stack. Regardless, the server should
+                    # still wait on the subnet.
                     net_id = (net.get(self.NETWORK_ID) or
                               net.get(self.NETWORK_UUID))
                     if net_id and net_id == subnet_net:
@@ -734,6 +776,106 @@ class Server(stack_user.StackUser):
             if net is not None:
                 net['port'] = props['port']
 
+    def _update_flavor(self, server, prop_diff):
+        flavor_update_policy = (
+            prop_diff.get(self.FLAVOR_UPDATE_POLICY) or
+            self.properties.get(self.FLAVOR_UPDATE_POLICY))
+        flavor = prop_diff[self.FLAVOR]
+
+        if flavor_update_policy == 'REPLACE':
+            raise resource.UpdateReplace(self.name)
+
+        flavor_id = self.client_plugin().get_flavor_id(flavor)
+        if not server:
+            server = self.nova().servers.get(self.resource_id)
+        return scheduler.TaskRunner(self.client_plugin().resize,
+                                    server, flavor, flavor_id)
+
+    def _update_image(self, server, prop_diff):
+        image_update_policy = (
+            prop_diff.get(self.IMAGE_UPDATE_POLICY) or
+            self.properties.get(self.IMAGE_UPDATE_POLICY))
+        if image_update_policy == 'REPLACE':
+            raise resource.UpdateReplace(self.name)
+        image = prop_diff[self.IMAGE]
+        image_id = self.client_plugin('glance').get_image_id(image)
+        if not server:
+            server = self.nova().servers.get(self.resource_id)
+        preserve_ephemeral = (
+            image_update_policy == 'REBUILD_PRESERVE_EPHEMERAL')
+        password = (prop_diff.get(self.ADMIN_PASS) or
+                    self.properties.get(self.ADMIN_PASS))
+        return scheduler.TaskRunner(
+            self.client_plugin().rebuild, server, image_id,
+            password=password,
+            preserve_ephemeral=preserve_ephemeral)
+
+    def _update_networks(self, server, prop_diff):
+        checkers = []
+        new_networks = prop_diff.get(self.NETWORKS)
+        attach_first_free_port = False
+        if not new_networks:
+            new_networks = []
+            attach_first_free_port = True
+        old_networks = self.properties.get(self.NETWORKS)
+
+        if not server:
+            server = self.nova().servers.get(self.resource_id)
+        interfaces = server.interface_list()
+
+        # if old networks is None, it means that the server got first
+        # free port. so we should detach this interface.
+        if old_networks is None:
+            for iface in interfaces:
+                checker = scheduler.TaskRunner(server.interface_detach,
+                                               iface.port_id)
+                checkers.append(checker)
+
+        # if we have any information in networks field, we should:
+        # 1. find similar networks, if they exist
+        # 2. remove these networks from new_networks and old_networks
+        #    lists
+        # 3. detach unmatched networks, which were present in old_networks
+        # 4. attach unmatched networks, which were present in new_networks
+        else:
+            # remove not updated networks from old and new networks lists,
+            # also get list these networks
+            not_updated_networks = \
+                self._get_network_matches(old_networks, new_networks)
+
+            self.update_networks_matching_iface_port(
+                old_networks + not_updated_networks, interfaces)
+
+            # according to nova interface-detach command detached port
+            # will be deleted
+            for net in old_networks:
+                checker = scheduler.TaskRunner(server.interface_detach,
+                                               net.get('port'))
+                checkers.append(checker)
+
+        # attach section similar for both variants that
+        # were mentioned above
+
+        for net in new_networks:
+            if net.get('port'):
+                checker = scheduler.TaskRunner(server.interface_attach,
+                                               net['port'], None, None)
+                checkers.append(checker)
+            elif net.get('network'):
+                checker = scheduler.TaskRunner(server.interface_attach,
+                                               None, net['network'],
+                                               net.get('fixed_ip'))
+                checkers.append(checker)
+
+        # if new_networks is None, we should attach first free port,
+        # according to similar behavior during instance creation
+        if attach_first_free_port:
+            checker = scheduler.TaskRunner(server.interface_attach,
+                                           None, None, None)
+            checkers.append(checker)
+
+        return checkers
+
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if 'Metadata' in tmpl_diff:
             self.metadata_set(tmpl_diff['Metadata'])
@@ -747,38 +889,14 @@ class Server(stack_user.StackUser):
                                              prop_diff[self.METADATA])
 
         if self.FLAVOR in prop_diff:
-
-            flavor_update_policy = (
-                prop_diff.get(self.FLAVOR_UPDATE_POLICY) or
-                self.properties.get(self.FLAVOR_UPDATE_POLICY))
-
-            if flavor_update_policy == 'REPLACE':
-                raise resource.UpdateReplace(self.name)
-
-            flavor = prop_diff[self.FLAVOR]
-            flavor_id = self.client_plugin().get_flavor_id(flavor)
-            if not server:
-                server = self.nova().servers.get(self.resource_id)
-            checker = scheduler.TaskRunner(self.client_plugin().resize,
-                                           server, flavor, flavor_id)
-            checkers.append(checker)
+            checkers.append(self._update_flavor(server, prop_diff))
 
         if self.IMAGE in prop_diff:
-            image_update_policy = (
-                prop_diff.get(self.IMAGE_UPDATE_POLICY) or
-                self.properties.get(self.IMAGE_UPDATE_POLICY))
-            if image_update_policy == 'REPLACE':
-                raise resource.UpdateReplace(self.name)
-            image = prop_diff[self.IMAGE]
-            image_id = self.client_plugin('glance').get_image_id(image)
+            checkers.append(self._update_image(server, prop_diff))
+        elif self.ADMIN_PASS in prop_diff:
             if not server:
                 server = self.nova().servers.get(self.resource_id)
-            preserve_ephemeral = (
-                image_update_policy == 'REBUILD_PRESERVE_EPHEMERAL')
-            checker = scheduler.TaskRunner(
-                self.client_plugin().rebuild, server, image_id,
-                preserve_ephemeral=preserve_ephemeral)
-            checkers.append(checker)
+            server.change_password(prop_diff[self.ADMIN_PASS])
 
         if self.NAME in prop_diff:
             if not server:
@@ -786,66 +904,7 @@ class Server(stack_user.StackUser):
             self.client_plugin().rename(server, prop_diff[self.NAME])
 
         if self.NETWORKS in prop_diff:
-            new_networks = prop_diff.get(self.NETWORKS)
-            attach_first_free_port = False
-            if not new_networks:
-                new_networks = []
-                attach_first_free_port = True
-            old_networks = self.properties.get(self.NETWORKS)
-
-            if not server:
-                server = self.nova().servers.get(self.resource_id)
-            interfaces = server.interface_list()
-
-            # if old networks is None, it means that the server got first
-            # free port. so we should detach this interface.
-            if old_networks is None:
-                for iface in interfaces:
-                    checker = scheduler.TaskRunner(server.interface_detach,
-                                                   iface.port_id)
-                    checkers.append(checker)
-            # if we have any information in networks field, we should:
-            # 1. find similar networks, if they exist
-            # 2. remove these networks from new_networks and old_networks
-            #    lists
-            # 3. detach unmatched networks, which were present in old_networks
-            # 4. attach unmatched networks, which were present in new_networks
-            else:
-                # remove not updated networks from old and new networks lists,
-                # also get list these networks
-                not_updated_networks = \
-                    self._get_network_matches(old_networks, new_networks)
-
-                self.update_networks_matching_iface_port(
-                    old_networks + not_updated_networks, interfaces)
-
-                # according to nova interface-detach command detached port
-                # will be deleted
-                for net in old_networks:
-                    checker = scheduler.TaskRunner(server.interface_detach,
-                                                   net.get('port'))
-                    checkers.append(checker)
-
-            # attach section similar for both variants that
-            # were mentioned above
-
-            for net in new_networks:
-                if net.get('port'):
-                    checker = scheduler.TaskRunner(server.interface_attach,
-                                                   net['port'], None, None)
-                    checkers.append(checker)
-                elif net.get('network'):
-                    checker = scheduler.TaskRunner(server.interface_attach,
-                                                   None, net['network'],
-                                                   net.get('fixed_ip'))
-                    checkers.append(checker)
-
-            # if new_networks is None, we should attach first free port,
-            # according to similar behavior during instance creation
-            if attach_first_free_port:
-                checker = scheduler.TaskRunner(server.interface_attach,
-                                               None, None, None)
-                checkers.append(checker)
+            checkers.extend(self._update_networks(server, prop_diff))
 
         # Optimization: make sure the first task is started before
         # check_update_complete.
@@ -939,14 +998,14 @@ class Server(stack_user.StackUser):
                                    server=self.name)
                 raise exception.StackValidationFailed(message=msg)
             elif network.get(self.NETWORK_UUID):
-                LOG.info(_('For the server "%(server)s" the "%(uuid)s" '
-                           'property is set to network "%(network)s". '
-                           '"%(uuid)s" property is deprecated. Use '
-                           '"%(id)s"  property instead.')
-                         % dict(uuid=self.NETWORK_UUID,
-                                id=self.NETWORK_ID,
-                                network=network[self.NETWORK_ID],
-                                server=self.name))
+                LOG.info(_LI('For the server "%(server)s" the "%(uuid)s" '
+                             'property is set to network "%(network)s". '
+                             '"%(uuid)s" property is deprecated. Use '
+                             '"%(id)s"  property instead.'),
+                         dict(uuid=self.NETWORK_UUID,
+                              id=self.NETWORK_ID,
+                              network=network[self.NETWORK_ID],
+                              server=self.name))
 
         # retrieve provider's absolute limits if it will be needed
         metadata = self.properties.get(self.METADATA)
@@ -1122,13 +1181,14 @@ class Server(stack_user.StackUser):
         except Exception as e:
             self.client_plugin().ignore_not_found(e)
 
-
-class FlavorConstraint(constraints.BaseCustomConstraint):
-
-    expected_exceptions = (exception.FlavorMissing,)
-
-    def validate_with_client(self, client, value):
-        client.client_plugin('nova').get_flavor_id(value)
+    def handle_restore(self, defn, restore_data):
+        image_id = restore_data['resource_data']['snapshot_image_id']
+        props = dict(
+            (key, value) for (key, value) in
+            six.iteritems(defn.properties(self.properties_schema))
+            if value is not None)
+        props[self.IMAGE] = image_id
+        return defn.freeze(properties=props)
 
 
 def resource_mapping():

@@ -12,14 +12,16 @@
 #    under the License.
 
 
+import mock
 import mox
+import six
 import swiftclient.client as sc
 
 from heat.common import exception
 from heat.common import template_format
 from heat.engine.resources import swift
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
 
 
@@ -64,7 +66,7 @@ swift_template = '''
 '''
 
 
-class swiftTest(HeatTestCase):
+class swiftTest(common.HeatTestCase):
     def setUp(self):
         super(swiftTest, self).setUp()
         self.m.CreateMock(sc.Connection)
@@ -252,6 +254,27 @@ class swiftTest(HeatTestCase):
         scheduler.TaskRunner(rsrc.delete)()
 
         self.m.VerifyAll()
+
+    def _get_check_resource(self):
+        t = template_format.parse(swift_template)
+        stack = utils.parse_stack(t)
+        res = self.create_resource(t, stack, 'SwiftContainer')
+        res.swift = mock.Mock()
+        return res
+
+    def test_check(self):
+        res = self._get_check_resource()
+        scheduler.TaskRunner(res.check)()
+        self.assertEqual((res.CHECK, res.COMPLETE), res.state)
+
+    def test_check_fail(self):
+        res = self._get_check_resource()
+        res.swift().get_container.side_effect = Exception('boom')
+
+        exc = self.assertRaises(exception.ResourceFailure,
+                                scheduler.TaskRunner(res.check))
+        self.assertIn('boom', six.text_type(exc))
+        self.assertEqual((res.CHECK, res.FAILED), res.state)
 
     def test_delete_retain(self):
         # first run, with retain policy

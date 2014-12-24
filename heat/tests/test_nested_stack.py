@@ -28,14 +28,14 @@ from heat.engine import parser
 from heat.engine import resource
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
 
 cfg.CONF.import_opt('max_resources_per_stack', 'heat.common.config')
 
 
-class NestedStackTest(HeatTestCase):
+class NestedStackTest(common.HeatTestCase):
     test_template = '''
 HeatTemplateFormatVersion: '2012-12-12'
 Resources:
@@ -101,7 +101,7 @@ Outputs:
         stack = self.create_stack(self.test_template)
         rsrc = stack['the_nested']
         nested_name = utils.PhysName(stack.name, 'the_nested')
-        self.assertEqual(rsrc.physical_resource_name(), nested_name)
+        self.assertEqual(nested_name, rsrc.physical_resource_name())
         arn_prefix = ('arn:openstack:heat::aaaa:stacks/%s/' %
                       rsrc.physical_resource_name())
         self.assertTrue(rsrc.FnGetRefId().startswith(arn_prefix))
@@ -438,6 +438,8 @@ Resources:
         urlfetch.get(
             'https://server.test/depth3.template').AndReturn(
                 self.nested_template)
+        self.m.StubOutWithMock(parser.Stack, 'validate')
+        parser.Stack.validate().MultipleTimes().AndReturn(None)
         self.m.ReplayAll()
         self.create_stack(root_template)
         self.m.VerifyAll()

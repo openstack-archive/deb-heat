@@ -703,6 +703,16 @@ class PropertyTest(testtools.TestCase):
         self.assertEqual("int() argument must be a string or a number, "
                          "not 'list'", six.text_type(ex))
 
+    def test_str_from_int(self):
+        schema = {'Type': 'String'}
+        p = properties.Property(schema)
+        self.assertEqual('3', p.get_value(3))
+
+    def test_str_from_bool(self):
+        schema = {'Type': 'String'}
+        p = properties.Property(schema)
+        self.assertEqual('True', p.get_value(True))
+
     def test_int_from_str_good(self):
         schema = {'Type': 'Integer'}
         p = properties.Property(schema)
@@ -1514,15 +1524,24 @@ class PropertiesValidationTest(testtools.TestCase):
         props = properties.Properties(schema, {})
         self.assertIsNone(props.validate())
 
-    def test_bad_data(self):
-        schema = {'foo': {'Type': 'String'}}
-        props = properties.Properties(schema, {'foo': 42})
-        self.assertRaises(exception.StackValidationFailed, props.validate)
-
     def test_unknown_typo(self):
         schema = {'foo': {'Type': 'String'}}
         props = properties.Properties(schema, {'food': 42})
         self.assertRaises(exception.StackValidationFailed, props.validate)
+
+    def test_list_instead_string(self):
+        schema = {'foo': {'Type': 'String'}}
+        props = properties.Properties(schema, {'foo': ['foo', 'bar']})
+        ex = self.assertRaises(exception.StackValidationFailed, props.validate)
+        self.assertEqual('Property error : foo Value must be a string',
+                         six.text_type(ex))
+
+    def test_dict_instead_string(self):
+        schema = {'foo': {'Type': 'String'}}
+        props = properties.Properties(schema, {'foo': {'foo': 'bar'}})
+        ex = self.assertRaises(exception.StackValidationFailed, props.validate)
+        self.assertEqual('Property error : foo Value must be a string',
+                         six.text_type(ex))
 
     def test_none_string(self):
         schema = {'foo': {'Type': 'String'}}
@@ -1662,12 +1681,12 @@ class PropertiesValidationTest(testtools.TestCase):
             )
         }
         props = properties.Properties(schema, {})
-        self.assertEqual(props.props['foo_sup'].support_status().status,
-                         support.SUPPORTED)
-        self.assertEqual(props.props['bar_dep'].support_status().status,
-                         support.DEPRECATED)
-        self.assertEqual(props.props['bar_dep'].support_status().message,
-                         'Do not use this ever')
+        self.assertEqual(support.SUPPORTED,
+                         props.props['foo_sup'].support_status().status)
+        self.assertEqual(support.DEPRECATED,
+                         props.props['bar_dep'].support_status().status)
+        self.assertEqual('Do not use this ever',
+                         props.props['bar_dep'].support_status().message)
 
     def test_nested_properties_schema_invalid_property_in_list(self):
         child_schema = {'Key': {'Type': 'String',

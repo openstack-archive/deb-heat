@@ -17,6 +17,7 @@
 import six
 
 from heat.common.i18n import _
+from heat.common.i18n import _LW
 from heat.engine import attributes
 from heat.engine import properties
 from heat.engine import resource
@@ -289,6 +290,11 @@ class DockerContainer(resource.Resource):
 
     def check_create_complete(self, container_id):
         status = self._get_container_status(container_id)
+        exit_status = status.get('ExitCode')
+        if exit_status is not None and exit_status != 0:
+            logs = self.get_client().logs(self.resource_id)
+            raise resource.ResourceInError(resource_status=self.FAILED,
+                                           status_reason=logs)
         return status['Running']
 
     def handle_delete(self):
@@ -346,5 +352,5 @@ def available_resource_mapping():
     if DOCKER_INSTALLED:
         return resource_mapping()
     else:
-        LOG.warn(_("Docker plug-in loaded, but docker lib not installed."))
+        LOG.warn(_LW("Docker plug-in loaded, but docker lib not installed."))
         return {}

@@ -18,13 +18,12 @@ import six
 from heat.common import exception as heat_ex
 from heat.common import template_format
 from heat.engine.clients.os import nova
-from heat.engine.resources.nova_floatingip import NovaFloatingIp
-from heat.engine.resources.nova_floatingip import NovaFloatingIpAssociation
+from heat.engine.resources import nova_floatingip
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 from heat.tests import utils
-from heat.tests.v1_1 import fakes
+from heat.tests.v1_1 import fakes as fakes_v1_1
 
 
 floating_ip_template = '''
@@ -57,7 +56,7 @@ floating_ip_template_with_assoc = '''
 '''
 
 
-class NovaFloatingIPTest(HeatTestCase):
+class NovaFloatingIPTest(common.HeatTestCase):
 
     def setUp(self):
         super(NovaFloatingIPTest, self).setUp()
@@ -71,6 +70,8 @@ class NovaFloatingIPTest(HeatTestCase):
         self.m.StubOutWithMock(self.novaclient.servers, 'add_floating_ip')
         self.m.StubOutWithMock(self.novaclient.servers, 'remove_floating_ip')
         self.stub_keystoneclient()
+        nova.NovaClientPlugin.get_server = mock.Mock(
+            return_value=mock.MagicMock())
 
     def _make_obj(self, **kwargs):
         mock = self.m.CreateMockAnything()
@@ -92,7 +93,9 @@ class NovaFloatingIPTest(HeatTestCase):
         stack = utils.parse_stack(template)
         floating_ip = stack.t.resource_definitions(stack)['MyFloatingIP']
 
-        return NovaFloatingIp('MyFloatingIP', floating_ip, stack)
+        return nova_floatingip.NovaFloatingIp('MyFloatingIP',
+                                              floating_ip,
+                                              stack)
 
     def prepare_floating_ip_assoc(self):
         nova.NovaClientPlugin._create().AndReturn(
@@ -111,8 +114,8 @@ class NovaFloatingIPTest(HeatTestCase):
         resource_defns = stack.t.resource_definitions(stack)
         floating_ip_assoc = resource_defns['MyFloatingIPAssociation']
 
-        return NovaFloatingIpAssociation('MyFloatingIPAssociation',
-                                         floating_ip_assoc, stack)
+        return nova_floatingip.NovaFloatingIpAssociation(
+            'MyFloatingIPAssociation', floating_ip_assoc, stack)
 
     def test_floating_ip_create(self):
         rsrc = self.prepare_floating_ip()
@@ -146,7 +149,7 @@ class NovaFloatingIPTest(HeatTestCase):
     def test_delete_floating_ip_assoc_successful_if_create_failed(self):
         rsrc = self.prepare_floating_ip_assoc()
         self.novaclient.servers.add_floating_ip(None, '11.0.0.1').AndRaise(
-            fakes.fake_exception(400))
+            fakes_v1_1.fake_exception(400))
 
         self.m.ReplayAll()
 

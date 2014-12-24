@@ -21,6 +21,8 @@ from heat.engine.clients import client_plugin
 
 class SaharaClientPlugin(client_plugin.ClientPlugin):
 
+    exceptions_module = sahara_base
+
     def _create(self):
         con = self.context
         endpoint_type = self._get_client_option('sahara', 'endpoint_type')
@@ -43,3 +45,7 @@ class SaharaClientPlugin(client_plugin.ClientPlugin):
     def is_over_limit(self, ex):
         return (isinstance(ex, sahara_base.APIException) and
                 ex.error_code == 413)
+
+    def is_conflict(self, ex):
+        return (isinstance(ex, sahara_base.APIException) and
+                ex.error_code == 409)

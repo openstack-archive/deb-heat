@@ -20,14 +20,14 @@ from oslo.db.sqlalchemy import models
 from oslo.utils import timeutils
 import six
 import sqlalchemy
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.ext import declarative
 from sqlalchemy.orm import backref
 from sqlalchemy.orm import relationship
-from sqlalchemy.orm.session import Session
+from sqlalchemy.orm import session as orm_session
 
-from heat.db.sqlalchemy.types import Json
+from heat.db.sqlalchemy import types
 
-BASE = declarative_base()
+BASE = declarative.declarative_base()
 
 
 def get_session():
@@ -42,7 +42,7 @@ class HeatBase(models.ModelBase, models.TimestampMixin):
     def expire(self, session=None, attrs=None):
         """Expire this object ()."""
         if not session:
-            session = Session.object_session(self)
+            session = orm_session.Session.object_session(self)
             if not session:
                 session = get_session()
         session.expire(self, attrs)
@@ -50,7 +50,7 @@ class HeatBase(models.ModelBase, models.TimestampMixin):
     def refresh(self, session=None, attrs=None):
         """Refresh this object."""
         if not session:
-            session = Session.object_session(self)
+            session = orm_session.Session.object_session(self)
             if not session:
                 session = get_session()
         session.refresh(self, attrs)
@@ -58,7 +58,7 @@ class HeatBase(models.ModelBase, models.TimestampMixin):
     def delete(self, session=None):
         """Delete this object."""
         if not session:
-            session = Session.object_session(self)
+            session = orm_session.Session.object_session(self)
             if not session:
                 session = get_session()
         session.begin()
@@ -67,7 +67,7 @@ class HeatBase(models.ModelBase, models.TimestampMixin):
 
     def update_and_save(self, values, session=None):
         if not session:
-            session = Session.object_session(self)
+            session = orm_session.Session.object_session(self)
             if not session:
                 session = get_session()
         session.begin()
@@ -105,8 +105,8 @@ class RawTemplate(BASE, HeatBase):
 
     __tablename__ = 'raw_template'
     id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
-    template = sqlalchemy.Column(Json)
-    files = sqlalchemy.Column(Json)
+    template = sqlalchemy.Column(types.Json)
+    files = sqlalchemy.Column(types.Json)
 
 
 class Stack(BASE, HeatBase, SoftDelete, StateAware):
@@ -124,17 +124,17 @@ class Stack(BASE, HeatBase, SoftDelete, StateAware):
     raw_template = relationship(RawTemplate, backref=backref('stack'))
     username = sqlalchemy.Column(sqlalchemy.String(256))
     tenant = sqlalchemy.Column(sqlalchemy.String(256))
-    parameters = sqlalchemy.Column('parameters', Json)
+    parameters = sqlalchemy.Column('parameters', types.Json)
     user_creds_id = sqlalchemy.Column(
         sqlalchemy.Integer,
-        sqlalchemy.ForeignKey('user_creds.id'),
-        nullable=False)
+        sqlalchemy.ForeignKey('user_creds.id'))
     owner_id = sqlalchemy.Column(sqlalchemy.String(36), nullable=True)
     timeout = sqlalchemy.Column(sqlalchemy.Integer)
     disable_rollback = sqlalchemy.Column(sqlalchemy.Boolean, nullable=False)
     stack_user_project_id = sqlalchemy.Column(sqlalchemy.String(64),
                                               nullable=True)
     backup = sqlalchemy.Column('backup', sqlalchemy.Boolean)
+    nested_depth = sqlalchemy.Column('nested_depth', sqlalchemy.Integer)
 
     # Override timestamp column to store the correct value: it should be the
     # time the create/update call was issued, not the time the DB entry is
@@ -164,9 +164,10 @@ class UserCreds(BASE, HeatBase):
     id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
     username = sqlalchemy.Column(sqlalchemy.String(255))
     password = sqlalchemy.Column(sqlalchemy.String(255))
+    region_name = sqlalchemy.Column(sqlalchemy.String(255))
     decrypt_method = sqlalchemy.Column(sqlalchemy.String(64))
     tenant = sqlalchemy.Column(sqlalchemy.String(1024))
-    auth_url = sqlalchemy.Column(sqlalchemy.String)
+    auth_url = sqlalchemy.Column(sqlalchemy.Text)
     tenant_id = sqlalchemy.Column(sqlalchemy.String(256))
     trust_id = sqlalchemy.Column(sqlalchemy.String(255))
     trustor_user_id = sqlalchemy.Column(sqlalchemy.String(64))
@@ -215,7 +216,7 @@ class ResourceData(BASE, HeatBase):
                            primary_key=True,
                            nullable=False)
     key = sqlalchemy.Column('key', sqlalchemy.String(255))
-    value = sqlalchemy.Column('value', sqlalchemy.String)
+    value = sqlalchemy.Column('value', sqlalchemy.Text)
     redact = sqlalchemy.Column('redact', sqlalchemy.Boolean)
     decrypt_method = sqlalchemy.Column(sqlalchemy.String(64))
     resource_id = sqlalchemy.Column('resource_id',
@@ -235,7 +236,7 @@ class Resource(BASE, HeatBase, StateAware):
     name = sqlalchemy.Column('name', sqlalchemy.String(255), nullable=True)
     nova_instance = sqlalchemy.Column('nova_instance', sqlalchemy.String(255))
     # odd name as "metadata" is reserved
-    rsrc_metadata = sqlalchemy.Column('rsrc_metadata', Json)
+    rsrc_metadata = sqlalchemy.Column('rsrc_metadata', types.Json)
 
     stack_id = sqlalchemy.Column(sqlalchemy.String(36),
                                  sqlalchemy.ForeignKey('stack.id'),
@@ -249,7 +250,7 @@ class Resource(BASE, HeatBase, StateAware):
     # time the create/update call was issued, not the time the DB entry is
     # created/modified. (bug #1193269)
     updated_at = sqlalchemy.Column(sqlalchemy.DateTime)
-    properties_data = sqlalchemy.Column('properties_data', Json)
+    properties_data = sqlalchemy.Column('properties_data', types.Json)
 
 
 class WatchRule(BASE, HeatBase):
@@ -259,7 +260,7 @@ class WatchRule(BASE, HeatBase):
 
     id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
     name = sqlalchemy.Column('name', sqlalchemy.String(255), nullable=True)
-    rule = sqlalchemy.Column('rule', Json)
+    rule = sqlalchemy.Column('rule', types.Json)
     state = sqlalchemy.Column('state', sqlalchemy.String(255))
     last_evaluated = sqlalchemy.Column(sqlalchemy.DateTime,
                                        default=timeutils.utcnow)
@@ -276,7 +277,7 @@ class WatchData(BASE, HeatBase):
     __tablename__ = 'watch_data'
 
     id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
-    data = sqlalchemy.Column('data', Json)
+    data = sqlalchemy.Column('data', types.Json)
 
     watch_rule_id = sqlalchemy.Column(
         sqlalchemy.Integer,
@@ -298,9 +299,9 @@ class SoftwareConfig(BASE, HeatBase):
     name = sqlalchemy.Column('name', sqlalchemy.String(255),
                              nullable=True)
     group = sqlalchemy.Column('group', sqlalchemy.String(255))
-    config = sqlalchemy.Column('config', Json)
+    config = sqlalchemy.Column('config', types.Json)
     tenant = sqlalchemy.Column(
-        'tenant', sqlalchemy.String(64), nullable=False)
+        'tenant', sqlalchemy.String(64), nullable=False, index=True)
 
 
 class SoftwareDeployment(BASE, HeatBase, StateAware):
@@ -310,6 +311,8 @@ class SoftwareDeployment(BASE, HeatBase, StateAware):
     """
 
     __tablename__ = 'software_deployment'
+    __table_args__ = (
+        sqlalchemy.Index('ix_software_deployment_created_at', 'created_at'),)
 
     id = sqlalchemy.Column('id', sqlalchemy.String(36), primary_key=True,
                            default=lambda: str(uuid.uuid4()))
@@ -320,11 +323,11 @@ class SoftwareDeployment(BASE, HeatBase, StateAware):
         nullable=False)
     config = relationship(SoftwareConfig, backref=backref('deployments'))
     server_id = sqlalchemy.Column('server_id', sqlalchemy.String(36),
-                                  nullable=False)
-    input_values = sqlalchemy.Column('input_values', Json)
-    output_values = sqlalchemy.Column('output_values', Json)
+                                  nullable=False, index=True)
+    input_values = sqlalchemy.Column('input_values', types.Json)
+    output_values = sqlalchemy.Column('output_values', types.Json)
     tenant = sqlalchemy.Column(
-        'tenant', sqlalchemy.String(64), nullable=False)
+        'tenant', sqlalchemy.String(64), nullable=False, index=True)
     stack_user_project_id = sqlalchemy.Column(sqlalchemy.String(64),
                                               nullable=True)
 
@@ -339,9 +342,9 @@ class Snapshot(BASE, HeatBase):
                                  sqlalchemy.ForeignKey('stack.id'),
                                  nullable=False)
     name = sqlalchemy.Column('name', sqlalchemy.String(255), nullable=True)
-    data = sqlalchemy.Column('data', Json)
+    data = sqlalchemy.Column('data', types.Json)
     tenant = sqlalchemy.Column(
-        'tenant', sqlalchemy.String(64), nullable=False)
+        'tenant', sqlalchemy.String(64), nullable=False, index=True)
     status = sqlalchemy.Column('status', sqlalchemy.String(255))
     status_reason = sqlalchemy.Column('status_reason', sqlalchemy.String(255))
     stack = relationship(Stack, backref=backref('snapshot'))

@@ -25,36 +25,43 @@ import testscenarios
 import testtools
 
 from heat.common import messaging
+from heat.engine.clients.os import cinder
 from heat.engine.clients.os import glance
 from heat.engine.clients.os import keystone
+from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import resources
-from heat.engine.resources import nova_keypair
 from heat.engine import scheduler
-from heat.engine import stack
 from heat.tests import fakes
 from heat.tests import utils
 
 
-TEST_DEFAULT_LOGLEVELS = {'migrate': logging.WARN}
+TEST_DEFAULT_LOGLEVELS = {'migrate': logging.WARN,
+                          'sqlalchemy': logging.WARN}
+_LOG_FORMAT = "%(levelname)8s [%(name)s] %(message)s"
+_TRUE_VALUES = ('True', 'true', '1', 'yes')
 
 
 class FakeLogMixin(object):
     def setup_logging(self):
         # Assign default logs to self.LOG so we can still
         # assert on heat logs.
+        default_level = logging.INFO
+        if os.environ.get('OS_DEBUG') in _TRUE_VALUES:
+            default_level = logging.DEBUG
+
         self.LOG = self.useFixture(
-            fixtures.FakeLogger(level=logging.DEBUG))
+            fixtures.FakeLogger(level=default_level, format=_LOG_FORMAT))
         base_list = set([nlog.split('.')[0]
                          for nlog in logging.Logger.manager.loggerDict])
         for base in base_list:
             if base in TEST_DEFAULT_LOGLEVELS:
                 self.useFixture(fixtures.FakeLogger(
                     level=TEST_DEFAULT_LOGLEVELS[base],
-                    name=base))
+                    name=base, format=_LOG_FORMAT))
             elif base != 'heat':
                 self.useFixture(fixtures.FakeLogger(
-                    name=base))
+                    name=base, format=_LOG_FORMAT))
 
 
 class HeatTestCase(testscenarios.WithScenarios,
@@ -83,6 +90,7 @@ class HeatTestCase(testscenarios.WithScenarios,
                                'environment.d')
 
         cfg.CONF.set_default('environment_dir', env_dir)
+        cfg.CONF.set_override('error_wait_time', None)
         self.addCleanup(cfg.CONF.reset)
 
         messaging.setup("fake://", optional=True)
@@ -104,14 +112,6 @@ class HeatTestCase(testscenarios.WithScenarios,
 
         utils.setup_dummy_db()
         self.addCleanup(utils.reset_dummy_db)
-
-        cached_wait_time = stack.ERROR_WAIT_TIME
-        stack.ERROR_WAIT_TIME = None
-
-        def replace_wait_time():
-            stack.ERROR_WAIT_TIME = cached_wait_time
-
-        self.addCleanup(replace_wait_time)
 
     def stub_wallclock(self):
         """
@@ -144,8 +144,8 @@ class HeatTestCase(testscenarios.WithScenarios,
         return fkc
 
     def stub_KeypairConstraint_validate(self):
-        self.m.StubOutWithMock(nova_keypair.KeypairConstraint, 'validate')
-        nova_keypair.KeypairConstraint.validate(
+        self.m.StubOutWithMock(nova.KeypairConstraint, 'validate')
+        nova.KeypairConstraint.validate(
             mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
 
     def stub_ImageConstraint_validate(self, num=None):
@@ -158,3 +158,23 @@ class HeatTestCase(testscenarios.WithScenarios,
             for x in range(num):
                 glance.ImageConstraint.validate(
                     mox.IgnoreArg(), mox.IgnoreArg()).AndReturn(True)
+
+    def stub_FlavorConstraint_validate(self):
+        self.m.StubOutWithMock(nova.FlavorConstraint, 'validate')
+        nova.FlavorConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+
+    def stub_VolumeConstraint_validate(self):
+        self.m.StubOutWithMock(cinder.VolumeConstraint, 'validate')
+        cinder.VolumeConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+
+    def stub_SnapshotConstraint_validate(self):
+        self.m.StubOutWithMock(cinder.VolumeSnapshotConstraint, 'validate')
+        cinder.VolumeSnapshotConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+
+    def stub_VolumeTypeConstraint_validate(self):
+        self.m.StubOutWithMock(cinder.VolumeTypeConstraint, 'validate')
+        cinder.VolumeTypeConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)

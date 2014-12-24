@@ -15,6 +15,7 @@
 
 import copy
 
+from heat.common.i18n import _
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
@@ -327,6 +328,9 @@ class Group(resource.Resource):
         asclient = self.auto_scale()
         group = asclient.create(**self._get_create_args())
         self.resource_id_set(str(group.id))
+
+    def handle_check(self):
+        self.auto_scale().get(self.resource_id)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         """Update the group configuration and the launch configuration."""

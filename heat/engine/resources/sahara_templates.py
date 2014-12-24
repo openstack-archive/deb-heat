@@ -15,9 +15,11 @@
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LI
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
+from heat.engine import support
 from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
@@ -30,13 +32,19 @@ SAHARA_NAME_REGEX = (r"^(([a-zA-Z]|[a-zA-Z][a-zA-Z0-9\-]"
 
 class SaharaNodeGroupTemplate(resource.Resource):
 
+    support_status = support.SupportStatus(version='2014.2')
+
     PROPERTIES = (
-        NAME, PLUGIN_NAME, HADOOP_VERSION, FLAVOR,
-        DESCRIPTION, VOLUMES_PER_NODE, VOLUMES_SIZE,
+        NAME, PLUGIN_NAME, HADOOP_VERSION, FLAVOR, DESCRIPTION,
+        VOLUMES_PER_NODE, VOLUMES_SIZE, VOLUME_TYPE,
+        SECURITY_GROUPS, AUTO_SECURITY_GROUP,
+        AVAILABILITY_ZONE, VOLUMES_AVAILABILITY_ZONE,
         NODE_PROCESSES, FLOATING_IP_POOL, NODE_CONFIGS,
     ) = (
-        'name', 'plugin_name', 'hadoop_version', 'flavor',
-        'description', 'volumes_per_node', 'volumes_size',
+        'name', 'plugin_name', 'hadoop_version', 'flavor', 'description',
+        'volumes_per_node', 'volumes_size', 'volume_type',
+        'security_groups', 'auto_security_group',
+        'availability_zone', 'volumes_availability_zone',
         'node_processes', 'floating_ip_pool', 'node_configs',
     )
 
@@ -83,6 +91,34 @@ class SaharaNodeGroupTemplate(resource.Resource):
                 constraints.Range(min=1),
             ],
         ),
+        VOLUME_TYPE: properties.Schema(
+            properties.Schema.STRING,
+            _("Type of the volume to create on Cinder backend."),
+            constraints=[
+                constraints.CustomConstraint('cinder.vtype')
+            ]
+        ),
+        SECURITY_GROUPS: properties.Schema(
+            properties.Schema.LIST,
+            _("List of security group names or IDs to assign to this "
+              "Node Group template."),
+            schema=properties.Schema(
+                properties.Schema.STRING,
+            ),
+        ),
+        AUTO_SECURITY_GROUP: properties.Schema(
+            properties.Schema.BOOLEAN,
+            _("Defines whether auto-assign security group to this "
+              "Node Group template."),
+        ),
+        AVAILABILITY_ZONE: properties.Schema(
+            properties.Schema.STRING,
+            _("Availability zone to create servers in."),
+        ),
+        VOLUMES_AVAILABILITY_ZONE: properties.Schema(
+            properties.Schema.STRING,
+            _("Availability zone to create volumes in."),
+        ),
         NODE_PROCESSES: properties.Schema(
             properties.Schema.LIST,
             _("List of processes to run on every node."),
@@ -126,7 +162,12 @@ class SaharaNodeGroupTemplate(resource.Resource):
             self.properties[self.FLAVOR])
         volumes_per_node = self.properties.get(self.VOLUMES_PER_NODE)
         volumes_size = self.properties.get(self.VOLUMES_SIZE)
+        volume_type = self.properties.get(self.VOLUME_TYPE)
         floating_ip_pool = self.properties.get(self.FLOATING_IP_POOL)
+        security_groups = self.properties[self.SECURITY_GROUPS]
+        auto_security_group = self.properties[self.AUTO_SECURITY_GROUP]
+        availability_zone = self.properties[self.AVAILABILITY_ZONE]
+        vol_availability_sone = self.properties[self.VOLUMES_AVAILABILITY_ZONE]
         if floating_ip_pool:
             floating_ip_pool = self.client_plugin(
                 'neutron').find_neutron_resource(self.properties,
@@ -140,11 +181,17 @@ class SaharaNodeGroupTemplate(resource.Resource):
             description=description,
             volumes_per_node=volumes_per_node,
             volumes_size=volumes_size,
+            volume_type=volume_type,
             node_processes=node_processes,
             floating_ip_pool=floating_ip_pool,
-            node_configs=node_configs)
-        LOG.info(_("Node Group Template '%s' has been created"
-                   ) % node_group_template.name)
+            node_configs=node_configs,
+            security_groups=security_groups,
+            auto_security_group=auto_security_group,
+            availability_zone=availability_zone,
+            volumes_availability_zone=vol_availability_sone
+        )
+        LOG.info(_LI("Node Group Template '%s' has been created"),
+                 node_group_template.name)
         self.resource_id_set(node_group_template.id)
         return self.resource_id
 
@@ -156,8 +203,8 @@ class SaharaNodeGroupTemplate(resource.Resource):
                 self.resource_id)
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
-        LOG.info(_("Node Group Template '%s' has been deleted."
-                   ) % self._ngt_name())
+        LOG.info(_LI("Node Group Template '%s' has been deleted."),
+                 self._ngt_name())
 
     def validate(self):
         res = super(SaharaNodeGroupTemplate, self).validate()
@@ -171,6 +218,8 @@ class SaharaNodeGroupTemplate(resource.Resource):
 
 
 class SaharaClusterTemplate(resource.Resource):
+
+    support_status = support.SupportStatus(version='2014.2')
 
     PROPERTIES = (
         NAME, PLUGIN_NAME, HADOOP_VERSION, DESCRIPTION,
@@ -299,8 +348,8 @@ class SaharaClusterTemplate(resource.Resource):
             cluster_configs=cluster_configs,
             node_groups=node_groups
         )
-        LOG.info(_("Cluster Template '%s' has been created"
-                   ) % cluster_template.name)
+        LOG.info(_LI("Cluster Template '%s' has been created"),
+                 cluster_template.name)
         self.resource_id_set(cluster_template.id)
         return self.resource_id
 
@@ -312,8 +361,8 @@ class SaharaClusterTemplate(resource.Resource):
                 self.resource_id)
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
-        LOG.info(_("Cluster Template '%s' has been deleted."
-                   ) % self._cluster_template_name())
+        LOG.info(_LI("Cluster Template '%s' has been deleted."),
+                 self._cluster_template_name())
 
     def validate(self):
         res = super(SaharaClusterTemplate, self).validate()

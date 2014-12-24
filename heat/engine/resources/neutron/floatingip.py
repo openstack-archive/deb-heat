@@ -10,7 +10,9 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+import six
 
+from heat.common.i18n import _
 from heat.engine import attributes
 from heat.engine import properties
 from heat.engine.resources.neutron import neutron
@@ -130,10 +132,24 @@ class FloatingIP(neutron.NeutronResource):
                 interface_subnet = (
                     resource.properties.get(router.RouterInterface.SUBNET) or
                     resource.properties.get(router.RouterInterface.SUBNET_ID))
-                for d in deps.graph(self):
+                for d in deps.graph()[self]:
                     if port_on_subnet(d, interface_subnet):
                         deps += (self, resource)
                         break
+            # depend on Router with EXTERNAL_GATEWAY_NETWORK property
+            # this template with the same network_id as this
+            # floating_network_id
+            elif resource.has_interface('OS::Neutron::Router'):
+                gateway = resource.properties.get(
+                    router.Router.EXTERNAL_GATEWAY)
+                if gateway:
+                    gateway_network = gateway.get(
+                        router.Router.EXTERNAL_GATEWAY_NETWORK)
+                    floating_network = self.properties.get(
+                        self.FLOATING_NETWORK) or self.properties.get(
+                            self.FLOATING_NETWORK_ID)
+                    if gateway_network == floating_network:
+                        deps += (self, resource)
 
     def validate(self):
         super(FloatingIP, self).validate()
@@ -206,6 +222,32 @@ class FloatingIPAssociation(neutron.NeutronResource):
             update_allowed=True
         ),
     }
+
+    def add_dependencies(self, deps):
+        super(FloatingIPAssociation, self).add_dependencies(deps)
+
+        for resource in six.itervalues(self.stack):
+            if resource.has_interface('OS::Neutron::RouterInterface'):
+
+                def port_on_subnet(resource, subnet):
+                    if not resource.has_interface('OS::Neutron::Port'):
+                        return False
+                    for fixed_ip in resource.properties.get(
+                            port.Port.FIXED_IPS):
+
+                        port_subnet = (
+                            fixed_ip.get(port.Port.FIXED_IP_SUBNET)
+                            or fixed_ip.get(port.Port.FIXED_IP_SUBNET_ID))
+                        return subnet == port_subnet
+                    return False
+
+                interface_subnet = (
+                    resource.properties.get(router.RouterInterface.SUBNET) or
+                    resource.properties.get(router.RouterInterface.SUBNET_ID))
+                for d in deps.graph()[self]:
+                    if port_on_subnet(d, interface_subnet):
+                        deps += (self, resource)
+                        break
 
     def handle_create(self):
         props = self.prepare_properties(self.properties, self.name)

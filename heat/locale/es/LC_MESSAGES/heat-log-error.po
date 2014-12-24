@@ -8,8 +8,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Heat\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2014-09-25 06:13+0000\n"
-"PO-Revision-Date: 2014-09-13 23:49+0000\n"
+"POT-Creation-Date: 2014-12-18 06:04+0000\n"
+"PO-Revision-Date: 2014-12-17 02:38+0000\n"
 "Last-Translator: openstackjenkins <jenkins@openstack.org>\n"
 "Language-Team: Spanish (http://www.transifex.com/projects/p/heat/language/"
 "es/)\n"
@@ -20,118 +20,236 @@ msgstr ""
 "Generated-By: Babel 1.3\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-#: heat/api/aws/ec2token.py:162
+#: heat/api/aws/ec2token.py:161
 msgid "Ec2Token authorization failed, no auth_uri specified in config file"
 msgstr ""
 "Ec2Token autorización ha fallado, ningún auth_uri especificado en el archivo "
 "de configuración"
 
-#: heat/api/aws/utils.py:105
+#: heat/api/aws/utils.py:98
 #, python-format
 msgid "Request does not contain %s parameter!"
 msgstr "Solicitud no contiene parámetro %s!"
 
-#: heat/api/cloudwatch/watch.py:274
+#: heat/api/cloudwatch/watch.py:253
 msgid "Request does not contain required MetricData"
 msgstr "Solicitud no contiene el requisito MetricData"
 
-#: heat/common/heat_keystoneclient.py:134
+#: heat/common/exception.py:116
+msgid "Exception in string format operation"
+msgstr "Excepción en la operación de formato de cadena"
+
+#: heat/common/heat_keystoneclient.py:135
 msgid "Admin client authentication failed"
 msgstr "Ha fallado la autenticación del cliente de administración"
 
-#: heat/common/heat_keystoneclient.py:154
+#: heat/common/heat_keystoneclient.py:156
 msgid "Domain admin client authentication failed"
 msgstr ""
 
-#: heat/common/heat_keystoneclient.py:184
+#: heat/common/heat_keystoneclient.py:186
 msgid "Unknown version in auth_token_info"
 msgstr ""
 
-#: heat/common/heat_keystoneclient.py:195
+#: heat/common/heat_keystoneclient.py:197
 msgid "Keystone v3 API connection failed, no password trust or auth_token!"
 msgstr ""
 
-#: heat/common/heat_keystoneclient.py:211
+#: heat/common/heat_keystoneclient.py:209
+msgid "Keystone client authentication failed"
+msgstr ""
+
+#: heat/common/heat_keystoneclient.py:217
 msgid "trust token re-scoping failed!"
 msgstr ""
 
-#: heat/common/heat_keystoneclient.py:215
+#: heat/common/heat_keystoneclient.py:221
 msgid "Trust impersonation failed"
 msgstr ""
 
-#: heat/common/heat_keystoneclient.py:338
-#: heat/common/heat_keystoneclient.py:425
+#: heat/common/heat_keystoneclient.py:364
+#: heat/common/heat_keystoneclient.py:451
 #, python-format
 msgid "Failed to add user %(user)s to role %(role)s, check role exists!"
 msgstr ""
 
-#: heat/common/lifecycle_plugin_utils.py:43
+#: heat/common/lifecycle_plugin_utils.py:44
 msgid "failed to get lifecycle plug point classes"
 msgstr "fallo a obtener clases de punto de conexión de ciclo de vida "
 
-#: heat/common/lifecycle_plugin_utils.py:50
+#: heat/common/lifecycle_plugin_utils.py:51
 #, python-format
 msgid "failed to instantiate stack lifecycle class %s"
 msgstr "fallo al instanciar clase de ciclo de vida de la pila %s"
 
-#: heat/common/lifecycle_plugin_utils.py:55
+#: heat/common/lifecycle_plugin_utils.py:56
 msgid "failed to sort lifecycle plug point classes"
 msgstr ""
 "ha ocurrido un error al ordenar las clases del punto de conexión de ciclo de "
 "vida"
 
-#: heat/common/lifecycle_plugin_utils.py:108
+#: heat/common/lifecycle_plugin_utils.py:109
 #, python-format
 msgid "%(opname) %(ci)s failed for %(a)s on %(sid)s"
 msgstr "%(opname) %(ci)s fallo por %(a)s en %(sid)s"
 
-#: heat/common/plugin_loader.py:97
+#: heat/common/plugin_loader.py:99
 #, python-format
 msgid "Failed to import module %s"
 msgstr "No se ha podido importar el modulo %s"
 
-#: heat/openstack/common/excutils.py:76
-#, python-format
-msgid "Original exception being dropped: %s"
-msgstr "Se está descartando excepción original: %s"
+#: heat/common/wsgi.py:266
+msgid "SIGTERM received"
+msgstr "Se ha recibido SIGTERM"
 
-#: heat/openstack/common/excutils.py:105
-#, python-format
-msgid "Unexpected exception occurred %d time(s)... retrying."
-msgstr "La excepción inesperada ha ocurrido %d vez(veces)... reintentando."
+#: heat/common/wsgi.py:275
+msgid "SIGHUP received"
+msgstr ""
 
-#: heat/openstack/common/lockutils.py:120
+#: heat/common/wsgi.py:303
 #, python-format
-msgid "Could not release the acquired lock `%s`"
-msgstr "No se ha podido liberar el bloqueo adquirido `%s`"
+msgid "Removing dead child %s"
+msgstr "Eliminando hijo muerto %s"
 
-#: heat/openstack/common/loopingcall.py:89
+#: heat/common/wsgi.py:639
+#, python-format
+msgid "Exception handling resource: %s"
+msgstr "Excepción al manejar recurso: %s"
+
+#: heat/common/wsgi.py:661
+#, python-format
+msgid "Returning %(code)s to user: %(explanation)s"
+msgstr "Devolviendo %(code)s al usuario: %(explanation)s"
+
+#: heat/common/wsgi.py:735
+#, python-format
+msgid "Unexpected error occurred serving API: %s"
+msgstr "Error inesperado ha ocurrido sirviendo API: %s"
+
+#: heat/engine/api.py:41
+msgid "Timeout conversion failed"
+msgstr ""
+
+#: heat/engine/api.py:298
+msgid "Unexpected number of keys in watch_data.data!"
+msgstr ""
+
+#: heat/engine/environment.py:470
+#, python-format
+msgid "Failed to read %s"
+msgstr "Ha fallado leer %s"
+
+#: heat/engine/environment.py:482
+#, python-format
+msgid "Failed to parse %(file_path)s"
+msgstr ""
+
+#: heat/engine/environment.py:486
+#, python-format
+msgid "Failed to read %(file_path)s"
+msgstr ""
+
+#: heat/engine/plugin_manager.py:97
+#, python-format
+msgid "Failed to load %(mapping_name)s from %(module)s"
+msgstr ""
+
+#: heat/engine/plugin_manager.py:104
+#, python-format
+msgid "Invalid type for %(mapping_name)s from %(module)s"
+msgstr ""
+
+#: heat/engine/resource.py:481
+msgid "Error marking resource as failed"
+msgstr ""
+
+#: heat/engine/resource.py:934 heat/engine/resource.py:961
+#, python-format
+msgid "DB error %s"
+msgstr "Error de base de datos %s"
+
+#: heat/engine/resource.py:1085
+#, python-format
+msgid "signal %(name)s : %(msg)s"
+msgstr "señal %(name)s : %(msg)s"
+
+#: heat/engine/service.py:260
+#, python-format
+msgid "Unable to retrieve stack %s for periodic task"
+msgstr "No ha sido posible obtener la pila %s para tareas periódicas"
+
+#: heat/engine/service.py:1389
+msgid "Filtering by namespace/metric not yet supported"
+msgstr ""
+
+#: heat/engine/stack.py:728
+#, python-format
+msgid "Unexpected action %s passed to update!"
+msgstr ""
+
+#: heat/engine/stack.py:946
+#, python-format
+msgid "Unexpected action %s passed to delete!"
+msgstr ""
+
+#: heat/engine/stack.py:1130
+#, python-format
+msgid "Resource %(name)s delete failed: %(ex)s"
+msgstr ""
+
+#: heat/engine/stack.py:1139
+#, python-format
+msgid "Resource %(name)s create failed: %(ex)s"
+msgstr ""
+
+#: heat/engine/resources/eip.py:114
+msgid ""
+"No default floating IP pool configured. Set 'default_floating_pool' in nova."
+"conf."
+msgstr ""
+
+#: heat/engine/resources/eip.py:330 heat/engine/resources/eip.py:353
+msgid "Port not specified."
+msgstr ""
+
+#: heat/engine/resources/nova_floatingip.py:77
+msgid ""
+"Could not allocate floating IP. Probably there is no default floating IP "
+"pool is configured."
+msgstr ""
+
+#: heat/engine/resources/remote_stack.py:149
+#, python-format
+msgid "exception: %s"
+msgstr ""
+
+#: heat/engine/resources/wait_condition.py:83
+#, python-format
+msgid "Metadata failed validation for %s"
+msgstr ""
+
+#: heat/engine/resources/aws/autoscaling_group.py:293
+msgid "Failed sending error notification"
+msgstr ""
+
+#: heat/openstack/common/loopingcall.py:95
 msgid "in fixed duration looping call"
 msgstr "en llamada en bucle de duración fija"
 
-#: heat/openstack/common/loopingcall.py:131
+#: heat/openstack/common/loopingcall.py:138
 msgid "in dynamic looping call"
 msgstr "en llamada en bucle dinámica"
 
-#: heat/openstack/common/policy.py:507
+#: heat/openstack/common/policy.py:563 heat/openstack/common/policy.py:843
 #, python-format
 msgid "Failed to understand rule %s"
 msgstr "Ha ocurrido un error al interpretar la regla %s"
 
-#: heat/openstack/common/policy.py:517
+#: heat/openstack/common/policy.py:573
 #, python-format
 msgid "No handler for matches of kind %s"
 msgstr "No hay manejador para coincidencias de clase %s"
 
-#: heat/openstack/common/policy.py:787
-#, python-format
-msgid "Failed to understand rule %r"
-msgstr "Ha ocurrido un error al interpretar la regla %r"
-
-#: heat/openstack/common/service.py:188
-msgid "Exception during rpc cleanup."
-msgstr "Excepción durante limpieza de rpc."
-
-#: heat/openstack/common/service.py:277
+#: heat/openstack/common/service.py:269
 msgid "Unhandled exception"
 msgstr "Excepción no controlada"

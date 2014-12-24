@@ -16,7 +16,9 @@ from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
+from heat.engine import support
 from heat.openstack.common import log as logging
+from heat.rpc import api as rpc_api
 
 LOG = logging.getLogger(__name__)
 
@@ -42,6 +44,8 @@ class SoftwareConfig(resource.Resource):
     produce. Inputs and outputs are optional and will map to concepts which
     are specific to the configuration tool being used.
     '''
+
+    support_status = support.SupportStatus(version='2014.1')
 
     PROPERTIES = (
         GROUP, CONFIG, OPTIONS, INPUTS, OUTPUTS
@@ -149,14 +153,12 @@ class SoftwareConfig(resource.Resource):
         ),
     }
 
-    default_client_name = 'heat'
-
     def handle_create(self):
         props = dict(self.properties)
         props[self.NAME] = self.physical_resource_name()
 
-        sc = self.heat().software_configs.create(**props)
-        self.resource_id_set(sc.id)
+        sc = self.rpc_client().create_software_config(self.context, **props)
+        self.resource_id_set(sc[rpc_api.SOFTWARE_CONFIG_ID])
 
     def handle_delete(self):
 
@@ -164,9 +166,10 @@ class SoftwareConfig(resource.Resource):
             return
 
         try:
-            self.heat().software_configs.delete(self.resource_id)
+            self.rpc_client().delete_software_config(
+                self.context, self.resource_id)
         except Exception as ex:
-            self.client_plugin().ignore_not_found(ex)
+            self.rpc_client().ignore_error_named(ex, 'NotFound')
 
     def _resolve_attribute(self, name):
         '''
@@ -175,11 +178,11 @@ class SoftwareConfig(resource.Resource):
         '''
         if name == self.CONFIG_ATTR and self.resource_id:
             try:
-                return self.heat().software_configs.get(
-                    self.resource_id).config
+                sc = self.rpc_client().show_software_config(
+                    self.context, self.resource_id)
+                return sc[rpc_api.SOFTWARE_CONFIG_CONFIG]
             except Exception as ex:
-                if self.client_plugin().is_not_found(ex):
-                    return None
+                self.rpc_client().ignore_error_named(ex, 'NotFound')
 
 
 def resource_mapping():

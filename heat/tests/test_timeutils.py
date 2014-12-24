@@ -14,10 +14,10 @@
 from testtools import matchers
 
 from heat.common import timeutils as util
-from heat.tests.common import HeatTestCase
+from heat.tests import common
 
 
-class ISO8601UtilityTest(HeatTestCase):
+class ISO8601UtilityTest(common.HeatTestCase):
 
     def setUp(self):
         super(ISO8601UtilityTest, self).setUp()
@@ -46,7 +46,7 @@ class ISO8601UtilityTest(HeatTestCase):
         self.assertRaises(ValueError, util.parse_isoduration, 'ABCDEFGH')
 
 
-class RetryBackoffExponentialTest(HeatTestCase):
+class RetryBackoffExponentialTest(common.HeatTestCase):
 
     scenarios = [(
         '0_0',
@@ -102,10 +102,10 @@ class RetryBackoffExponentialTest(HeatTestCase):
     def test_backoff_delay(self):
         delay = util.retry_backoff_delay(
             self.attempt, self.scale_factor)
-        self.assertEqual(delay, self.delay)
+        self.assertEqual(self.delay, delay)
 
 
-class RetryBackoffJitterTest(HeatTestCase):
+class RetryBackoffJitterTest(common.HeatTestCase):
 
     scenarios = [(
         '0_0_1',
