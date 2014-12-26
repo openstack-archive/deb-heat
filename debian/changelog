@@ -3,6 +3,7 @@ heat (2015.1~b1-1) UNRELEASED; urgency=medium
   * New upstream release.
   * Reviewed (build-)depends for this release.
   * Build the heat.conf.sample on the fly at build time.
+  * Refreshed allow-route-2.0.patch.
 
  -- Thomas Goirand <zigo@debian.org>  Wed, 24 Dec 2014 17:45:14 +0800
 
