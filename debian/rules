@@ -33,7 +33,10 @@ override_dh_clean:
 	rm -f debian/*.init debian/*.service debian/*.upstart
 
 override_dh_install:
+	# Generate the configuration sample file
 	PYTHONPATH=. bash tools/config/generate_sample.sh -b . -p heat -o etc/heat
+	# Fix the default db connection to use SQLite
+	sed -i 's|^[# \t]*connection[\t #]*=.*|connection=sqlite:////var/lib/heat/heatdb|' etc/heat/heat.conf.sample
 
 	dh_install --fail-missing -Xbin/cinder-keystone-setup
 	install -D -m 0640 etc/heat/heat.conf.sample $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
