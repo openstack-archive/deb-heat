@@ -1,0 +1,28 @@
+From: Tetiana Lashchova <tlashchova@mirantis.com>
+Date: Fri, 19 Dec 2014 14:19:55 +0000 (+0200)
+Subject: Remove gettextutils import
+X-Git-Url: https://review.openstack.org/gitweb?p=openstack%2Fheat.git;a=commitdiff_plain;h=213ed63a240e04cdbf757a7379a69b47452113b6
+
+Remove gettextutils import
+
+Change-Id: I48846926cc5eb2a1f81db6a2becb310bdf61daa7
+Closes-Bug: #1404206
+---
+
+diff --git a/heat/openstack/common/config/generator.py b/heat/openstack/common/config/generator.py
+index 43113b3..0bf9849 100644
+--- a/heat/openstack/common/config/generator.py
++++ b/heat/openstack/common/config/generator.py
+@@ -31,12 +31,9 @@ from oslo.config import cfg
+ import six
+ import stevedore.named
+ 
+-from heat.openstack.common import gettextutils
+ from heat.common import i18n
+ from heat.openstack.common import importutils
+ 
+-gettextutils.install('heat')
+-
+ STROPT = "StrOpt"
+ BOOLOPT = "BoolOpt"
+ INTOPT = "IntOpt"
