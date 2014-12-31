@@ -1,13 +1,11 @@
-From: Tetiana Lashchova <tlashchova@mirantis.com>
+Description: Remove gettextutils import
+Author: Tetiana Lashchova <tlashchova@mirantis.com>
 Date: Fri, 19 Dec 2014 14:19:55 +0000 (+0200)
-Subject: Remove gettextutils import
 X-Git-Url: https://review.openstack.org/gitweb?p=openstack%2Fheat.git;a=commitdiff_plain;h=213ed63a240e04cdbf757a7379a69b47452113b6
-
-Remove gettextutils import
-
 Change-Id: I48846926cc5eb2a1f81db6a2becb310bdf61daa7
-Closes-Bug: #1404206
----
+Bug-Ubuntu: https://bugs.launchpad.net/heat/+bug/1404206
+Origin: Upstream, https://review.openstack.org/#/c/143096/
+Last-Update: 2014-12-31
 
 diff --git a/heat/openstack/common/config/generator.py b/heat/openstack/common/config/generator.py
 index 43113b3..0bf9849 100644
