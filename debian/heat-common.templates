@@ -80,7 +80,7 @@ _Description: Name of the region to register:
 
 Template: heat/configure_db
 Type: boolean
-Default: true
+Default: false
 _Description: Set up a database for heat-common?
  No database has been set up for heat-common to use. Before
  continuing, you should make sure you have the following information:
