@@ -1,6 +1,8 @@
 heat (2014.1.3-5) unstable; urgency=medium
 
   * Sets heat/configure_db to false by default.
+  * Only calls pkgos_dbc_postinst and su heat -c "heat-manage db_sync" if
+    heat/configure_db is set to true.
 
  -- Thomas Goirand <zigo@debian.org>  Thu, 08 Jan 2015 16:28:44 +0000
 
