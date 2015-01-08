@@ -19,15 +19,22 @@ if [ "$1" = "configure" ] || [ "$1" = "reconfigure" ] ; then
 	chown heat:heat /var/lib/heat /etc/heat
         pkgos_write_new_conf heat heat.conf
 
-	pkgos_dbc_postinst ${CONF} database connection heat $@
+	db_get glance/configure_db
+	if [ "$RET" = "true" ] ; then
+		pkgos_dbc_postinst ${CONF} database connection heat $@
+	fi
 	pkgos_rabbit_write_conf ${CONF} DEFAULT heat
         pkgos_write_admin_creds ${CONF} keystone_authtoken heat
 	pkgos_register_endpoint_postinst heat heat orchestration "Heat Orchestration API" 8004 /v1/'%(tenant_id)s'
 	# This is the equivalent of db-sync:
-	su heat -c "heat-manage db_sync"
+	db_get glance/configure_db
+	if [ "$RET" = "true" ] ; then
+		su heat -c "heat-manage db_sync"
+	fi
 
         chown -R heat:adm /var/log/heat
         chmod 0750 /var/log/heat
+	db_stop
 fi
 
 #DEBHELPER#
