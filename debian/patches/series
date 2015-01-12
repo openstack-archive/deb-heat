@@ -1,1 +1,2 @@
 fix-default-db.patch
+remove-the-use-of-ssl.PROTOCOL_SSLv3.patch

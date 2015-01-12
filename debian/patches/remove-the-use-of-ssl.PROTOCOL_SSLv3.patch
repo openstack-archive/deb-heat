@@ -1,0 +1,19 @@
+Description: Remove the use of ssl.PROTOCOL_SSLv23
+ The ssl.PROTOCOL_SSLv23 object cannot be used in Debian anymore, this patch
+ removes it from heat/openstack/common/sslutils.py.
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: not-needed
+Last-Update: 2014-01-13
+
+--- heat-2014.1.3.orig/heat/openstack/common/sslutils.py
++++ heat-2014.1.3/heat/openstack/common/sslutils.py
+@@ -80,8 +80,7 @@ def wrap(sock):
+ 
+ _SSL_PROTOCOLS = {
+     "tlsv1": ssl.PROTOCOL_TLSv1,
+-    "sslv23": ssl.PROTOCOL_SSLv23,
+-    "sslv3": ssl.PROTOCOL_SSLv3
++    "sslv23": ssl.PROTOCOL_SSLv23
+ }
+ 
+ try:

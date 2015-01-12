@@ -1,3 +1,9 @@
+heat (2014.1.3-7) unstable; urgency=medium
+
+  * Removed the use of PROTOCOL_SSLv3 which is removed form Debian.
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 13 Jan 2015 00:30:06 +0100
+
 heat (2014.1.3-6) unstable; urgency=medium
 
   * Fixed the use of a wrong Debconf template name (Closes: #774952).
