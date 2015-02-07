@@ -121,7 +121,8 @@ class ResourceGroup(stack_resource.StackResource):
                     _('Property values for the resources in the group')
                 ),
             },
-            required=True
+            required=True,
+            update_allowed=True
         ),
     }
 
@@ -145,7 +146,14 @@ class ResourceGroup(stack_resource.StackResource):
         res_class = self.stack.env.get_class(res_def.resource_type)
         res_inst = res_class("%s:resource_def" % self.name, res_def,
                              self.stack)
-        res_inst.validate()
+        # Only validate the resource definition (which may be a
+        # nested template) if count is non-zero, to enable folks
+        # to disable features via a zero count if they wish
+        # Use self._resource_names() to determine if any resources will
+        # be created, not the COUNT property, because this doesn't exist
+        # in the SoftwareDeployments subclass properties schema.
+        if self._resource_names():
+            res_inst.validate()
 
     def _resource_names(self, properties=None):
         p = properties or self.properties

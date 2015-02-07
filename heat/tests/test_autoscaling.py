@@ -275,8 +275,8 @@ class AutoScalingTest(HeatTestCase):
 
     def _stub_meta_expected(self, now, data, nmeta=1):
         # Stop time at now
-        self.m.StubOutWithMock(timeutils, 'utcnow')
-        timeutils.utcnow().MultipleTimes().AndReturn(now)
+        timeutils.set_time_override(now)
+        self.addCleanup(timeutils.clear_time_override)
 
         # Then set a stub to ensure the metadata update is as
         # expected based on the timestamp and data
@@ -1071,8 +1071,8 @@ class AutoScalingTest(HeatTestCase):
         self.m.UnsetStubs()
 
         now = now + datetime.timedelta(seconds=10)
-        self.m.StubOutWithMock(timeutils, 'utcnow')
-        timeutils.utcnow().MultipleTimes().AndReturn(now)
+        timeutils.set_time_override(now)
+        self.addCleanup(timeutils.clear_time_override)
 
         self.m.StubOutWithMock(resource.Resource, 'metadata_get')
         rsrc.metadata_get().AndReturn(previous_meta)
@@ -1356,8 +1356,8 @@ class AutoScalingTest(HeatTestCase):
         self.m.UnsetStubs()
 
         now = now + datetime.timedelta(seconds=10)
-        self.m.StubOutWithMock(timeutils, 'utcnow')
-        timeutils.utcnow().MultipleTimes().AndReturn(now)
+        timeutils.set_time_override(now)
+        self.addCleanup(timeutils.clear_time_override)
 
         self.m.StubOutWithMock(resource.Resource, 'metadata_get')
         up_policy.metadata_get().AndReturn(previous_meta)
@@ -1750,26 +1750,6 @@ class AutoScalingTest(HeatTestCase):
         rsrc.id = None
         self.assertIsNone(rsrc.resource_id)
         self.assertEqual('LaunchConfig', rsrc.FnGetRefId())
-
-    def test_validate_BlockDeviceMappings_VolumeSize_invalid_str(self):
-        t = template_format.parse(as_template)
-        lcp = t['Resources']['LaunchConfig']['Properties']
-        bdm = [{'DeviceName': 'vdb',
-                'Ebs': {'SnapshotId': '1234',
-                        'VolumeSize': 10}}]
-        lcp['BlockDeviceMappings'] = bdm
-        stack = utils.parse_stack(t, params=self.params)
-        self.stub_ImageConstraint_validate()
-        self.m.ReplayAll()
-
-        e = self.assertRaises(exception.StackValidationFailed,
-                              self.create_scaling_group, t,
-                              stack, 'LaunchConfig')
-
-        expected_msg = "Value must be a string"
-        self.assertIn(expected_msg, six.text_type(e))
-
-        self.m.VerifyAll()
 
     def test_validate_BlockDeviceMappings_without_Ebs_property(self):
         t = template_format.parse(as_template)
