@@ -33,10 +33,25 @@ override_dh_clean:
 	rm -f debian/*.init debian/*.service debian/*.upstart
 
 override_dh_install:
-	# Generate the configuration sample file
-	PYTHONPATH=. bash tools/config/generate_sample.sh -b . -p heat -o etc/heat
-	# Fix the default db connection to use SQLite
-	sed -i 's|^[# \t]*connection[\t #]*=.*|connection=sqlite:////var/lib/heat/heatdb|' etc/heat/heat.conf.sample
+	oslo-config-generator \
+		--namespace heat.common.config \
+		--namespace heat.common.crypt \
+		--namespace heat.common.heat_keystoneclient \
+		--namespace heat.common.wsgi \
+		--namespace heat.engine.clients \
+		--namespace heat.engine.notification \
+		--namespace heat.engine.resources \
+		--namespace heat.openstack.common.eventlet_backdoor \
+		--namespace heat.openstack.common.log \
+		--namespace heat.openstack.common.policy \
+		--namespace heat.api.middleware.ssl \
+		--namespace heat.api.aws.ec2token \
+		--namespace keystonemiddleware.auth_token \
+		--namespace oslo.messaging \
+		--namespace oslo.db \
+		--wrap-width 120 \
+		--output-file $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
+	sed -i 's|^[# \t]*connection[\t #]*=.*|connection=sqlite:////var/lib/heat/heatdb|' $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
 
 	dh_install --fail-missing -Xbin/cinder-keystone-setup
 	install -D -m 0640 etc/heat/heat.conf.sample $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
