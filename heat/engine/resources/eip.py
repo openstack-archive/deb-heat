@@ -10,9 +10,9 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-import six
 
 from oslo.utils import excutils
+import six
 
 from heat.common import exception
 from heat.common.i18n import _
@@ -140,8 +140,8 @@ class ElasticIp(resource.Resource):
                     server.remove_floating_ip(self._ipaddress())
             except Exception as e:
                 is_not_found = self.client_plugin('nova').is_not_found(e)
-                is_unprocessable_entity = self.client_plugin('nova').\
-                    is_unprocessable_entity(e)
+                is_unprocessable_entity = self.client_plugin(
+                    'nova').is_unprocessable_entity(e)
 
                 if (not is_not_found and not is_unprocessable_entity):
                     raise
@@ -239,9 +239,8 @@ class ElasticIpAssociation(resource.Resource):
         # to check InstanceId and NetworkInterfaceId, should provide
         # at least one
         if not instance_id and not ni_id:
-            msg = _("Must specify at least one of 'InstanceId' "
-                    "or 'NetworkInterfaceId'.")
-            raise exception.StackValidationFailed(message=msg)
+            raise exception.PropertyUnspecifiedError('InstanceId',
+                                                     'NetworkInterfaceId')
 
     def _get_port_info(self, ni_id=None, instance_id=None):
         port_id = None
@@ -260,8 +259,7 @@ class ElasticIpAssociation(resource.Resource):
         router = vpc.VPC.router_for_vpc(self.neutron(), network_id)
         if router is not None:
             floatingip = self.neutron().show_floatingip(float_id)
-            floating_net_id = \
-                floatingip['floatingip']['floating_network_id']
+            floating_net_id = floatingip['floatingip']['floating_network_id']
             self.neutron().add_gateway_router(
                 router['id'], {'network_id': floating_net_id})
 

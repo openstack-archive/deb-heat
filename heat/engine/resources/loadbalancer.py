@@ -11,9 +11,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 import os
-import six
 
 from oslo.config import cfg
+import six
 
 from heat.common import exception
 from heat.common.i18n import _
@@ -30,7 +30,7 @@ LOG = logging.getLogger(__name__)
 lb_template_default = r'''
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "Built in HAProxy server",
+  "Description": "Built in HAProxy server using Fedora 21 x64 cloud image",
   "Parameters" : {
     "KeyName" : {
       "Type" : "String"
@@ -66,10 +66,8 @@ lb_template_default = r'''
           "config": {
             "packages": {
               "yum": {
-                "cronie"         : [],
                 "haproxy"        : [],
                 "socat"          : [],
-                "python-psutil"  : []
               }
             },
             "services": {
@@ -127,6 +125,21 @@ lb_template_default = r'''
                 "owner": "root",
                 "group": "root"
               },
+              "/root/haproxy_tmp.te": {
+                "mode": "000600",
+                "owner": "root",
+                "group": "root",
+                "content": { "Fn::Join" : [ "", [
+                  "module haproxy_tmp 1.0;\n",
+                  "require { type tmp_t; type haproxy_t;",
+                  "class sock_file { rename write create unlink link };",
+                  "class dir { write remove_name add_name };}\n",
+                  "allow haproxy_t ",
+                  "tmp_t:dir { write remove_name add_name };\n",
+                  "allow haproxy_t ",
+                  "tmp_t:sock_file { rename write create unlink link};\n"
+                 ]]}
+               },
               "/tmp/cfn-hup-crontab.txt" : {
                 "content" : { "Fn::Join" : ["", [
                 "MAIL=\"\"\n",
@@ -144,7 +157,7 @@ lb_template_default = r'''
         }
       },
       "Properties": {
-        "ImageId": "F20-x86_64-cfntools",
+        "ImageId": "Fedora-Cloud-Base-20141203-21.x86_64",
         "InstanceType": "m1.small",
         "KeyName": { "Ref": "KeyName" },
         "UserData": { "Fn::Base64": { "Fn::Join": ["", [
@@ -161,6 +174,25 @@ lb_template_default = r'''
           { "Ref": "AWS::StackId" },
           "    -r LB_instance ",
           "    --region ", { "Ref": "AWS::Region" }, "\n",
+
+          "# HAProxy+SELinux, https://www.mankier.com/8/haproxy_selinux \n",
+
+          "# this is exported by selinux-policy >=3.12.1.196\n",
+          "setsebool haproxy_connect_any 1\n",
+
+          "# when the location of haproxy stats file is fixed\n",
+          "# in heat-cfntools and AWS::ElasticLoadBalancing::LoadBalancer\n",
+          "# to point to /var/lib/haproxy/stats, \n",
+          "# this next block can be removed.\n",
+          "# compile custom module to allow /tmp files and sockets access\n",
+          "cd /root\n",
+          "checkmodule -M -m -o haproxy_tmp.mod haproxy_tmp.te\n",
+          "semodule_package -o haproxy_tmp.pp -m haproxy_tmp.mod\n",
+          "semodule -i haproxy_tmp.pp\n",
+          "touch /tmp/.haproxy-stats\n",
+          "semanage fcontext -a -t haproxy_tmpfs_t /tmp/.haproxy-stats\n",
+          "restorecon -R -v /tmp/.haproxy-stats\n",
+
           "# install cfn-hup crontab\n",
           "crontab /tmp/cfn-hup-crontab.txt\n",
 
@@ -204,6 +236,25 @@ cfg.CONF.register_opts(loadbalancer_opts)
 
 
 class LoadBalancer(stack_resource.StackResource):
+    """Implements a HAProxy-bearing instance as a nested stack.
+
+    The template for the nested stack can be redefined with
+    ``loadbalancer_template`` option in ``heat.conf``.
+
+    Generally the image used for the instance must have the following
+    packages installed or available for installation at runtime::
+
+        - heat-cfntools and its dependencies like python-psutil
+        - cronie
+        - socat
+        - haproxy
+
+    Current default builtin template uses Fedora 21 x86_64 base cloud image
+    (https://getfedora.org/cloud/download/)
+    and apart from installing packages goes through some hoops
+    around SELinux due to pecularities of heat-cfntools.
+
+    """
 
     PROPERTIES = (
         AVAILABILITY_ZONES, HEALTH_CHECK, INSTANCES, LISTENERS,
@@ -370,56 +421,59 @@ class LoadBalancer(stack_resource.StackResource):
         ),
     }
 
-    def _haproxy_config(self, templ, instances):
-        # initial simplifications:
-        # - only one Listener
-        # - only http (no tcp or ssl)
-        #
-        # option httpchk HEAD /check.txt HTTP/1.0
-        gl = '''
-    global
-        daemon
-        maxconn 256
-        stats socket /tmp/.haproxy-stats
+    def _haproxy_config_global(self):
+        return '''
+global
+    daemon
+    maxconn 256
+    stats socket /tmp/.haproxy-stats
 
-    defaults
-        mode http
-        timeout connect 5000ms
-        timeout client 50000ms
-        timeout server 50000ms
+defaults
+    mode http
+    timeout connect 5000ms
+    timeout client 50000ms
+    timeout server 50000ms
 '''
 
+    def _haproxy_config_frontend(self):
         listener = self.properties[self.LISTENERS][0]
         lb_port = listener[self.LISTENER_LOAD_BALANCER_PORT]
-        inst_port = listener[self.LISTENER_INSTANCE_PORT]
-        spaces = '            '
-        frontend = '''
-        frontend http
-            bind *:%s
+        return '''
+frontend http
+    bind *:%s
+    default_backend servers
 ''' % (lb_port)
 
+    def _haproxy_config_backend(self):
         health_chk = self.properties[self.HEALTH_CHECK]
         if health_chk:
-            check = 'check inter %ss fall %s rise %s' % (
+            timeout = int(health_chk[self.HEALTH_CHECK_TIMEOUT])
+            timeout_check = 'timeout check %ds' % timeout
+            spaces = '    '
+        else:
+            timeout_check = ''
+            spaces = ''
+
+        return '''
+backend servers
+    balance roundrobin
+    option http-server-close
+    option forwardfor
+    option httpchk
+%s%s
+''' % (spaces, timeout_check)
+
+    def _haproxy_config_servers(self, instances):
+        listener = self.properties[self.LISTENERS][0]
+        inst_port = listener[self.LISTENER_INSTANCE_PORT]
+        spaces = '    '
+        check = ''
+        health_chk = self.properties[self.HEALTH_CHECK]
+        if health_chk:
+            check = ' check inter %ss fall %s rise %s' % (
                     health_chk[self.HEALTH_CHECK_INTERVAL],
                     health_chk[self.HEALTH_CHECK_UNHEALTHY_THRESHOLD],
                     health_chk[self.HEALTH_CHECK_HEALTHY_THRESHOLD])
-            timeout = int(health_chk[self.HEALTH_CHECK_TIMEOUT])
-            timeout_check = 'timeout check %ds' % timeout
-        else:
-            check = ''
-            timeout_check = ''
-
-        backend = '''
-        default_backend servers
-
-        backend servers
-            balance roundrobin
-            option http-server-close
-            option forwardfor
-            option httpchk
-            %s
-''' % timeout_check
 
         servers = []
         n = 1
@@ -427,12 +481,22 @@ class LoadBalancer(stack_resource.StackResource):
         for i in instances or []:
             ip = nova_cp.server_to_ipaddress(i) or '0.0.0.0'
             LOG.debug('haproxy server:%s' % ip)
-            servers.append('%sserver server%d %s:%s %s' % (spaces, n,
-                                                           ip, inst_port,
-                                                           check))
+            servers.append('%sserver server%d %s:%s%s' % (spaces, n,
+                                                          ip, inst_port,
+                                                          check))
             n = n + 1
+        return '\n'.join(servers)
 
-        return '%s%s%s%s\n' % (gl, frontend, backend, '\n'.join(servers))
+    def _haproxy_config(self, instances):
+        # initial simplifications:
+        # - only one Listener
+        # - only http (no tcp or ssl)
+        #
+        # option httpchk HEAD /check.txt HTTP/1.0
+        return '%s%s%s%s\n' % (self._haproxy_config_global(),
+                               self._haproxy_config_frontend(),
+                               self._haproxy_config_backend(),
+                               self._haproxy_config_servers(instances))
 
     def get_parsed_template(self):
         if cfg.CONF.loadbalancer_template:
@@ -472,7 +536,7 @@ class LoadBalancer(stack_resource.StackResource):
         if self.properties[self.INSTANCES]:
             md = templ['Resources']['LB_instance']['Metadata']
             files = md['AWS::CloudFormation::Init']['config']['files']
-            cfg = self._haproxy_config(templ, self.properties[self.INSTANCES])
+            cfg = self._haproxy_config(self.properties[self.INSTANCES])
             files['/etc/haproxy/haproxy.cfg']['content'] = cfg
 
         return self.create_with_template(templ, params)
@@ -494,8 +558,7 @@ class LoadBalancer(stack_resource.StackResource):
         if (self.INSTANCES in prop_diff and
                 (self.properties[self.INSTANCES] is not None or
                  new_props[self.INSTANCES] is not None)):
-            templ = self.get_parsed_template()
-            cfg = self._haproxy_config(templ, prop_diff[self.INSTANCES])
+            cfg = self._haproxy_config(prop_diff[self.INSTANCES])
 
             md = self.nested()['LB_instance'].metadata_get()
             files = md['AWS::CloudFormation::Init']['config']['files']
@@ -514,8 +577,8 @@ class LoadBalancer(stack_resource.StackResource):
         if res:
             return res
 
-        if cfg.CONF.loadbalancer_template and \
-                not os.access(cfg.CONF.loadbalancer_template, os.R_OK):
+        if (cfg.CONF.loadbalancer_template and
+                not os.access(cfg.CONF.loadbalancer_template, os.R_OK)):
             msg = _('Custom LoadBalancer template can not be found')
             raise exception.StackValidationFailed(message=msg)
 

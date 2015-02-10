@@ -24,10 +24,10 @@ class Router(neutron.NeutronResource):
 
     PROPERTIES = (
         NAME, EXTERNAL_GATEWAY, VALUE_SPECS, ADMIN_STATE_UP,
-        L3_AGENT_ID,
+        L3_AGENT_ID, DISTRIBUTED,
     ) = (
         'name', 'external_gateway_info', 'value_specs', 'admin_state_up',
-        'l3_agent_id',
+        'l3_agent_id', 'distributed',
     )
 
     _EXTERNAL_GATEWAY_KEYS = (
@@ -89,6 +89,14 @@ class Router(neutron.NeutronResource):
               'users only.'),
             update_allowed=True
         ),
+        DISTRIBUTED: properties.Schema(
+            properties.Schema.BOOLEAN,
+            _('Indicates whether or not to create a distributed router. '
+              'NOTE: The default policy setting in Neutron restricts usage '
+              'of this property to administrative users only. This property '
+              'can not be used in conjunction with the L3 agent ID.'),
+            support_status=support.SupportStatus(version='2015.1')
+        ),
     }
 
     attributes_schema = {
@@ -111,6 +119,15 @@ class Router(neutron.NeutronResource):
             _("All attributes.")
         ),
     }
+
+    def validate(self):
+        super(Router, self).validate()
+        is_distributed = self.properties.get(self.DISTRIBUTED)
+        l3_agent_id = self.properties.get(self.L3_AGENT_ID)
+        # do not specific l3_agent_id when creating a distributed router
+        if is_distributed and l3_agent_id:
+            raise exception.ResourcePropertyConflict(self.DISTRIBUTED,
+                                                     self.L3_AGENT_ID)
 
     def add_dependencies(self, deps):
         super(Router, self).add_dependencies(deps)
@@ -163,7 +180,7 @@ class Router(neutron.NeutronResource):
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
-            return self._delete_task()
+            return True
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         props = self.prepare_update_properties(json_snippet)
@@ -191,16 +208,22 @@ class Router(neutron.NeutronResource):
 
 class RouterInterface(neutron.NeutronResource):
     PROPERTIES = (
-        ROUTER_ID, SUBNET_ID, SUBNET, PORT_ID,
+        ROUTER, ROUTER_ID, SUBNET_ID, SUBNET, PORT_ID, PORT
     ) = (
-        'router_id', 'subnet_id', 'subnet', 'port_id',
+        'router', 'router_id', 'subnet_id', 'subnet', 'port_id', 'port'
     )
 
     properties_schema = {
+        ROUTER: properties.Schema(
+            properties.Schema.STRING,
+            _('The router.')
+        ),
         ROUTER_ID: properties.Schema(
             properties.Schema.STRING,
-            _('The router id.'),
-            required=True
+            _('ID of the router.'),
+            support_status=support.SupportStatus(
+                support.DEPRECATED,
+                _('Use property %s.') % ROUTER)
         ),
         SUBNET_ID: properties.Schema(
             properties.Schema.STRING,
@@ -210,51 +233,66 @@ class RouterInterface(neutron.NeutronResource):
         ),
         SUBNET: properties.Schema(
             properties.Schema.STRING,
-            _('The subnet, either subnet or port_id should be '
+            _('The subnet, either subnet or port should be '
               'specified.')
         ),
         PORT_ID: properties.Schema(
             properties.Schema.STRING,
-            _('The port id, either subnet or port_id should be specified.')
+            support_status=support.SupportStatus(
+                support.DEPRECATED,
+                _('Deprecated in Kilo. '
+                  'Use property %s.') % PORT)
         ),
+        PORT: properties.Schema(
+            properties.Schema.STRING,
+            _('The port, either subnet or port should be specified.'),
+            support_status=support.SupportStatus(version='2015.1')
+        )
     }
 
     @staticmethod
-    def _validate_depr_subnet_keys(properties, subnet_key, depr_subnet_key):
-        subnet_value = properties.get(subnet_key)
-        subnet_id_value = properties.get(depr_subnet_key)
-        if subnet_value and subnet_id_value:
-            raise exception.ResourcePropertyConflict(subnet_key,
-                                                     depr_subnet_key)
-        if not subnet_value and not subnet_id_value:
+    def _validate_deprecated_keys(props, key, deprecated_key):
+        value = props.get(key)
+        deprecated_value = props.get(deprecated_key)
+        if value and deprecated_value:
+            raise exception.ResourcePropertyConflict(key,
+                                                     deprecated_key)
+        if not value and not deprecated_value:
             return False
         return True
 
     def validate(self):
-        '''
-        Validate any of the provided params
-        '''
+        """Validate any of the provided params."""
         super(RouterInterface, self).validate()
 
-        prop_subnet_exists = self._validate_depr_subnet_keys(
+        prop_subnet_exists = self._validate_deprecated_keys(
             self.properties, self.SUBNET, self.SUBNET_ID)
+        if not self._validate_deprecated_keys(
+                self.properties, self.ROUTER, self.ROUTER_ID):
+            raise exception.PropertyUnspecifiedError(self.ROUTER,
+                                                     self.ROUTER_ID)
 
-        port_id = self.properties.get(self.PORT_ID)
-        if prop_subnet_exists and port_id:
+        prop_port_exists = self._validate_deprecated_keys(
+            self.properties, self.PORT, self.PORT_ID)
+
+        if prop_subnet_exists and prop_port_exists:
             raise exception.ResourcePropertyConflict(self.SUBNET,
-                                                     self.PORT_ID)
-        if not prop_subnet_exists and not port_id:
-            msg = 'Either subnet or port_id must be specified.'
-            raise exception.StackValidationFailed(message=msg)
+                                                     self.PORT)
+
+        if not prop_subnet_exists and not prop_port_exists:
+            raise exception.PropertyUnspecifiedError(self.SUBNET,
+                                                     self.PORT)
 
     def handle_create(self):
-        router_id = self.properties.get(self.ROUTER_ID)
+        router_id = self.client_plugin().resolve_router(
+            dict(self.properties), self.ROUTER, self.ROUTER_ID)
         key = 'subnet_id'
         value = self.client_plugin().resolve_subnet(
             dict(self.properties), self.SUBNET, key)
         if not value:
-            key = self.PORT_ID
-            value = self.properties.get(key)
+            key = 'port_id'
+            value = self.client_plugin().resolve_port(
+                dict(self.properties), self.PORT, key)
         self.neutron().add_interface_router(
             router_id,
             {key: value})

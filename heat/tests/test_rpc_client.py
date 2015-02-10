@@ -17,8 +17,8 @@
 Unit Tests for heat.rpc.client
 """
 
-
 import copy
+
 import mock
 from oslo.messaging._drivers import common as rpc_common
 import stubout
@@ -247,7 +247,8 @@ class EngineRpcAPITestCase(testtools.TestCase):
         self._test_engine_api('resource_signal', 'call',
                               stack_identity=self.identity,
                               resource_name='LogicalResourceId',
-                              details={u'wordpress': []})
+                              details={u'wordpress': []},
+                              sync_call=True)
 
     def test_create_watch_data(self):
         self._test_engine_api('create_watch_data', 'call',
@@ -337,3 +338,6 @@ class EngineRpcAPITestCase(testtools.TestCase):
         self._test_engine_api('delete_snapshot', 'call',
                               stack_identity=self.identity,
                               snapshot_id=snapshot_id)
+
+    def test_list_services(self):
+        self._test_engine_api('list_services', 'call', version='1.4')

@@ -81,7 +81,8 @@ class Schema(constr.Schema):
                         message=_('Default must be a comma-delimited list '
                                   'string: %s') % err)
             try:
-                self.validate_constraints(default_value, context)
+                self.validate_constraints(default_value, context,
+                                          [constr.CustomConstraint])
             except (ValueError, TypeError,
                     exception.StackValidationFailed) as exc:
                 raise exception.InvalidSchemaError(
@@ -210,29 +211,32 @@ class Parameter(object):
         self.user_default = None
 
     def validate(self, validate_value=True, context=None):
-        '''
-        Validates the parameter.
+        """Validates the parameter.
 
         This method validates if the parameter's schema is valid,
         and if the default value - if present - or the user-provided
         value for the parameter comply with the schema.
-        '''
-        self.schema.validate(context)
-
-        if not validate_value:
-            return
+        """
+        err_msg = _("Parameter '%(name)s' is invalid: %(exp)s")
 
         try:
-            if self.has_default():
-                self._validate(self.default(), context)
+            self.schema.validate(context)
+
+            if not validate_value:
+                return
+
             if self.user_value is not None:
                 self._validate(self.user_value, context)
-            elif not self.has_default():
+            elif self.has_default():
+                self._validate(self.default(), context)
+            else:
                 raise exception.UserParameterMissing(key=self.name)
         except exception.StackValidationFailed as ex:
-            msg = _("Parameter '%(name)s' is invalid: %(exp)s") % dict(
-                name=self.name, exp=six.text_type(ex))
+            msg = err_msg % dict(name=self.name, exp=six.text_type(ex))
             raise exception.StackValidationFailed(message=msg)
+        except exception.InvalidSchemaError as ex:
+            msg = err_msg % dict(name=self.name, exp=six.text_type(ex))
+            raise exception.InvalidSchemaError(message=msg)
 
     def value(self):
         '''Get the parameter value, optionally sanitising it for output.'''
@@ -276,7 +280,7 @@ class Parameter(object):
         self.user_default = value
 
     def __str__(self):
-        '''Return a string representation of the parameter'''
+        '''Return a string representation of the parameter.'''
         value = self.value()
         if self.hidden():
             return '******'
@@ -288,11 +292,11 @@ class NumberParam(Parameter):
     '''A template parameter of type "Number".'''
 
     def __int__(self):
-        '''Return an integer representation of the parameter'''
+        '''Return an integer representation of the parameter.'''
         return int(super(NumberParam, self).value())
 
     def __float__(self):
-        '''Return a float representation of the parameter'''
+        '''Return a float representation of the parameter.'''
         return float(super(NumberParam, self).value())
 
     def _validate(self, val, context):
@@ -522,8 +526,8 @@ class Parameters(collections.Mapping):
                     raise exception.InvalidTemplateParameter(key=name)
 
     def _pseudo_parameters(self, stack_identifier):
-        stack_id = stack_identifier.arn() \
-            if stack_identifier is not None else 'None'
+        stack_id = (stack_identifier.arn()
+                    if stack_identifier is not None else 'None')
         stack_name = stack_identifier and stack_identifier.stack_name
 
         yield Parameter(self.PARAM_STACK_ID,
@@ -536,12 +540,12 @@ class Parameters(collections.Mapping):
             yield Parameter(self.PARAM_REGION,
                             Schema(Schema.STRING,
                                    default='ap-southeast-1',
-                                   constraints=
-                                   [constr.AllowedValues(['us-east-1',
-                                                          'us-west-1',
-                                                          'us-west-2',
-                                                          'sa-east-1',
-                                                          'eu-west-1',
-                                                          'ap-southeast-1',
-                                                          'ap-northeast-1']
-                                                         )]))
+                                   constraints=[
+                                       constr.AllowedValues(['us-east-1',
+                                                             'us-west-1',
+                                                             'us-west-2',
+                                                             'sa-east-1',
+                                                             'eu-west-1',
+                                                             'ap-southeast-1',
+                                                             'ap-northeast-1']
+                                                            )]))

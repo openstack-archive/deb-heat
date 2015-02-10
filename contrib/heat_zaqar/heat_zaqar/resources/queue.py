@@ -17,6 +17,7 @@ from heat.engine import attributes
 from heat.engine import clients
 from heat.engine import properties
 from heat.engine import resource
+from heat.engine import support
 
 
 def resource_mapping():
@@ -28,6 +29,8 @@ def resource_mapping():
 
 
 class ZaqarQueue(resource.Resource):
+
+    default_client_name = "zaqar"
 
     PROPERTIES = (
         NAME, METADATA,
@@ -56,15 +59,18 @@ class ZaqarQueue(resource.Resource):
     attributes_schema = {
         QUEUE_ID: attributes.Schema(
             _("ID of the queue."),
-            cache_mode=attributes.Schema.CACHE_NONE
+            cache_mode=attributes.Schema.CACHE_NONE,
+            support_status=support.SupportStatus(
+                status=support.DEPRECATED,
+                message=_("Deprecated in kilo. "
+                          "Use get_resource|Ref command instead. "
+                          "For example: { get_resource : <resource_name> }")
+            )
         ),
         HREF: attributes.Schema(
             _("The resource href of the queue.")
         ),
     }
-
-    def zaqar(self):
-        return self.clients.client('zaqar')
 
     def physical_resource_name(self):
         return self.properties[self.NAME]
@@ -72,7 +78,7 @@ class ZaqarQueue(resource.Resource):
     def handle_create(self):
         """Create a zaqar message queue."""
         queue_name = self.physical_resource_name()
-        queue = self.zaqar().queue(queue_name, auto_create=False)
+        queue = self.client().queue(queue_name, auto_create=False)
         # Zaqar client doesn't report an error if an queue with the same
         # id/name already exists, which can cause issue with stack update.
         if queue.exists():
@@ -97,7 +103,7 @@ class ZaqarQueue(resource.Resource):
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         """Update queue metadata."""
         if 'metadata' in prop_diff:
-            queue = self.zaqar().queue(self.resource_id, auto_create=False)
+            queue = self.client().queue(self.resource_id, auto_create=False)
             metadata = prop_diff['metadata']
             queue.metadata(new_meta=metadata)
 
@@ -105,12 +111,15 @@ class ZaqarQueue(resource.Resource):
         """Delete a zaqar message queue."""
         if not self.resource_id:
             return
-
-        queue = self.zaqar().queue(self.resource_id, auto_create=False)
-        queue.delete()
+        try:
+            queue = self.client().queue(self.resource_id, auto_create=False)
+        except Exception as exc:
+            self.client_plugin().ignore_not_found(exc)
+        else:
+            queue.delete()
 
     def href(self):
-        api_endpoint = self.zaqar().api_url
+        api_endpoint = self.client().api_url
         queue_name = self.physical_resource_name()
         if api_endpoint.endswith('/'):
             return '%squeues/%s' % (api_endpoint, queue_name)

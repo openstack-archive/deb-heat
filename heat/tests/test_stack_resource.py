@@ -11,16 +11,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import datetime
-import six
 import uuid
 
 import mock
-import mox
+from oslo.config import cfg
+import six
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import environment
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import stack as parser
@@ -192,6 +190,14 @@ class StackResourceTest(common.HeatTestCase):
         preview = self.parent_resource.preview()
         self.assertIsInstance(preview, stack_resource.StackResource)
 
+    def test_nested_stack_abandon(self):
+        nest = mock.MagicMock()
+        self.parent_resource.nested = nest
+        nest.return_value.prepare_abandon.return_value = {'X': 'Y'}
+        ret = self.parent_resource.prepare_abandon()
+        nest.return_value.prepare_abandon.assert_called_once_with()
+        self.assertEqual({'X': 'Y'}, ret)
+
     def test_implementation_signature(self):
         self.parent_resource.child_template = mock.Mock(
             return_value=self.simple_template)
@@ -204,11 +210,12 @@ class StackResourceTest(common.HeatTestCase):
         self.assertNotEqual(sig2, sig2a)
 
     def test_propagated_files(self):
+        """Makes sure that the files map in the top level stack
+        are passed on to the child stack.
+        """
         self.parent_stack.t.files["foo"] = "bar"
-        self.parent_resource.create_with_template(self.templ,
-                                                  {"KeyName": "key"})
-        self.stack = self.parent_resource.nested()
-        self.assertEqual({"foo": "bar"}, self.stack.t.files)
+        parsed_t = self.parent_resource._parse_child_template(self.templ)
+        self.assertEqual({"foo": "bar"}, parsed_t.files)
 
     @mock.patch('heat.engine.environment.get_child_environment')
     @mock.patch.object(stack_resource.parser, 'Stack')
@@ -305,8 +312,8 @@ class StackResourceTest(common.HeatTestCase):
             'test',
             resource_defns[self.ws_resname],
             self.parent_stack)
-        stk_resource.child_template = \
-            mock.Mock(return_value=templatem.Template(self.simple_template))
+        stk_resource.child_template = mock.Mock(
+            return_value=templatem.Template(self.simple_template))
         stk_resource.child_params = mock.Mock()
         exc = exception.RequestLimitExceeded(message='Validation Failed')
         validation_mock = mock.Mock(side_effect=exc)
@@ -322,8 +329,8 @@ class StackResourceTest(common.HeatTestCase):
             'test',
             resource_defns[self.ws_resname],
             self.parent_stack)
-        stk_resource.child_template = \
-            mock.Mock(return_value=self.simple_template)
+        stk_resource.child_template = mock.Mock(
+            return_value=self.simple_template)
         stk_resource.child_params = mock.Mock()
         exc = exception.RequestLimitExceeded(message='Validation Failed')
         validation_mock = mock.Mock(side_effect=exc)
@@ -413,71 +420,6 @@ class StackResourceTest(common.HeatTestCase):
                           self.parent_resource._validate_nested_resources,
                           template)
 
-    def test_create_with_template_ok(self):
-        self.parent_resource.create_with_template(self.templ,
-                                                  {"KeyName": "key"})
-        self.stack = self.parent_resource.nested()
-
-        self.assertEqual(self.parent_resource, self.stack.parent_resource)
-        self.assertEqual("cb2f2b28-a663-4683-802c-4b40c916e1ff",
-                         self.stack.name)
-        self.assertEqual(self.templ, self.stack.t.t)
-        self.assertEqual(self.stack.id, self.parent_resource.resource_id)
-        self.assertEqual(1, self.stack.nested_depth)
-        self.assertIsNone(self.stack.timeout_mins)
-        self.assertEqual('aprojectid', self.stack.stack_user_project_id)
-
-    def test_create_with_template_timeout_mins(self):
-        self.assertIsNone(self.parent_stack.timeout_mins)
-        self.m.StubOutWithMock(self.parent_stack, 'timeout_mins')
-        self.parent_stack.timeout_mins = 100
-        self.m.ReplayAll()
-        self.parent_resource.create_with_template(self.templ,
-                                                  {"KeyName": "key"})
-        self.stack = self.parent_resource.nested()
-        self.assertEqual(100, self.stack.timeout_mins)
-        self.m.VerifyAll()
-
-    def test_adopt_with_template_ok(self):
-        adopt_data = {
-            "resources": {
-                "WebServer": {
-                    "resource_id": "test-res-id"
-                }
-            }
-        }
-        self.parent_resource.create_with_template(self.templ,
-                                                  {"KeyName": "key"},
-                                                  adopt_data=adopt_data)
-        self.stack = self.parent_resource.nested()
-
-        self.assertEqual(self.stack.ADOPT, self.stack.action)
-        self.assertEqual('test-res-id',
-                         self.stack.resources['WebServer'].resource_id)
-        self.assertEqual(self.parent_resource, self.stack.parent_resource)
-        self.assertEqual("cb2f2b28-a663-4683-802c-4b40c916e1ff",
-                         self.stack.name)
-        self.assertEqual(self.templ, self.stack.t.t)
-        self.assertEqual(self.stack.id, self.parent_resource.resource_id)
-
-    def test_prepare_abandon(self):
-        self.parent_resource.create_with_template(self.templ,
-                                                  {"KeyName": "key"})
-        ret = self.parent_resource.prepare_abandon()
-        # check abandoned data contains all the necessary information.
-        # (no need to check stack/resource IDs, because they are
-        # randomly generated uuids)
-        self.assertEqual(9, len(ret))
-        self.assertEqual('CREATE', ret['action'])
-        self.assertIn('name', ret)
-        self.assertIn('id', ret)
-        self.assertIn('resources', ret)
-        self.assertEqual(template_format.parse(param_template),
-                         ret['template'])
-        self.assertIn('stack_user_project_id', ret)
-        self.assertIn('project_id', ret)
-        self.assertIn('environment', ret)
-
     def test_create_with_template_validates(self):
         """
         Creating a stack with a template validates the created stack, so that
@@ -505,114 +447,6 @@ class StackResourceTest(common.HeatTestCase):
             exception.StackValidationFailed,
             self.parent_resource.update_with_template,
             template, {'WebServer': 'foo'})
-
-    def test_update_with_template_ok(self):
-        """
-        The update_with_template method updates the nested stack with the
-        given template and user parameters.
-        """
-        create_result = self.parent_resource.create_with_template(
-            self.simple_template, {})
-        while not create_result.step():
-            pass
-        self.stack = self.parent_resource.nested()
-
-        new_templ = self.simple_template.copy()
-        inst_snippet = new_templ["Resources"]["WebServer"].copy()
-        new_templ["Resources"]["WebServer2"] = inst_snippet
-        self.parent_resource.updated_time = \
-            datetime.datetime(2014, 10, 24, 15, 40)
-
-        updater = self.parent_resource.update_with_template(
-            new_templ, {})
-        updater.run_to_completion()
-        self.assertIs(True,
-                      self.parent_resource.check_update_complete(updater))
-        self.assertEqual(('UPDATE', 'COMPLETE'), self.stack.state)
-        self.assertEqual(set(["WebServer", "WebServer2"]),
-                         set(self.stack.keys()))
-        self.assertIsNone(self.stack.timeout_mins)
-        self.assertIsNotNone(self.stack.updated_time)
-
-        # The stack's owner_id is maintained.
-        saved_stack = parser.Stack.load(
-            self.parent_stack.context, self.stack.id)
-        self.assertEqual(self.parent_stack.id, saved_stack.owner_id)
-        # Check the stack's updated_time is saved and same as the resource
-        self.assertEqual(self.parent_resource.updated_time,
-                         saved_stack.updated_time)
-
-    def test_update_with_template_timeout_mins(self):
-        self.assertIsNone(self.parent_stack.timeout_mins)
-        self.m.StubOutWithMock(self.parent_stack, 'timeout_mins')
-        self.parent_stack.timeout_mins = 100
-        self.m.ReplayAll()
-
-        create_result = self.parent_resource.create_with_template(
-            self.simple_template, {})
-        while not create_result.step():
-            pass
-        self.stack = self.parent_resource.nested()
-        self.assertEqual(100, self.stack.timeout_mins)
-
-        self.parent_stack.timeout_mins = 200
-        self.m.ReplayAll()
-
-        updater = self.parent_resource.update_with_template(
-            self.simple_template, {})
-        updater.run_to_completion()
-        self.assertEqual(200, self.stack.timeout_mins)
-        self.m.VerifyAll()
-
-    def test_update_with_template_files(self):
-        create_result = self.parent_resource.create_with_template(
-            self.simple_template, {})
-        while not create_result.step():
-            pass
-        self.stack = self.parent_resource.nested()
-
-        new_templ = self.simple_template.copy()
-        inst_snippet = new_templ["Resources"]["WebServer"].copy()
-        new_templ["Resources"]["WebServer2"] = inst_snippet
-        self.parent_stack.t.files["foo"] = "bar"
-        updater = self.parent_resource.update_with_template(
-            new_templ, {})
-        updater.run_to_completion()
-
-        self.assertEqual({"foo": "bar"}, self.stack.t.files)
-
-    def test_update_with_template_state_err(self):
-        """
-        update_with_template_state_err method should raise error when update
-        task is done but the nested stack is in (UPDATE, FAILED) state.
-        """
-        create_creator = self.parent_resource.create_with_template(
-            self.simple_template, {})
-        create_creator.run_to_completion()
-        self.stack = self.parent_resource.nested()
-
-        new_templ = self.simple_template.copy()
-        inst_snippet = new_templ["Resources"]["WebServer"].copy()
-        new_templ["Resources"]["WebServer2"] = inst_snippet
-
-        def update_task():
-            yield
-            self.stack.state_set(parser.Stack.UPDATE, parser.Stack.FAILED, '')
-
-        self.m.StubOutWithMock(self.stack, 'update_task')
-        self.stack.update_task(mox.IgnoreArg()).AndReturn(update_task())
-        self.m.ReplayAll()
-
-        updater = self.parent_resource.update_with_template(new_templ, {})
-        updater.run_to_completion()
-        self.assertEqual((self.stack.UPDATE, self.stack.FAILED),
-                         self.stack.state)
-        ex = self.assertRaises(exception.Error,
-                               self.parent_resource.check_update_complete,
-                               updater)
-        self.assertEqual('Nested stack UPDATE failed: ', six.text_type(ex))
-
-        self.m.VerifyAll()
 
     def test_load_nested_ok(self):
         self.parent_resource.create_with_template(self.templ,
@@ -707,6 +541,100 @@ class StackResourceTest(common.HeatTestCase):
 
         self.assertIsNone(self.parent_resource.delete_nested())
 
+    def test_need_update_in_failed_state_for_nested_resource(self):
+        """
+        The resource in any state and has nested stack,
+        should need update.
+        """
+        need_update = self.parent_resource._needs_update(
+            self.parent_resource.t,
+            self.parent_resource.t,
+            self.parent_resource.properties,
+            self.parent_resource.properties,
+            self.parent_resource)
+
+        self.assertEqual(True, need_update)
+
+    def test_check_nested_resources(self):
+        def _mock_check(res):
+            res.handle_check = mock.Mock()
+
+        self.parent_resource.create_with_template(self.templ, {"KeyName": "k"})
+        nested = self.parent_resource.nested()
+        [_mock_check(res) for res in nested.resources.values()]
+
+        scheduler.TaskRunner(self.parent_resource.check)()
+        [self.assertTrue(res.handle_check.called)
+         for res in nested.resources.values()]
+
+
+class StackResourceLimitTest(common.HeatTestCase):
+    scenarios = [
+        ('1', dict(root=3, templ=4, nested=0, max=10, error=False)),
+        ('2', dict(root=3, templ=8, nested=0, max=10, error=True)),
+        ('3', dict(root=3, templ=8, nested=2, max=10, error=False)),
+        ('4', dict(root=3, templ=12, nested=2, max=10, error=True))]
+
+    def setUp(self):
+        super(StackResourceLimitTest, self).setUp()
+        resource._register_class('some_magic_type',
+                                 MyStackResource)
+        ws_resname = "provider_resource"
+        t = templatem.Template(
+            {'HeatTemplateFormatVersion': '2012-12-12',
+             'Resources': {ws_resname: ws_res_snippet}})
+        self.ctx = utils.dummy_context()
+        self.parent_stack = parser.Stack(self.ctx, 'test_stack',
+                                         t, stack_id=str(uuid.uuid4()),
+                                         user_creds_id='uc123',
+                                         stack_user_project_id='aprojectid')
+        resource_defns = t.resource_definitions(self.parent_stack)
+        self.res = MyStackResource('test',
+                                   resource_defns[ws_resname],
+                                   self.parent_stack)
+
+    def test_resource_limit(self):
+        # mock nested resources
+        nested = mock.MagicMock()
+        nested.resources = range(self.nested)
+        self.res.nested = mock.MagicMock(return_value=nested)
+
+        # mock root total_resources
+        self.res.stack.root_stack.total_resources = mock.Mock(
+            return_value=self.root)
+
+        # setup the config max
+        cfg.CONF.set_default('max_resources_per_stack', self.max)
+
+        # fake the template
+        templ = mock.MagicMock()
+        templ.__getitem__.return_value = range(self.templ)
+        templ.RESOURCES = 'Resources'
+        if self.error:
+            self.assertRaises(exception.RequestLimitExceeded,
+                              self.res._validate_nested_resources, templ)
+        else:
+            self.assertIsNone(self.res._validate_nested_resources(templ))
+
+
+class StackResourceAttrTest(common.HeatTestCase):
+    def setUp(self):
+        super(StackResourceAttrTest, self).setUp()
+        resource._register_class('some_magic_type',
+                                 MyStackResource)
+        ws_resname = "provider_resource"
+        t = templatem.Template(
+            {'HeatTemplateFormatVersion': '2012-12-12',
+             'Resources': {ws_resname: ws_res_snippet}})
+        self.parent_stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                                         t, stack_id=str(uuid.uuid4()),
+                                         user_creds_id='uc123',
+                                         stack_user_project_id='aprojectid')
+        resource_defns = t.resource_definitions(self.parent_stack)
+        self.parent_resource = MyStackResource('test',
+                                               resource_defns[ws_resname],
+                                               self.parent_stack)
+
     def test_get_output_ok(self):
         nested = self.m.CreateMockAnything()
         self.m.StubOutWithMock(stack_resource.StackResource, 'nested')
@@ -771,141 +699,85 @@ class StackResourceTest(common.HeatTestCase):
 
         self.m.VerifyAll()
 
-    def test_need_update_in_failed_state_for_nested_resource(self):
+    def test_validate_nested_stack(self):
+        self.parent_resource.child_template = mock.Mock(return_value='foo')
+        self.parent_resource.child_params = mock.Mock(return_value={})
+        nested = self.m.CreateMockAnything()
+        nested.validate().AndReturn(True)
+        self.m.StubOutWithMock(stack_resource.StackResource,
+                               '_parse_nested_stack')
+        stack_resource.StackResource._parse_nested_stack(
+            self.parent_stack.name, 'foo', {}).AndReturn(nested)
+
+        self.m.ReplayAll()
+        self.parent_resource.validate_nested_stack()
+        self.assertFalse(nested.strict_validate)
+        self.m.VerifyAll()
+
+
+class StackResourceCheckCompleteTest(common.HeatTestCase):
+    scenarios = [
+        ('create', dict(action='create')),
+        ('update', dict(action='update')),
+        ('suspend', dict(action='suspend')),
+        ('resume', dict(action='resume')),
+        ('delete', dict(action='delete')),
+    ]
+
+    def setUp(self):
+        super(StackResourceCheckCompleteTest, self).setUp()
+        resource._register_class('some_magic_type',
+                                 MyStackResource)
+        self.ws_resname = "provider_resource"
+        t = templatem.Template(
+            {'HeatTemplateFormatVersion': '2012-12-12',
+             'Resources': {self.ws_resname: ws_res_snippet}})
+        self.parent_stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                                         t, stack_id=str(uuid.uuid4()),
+                                         user_creds_id='uc123',
+                                         stack_user_project_id='aprojectid')
+        resource_defns = t.resource_definitions(self.parent_stack)
+        self.parent_resource = MyStackResource('test',
+                                               resource_defns[self.ws_resname],
+                                               self.parent_stack)
+
+        self.nested = mock.MagicMock()
+        self.parent_resource._nested = self.nested
+        setattr(self.nested, self.action.upper(), self.action.upper())
+        self.nested.COMPLETE = 'COMPLETE'
+
+    def test_state_ok(self):
         """
-        The resource in FAILED state and has nested stack,
-        should need update.
+        check_create_complete should return True create task is
+        done and the nested stack is in (<action>,COMPLETE) state.
         """
-        self.parent_resource.set_template(self.templ, {"KeyName": "test"})
-        scheduler.TaskRunner(self.parent_resource.create)()
-        self.parent_resource.state_set('CREATE', 'FAILED')
+        self.nested.state = (self.action.upper(), 'COMPLETE')
+        task = mock.MagicMock()
+        task.step.return_value = True
 
-        need_update = self.parent_resource._needs_update(
-            self.parent_resource.t,
-            self.parent_resource.t,
-            self.parent_resource.properties,
-            self.parent_resource.properties,
-            self.parent_resource)
+        complete = getattr(self.parent_resource,
+                           'check_%s_complete' % self.action)
+        self.assertIs(True, complete(task))
 
-        self.assertEqual(True, need_update)
-
-    def test_create_complete_state_err(self):
+    def test_state_err(self):
         """
         check_create_complete should raise error when create task is
-        done but the nested stack is not in (CREATE,COMPLETE) state
+        done but the nested stack is not in (<action>,COMPLETE) state
         """
-        del self.templ['Resources']['WebServer']
-        self.parent_resource.set_template(self.templ, {"KeyName": "test"})
 
-        ctx = self.parent_resource.context
-        phy_id = "cb2f2b28-a663-4683-802c-4b40c916e1ff"
-        templ = templatem.Template(self.templ)
-        env = environment.Environment({"KeyName": "test"})
-        self.stack = parser.Stack(ctx, phy_id, templ, env, timeout_mins=None,
-                                  disable_rollback=True,
-                                  parent_resource=self.parent_resource,
-                                  stack_user_project_id='aprojectid')
+        self.nested.state = (self.action.upper(), 'FAILED')
+        self.nested.status_reason = 'broken on purpose'
+        task = mock.MagicMock()
+        task.step.return_value = True
 
-        self.m.StubOutWithMock(environment, 'Environment')
-        environment.Environment().AndReturn(env)
+        complete = getattr(self.parent_resource,
+                           'check_%s_complete' % self.action)
+        self.assertRaises(exception.Error, complete, task)
 
-        self.m.StubOutWithMock(parser, 'Stack')
-        parser.Stack(ctx, phy_id, templ, env=env, timeout_mins=None,
-                     disable_rollback=True,
-                     parent_resource=self.parent_resource,
-                     owner_id=self.parent_stack.id,
-                     user_creds_id=self.parent_stack.user_creds_id,
-                     adopt_stack_data=None,
-                     stack_user_project_id='aprojectid',
-                     nested_depth=1).AndReturn(self.stack)
+    def test_step_false(self):
+        task = mock.MagicMock()
+        task.step.return_value = False
 
-        st_set = self.stack.state_set
-        self.m.StubOutWithMock(self.stack, 'state_set')
-        self.stack.state_set(self.stack.CREATE, self.stack.IN_PROGRESS,
-                             "Stack CREATE started").WithSideEffects(st_set)
-
-        self.stack.state_set(self.stack.CREATE, self.stack.COMPLETE,
-                             "Stack CREATE completed successfully")
-        self.m.ReplayAll()
-
-        self.assertRaises(exception.ResourceFailure,
-                          scheduler.TaskRunner(self.parent_resource.create))
-        self.assertEqual(('CREATE', 'FAILED'), self.parent_resource.state)
-        self.assertEqual(('Error: Stack CREATE started'),
-                         self.parent_resource.status_reason)
-
-        self.m.VerifyAll()
-        # Restore state_set to let clean up proceed
-        self.stack.state_set = st_set
-
-    def test_suspend_complete_state_err(self):
-        """
-        check_suspend_complete should raise error when suspend task is
-        done but the nested stack is not in (SUSPEND,COMPLETE) state
-        """
-        del self.templ['Resources']['WebServer']
-        self.parent_resource.set_template(self.templ, {"KeyName": "test"})
-        scheduler.TaskRunner(self.parent_resource.create)()
-        self.stack = self.parent_resource.nested()
-
-        st_set = self.stack.state_set
-        self.m.StubOutWithMock(self.stack, 'state_set')
-        self.stack.state_set(parser.Stack.SUSPEND, parser.Stack.IN_PROGRESS,
-                             "Stack SUSPEND started").WithSideEffects(st_set)
-
-        self.stack.state_set(parser.Stack.SUSPEND, parser.Stack.COMPLETE,
-                             "Stack SUSPEND completed successfully")
-        self.m.ReplayAll()
-
-        self.assertRaises(exception.ResourceFailure,
-                          scheduler.TaskRunner(self.parent_resource.suspend))
-        self.assertEqual(('SUSPEND', 'FAILED'), self.parent_resource.state)
-        self.assertEqual(('Error: Stack SUSPEND started'),
-                         self.parent_resource.status_reason)
-
-        self.m.VerifyAll()
-        # Restore state_set to let clean up proceed
-        self.stack.state_set = st_set
-
-    def test_resume_complete_state_err(self):
-        """
-        check_resume_complete should raise error when resume task is
-        done but the nested stack is not in (RESUME,COMPLETE) state
-        """
-        del self.templ['Resources']['WebServer']
-        self.parent_resource.set_template(self.templ, {"KeyName": "test"})
-        scheduler.TaskRunner(self.parent_resource.create)()
-        self.stack = self.parent_resource.nested()
-
-        scheduler.TaskRunner(self.parent_resource.suspend)()
-
-        st_set = self.stack.state_set
-        self.m.StubOutWithMock(self.stack, 'state_set')
-        self.stack.state_set(parser.Stack.RESUME, parser.Stack.IN_PROGRESS,
-                             "Stack RESUME started").WithSideEffects(st_set)
-
-        self.stack.state_set(parser.Stack.RESUME, parser.Stack.COMPLETE,
-                             "Stack RESUME completed successfully")
-        self.m.ReplayAll()
-
-        self.assertRaises(exception.ResourceFailure,
-                          scheduler.TaskRunner(self.parent_resource.resume))
-        self.assertEqual(('RESUME', 'FAILED'), self.parent_resource.state)
-        self.assertEqual(('Error: Stack RESUME started'),
-                         self.parent_resource.status_reason)
-
-        self.m.VerifyAll()
-        # Restore state_set to let clean up proceed
-        self.stack.state_set = st_set
-
-    def test_check_nested_resources(self):
-        def _mock_check(res):
-            res.handle_check = mock.Mock()
-
-        self.parent_resource.create_with_template(self.templ, {"KeyName": "k"})
-        nested = self.parent_resource.nested()
-        [_mock_check(res) for res in nested.resources.values()]
-
-        scheduler.TaskRunner(self.parent_resource.check)()
-        [self.assertTrue(res.handle_check.called)
-         for res in nested.resources.values()]
+        complete = getattr(self.parent_resource,
+                           'check_%s_complete' % self.action)
+        self.assertIs(False, complete(task))

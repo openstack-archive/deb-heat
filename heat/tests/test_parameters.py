@@ -12,8 +12,8 @@
 #    under the License.
 
 import json
-import six
 
+import six
 import testtools
 
 from heat.common import exception
@@ -91,7 +91,7 @@ class ParameterTest(testtools.TestCase):
                   'ConstraintDescription': 'wibble',
                   'Default': 'bar'}
         err = self.assertRaises(exception.InvalidSchemaError,
-                                self.new_parameter, 'p', schema, 'foo')
+                                self.new_parameter, 'p', schema)
         self.assertIn('wibble', six.text_type(err))
 
     def test_no_echo_true(self):
@@ -374,8 +374,8 @@ class ParameterTest(testtools.TestCase):
                   'AllowedPattern': '[a-z]*'}
         err = self.assertRaises(exception.StackValidationFailed,
                                 self.new_parameter, 'testparam', schema, '234')
-        expected = 'Parameter \'testparam\' is invalid: '\
-            '"234" does not match pattern "[a-z]*"'
+        expected = ("Parameter 'testparam' is invalid: "
+                    '"234" does not match pattern "[a-z]*"')
         self.assertEqual(expected, six.text_type(err))
 
 

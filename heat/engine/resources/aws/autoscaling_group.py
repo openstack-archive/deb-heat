@@ -12,6 +12,7 @@
 #    under the License.
 
 import math
+
 from oslo.utils import excutils
 import six
 
@@ -20,10 +21,14 @@ from heat.common import grouputils
 from heat.common.i18n import _
 from heat.common.i18n import _LE
 from heat.common.i18n import _LI
+from heat.engine import attributes
 from heat.engine import constraints
+from heat.engine import function
 from heat.engine.notification import autoscaling as notification
 from heat.engine import properties
+from heat.engine import resource
 from heat.engine.resources import instance_group as instgrp
+from heat.engine import rsrc_defn
 from heat.engine import support
 from heat.openstack.common import log as logging
 from heat.scaling import cooldown
@@ -76,10 +81,12 @@ class AutoScalingGroup(instgrp.InstanceGroup, cooldown.CooldownMixin):
         AVAILABILITY_ZONES, LAUNCH_CONFIGURATION_NAME, MAX_SIZE, MIN_SIZE,
         COOLDOWN, DESIRED_CAPACITY, HEALTH_CHECK_GRACE_PERIOD,
         HEALTH_CHECK_TYPE, LOAD_BALANCER_NAMES, VPCZONE_IDENTIFIER, TAGS,
+        INSTANCE_ID,
     ) = (
         'AvailabilityZones', 'LaunchConfigurationName', 'MaxSize', 'MinSize',
         'Cooldown', 'DesiredCapacity', 'HealthCheckGracePeriod',
         'HealthCheckType', 'LoadBalancerNames', 'VPCZoneIdentifier', 'Tags',
+        'InstanceId',
     )
 
     _TAG_KEYS = (
@@ -100,6 +107,12 @@ class AutoScalingGroup(instgrp.InstanceGroup, cooldown.CooldownMixin):
         'MinInstancesInService', 'MaxBatchSize', 'PauseTime'
     )
 
+    ATTRIBUTES = (
+        INSTANCE_LIST,
+    ) = (
+        'InstanceList',
+    )
+
     properties_schema = {
         AVAILABILITY_ZONES: properties.Schema(
             properties.Schema.LIST,
@@ -109,8 +122,17 @@ class AutoScalingGroup(instgrp.InstanceGroup, cooldown.CooldownMixin):
         LAUNCH_CONFIGURATION_NAME: properties.Schema(
             properties.Schema.STRING,
             _('The reference to a LaunchConfiguration resource.'),
-            required=True,
             update_allowed=True
+        ),
+        INSTANCE_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('The ID of an existing instance to use to '
+              'create the Auto Scaling group. If specify this property, '
+              'will create the group use an existing instance instead of '
+              'a launch configuration.'),
+            constraints=[
+                constraints.CustomConstraint("nova.server")
+            ]
         ),
         MAX_SIZE: properties.Schema(
             properties.Schema.INTEGER,
@@ -182,6 +204,13 @@ class AutoScalingGroup(instgrp.InstanceGroup, cooldown.CooldownMixin):
         ),
     }
 
+    attributes_schema = {
+        INSTANCE_LIST: attributes.Schema(
+            _("A comma-delimited list of server ip addresses. "
+              "(Heat extension).")
+        ),
+    }
+
     rolling_update_schema = {
         MIN_INSTANCES_IN_SERVICE: properties.Schema(properties.Schema.INTEGER,
                                                     default=0),
@@ -192,19 +221,40 @@ class AutoScalingGroup(instgrp.InstanceGroup, cooldown.CooldownMixin):
     }
 
     update_policy_schema = {
-        ROLLING_UPDATE: properties.Schema(
-            properties.Schema.MAP,
-            schema=rolling_update_schema)
+        ROLLING_UPDATE: properties.Schema(properties.Schema.MAP,
+                                          schema=rolling_update_schema)
     }
 
     def handle_create(self):
         self.validate_launchconfig()
-        return self.create_with_template(self.child_template(),
-                                         self._environment())
+        return self.create_with_template(self.child_template())
+
+    def _make_launch_config_resource(self, name, props):
+        lc_res_type = 'AWS::AutoScaling::LaunchConfiguration'
+        lc_res_def = rsrc_defn.ResourceDefinition(name,
+                                                  lc_res_type,
+                                                  props)
+        lc_res = resource.Resource(name, lc_res_def, self.stack)
+        return lc_res
 
     def _get_conf_properties(self):
-        conf, props = super(AutoScalingGroup, self)._get_conf_properties()
-        vpc_zone_ids = self.properties.get(AutoScalingGroup.VPCZONE_IDENTIFIER)
+        instance_id = self.properties.get(self.INSTANCE_ID)
+        if instance_id:
+            server = self.client_plugin('nova').get_server(instance_id)
+            instance_props = {
+                'ImageId': server.image['id'],
+                'InstanceType': server.flavor['id'],
+                'KeyName': server.key_name,
+                'SecurityGroups': [sg['name']
+                                   for sg in server.security_groups]
+            }
+            conf = self._make_launch_config_resource(self.name,
+                                                     instance_props)
+            props = function.resolve(conf.properties.data)
+        else:
+            conf, props = super(AutoScalingGroup, self)._get_conf_properties()
+
+        vpc_zone_ids = self.properties.get(self.VPCZONE_IDENTIFIER)
         if vpc_zone_ids:
             props['SubnetId'] = vpc_zone_ids[0]
 
@@ -230,21 +280,18 @@ class AutoScalingGroup(instgrp.InstanceGroup, cooldown.CooldownMixin):
                                                 self.context)
                 self.update_policy = up
 
+        self.properties = json_snippet.properties(self.properties_schema,
+                                                  self.context)
         if prop_diff:
-            self.properties = json_snippet.properties(self.properties_schema,
-                                                      self.context)
-
             # Replace instances first if launch configuration has changed
             self._try_rolling_update(prop_diff)
 
-            if (self.DESIRED_CAPACITY in prop_diff and
-                    self.properties[self.DESIRED_CAPACITY] is not None):
-
-                self.adjust(self.properties[self.DESIRED_CAPACITY],
-                            adjustment_type=EXACT_CAPACITY)
-            else:
-                current_capacity = grouputils.get_size(self)
-                self.adjust(current_capacity, adjustment_type=EXACT_CAPACITY)
+        if self.properties[self.DESIRED_CAPACITY] is not None:
+            self.adjust(self.properties[self.DESIRED_CAPACITY],
+                        adjustment_type=EXACT_CAPACITY)
+        else:
+            current_capacity = grouputils.get_size(self)
+            self.adjust(current_capacity, adjustment_type=EXACT_CAPACITY)
 
     def adjust(self, adjustment, adjustment_type=CHANGE_IN_CAPACITY):
         """
@@ -263,8 +310,9 @@ class AutoScalingGroup(instgrp.InstanceGroup, cooldown.CooldownMixin):
 
         new_capacity = _calculate_new_capacity(capacity, adjustment,
                                                adjustment_type, lower, upper)
-
-        if new_capacity == capacity:
+        total = grouputils.get_size(self, include_failed=True)
+        # if there are failed resources in nested_stack, has to change
+        if new_capacity == total:
             LOG.debug('no change in capacity %d' % capacity)
             return
 
@@ -314,10 +362,6 @@ class AutoScalingGroup(instgrp.InstanceGroup, cooldown.CooldownMixin):
         return super(AutoScalingGroup, self)._tags() + autoscaling_tag
 
     def validate(self):
-        res = super(AutoScalingGroup, self).validate()
-        if res:
-            return res
-
         # check validity of group size
         min_size = self.properties[self.MIN_SIZE]
         max_size = self.properties[self.MAX_SIZE]
@@ -340,10 +384,32 @@ class AutoScalingGroup(instgrp.InstanceGroup, cooldown.CooldownMixin):
         # availability zones, it will be possible to specify multiple subnets.
         # For now, only one subnet can be specified. The bug #1096017 tracks
         # this issue.
-        if self.properties.get(self.VPCZONE_IDENTIFIER) and \
-                len(self.properties[self.VPCZONE_IDENTIFIER]) != 1:
+        if (self.properties.get(self.VPCZONE_IDENTIFIER) and
+                len(self.properties[self.VPCZONE_IDENTIFIER]) != 1):
             raise exception.NotSupported(feature=_("Anything other than one "
                                          "VPCZoneIdentifier"))
+        # validate properties InstanceId and LaunchConfigurationName
+        # for aws auto scaling group.
+        # should provide just only one of
+        if self.type() == 'AWS::AutoScaling::AutoScalingGroup':
+            instanceId = self.properties.get(self.INSTANCE_ID)
+            launch_config = self.properties.get(
+                self.LAUNCH_CONFIGURATION_NAME)
+            if bool(instanceId) == bool(launch_config):
+                msg = _("Either 'InstanceId' or 'LaunchConfigurationName' "
+                        "must be provided.")
+                raise exception.StackValidationFailed(message=msg)
+
+        super(AutoScalingGroup, self).validate()
+
+    def _resolve_attribute(self, name):
+        '''
+        heat extension: "InstanceList" returns comma delimited list of server
+        ip addresses.
+        '''
+        if name == self.INSTANCE_LIST:
+            return u','.join(inst.FnGetAtt('PublicIp')
+                             for inst in grouputils.get_members(self)) or None
 
     def child_template(self):
         if self.properties[self.DESIRED_CAPACITY]:

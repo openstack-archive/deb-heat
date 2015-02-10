@@ -12,9 +12,9 @@
 #    under the License.
 
 import datetime as dt
+import json
 import uuid
 
-import json
 import mock
 import six
 
@@ -207,6 +207,18 @@ class FormatTest(common.HeatTestCase):
         formatted = api.format_stack_resource(res, False)
         self.assertEqual(resource_keys, set(formatted.keys()))
 
+    def test_format_stack_resource_with_nested_stack_empty(self):
+        res = self.stack['generic1']
+        nested_id = {'foo': 'bar'}
+
+        res.nested = mock.MagicMock()
+        res.nested.return_value.identifier.return_value = nested_id
+        res.nested.return_value.__len__.return_value = 0
+
+        formatted = api.format_stack_resource(res, False)
+        res.nested.return_value.identifier.assert_called_once_with()
+        self.assertEqual(nested_id, formatted[rpc_api.RES_NESTED_STACK_ID])
+
     def test_format_stack_resource_required_by(self):
         res1 = api.format_stack_resource(self.stack['generic1'])
         res2 = api.format_stack_resource(self.stack['generic2'])
@@ -289,6 +301,7 @@ class FormatTest(common.HeatTestCase):
             'stack_owner': 'test_username',
             'stack_status': 'IN_PROGRESS',
             'stack_status_reason': '',
+            'stack_user_project_id': None,
             'template_description': 'No description',
             'timeout_mins': None,
             'parameters': {

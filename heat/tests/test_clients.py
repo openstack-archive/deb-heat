@@ -15,26 +15,40 @@ from ceilometerclient import exc as ceil_exc
 from ceilometerclient.openstack.common.apiclient import exceptions as c_a_exc
 from cinderclient import exceptions as cinder_exc
 from glanceclient import exc as glance_exc
+from heatclient import client as heatclient
 from heatclient import exc as heat_exc
 from keystoneclient import exceptions as keystone_exc
+import mock
 from neutronclient.common import exceptions as neutron_exc
+from oslo.config import cfg
 from saharaclient.api import base as sahara_base
+import six
 from swiftclient import exceptions as swift_exc
+from testtools import testcase
 from troveclient import client as troveclient
 
-from heatclient import client as heatclient
-import mock
-from oslo.config import cfg
-from testtools import testcase
-
+from heat.common import exception
 from heat.engine import clients
 from heat.engine.clients import client_plugin
 from heat.tests import common
+from heat.tests import fakes
 from heat.tests import utils
 from heat.tests.v1_1 import fakes as fakes_v1_1
 
 
 class ClientsTest(common.HeatTestCase):
+
+    def test_bad_cloud_backend(self):
+        con = mock.Mock()
+        cfg.CONF.set_override('cloud_backend', 'some.weird.object')
+        exc = self.assertRaises(exception.Invalid, clients.Clients, con)
+        self.assertIn('Invalid cloud_backend setting in heat.conf detected',
+                      six.text_type(exc))
+
+        cfg.CONF.set_override('cloud_backend', 'heat.engine.clients.Clients')
+        exc = self.assertRaises(exception.Invalid, clients.Clients, con)
+        self.assertIn('Invalid cloud_backend setting in heat.conf detected',
+                      six.text_type(exc))
 
     def test_clients_get_heat_url(self):
         con = mock.Mock()
@@ -74,11 +88,11 @@ class ClientsTest(common.HeatTestCase):
 
     @mock.patch.object(heatclient, 'Client')
     def test_clients_heat_no_auth_token(self, mock_call):
-        self.stub_keystoneclient(auth_token='anewtoken')
         con = mock.Mock()
         con.auth_url = "http://auth.example.com:5000/v2.0"
         con.tenant_id = "b363706f891f48019483f8bd6503c54b"
         con.auth_token = None
+        con.auth_plugin = fakes.FakeAuth(auth_token='anewtoken')
         c = clients.Clients(con)
         con.clients = c
 
@@ -89,11 +103,12 @@ class ClientsTest(common.HeatTestCase):
 
     @mock.patch.object(heatclient, 'Client')
     def test_clients_heat_cached(self, mock_call):
-        self.stub_keystoneclient()
+        self.stub_auth()
         con = mock.Mock()
         con.auth_url = "http://auth.example.com:5000/v2.0"
         con.tenant_id = "b363706f891f48019483f8bd6503c54b"
         con.auth_token = "3bcc3d3a03f44e3d8377f9247b0ad155"
+        con.trust_id = None
         c = clients.Clients(con)
         con.clients = c
 
@@ -106,22 +121,6 @@ class ClientsTest(common.HeatTestCase):
         heat = obj.client()
         heat_cached = obj.client()
         self.assertEqual(heat, heat_cached)
-
-    def test_clients_auth_token_update(self):
-        fkc = self.stub_keystoneclient(auth_token='token1')
-        con = mock.Mock()
-        con.auth_url = "http://auth.example.com:5000/v2.0"
-        con.trust_id = "b363706f891f48019483f8bd6503c54b"
-        con.username = 'heat'
-        con.password = 'verysecret'
-        con.auth_token = None
-        obj = clients.Clients(con)
-        con.clients = obj
-
-        self.assertIsNotNone(obj.client('heat'))
-        self.assertEqual('token1', obj.auth_token)
-        fkc.auth_token = 'token2'
-        self.assertEqual('token2', obj.auth_token)
 
 
 class FooClientsPlugin(client_plugin.ClientPlugin):
@@ -164,37 +163,37 @@ class ClientPluginTest(common.HeatTestCase):
     def test_auth_token(self):
         con = mock.Mock()
         con.auth_token = "1234"
+        con.trust_id = None
 
         c = clients.Clients(con)
         con.clients = c
 
-        c.client = mock.Mock(name="client")
-        mock_keystone = mock.Mock()
-        c.client.return_value = mock_keystone
-        mock_keystone.auth_token = '5678'
+        con.auth_plugin = mock.Mock(name="auth_plugin")
+        con.auth_plugin.get_token = mock.Mock(name="get_token")
+        con.auth_plugin.get_token.return_value = '5678'
         plugin = FooClientsPlugin(con)
 
-        # assert token is from keystone rather than context
+        # assert token is from plugin rather than context
         # even though both are set
         self.assertEqual('5678', plugin.auth_token)
-        c.client.assert_called_with('keystone')
+        con.auth_plugin.get_token.assert_called()
 
     def test_url_for(self):
         con = mock.Mock()
         con.auth_token = "1234"
+        con.trust_id = None
 
         c = clients.Clients(con)
         con.clients = c
 
-        c.client = mock.Mock(name="client")
-        mock_keystone = mock.Mock()
-        c.client.return_value = mock_keystone
-        mock_keystone.url_for.return_value = 'http://192.0.2.1/foo'
+        con.auth_plugin = mock.Mock(name="auth_plugin")
+        con.auth_plugin.get_endpoint = mock.Mock(name="get_endpoint")
+        con.auth_plugin.get_endpoint.return_value = 'http://192.0.2.1/foo'
         plugin = FooClientsPlugin(con)
 
         self.assertEqual('http://192.0.2.1/foo',
                          plugin.url_for(service_type='foo'))
-        c.client.assert_called_with('keystone')
+        con.auth_plugin.get_endpoint.assert_called()
 
     def test_abstract_create(self):
         con = mock.Mock()
@@ -465,8 +464,7 @@ class TestIsNotFound(common.HeatTestCase):
             is_client_exception=True,
             is_conflict=True,
             plugin='neutron',
-            exception=lambda: neutron_exc.NeutronClientException(
-                status_code=409),
+            exception=lambda: neutron_exc.Conflict(),
         )),
         ('nova_not_found', dict(
             is_not_found=True,
@@ -694,19 +692,19 @@ class TestIsNotFound(common.HeatTestCase):
 class ClientAPIVersionTest(common.HeatTestCase):
 
     def test_cinder_api_v1_and_v2(self):
-        self.stub_keystoneclient()
+        self.stub_auth()
         ctx = utils.dummy_context()
         client = clients.Clients(ctx).client('cinder')
         self.assertEqual(2, client.volume_api_version)
 
     def test_cinder_api_v1_only(self):
-        self.stub_keystoneclient(only_services=['volume'])
+        self.stub_auth(only_services=['volume'])
         ctx = utils.dummy_context()
         client = clients.Clients(ctx).client('cinder')
         self.assertEqual(1, client.volume_api_version)
 
     def test_cinder_api_v2_only(self):
-        self.stub_keystoneclient(only_services=['volumev2'])
+        self.stub_auth(only_services=['volumev2'])
         ctx = utils.dummy_context()
         client = clients.Clients(ctx).client('cinder')
         self.assertEqual(2, client.volume_api_version)

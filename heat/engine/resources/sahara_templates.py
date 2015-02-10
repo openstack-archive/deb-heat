@@ -24,7 +24,7 @@ from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
 
-#NOTE(pshchelo): copied from sahara/utils/api_validator.py
+# NOTE(pshchelo): copied from sahara/utils/api_validator.py
 SAHARA_NAME_REGEX = (r"^(([a-zA-Z]|[a-zA-Z][a-zA-Z0-9\-]"
                      r"*[a-zA-Z0-9])\.)*([A-Za-z]|[A-Za-z]"
                      r"[A-Za-z0-9\-]*[A-Za-z0-9])$")
@@ -76,6 +76,9 @@ class SaharaNodeGroupTemplate(resource.Resource):
             properties.Schema.STRING,
             _('Name or ID Nova flavor for the nodes.'),
             required=True,
+            constraints=[
+                constraints.CustomConstraint('nova.flavor')
+            ]
         ),
         VOLUMES_PER_NODE: properties.Schema(
             properties.Schema.INTEGER,
@@ -132,10 +135,10 @@ class SaharaNodeGroupTemplate(resource.Resource):
         ),
         FLOATING_IP_POOL: properties.Schema(
             properties.Schema.STRING,
-            _("Name or UUID of the Neutron floating IP network to use."),
-            constraints=[
-                constraints.CustomConstraint('neutron.network'),
-            ],
+            _("Name or UUID of the Neutron floating IP network or "
+              "name of the Nova floating ip pool to use. "
+              "Should not be provided when used with Nova-network "
+              "that auto-assign floating IPs."),
         ),
         NODE_CONFIGS: properties.Schema(
             properties.Schema.MAP,
@@ -167,12 +170,11 @@ class SaharaNodeGroupTemplate(resource.Resource):
         security_groups = self.properties[self.SECURITY_GROUPS]
         auto_security_group = self.properties[self.AUTO_SECURITY_GROUP]
         availability_zone = self.properties[self.AVAILABILITY_ZONE]
-        vol_availability_sone = self.properties[self.VOLUMES_AVAILABILITY_ZONE]
-        if floating_ip_pool:
+        vol_availability_zone = self.properties[self.VOLUMES_AVAILABILITY_ZONE]
+        if floating_ip_pool and self.is_using_neutron():
             floating_ip_pool = self.client_plugin(
-                'neutron').find_neutron_resource(self.properties,
-                                                 self.FLOATING_IP_POOL,
-                                                 'network')
+                'neutron').find_neutron_resource(
+                    self.properties, self.FLOATING_IP_POOL, 'network')
         node_configs = self.properties.get(self.NODE_CONFIGS)
 
         node_group_template = self.client().node_group_templates.create(
@@ -188,7 +190,7 @@ class SaharaNodeGroupTemplate(resource.Resource):
             security_groups=security_groups,
             auto_security_group=auto_security_group,
             availability_zone=availability_zone,
-            volumes_availability_zone=vol_availability_sone
+            volumes_availability_zone=vol_availability_zone
         )
         LOG.info(_LI("Node Group Template '%s' has been created"),
                  node_group_template.name)
@@ -210,11 +212,26 @@ class SaharaNodeGroupTemplate(resource.Resource):
         res = super(SaharaNodeGroupTemplate, self).validate()
         if res:
             return res
-        #NOTE(pshchelo): floating ip pool must be set for Neutron
-        if (self.is_using_neutron() and
-                not self.properties.get(self.FLOATING_IP_POOL)):
-            msg = _("%s must be provided.") % self.FLOATING_IP_POOL
-            raise exception.StackValidationFailed(message=msg)
+        pool = self.properties[self.FLOATING_IP_POOL]
+        if pool:
+            if self.is_using_neutron():
+                try:
+                    self.client_plugin('neutron').find_neutron_resource(
+                        self.properties, self.FLOATING_IP_POOL, 'network')
+                except Exception as ex:
+                    if (self.client_plugin('neutron').is_not_found(ex)
+                            or self.client_plugin('neutron').is_no_unique(ex)):
+                        raise exception.StackValidationFailed(
+                            message=ex.message)
+                    raise
+            else:
+                try:
+                    self.client('nova').floating_ip_pools.find(name=pool)
+                except Exception as ex:
+                    if self.client_plugin('nova').is_not_found(ex):
+                        raise exception.StackValidationFailed(
+                            message=ex.message)
+                    raise
 
 
 class SaharaClusterTemplate(resource.Resource):
@@ -369,7 +386,7 @@ class SaharaClusterTemplate(resource.Resource):
         if res:
             return res
         # check if running on neutron and MANAGEMENT_NETWORK missing
-        #NOTE(pshchelo): on nova-network with MANAGEMENT_NETWORK present
+        # NOTE(pshchelo): on nova-network with MANAGEMENT_NETWORK present
         # overall stack validation will fail due to neutron.network constraint,
         # although the message will be not really relevant.
         if (self.is_using_neutron() and

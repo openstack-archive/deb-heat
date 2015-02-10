@@ -11,9 +11,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import six
-
 from keystoneclient import exceptions as kc_exceptions
+import six
 
 from heat.common import exception
 from heat.common import short_id
@@ -80,7 +79,7 @@ class StackUserTest(common.HeatTestCase):
         return rsrc
 
     def test_handle_create_no_stack_project(self):
-        rsrc = self._user_create(stack_name='user_test123',
+        rsrc = self._user_create(stack_name='stackuser_crnoprj',
                                  project_id='aproject123',
                                  user_id='auser123')
         self.m.ReplayAll()
@@ -92,7 +91,7 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_handle_create_existing_project(self):
-        rsrc = self._user_create(stack_name='user_test456',
+        rsrc = self._user_create(stack_name='stackuser_crexistprj',
                                  project_id='aproject456',
                                  user_id='auser456',
                                  create_project=False)
@@ -105,7 +104,7 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_handle_delete(self):
-        rsrc = self._user_create(stack_name='user_testdel',
+        rsrc = self._user_create(stack_name='stackuser_testdel',
                                  project_id='aprojectdel',
                                  user_id='auserdel')
 
@@ -123,7 +122,7 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_handle_delete_not_found(self):
-        rsrc = self._user_create(stack_name='user_testdel2',
+        rsrc = self._user_create(stack_name='stackuser_testdel_notfound',
                                  project_id='aprojectdel2',
                                  user_id='auserdel2')
 
@@ -142,7 +141,7 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_handle_delete_noid(self):
-        rsrc = self._user_create(stack_name='user_testdel2',
+        rsrc = self._user_create(stack_name='stackuser_testdel_noid',
                                  project_id='aprojectdel2',
                                  user_id='auserdel2')
 
@@ -156,7 +155,7 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_handle_suspend(self):
-        rsrc = self._user_create(stack_name='user_testdel',
+        rsrc = self._user_create(stack_name='stackuser_testsusp',
                                  project_id='aprojectdel',
                                  user_id='auserdel')
 
@@ -174,7 +173,7 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_handle_suspend_legacy(self):
-        rsrc = self._user_create(stack_name='user_testdel',
+        rsrc = self._user_create(stack_name='stackuser_testsusp_lgcy',
                                  project_id='aprojectdel',
                                  user_id='auserdel')
 
@@ -196,7 +195,7 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_handle_resume(self):
-        rsrc = self._user_create(stack_name='user_testdel',
+        rsrc = self._user_create(stack_name='stackuser_testresume',
                                  project_id='aprojectdel',
                                  user_id='auserdel')
 
@@ -215,7 +214,7 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_handle_resume_legacy(self):
-        rsrc = self._user_create(stack_name='user_testdel',
+        rsrc = self._user_create(stack_name='stackuser_testresume_lgcy',
                                  project_id='aprojectdel',
                                  user_id='auserdel')
 
@@ -238,7 +237,7 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_keypair(self):
-        rsrc = self._user_create(stack_name='user_testdel',
+        rsrc = self._user_create(stack_name='stackuser_test_cr_keypair',
                                  project_id='aprojectdel',
                                  user_id='auserdel')
 
@@ -263,7 +262,7 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_keypair_error(self):
-        rsrc = self._user_create(stack_name='user_testdel',
+        rsrc = self._user_create(stack_name='stackuser_test_cr_keypair_err',
                                  project_id='aprojectdel',
                                  user_id='auserdel')
 
@@ -280,7 +279,7 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_delete_keypair(self):
-        rsrc = self._user_create(stack_name='user_testdel',
+        rsrc = self._user_create(stack_name='stackuser_testdel_keypair',
                                  project_id='aprojectdel',
                                  user_id='auserdel')
 
@@ -302,13 +301,13 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_delete_keypair_no_credential_id(self):
-        rsrc = self._user_create(stack_name='user_testdel',
+        rsrc = self._user_create(stack_name='stackuser_del_keypair_nocrdid',
                                  project_id='aprojectdel',
                                  user_id='auserdel')
         rsrc._delete_keypair()
 
     def test_delete_keypair_legacy(self):
-        rsrc = self._user_create(stack_name='user_testdel',
+        rsrc = self._user_create(stack_name='stackuser_testdel_keypair_lgcy',
                                  project_id='aprojectdel',
                                  user_id='auserdel')
 
@@ -334,7 +333,7 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_delete_keypair_notfound(self):
-        rsrc = self._user_create(stack_name='user_testdel',
+        rsrc = self._user_create(stack_name='stackuser_testdel_kpr_notfound',
                                  project_id='aprojectdel',
                                  user_id='auserdel')
 
@@ -354,17 +353,15 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_user_token(self):
-        rsrc = self._user_create(stack_name='user_test123',
+        rsrc = self._user_create(stack_name='stackuser_testtoken',
                                  project_id='aproject123',
-                                 user_id='auser123',
+                                 user_id='aabbcc',
                                  password='apassword')
 
-        short_id.get_id(rsrc.id).AndReturn('aabbcc')
         self.m.StubOutWithMock(fakes.FakeKeystoneClient,
                                'stack_domain_user_token')
-        username = 'user_test123-user-aabbcc'
         fakes.FakeKeystoneClient.stack_domain_user_token(
-            username=username, project_id='aproject123',
+            user_id='aabbcc', project_id='aproject123',
             password='apassword').AndReturn('atoken123')
         self.m.ReplayAll()
 
@@ -375,7 +372,7 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_user_token_err_nopassword(self):
-        rsrc = self._user_create(stack_name='user_test123',
+        rsrc = self._user_create(stack_name='stackuser_testtoken_err_nopwd',
                                  project_id='aproject123',
                                  user_id='auser123')
         self.m.ReplayAll()
@@ -388,7 +385,7 @@ class StackUserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_user_token_err_noproject(self):
-        stack_name = 'user_test123'
+        stack_name = 'user_token_err_noprohect_stack'
         resource_name = 'user'
         t = template_format.parse(user_template)
         stack = utils.parse_stack(t, stack_name=stack_name)

@@ -16,6 +16,7 @@ import json
 import mock
 from oslo.config import cfg
 from oslo.messaging._drivers import common as rpc_common
+from oslo.messaging import exceptions
 import six
 import webob.exc
 
@@ -25,6 +26,7 @@ import heat.api.openstack.v1.actions as actions
 import heat.api.openstack.v1.build_info as build_info
 import heat.api.openstack.v1.events as events
 import heat.api.openstack.v1.resources as resources
+import heat.api.openstack.v1.services as services
 import heat.api.openstack.v1.software_configs as software_configs
 import heat.api.openstack.v1.software_deployments as software_deployments
 import heat.api.openstack.v1.stacks as stacks
@@ -65,9 +67,9 @@ class InstantiationDataTest(common.HeatTestCase):
         data = {"AWSTemplateFormatVersion": "2010-09-09",
                 "key1": ["val1[0]", "val1[1]"],
                 "key2": "val2"}
-        json_repr = '{"AWSTemplateFormatVersion" : "2010-09-09",' \
-                    '"key1": [ "val1[0]", "val1[1]" ], ' \
-                    '"key2": "val2" }'
+        json_repr = ('{"AWSTemplateFormatVersion" : "2010-09-09",'
+                     '"key1": [ "val1[0]", "val1[1]" ], '
+                     '"key2": "val2" }')
         parsed = stacks.InstantiationData.format_parse(json_repr, 'foo')
         self.assertEqual(data, parsed)
 
@@ -108,8 +110,8 @@ parameters:
         self.assertEqual(template, data.template())
 
     def test_template_string_json(self):
-        template = '{"heat_template_version": "2013-05-23",' \
-                   '"foo": "bar", "blarg": "wibble"}'
+        template = ('{"heat_template_version": "2013-05-23",'
+                    '"foo": "bar", "blarg": "wibble"}')
         body = {'template': template}
         data = stacks.InstantiationData(body)
         self.assertEqual(json.loads(template), data.template())
@@ -839,7 +841,7 @@ class StackControllerTest(ControllerTest, common.HeatTestCase):
             req.context,
             ('create_stack',
              {'stack_name': identity.stack_name,
-             'template': template,
+              'template': template,
               'params': {'parameters': parameters,
                          'parameter_defaults': {},
                          'resource_registry': {}},
@@ -2544,10 +2546,11 @@ class ResourceControllerTest(ControllerTest, common.HeatTestCase):
         self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
         rpc_client.EngineClient.call(
             req.context,
-            ('resource_signal',
-             {'stack_identity': stack_identity,
-              'resource_name': res_name,
-              'details': 'Signal content'}))
+            ('resource_signal', {'stack_identity': stack_identity,
+                                 'resource_name': res_name,
+                                 'details': 'Signal content',
+                                 'sync_call': False}),
+            version='1.3')
         self.m.ReplayAll()
 
         result = self.controller.signal(req, tenant_id=self.tenant,
@@ -3616,6 +3619,63 @@ class RoutesTest(common.HeatTestCase):
             {'tenant_id': 'fake_tenant'}
         )
 
+    def test_405(self):
+        self.assertRoute(
+            self.m,
+            '/fake_tenant/validate',
+            'GET',
+            'reject',
+            'DefaultMethodController',
+            {'tenant_id': 'fake_tenant', 'allowed_methods': 'POST'}
+        )
+        self.assertRoute(
+            self.m,
+            '/fake_tenant/stacks',
+            'PUT',
+            'reject',
+            'DefaultMethodController',
+            {'tenant_id': 'fake_tenant', 'allowed_methods': 'GET,POST'}
+        )
+        self.assertRoute(
+            self.m,
+            '/fake_tenant/stacks/fake_stack/stack_id',
+            'POST',
+            'reject',
+            'DefaultMethodController',
+            {'tenant_id': 'fake_tenant', 'stack_name': 'fake_stack',
+             'stack_id': 'stack_id', 'allowed_methods': 'GET,PUT,PATCH,DELETE'}
+        )
+
+    def test_options(self):
+        self.assertRoute(
+            self.m,
+            '/fake_tenant/validate',
+            'OPTIONS',
+            'options',
+            'DefaultMethodController',
+            {'tenant_id': 'fake_tenant', 'allowed_methods': 'POST'}
+        )
+        self.assertRoute(
+            self.m,
+            '/fake_tenant/stacks/fake_stack/stack_id',
+            'OPTIONS',
+            'options',
+            'DefaultMethodController',
+            {'tenant_id': 'fake_tenant', 'stack_name': 'fake_stack',
+             'stack_id': 'stack_id', 'allowed_methods': 'GET,PUT,PATCH,DELETE'}
+        )
+
+    def test_services(self):
+        self.assertRoute(
+            self.m,
+            '/aaaa/services',
+            'GET',
+            'index',
+            'ServiceController',
+            {
+                'tenant_id': 'aaaa'
+            })
+
 
 @mock.patch.object(policy.Enforcer, 'enforce')
 class ActionControllerTest(ControllerTest, common.HeatTestCase):
@@ -4221,3 +4281,37 @@ class SoftwareDeploymentControllerTest(ControllerTest, common.HeatTestCase):
                 req, deployment_id=deployment_id, tenant_id=self.tenant)
             self.assertEqual(404, resp.json['code'])
             self.assertEqual('NotFound', resp.json['error']['type'])
+
+
+class ServiceControllerTest(ControllerTest, common.HeatTestCase):
+
+    def setUp(self):
+        super(ServiceControllerTest, self).setUp()
+        self.controller = services.ServiceController({})
+
+    @mock.patch.object(policy.Enforcer, 'enforce')
+    def test_index(self, mock_enforce):
+        self._mock_enforce_setup(
+            mock_enforce, 'index')
+        req = self._get('/services')
+        return_value = []
+        with mock.patch.object(
+                self.controller.rpc_client,
+                'list_services',
+                return_value=return_value):
+            resp = self.controller.index(req, tenant_id=self.tenant)
+            self.assertEqual(
+                {'services': []}, resp)
+
+    @mock.patch.object(policy.Enforcer, 'enforce')
+    def test_index_503(self, mock_enforce):
+        self._mock_enforce_setup(
+            mock_enforce, 'index')
+        req = self._get('/services')
+        with mock.patch.object(
+                self.controller.rpc_client,
+                'list_services',
+                side_effect=exceptions.MessagingTimeout()):
+            self.assertRaises(
+                webob.exc.HTTPServiceUnavailable,
+                self.controller.index, req, tenant_id=self.tenant)

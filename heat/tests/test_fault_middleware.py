@@ -12,12 +12,12 @@
 #    under the License.
 
 import inspect
-from oslo.config import cfg
 import re
+
+from oslo.config import cfg
+from oslo.messaging._drivers import common as rpc_common
 import six
 import webob
-
-from oslo.messaging._drivers import common as rpc_common
 
 import heat.api.middleware.fault as fault
 from heat.common import exception as heat_exc
@@ -104,8 +104,8 @@ class FaultMiddlewareTest(common.HeatTestCase):
             serialized, ["heat.common.exception"])
         wrapper = fault.FaultWrapper(None)
         msg = wrapper._error(remote_error)
-        expected_message, expected_traceback = six.text_type(remote_error).\
-            split('\n', 1)
+        expected_message, expected_traceback = six.text_type(
+            remote_error).split('\n', 1)
         expected = {'code': 404,
                     'error': {'message': expected_message,
                               'traceback': expected_traceback,
@@ -211,8 +211,8 @@ class FaultMiddlewareTest(common.HeatTestCase):
 
         wrapper = fault.FaultWrapper(None)
         msg = wrapper._error(remote_error)
-        expected_message, expected_traceback = six.text_type(remote_error).\
-            split('\n', 1)
+        expected_message, expected_traceback = six.text_type(
+            remote_error).split('\n', 1)
         expected = {'code': 404,
                     'error': {'message': expected_message,
                               'traceback': expected_traceback,

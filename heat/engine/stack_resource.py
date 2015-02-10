@@ -15,11 +15,13 @@ import hashlib
 
 from oslo.config import cfg
 from oslo.serialization import jsonutils
+import six
 
 from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LI
 from heat.common.i18n import _LW
+from heat.common import template_format
 from heat.engine import attributes
 from heat.engine import environment
 from heat.engine import resource
@@ -50,14 +52,18 @@ class StackResource(resource.Resource):
 
     def validate(self):
         super(StackResource, self).validate()
+        self.validate_nested_stack()
+
+    def validate_nested_stack(self):
         try:
             nested_stack = self._parse_nested_stack(
                 self.stack.name,
                 self.child_template(),
                 self.child_params())
+            nested_stack.strict_validate = False
             nested_stack.validate()
         except Exception as ex:
-            msg = _("Failed to validate: %s") % ex
+            msg = _("Failed to validate: %s") % six.text_type(ex)
             raise exception.StackValidationFailed(message=msg)
 
     def _outputs_to_attribs(self, json_snippet):
@@ -76,8 +82,8 @@ class StackResource(resource.Resource):
         return True
 
     def nested(self, force_reload=False, show_deleted=False):
-        '''
-        Return a Stack object representing the nested (child) stack.
+        '''Return a Stack object representing the nested (child) stack.
+
         :param force_reload: Forces reloading from the DB instead of returning
                              the locally cached Stack object
         :param show_deleted: Returns the stack even if it's been deleted
@@ -146,11 +152,12 @@ class StackResource(resource.Resource):
         return template.Template(parsed_child_template,
                                  files=self.stack.t.files)
 
-    def _parse_nested_stack(self, stack_name, child_template, child_params,
-                            timeout_mins=None, adopt_data=None):
+    def _parse_nested_stack(self, stack_name, child_template,
+                            child_params=None, timeout_mins=None,
+                            adopt_data=None):
         if self.stack.nested_depth >= cfg.CONF.max_nested_stack_depth:
-            msg = _("Recursion depth exceeds %d.") % \
-                cfg.CONF.max_nested_stack_depth
+            msg = _("Recursion depth exceeds %d."
+                    ) % cfg.CONF.max_nested_stack_depth
             raise exception.RequestLimitExceeded(message=msg)
 
         parsed_template = self._parse_child_template(child_template)
@@ -168,10 +175,13 @@ class StackResource(resource.Resource):
         stack_user_project_id = self.stack.stack_user_project_id
         new_nested_depth = self.stack.nested_depth + 1
 
-        # Note we disable rollback for nested stacks, since they
-        # should be rolled back by the parent stack on failure
+        if child_params is None:
+            child_params = self.child_params()
         child_env = environment.get_child_environment(
             self.stack.env, child_params)
+
+        # Note we disable rollback for nested stacks, since they
+        # should be rolled back by the parent stack on failure
         nested = parser.Stack(self.context,
                               stack_name,
                               parsed_template,
@@ -198,7 +208,7 @@ class StackResource(resource.Resource):
             message = exception.StackResourceLimitExceeded.msg_fmt
             raise exception.RequestLimitExceeded(message=message)
 
-    def create_with_template(self, child_template, user_params,
+    def create_with_template(self, child_template, user_params=None,
                              timeout_mins=None, adopt_data=None):
         """Create the nested stack with the given template."""
         name = self.physical_resource_name()
@@ -232,15 +242,35 @@ class StackResource(resource.Resource):
 
         return done
 
-    def update_with_template(self, child_template, user_params,
+    def check_adopt_complete(self, stack_creator):
+        if stack_creator is None:
+            return True
+        done = stack_creator.step()
+        if done:
+            if self._nested.state != (self._nested.ADOPT,
+                                      self._nested.COMPLETE):
+                raise exception.Error(self._nested.status_reason)
+
+        return done
+
+    def update_with_template(self, child_template, user_params=None,
                              timeout_mins=None):
         """Update the nested stack with the new template."""
+        if self.id is None:
+            self._store()
+        name = self.physical_resource_name()
+
         nested_stack = self.nested()
         if nested_stack is None:
-            raise exception.Error(_('Cannot update %s, stack not created')
-                                  % self.name)
+            # if the create failed for some reason and the nested
+            # stack was not created, we need to create an empty stack
+            # here so that the update will work.
+            empty_temp = template_format.parse(
+                "heat_template_version: '2013-05-23'")
+            stack_creator = self.create_with_template(empty_temp, {})
+            stack_creator.run_to_completion()
+            nested_stack = self.nested()
 
-        name = self.physical_resource_name()
         stack = self._parse_nested_stack(name, child_template, user_params,
                                          timeout_mins)
         stack.validate()

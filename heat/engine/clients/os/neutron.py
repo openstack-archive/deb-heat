@@ -14,11 +14,11 @@
 from neutronclient.common import exceptions
 from neutronclient.neutron import v2_0 as neutronV20
 from neutronclient.v2_0 import client as nc
+from oslo.utils import uuidutils
 
 from heat.common import exception
 from heat.engine.clients import client_plugin
 from heat.engine import constraints
-from heat.openstack.common import uuidutils
 
 
 class NeutronClientPlugin(client_plugin.ClientPlugin):
@@ -54,14 +54,17 @@ class NeutronClientPlugin(client_plugin.ClientPlugin):
                 ex.status_code == 404)
 
     def is_conflict(self, ex):
-        if not isinstance(ex, exceptions.NeutronClientException):
-            return False
-        return ex.status_code == 409
+        bad_conflicts = (exceptions.OverQuotaClient,)
+        return (isinstance(ex, exceptions.Conflict) and
+                not isinstance(ex, bad_conflicts))
 
     def is_over_limit(self, ex):
         if not isinstance(ex, exceptions.NeutronClientException):
             return False
         return ex.status_code == 413
+
+    def is_no_unique(self, ex):
+        return isinstance(ex, exceptions.NeutronClientNoUniqueMatch)
 
     def find_neutron_resource(self, props, key, key_type):
         return neutronV20.find_resourceid_by_name_or_id(
@@ -82,6 +85,9 @@ class NeutronClientPlugin(client_plugin.ClientPlugin):
 
     def resolve_router(self, props, router_key, router_id_key):
         return self._resolve(props, router_key, router_id_key, 'router')
+
+    def resolve_port(self, props, port_key, port_id_key):
+        return self._resolve(props, port_key, port_id_key, 'port')
 
     def network_id_from_subnet_id(self, subnet_id):
         subnet_info = self.client().show_subnet(subnet_id)

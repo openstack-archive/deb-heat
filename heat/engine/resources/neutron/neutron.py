@@ -10,15 +10,15 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+from oslo.utils import uuidutils
 import six
 
 import warnings
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.engine import properties as properties_module
 from heat.engine import resource
-from heat.engine import scheduler
-from heat.openstack.common import uuidutils
 
 
 class NeutronResource(resource.Resource):
@@ -52,18 +52,19 @@ class NeutronResource(resource.Resource):
 
     @staticmethod
     def _validate_depr_property_required(properties, prop_key, depr_prop_key):
+        if isinstance(properties, properties_module.Properties):
+            prop_value = properties.data.get(prop_key)
+            depr_prop_value = properties.data.get(depr_prop_key)
+        else:
             prop_value = properties.get(prop_key)
             depr_prop_value = properties.get(depr_prop_key)
 
-            if prop_value and depr_prop_value:
-                raise exception.ResourcePropertyConflict(prop_key,
-                                                         depr_prop_key)
-            if not prop_value and not depr_prop_value:
-                msg = _('Either %(prop_key)s or %(depr_prop_key)s'
-                        ' should be specified.'
-                        ) % {'prop_key': prop_key,
-                             'depr_prop_key': depr_prop_key}
-                raise exception.StackValidationFailed(message=msg)
+        if prop_value and depr_prop_value:
+            raise exception.ResourcePropertyConflict(prop_key,
+                                                     depr_prop_key)
+        if not prop_value and not depr_prop_value:
+            raise exception.PropertyUnspecifiedError(prop_key,
+                                                     depr_prop_key)
 
     @staticmethod
     def prepare_properties(properties, name):
@@ -128,15 +129,6 @@ class NeutronResource(resource.Resource):
 
         return attributes[name]
 
-    def _confirm_delete(self):
-        while True:
-            try:
-                yield
-                self._show_resource()
-            except Exception as ex:
-                self.client_plugin().ignore_not_found(ex)
-                return
-
     def FnGetRefId(self):
         return six.text_type(self.resource_id)
 
@@ -179,11 +171,15 @@ class NeutronResource(resource.Resource):
                         raise exception.PhysicalResourceNameAmbiguity(name=sg)
         return seclist
 
-    def _delete_task(self):
-        delete_task = scheduler.TaskRunner(self._confirm_delete)
-        delete_task.start()
-        return delete_task
+    def check_delete_complete(self, check):
+        # NOTE(pshchelo): when longer check is needed, check is returned
+        # as True, otherwise None is implicitly returned as check
+        if not check:
+            return True
 
-    def check_delete_complete(self, delete_task):
-        # if the resource was already deleted, delete_task will be None
-        return delete_task is None or delete_task.step()
+        try:
+            self._show_resource()
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
+            return True
+        return False

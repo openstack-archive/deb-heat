@@ -16,6 +16,7 @@ from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.neutron import neutron
+from heat.engine import support
 
 
 class Firewall(neutron.NeutronResource):
@@ -25,16 +26,18 @@ class Firewall(neutron.NeutronResource):
 
     PROPERTIES = (
         NAME, DESCRIPTION, ADMIN_STATE_UP, FIREWALL_POLICY_ID,
+        SHARED,
     ) = (
         'name', 'description', 'admin_state_up', 'firewall_policy_id',
+        'shared',
     )
 
     ATTRIBUTES = (
         NAME_ATTR, DESCRIPTION_ATTR, ADMIN_STATE_UP_ATTR,
-        FIREWALL_POLICY_ID_ATTR, STATUS, TENANT_ID, SHOW,
+        FIREWALL_POLICY_ID_ATTR, SHARED_ATTR, STATUS, TENANT_ID, SHOW,
     ) = (
         'name', 'description', 'admin_state_up',
-        'firewall_policy_id', 'status', 'tenant_id', 'show',
+        'firewall_policy_id', 'shared', 'status', 'tenant_id', 'show',
     )
 
     properties_schema = {
@@ -63,6 +66,15 @@ class Firewall(neutron.NeutronResource):
             required=True,
             update_allowed=True
         ),
+        SHARED: properties.Schema(
+            properties.Schema.BOOLEAN,
+            _('Whether this firewall should be shared across all tenants. '
+              'NOTE: The default policy setting in Neutron restricts usage '
+              'of this property to administrative users only.'),
+            default=False,
+            update_allowed=True,
+            support_status=support.SupportStatus(version='2015.1'),
+        ),
     }
 
     attributes_schema = {
@@ -78,6 +90,9 @@ class Firewall(neutron.NeutronResource):
         FIREWALL_POLICY_ID_ATTR: attributes.Schema(
             _('Unique identifier of the firewall policy used to create '
               'the firewall.')
+        ),
+        SHARED_ATTR: attributes.Schema(
+            _('Shared status of this firewall.')
         ),
         STATUS: attributes.Schema(
             _('The status of the firewall.')
@@ -113,7 +128,7 @@ class Firewall(neutron.NeutronResource):
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
-            return self._delete_task()
+            return True
 
 
 class FirewallPolicy(neutron.NeutronResource):
@@ -215,7 +230,7 @@ class FirewallPolicy(neutron.NeutronResource):
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
-            return self._delete_task()
+            return True
 
 
 class FirewallRule(neutron.NeutronResource):
@@ -266,9 +281,10 @@ class FirewallRule(neutron.NeutronResource):
             properties.Schema.STRING,
             _('Protocol for the firewall rule.'),
             constraints=[
-                constraints.AllowedValues(['tcp', 'udp', 'icmp', None]),
+                constraints.AllowedValues(['tcp', 'udp', 'icmp', 'any']),
             ],
-            update_allowed=True
+            default='any',
+            update_allowed=True,
         ),
         IP_VERSION: properties.Schema(
             properties.Schema.STRING,
@@ -370,12 +386,16 @@ class FirewallRule(neutron.NeutronResource):
         props = self.prepare_properties(
             self.properties,
             self.physical_resource_name())
+        if props.get(self.PROTOCOL) == 'any':
+            props[self.PROTOCOL] = None
         firewall_rule = self.neutron().create_firewall_rule(
             {'firewall_rule': props})['firewall_rule']
         self.resource_id_set(firewall_rule['id'])
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
+            if prop_diff.get(self.PROTOCOL) == 'any':
+                prop_diff[self.PROTOCOL] = None
             self.neutron().update_firewall_rule(
                 self.resource_id, {'firewall_rule': prop_diff})
 
@@ -386,7 +406,7 @@ class FirewallRule(neutron.NeutronResource):
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
-            return self._delete_task()
+            return True
 
 
 def resource_mapping():

@@ -12,11 +12,12 @@
 #    under the License.
 
 import copy
-import six
 import uuid
 
 from oslo.config import cfg
 from oslo.serialization import jsonutils
+from oslo.utils import uuidutils
+import six
 
 from heat.common import exception
 from heat.common.i18n import _
@@ -30,7 +31,6 @@ from heat.engine import scheduler
 from heat.engine import stack_user
 from heat.engine import support
 from heat.openstack.common import log as logging
-from heat.openstack.common import uuidutils
 from heat.rpc import api as rpc_api
 
 cfg.CONF.import_opt('instance_user', 'heat.common.config')
@@ -325,7 +325,9 @@ class Server(stack_user.StackUser):
             _('A dict of all server details as returned by the API.')
         ),
         ADDRESSES: attributes.Schema(
-            _('A dict of all network addresses with corresponding port_id.')
+            _('A dict of all network addresses with corresponding port_id. '
+              'The port ID may be obtained through the following expression: '
+              '"{get_attr: [<server>, addresses, <network name>, 0, port]}".')
         ),
         NETWORKS_ATTR: attributes.Schema(
             _('A dict of assigned network addresses of the form: '
@@ -360,7 +362,8 @@ class Server(stack_user.StackUser):
               "can be specified as parameter to the get_attr function, "
               "e.g. get_attr: [ <server>, console_urls, novnc ]. "
               "Currently supported types are "
-              "novnc, xvpvnc, spice-html5, rdp-html5, serial.")
+              "novnc, xvpvnc, spice-html5, rdp-html5, serial."),
+            support_status=support.SupportStatus(version='2015.1')
         ),
     }
 
@@ -840,8 +843,8 @@ class Server(stack_user.StackUser):
         else:
             # remove not updated networks from old and new networks lists,
             # also get list these networks
-            not_updated_networks = \
-                self._get_network_matches(old_networks, new_networks)
+            not_updated_networks = self._get_network_matches(
+                old_networks, new_networks)
 
             self.update_networks_matching_iface_port(
                 old_networks + not_updated_networks, interfaces)
@@ -985,8 +988,8 @@ class Server(stack_user.StackUser):
         # record if any networks include explicit ports
         networks_with_port = False
         for network in networks:
-            networks_with_port = networks_with_port or \
-                network.get(self.NETWORK_PORT)
+            networks_with_port = (networks_with_port or
+                                  network.get(self.NETWORK_PORT))
             if network.get(self.NETWORK_UUID) and network.get(self.NETWORK_ID):
                 msg = _('Properties "%(uuid)s" and "%(id)s" are both set '
                         'to the network "%(network)s" for the server '

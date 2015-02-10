@@ -12,10 +12,11 @@
 #    under the License.
 
 import errno
-import mox
 import os
-import pkg_resources
 import subprocess
+
+import mox
+import pkg_resources
 
 from heat.cloudinit import loguserdata
 from heat.tests import common
@@ -148,10 +149,10 @@ class LoguserdataTest(common.HeatTestCase):
 
     def test_main_fails(self):
 
-        #fail on ci version
+        # fail on ci version
         pkg_resources.get_distribution('cloud-init').AndReturn(
             FakeCiVersion('0.5.0'))
-        #fail on execute cfn-userdata
+        # fail on execute cfn-userdata
         pkg_resources.get_distribution('cloud-init').AndReturn(
             FakeCiVersion('0.7.0'))
 

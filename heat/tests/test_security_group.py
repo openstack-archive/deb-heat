@@ -174,7 +174,7 @@ Resources:
         self.assertEqual(metadata, dict(rsrc.metadata_get()))
 
     def stubout_nova_create_security_group(self):
-        #create script
+        # create script
         self.mock_no_neutron()
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         nova_sg.SecurityGroupManager.list().AndReturn([NovaSG(
@@ -504,7 +504,7 @@ Resources:
         neutronclient.Client.delete_security_group_rule('ffff').AndReturn(None)
 
     def test_security_group_nova(self):
-        #create script
+        # create script
         sg_name = self.stubout_nova_create_security_group()
 
         # delete script
@@ -522,7 +522,7 @@ Resources:
         self.m.VerifyAll()
 
     def test_security_group_nova_bad_source_group(self):
-        #create script
+        # create script
         self.mock_no_neutron()
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         nova_sg.SecurityGroupManager.list().MultipleTimes().AndReturn([NovaSG(
@@ -582,7 +582,7 @@ Resources:
         self.m.VerifyAll()
 
     def test_security_group_nova_exception(self):
-        #create script
+        # create script
         self.mock_no_neutron()
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         sg_name = utils.PhysName('test_stack', 'the_sg')
@@ -700,7 +700,7 @@ Resources:
         self.assertRaises(exception.EgressRuleNotAllowed, sg.validate)
 
     def test_security_group_neutron(self):
-        #create script
+        # create script
         self.stubout_neutron_create_security_group()
 
         # delete script
@@ -718,7 +718,7 @@ Resources:
         self.m.VerifyAll()
 
     def test_security_group_neutron_exception(self):
-        #create script
+        # create script
         sg_name = utils.PhysName('test_stack', 'the_sg')
         neutronclient.Client.create_security_group({
             'security_group': {
@@ -747,7 +747,7 @@ Resources:
                 'security_group_id': 'aaaa'
             }
         }).AndRaise(
-            neutron_exc.NeutronClientException(status_code=409))
+            neutron_exc.Conflict())
         neutronclient.Client.create_security_group_rule({
             'security_group_rule': {
                 'direction': 'ingress',
@@ -760,7 +760,7 @@ Resources:
                 'security_group_id': 'aaaa'
             }
         }).AndRaise(
-            neutron_exc.NeutronClientException(status_code=409))
+            neutron_exc.Conflict())
         neutronclient.Client.create_security_group_rule({
             'security_group_rule': {
                 'direction': 'ingress',
@@ -773,7 +773,7 @@ Resources:
                 'security_group_id': 'aaaa'
             }
         }).AndRaise(
-            neutron_exc.NeutronClientException(status_code=409))
+            neutron_exc.Conflict())
         neutronclient.Client.create_security_group_rule({
             'security_group_rule': {
                 'direction': 'egress',
@@ -786,7 +786,7 @@ Resources:
                 'security_group_id': 'aaaa'
             }
         }).AndRaise(
-            neutron_exc.NeutronClientException(status_code=409))
+            neutron_exc.Conflict())
         neutronclient.Client.create_security_group_rule({
             'security_group_rule': {
                 'direction': 'egress',
@@ -799,7 +799,7 @@ Resources:
                 'security_group_id': 'aaaa'
             }
         }).AndRaise(
-            neutron_exc.NeutronClientException(status_code=409))
+            neutron_exc.Conflict())
 
         # delete script
         neutronclient.Client.show_security_group('aaaa').AndReturn({
@@ -896,7 +896,7 @@ Resources:
         self.m.VerifyAll()
 
     def test_security_group_nova_update(self):
-        #create script
+        # create script
         sg_name = self.stubout_nova_create_security_group()
         # update script
         nova_sg.SecurityGroupManager.list().MultipleTimes().AndReturn([
@@ -955,7 +955,7 @@ Resources:
         self.m.VerifyAll()
 
     def test_security_group_neutron_update(self):
-        #create script
+        # create script
         self.stubout_neutron_create_security_group()
 
         # update script

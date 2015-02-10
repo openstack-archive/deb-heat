@@ -14,9 +14,10 @@
 
 import copy
 import json
+import uuid
+
 import mock
 import six
-import uuid
 
 from heat.common import exception
 from heat.common import template_format
@@ -31,8 +32,7 @@ from ..resources import cloud_loadbalancer as lb  # noqa
 # The following fakes are for pyrax
 
 
-cert = """\
------BEGIN CERTIFICATE-----
+cert = """-----BEGIN CERTIFICATE-----
 MIIFBjCCAu4CCQDWdcR5LY/+/jANBgkqhkiG9w0BAQUFADBFMQswCQYDVQQGEwJB
 VTETMBEGA1UECAwKU29tZS1TdGF0ZTEhMB8GA1UECgwYSW50ZXJuZXQgV2lkZ2l0
 cyBQdHkgTHRkMB4XDTE0MTAxNjE3MDYxNVoXDTE1MTAxNjE3MDYxNVowRTELMAkG
@@ -62,8 +62,7 @@ eF5whPl36/GK8HUixCibkCyqEOBBuNqhOz7nVLM0eg5L+TE5coizEBagxVCovYSj
 fQ9zkIgaC5oeH6L0C1FFG1vRNSWokheBk14ztVoJCJyFr6p0/6pD7SeR
 -----END CERTIFICATE-----"""
 
-private_key = """\
------BEGIN PRIVATE KEY-----
+private_key = """-----BEGIN PRIVATE KEY-----
 MIIJRAIBADANBgkqhkiG9w0BAQEFAASCCS4wggkqAgEAAoICAQDJuTXD9LTCh25U
 +lHdZPE8Wff/Ljh8FDT27xbL0sgrqY9CdLxgk427gtiOU/wl0bZyxCLfxGq5TQKn
 I2wwlrUshCrN8w5ppK3qCAxGvKcgENsnLAlxjMQzfexd/8JS2WoFDTNBcBhy2VgY
@@ -174,6 +173,12 @@ class FakeNode(object):
     def __ne__(self, other):
         return not self.__eq__(other)
 
+    def update(self):
+        pass
+
+    def delete(self):
+        pass
+
 
 class FakeVirtualIP(object):
     def __init__(self, address=None, port=None, condition=None,
@@ -254,6 +259,9 @@ class FakeLoadBalancer(object):
         pass
 
     def delete_connection_throttle(self, *args, **kwargs):
+        pass
+
+    def delete(self, *args, **kwargs):
         pass
 
 
@@ -398,15 +406,15 @@ class LoadBalancerTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_alter_properties(self):
-        #test alter properties functions
+        # test alter properties functions
         template = self._set_template(self.lb_template,
                                       sessionPersistence='HTTP_COOKIE',
                                       connectionLogging=True,
                                       metadata={'yolo': 'heeyyy_gurl'})
 
         expected = self._set_expected(self.expected_body,
-                                      sessionPersistence=
-                                      {'persistenceType': 'HTTP_COOKIE'},
+                                      sessionPersistence={
+                                          'persistenceType': 'HTTP_COOKIE'},
                                       connectionLogging={'enabled': True},
                                       metadata=[
                                           {'key': 'yolo',
@@ -449,7 +457,7 @@ class LoadBalancerTest(common.HeatTestCase):
         self.assertIn("Must specify VIP type and version", str(exc))
 
     def test_validate_half_closed(self):
-        #test failure (invalid protocol)
+        # test failure (invalid protocol)
         template = self._set_template(self.lb_template, halfClosed=True)
         expected = self._set_expected(self.expected_body, halfClosed=True)
         rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
@@ -460,7 +468,7 @@ class LoadBalancerTest(common.HeatTestCase):
         self.assertIn('The halfClosed property is only available for the TCP'
                       ' or TCP_CLIENT_FIRST protocols', str(exc))
 
-        #test TCP protocol
+        # test TCP protocol
         template = self._set_template(template, protocol='TCP')
         expected = self._set_expected(expected, protocol='TCP')
         rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
@@ -468,7 +476,7 @@ class LoadBalancerTest(common.HeatTestCase):
                                                           expected)
         self.assertIsNone(rsrc.validate())
 
-        #test TCP_CLIENT_FIRST protocol
+        # test TCP_CLIENT_FIRST protocol
         template = self._set_template(template,
                                       protocol='TCP_CLIENT_FIRST')
         expected = self._set_expected(expected,
@@ -479,7 +487,7 @@ class LoadBalancerTest(common.HeatTestCase):
         self.assertIsNone(rsrc.validate())
 
     def test_validate_health_monitor(self):
-        #test connect success
+        # test connect success
         health_monitor = {
             'type': 'CONNECT',
             'attemptsBeforeDeactivation': 1,
@@ -496,8 +504,8 @@ class LoadBalancerTest(common.HeatTestCase):
 
         self.assertIsNone(rsrc.validate())
 
-        #test connect failure
-        #bodyRegex is only valid for type 'HTTP(S)'
+        # test connect failure
+        # bodyRegex is only valid for type 'HTTP(S)'
         health_monitor['bodyRegex'] = 'dfawefawe'
         template = self._set_template(template,
                                       healthMonitor=health_monitor)
@@ -510,7 +518,7 @@ class LoadBalancerTest(common.HeatTestCase):
                                 rsrc.validate)
         self.assertIn('Unknown Property bodyRegex', str(exc))
 
-        #test http fields
+        # test http fields
         health_monitor['type'] = 'HTTP'
         health_monitor['bodyRegex'] = 'bodyRegex'
         health_monitor['statusRegex'] = 'statusRegex'
@@ -533,7 +541,7 @@ class LoadBalancerTest(common.HeatTestCase):
             'secureTrafficOnly': True
         }
 
-        #test ssl termination enabled without required fields failure
+        # test ssl termination enabled without required fields failure
         template = self._set_template(self.lb_template,
                                       sslTermination=ssl_termination)
         expected = self._set_expected(self.expected_body,
@@ -720,6 +728,55 @@ class LoadBalancerTest(common.HeatTestCase):
         resdef = mock.Mock(spec=rsrc_defn.ResourceDefinition)
         lbres = lb.CloudLoadBalancer("test", resdef, stack)
         self.assertIsNone(lbres._resolve_attribute("PublicIp"))
+
+    def test_update_nodes_immutable(self):
+        rsrc, fake_loadbalancer = self._mock_loadbalancer(self.lb_template,
+                                                          self.lb_name,
+                                                          self.expected_body)
+        current_nodes = [
+            FakeNode(address=u"1.1.1.1", port=80, condition=u"ENABLED"),
+            FakeNode(address=u"2.2.2.2", port=80, condition=u"ENABLED"),
+            FakeNode(address=u"3.3.3.3", port=80, condition=u"ENABLED"),
+        ]
+        fake_loadbalancer.nodes = current_nodes
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+
+        update_template = copy.deepcopy(rsrc.t)
+        expected_ip = '4.4.4.4'
+        update_template['Properties']['nodes'] = [
+            {"addresses": ["1.1.1.1"], "port": 80, "condition": "ENABLED"},
+            {"addresses": ["2.2.2.2"], "port": 80, "condition": "DISABLED"},
+            {"addresses": [expected_ip], "port": 80, "condition": "ENABLED"},
+        ]
+
+        self.m.StubOutWithMock(rsrc.clb, 'get')
+        rsrc.clb.get(rsrc.resource_id).AndReturn(fake_loadbalancer)
+
+        msg = ("Load Balancer is immutable. Status: 'PENDING_UPDATE'")
+        exc = Exception(msg)
+
+        # Add node `expected_ip`
+        new_nodes = [fake_loadbalancer.Node(address=expected_ip, port=80,
+                                            condition='ENABLED')]
+        self.m.StubOutWithMock(fake_loadbalancer, 'add_nodes')
+        fake_loadbalancer.add_nodes(new_nodes).AndRaise(exc)
+        fake_loadbalancer.add_nodes(new_nodes).AndReturn(None)
+
+        # Update node 2.2.2.2
+        self.m.StubOutWithMock(current_nodes[1], 'update')
+        current_nodes[1].update().AndRaise(exc)
+        current_nodes[1].update().AndReturn(None)
+
+        # Delete node 3.3.3.3
+        self.m.StubOutWithMock(current_nodes[2], 'delete')
+        current_nodes[2].delete().AndRaise(exc)
+        current_nodes[2].delete().AndReturn(None)
+
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.update, update_template)()
+        self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
+        self.m.VerifyAll()
 
     def test_update_immutable(self):
         rsrc, fake_loadbalancer = self._mock_loadbalancer(self.lb_template,
@@ -976,8 +1033,8 @@ class LoadBalancerTest(common.HeatTestCase):
     def test_update_session_persistence_delete(self):
         template = copy.deepcopy(self.lb_template)
         lb_name = template['Resources'].keys()[0]
-        template['Resources'][lb_name]['Properties']['sessionPersistence'] = \
-            "SOURCE_IP"
+        template['Resources'][lb_name]['Properties'][
+            'sessionPersistence'] = "SOURCE_IP"
         expected_body = copy.deepcopy(self.expected_body)
         expected_body['sessionPersistence'] = {'persistenceType': "SOURCE_IP"}
         rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
@@ -1184,8 +1241,8 @@ class LoadBalancerTest(common.HeatTestCase):
     def test_update_connection_logging_delete(self):
         template = copy.deepcopy(self.lb_template)
         lb_name = template['Resources'].keys()[0]
-        template['Resources'][lb_name]['Properties']['connectionLogging'] = \
-            True
+        template['Resources'][lb_name]['Properties'][
+            'connectionLogging'] = True
         expected_body = copy.deepcopy(self.expected_body)
         expected_body['connectionLogging'] = {'enabled': True}
         rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
@@ -1211,8 +1268,8 @@ class LoadBalancerTest(common.HeatTestCase):
     def test_update_connection_logging_disable(self):
         template = copy.deepcopy(self.lb_template)
         lb_name = template['Resources'].keys()[0]
-        template['Resources'][lb_name]['Properties']['connectionLogging'] = \
-            True
+        template['Resources'][lb_name]['Properties'][
+            'connectionLogging'] = True
         expected_body = copy.deepcopy(self.expected_body)
         expected_body['connectionLogging'] = {'enabled': True}
         rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
@@ -1261,8 +1318,8 @@ class LoadBalancerTest(common.HeatTestCase):
     def test_update_connection_throttle_delete(self):
         template = copy.deepcopy(self.lb_template)
         lb_name = template['Resources'].keys()[0]
-        template['Resources'][lb_name]['Properties']['connectionThrottle'] = \
-            {'maxConnections': 1000}
+        template['Resources'][lb_name]['Properties'][
+            'connectionThrottle'] = {'maxConnections': 1000}
         expected_body = copy.deepcopy(self.expected_body)
         expected_body['connectionThrottle'] = {
             'maxConnections': 1000, 'maxConnectionRate': None,
@@ -1312,8 +1369,8 @@ class LoadBalancerTest(common.HeatTestCase):
     def test_update_content_caching_deleted(self):
         template = copy.deepcopy(self.lb_template)
         lb_name = template['Resources'].keys()[0]
-        template['Resources'][lb_name]['Properties']['contentCaching'] = \
-            'ENABLED'
+        template['Resources'][lb_name]['Properties'][
+            'contentCaching'] = 'ENABLED'
         # Enabling the content cache is done post-creation, so no need
         # to modify self.expected_body
         rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
@@ -1340,8 +1397,8 @@ class LoadBalancerTest(common.HeatTestCase):
     def test_update_content_caching_disable(self):
         template = copy.deepcopy(self.lb_template)
         lb_name = template['Resources'].keys()[0]
-        template['Resources'][lb_name]['Properties']['contentCaching'] = \
-            'ENABLED'
+        template['Resources'][lb_name]['Properties'][
+            'contentCaching'] = 'ENABLED'
         # Enabling the content cache is done post-creation, so no need
         # to modify self.expected_body
         rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
@@ -1364,3 +1421,56 @@ class LoadBalancerTest(common.HeatTestCase):
         self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
         self.assertEqual(False, fake_loadbalancer.content_caching)
         self.m.VerifyAll()
+
+    def test_delete(self):
+        template = self._set_template(self.lb_template,
+                                      contentCaching='ENABLED')
+        rsrc, fake_lb = self._mock_loadbalancer(template, self.lb_name,
+                                                self.expected_body)
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+        self.m.VerifyAll()
+
+        self.m.StubOutWithMock(rsrc.clb, 'get')
+        rsrc.clb.get(rsrc.resource_id).AndReturn(fake_lb)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(rsrc.delete)()
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
+
+    def test_delete_immutable(self):
+        template = self._set_template(self.lb_template,
+                                      contentCaching='ENABLED')
+        rsrc, fake_lb = self._mock_loadbalancer(template, self.lb_name,
+                                                self.expected_body)
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+        self.m.VerifyAll()
+
+        self.m.StubOutWithMock(rsrc.clb, 'get')
+        rsrc.clb.get(rsrc.resource_id).AndReturn(fake_lb)
+        self.m.StubOutWithMock(fake_lb, 'delete')
+        fake_lb.delete().AndRaise(Exception('immutable'))
+        fake_lb.delete().AndReturn(None)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(rsrc.delete)()
+        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
+
+    def test_check_delete_complete(self):
+        mock_stack = mock.Mock()
+        mock_stack.db_resource_get.return_value = None
+        mock_resdef = mock.Mock(spec=rsrc_defn.ResourceDefinition)
+        mock_loadbalancer = lb.CloudLoadBalancer("test", mock_resdef,
+                                                 mock_stack)
+
+        mock_task = mock.Mock()
+        mock_task.step.return_value = False
+
+        res = mock_loadbalancer.check_delete_complete(mock_task)
+        self.assertFalse(res)
+
+        mock_task.step.return_value = True
+
+        res = mock_loadbalancer.check_delete_complete(mock_task)
+        self.assertTrue(res)

@@ -12,6 +12,9 @@
 #    under the License.
 
 import abc
+
+from keystoneclient import exceptions
+from keystoneclient import session
 from oslo.config import cfg
 import six
 
@@ -27,6 +30,23 @@ class ClientPlugin(object):
         self.context = context
         self.clients = context.clients
         self._client = None
+        self._keystone_session_obj = None
+
+    @property
+    def _keystone_session(self):
+        # FIXME(jamielennox): This session object is essentially static as the
+        # options won't change. Further it is allowed to be shared by multiple
+        # authentication requests so there is no reason to construct it fresh
+        # for every client plugin. It should be global and shared amongst them.
+        if not self._keystone_session_obj:
+            o = {'cacert': self._get_client_option('keystone', 'ca_file'),
+                 'insecure': self._get_client_option('keystone', 'insecure'),
+                 'cert': self._get_client_option('keystone', 'cert_file'),
+                 'key': self._get_client_option('keystone', 'key_file')}
+
+            self._keystone_session_obj = session.Session.construct(o)
+
+        return self._keystone_session_obj
 
     def client(self):
         if not self._client:
@@ -40,14 +60,32 @@ class ClientPlugin(object):
 
     @property
     def auth_token(self):
-        # Always use the auth_token from the keystone client, as
-        # this may be refreshed if the context contains credentials
-        # which allow reissuing of a new token before the context
-        # auth_token expiry (e.g trust_id or username/password)
-        return self.clients.client('keystone').auth_token
+        # NOTE(jamielennox): use the session defined by the keystoneclient
+        # options as traditionally the token was always retrieved from
+        # keystoneclient.
+        return self.context.auth_plugin.get_token(self._keystone_session)
 
     def url_for(self, **kwargs):
-        return self.clients.client('keystone').url_for(**kwargs)
+        # NOTE(jamielennox): use the session defined by the keystoneclient
+        # options as traditionally the token was always retrieved from
+        # keystoneclient.
+        try:
+            kwargs.setdefault('interface', kwargs.pop('endpoint_type'))
+        except KeyError:
+            pass
+
+        reg = self.context.region_name or cfg.CONF.region_name_for_services
+        kwargs.setdefault('region_name', reg)
+
+        url = self.context.auth_plugin.get_endpoint(self._keystone_session,
+                                                    **kwargs)
+
+        # NOTE(jamielennox): raising exception maintains compatibility with
+        # older keystoneclient service catalog searching.
+        if url is None:
+            raise exceptions.EndpointNotFound()
+
+        return url
 
     def _get_client_option(self, client, option):
         # look for the option in the [clients_${client}] section

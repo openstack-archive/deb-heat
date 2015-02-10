@@ -26,10 +26,10 @@ class VPNService(neutron.NeutronResource):
 
     PROPERTIES = (
         NAME, DESCRIPTION, ADMIN_STATE_UP,
-        SUBNET_ID, SUBNET, ROUTER_ID,
+        SUBNET_ID, SUBNET, ROUTER_ID, ROUTER
     ) = (
         'name', 'description', 'admin_state_up',
-        'subnet_id', 'subnet', 'router_id',
+        'subnet_id', 'subnet', 'router_id', 'router'
     )
 
     ATTRIBUTES = (
@@ -67,14 +67,21 @@ class VPNService(neutron.NeutronResource):
         SUBNET: properties.Schema(
             properties.Schema.STRING,
             _('Subnet in which the vpn service will be created.'),
-            required=False
+            required=False,
+            support_status=support.SupportStatus(version='2014.2')
         ),
         ROUTER_ID: properties.Schema(
             properties.Schema.STRING,
             _('Unique identifier for the router to which the vpn service '
               'will be inserted.'),
-            required=True
+            support_status=support.SupportStatus(
+                support.DEPRECATED,
+                _('Use property %s') % ROUTER),
         ),
+        ROUTER: properties.Schema(
+            properties.Schema.STRING,
+            _('The router to which the vpn service will be inserted.'),
+        )
     }
 
     attributes_schema = {
@@ -113,12 +120,15 @@ class VPNService(neutron.NeutronResource):
         super(VPNService, self).validate()
         self._validate_depr_property_required(
             self.properties, self.SUBNET, self.SUBNET_ID)
+        self._validate_depr_property_required(
+            self.properties, self.ROUTER, self.ROUTER_ID)
 
     def handle_create(self):
         props = self.prepare_properties(
             self.properties,
             self.physical_resource_name())
         self.client_plugin().resolve_subnet(props, self.SUBNET, 'subnet_id')
+        self.client_plugin().resolve_router(props, self.ROUTER, 'router_id')
         vpnservice = self.neutron().create_vpnservice({'vpnservice': props})[
             'vpnservice']
         self.resource_id_set(vpnservice['id'])
@@ -135,7 +145,7 @@ class VPNService(neutron.NeutronResource):
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
-            return self._delete_task()
+            return True
 
 
 class IPsecSiteConnection(neutron.NeutronResource):
@@ -357,7 +367,7 @@ class IPsecSiteConnection(neutron.NeutronResource):
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
-            return self._delete_task()
+            return True
 
 
 class IKEPolicy(neutron.NeutronResource):
@@ -517,7 +527,7 @@ class IKEPolicy(neutron.NeutronResource):
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
-            return self._delete_task()
+            return True
 
 
 class IPsecPolicy(neutron.NeutronResource):
@@ -679,7 +689,7 @@ class IPsecPolicy(neutron.NeutronResource):
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
-            return self._delete_task()
+            return True
 
 
 def resource_mapping():

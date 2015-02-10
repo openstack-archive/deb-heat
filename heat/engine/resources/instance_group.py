@@ -145,7 +145,7 @@ class InstanceGroup(stack_resource.StackResource):
                     raise ValueError('Maximum PauseTime is 1 hour.')
 
     def validate_launchconfig(self):
-        # It seems to be a common error to not have a dependancy on the
+        # It seems to be a common error to not have a dependency on the
         # launchconfiguration. This can happen if the the actual resource
         # name is used instead of {get_resource: launch_conf} and no
         # depends_on is used.
@@ -166,21 +166,12 @@ class InstanceGroup(stack_resource.StackResource):
                                        lc=self.LAUNCH_CONFIGURATION_NAME,
                                        ref=conf_refid))
 
-    def _environment(self):
-        """Return the environment for the nested stack."""
-        return {
-            environment_format.PARAMETERS: {},
-            environment_format.RESOURCE_REGISTRY: {
-                SCALED_RESOURCE_TYPE: 'AWS::EC2::Instance',
-            },
-        }
-
     def handle_create(self):
         """Create a nested stack and add the initial resources to it."""
         self.validate_launchconfig()
         num_instances = self.properties[self.SIZE]
         initial_template = self._create_template(num_instances)
-        return self.create_with_template(initial_template, self._environment())
+        return self.create_with_template(initial_template)
 
     def check_create_complete(self, task):
         """
@@ -205,19 +196,19 @@ class InstanceGroup(stack_resource.StackResource):
                                                 self.context)
                 self.update_policy = up
 
+        self.properties = json_snippet.properties(self.properties_schema,
+                                                  self.context)
         if prop_diff:
-            self.properties = json_snippet.properties(self.properties_schema,
-                                                      self.context)
-
             # Replace instances first if launch configuration has changed
             self._try_rolling_update(prop_diff)
 
-            # Get the current capacity, we may need to adjust if
-            # Size has changed
-            if self.SIZE in prop_diff:
-                curr_size = grouputils.get_size(self)
-                if curr_size != self.properties[self.SIZE]:
-                    self.resize(self.properties[self.SIZE])
+        # Get the current capacity, we may need to adjust if
+        # Size has changed
+        if self.properties[self.SIZE] is not None:
+            self.resize(self.properties[self.SIZE])
+        else:
+            curr_size = grouputils.get_size(self)
+            self.resize(curr_size)
 
     def _tags(self):
         """
@@ -238,9 +229,15 @@ class InstanceGroup(stack_resource.StackResource):
     def _get_conf_properties(self):
         conf_refid = self.properties[self.LAUNCH_CONFIGURATION_NAME]
         conf = self.stack.resource_by_refid(conf_refid)
-
         props = function.resolve(conf.properties.data)
+        if 'InstanceId' in props:
+            props = conf.rebuild_lc_properties(props['InstanceId'])
+
         props['Tags'] = self._tags()
+        # if the launch configuration is created from an existing instance.
+        # delete the 'InstanceId' property
+        props.pop('InstanceId', None)
+
         return conf, props
 
     def _get_instance_definition(self):
@@ -317,8 +314,7 @@ class InstanceGroup(stack_resource.StackResource):
                     efft_capacity = capacity
                 template = self._create_template(efft_capacity, efft_bat_sz)
                 self._lb_reload(exclude=changing_instances(template))
-                updater = self.update_with_template(template,
-                                                    self._environment())
+                updater = self.update_with_template(template)
                 updater.run_to_completion()
                 self.check_update_complete(updater)
                 remainder -= efft_bat_sz
@@ -338,8 +334,7 @@ class InstanceGroup(stack_resource.StackResource):
         """
         new_template = self._create_template(new_capacity)
         try:
-            updater = self.update_with_template(new_template,
-                                                self._environment())
+            updater = self.update_with_template(new_template)
             updater.run_to_completion()
             self.check_update_complete(updater)
         finally:
@@ -397,7 +392,13 @@ class InstanceGroup(stack_resource.StackResource):
         return self._create_template(num_instances)
 
     def child_params(self):
-        return self._environment()
+        """Return the environment for the nested stack."""
+        return {
+            environment_format.PARAMETERS: {},
+            environment_format.RESOURCE_REGISTRY: {
+                SCALED_RESOURCE_TYPE: 'AWS::EC2::Instance',
+            },
+        }
 
 
 def resource_mapping():

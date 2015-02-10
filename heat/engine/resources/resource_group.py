@@ -13,6 +13,7 @@
 
 import collections
 import copy
+
 import six
 
 from heat.common import exception
@@ -20,7 +21,6 @@ from heat.common.i18n import _
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
-from heat.engine.resources import template_resource
 from heat.engine import stack_resource
 from heat.engine import support
 from heat.engine import template
@@ -146,18 +146,18 @@ class ResourceGroup(stack_resource.StackResource):
                 schema={
                     REMOVAL_RSRC_LIST: properties.Schema(
                         properties.Schema.LIST,
-                        _('List of resources to be removed '
-                          'when doing an update which requires removal of '
-                          'specific resources. '
-                          'The resource may be specified several ways: '
-                          '(1) The resource name, as in the nested stack, '
-                          '(2) The resource reference returned from '
-                          'get_resource in a template, as available via '
-                          'the \'refs\' attribute '
-                          'Note this is destructive on update when specified; '
-                          'even if the count is not being reduced, and once '
-                          'a resource name is removed, it\'s name is never '
-                          'reused in subsequent updates'
+                        _("List of resources to be removed "
+                          "when doing an update which requires removal of "
+                          "specific resources. "
+                          "The resource may be specified several ways: "
+                          "(1) The resource name, as in the nested stack, "
+                          "(2) The resource reference returned from "
+                          "get_resource in a template, as available via "
+                          "the 'refs' attribute "
+                          "Note this is destructive on update when specified; "
+                          "even if the count is not being reduced, and once "
+                          "a resource name is removed, it's name is never "
+                          "reused in subsequent updates"
                           ),
                         default=[]
                     ),
@@ -175,24 +175,25 @@ class ResourceGroup(stack_resource.StackResource):
         ),
         ATTR_ATTRIBUTES: attributes.Schema(
             _("A map of resource names to the specified attribute of each "
-              "individual resource.")
+              "individual resource.  "
+              "Requires heat_template_version: 2014-10-16."),
+            support_status=support.SupportStatus(version='2014.2')
         ),
     }
 
     def validate(self):
-        # validate our basic properties
-        super(ResourceGroup, self).validate()
-        # make sure the nested resource is valid
         test_tmpl = self._assemble_nested(["0"], include_all=True)
         val_templ = template.Template(test_tmpl)
         res_def = val_templ.resource_definitions(self.stack)["0"]
+        # make sure we can resolve the nested resource type
         try:
-            res_class = self.stack.env.get_class(res_def.resource_type)
+            self.stack.env.get_class(res_def.resource_type)
         except exception.NotFound:
-            res_class = template_resource.TemplateResource
-        res_inst = res_class("%s:resource_def" % self.name, res_def,
-                             self.stack)
-        res_inst.validate()
+            # its a template resource
+            pass
+
+        # validate the nested template definition
+        super(ResourceGroup, self).validate()
 
     def _name_blacklist(self):
         """Resolve the remove_policies to names for removal."""
@@ -344,17 +345,6 @@ class ResourceGroup(stack_resource.StackResource):
             return self.create_with_template(self._assemble_nested(names),
                                              {},
                                              adopt_data=resource_data)
-
-    def check_adopt_complete(self, adopter):
-        if adopter is None:
-            return True
-        done = adopter.step()
-        if done:
-            if self._nested.state != (self._nested.ADOPT,
-                                      self._nested.COMPLETE):
-                raise exception.Error(self._nested.status_reason)
-
-        return done
 
 
 def resource_mapping():

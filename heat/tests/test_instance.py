@@ -12,13 +12,13 @@
 #    under the License.
 
 import copy
-import six
 import uuid
 
 from glanceclient import exc as glance_exceptions
 import mock
 import mox
 from neutronclient.v2_0 import client as neutronclient
+import six
 
 from heat.common import exception
 from heat.common import template_format
@@ -97,10 +97,10 @@ class InstancesTest(common.HeatTestCase):
     def _get_test_template(self, stack_name, image_id=None):
         (tmpl, stack) = self._setup_test_stack(stack_name)
 
-        tmpl.t['Resources']['WebServer']['Properties']['ImageId'] = \
-            image_id or 'CentOS 5.2'
-        tmpl.t['Resources']['WebServer']['Properties']['InstanceType'] = \
-            '256 MB Server'
+        tmpl.t['Resources']['WebServer']['Properties'][
+            'ImageId'] = image_id or 'CentOS 5.2'
+        tmpl.t['Resources']['WebServer']['Properties'][
+            'InstanceType'] = '256 MB Server'
 
         return tmpl, stack
 
@@ -381,9 +381,9 @@ class InstancesTest(common.HeatTestCase):
         create = scheduler.TaskRunner(instance.create)
         error = self.assertRaises(exception.ResourceFailure, create)
         self.assertEqual(
-            'StackValidationFailed: Property error : WebServer: '
-            'ImageId Error validating value \'Slackware\': '
-            'The Image (Slackware) could not be found.',
+            "StackValidationFailed: Property error : WebServer: "
+            "ImageId Error validating value 'Slackware': "
+            "The Image (Slackware) could not be found.",
             six.text_type(error))
 
         self.m.VerifyAll()

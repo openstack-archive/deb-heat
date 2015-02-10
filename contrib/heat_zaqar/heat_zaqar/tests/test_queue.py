@@ -11,18 +11,25 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import mock
 import six
 
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import parser
 from heat.engine import resource
+from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.engine import template
 from heat.tests import common
 from heat.tests import utils
 
 from ..resources import queue  # noqa
+
+try:
+    from zaqarclient.transport.errors import ResourceNotFound  # noqa
+except ImportError:
+    ResourceNotFound = Exception
 
 wp_template = '''
 {
@@ -39,7 +46,7 @@ wp_template = '''
   },
   "Outputs" : {
     "queue_id": {
-      "Value": { "Fn::GetAtt" : [ "MyQueue2", "queue_id" ]},
+      "Value": { "Ref" : "MyQueue2" },
       "Description": "queue name"
     },
     "queue_href": {
@@ -90,8 +97,8 @@ class ZaqarMessageQueueTest(common.HeatTestCase):
         self.parse_stack(t)
 
         queue = self.stack['MyQueue2']
-        self.m.StubOutWithMock(queue, 'zaqar')
-        queue.zaqar().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(queue, 'client')
+        queue.client().MultipleTimes().AndReturn(self.fc)
 
         fake_q = FakeQueue(queue.physical_resource_name(), auto_create=False)
         self.m.StubOutWithMock(self.fc, 'queue')
@@ -109,7 +116,6 @@ class ZaqarMessageQueueTest(common.HeatTestCase):
 
         scheduler.TaskRunner(queue.create)()
         self.fc.api_url = 'http://127.0.0.1:8888/v1'
-        self.assertEqual('myqueue', queue.FnGetAtt('queue_id'))
         self.assertEqual('http://127.0.0.1:8888/v1/queues/myqueue',
                          queue.FnGetAtt('href'))
 
@@ -120,8 +126,8 @@ class ZaqarMessageQueueTest(common.HeatTestCase):
         self.parse_stack(t)
 
         queue = self.stack['MyQueue2']
-        self.m.StubOutWithMock(queue, 'zaqar')
-        queue.zaqar().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(queue, 'client')
+        queue.client().MultipleTimes().AndReturn(self.fc)
 
         fake_q = FakeQueue("myqueue", auto_create=False)
         self.m.StubOutWithMock(self.fc, 'queue')
@@ -141,8 +147,8 @@ class ZaqarMessageQueueTest(common.HeatTestCase):
         self.parse_stack(t)
 
         queue = self.stack['MyQueue2']
-        self.m.StubOutWithMock(queue, 'zaqar')
-        queue.zaqar().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(queue, 'client')
+        queue.client().MultipleTimes().AndReturn(self.fc)
 
         fake_q = FakeQueue("myqueue", auto_create=False)
         self.m.StubOutWithMock(self.fc, 'queue')
@@ -167,8 +173,8 @@ class ZaqarMessageQueueTest(common.HeatTestCase):
 
         queue = self.stack['MyQueue2']
         queue.resource_id_set(queue.properties.get('name'))
-        self.m.StubOutWithMock(queue, 'zaqar')
-        queue.zaqar().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(queue, 'client')
+        queue.client().MultipleTimes().AndReturn(self.fc)
 
         fake_q = FakeQueue("myqueue", auto_create=False)
         self.m.StubOutWithMock(self.fc, 'queue')
@@ -183,13 +189,32 @@ class ZaqarMessageQueueTest(common.HeatTestCase):
         scheduler.TaskRunner(queue.delete)()
         self.m.VerifyAll()
 
+    @mock.patch.object(queue.ZaqarQueue, "client")
+    @mock.patch.object(queue.ZaqarQueue, "client_plugin")
+    def test_delete_not_found(self, mockplugin, mockclient):
+
+        mock_def = mock.Mock(spec=rsrc_defn.ResourceDefinition)
+        mock_stack = mock.Mock()
+        mock_stack.db_resource_get.return_value = None
+
+        mockclient.return_value.queue.side_effect = ResourceNotFound
+        mockplugin.return_value.ignore_not_found.return_value = None
+        zplugin = queue.ZaqarQueue("test_delete_not_found", mock_def,
+                                   mock_stack)
+        zplugin.resource_id = "test_delete_not_found"
+        zplugin.handle_delete()
+        mockclient.return_value.queue.assert_called_once_with(
+            "test_delete_not_found", auto_create=False)
+        mockplugin.return_value.ignore_not_found.assert_called_once_with(
+            mock.ANY)
+
     def test_update_in_place(self):
         t = template_format.parse(wp_template)
         self.parse_stack(t)
         queue = self.stack['MyQueue2']
         queue.resource_id_set(queue.properties.get('name'))
-        self.m.StubOutWithMock(queue, 'zaqar')
-        queue.zaqar().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(queue, 'client')
+        queue.client().MultipleTimes().AndReturn(self.fc)
         fake_q = FakeQueue('myqueue', auto_create=False)
         self.m.StubOutWithMock(self.fc, 'queue')
         self.fc.queue('myqueue',
@@ -216,8 +241,8 @@ class ZaqarMessageQueueTest(common.HeatTestCase):
         self.parse_stack(t)
         queue = self.stack['MyQueue2']
         queue.resource_id_set(queue.properties.get('name'))
-        self.m.StubOutWithMock(queue, 'zaqar')
-        queue.zaqar().MultipleTimes().AndReturn(self.fc)
+        self.m.StubOutWithMock(queue, 'client')
+        queue.client().MultipleTimes().AndReturn(self.fc)
         fake_q = FakeQueue('myqueue', auto_create=False)
         self.m.StubOutWithMock(self.fc, 'queue')
         self.fc.queue('myqueue',

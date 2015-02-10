@@ -111,8 +111,8 @@ class HeatException(Exception):
             self.message = self.msg_fmt % kwargs
         except KeyError:
             exc_info = sys.exc_info()
-            #kwargs doesn't match a variable in the message
-            #log the issue and the kwargs
+            # kwargs doesn't match a variable in the message
+            # log the issue and the kwargs
             LOG.exception(_LE('Exception in string format operation'))
             for name, value in six.iteritems(kwargs):
                 LOG.error("%s: %s" % (name, value))  # noqa
@@ -135,8 +135,8 @@ class MissingCredentialError(HeatException):
 
 
 class BadAuthStrategy(HeatException):
-    msg_fmt = _("Incorrect auth strategy, expected \"%(expected)s\" but "
-                "received \"%(received)s\"")
+    msg_fmt = _('Incorrect auth strategy, expected "%(expected)s" but '
+                'received "%(received)s"')
 
 
 class AuthBadRequest(HeatException):
@@ -159,7 +159,7 @@ class Forbidden(HeatException):
     msg_fmt = _("You are not authorized to complete this action.")
 
 
-#NOTE(bcwaldon): here for backwards-compatibility, need to deprecate.
+# NOTE(bcwaldon): here for backwards-compatibility, need to deprecate.
 class NotAuthorized(Forbidden):
     msg_fmt = _("You are not authorized to complete this action.")
 
@@ -216,8 +216,8 @@ class InvalidTemplateAttribute(HeatException):
 
 
 class InvalidTemplateReference(HeatException):
-    msg_fmt = _("The specified reference \"%(resource)s\" (in %(key)s)"
-                " is incorrect.")
+    msg_fmt = _('The specified reference "%(resource)s" (in %(key)s)'
+                ' is incorrect.')
 
 
 class UserKeyPairMissing(HeatException):
@@ -327,6 +327,16 @@ class ResourcePropertyConflict(HeatException):
         super(ResourcePropertyConflict, self).__init__(**kwargs)
 
 
+class PropertyUnspecifiedError(HeatException):
+    msg_fmt = _('At least one of the following properties '
+                'must be specified: %(props)s')
+
+    def __init__(self, *args, **kwargs):
+        if args:
+            kwargs.update({'props': ", ".join(args)})
+        super(PropertyUnspecifiedError, self).__init__(**kwargs)
+
+
 class HTTPExceptionDisguise(Exception):
     """Disguises HTTP exceptions so they can be handled by the webob fault
     application in the wsgi pipeline.
@@ -380,3 +390,7 @@ class StopActionFailed(HeatException):
 class EventSendFailed(HeatException):
     msg_fmt = _("Failed to send message to stack (%(stack_name)s) "
                 "on other engine (%(engine_id)s)")
+
+
+class ServiceNotFound(HeatException):
+    msg_fmt = _("Service %(service_id)s does not found")

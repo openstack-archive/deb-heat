@@ -11,10 +11,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import mock
 import os
+
+import mock
 from oslo.config import cfg
-from oslo.middleware import request_id
+from oslo_middleware import request_id
 import webob
 
 from heat.common import context

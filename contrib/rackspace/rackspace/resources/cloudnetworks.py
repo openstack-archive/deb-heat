@@ -20,32 +20,37 @@ from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
+from heat.engine import support
 from heat.openstack.common import log as logging
 
 try:
+    from pyrax.exceptions import NetworkInUse  # noqa
     from pyrax.exceptions import NotFound  # noqa
+    PYRAX_INSTALLED = True
 except ImportError:
+    PYRAX_INSTALLED = False
 
     class NotFound(Exception):
         """Dummy pyrax exception - only used for testing."""
 
-    def resource_mapping():
-        return {}
-else:
+    class NetworkInUse(Exception):
+        """Dummy pyrax exception - only used for testing."""
 
-    def resource_mapping():
-        return {'Rackspace::Cloud::Network': CloudNetwork}
 
 LOG = logging.getLogger(__name__)
 
 
 class CloudNetwork(resource.Resource):
-    """
-    A resource for creating Rackspace Cloud Networks.
+    """A resource for creating Rackspace Cloud Networks.
 
     See http://www.rackspace.com/cloud/networks/ for service
     documentation.
     """
+
+    support_status = support.SupportStatus(
+        support.DEPRECATED,
+        _('Use OS::Neutron::Net instead.'),
+    )
 
     PROPERTIES = (
         LABEL, CIDR
@@ -110,20 +115,40 @@ class CloudNetwork(resource.Resource):
         self.cloud_networks().get(self.resource_id)
 
     def handle_delete(self):
-        net = self.network()
-        if net:
-            net.delete()
-        return net
+        '''Delete cloud network.
 
-    def check_delete_complete(self, network):
-        if network:
+        Cloud Network doesn't have a status attribute, and there is a non-zero
+        window between the deletion of a server and the acknowledgement from
+        the cloud network that it's no longer in use, so it needs some way to
+        keep track of when the delete call was successfully issued.
+        '''
+        network_info = {
+            'delete_issued': False,
+            'network': self.network(),
+        }
+        return network_info
+
+    def check_delete_complete(self, network_info):
+        network = network_info['network']
+
+        if not network:
+            return True
+
+        if not network_info['delete_issued']:
             try:
-                network.get()
-            except NotFound:
-                return True
+                network.delete()
+            except NetworkInUse:
+                LOG.warn("Network '%s' still in use." % network.id)
             else:
-                return False
-        return True
+                network_info['delete_issued'] = True
+            return False
+
+        try:
+            network.get()
+        except NotFound:
+            return True
+
+        return False
 
     def validate(self):
         super(CloudNetwork, self).validate()
@@ -137,3 +162,13 @@ class CloudNetwork(resource.Resource):
         if net:
             return unicode(getattr(net, name))
         return ""
+
+
+def resource_mapping():
+    return {'Rackspace::Cloud::Network': CloudNetwork}
+
+
+def available_resource_mapping():
+    if PYRAX_INSTALLED:
+        return resource_mapping()
+    return {}

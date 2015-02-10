@@ -95,15 +95,16 @@ def format_stack(stack, preview=False):
         rpc_api.STACK_ID: dict(stack.identifier()),
         rpc_api.STACK_CREATION_TIME: timeutils.isotime(stack.created_time),
         rpc_api.STACK_UPDATED_TIME: updated_time,
-        rpc_api.STACK_NOTIFICATION_TOPICS: [],  # TODO Not implemented yet
+        rpc_api.STACK_NOTIFICATION_TOPICS: [],  # TODO(?) Not implemented yet
         rpc_api.STACK_PARAMETERS: stack.parameters.map(str),
         rpc_api.STACK_DESCRIPTION: stack.t[stack.t.DESCRIPTION],
         rpc_api.STACK_TMPL_DESCRIPTION: stack.t[stack.t.DESCRIPTION],
-        rpc_api.STACK_CAPABILITIES: [],   # TODO Not implemented yet
+        rpc_api.STACK_CAPABILITIES: [],   # TODO(?) Not implemented yet
         rpc_api.STACK_DISABLE_ROLLBACK: stack.disable_rollback,
         rpc_api.STACK_TIMEOUT: stack.timeout_mins,
         rpc_api.STACK_OWNER: stack.username,
         rpc_api.STACK_PARENT: stack.owner_id,
+        rpc_api.STACK_USER_PROJECT_ID: stack.stack_user_project_id,
     }
 
     if not preview:
@@ -176,7 +177,7 @@ def format_stack_resource(resource, detail=True, with_props=False,
     }
 
     if (hasattr(resource, 'nested') and callable(resource.nested) and
-            resource.nested()):
+            resource.nested() is not None):
         res[rpc_api.RES_NESTED_STACK_ID] = dict(resource.nested().identifier())
 
     if resource.stack.parent_resource:

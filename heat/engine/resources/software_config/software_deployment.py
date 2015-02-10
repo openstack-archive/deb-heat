@@ -12,8 +12,9 @@
 #    under the License.
 
 import copy
-import six
 import uuid
+
+import six
 
 from heat.common import exception
 from heat.common.i18n import _
@@ -214,8 +215,8 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         config = self.rpc_client().show_software_config(
             self.context, config_id)
 
-        if action not in self.properties[self.DEPLOY_ACTIONS]\
-                and not config[rpc_api.SOFTWARE_CONFIG_GROUP] == 'component':
+        if (action not in self.properties[self.DEPLOY_ACTIONS]
+                and not config[rpc_api.SOFTWARE_CONFIG_GROUP] == 'component'):
             return
 
         props = self._build_properties(
@@ -380,6 +381,8 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             self.data_set('password', password, True)
 
     def check_create_complete(self, sd):
+        if not sd:
+            return True
         return self._check_complete()
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
@@ -390,6 +393,8 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         return self._handle_action(self.UPDATE)
 
     def check_update_complete(self, sd):
+        if not sd:
+            return True
         return self._check_complete()
 
     def handle_delete(self):
@@ -402,9 +407,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             self._delete_resource()
 
     def check_delete_complete(self, sd=None):
-        if not sd:
-            return True
-        if self._check_complete():
+        if not sd or self._check_complete():
             self._delete_resource()
             return True
 
@@ -433,12 +436,16 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         return self._handle_action(self.SUSPEND)
 
     def check_suspend_complete(self, sd):
+        if not sd:
+            return True
         return self._check_complete()
 
     def handle_resume(self):
         return self._handle_action(self.RESUME)
 
     def check_resume_complete(self, sd):
+        if not sd:
+            return True
         return self._check_complete()
 
     def handle_signal(self, details):

@@ -13,11 +13,12 @@
 """Tests for :module:'heat.engine.resources.nova_utls'."""
 
 import collections
+import uuid
+
 import mock
 from novaclient import exceptions as nova_exceptions
 from oslo.config import cfg
 import six
-import uuid
 
 from heat.common import exception
 from heat.engine.clients.os import nova
@@ -273,7 +274,7 @@ class NovaUtilsMetadataTests(NovaClientPluginTestCase):
         self.assertEqual(expected, self.nova_plugin.meta_serialize(original))
 
 
-class ServerConstraintTest(NovaClientPluginTestCase):
+class ServerConstraintTest(common.HeatTestCase):
 
     def setUp(self):
         super(ServerConstraintTest, self).setUp()

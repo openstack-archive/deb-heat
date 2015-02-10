@@ -23,10 +23,10 @@ from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
-from heat.engine.resources import volume
 from heat.engine import scheduler
 from heat.engine import signal_responder
 from heat.engine import support
+from heat.engine import volume_tasks as vol_task
 from heat.openstack.common import log as logging
 
 cfg.CONF.import_opt('instance_user', 'heat.common.config')
@@ -504,15 +504,14 @@ class Instance(resource.Resource):
                 unsorted_nics.append(nic)
             sorted_nics = sorted(unsorted_nics,
                                  key=lambda nic: int(nic['DeviceIndex']))
-            nics = [{'port-id': nic['NetworkInterfaceId']}
-                    for nic in sorted_nics]
+            nics = [{'port-id': snic['NetworkInterfaceId']}
+                    for snic in sorted_nics]
         else:
             # if SubnetId property in Instance, ensure subnet exists
             if subnet_id:
                 neutronclient = self.neutron()
-                network_id = \
-                    self.client_plugin('neutron').network_id_from_subnet_id(
-                        subnet_id)
+                network_id = self.client_plugin(
+                    'neutron').network_id_from_subnet_id(subnet_id)
                 # if subnet verified, create a port to use this subnet
                 # if port is not created explicitly, nova will choose
                 # the first subnet in the given network.
@@ -525,9 +524,8 @@ class Instance(resource.Resource):
                     }
 
                     if security_groups:
-                        props['security_groups'] = \
-                            self.client_plugin('neutron').get_secgroup_uuids(
-                                security_groups)
+                        props['security_groups'] = self.client_plugin(
+                            'neutron').get_secgroup_uuids(security_groups)
 
                     port = neutronclient.create_port({'port': props})['port']
 
@@ -652,10 +650,10 @@ class Instance(resource.Resource):
         return server, scheduler.TaskRunner(self._attach_volumes_task())
 
     def _attach_volumes_task(self):
-        attach_tasks = (volume.VolumeAttachTask(self.stack,
-                                                self.resource_id,
-                                                volume_id,
-                                                device)
+        attach_tasks = (vol_task.VolumeAttachTask(self.stack,
+                                                  self.resource_id,
+                                                  volume_id,
+                                                  device)
                         for volume_id, device in self.volumes())
         return scheduler.PollingTaskGroup(attach_tasks)
 
@@ -861,9 +859,9 @@ class Instance(resource.Resource):
         '''
         Detach volumes from the instance
         '''
-        detach_tasks = (volume.VolumeDetachTask(self.stack,
-                                                self.resource_id,
-                                                volume_id)
+        detach_tasks = (vol_task.VolumeDetachTask(self.stack,
+                                                  self.resource_id,
+                                                  volume_id)
                         for volume_id, device in self.volumes())
         return scheduler.PollingTaskGroup(detach_tasks)
 

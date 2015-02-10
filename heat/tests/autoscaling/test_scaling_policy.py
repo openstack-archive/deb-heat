@@ -12,6 +12,7 @@
 #    under the License.
 
 import datetime
+
 import mock
 from oslo.config import cfg
 from oslo.utils import timeutils
@@ -159,3 +160,20 @@ class TestCooldownMixin(common.HeatTestCase):
         self.patchobject(timeutils, 'strtime', return_value=nowish)
         pol._cooldown_timestamp(reason)
         meta_set.assert_called_once_with({nowish: reason})
+
+
+class ScalingPolicyAttrTest(common.HeatTestCase):
+    def setUp(self):
+        super(ScalingPolicyAttrTest, self).setUp()
+        self.stub_keystoneclient()
+        t = template_format.parse(as_template)
+        stack = utils.parse_stack(t, params=as_params)
+        self.policy = stack['WebServerScaleUpPolicy']
+        self.assertIsNone(self.policy.validate())
+        scheduler.TaskRunner(self.policy.create)()
+        self.assertEqual((self.policy.CREATE, self.policy.COMPLETE),
+                         self.policy.state)
+
+    def test_alarm_attribute(self):
+        self.assertIn("WebServerScaleUpPolicy",
+                      self.policy.FnGetAtt('AlarmUrl'))

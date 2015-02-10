@@ -28,6 +28,7 @@ class EngineClient(object):
 
         1.0 - Initial version.
         1.1 - Add support_status argument to list_resource_types()
+        1.4 - Add support for service list
     '''
 
     BASE_RPC_API_VERSION = '1.0'
@@ -406,7 +407,8 @@ class EngineClient(object):
                                              resource_name=resource_name,
                                              metadata=metadata))
 
-    def resource_signal(self, ctxt, stack_identity, resource_name, details):
+    def resource_signal(self, ctxt, stack_identity, resource_name, details,
+                        sync_call=False):
         """
         Generate an alarm on the resource.
         :param ctxt: RPC context.
@@ -417,7 +419,10 @@ class EngineClient(object):
         return self.call(ctxt, self.make_msg('resource_signal',
                                              stack_identity=stack_identity,
                                              resource_name=resource_name,
-                                             details=details))
+                                             details=details,
+                                             sync_call=sync_call),
+
+                         version='1.3')
 
     def create_watch_data(self, ctxt, watch_name, stats_data):
         '''
@@ -560,3 +565,6 @@ class EngineClient(object):
         return self.call(cnxt, self.make_msg('stack_restore',
                                              stack_identity=stack_identity,
                                              snapshot_id=snapshot_id))
+
+    def list_services(self, cnxt):
+        return self.call(cnxt, self.make_msg('list_services'), version='1.4')

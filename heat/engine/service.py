@@ -15,16 +15,17 @@ import collections
 import functools
 import json
 import os
+import socket
+import warnings
 
 import eventlet
 from oslo.config import cfg
 from oslo import messaging
 from oslo.serialization import jsonutils
-from oslo.utils import timeutils
+from oslo.utils import uuidutils
 from osprofiler import profiler
 import requests
 import six
-import warnings
 import webob
 
 from heat.common import context
@@ -35,6 +36,7 @@ from heat.common.i18n import _LI
 from heat.common.i18n import _LW
 from heat.common import identifier
 from heat.common import messaging as rpc_messaging
+from heat.common import service_utils
 from heat.db import api as db_api
 from heat.engine import api
 from heat.engine import attributes
@@ -44,6 +46,7 @@ from heat.engine import event as evt
 from heat.engine import parameter_groups
 from heat.engine import properties
 from heat.engine import resources
+from heat.engine import service_stack_watch
 from heat.engine import stack as parser
 from heat.engine import stack_lock
 from heat.engine import template as templatem
@@ -51,7 +54,6 @@ from heat.engine import watchrule
 from heat.openstack.common import log as logging
 from heat.openstack.common import service
 from heat.openstack.common import threadgroup
-from heat.openstack.common import uuidutils
 from heat.rpc import api as rpc_api
 
 cfg.CONF.import_opt('engine_life_check_timeout', 'heat.common.config')
@@ -216,88 +218,6 @@ class ThreadGroupManager(object):
             event.send(message)
 
 
-class StackWatch(object):
-    def __init__(self, thread_group_mgr):
-        self.thread_group_mgr = thread_group_mgr
-
-    def start_watch_task(self, stack_id, cnxt):
-
-        def stack_has_a_watchrule(sid):
-            wrs = db_api.watch_rule_get_all_by_stack(cnxt, sid)
-
-            now = timeutils.utcnow()
-            start_watch_thread = False
-            for wr in wrs:
-                # reset the last_evaluated so we don't fire off alarms when
-                # the engine has not been running.
-                db_api.watch_rule_update(cnxt, wr.id, {'last_evaluated': now})
-
-                if wr.state != rpc_api.WATCH_STATE_CEILOMETER_CONTROLLED:
-                    start_watch_thread = True
-
-            children = db_api.stack_get_all_by_owner_id(cnxt, sid)
-            for child in children:
-                if stack_has_a_watchrule(child.id):
-                    start_watch_thread = True
-
-            return start_watch_thread
-
-        if stack_has_a_watchrule(stack_id):
-            self.thread_group_mgr.add_timer(
-                stack_id,
-                self.periodic_watcher_task,
-                sid=stack_id)
-
-    def check_stack_watches(self, sid):
-        # Retrieve the stored credentials & create context
-        # Require tenant_safe=False to the stack_get to defeat tenant
-        # scoping otherwise we fail to retrieve the stack
-        LOG.debug("Periodic watcher task for stack %s" % sid)
-        admin_context = context.get_admin_context()
-        db_stack = db_api.stack_get(admin_context, sid, tenant_safe=False,
-                                    eager_load=True)
-        if not db_stack:
-            LOG.error(_LE("Unable to retrieve stack %s for periodic task"),
-                      sid)
-            return
-        stack = parser.Stack.load(admin_context, stack=db_stack,
-                                  use_stored_context=True)
-
-        # recurse into any nested stacks.
-        children = db_api.stack_get_all_by_owner_id(admin_context, sid)
-        for child in children:
-            self.check_stack_watches(child.id)
-
-        # Get all watchrules for this stack and evaluate them
-        try:
-            wrs = db_api.watch_rule_get_all_by_stack(admin_context, sid)
-        except Exception as ex:
-            LOG.warn(_LW('periodic_task db error watch rule removed? %(ex)s'),
-                     ex)
-            return
-
-        def run_alarm_action(stack, actions, details):
-            for action in actions:
-                action(details=details)
-            for res in stack.itervalues():
-                res.metadata_update()
-
-        for wr in wrs:
-            rule = watchrule.WatchRule.load(stack.context, watch=wr)
-            actions = rule.evaluate()
-            if actions:
-                self.thread_group_mgr.start(sid, run_alarm_action, stack,
-                                            actions, rule.get_details())
-
-    def periodic_watcher_task(self, sid):
-        """
-        Periodic task, created for each stack, triggers watch-rule
-        evaluation for all rules defined for the stack
-        sid = stack ID
-        """
-        self.check_stack_watches(sid)
-
-
 @profiler.trace_cls("rpc")
 class EngineListener(service.Service):
     '''
@@ -349,13 +269,15 @@ class EngineService(service.Service):
     by the RPC caller.
     """
 
-    RPC_API_VERSION = '1.2'
+    RPC_API_VERSION = '1.4'
 
     def __init__(self, host, topic, manager=None):
         super(EngineService, self).__init__()
         resources.initialise()
         self.host = host
         self.topic = topic
+        self.binary = 'heat-engine'
+        self.hostname = socket.gethostname()
 
         # The following are initialized here, but assigned in start() which
         # happens after the fork when spawning multiple worker processes
@@ -364,6 +286,8 @@ class EngineService(service.Service):
         self.engine_id = None
         self.thread_group_mgr = None
         self.target = None
+        self.service_id = None
+        self.manage_thread_grp = None
 
         if cfg.CONF.instance_user:
             warnings.warn('The "instance_user" option in heat.conf is '
@@ -384,7 +308,8 @@ class EngineService(service.Service):
         # so we need to create a ThreadGroupManager here for the periodic tasks
         if self.thread_group_mgr is None:
             self.thread_group_mgr = ThreadGroupManager()
-        self.stack_watch = StackWatch(self.thread_group_mgr)
+        self.stack_watch = service_stack_watch.StackWatch(
+            self.thread_group_mgr)
 
         # Create a periodic_watcher_task per-stack
         admin_context = context.get_admin_context()
@@ -408,6 +333,10 @@ class EngineService(service.Service):
         self._client = rpc_messaging.get_rpc_client(
             version=self.RPC_API_VERSION)
 
+        self.manage_thread_grp = threadgroup.ThreadGroup()
+        self.manage_thread_grp.add_timer(cfg.CONF.periodic_interval,
+                                         self.service_manage_report)
+
         super(EngineService, self).start()
 
     def stop(self):
@@ -428,6 +357,11 @@ class EngineService(service.Service):
             # Stop threads gracefully
             self.thread_group_mgr.stop(stack_id, True)
             LOG.info(_LI("Stack %s processing was finished"), stack_id)
+
+        self.manage_thread_grp.stop()
+        ctxt = context.get_admin_context()
+        db_api.service_delete(ctxt, self.service_id)
+        LOG.info(_LI('Service %s is deleted'), self.service_id)
 
         # Terminate the engine process
         LOG.info(_LI("All threads were gone, terminating engine"))
@@ -585,9 +519,11 @@ class EngineService(service.Service):
         self._validate_new_stack(cnxt, stack_name, tmpl)
 
         if rpc_api.PARAM_ADOPT_STACK_DATA in common_params:
-            params[rpc_api.STACK_PARAMETERS] = common_params[
-                rpc_api.PARAM_ADOPT_STACK_DATA]['environment'][
-                    rpc_api.STACK_PARAMETERS]
+            # Override the params with values given with -P option
+            new_params = common_params[rpc_api.PARAM_ADOPT_STACK_DATA][
+                'environment'][rpc_api.STACK_PARAMETERS].copy()
+            new_params.update(params.get(rpc_api.STACK_PARAMETERS, {}))
+            params[rpc_api.STACK_PARAMETERS] = new_params
 
         env = environment.Environment(params)
         stack = parser.Stack(cnxt, stack_name, tmpl, env,
@@ -1109,13 +1045,35 @@ class EngineService(service.Service):
                 LOG.warn(_LW("Access denied to resource %s"), resource_name)
                 raise exception.Forbidden()
 
-        self._verify_stack_resource(stack, resource_name)
+        if resource_name not in stack:
+            raise exception.ResourceNotFound(resource_name=resource_name,
+                                             stack_name=stack.name)
 
         return api.format_stack_resource(stack[resource_name],
                                          with_attr=with_attr)
 
     @request_context
-    def resource_signal(self, cnxt, stack_identity, resource_name, details):
+    def resource_signal(self, cnxt, stack_identity, resource_name, details,
+                        sync_call=False):
+        '''
+        :param sync_call: indicates whether a synchronized call behavior is
+                          expected. This is reserved for CFN WaitCondition
+                          implementation.
+        '''
+
+        def _resource_signal(rsrc, details):
+            stack = rsrc.stack
+            LOG.debug("signaling resource %s:%s" % (stack.name, rsrc.name))
+            rsrc.signal(details)
+
+            # Refresh the metadata for all other resources, since signals can
+            # update metadata which is used by other resources, e.g
+            # when signalling a WaitConditionHandle resource, and other
+            # resources may refer to WaitCondition Fn::GetAtt Data
+            for r in stack.dependencies:
+                if r.name != rsrc.name and r.id is not None:
+                    r.metadata_update()
+
         s = self._get_stack(cnxt, stack_identity)
 
         # This is not "nice" converting to the stored context here,
@@ -1125,18 +1083,14 @@ class EngineService(service.Service):
         stack = parser.Stack.load(cnxt, stack=s, use_stored_context=True)
         self._verify_stack_resource(stack, resource_name)
 
-        if callable(stack[resource_name].signal):
-            stack[resource_name].signal(details)
-
-        # Refresh the metadata for all other resources, since signals can
-        # update metadata which is used by other resources, e.g
-        # when signalling a WaitConditionHandle resource, and other
-        # resources may refer to WaitCondition Fn::GetAtt Data
-        for res in stack.dependencies:
-            if res.name != resource_name and res.id is not None:
-                res.metadata_update()
-
-        return stack[resource_name].metadata_get()
+        rsrc = stack[resource_name]
+        if callable(rsrc.signal):
+            if sync_call:
+                _resource_signal(rsrc, details)
+                return rsrc.metadata_get()
+            else:
+                self.thread_group_mgr.start(stack.id, _resource_signal,
+                                            rsrc, details)
 
     @request_context
     def find_physical_resource(self, cnxt, physical_resource_id):
@@ -1222,6 +1176,13 @@ class EngineService(service.Service):
         s = self._get_stack(cnxt, stack_identity)
 
         stack = parser.Stack.load(cnxt, stack=s)
+        if stack.status == stack.IN_PROGRESS:
+            LOG.info(_LI('%(stack)s is in state %(action)s_IN_PROGRESS, '
+                         'snapshot is not permitted.'), {
+                             'stack': six.text_type(stack),
+                             'action': stack.action})
+            raise exception.ActionInProgress(stack_name=stack.name,
+                                             action=stack.action)
 
         lock = stack_lock.StackLock(cnxt, stack, self.engine_id)
 
@@ -1532,3 +1493,53 @@ class EngineService(service.Service):
     @request_context
     def delete_software_deployment(self, cnxt, deployment_id):
         db_api.software_deployment_delete(cnxt, deployment_id)
+
+    @request_context
+    def list_services(self, cnxt):
+        result = [service_utils.format_service(srv)
+                  for srv in db_api.service_get_all(cnxt)]
+        return result
+
+    def service_manage_report(self):
+        cnxt = context.get_admin_context()
+
+        if self.service_id is not None:
+            # Service is already running
+            db_api.service_update(
+                cnxt,
+                self.service_id,
+                dict())
+            LOG.info(_LI('Service %s is updated'), self.service_id)
+        else:
+            service_refs = db_api.service_get_all_by_args(cnxt,
+                                                          self.host,
+                                                          self.binary,
+                                                          self.hostname)
+            if len(service_refs) == 1:
+                # Service was aborted or stopped
+                service_ref = service_refs[0]
+
+                if service_ref['deleted_at'] is None:
+                    LOG.info(_LI('Service %s was aborted'), self.service_id)
+
+                service_ref = db_api.service_update(
+                    cnxt,
+                    service_ref['id'],
+                    dict(engine_id=self.engine_id,
+                         deleted_at=None,
+                         report_interval=cfg.CONF.periodic_interval))
+                self.service_id = service_ref['id']
+                LOG.info(_LI('Service %s is restarted'), self.service_id)
+            elif len(service_refs) == 0:
+                # Service is started now
+                service_ref = db_api.service_create(
+                    cnxt,
+                    dict(host=self.host,
+                         hostname=self.hostname,
+                         binary=self.binary,
+                         engine_id=self.engine_id,
+                         topic=self.topic,
+                         report_interval=cfg.CONF.periodic_interval)
+                )
+                self.service_id = service_ref['id']
+                LOG.info(_LI('Service %s is started'), self.service_id)

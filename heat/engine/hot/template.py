@@ -11,6 +11,7 @@
 #    under the License.
 
 import collections
+
 import six
 
 from heat.common import exception
@@ -38,10 +39,13 @@ class HOTemplate20130523(template.Template):
     A Heat Orchestration Template format stack template.
     """
 
-    SECTIONS = (VERSION, DESCRIPTION, PARAMETER_GROUPS, PARAMETERS,
-                RESOURCES, OUTPUTS, MAPPINGS) = \
-               ('heat_template_version', 'description', 'parameter_groups',
-                'parameters', 'resources', 'outputs', '__undefined__')
+    SECTIONS = (
+        VERSION, DESCRIPTION, PARAMETER_GROUPS,
+        PARAMETERS, RESOURCES, OUTPUTS, MAPPINGS
+    ) = (
+        'heat_template_version', 'description', 'parameter_groups',
+        'parameters', 'resources', 'outputs', '__undefined__'
+    )
 
     SECTIONS_NO_DIRECT_ACCESS = set([PARAMETERS, VERSION])
 
@@ -73,7 +77,7 @@ class HOTemplate20130523(template.Template):
 
     def __getitem__(self, section):
         """"Get the relevant section in the template."""
-        #first translate from CFN into HOT terminology if necessary
+        # first translate from CFN into HOT terminology if necessary
         if section not in self.SECTIONS:
             section = HOTemplate20130523._translate(
                 section, self._CFN_TO_HOT_SECTIONS,

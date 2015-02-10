@@ -12,6 +12,7 @@
 #    under the License.
 
 import copy
+
 import mox
 from neutronclient.v2_0 import client as neutronclient
 from novaclient import exceptions as nova_exceptions
@@ -331,14 +332,16 @@ class EIPTest(common.HeatTestCase):
         self._mock_server_get(mock_server=server, multiple=True)
 
         self.m.StubOutWithMock(self.fc.servers, 'add_floating_ip')
-        self.fc.servers.add_floating_ip(server, floating_ip.ip, None).\
-            AndRaise(nova_exceptions.BadRequest(400))
+        self.fc.servers.add_floating_ip(
+            server, floating_ip.ip, None
+        ).AndRaise(nova_exceptions.BadRequest(400))
 
         self.m.StubOutWithMock(self.fc.servers, 'remove_floating_ip')
         msg = ("ClientException: Floating ip 172.24.4.13 is not associated "
                "with instance 1234.")
-        self.fc.servers.remove_floating_ip(server, floating_ip.ip).\
-            AndRaise(nova_exceptions.ClientException(422, msg))
+        self.fc.servers.remove_floating_ip(
+            server, floating_ip.ip
+        ).AndRaise(nova_exceptions.ClientException(422, msg))
         self.m.StubOutWithMock(self.fc.floating_ips, 'delete')
         self.fc.floating_ips.delete(mox.IsA(object))
 
@@ -683,9 +686,15 @@ class AllocTest(common.HeatTestCase):
         properties.pop('EIP')
         allocation_id = '1fafbe59-2332-4f5f-bfa4-517b4d6c1b65'
         properties['AllocationId'] = allocation_id
-        expected = ("Must specify at least one of 'InstanceId' "
-                    "or 'NetworkInterfaceId'.")
-        self._validate_properties(stack, template, expected)
+        resource_defns = template.resource_definitions(stack)
+        rsrc = eip.ElasticIpAssociation('validate_eip_ass',
+                                        resource_defns['IPAssoc'],
+                                        stack)
+        exc = self.assertRaises(exception.PropertyUnspecifiedError,
+                                rsrc.validate)
+        self.assertIn('At least one of the following properties '
+                      'must be specified: InstanceId, NetworkInterfaceId',
+                      six.text_type(exc))
 
     def test_delete_association_successful_if_create_failed(self):
         server = self.fc.servers.list()[0]

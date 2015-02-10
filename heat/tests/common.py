@@ -24,6 +24,7 @@ from oslotest import mockpatch
 import testscenarios
 import testtools
 
+from heat.common import context
 from heat.common import messaging
 from heat.engine.clients.os import cinder
 from heat.engine.clients.os import glance
@@ -137,6 +138,13 @@ class HeatTestCase(testscenarios.WithScenarios,
         mockfixture = self.useFixture(mockpatch.Patch(target, **kwargs))
         return mockfixture.mock
 
+    def stub_auth(self, ctx=None, **kwargs):
+        auth = self.patchobject(ctx or context.RequestContext,
+                                "_create_auth_plugin")
+        fake_auth = fakes.FakeAuth(**kwargs)
+        auth.return_value = fake_auth
+        return auth
+
     def stub_keystoneclient(self, fake_client=None, **kwargs):
         client = self.patchobject(keystone.KeystoneClientPlugin, "_create")
         fkc = fake_client or fakes.FakeKeystoneClient(**kwargs)
@@ -152,8 +160,8 @@ class HeatTestCase(testscenarios.WithScenarios,
         self.m.StubOutWithMock(glance.ImageConstraint, 'validate')
         if num is None:
             glance.ImageConstraint.validate(
-                mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().\
-                AndReturn(True)
+                mox.IgnoreArg(), mox.IgnoreArg()
+            ).MultipleTimes().AndReturn(True)
         else:
             for x in range(num):
                 glance.ImageConstraint.validate(
@@ -177,4 +185,9 @@ class HeatTestCase(testscenarios.WithScenarios,
     def stub_VolumeTypeConstraint_validate(self):
         self.m.StubOutWithMock(cinder.VolumeTypeConstraint, 'validate')
         cinder.VolumeTypeConstraint.validate(
+            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+
+    def stub_ServerConstraint_validate(self):
+        self.m.StubOutWithMock(nova.ServerConstraint, 'validate')
+        nova.ServerConstraint.validate(
             mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)

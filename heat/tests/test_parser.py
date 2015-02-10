@@ -15,19 +15,18 @@ import collections
 import copy
 import json
 import time
+import warnings
 
 from keystoneclient import exceptions as kc_exceptions
 import mock
 import mox
 from oslo.config import cfg
 import six
-import warnings
 
 from heat.common import context
 from heat.common import exception
 from heat.common import heat_keystoneclient as hkc
 from heat.common import template_format
-from heat.common import urlfetch
 import heat.db.api as db_api
 from heat.engine.cfn import functions as cfn_funcs
 from heat.engine.cfn import template as cfn_t
@@ -973,7 +972,7 @@ class StackTest(common.HeatTestCase):
     def test_no_auth_token(self):
         ctx = utils.dummy_context()
         ctx.auth_token = None
-        self.stub_keystoneclient()
+        self.stub_auth()
 
         self.m.ReplayAll()
         stack = parser.Stack(ctx, 'test_stack', self.tmpl)
@@ -1047,75 +1046,71 @@ class StackTest(common.HeatTestCase):
                              status_reason='blarg')
         self.assertEqual(1, stack.total_resources())
 
-    def _setup_nested(self, name):
-        nested_tpl = ('{"HeatTemplateFormatVersion" : "2012-12-12",'
-                      '"Resources":{'
-                      '"A": {"Type": "GenericResourceType"},'
-                      '"B": {"Type": "GenericResourceType"}}}')
-        tpl = {'HeatTemplateFormatVersion': "2012-12-12",
-               'Resources':
-               {'A': {'Type': 'AWS::CloudFormation::Stack',
-                      'Properties':
-                      {'TemplateURL': 'http://server.test/nested.json'}},
-                'B': {'Type': 'GenericResourceType'}}}
-        self.m.StubOutWithMock(urlfetch, 'get')
-        urlfetch.get('http://server.test/nested.json').AndReturn(nested_tpl)
-        self.m.ReplayAll()
-        self.stack = parser.Stack(self.ctx, 'test_stack', parser.Template(tpl),
-                                  status_reason=name)
-        self.stack.store()
-        self.stack.create()
-
     def test_total_resources_nested(self):
-        self._setup_nested('zyzzyx')
-        self.assertEqual(4, self.stack.total_resources())
-        self.assertIsNotNone(self.stack['A'].nested())
-        self.assertEqual(
-            2, self.stack['A'].nested().total_resources())
-        self.assertEqual(
-            4,
-            self.stack['A'].nested().root_stack.total_resources())
+        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
+               'Resources':
+               {'A': {'Type': 'GenericResourceType'}}}
+        stack = parser.Stack(self.ctx, 'test_stack', parser.Template(tpl),
+                             status_reason='blarg')
+
+        stack['A'].nested = mock.Mock()
+        stack['A'].nested.return_value.total_resources.return_value = 3
+        self.assertEqual(4, stack.total_resources())
 
     def test_iter_resources(self):
-        self._setup_nested('iter_resources')
-        nested_stack = self.stack['A'].nested()
-        resource_generator = self.stack.iter_resources()
+        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
+               'Resources':
+               {'A': {'Type': 'GenericResourceType'},
+                'B': {'Type': 'GenericResourceType'}}}
+        stack = parser.Stack(self.ctx, 'test_stack', parser.Template(tpl),
+                             status_reason='blarg')
+
+        def get_more(nested_depth=0):
+            yield 'X'
+            yield 'Y'
+            yield 'Z'
+
+        stack['A'].nested = mock.MagicMock()
+        stack['A'].nested.return_value.iter_resources.side_effect = get_more
+
+        resource_generator = stack.iter_resources()
         self.assertIsNot(resource_generator, list)
 
         first_level_resources = list(resource_generator)
         self.assertEqual(2, len(first_level_resources))
-        self.assertIn(self.stack['A'], first_level_resources)
-        self.assertIn(self.stack['B'], first_level_resources)
+        all_resources = list(stack.iter_resources(1))
+        self.assertEqual(5, len(all_resources))
 
-        all_resources = list(self.stack.iter_resources(1))
-        self.assertIn(self.stack['A'], first_level_resources)
-        self.assertIn(self.stack['B'], first_level_resources)
-        self.assertIn(nested_stack['A'], all_resources)
-        self.assertIn(nested_stack['B'], all_resources)
+    def test_root_stack_no_parent(self):
+        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
+               'Resources':
+               {'A': {'Type': 'GenericResourceType'}}}
+        stack = parser.Stack(self.ctx, 'test_stack', parser.Template(tpl),
+                             status_reason='blarg')
 
-    def test_root_stack(self):
-        self._setup_nested('toor')
-        self.assertEqual(self.stack, self.stack.root_stack)
-        self.assertIsNotNone(self.stack['A'].nested())
-        self.assertEqual(
-            self.stack, self.stack['A'].nested().root_stack)
+        self.assertEqual(stack, stack.root_stack)
 
-    def test_nested_stack_abandon(self):
-        self._setup_nested('nestedstack')
-        ret = self.stack.prepare_abandon()
-        self.assertIsNotNone(self.stack['A'].nested())
-        self.assertEqual(
-            self.stack, self.stack['A'].nested().root_stack)
+    def test_root_stack_parent_no_stack(self):
+        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
+               'Resources':
+               {'A': {'Type': 'GenericResourceType'}}}
+        stack = parser.Stack(self.ctx, 'test_stack', parser.Template(tpl),
+                             status_reason='blarg')
 
-        keys = ['name', 'id', 'action', 'status', 'template', 'resources',
-                'project_id', 'stack_user_project_id', 'environment']
+        stack.parent_resource = mock.Mock()
+        stack.parent_resource.stack = None
+        self.assertEqual(stack, stack.root_stack)
 
-        self.assertEqual(len(keys), len(ret))
-        nested_stack_data = ret['resources']['A']
-        self.assertEqual(len(keys), len(nested_stack_data))
-        for key in keys:
-            self.assertIn(key, ret)
-            self.assertIn(key, nested_stack_data)
+    def test_root_stack_with_parent(self):
+        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
+               'Resources':
+               {'A': {'Type': 'GenericResourceType'}}}
+        stack = parser.Stack(self.ctx, 'test_stack', parser.Template(tpl),
+                             status_reason='blarg')
+
+        stack.parent_resource = mock.Mock()
+        stack.parent_resource.stack.root_stack = 'test value'
+        self.assertEqual('test value', stack.root_stack)
 
     def test_load_parent_resource(self):
         self.stack = parser.Stack(self.ctx, 'load_parent_resource',
@@ -1210,9 +1205,9 @@ class StackTest(common.HeatTestCase):
     def test_set_param_id_update(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'AResource': {'Type': 'ResourceWithPropsType',
-                              'Metadata': {'Bar': {'Ref': 'AWS::StackId'}},
-                              'Properties': {'Foo': 'abc'}}}}
+                    'AResource': {'Type': 'ResourceWithPropsType',
+                                  'Metadata': {'Bar': {'Ref': 'AWS::StackId'}},
+                                  'Properties': {'Foo': 'abc'}}}}
 
         self.stack = parser.Stack(self.ctx, 'update_stack_arn_test',
                                   template.Template(tmpl))
@@ -1225,9 +1220,10 @@ class StackTest(common.HeatTestCase):
 
         tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
                  'Resources': {
-                 'AResource': {'Type': 'ResourceWithPropsType',
-                               'Metadata': {'Bar': {'Ref': 'AWS::StackId'}},
-                               'Properties': {'Foo': 'xyz'}}}}
+                     'AResource': {'Type': 'ResourceWithPropsType',
+                                   'Metadata': {'Bar':
+                                                {'Ref': 'AWS::StackId'}},
+                                   'Properties': {'Foo': 'xyz'}}}}
 
         updated_stack = parser.Stack(self.ctx, 'updated_stack',
                                      template.Template(tmpl2))
@@ -1327,13 +1323,12 @@ class StackTest(common.HeatTestCase):
     def test_access_policy_update(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'R1': {'Type': 'GenericResourceType'},
-                'Policy': {
-                    'Type': 'OS::Heat::AccessPolicy',
-                    'Properties': {
-                        'AllowedResources': ['R1'],
-                    },
-                }}}
+                    'R1': {'Type': 'GenericResourceType'},
+                    'Policy': {
+                        'Type': 'OS::Heat::AccessPolicy',
+                        'Properties': {
+                            'AllowedResources': ['R1']
+                        }}}}
 
         self.stack = parser.Stack(self.ctx, 'update_stack_access_policy_test',
                                   template.Template(tmpl))
@@ -1344,14 +1339,13 @@ class StackTest(common.HeatTestCase):
 
         tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
                  'Resources': {
-                 'R1': {'Type': 'GenericResourceType'},
-                 'R2': {'Type': 'GenericResourceType'},
-                 'Policy': {
-                     'Type': 'OS::Heat::AccessPolicy',
-                     'Properties': {
-                         'AllowedResources': ['R1', 'R2'],
-                     },
-                 }}}
+                     'R1': {'Type': 'GenericResourceType'},
+                     'R2': {'Type': 'GenericResourceType'},
+                     'Policy': {
+                         'Type': 'OS::Heat::AccessPolicy',
+                         'Properties': {
+                             'AllowedResources': ['R1', 'R2'],
+                         }}}}
 
         updated_stack = parser.Stack(self.ctx, 'updated_stack',
                                      template.Template(tmpl2))
@@ -1399,10 +1393,12 @@ class StackTest(common.HeatTestCase):
                          self.stack.state)
 
     def test_delete_user_creds_gone_missing(self):
-        '''It may happen that user_creds were deleted when a delete
-           operation was stopped. We should be resilient to this and still
-           complete the delete operation.
-           '''
+        '''Do not block stack deletion if user_creds is missing.
+
+        It may happen that user_creds were deleted when a delete operation was
+        stopped. We should be resilient to this and still complete the delete
+        operation.
+        '''
         self.stack = parser.Stack(self.ctx, 'delete_test',
                                   self.tmpl)
         stack_id = self.stack.store()
@@ -1424,6 +1420,29 @@ class StackTest(common.HeatTestCase):
         self.assertIsNone(db_creds)
         del_db_s = db_api.stack_get(self.ctx, stack_id, show_deleted=True)
         self.assertIsNone(del_db_s.user_creds_id)
+        self.assertEqual((parser.Stack.DELETE, parser.Stack.COMPLETE),
+                         self.stack.state)
+
+    def test_delete_user_creds_fail(self):
+        '''Do not stop deleting stacks even failed deleting user_creds.
+
+        It may happen that user_creds were incorrectly saved (truncated) and
+        thus cannot be correctly retrieved (and decrypted). In this case,
+        stack delete should not be stopped.
+        '''
+        self.stack = parser.Stack(self.ctx, 'delete_test', self.tmpl)
+        stack_id = self.stack.store()
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertIsNotNone(db_s)
+        self.assertIsNotNone(db_s.user_creds_id)
+        exc = exception.Error('Cannot get user credentials')
+        self.patchobject(db_api, 'user_creds_get').side_effect = exc
+
+        self.stack.delete()
+
+        db_s = db_api.stack_get(self.ctx, stack_id)
+        self.assertIsNone(db_s)
         self.assertEqual((parser.Stack.DELETE, parser.Stack.COMPLETE),
                          self.stack.state)
 
@@ -1827,12 +1846,17 @@ class StackTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def _get_stack_to_check(self, name):
+        tpl = {"HeatTemplateFormatVersion": "2012-12-12",
+               "Resources": {
+                   "A": {"Type": "GenericResourceType"},
+                   "B": {"Type": "GenericResourceType"}}}
+        self.stack = parser.Stack(self.ctx, name, parser.Template(tpl),
+                                  status_reason=name)
+        self.stack.store()
+
         def _mock_check(res):
             res.handle_check = mock.Mock()
-            if hasattr(res, 'nested'):
-                [_mock_check(r) for r in res.nested().resources.values()]
 
-        self._setup_nested(name)
         [_mock_check(res) for res in self.stack.resources.values()]
         return self.stack
 
@@ -1845,18 +1869,6 @@ class StackTest(common.HeatTestCase):
         [self.assertTrue(res.handle_check.called)
          for res in stack.resources.values()]
         self.assertNotIn('not fully supported', stack.status_reason)
-
-    def test_check_nested_stack(self):
-        def _mock_check(res):
-            res.handle_check = mock.Mock()
-
-        self._setup_nested('check-nested-stack')
-        nested = self.stack['A'].nested()
-        [_mock_check(res) for res in nested.resources.values()]
-        self.stack.check()
-
-        [self.assertTrue(res.handle_check.called)
-         for res in nested.resources.values()]
 
     def test_check_not_supported(self):
         stack = self._get_stack_to_check('check-not-supported')
@@ -2049,8 +2061,8 @@ class StackTest(common.HeatTestCase):
 
         tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
                  'Resources': {
-                 'AResource': {'Type': 'GenericResourceType'},
-                 'BResource': {'Type': 'GenericResourceType'}}}
+                     'AResource': {'Type': 'GenericResourceType'},
+                     'BResource': {'Type': 'GenericResourceType'}}}
         updated_stack = parser.Stack(self.ctx, 'updated_stack',
                                      template.Template(tmpl2))
         self.stack.update(updated_stack)
@@ -2061,8 +2073,8 @@ class StackTest(common.HeatTestCase):
     def test_update_remove(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'AResource': {'Type': 'GenericResourceType'},
-                'BResource': {'Type': 'GenericResourceType'}}}
+                    'AResource': {'Type': 'GenericResourceType'},
+                    'BResource': {'Type': 'GenericResourceType'}}}
 
         self.stack = parser.Stack(self.ctx, 'update_test_stack',
                                   template.Template(tmpl))
@@ -2187,7 +2199,7 @@ class StackTest(common.HeatTestCase):
 
     def test_update_modify_ok_replace_int(self):
         # create
-        #========
+        # ========
         tmpl = {'heat_template_version': '2013-05-23',
                 'resources': {'AResource': {
                     'type': 'ResWithComplexPropsAndAttrs',
@@ -2218,7 +2230,7 @@ class StackTest(common.HeatTestCase):
         self.m.ReplayAll()
 
         # update 1
-        #==========
+        # ==========
 
         self.stack = parser.Stack.load(self.ctx, stack_id=stack_id)
         tmpl2 = {'heat_template_version': '2013-05-23',
@@ -2233,7 +2245,7 @@ class StackTest(common.HeatTestCase):
                          self.stack.state)
 
         # update 2
-        #==========
+        # ==========
         # reload the previous stack
         self.stack = parser.Stack.load(self.ctx, stack_id=stack_id)
         tmpl3 = {'heat_template_version': '2013-05-23',
@@ -2286,8 +2298,8 @@ class StackTest(common.HeatTestCase):
             {'Type': 'ResourceWithPropsType',
              'Properties': {'Foo': 'xyz'}},
             {'Type': 'ResourceWithPropsType',
-             'Properties': {'Foo': 'abc'}}).WithSideEffects(check_props) \
-                                           .AndRaise(resource.UpdateReplace)
+             'Properties': {'Foo': 'abc'}}
+        ).WithSideEffects(check_props).AndRaise(resource.UpdateReplace)
         self.m.ReplayAll()
 
         self.stack.update(updated_stack)
@@ -2664,8 +2676,8 @@ class StackTest(common.HeatTestCase):
 
         tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
                  'Resources': {
-                 'AResource': {'Type': 'GenericResourceType'},
-                 'BResource': {'Type': 'GenericResourceType'}}}
+                     'AResource': {'Type': 'GenericResourceType'},
+                     'BResource': {'Type': 'GenericResourceType'}}}
         updated_stack = parser.Stack(self.ctx, 'updated_stack',
                                      template.Template(tmpl2))
 
@@ -2699,8 +2711,8 @@ class StackTest(common.HeatTestCase):
 
         tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
                  'Resources': {
-                 'AResource': {'Type': 'GenericResourceType'},
-                 'BResource': {'Type': 'GenericResourceType'}}}
+                     'AResource': {'Type': 'GenericResourceType'},
+                     'BResource': {'Type': 'GenericResourceType'}}}
         updated_stack = parser.Stack(self.ctx, 'updated_stack',
                                      template.Template(tmpl2))
 
@@ -2733,8 +2745,8 @@ class StackTest(common.HeatTestCase):
 
         tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
                  'Resources': {
-                 'AResource': {'Type': 'GenericResourceType'},
-                 'BResource': {'Type': 'GenericResourceType'}}}
+                     'AResource': {'Type': 'GenericResourceType'},
+                     'BResource': {'Type': 'GenericResourceType'}}}
         updated_stack = parser.Stack(self.ctx, 'updated_stack',
                                      template.Template(tmpl2),
                                      disable_rollback=False)
@@ -2884,8 +2896,8 @@ class StackTest(common.HeatTestCase):
 
         tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
                  'Resources': {
-                 'AResource': {'Type': 'GenericResourceType'},
-                 'BResource': {'Type': 'GenericResourceType'}}}
+                     'AResource': {'Type': 'GenericResourceType'},
+                     'BResource': {'Type': 'GenericResourceType'}}}
 
         updated_stack = parser.Stack(self.ctx, 'updated_stack',
                                      template.Template(tmpl2),
@@ -2906,8 +2918,8 @@ class StackTest(common.HeatTestCase):
     def test_update_rollback_remove(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'AResource': {'Type': 'GenericResourceType'},
-                'BResource': {'Type': 'ResourceWithPropsType'}}}
+                    'AResource': {'Type': 'GenericResourceType'},
+                    'BResource': {'Type': 'ResourceWithPropsType'}}}
 
         self.stack = parser.Stack(self.ctx, 'update_test_stack',
                                   template.Template(tmpl),
@@ -2945,8 +2957,8 @@ class StackTest(common.HeatTestCase):
     def test_update_rollback_replace(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'AResource': {'Type': 'ResourceWithPropsType',
-                              'Properties': {'Foo': 'foo'}}}}
+                    'AResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {'Foo': 'foo'}}}}
 
         self.stack = parser.Stack(self.ctx, 'update_test_stack',
                                   template.Template(tmpl),
@@ -2986,18 +2998,18 @@ class StackTest(common.HeatTestCase):
         '''
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'AResource': {'Type': 'ResourceWithPropsType',
-                              'Properties': {'Foo': 'abc'}},
-                'BResource': {'Type': 'ResourceWithPropsType',
-                              'Properties': {
-                                  'Foo': {'Ref': 'AResource'}}}}}
+                    'AResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {'Foo': 'abc'}},
+                    'BResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {
+                                      'Foo': {'Ref': 'AResource'}}}}}
         tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
                  'Resources': {
-                 'AResource': {'Type': 'ResourceWithPropsType',
-                               'Properties': {'Foo': 'smelly'}},
-                 'BResource': {'Type': 'ResourceWithPropsType',
-                               'Properties': {
-                                   'Foo': {'Ref': 'AResource'}}}}}
+                     'AResource': {'Type': 'ResourceWithPropsType',
+                                   'Properties': {'Foo': 'smelly'}},
+                     'BResource': {'Type': 'ResourceWithPropsType',
+                                   'Properties': {
+                                       'Foo': {'Ref': 'AResource'}}}}}
 
         self.stack = parser.Stack(self.ctx, 'update_test_stack',
                                   template.Template(tmpl))
@@ -3034,17 +3046,17 @@ class StackTest(common.HeatTestCase):
         '''
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'CResource': {'Type': 'ResourceWithPropsType',
-                              'Properties': {'Foo': 'abc'}}}}
+                    'CResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {'Foo': 'abc'}}}}
         tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
                  'Resources': {
-                 'CResource': {'Type': 'ResourceWithPropsType',
-                               'Properties': {'Foo': 'abc'}},
-                 'AResource': {'Type': 'ResourceWithPropsType',
-                               'Properties': {'Foo': 'smelly'}},
-                 'BResource': {'Type': 'ResourceWithPropsType',
-                               'Properties': {
-                                   'Foo': {'Ref': 'AResource'}}}}}
+                     'CResource': {'Type': 'ResourceWithPropsType',
+                                   'Properties': {'Foo': 'abc'}},
+                     'AResource': {'Type': 'ResourceWithPropsType',
+                                   'Properties': {'Foo': 'smelly'}},
+                     'BResource': {'Type': 'ResourceWithPropsType',
+                                   'Properties': {
+                                       'Foo': {'Ref': 'AResource'}}}}}
 
         self.stack = parser.Stack(self.ctx, 'update_test_stack',
                                   template.Template(tmpl))
@@ -3058,8 +3070,8 @@ class StackTest(common.HeatTestCase):
 
         self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_create')
 
-        generic_rsrc.ResourceWithProps.handle_create().MultipleTimes().\
-            AndReturn(None)
+        generic_rsrc.ResourceWithProps.handle_create().MultipleTimes(
+        ).AndReturn(None)
 
         self.m.ReplayAll()
 
@@ -3083,18 +3095,18 @@ class StackTest(common.HeatTestCase):
         '''
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'AResource': {'Type': 'ResourceWithPropsType',
-                              'Properties': {'Foo': 'abc'}},
-                'BResource': {'Type': 'ResourceWithPropsType',
-                              'Properties': {
-                                  'Foo': {'Ref': 'AResource'}}}}}
+                    'AResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {'Foo': 'abc'}},
+                    'BResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {
+                                      'Foo': {'Ref': 'AResource'}}}}}
         tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
                  'Resources': {
-                 'AResource': {'Type': 'ResourceWithPropsType',
-                               'Properties': {'Foo': 'smelly'}},
-                 'BResource': {'Type': 'ResourceWithPropsType',
-                               'Properties': {
-                                   'Foo': {'Ref': 'AResource'}}}}}
+                     'AResource': {'Type': 'ResourceWithPropsType',
+                                   'Properties': {'Foo': 'smelly'}},
+                     'BResource': {'Type': 'ResourceWithPropsType',
+                                   'Properties': {
+                                       'Foo': {'Ref': 'AResource'}}}}}
 
         self.stack = parser.Stack(self.ctx, 'update_test_stack',
                                   template.Template(tmpl),
@@ -3147,18 +3159,18 @@ class StackTest(common.HeatTestCase):
 
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'AResource': {'Type': 'ResourceTypeA',
-                              'Properties': {'Foo': 'abc'}},
-                'BResource': {'Type': 'ResourceWithPropsType',
-                              'Properties': {
-                                  'Foo': {'Ref': 'AResource'}}}}}
+                    'AResource': {'Type': 'ResourceTypeA',
+                                  'Properties': {'Foo': 'abc'}},
+                    'BResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {
+                                      'Foo': {'Ref': 'AResource'}}}}}
         tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
                  'Resources': {
-                 'AResource': {'Type': 'ResourceTypeA',
-                               'Properties': {'Foo': 'smelly'}},
-                 'BResource': {'Type': 'ResourceWithPropsType',
-                               'Properties': {
-                                   'Foo': {'Ref': 'AResource'}}}}}
+                     'AResource': {'Type': 'ResourceTypeA',
+                                   'Properties': {'Foo': 'smelly'}},
+                     'BResource': {'Type': 'ResourceWithPropsType',
+                                   'Properties': {
+                                       'Foo': {'Ref': 'AResource'}}}}}
 
         self.stack = parser.Stack(self.ctx, 'update_test_stack',
                                   template.Template(tmpl),
@@ -3213,18 +3225,18 @@ class StackTest(common.HeatTestCase):
 
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'AResource': {'Type': 'ResourceTypeA',
-                              'Properties': {'Foo': 'abc'}},
-                'BResource': {'Type': 'ResourceWithPropsType',
-                              'Properties': {
-                                  'Foo': {'Ref': 'AResource'}}}}}
+                    'AResource': {'Type': 'ResourceTypeA',
+                                  'Properties': {'Foo': 'abc'}},
+                    'BResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {
+                                      'Foo': {'Ref': 'AResource'}}}}}
         tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
                  'Resources': {
-                 'AResource': {'Type': 'ResourceTypeA',
-                               'Properties': {'Foo': 'smelly'}},
-                 'BResource': {'Type': 'ResourceWithPropsType',
-                               'Properties': {
-                                   'Foo': {'Ref': 'AResource'}}}}}
+                     'AResource': {'Type': 'ResourceTypeA',
+                                   'Properties': {'Foo': 'smelly'}},
+                     'BResource': {'Type': 'ResourceWithPropsType',
+                                   'Properties': {
+                                       'Foo': {'Ref': 'AResource'}}}}}
 
         self.stack = parser.Stack(self.ctx, 'update_test_stack',
                                   template.Template(tmpl),
@@ -3395,11 +3407,11 @@ class StackTest(common.HeatTestCase):
 
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'AResource': {'Type': 'ResourceTypeA',
-                              'Properties': {'Foo': 'abc'}},
-                'BResource': {'Type': 'ResourceWithPropsType',
-                              'Properties': {
-                                  'Foo': {'Ref': 'AResource'}}}}}
+                    'AResource': {'Type': 'ResourceTypeA',
+                                  'Properties': {'Foo': 'abc'}},
+                    'BResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {
+                                      'Foo': {'Ref': 'AResource'}}}}}
         self.stack = parser.Stack(self.ctx, 'update_test_stack',
                                   template.Template(tmpl),
                                   disable_rollback=True)
@@ -3471,8 +3483,8 @@ class StackTest(common.HeatTestCase):
     def test_update_deletion_policy(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'AResource': {'Type': 'ResourceWithPropsType',
-                              'Properties': {'Foo': 'Bar'}}}}
+                    'AResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {'Foo': 'Bar'}}}}
 
         self.stack = parser.Stack(self.ctx, 'update_test_stack',
                                   template.Template(tmpl))
@@ -3485,9 +3497,9 @@ class StackTest(common.HeatTestCase):
 
         new_tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                     'Resources': {
-                    'AResource': {'Type': 'ResourceWithPropsType',
-                                  'DeletionPolicy': 'Retain',
-                                  'Properties': {'Foo': 'Bar'}}}}
+                        'AResource': {'Type': 'ResourceWithPropsType',
+                                      'DeletionPolicy': 'Retain',
+                                      'Properties': {'Foo': 'Bar'}}}}
 
         updated_stack = parser.Stack(self.ctx, 'updated_stack',
                                      template.Template(new_tmpl))
@@ -3507,8 +3519,8 @@ class StackTest(common.HeatTestCase):
 
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'AResource': {'Type': 'ResourceWithNoUpdate',
-                              'Properties': {'Foo': 'Bar'}}}}
+                    'AResource': {'Type': 'ResourceWithNoUpdate',
+                                  'Properties': {'Foo': 'Bar'}}}}
 
         self.stack = parser.Stack(self.ctx, 'update_test_stack',
                                   template.Template(tmpl))
@@ -3521,9 +3533,9 @@ class StackTest(common.HeatTestCase):
 
         new_tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                     'Resources': {
-                    'AResource': {'Type': 'ResourceWithNoUpdate',
-                                  'DeletionPolicy': 'Retain',
-                                  'Properties': {'Foo': 'Bar'}}}}
+                        'AResource': {'Type': 'ResourceWithNoUpdate',
+                                      'DeletionPolicy': 'Retain',
+                                      'Properties': {'Foo': 'Bar'}}}}
 
         updated_stack = parser.Stack(self.ctx, 'updated_stack',
                                      template.Template(new_tmpl))
@@ -3672,7 +3684,7 @@ class StackTest(common.HeatTestCase):
 
     def test_stack_name_invalid(self):
         stack_names = ['_foo', '1bad', '.kcats', 'test stack', ' teststack',
-                       '^-^', '\"stack\"', '1234', 'cat|dog', '$(foo)',
+                       '^-^', '"stack"', '1234', 'cat|dog', '$(foo)',
                        'test/stack', 'test\stack', 'test::stack', 'test;stack',
                        'test~stack', '#test']
         for stack_name in stack_names:
@@ -4094,10 +4106,10 @@ class StackTest(common.HeatTestCase):
     def test_correct_outputs(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'AResource': {'Type': 'ResourceWithPropsType',
-                              'Properties': {'Foo': 'abc'}},
-                'BResource': {'Type': 'ResourceWithPropsType',
-                              'Properties': {'Foo': 'def'}}},
+                    'AResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {'Foo': 'abc'}},
+                    'BResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {'Foo': 'def'}}},
                 'Outputs': {
                     'Resource_attr': {
                         'Value': {
@@ -4124,8 +4136,8 @@ class StackTest(common.HeatTestCase):
     def test_incorrect_outputs(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'AResource': {'Type': 'ResourceWithPropsType',
-                              'Properties': {'Foo': 'abc'}}},
+                    'AResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {'Foo': 'abc'}}},
                 'Outputs': {
                     'Resource_attr': {
                         'Value': {
@@ -4226,8 +4238,8 @@ class StackTest(common.HeatTestCase):
     def test_incorrect_outputs_cfn_get_attr(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'AResource': {'Type': 'ResourceWithPropsType',
-                              'Properties': {'Foo': 'abc'}}},
+                    'AResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {'Foo': 'abc'}}},
                 'Outputs': {
                     'Resource_attr': {
                         'Value': {
@@ -4320,6 +4332,49 @@ class StackTest(common.HeatTestCase):
                       'Found a [%s] instead' % six.text_type,
                       six.text_type(ex))
 
+    def test_prop_validate_value(self):
+        tmpl = template_format.parse("""
+        HeatTemplateFormatVersion: '2012-12-12'
+        Resources:
+          AResource:
+            Type: ResourceWithPropsType
+            Properties:
+              FooInt: notanint
+        """)
+        self.stack = parser.Stack(self.ctx, 'stack_with_bad_property',
+                                  template.Template(tmpl))
+
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               self.stack.validate)
+
+        self.assertIn("'notanint' is not an integer",
+                      six.text_type(ex))
+
+        self.stack.strict_validate = False
+        self.assertIsNone(self.stack.validate())
+
+    def test_param_validate_value(self):
+        tmpl = template_format.parse("""
+        HeatTemplateFormatVersion: '2012-12-12'
+        Parameters:
+          foo:
+            Type: Number
+        """)
+
+        env1 = {'parameters': {'foo': 'abc'}}
+        self.stack = parser.Stack(self.ctx, 'stack_with_bad_param',
+                                  template.Template(tmpl),
+                                  env=environment.Environment(env1))
+
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               self.stack.validate)
+
+        self.assertIn("could not convert string to float: abc",
+                      six.text_type(ex))
+
+        self.stack.strict_validate = False
+        self.assertIsNone(self.stack.validate())
+
     def test_incorrect_outputs_cfn_list_data(self):
         tmpl = template_format.parse("""
         HeatTemplateFormatVersion: '2012-12-12'
@@ -4344,8 +4399,8 @@ class StackTest(common.HeatTestCase):
     def test_incorrect_outputs_hot_get_attr(self):
         tmpl = {'heat_template_version': '2013-05-23',
                 'resources': {
-                'AResource': {'type': 'ResourceWithPropsType',
-                              'properties': {'Foo': 'abc'}}},
+                    'AResource': {'type': 'ResourceWithPropsType',
+                                  'properties': {'Foo': 'abc'}}},
                 'outputs': {
                     'resource_attr': {
                         'value': {
@@ -4364,8 +4419,8 @@ class StackTest(common.HeatTestCase):
     def test_restore(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                'A': {'Type': 'GenericResourceType'},
-                'B': {'Type': 'GenericResourceType'}}}
+                    'A': {'Type': 'GenericResourceType'},
+                    'B': {'Type': 'GenericResourceType'}}}
         self.stack = parser.Stack(self.ctx, 'stack_details_test',
                                   parser.Template(tmpl))
         self.stack.store()

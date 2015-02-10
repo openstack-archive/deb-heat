@@ -79,7 +79,7 @@ class Stack(collections.Mapping):
                  created_time=None, updated_time=None,
                  user_creds_id=None, tenant_id=None,
                  use_stored_context=False, username=None,
-                 nested_depth=0):
+                 nested_depth=0, strict_validate=True):
         '''
         Initialise from a context, name, Template object and (optionally)
         Environment object. The database ID may also be initialised, if the
@@ -101,7 +101,8 @@ class Stack(collections.Mapping):
         self.context = context
         self.t = tmpl
         self.name = stack_name
-        self.action = self.CREATE if action is None else action
+        self.action = (self.ADOPT if adopt_stack_data else
+                       self.CREATE if action is None else action)
         self.status = self.IN_PROGRESS if status is None else status
         self.status_reason = status_reason
         self.timeout_mins = timeout_mins
@@ -117,6 +118,7 @@ class Stack(collections.Mapping):
         self.updated_time = updated_time
         self.user_creds_id = user_creds_id
         self.nested_depth = nested_depth
+        self.strict_validate = strict_validate
 
         if use_stored_context:
             self.context = self.stored_context()
@@ -244,8 +246,8 @@ class Stack(collections.Mapping):
     def _get_dependencies(resources):
         '''Return the dependency graph for a list of resources.'''
         deps = dependencies.Dependencies()
-        for resource in resources:
-            resource.add_dependencies(deps)
+        for res in resources:
+            res.add_dependencies(deps)
 
         return deps
 
@@ -458,7 +460,8 @@ class Stack(collections.Mapping):
         self.t.validate()
 
         # Validate parameters
-        self.parameters.validate(context=self.context)
+        self.parameters.validate(context=self.context,
+                                 validate_value=self.strict_validate)
 
         # Validate Parameter Groups
         parameter_groups = param_groups.ParameterGroups(self.t)
@@ -846,9 +849,9 @@ class Stack(collections.Mapping):
             # these stacks. curr_res is the resource that just
             # created and failed, so put into the stack to delete anyway.
             backup_res_id = backup_res.resource_id
-            curr_res = self.resources[key]
-            curr_res_id = curr_res.resource_id
-            if backup_res_id:
+            curr_res = self.resources.get(key)
+            if backup_res_id is not None and curr_res is not None:
+                curr_res_id = curr_res.resource_id
                 if (any(failed(child) for child in
                         self.dependencies[curr_res]) or
                         curr_res.status in
@@ -868,13 +871,25 @@ class Stack(collections.Mapping):
 
         stack.delete(backup=True)
 
+    def _try_get_user_creds(self, user_creds_id):
+        # There are cases where the user_creds cannot be returned
+        # due to credentials truncated when being saved to DB.
+        # Ignore this error instead of blocking stack deletion.
+        user_creds = None
+        try:
+            user_creds = db_api.user_creds_get(self.user_creds_id)
+        except exception.Error as err:
+            LOG.exception(err)
+            pass
+        return user_creds
+
     def _delete_credentials(self, stack_status, reason, abandon):
         # Cleanup stored user_creds so they aren't accessible via
         # the soft-deleted stack which remains in the DB
         # The stack_status and reason passed in are current values, which
         # may get rewritten and returned from this method
         if self.user_creds_id:
-            user_creds = db_api.user_creds_get(self.user_creds_id)
+            user_creds = self._try_get_user_creds(self.user_creds_id)
             # If we created a trust, delete it
             if user_creds is not None:
                 trust_id = user_creds.get('trust_id')
@@ -887,8 +902,8 @@ class Stack(collections.Mapping):
                         # rights to delete the trust unless an admin
                         trustor_id = user_creds.get('trustor_user_id')
                         if self.context.user_id != trustor_id:
-                            LOG.debug('Context user_id doesn\'t match '
-                                      'trustor, using stored context')
+                            LOG.debug("Context user_id doesn't match "
+                                      "trustor, using stored context")
                             sc = self.stored_context()
                             sc.clients.client('keystone').delete_trust(
                                 trust_id)
@@ -1179,7 +1194,11 @@ class Stack(collections.Mapping):
         }
 
     def resolve_static_data(self, snippet):
-        return self.t.parse(self, snippet)
+        try:
+            return self.t.parse(self, snippet)
+        except Exception as ex:
+            raise exception.StackValidationFailed(
+                message=encodeutils.safe_decode(six.text_type(ex)))
 
     def resolve_runtime_data(self, snippet):
         """DEPRECATED. Use heat.engine.function.resolve() instead."""

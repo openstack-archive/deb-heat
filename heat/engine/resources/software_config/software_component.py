@@ -116,6 +116,7 @@ class SoftwareComponent(sc.SoftwareConfig):
         props[self.CONFIG] = {self.CONFIGS: configs}
         # set 'group' to enable component processing by in-instance hook
         props[self.GROUP] = 'component'
+        del props['configs']
 
         sc = self.rpc_client().create_software_config(self.context, **props)
         self.resource_id_set(sc[rpc_api.SOFTWARE_CONFIG_ID])
@@ -150,8 +151,8 @@ class SoftwareComponent(sc.SoftwareConfig):
             actions = config.get(self.CONFIG_ACTIONS)
             if any(action in config_actions for action in actions):
                 msg = _('Defining more than one configuration for the same '
-                        'action in SoftwareComponent "%s" is not allowed.')\
-                    % self.name
+                        'action in SoftwareComponent "%s" is not allowed.'
+                        ) % self.name
                 raise exception.StackValidationFailed(message=msg)
             config_actions.update(actions)
 

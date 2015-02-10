@@ -10,9 +10,9 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-import six
 
 from oslo.utils import excutils
+import six
 
 from heat.common.i18n import _
 from heat.common.i18n import _LE
@@ -143,8 +143,8 @@ class NovaFloatingIpAssociation(resource.Resource):
         try:
             server = self.nova().servers.get(self.properties[self.SERVER])
             if server:
-                fl_ip = self.nova().floating_ips.\
-                    get(self.properties[self.FLOATING_IP])
+                fl_ip = self.nova().floating_ips.get(
+                    self.properties[self.FLOATING_IP])
                 self.nova().servers.remove_floating_ip(server, fl_ip.ip)
         except Exception as e:
             self.client_plugin().ignore_not_found(e)

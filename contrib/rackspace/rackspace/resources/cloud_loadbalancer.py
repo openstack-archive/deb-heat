@@ -29,10 +29,10 @@ from heat.engine import scheduler
 from heat.openstack.common import log as logging
 
 try:
-    from pyrax.exceptions import NotFound
+    from pyrax.exceptions import NotFound  # noqa
     PYRAX_INSTALLED = True
 except ImportError:
-    #Setup fake exception for testing without pyrax
+    # Setup fake exception for testing without pyrax
     class NotFound(Exception):
         pass
     PYRAX_INSTALLED = False
@@ -212,8 +212,8 @@ class CloudLoadBalancer(resource.Resource):
                         properties.Schema.LIST,
                         required=True,
                         description=(_("IP addresses for the load balancer "
-                                     "node. Must have at least one "
-                                     "address.")),
+                                       "node. Must have at least one "
+                                       "address.")),
                         schema=properties.Schema(
                             properties.Schema.STRING
                         )
@@ -541,8 +541,8 @@ class CloudLoadBalancer(resource.Resource):
 
         virtual_ips = self._setup_properties(vips, self.clb.VirtualIP)
 
-        (session_persistence, connection_logging, metadata) = \
-            self._alter_properties_for_api()
+        (session_persistence, connection_logging, metadata
+         ) = self._alter_properties_for_api()
 
         lb_body = {
             'port': self.properties[self.PORT],
@@ -631,6 +631,18 @@ class CloudLoadBalancer(resource.Resource):
         return checkers
 
     def _update_nodes(self, lb, updated_nodes):
+        @retry_if_immutable
+        def add_nodes(lb, new_nodes):
+            lb.add_nodes(new_nodes)
+
+        @retry_if_immutable
+        def remove_node(known, node):
+            known[node].delete()
+
+        @retry_if_immutable
+        def update_node(known, node):
+            known[node].update()
+
         checkers = []
         current_nodes = lb.nodes
         diff_nodes = self._process_nodes(updated_nodes)
@@ -662,25 +674,23 @@ class CloudLoadBalancer(resource.Resource):
         """
         new_nodes = [self.clb.Node(**new[lb_node]) for lb_node in added]
         if new_nodes:
-            checker = scheduler.TaskRunner(lb.add_nodes, new_nodes)
-            checkers.append(checker)
+            checkers.append(scheduler.TaskRunner(add_nodes, lb, new_nodes))
 
         # Delete loadbalancers in the old dict that are not in the
         # new dict.
         for node in deleted:
-            checker = scheduler.TaskRunner(old[node].delete)
-            checkers.append(checker)
+            checkers.append(scheduler.TaskRunner(remove_node, old, node))
 
         # Update nodes that have been changed
         for node in updated:
             node_changed = False
             for attribute in new[node].keys():
-                if new[node][attribute] != getattr(old[node], attribute):
+                new_value = new[node][attribute]
+                if new_value and new_value != getattr(old[node], attribute):
                     node_changed = True
-                    setattr(old[node], attribute, new[node][attribute])
+                    setattr(old[node], attribute, new_value)
             if node_changed:
-                checker = scheduler.TaskRunner(old[node].update)
-                checkers.append(checker)
+                checkers.append(scheduler.TaskRunner(update_node, old, node))
 
         return checkers
 
@@ -817,6 +827,10 @@ class CloudLoadBalancer(resource.Resource):
         return True
 
     def handle_delete(self):
+        @retry_if_immutable
+        def delete_lb(lb):
+            lb.delete()
+
         if self.resource_id is None:
             return
         try:
@@ -825,7 +839,15 @@ class CloudLoadBalancer(resource.Resource):
             pass
         else:
             if loadbalancer.status != 'DELETED':
-                loadbalancer.delete()
+                task = scheduler.TaskRunner(delete_lb, loadbalancer)
+                task.start()
+                return task
+
+    def check_delete_complete(self, task):
+        if task and not task.step():
+            return False
+
+        return True
 
     def _remove_none(self, property_dict):
         """Remove None values that would cause schema validation problems.
@@ -850,8 +872,8 @@ class CloudLoadBalancer(resource.Resource):
                            % self.HALF_CLOSED)
                 raise exception.StackValidationFailed(message=message)
 
-        #health_monitor connect and http types require completely different
-        #schema
+        # health_monitor connect and http types require completely different
+        # schema
         if self.properties.get(self.HEALTH_MONITOR):
             prop_val = self.properties[self.HEALTH_MONITOR]
             health_monitor = self._remove_none(prop_val)

@@ -27,15 +27,15 @@ class MeteringLabel(neutron.NeutronResource):
     support_status = support.SupportStatus(version='2014.1')
 
     PROPERTIES = (
-        NAME, DESCRIPTION,
+        NAME, DESCRIPTION, SHARED,
     ) = (
-        'name', 'description',
+        'name', 'description', 'shared',
     )
 
     ATTRIBUTES = (
-        NAME_ATTR, DESCRIPTION_ATTR,
+        NAME_ATTR, DESCRIPTION_ATTR, SHARED_ATTR,
     ) = (
-        'name', 'description',
+        'name', 'description', 'shared',
     )
 
     properties_schema = {
@@ -46,7 +46,14 @@ class MeteringLabel(neutron.NeutronResource):
         DESCRIPTION: properties.Schema(
             properties.Schema.STRING,
             _('Description of the metering label.'),
-        )
+        ),
+        SHARED: properties.Schema(
+            properties.Schema.BOOLEAN,
+            _('Whether the metering label should be shared '
+              'across all tenants.'),
+            default=False,
+            support_status=support.SupportStatus(version='2015.1'),
+        ),
     }
 
     attributes_schema = {
@@ -55,6 +62,9 @@ class MeteringLabel(neutron.NeutronResource):
         ),
         DESCRIPTION_ATTR: attributes.Schema(
             _('Description of the metering label.')
+        ),
+        SHARED_ATTR: attributes.Schema(
+            _('Shared status of the metering label.')
         ),
     }
 
@@ -78,7 +88,7 @@ class MeteringLabel(neutron.NeutronResource):
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
-            return self._delete_task()
+            return True
 
 
 class MeteringRule(neutron.NeutronResource):
@@ -166,7 +176,7 @@ class MeteringRule(neutron.NeutronResource):
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
-            return self._delete_task()
+            return True
 
 
 def resource_mapping():

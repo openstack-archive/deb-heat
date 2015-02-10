@@ -1,5 +1,3 @@
-# Copyright (c) 2012 Intel Corporation.
-# All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -13,25 +11,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""
-UUID related utilities and helper functions.
-"""
+import sqlalchemy
 
-import uuid
+from heat.db.sqlalchemy import types as heat_db_types
 
 
-def generate_uuid():
-    return str(uuid.uuid4())
+def upgrade(migrate_engine):
+    meta = sqlalchemy.MetaData(bind=migrate_engine)
+
+    stack = sqlalchemy.Table('stack', meta, autoload=True)
+    tags = sqlalchemy.Column('tags', heat_db_types.Json)
+    tags.create(stack)
 
 
-def is_uuid_like(val):
-    """Returns validation of a value as a UUID.
+def downgrade(migrate_engine):
+    meta = sqlalchemy.MetaData(bind=migrate_engine)
 
-    For our purposes, a UUID is a canonical form string:
-    aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-
-    """
-    try:
-        return str(uuid.UUID(val)) == val
-    except (TypeError, ValueError, AttributeError):
-        return False
+    stack = sqlalchemy.Table('stack', meta, autoload=True)
+    stack.c.tags.drop()

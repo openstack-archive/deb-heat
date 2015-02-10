@@ -19,9 +19,9 @@ from heat.common import identifier
 from heat.common import template_format
 from heat.engine import environment
 from heat.engine import parser
+from heat.engine.resources.aws import wait_condition_handle as aws_wch
 from heat.engine.resources import instance
 from heat.engine.resources import server
-from heat.engine.resources import wait_condition as wc
 from heat.engine import scheduler
 from heat.engine import service
 from heat.tests import common
@@ -215,6 +215,7 @@ class WaitCondMetadataUpdateTest(common.HeatTestCase):
         self.patch('heat.engine.service.warnings')
 
         self.man = service.EngineService('a-host', 'a-topic')
+        self.man.create_periodic_tasks()
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://server.test:8000/v1/waitcondition')
 
@@ -238,8 +239,8 @@ class WaitCondMetadataUpdateTest(common.HeatTestCase):
 
         id = identifier.ResourceIdentifier('test_tenant_id', stack.name,
                                            stack.id, '', 'WH')
-        self.m.StubOutWithMock(wc.WaitConditionHandle, 'identifier')
-        wc.WaitConditionHandle.identifier().MultipleTimes().AndReturn(id)
+        self.m.StubOutWithMock(aws_wch.WaitConditionHandle, 'identifier')
+        aws_wch.WaitConditionHandle.identifier().MultipleTimes().AndReturn(id)
 
         self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
         return stack
@@ -266,7 +267,8 @@ class WaitCondMetadataUpdateTest(common.HeatTestCase):
                                      dict(self.stack.identifier()),
                                      'WH',
                                      {'Data': data, 'Reason': reason,
-                                      'Status': 'SUCCESS', 'UniqueId': id})
+                                      'Status': 'SUCCESS', 'UniqueId': id},
+                                     sync_call=True)
 
         def post_success(sleep_time):
             update_metadata('123', 'foo', 'bar')
@@ -286,6 +288,7 @@ class WaitCondMetadataUpdateTest(common.HeatTestCase):
         self.assertEqual('{"123": "foo"}', inst.metadata_get()['test'])
 
         update_metadata('456', 'blarg', 'wibble')
+
         self.assertEqual('{"123": "foo", "456": "blarg"}',
                          watch.FnGetAtt('Data'))
         self.assertEqual('{"123": "foo"}',

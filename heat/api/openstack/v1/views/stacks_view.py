@@ -30,6 +30,7 @@ basic_keys = (
     rpc_api.STACK_UPDATED_TIME,
     rpc_api.STACK_OWNER,
     rpc_api.STACK_PARENT,
+    rpc_api.STACK_USER_PROJECT_ID,
 )
 
 
@@ -53,8 +54,8 @@ def format_stack(req, stack, keys=None, tenant_safe=True):
             yield (key, '_'.join((stack[rpc_api.STACK_ACTION], value)))
         else:
             # TODO(zaneb): ensure parameters can be formatted for XML
-            #elif key == rpc_api.STACK_PARAMETERS:
-            #    return key, json.dumps(value)
+            # elif key == rpc_api.STACK_PARAMETERS:
+            #     return key, json.dumps(value)
             yield (key, value)
 
     return dict(itertools.chain.from_iterable(

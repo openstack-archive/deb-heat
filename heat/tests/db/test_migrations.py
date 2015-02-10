@@ -28,6 +28,7 @@ from migrate.versioning import repository
 from oslo.db.sqlalchemy import test_base
 from oslo.db.sqlalchemy import test_migrations
 from oslo.db.sqlalchemy import utils
+from oslo.serialization import jsonutils
 import pkg_resources as pkg
 
 from heat.db.sqlalchemy import migrate_repo
@@ -86,6 +87,11 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
         col = getattr(t.c, column)
         self.assertTrue(col.nullable)
 
+    def assertColumnIsNotNullable(self, engine, table, column_name):
+        table = utils.get_table(engine, table)
+        column = getattr(table.c, column_name)
+        self.assertFalse(column.nullable)
+
     def assertIndexExists(self, engine, table, index):
         t = utils.get_table(engine, table)
         index_names = [idx.name for idx in t.indexes]
@@ -139,7 +145,7 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
         self.assertColumnExists(engine, 'raw_template', 'files')
 
     def _pre_upgrade_035(self, engine):
-        #The stacks id are for the 33 version migration
+        # The stacks id are for the 33 version migration
         event_table = utils.get_table(engine, 'event')
         data = [{
             'id': '22222222-152e-405d-b13a-35d4c816390c',
@@ -178,7 +184,7 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
             self.assertEqual(last_id, events_in_db[index].id)
             self.assertEqual(event['id'], events_in_db[index].uuid)
 
-        #Check that the autoincremental id is ok
+        # Check that the autoincremental id is ok
         data = [{
             'uuid': '33333333-152e-405d-b13a-35d4c816390c',
             'stack_id': '967aaefb-152e-405d-b13a-35d4c816390c',
@@ -196,6 +202,31 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
     def _check_036(self, engine, data):
         self.assertColumnExists(engine, 'stack', 'stack_user_project_id')
 
+    def _pre_upgrade_037(self, engine):
+        raw_template = utils.get_table(engine, 'raw_template')
+        templ = '''{"heat_template_version": "2013-05-23",
+        "parameters": {
+           "key_name": {
+              "Type": "string"
+           }
+          }
+        }'''
+        data = [dict(id=4, template=templ, files='{}')]
+        engine.execute(raw_template.insert(), data)
+        return data[0]
+
+    def _check_037(self, engine, data):
+        raw_template = utils.get_table(engine, 'raw_template')
+        templs = list(raw_template.select().
+                      where(raw_template.c.id == str(data['id'])).
+                      execute())
+        template = jsonutils.loads(templs[0].template)
+        data_template = jsonutils.loads(data['template'])
+        self.assertNotIn('Type', template['parameters']['key_name'])
+        self.assertIn('type', template['parameters']['key_name'])
+        self.assertEqual(template['parameters']['key_name']['type'],
+                         data_template['parameters']['key_name']['Type'])
+
     def _check_038(self, engine, data):
         self.assertColumnNotExists(engine, 'software_config', 'io')
 
@@ -204,6 +235,55 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
 
     def _check_040(self, engine, data):
         self.assertColumnNotExists(engine, 'software_deployment', 'signal_id')
+
+    def _pre_upgrade_041(self, engine):
+        raw_template = utils.get_table(engine, 'raw_template')
+        templ = '''{"heat_template_version": "2013-05-23",
+        "resources": {
+            "my_instance": {
+                "Type": "OS::Nova::Server"
+            }
+          },
+        "outputs": {
+            "instance_ip": {
+                "Value": { "get_attr": "[my_instance, first_address]" }
+            }
+          }
+        }'''
+        data = [dict(id=7, template=templ, files='{}')]
+        engine.execute(raw_template.insert(), data)
+        return data[0]
+
+    def _check_041(self, engine, data):
+        raw_template = utils.get_table(engine, 'raw_template')
+        templs = list(raw_template.select().
+                      where(raw_template.c.id == str(data['id'])).
+                      execute())
+        template = jsonutils.loads(templs[0].template)
+        self.assertIn('type', template['resources']['my_instance'])
+        self.assertNotIn('Type', template['resources']['my_instance'])
+        self.assertIn('value', template['outputs']['instance_ip'])
+        self.assertNotIn('Value', template['outputs']['instance_ip'])
+
+    def _pre_upgrade_043(self, engine):
+        raw_template = utils.get_table(engine, 'raw_template')
+        templ = '''{"HeatTemplateFormatVersion" : "2012-12-11",
+        "Parameters" : {
+          "foo" : { "Type" : "String", "NoEcho": "True" },
+          "bar" : { "Type" : "String", "NoEcho": "True", "Default": "abc" },
+          "blarg" : { "Type" : "String", "Default": "quux" }
+          }
+        }'''
+        data = [dict(id=8, template=templ, files='{}')]
+        engine.execute(raw_template.insert(), data)
+        return data[0]
+
+    def _check_043(self, engine, data):
+        raw_template = utils.get_table(engine, 'raw_template')
+        templ = list(raw_template.select().
+                     where(raw_template.c.id == data['id']).execute())
+        template = jsonutils.loads(templ[0].template)
+        self.assertEqual(template['HeatTemplateFormatVersion'], '2012-12-12')
 
     def _pre_upgrade_045(self, engine):
         raw_template = utils.get_table(engine, 'raw_template')
@@ -308,6 +388,24 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
 
     def _check_049(self, engine, data):
         self.assertColumnExists(engine, 'user_creds', 'region_name')
+
+    def _check_051(self, engine, data):
+        column_list = [('id', False),
+                       ('host', False),
+                       ('topic', False),
+                       ('binary', False),
+                       ('hostname', False),
+                       ('engine_id', False),
+                       ('report_interval', False),
+                       ('updated_at', True),
+                       ('created_at', True),
+                       ('deleted_at', True)]
+        for column in column_list:
+            self.assertColumnExists(engine, 'service', column[0])
+            if not column[1]:
+                self.assertColumnIsNotNullable(engine, 'service', column[0])
+            else:
+                self.assertColumnIsNullable(engine, 'service', column[0])
 
 
 class TestHeatMigrationsMySQL(HeatMigrationsCheckers,

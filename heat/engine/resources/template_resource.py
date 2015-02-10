@@ -87,7 +87,7 @@ class TemplateResource(stack_resource.StackResource):
         return ((properties.Properties.schema_from_params(
                 tmpl.param_schemata(param_defaults))),
                 (attributes.Attributes.schema_from_outputs(
-                tmpl[tmpl.OUTPUTS])))
+                 tmpl[tmpl.OUTPUTS])))
 
     def _generate_schema(self, definition):
         self._parsed_nested = None
@@ -244,15 +244,6 @@ class TemplateResource(stack_resource.StackResource):
                                          self.child_params(),
                                          adopt_data=resource_data)
 
-    def check_adopt_complete(self, stack_creator):
-        done = stack_creator.step()
-        if done:
-            if self._nested.state != (self._nested.ADOPT,
-                                      self._nested.COMPLETE):
-                raise exception.Error(self._nested.status_reason)
-
-        return done
-
     def handle_create(self):
         return self.create_with_template(self.child_template(),
                                          self.child_params())
@@ -266,7 +257,7 @@ class TemplateResource(stack_resource.StackResource):
         return self.delete_nested()
 
     def FnGetRefId(self):
-        if not self.nested():
+        if self.nested() is None:
             return six.text_type(self.name)
 
         if 'OS::stack_id' in self.nested().outputs:
@@ -280,7 +271,7 @@ class TemplateResource(stack_resource.StackResource):
             return None
 
         def _get_inner_resource(resource_name):
-            if self.nested():
+            if self.nested() is not None:
                 try:
                     return self.nested()[resource_name]
                 except KeyError:

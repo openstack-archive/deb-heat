@@ -10,20 +10,20 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import fixtures
 import logging
 import os
 import random
 import re
-import six
 import subprocess
-import testscenarios
-import testtools
 import time
 
+import fixtures
 from heatclient import exc as heat_exceptions
+from oslo.utils import timeutils
+import six
+import testscenarios
+import testtools
 
-from heat.openstack.common import timeutils
 from heat_integrationtests.common import clients
 from heat_integrationtests.common import config
 from heat_integrationtests.common import exceptions
@@ -85,6 +85,7 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
         self.compute_client = self.manager.compute_client
         self.network_client = self.manager.network_client
         self.volume_client = self.manager.volume_client
+        self.object_client = self.manager.object_client
         self.useFixture(fixtures.FakeLogger(format=_LOG_FORMAT))
 
     def status_timeout(self, things, thing_id, expected_status,
@@ -326,12 +327,29 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
         )
         self._wait_for_stack_status(stack_identifier, 'UPDATE_COMPLETE')
 
+    def assert_resource_is_a_stack(self, stack_identifier, res_name):
+        rsrc = self.client.resources.get(stack_identifier, res_name)
+        nested_link = [l for l in rsrc.links if l['rel'] == 'nested']
+        nested_href = nested_link[0]['href']
+        nested_id = nested_href.split('/')[-1]
+        nested_identifier = '/'.join(nested_href.split('/')[-2:])
+        self.assertEqual(rsrc.physical_resource_id, nested_id)
+
+        nested_stack = self.client.stacks.get(nested_id)
+        nested_identifier2 = '%s/%s' % (nested_stack.stack_name,
+                                        nested_stack.id)
+        self.assertEqual(nested_identifier, nested_identifier2)
+        parent_id = stack_identifier.split("/")[-1]
+        self.assertEqual(parent_id, nested_stack.parent)
+        return nested_identifier
+
     def list_resources(self, stack_identifier):
         resources = self.client.resources.list(stack_identifier)
         return dict((r.resource_name, r.resource_type) for r in resources)
 
     def stack_create(self, stack_name=None, template=None, files=None,
-                     parameters=None, environment=None):
+                     parameters=None, environment=None,
+                     expected_status='CREATE_COMPLETE'):
         name = stack_name or self._stack_rand_name()
         templ = template or self.template
         templ_files = files or {}
@@ -349,5 +367,27 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
 
         stack = self.client.stacks.get(name)
         stack_identifier = '%s/%s' % (name, stack.id)
-        self._wait_for_stack_status(stack_identifier, 'CREATE_COMPLETE')
+        self._wait_for_stack_status(stack_identifier, expected_status)
+        return stack_identifier
+
+    def stack_adopt(self, stack_name=None, files=None,
+                    parameters=None, environment=None, adopt_data=None,
+                    wait_for_status='ADOPT_COMPLETE'):
+        name = stack_name or self._stack_rand_name()
+        templ_files = files or {}
+        params = parameters or {}
+        env = environment or {}
+        self.client.stacks.create(
+            stack_name=name,
+            files=templ_files,
+            disable_rollback=True,
+            parameters=params,
+            environment=env,
+            adopt_stack_data=adopt_data,
+        )
+        self.addCleanup(self.client.stacks.delete, name)
+
+        stack = self.client.stacks.get(name)
+        stack_identifier = '%s/%s' % (name, stack.id)
+        self._wait_for_stack_status(stack_identifier, wait_for_status)
         return stack_identifier

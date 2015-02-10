@@ -71,7 +71,8 @@ class Port(neutron.NeutronResource):
 
         NETWORK: properties.Schema(
             properties.Schema.STRING,
-            _('Network this port belongs to.')
+            _('Network this port belongs to.'),
+            support_status=support.SupportStatus(version='2014.2')
         ),
 
         NAME: properties.Schema(
@@ -107,7 +108,8 @@ class Port(neutron.NeutronResource):
                     FIXED_IP_SUBNET: properties.Schema(
                         properties.Schema.STRING,
                         _('Subnet in which to allocate the IP address for '
-                          'this port.')
+                          'this port.'),
+                        support_status=support.SupportStatus(version='2014.2')
                     ),
                     FIXED_IP_IP_ADDRESS: properties.Schema(
                         properties.Schema.STRING,
@@ -175,8 +177,9 @@ class Port(neutron.NeutronResource):
               'To support SR-IOV PCI passthrough networking, you can request '
               'that the neutron port to be realized as normal (virtual nic), '
               'direct (pci passthrough), or macvtap '
-              '(virtual interface with a tap-like software interface).'),
-            default='normal',
+              '(virtual interface with a tap-like software interface). Note'
+              ' that this only works for Neutron deployments that support '
+              'the bindings extension.'),
             constraints=[
                 constraints.AllowedValues(['normal', 'direct', 'macvtap']),
             ],
@@ -279,13 +282,13 @@ class Port(neutron.NeutronResource):
         # 'default' securityGroup. If has the 'security_groups' and the
         # value is [], which means to create the port without securityGroup.
         if props.get(self.SECURITY_GROUPS) is not None:
-            props[self.SECURITY_GROUPS] = self.client_plugin().\
-                get_secgroup_uuids(props.get(self.SECURITY_GROUPS))
+            props[self.SECURITY_GROUPS] = self.client_plugin(
+            ).get_secgroup_uuids(props.get(self.SECURITY_GROUPS))
         else:
             # And the update should has the same behavior.
             if prepare_for_update:
-                props[self.SECURITY_GROUPS] = self.client_plugin().\
-                    get_secgroup_uuids(['default'])
+                props[self.SECURITY_GROUPS] = self.client_plugin(
+                ).get_secgroup_uuids(['default'])
 
         if not props[self.FIXED_IPS]:
             del(props[self.FIXED_IPS])
@@ -307,7 +310,7 @@ class Port(neutron.NeutronResource):
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
-            return self._delete_task()
+            return True
 
     def _resolve_attribute(self, name):
         if name == self.SUBNETS_ATTR:

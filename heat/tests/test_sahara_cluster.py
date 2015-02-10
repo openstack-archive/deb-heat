@@ -39,7 +39,7 @@ resources:
       plugin_name: vanilla
       hadoop_version: 2.3.0
       cluster_template_id: some_cluster_template_id
-      image: some_image
+      default_image_id: some_image
       key_name: admin
       neutron_management_network: some_network
 """
@@ -100,10 +100,15 @@ class SaharaClusterTest(common.HeatTestCase):
 
     def test_cluster_delete(self):
         cluster = self._create_cluster(self.t)
+        self.cl_mgr.get.side_effect = [
+            self.fake_cl,
+            sahara.sahara_base.APIException(error_code=404)]
+        self.cl_mgr.get.reset_mock()
         scheduler.TaskRunner(cluster.delete)()
         self.assertEqual((cluster.DELETE, cluster.COMPLETE),
                          cluster.state)
         self.cl_mgr.delete.assert_called_once_with(self.fake_cl.id)
+        self.assertEqual(2, self.cl_mgr.get.call_count)
 
     def test_cluster_create_fails(self):
         cfg.CONF.set_override('action_retry_limit', 0)
@@ -131,6 +136,32 @@ class SaharaClusterTest(common.HeatTestCase):
         scheduler.TaskRunner(cluster.delete)()
         self.cl_mgr.delete.assert_called_once_with(self.fake_cl.id)
 
+    def test_cluster_check_delete_complete_error(self):
+        cluster = self._create_cluster(self.t)
+        self.cl_mgr.get.side_effect = [
+            self.fake_cl,
+            sahara.sahara_base.APIException()]
+        self.cl_mgr.get.reset_mock()
+        delete_task = scheduler.TaskRunner(cluster.delete)
+        ex = self.assertRaises(exception.ResourceFailure, delete_task)
+        expected = "APIException: None"
+        self.assertEqual(expected, six.text_type(ex))
+        self.cl_mgr.delete.assert_called_once_with(self.fake_cl.id)
+        self.assertEqual(2, self.cl_mgr.get.call_count)
+
+    def test_cluster_delete_cluster_in_error(self):
+        cluster = self._create_cluster(self.t)
+        self.cl_mgr.get.side_effect = [
+            self.fake_cl,
+            FakeCluster(status='Error')]
+        self.cl_mgr.get.reset_mock()
+        delete_task = scheduler.TaskRunner(cluster.delete)
+        ex = self.assertRaises(exception.ResourceFailure, delete_task)
+        expected = 'ResourceInError: Went to status Error due to "Unknown"'
+        self.assertEqual(expected, six.text_type(ex))
+        self.cl_mgr.delete.assert_called_once_with(self.fake_cl.id)
+        self.assertEqual(2, self.cl_mgr.get.call_count)
+
     def test_cluster_resolve_attribute(self):
         cluster = self._create_cluster(self.t)
         self.cl_mgr.get.reset_mock()
@@ -149,7 +180,8 @@ class SaharaClusterTest(common.HeatTestCase):
         self.assertIsInstance(cluster, sc.SaharaCluster)
 
     def test_cluster_create_no_image_anywhere_fails(self):
-        self.t['resources']['super-cluster']['properties'].pop('image')
+        self.t['resources']['super-cluster']['properties'].pop(
+            'default_image_id')
         self.sahara_mock.cluster_templates.get.return_value = mock.Mock(
             default_image_id=None)
         cluster = self._init_cluster(self.t)
@@ -170,3 +202,25 @@ class SaharaClusterTest(common.HeatTestCase):
                                cluster.validate)
         self.assertEqual("neutron_management_network must be provided",
                          six.text_type(ex))
+
+    def test_validation_error_for_deprecated_properties(self):
+        tmpl = '''
+heat_template_version: 2013-05-23
+description: Hadoop Cluster by Sahara
+resources:
+  super-cluster:
+    type: OS::Sahara::Cluster
+    properties:
+      name: super-cluster
+      plugin_name: vanilla
+      hadoop_version: 2.3.0
+      cluster_template_id: some_cluster_template_id
+      image: some_image
+      default_image_id: test_image_id
+      key_name: admin
+      neutron_management_network: some_network
+      '''
+        ct = self._init_cluster(template_format.parse(tmpl))
+        ex = self.assertRaises(exception.ResourcePropertyConflict, ct.validate)
+        msg = 'Cannot define the following properties at the same time: '
+        self.assertIn(msg, six.text_type(ex))

@@ -410,13 +410,13 @@ class Debug(Middleware):
         print(("*" * 40) + " REQUEST ENVIRON")
         for key, value in req.environ.items():
             print(key, "=", value)
-        print
+        print('')
         resp = req.get_response(self.application)
 
         print(("*" * 40) + " RESPONSE HEADERS")
         for (key, value) in six.iteritems(resp.headers):
             print(key, "=", value)
-        print
+        print('')
 
         resp.app_iter = self.print_generator(resp.app_iter)
 
@@ -433,11 +433,33 @@ class Debug(Middleware):
             sys.stdout.write(part)
             sys.stdout.flush()
             yield part
-        print
+        print('')
 
 
 def debug_filter(app, conf, **local_conf):
     return Debug(app)
+
+
+class DefaultMethodController(object):
+    """
+    This controller handles the OPTIONS request method and any of the
+    HTTP methods that are not explicitly implemented by the application.
+    """
+    def options(self, req, allowed_methods, *args, **kwargs):
+        """
+        Return a response that includes the 'Allow' header listing the methods
+        that are implemented. A 204 status code is used for this response.
+        """
+        raise webob.exc.HTTPNoContent(headers=[('Allow', allowed_methods)])
+
+    def reject(self, req, allowed_methods, *args, **kwargs):
+        """
+        Return a 405 method not allowed error. As a convenience, the 'Allow'
+        header with the list of implemented methods is included in the
+        response as well.
+        """
+        raise webob.exc.HTTPMethodNotAllowed(
+            headers=[('Allow', allowed_methods)])
 
 
 class Router(object):
@@ -535,16 +557,16 @@ def is_json_content_type(request):
             aws_content_type = request.params.get("ContentType")
         except Exception:
             aws_content_type = None
-        #respect aws_content_type when both available
+        # respect aws_content_type when both available
         content_type = aws_content_type or request.content_type
     else:
         content_type = request.content_type
-    #bug #1887882
-    #for back compatible for null or plain content type
+    # bug #1887882
+    # for back compatible for null or plain content type
     if not content_type or content_type.startswith('text/plain'):
         content_type = 'application/json'
-    if content_type in ('JSON', 'application/json')\
-            and request.body.startswith('{'):
+    if (content_type in ('JSON', 'application/json')
+            and request.body.startswith('{')):
         return True
     return False
 
@@ -565,9 +587,9 @@ class JSONRequestDeserializer(object):
         try:
             if len(datastring) > cfg.CONF.max_json_body_size:
                 msg = _('JSON body size (%(len)s bytes) exceeds maximum '
-                        'allowed size (%(limit)s bytes).') % \
-                    {'len': len(datastring),
-                     'limit': cfg.CONF.max_json_body_size}
+                        'allowed size (%(limit)s bytes).'
+                        ) % {'len': len(datastring),
+                             'limit': cfg.CONF.max_json_body_size}
                 raise exception.RequestLimitExceeded(message=msg)
             return json.loads(datastring)
         except ValueError as ex:
@@ -744,19 +766,8 @@ def translate_exception(exc, locale):
         exc.message = i18n.translate(six.text_type(exc), locale)
 
     if isinstance(exc, webob.exc.HTTPError):
-        # If the explanation is not a Message, that means that the
-        # explanation is the default, generic and not translatable explanation
-        # from webop.exc. Since the explanation is the error shown when the
-        # exception is converted to a response, let's actually swap it with
-        # message, since message is what gets passed in at construction time
-        # in the API
-        if not isinstance(exc.explanation, i18n._message.Message):
-            exc.explanation = six.text_type(exc)
-            exc.detail = ''
-        else:
-            exc.explanation = \
-                i18n.translate(exc.explanation, locale)
-            exc.detail = i18n.translate(exc.detail, locale)
+        exc.explanation = i18n.translate(exc.explanation, locale)
+        exc.detail = i18n.translate(getattr(exc, 'detail', ''), locale)
     return exc
 
 

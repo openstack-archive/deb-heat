@@ -14,6 +14,7 @@
 import copy
 import datetime
 
+import mock
 import mox
 from oslo.config import cfg
 from oslo.utils import timeutils
@@ -23,13 +24,14 @@ from heat.common import exception
 from heat.common import grouputils
 from heat.common import short_id
 from heat.common import template_format
+from heat.engine.clients.os import nova
 from heat.engine.notification import autoscaling as notification
 from heat.engine import parser
 from heat.engine import resource
+from heat.engine.resources.aws import autoscaling_group as asg
 from heat.engine.resources import instance
 from heat.engine.resources import loadbalancer
 from heat.engine.resources.neutron import loadbalancer as neutron_lb
-from heat.engine.resources import server
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.tests.autoscaling import inline_templates
@@ -71,6 +73,16 @@ class AutoScalingTest(common.HeatTestCase):
         cfg.CONF.set_default('heat_waitcondition_server_url',
                              'http://server.test:8000/v1/waitcondition')
         self.stub_keystoneclient()
+        t = template_format.parse(as_template)
+        stack = utils.parse_stack(t, params=self.params)
+        self.defn = rsrc_defn.ResourceDefinition(
+            'asg', 'AWS::AutoScaling::AutoScalingGroup',
+            {'AvailabilityZones': ['nova'],
+             'LaunchConfigurationName': 'config',
+             'MaxSize': 5,
+             'MinSize': 1,
+             'DesiredCapacity': 2})
+        self.asg = asg.AutoScalingGroup('asg', self.defn, stack)
 
     def create_scaling_group(self, t, stack, resource_name):
         # create the launch configuration resource
@@ -93,15 +105,6 @@ class AutoScalingTest(common.HeatTestCase):
 
         return rsrc
 
-    def create_scaling_group_hot(self, t, stack, resource_name):
-        # create the group resource
-        rsrc = stack[resource_name]
-        self.assertIsNone(rsrc.validate())
-        scheduler.TaskRunner(rsrc.create)()
-        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
-
-        return rsrc
-
     def create_scaling_policy(self, t, stack, resource_name):
         rsrc = stack[resource_name]
         self.assertIsNone(rsrc.validate())
@@ -109,12 +112,14 @@ class AutoScalingTest(common.HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         return rsrc
 
-    def _stub_create(self, num, with_error=None):
+    def _stub_create(self, num, with_error=None, with_lcn=True):
         self.m.StubOutWithMock(instance.Instance, 'handle_create')
         self.m.StubOutWithMock(instance.Instance, 'check_create_complete')
         self.stub_ImageConstraint_validate()
         self.stub_FlavorConstraint_validate()
-        self.stub_SnapshotConstraint_validate()
+        # create with launch config name, need to stub snapshot constraint
+        if with_lcn:
+            self.stub_SnapshotConstraint_validate()
         if with_error:
             instance.Instance.handle_create().AndRaise(
                 exception.Error(with_error))
@@ -125,21 +130,6 @@ class AutoScalingTest(common.HeatTestCase):
         instance.Instance.check_create_complete(cookie).AndReturn(False)
         instance.Instance.check_create_complete(
             cookie).MultipleTimes().AndReturn(True)
-
-    def _stub_create_hot(self, num):
-        self.m.StubOutWithMock(server.Server, 'handle_create')
-        self.m.StubOutWithMock(server.Server, 'check_create_complete')
-        self.m.StubOutWithMock(server.Server, 'validate')
-        self.stub_ImageConstraint_validate()
-        self.stub_FlavorConstraint_validate()
-        server_test = object()
-        for x in range(num):
-            server.Server.handle_create().AndReturn(server_test)
-        server.Server.check_create_complete(server_test).AndReturn(False)
-        server.Server.check_create_complete(
-            server_test).MultipleTimes().AndReturn(True)
-        server.Server.validate().AndReturn(None)
-        server.Server.validate().MultipleTimes().AndReturn(False)
 
     def _stub_delete(self, num):
         self.m.StubOutWithMock(instance.Instance, 'handle_delete')
@@ -240,8 +230,8 @@ class AutoScalingTest(common.HeatTestCase):
 
     def _stub_meta_expected(self, now, data, nmeta=1):
         # Stop time at now
-        self.m.StubOutWithMock(timeutils, 'utcnow')
-        timeutils.utcnow().MultipleTimes().AndReturn(now)
+        timeutils.set_time_override(now)
+        self.addCleanup(timeutils.clear_time_override)
 
         # Then set a stub to ensure the metadata update is as
         # expected based on the timestamp and data
@@ -251,30 +241,6 @@ class AutoScalingTest(common.HeatTestCase):
         # update for the policy and autoscaling group, so pass nmeta=2
         for x in range(nmeta):
             resource.Resource.metadata_set(expected).AndReturn(None)
-
-    def test_scaling_group_update_replace(self):
-        t = template_format.parse(as_template)
-        stack = utils.parse_stack(t, params=self.params)
-
-        self._stub_lb_reload(1)
-        now = timeutils.utcnow()
-        self._stub_meta_expected(now, 'ExactCapacity : 1')
-        self._stub_create(1)
-        self.m.ReplayAll()
-        rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        self.assertEqual(utils.PhysName(stack.name, rsrc.name),
-                         rsrc.FnGetRefId())
-        self.assertEqual(1, len(grouputils.get_member_names(rsrc)))
-        props = copy.copy(rsrc.properties.data)
-        props['AvailabilityZones'] = ['foo']
-        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name,
-                                                      rsrc.type(),
-                                                      props)
-        updater = scheduler.TaskRunner(rsrc.update, update_snippet)
-        self.assertRaises(resource.UpdateReplace, updater)
-
-        rsrc.delete()
-        self.m.VerifyAll()
 
     def test_scaling_group_suspend(self):
         t = template_format.parse(as_template)
@@ -490,6 +456,15 @@ class AutoScalingTest(common.HeatTestCase):
 
         self.m.VerifyAll()
 
+    def test_update_in_failed(self):
+        self.asg.state_set('CREATE', 'FAILED')
+        # to update the failed asg
+        self.asg.adjust = mock.Mock(return_value=None)
+
+        self.asg.handle_update(self.defn, None, None)
+        self.asg.adjust.assert_called_once_with(
+            2, adjustment_type='ExactCapacity')
+
     def test_lb_reload_static_resolve(self):
         t = template_format.parse(as_template)
         properties = t['Resources']['ElasticLoadBalancer']['Properties']
@@ -569,28 +544,6 @@ class AutoScalingTest(common.HeatTestCase):
         self.m.ReplayAll()
         stack = utils.parse_stack(t, params=self.params)
         self.create_scaling_group(t, stack, 'WebServerGroup')
-
-        self.m.VerifyAll()
-
-    def test_lb_reload_invalid_resource(self):
-        t = template_format.parse(as_template)
-        t['Resources']['ElasticLoadBalancer'] = {
-            'Type': 'AWS::EC2::Volume',
-            'Properties': {
-                'AvailabilityZone': 'nova'
-            }
-        }
-
-        self._stub_create(1)
-        self.m.ReplayAll()
-        stack = utils.parse_stack(t, params=self.params)
-        error = self.assertRaises(
-            exception.ResourceFailure,
-            self.create_scaling_group, t, stack, 'WebServerGroup')
-        self.assertEqual(
-            "Error: Unsupported resource 'ElasticLoadBalancer' in "
-            "LoadBalancerNames",
-            six.text_type(error))
 
         self.m.VerifyAll()
 
@@ -710,7 +663,7 @@ class AutoScalingTest(common.HeatTestCase):
         up_policy.metadata_get().AndReturn(previous_meta)
         rsrc.metadata_get().AndReturn(previous_meta)
 
-        #stub for the metadata accesses while creating the two instances
+        # stub for the metadata accesses while creating the two instances
         resource.Resource.metadata_get()
         resource.Resource.metadata_get()
 
@@ -728,108 +681,83 @@ class AutoScalingTest(common.HeatTestCase):
         rsrc.delete()
         self.m.VerifyAll()
 
-    def test_vpc_zone_identifier(self):
+    def _stub_nova_server_get(self, not_found=False):
+        mock_server = mock.MagicMock()
+        mock_server.image = {'id': 'dd619705-468a-4f7d-8a06-b84794b3561a'}
+        mock_server.flavor = {'id': '1'}
+        mock_server.key_name = 'test'
+        mock_server.security_groups = [{u'name': u'hth_test'}]
+        if not_found:
+            self.patchobject(nova.NovaClientPlugin, 'get_server',
+                             side_effect=exception.ServerNotFound(
+                                 server='5678'))
+        else:
+            self.patchobject(nova.NovaClientPlugin, 'get_server',
+                             return_value=mock_server)
+
+    def test_validate_without_InstanceId_and_LaunchConfigurationName(self):
         t = template_format.parse(as_template)
-        properties = t['Resources']['WebServerGroup']['Properties']
-        properties['VPCZoneIdentifier'] = ['xxxx']
-
+        agp = t['Resources']['WebServerGroup']['Properties']
+        agp.pop('LaunchConfigurationName')
+        agp.pop('LoadBalancerNames')
         stack = utils.parse_stack(t, params=self.params)
+        rsrc = stack['WebServerGroup']
+        error_msg = ("Either 'InstanceId' or 'LaunchConfigurationName' "
+                     "must be provided.")
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                rsrc.validate)
+        self.assertIn(error_msg, six.text_type(exc))
 
-        self._stub_lb_reload(1)
-        now = timeutils.utcnow()
-        self._stub_meta_expected(now, 'ExactCapacity : 1')
-        self._stub_create(1)
+    def test_validate_with_InstanceId_and_LaunchConfigurationName(self):
+        t = template_format.parse(as_template)
+        agp = t['Resources']['WebServerGroup']['Properties']
+        agp['InstanceId'] = '5678'
+        stack = utils.parse_stack(t, params=self.params)
+        rsrc = stack['WebServerGroup']
+        error_msg = ("Either 'InstanceId' or 'LaunchConfigurationName' "
+                     "must be provided.")
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                rsrc.validate)
+        self.assertIn(error_msg, six.text_type(exc))
+
+    def test_scaling_group_create_with_instanceid(self):
+        t = template_format.parse(as_template)
+        agp = t['Resources']['WebServerGroup']['Properties']
+        agp['InstanceId'] = '5678'
+        agp.pop('LaunchConfigurationName')
+        agp.pop('LoadBalancerNames')
+        stack = utils.parse_stack(t, params=self.params)
+        rsrc = stack['WebServerGroup']
+        self.stub_KeypairConstraint_validate()
+        self._stub_nova_server_get()
+        self._stub_create(1, with_lcn=False)
         self.m.ReplayAll()
 
-        rsrc = self.create_scaling_group(t, stack, 'WebServerGroup')
-        instances = grouputils.get_members(rsrc)
-        self.assertEqual(1, len(instances))
-        self.assertEqual('xxxx', instances[0].properties['SubnetId'])
-
-        rsrc.delete()
-        self.m.VerifyAll()
-
-    def test_launch_config_get_ref_by_id(self):
-        t = template_format.parse(as_template)
-        stack = utils.parse_stack(t, params=self.params)
-        rsrc = stack['LaunchConfig']
-        self.stub_ImageConstraint_validate()
-        self.stub_FlavorConstraint_validate()
-        self.stub_SnapshotConstraint_validate()
-
-        self.assertIsNone(rsrc.validate())
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
-
-        # use physical_resource_name when rsrc.id is not None
-        self.assertIsNotNone(rsrc.id)
-        expected = '%s-%s-%s' % (rsrc.stack.name,
-                                 rsrc.name,
-                                 short_id.get_id(rsrc.id))
-        self.assertEqual(expected, rsrc.FnGetRefId())
-
-        # otherwise use parent method
-        rsrc.id = None
-        self.assertIsNone(rsrc.resource_id)
-        self.assertEqual('LaunchConfig', rsrc.FnGetRefId())
-
-    def test_validate_BlockDeviceMappings_without_Ebs_property(self):
-        t = template_format.parse(as_template)
-        lcp = t['Resources']['LaunchConfig']['Properties']
-        bdm = [{'DeviceName': 'vdb'}]
-        lcp['BlockDeviceMappings'] = bdm
-        stack = utils.parse_stack(t, params=self.params)
-
-        self.stub_ImageConstraint_validate()
-        self.stub_FlavorConstraint_validate()
-        self.m.ReplayAll()
-
-        e = self.assertRaises(exception.StackValidationFailed,
-                              self.create_scaling_group, t,
-                              stack, 'LaunchConfig')
-
-        self.assertIn("Ebs is missing, this is required",
-                      six.text_type(e))
+        instance_definition = rsrc._get_instance_definition()
+        ins_props = instance_definition['Properties']
+        self.assertEqual('dd619705-468a-4f7d-8a06-b84794b3561a',
+                         ins_props['ImageId'])
+        self.assertEqual('test', ins_props['KeyName'])
+        self.assertEqual(['hth_test'], ins_props['SecurityGroups'])
+        self.assertEqual('1', ins_props['InstanceType'])
 
         self.m.VerifyAll()
 
-    def test_validate_BlockDeviceMappings_without_SnapshotId_property(self):
+    def test_scaling_group_create_with_instanceid_not_found(self):
         t = template_format.parse(as_template)
-        lcp = t['Resources']['LaunchConfig']['Properties']
-        bdm = [{'DeviceName': 'vdb',
-                'Ebs': {'VolumeSize': '1'}}]
-        lcp['BlockDeviceMappings'] = bdm
+        agp = t['Resources']['WebServerGroup']['Properties']
+        agp.pop('LaunchConfigurationName')
+        agp['InstanceId'] = '5678'
         stack = utils.parse_stack(t, params=self.params)
-
-        self.stub_ImageConstraint_validate()
-        self.stub_FlavorConstraint_validate()
+        rsrc = stack['WebServerGroup']
+        self._stub_nova_server_get(not_found=True)
         self.m.ReplayAll()
-
-        e = self.assertRaises(exception.StackValidationFailed,
-                              self.create_scaling_group, t,
-                              stack, 'LaunchConfig')
-
-        self.assertIn("SnapshotId is missing, this is required",
-                      six.text_type(e))
-        self.m.VerifyAll()
-
-    def test_validate_BlockDeviceMappings_without_DeviceName_property(self):
-        t = template_format.parse(as_template)
-        lcp = t['Resources']['LaunchConfig']['Properties']
-        bdm = [{'Ebs': {'SnapshotId': '1234',
-                        'VolumeSize': '1'}}]
-        lcp['BlockDeviceMappings'] = bdm
-        stack = utils.parse_stack(t, params=self.params)
-        self.stub_ImageConstraint_validate()
-        self.m.ReplayAll()
-
-        e = self.assertRaises(exception.StackValidationFailed,
-                              self.create_scaling_group, t,
-                              stack, 'LaunchConfig')
-
-        excepted_error = ('Property error : LaunchConfig: BlockDeviceMappings '
-                          'Property error : BlockDeviceMappings: 0 Property '
-                          'error : 0: Property DeviceName not assigned')
-        self.assertIn(excepted_error, six.text_type(e))
+        msg = ("Property error : WebServerGroup: InstanceId Error validating "
+               "value '5678': The server (5678) could not be found")
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                rsrc.validate)
+        self.assertIn(msg, six.text_type(exc))
 
         self.m.VerifyAll()

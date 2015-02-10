@@ -91,9 +91,6 @@ engine_opts = [
                       "If it's empty, Heat will use the default user set up "
                       "with your cloud image (for OS::Nova::Server) or "
                       "'ec2-user' (for AWS::EC2::Instance).")),
-    cfg.StrOpt('instance_driver',
-               default='heat.engine.nova',
-               help=_('Driver to use for controlling instances.')),
     cfg.ListOpt('plugin_dirs',
                 default=['/usr/lib64/heat', '/usr/lib/heat'],
                 help=_('List of directories to search for plug-ins.')),
@@ -124,10 +121,10 @@ engine_opts = [
                       'retries.')),
     cfg.IntOpt('event_purge_batch_size',
                default=10,
-               help=_('Controls how many events will be pruned whenever a '
-                      ' stack\'s events exceed max_events_per_stack. Set this'
-                      ' lower to keep more events at the expense of more'
-                      ' frequent purges.')),
+               help=_("Controls how many events will be pruned whenever a "
+                      "stack's events exceed max_events_per_stack. Set this "
+                      "lower to keep more events at the expense of more "
+                      "frequent purges.")),
     cfg.IntOpt('max_events_per_stack',
                default=1000,
                help=_('Maximum events that will be available per stack. Older'
@@ -254,7 +251,8 @@ def list_opts():
     yield 'clients', default_clients_opts
 
     for client in ('nova', 'swift', 'neutron', 'cinder',
-                   'ceilometer', 'keystone', 'heat', 'glance', 'trove'):
+                   'ceilometer', 'keystone', 'heat', 'glance', 'trove',
+                   'sahara'):
         client_specific_group = 'clients_' + client
         yield client_specific_group, clients_opts
 

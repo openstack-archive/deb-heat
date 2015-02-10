@@ -17,7 +17,7 @@ import itertools
 from docutils import core
 from docutils import nodes
 import pydoc
-from sphinx.util.compat import Directive
+from sphinx.util import compat
 
 from heat.common.i18n import _
 from heat.engine import attributes
@@ -38,7 +38,7 @@ class resourcepages(nodes.General, nodes.Element):
     pass
 
 
-class ResourcePages(Directive):
+class ResourcePages(compat.Directive):
     has_content = False
     required_arguments = 0
     optional_arguments = 1
@@ -234,6 +234,14 @@ Resources:
 
         if prop.support_status.status != support.SUPPORTED:
             para = nodes.paragraph('', self._status_str(prop.support_status))
+            note = nodes.note('', para)
+            definition.append(note)
+
+        if (prop.support_status.status == support.SUPPORTED and
+            prop.support_status.version is not None):
+            tag = prop.support_status.version.title()
+            message = (_('Available since %s.') % self._version_str(tag))
+            para = nodes.paragraph('', message)
             note = nodes.note('', para)
             definition.append(note)
 

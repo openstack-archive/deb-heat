@@ -12,6 +12,7 @@
 #    under the License.
 
 import copy
+
 import six
 
 from heat.common import exception
@@ -603,11 +604,11 @@ class HOTemplateTest(common.HeatTestCase):
 
         err_str = "can not be accessed directly"
 
-        #Hot template test
+        # Hot template test
         keyError = self.assertRaises(KeyError, tmpl.__getitem__, 'parameters')
         self.assertIn(err_str, six.text_type(keyError))
 
-        #CFN template test
+        # CFN template test
         keyError = self.assertRaises(KeyError, tmpl.__getitem__, 'Parameters')
         self.assertIn(err_str, six.text_type(keyError))
 
@@ -927,8 +928,8 @@ class StackTest(test_parser.StackTest):
             {'Type': 'ResourceWithPropsType',
              'Properties': {'Foo': 'xyz'}},
             {'Type': 'ResourceWithPropsType',
-             'Properties': {'Foo': 'abc'}}).WithSideEffects(check_props) \
-                                           .AndRaise(resource.UpdateReplace)
+             'Properties': {'Foo': 'abc'}}
+        ).WithSideEffects(check_props).AndRaise(resource.UpdateReplace)
         self.m.ReplayAll()
 
         self.stack.update(updated_stack)
@@ -1129,6 +1130,12 @@ class StackParametersTest(common.HeatTestCase):
               snippet={'properties': {'prop1': {'get_param':
                                                 'OS::stack_name'}}},
               expected={'properties': {'prop1': 'test'}})),
+        ('pseudo_project_id',
+         dict(params={},
+              snippet={'properties': {'prop1': {'get_param':
+                                                'OS::project_id'}}},
+              expected={'properties':
+                        {'prop1': '9913ef0a-b8be-4b33-b574-9061441bd373'}})),
 
     ]
 
@@ -1160,13 +1167,14 @@ class StackParametersTest(common.HeatTestCase):
         tmpl = parser.Template(self.props_template)
         env = environment.Environment(self.params)
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl, env,
-                             stack_id='1ba8c334-2297-4312-8c7c-43763a988ced')
+                             stack_id='1ba8c334-2297-4312-8c7c-43763a988ced',
+                             tenant_id='9913ef0a-b8be-4b33-b574-9061441bd373')
         self.assertEqual(self.expected,
                          function.resolve(tmpl.parse(stack, self.snippet)))
 
 
 class HOTParamValidatorTest(common.HeatTestCase):
-    """Test HOTParamValidator"""
+    """Test HOTParamValidator."""
 
     def test_multiple_constraint_descriptions(self):
         len_desc = 'string length should be between 8 and 16'
@@ -1342,6 +1350,19 @@ class HOTParamValidatorTest(common.HeatTestCase):
 
         value = "0"
         self.assertTrue(v(value))
+
+    def test_custom_constraint_default_skip(self):
+        schema = {
+            'type': 'string',
+            'constraints': [{
+                'custom_constraint': 'skipping',
+                'description': 'Must be skipped on default value'
+            }],
+            'default': 'foo'
+        }
+        param_schema = hot_param.HOTParamSchema.from_dict('p', schema)
+
+        param_schema.validate()
 
     def test_range_constraint_invalid_default(self):
         range_desc = 'Value must be between 30000 and 50000'

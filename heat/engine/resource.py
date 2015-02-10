@@ -14,11 +14,12 @@
 import base64
 import contextlib
 import datetime as dt
+import warnings
+
 from oslo.config import cfg
 from oslo.utils import encodeutils
 from oslo.utils import excutils
 import six
-import warnings
 
 from heat.common import exception
 from heat.common.i18n import _
@@ -390,10 +391,10 @@ class Resource(object):
             if self.resource_id:
                 text = '%s "%s" [%s] %s' % (self.__class__.__name__, self.name,
                                             self.resource_id,
-                                            unicode(self.stack))
+                                            six.text_type(self.stack))
             else:
                 text = '%s "%s" %s' % (self.__class__.__name__, self.name,
-                                       unicode(self.stack))
+                                       six.text_type(self.stack))
         else:
             text = '%s "%s"' % (self.__class__.__name__, self.name)
         return encodeutils.safe_decode(text)
@@ -840,7 +841,7 @@ class Resource(object):
 
         function.validate(self.t)
         self.validate_deletion_policy(self.t.deletion_policy())
-        return self.properties.validate()
+        return self.properties.validate(with_value=self.stack.strict_validate)
 
     @classmethod
     def validate_deletion_policy(cls, policy):
@@ -1013,14 +1014,14 @@ class Resource(object):
         :results: the id or name of the resource.
         '''
         if self.resource_id is not None:
-            return unicode(self.resource_id)
+            return six.text_type(self.resource_id)
         else:
-            return unicode(self.name)
+            return six.text_type(self.name)
 
     def physical_resource_name_or_FnGetRefId(self):
         res_name = self.physical_resource_name()
         if res_name is not None:
-            return unicode(res_name)
+            return six.text_type(res_name)
         else:
             return Resource.FnGetRefId(self)
 
