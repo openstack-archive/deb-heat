@@ -33,6 +33,7 @@ override_dh_clean:
 	rm -f debian/*.init debian/*.service debian/*.upstart
 
 override_dh_install:
+	mkdir -p $(CURDIR)/debian/heat-common/usr/share/heat-common
 	oslo-config-generator \
 		--namespace heat.common.config \
 		--namespace heat.common.crypt \
