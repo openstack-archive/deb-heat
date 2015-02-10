@@ -55,8 +55,6 @@ override_dh_install:
 	sed -i 's|^[# \t]*connection[\t #]*=.*|connection=sqlite:////var/lib/heat/heatdb|' $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
 
 	dh_install --fail-missing -Xbin/cinder-keystone-setup
-	install -D -m 0640 etc/heat/heat.conf.sample $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
-	sed -i 's|[# ]*auth_protocol[# ]*=.*|auth_protocol=http|' $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
 	set -e && for pyvers in $(PYTHONS); do \
 		mkdir -p $(CURDIR)/debian/python-heat/usr/lib/python$$pyvers/dist-packages/heat/plugins ; \
 		cp -rf contrib/heat_keystoneclient_v2/heat_keystoneclient_v2 $(CURDIR)/debian/python-heat/usr/lib/python$$pyvers/dist-packages/heat/plugins ; \
