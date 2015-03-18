@@ -91,18 +91,18 @@ as it allows particular rules to be explicitly disabled.
 import abc
 import ast
 import copy
+import logging
 import os
 import re
 
-from oslo.config import cfg
-from oslo.serialization import jsonutils
+from oslo_config import cfg
+from oslo_serialization import jsonutils
 import six
 import six.moves.urllib.parse as urlparse
 import six.moves.urllib.request as urlrequest
 
 from heat.openstack.common import fileutils
 from heat.openstack.common._i18n import _, _LE, _LI
-from heat.openstack.common import log as logging
 
 
 policy_opts = [

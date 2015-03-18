@@ -31,9 +31,11 @@ from heat.engine import rsrc_defn
 from heat.engine import template
 from heat.tests import common
 from heat.tests import generic_resource as generic_rsrc
-from heat.tests import test_parser
 from heat.tests import utils
 
+empty_template = template_format.parse('''{
+  "HeatTemplateFormatVersion" : "2012-12-12",
+}''')
 
 hot_tpl_empty = template_format.parse('''
 heat_template_version: 2013-05-23
@@ -41,6 +43,10 @@ heat_template_version: 2013-05-23
 
 hot_juno_tpl_empty = template_format.parse('''
 heat_template_version: 2014-10-16
+''')
+
+hot_kilo_tpl_empty = template_format.parse('''
+heat_template_version: 2015-04-30
 ''')
 
 hot_tpl_empty_sections = template_format.parse('''
@@ -585,6 +591,126 @@ class HOTemplateTest(common.HeatTestCase):
 
         self.assertEqual(snippet_resolved, self.resolve(snippet, tmpl, stack))
 
+    def test_repeat(self):
+        """Test repeat function."""
+        snippet = {'repeat': {'template': 'this is %var%',
+                              'for_each': {'%var%': ['a', 'b', 'c']}}}
+        snippet_resolved = ['this is a', 'this is b', 'this is c']
+
+        tmpl = parser.Template(hot_kilo_tpl_empty)
+
+        self.assertEqual(snippet_resolved, self.resolve(snippet, tmpl))
+
+    def test_repeat_dict_template(self):
+        """Test repeat function with a dictionary as a template."""
+        snippet = {'repeat': {'template': {'key-%var%': 'this is %var%'},
+                              'for_each': {'%var%': ['a', 'b', 'c']}}}
+        snippet_resolved = [{'key-a': 'this is a'},
+                            {'key-b': 'this is b'},
+                            {'key-c': 'this is c'}]
+
+        tmpl = parser.Template(hot_kilo_tpl_empty)
+
+        self.assertEqual(snippet_resolved, self.resolve(snippet, tmpl))
+
+    def test_repeat_list_template(self):
+        """Test repeat function with a list as a template."""
+        snippet = {'repeat': {'template': ['this is %var%', 'static'],
+                              'for_each': {'%var%': ['a', 'b', 'c']}}}
+        snippet_resolved = [['this is a', 'static'],
+                            ['this is b', 'static'],
+                            ['this is c', 'static']]
+
+        tmpl = parser.Template(hot_kilo_tpl_empty)
+
+        self.assertEqual(snippet_resolved, self.resolve(snippet, tmpl))
+
+    def test_repeat_multi_list(self):
+        """Test repeat function with multiple input lists."""
+        snippet = {'repeat': {'template': 'this is %var1%-%var2%',
+                              'for_each': {'%var1%': ['a', 'b', 'c'],
+                                           '%var2%': ['1', '2']}}}
+        snippet_resolved = ['this is a-1', 'this is b-1', 'this is c-1',
+                            'this is a-2', 'this is b-2', 'this is c-2']
+
+        tmpl = parser.Template(hot_kilo_tpl_empty)
+
+        result = self.resolve(snippet, tmpl)
+        self.assertEqual(len(result), len(snippet_resolved))
+        for item in result:
+            self.assertIn(item, snippet_resolved)
+
+    def test_repeat_bad_args(self):
+        """
+        Test that the repeat function reports a proper error when missing
+        or invalid arguments.
+        """
+        tmpl = parser.Template(hot_kilo_tpl_empty)
+
+        # missing for_each
+        snippet = {'repeat': {'template': 'this is %var%'}}
+        self.assertRaises(KeyError, self.resolve, snippet, tmpl)
+
+        # mispelled for_each
+        snippet = {'repeat': {'template': 'this is %var%',
+                              'foreach': {'%var%': ['a', 'b', 'c']}}}
+        self.assertRaises(KeyError, self.resolve, snippet, tmpl)
+
+        # for_each is not a map
+        snippet = {'repeat': {'template': 'this is %var%',
+                              'for_each': '%var%'}}
+        self.assertRaises(TypeError, self.resolve, snippet, tmpl)
+
+        # value given to for_each entry is not a list
+        snippet = {'repeat': {'template': 'this is %var%',
+                              'for_each': {'%var%': 'a'}}}
+        self.assertRaises(TypeError, self.resolve, snippet, tmpl)
+
+        # mispelled template
+        snippet = {'repeat': {'templte': 'this is %var%',
+                              'for_each': {'%var%': ['a', 'b', 'c']}}}
+        self.assertRaises(KeyError, self.resolve, snippet, tmpl)
+
+    def test_digest(self):
+        snippet = {'digest': ['md5', 'foobar']}
+        snippet_resolved = '3858f62230ac3c915f300c664312c63f'
+
+        tmpl = parser.Template(hot_kilo_tpl_empty)
+        self.assertEqual(snippet_resolved, self.resolve(snippet, tmpl))
+
+    def test_digest_invalid_types(self):
+        tmpl = parser.Template(hot_kilo_tpl_empty)
+
+        invalid_snippets = [
+            {'digest': 'invalid'},
+            {'digest': {'foo': 'invalid'}},
+            {'digest': [123]},
+        ]
+        for snippet in invalid_snippets:
+            exc = self.assertRaises(TypeError, self.resolve, snippet, tmpl)
+            self.assertIn('must be a list of strings', six.text_type(exc))
+
+    def test_digest_incorrect_number_arguments(self):
+        tmpl = parser.Template(hot_kilo_tpl_empty)
+
+        invalid_snippets = [
+            {'digest': []},
+            {'digest': ['foo']},
+            {'digest': ['md5']},
+            {'digest': ['md5', 'foo', 'bar']},
+        ]
+        for snippet in invalid_snippets:
+            exc = self.assertRaises(ValueError, self.resolve, snippet, tmpl)
+            self.assertIn('usage: ["<algorithm>", "<value>"]',
+                          six.text_type(exc))
+
+    def test_digest_invalid_algorithm(self):
+        tmpl = parser.Template(hot_kilo_tpl_empty)
+
+        snippet = {'digest': ['invalid_algorithm', 'foobar']}
+        exc = self.assertRaises(ValueError, self.resolve, snippet, tmpl)
+        self.assertIn('Algorithm must be one of', six.text_type(exc))
+
     def test_prevent_parameters_access(self):
         """
         Test that the parameters section can't be accessed using the template
@@ -669,7 +795,8 @@ class HOTemplateTest(common.HeatTestCase):
                                              parser.Template(hot_tpl_empty))
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template(hot_tpl_empty),
-                             parent_resource=parent_resource)
+                             parent_resource='parent')
+        stack._parent_resource = parent_resource
         self.assertEqual({"foo": "bar"},
                          self.resolve(metadata_snippet, stack.t, stack))
         self.assertEqual('Retain',
@@ -694,7 +821,8 @@ class HOTemplateTest(common.HeatTestCase):
 
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template(hot_tpl_empty),
-                             parent_resource=parent_resource)
+                             parent_resource='parent')
+        stack._parent_resource = parent_resource
         self.assertEqual('Retain',
                          self.resolve(deletion_policy_snippet, stack.t, stack))
 
@@ -719,7 +847,8 @@ class HOTemplateTest(common.HeatTestCase):
                                              parser.Template(hot_tpl_empty))
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              parser.Template(hot_tpl_empty),
-                             parent_resource=parent_resource)
+                             parent_resource='parent')
+        stack._parent_resource = parent_resource
         self.assertEqual('Delete', self.resolve(snippet, stack.t, stack))
 
     def test_removed_function(self):
@@ -757,8 +886,22 @@ class HOTemplateTest(common.HeatTestCase):
         self.assertEqual(hot_tpl['resources'], empty.t['resources'])
 
 
-class StackTest(test_parser.StackTest):
+class HotStackTest(common.HeatTestCase):
     """Test stack function when stack was created from HOT template."""
+    def setUp(self):
+        super(HotStackTest, self).setUp()
+
+        self.tmpl = template.Template(copy.deepcopy(empty_template))
+        self.ctx = utils.dummy_context()
+
+        resource._register_class('GenericResourceType',
+                                 generic_rsrc.GenericResource)
+        resource._register_class('ResourceWithPropsType',
+                                 generic_rsrc.ResourceWithProps)
+        resource._register_class('ResourceWithComplexAttributesType',
+                                 generic_rsrc.ResourceWithComplexAttributes)
+        resource._register_class('ResWithComplexPropsAndAttrs',
+                                 generic_rsrc.ResWithComplexPropsAndAttrs)
 
     def resolve(self, snippet):
         return function.resolve(self.stack.t.parse(self.stack, snippet))
@@ -910,16 +1053,18 @@ class StackTest(test_parser.StackTest):
                                'update_template_diff')
 
         self.stack = parser.Stack(self.ctx, 'update_test_stack',
-                                  template.Template(tmpl),
-                                  environment.Environment({'foo': 'abc'}))
+                                  template.Template(
+                                      tmpl, env=environment.Environment(
+                                          {'foo': 'abc'})))
         self.stack.store()
         self.stack.create()
         self.assertEqual((parser.Stack.CREATE, parser.Stack.COMPLETE),
                          self.stack.state)
 
         updated_stack = parser.Stack(self.ctx, 'updated_stack',
-                                     template.Template(tmpl),
-                                     environment.Environment({'foo': 'xyz'}))
+                                     template.Template(
+                                         tmpl, env=environment.Environment(
+                                             {'foo': 'xyz'})))
 
         def check_props(*args):
             self.assertEqual('abc', self.stack['AResource'].properties['Foo'])
@@ -1164,9 +1309,9 @@ class StackParametersTest(common.HeatTestCase):
 
     def test_param_refs(self):
         """Test if parameter references work."""
-        tmpl = parser.Template(self.props_template)
         env = environment.Environment(self.params)
-        stack = parser.Stack(utils.dummy_context(), 'test', tmpl, env,
+        tmpl = parser.Template(self.props_template, env=env)
+        stack = parser.Stack(utils.dummy_context(), 'test', tmpl,
                              stack_id='1ba8c334-2297-4312-8c7c-43763a988ced',
                              tenant_id='9913ef0a-b8be-4b33-b574-9061441bd373')
         self.assertEqual(self.expected,

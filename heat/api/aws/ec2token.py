@@ -13,9 +13,10 @@
 
 import hashlib
 
-from oslo.config import cfg
-from oslo.serialization import jsonutils as json
-from oslo.utils import importutils
+from oslo_config import cfg
+from oslo_log import log as logging
+from oslo_serialization import jsonutils as json
+from oslo_utils import importutils
 import requests
 import webob
 
@@ -24,7 +25,6 @@ from heat.common.i18n import _
 from heat.common.i18n import _LE
 from heat.common.i18n import _LI
 from heat.common import wsgi
-from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
 

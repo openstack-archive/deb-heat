@@ -12,8 +12,8 @@
 
 import copy
 import json
-import logging
 
+from oslo_log import log as logging
 from testtools import matchers
 
 from heat_integrationtests.common import test
@@ -70,7 +70,7 @@ parameters:
   InstanceType: {type: string}
   SecurityGroups: {type: comma_delimited_list}
   UserData: {type: string}
-  Tags: {type: comma_delimited_list}
+  Tags: {type: comma_delimited_list, default: "x,y"}
 
 resources:
   random1:
@@ -78,8 +78,11 @@ resources:
     properties:
       salt: {get_param: ImageId}
 outputs:
-  PublicIp:
-    value: {get_attr: [random1, value]}
+  PublicIp: {value: {get_attr: [random1, value]}}
+  AvailabilityZone: {value: 'not-used11'}
+  PrivateDnsName: {value: 'not-used12'}
+  PublicDnsName: {value: 'not-used13'}
+  PrivateIp: {value: 'not-used14'}
 '''
 
     # This is designed to fail.
@@ -90,7 +93,7 @@ parameters:
   InstanceType: {type: string}
   SecurityGroups: {type: comma_delimited_list}
   UserData: {type: string}
-  Tags: {type: comma_delimited_list}
+  Tags: {type: comma_delimited_list, default: "x,y"}
 
 resources:
   random1:
@@ -302,6 +305,35 @@ class AutoscalingGroupBasicTest(AutoscalingGroupTest):
                                                res.resource_name,
                                                'CREATE_FAILED')
 
+    def test_group_suspend_resume(self):
+
+        files = {'provider.yaml': self.instance_template}
+        env = {'resource_registry': {'AWS::EC2::Instance': 'provider.yaml'},
+               'parameters': {'size': 4,
+                              'image': self.conf.image_ref,
+                              'flavor': self.conf.instance_type}}
+        stack_identifier = self.stack_create(template=self.template,
+                                             files=files, environment=env)
+
+        nested_ident = self.assert_resource_is_a_stack(stack_identifier,
+                                                       'JobServerGroup')
+
+        self.client.actions.suspend(stack_id=stack_identifier)
+        self._wait_for_resource_status(
+            stack_identifier, 'JobServerGroup', 'SUSPEND_COMPLETE')
+        for res in self.client.resources.list(nested_ident):
+            self._wait_for_resource_status(nested_ident,
+                                           res.resource_name,
+                                           'SUSPEND_COMPLETE')
+
+        self.client.actions.resume(stack_id=stack_identifier)
+        self._wait_for_resource_status(
+            stack_identifier, 'JobServerGroup', 'RESUME_COMPLETE')
+        for res in self.client.resources.list(nested_ident):
+            self._wait_for_resource_status(nested_ident,
+                                           res.resource_name,
+                                           'RESUME_COMPLETE')
+
 
 class AutoscalingGroupUpdatePolicyTest(AutoscalingGroupTest):
 
@@ -501,3 +533,190 @@ class AutoscalingGroupUpdatePolicyTest(AutoscalingGroupTest):
                                    num_creates_expected_on_updt=2,
                                    num_deletes_expected_on_updt=2,
                                    update_replace=False)
+
+
+class AutoScalingSignalTest(AutoscalingGroupTest):
+
+    template = '''
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Template to create multiple instances.",
+  "Parameters" : {"size": {"Type": "String", "Default": "1"},
+                  "AZ": {"Type": "String", "Default": "nova"},
+                  "image": {"Type": "String"},
+                  "flavor": {"Type": "String"}},
+  "Resources": {
+    "custom_lb": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": {"Ref": "image"},
+        "InstanceType": {"Ref": "flavor"},
+        "UserData": "foo",
+        "SecurityGroups": [ "sg-1" ],
+        "Tags": []
+      },
+      "Metadata": {
+        "IPs": {"Fn::GetAtt": ["JobServerGroup", "InstanceList"]}
+      }
+    },
+    "JobServerGroup": {
+      "Type" : "AWS::AutoScaling::AutoScalingGroup",
+      "Properties" : {
+        "AvailabilityZones" : [{"Ref": "AZ"}],
+        "LaunchConfigurationName" : { "Ref" : "JobServerConfig" },
+        "DesiredCapacity" : {"Ref": "size"},
+        "MinSize" : "0",
+        "MaxSize" : "20"
+      }
+    },
+    "JobServerConfig" : {
+      "Type" : "AWS::AutoScaling::LaunchConfiguration",
+      "Metadata": {"foo": "bar"},
+      "Properties": {
+        "ImageId"           : {"Ref": "image"},
+        "InstanceType"      : {"Ref": "flavor"},
+        "SecurityGroups"    : [ "sg-1" ],
+        "UserData"          : "jsconfig data"
+      }
+    },
+    "ScaleUpPolicy" : {
+      "Type" : "AWS::AutoScaling::ScalingPolicy",
+      "Properties" : {
+        "AdjustmentType" : "ChangeInCapacity",
+        "AutoScalingGroupName" : { "Ref" : "JobServerGroup" },
+        "Cooldown" : "0",
+        "ScalingAdjustment": "1"
+      }
+    },
+    "ScaleDownPolicy" : {
+      "Type" : "AWS::AutoScaling::ScalingPolicy",
+      "Properties" : {
+        "AdjustmentType" : "ChangeInCapacity",
+        "AutoScalingGroupName" : { "Ref" : "JobServerGroup" },
+        "Cooldown" : "0",
+        "ScalingAdjustment" : "-2"
+      }
+    }
+  },
+  "Outputs": {
+    "InstanceList": {"Value": {
+      "Fn::GetAtt": ["JobServerGroup", "InstanceList"]}}
+  }
+}
+'''
+
+    lb_template = '''
+heat_template_version: 2013-05-23
+parameters:
+  ImageId: {type: string}
+  InstanceType: {type: string}
+  SecurityGroups: {type: comma_delimited_list}
+  UserData: {type: string}
+  Tags: {type: comma_delimited_list, default: "x,y"}
+
+resources:
+outputs:
+  PublicIp: {value: "not-used"}
+  AvailabilityZone: {value: 'not-used1'}
+  PrivateDnsName: {value: 'not-used2'}
+  PublicDnsName: {value: 'not-used3'}
+  PrivateIp: {value: 'not-used4'}
+
+'''
+
+    def setUp(self):
+        super(AutoScalingSignalTest, self).setUp()
+        self.build_timeout = self.conf.build_timeout
+        self.build_interval = self.conf.build_interval
+        self.files = {'provider.yaml': self.instance_template,
+                      'lb.yaml': self.lb_template}
+        self.env = {'resource_registry':
+                    {'resources':
+                     {'custom_lb': {'AWS::EC2::Instance': 'lb.yaml'}},
+                     'AWS::EC2::Instance': 'provider.yaml'},
+                    'parameters': {'size': 2,
+                                   'image': self.conf.image_ref,
+                                   'flavor': self.conf.instance_type}}
+
+    def check_instance_count(self, stack_identifier, expected):
+        md = self.client.resources.metadata(stack_identifier, 'custom_lb')
+        actual_md = len(md['IPs'].split(','))
+        if actual_md != expected:
+            LOG.warn('check_instance_count exp:%d, meta:%s' % (expected,
+                                                               md['IPs']))
+            return False
+
+        stack = self.client.stacks.get(stack_identifier)
+        inst_list = self._stack_output(stack, 'InstanceList')
+        actual = len(inst_list.split(','))
+        if actual != expected:
+            LOG.warn('check_instance_count exp:%d, act:%s' % (expected,
+                                                              inst_list))
+        return actual == expected
+
+    def test_scaling_meta_update(self):
+        """Use heatclient to signal the up and down policy.
+
+        Then confirm that the metadata in the custom_lb is updated each
+        time.
+        """
+        stack_identifier = self.stack_create(template=self.template,
+                                             files=self.files,
+                                             environment=self.env)
+
+        self.assertTrue(test.call_until_true(
+            self.build_timeout, self.build_interval,
+            self.check_instance_count, stack_identifier, 2))
+
+        nested_ident = self.assert_resource_is_a_stack(stack_identifier,
+                                                       'JobServerGroup')
+        # Scale up one, Trigger alarm
+        self.client.resources.signal(stack_identifier, 'ScaleUpPolicy')
+        self._wait_for_stack_status(nested_ident, 'UPDATE_COMPLETE')
+        self.assertTrue(test.call_until_true(
+            self.build_timeout, self.build_interval,
+            self.check_instance_count, stack_identifier, 3))
+
+        # Scale down two, Trigger alarm
+        self.client.resources.signal(stack_identifier, 'ScaleDownPolicy')
+        self._wait_for_stack_status(nested_ident, 'UPDATE_COMPLETE')
+        self.assertTrue(test.call_until_true(
+            self.build_timeout, self.build_interval,
+            self.check_instance_count, stack_identifier, 1))
+
+    def test_signal_with_policy_update(self):
+        """Prove that an updated policy is used in the next signal."""
+
+        stack_identifier = self.stack_create(template=self.template,
+                                             files=self.files,
+                                             environment=self.env)
+
+        self.assertTrue(test.call_until_true(
+            self.build_timeout, self.build_interval,
+            self.check_instance_count, stack_identifier, 2))
+
+        nested_ident = self.assert_resource_is_a_stack(stack_identifier,
+                                                       'JobServerGroup')
+        # Scale up one, Trigger alarm
+        self.client.resources.signal(stack_identifier, 'ScaleUpPolicy')
+        self._wait_for_stack_status(nested_ident, 'UPDATE_COMPLETE')
+        self.assertTrue(test.call_until_true(
+            self.build_timeout, self.build_interval,
+            self.check_instance_count, stack_identifier, 3))
+
+        # increase the adjustment to "+2" and remove the DesiredCapacity
+        # so we don't go from 3 to 2.
+        new_template = self.template.replace(
+            '"ScalingAdjustment": "1"',
+            '"ScalingAdjustment": "2"').replace(
+                '"DesiredCapacity" : {"Ref": "size"},', '')
+
+        self.update_stack(stack_identifier, template=new_template,
+                          environment=self.env, files=self.files)
+
+        # Scale up two, Trigger alarm
+        self.client.resources.signal(stack_identifier, 'ScaleUpPolicy')
+        self._wait_for_stack_status(nested_ident, 'UPDATE_COMPLETE')
+        self.assertTrue(test.call_until_true(
+            self.build_timeout, self.build_interval,
+            self.check_instance_count, stack_identifier, 5))

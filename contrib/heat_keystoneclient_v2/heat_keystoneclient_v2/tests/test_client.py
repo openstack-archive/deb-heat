@@ -14,8 +14,8 @@
 
 import mock
 import mox
-from oslo.config import cfg
-from oslo.utils import importutils
+from oslo_config import cfg
+from oslo_utils import importutils
 
 from heat.common import exception
 from heat.tests import common
@@ -46,23 +46,25 @@ class KeystoneClientTest(common.HeatTestCase):
         self.addCleanup(self.m.VerifyAll)
 
     def _stubs_v2(self, method='token', auth_ok=True, trust_scoped=True,
-                  user_id='trustor_user_id'):
+                  user_id='trustor_user_id', region=None):
         self.mock_ks_client = self.m.CreateMock(heat_keystoneclient.kc.Client)
         self.m.StubOutWithMock(heat_keystoneclient.kc, "Client")
         if method == 'token':
             heat_keystoneclient.kc.Client(
                 auth_url=mox.IgnoreArg(),
+                endpoint=mox.IgnoreArg(),
                 tenant_name='test_tenant',
                 token='abcd1234',
                 cacert=None,
                 cert=None,
                 insecure=False,
-                region_name=None,
+                region_name=region,
                 key=None).AndReturn(self.mock_ks_client)
             self.mock_ks_client.authenticate().AndReturn(auth_ok)
         elif method == 'password':
             heat_keystoneclient.kc.Client(
                 auth_url=mox.IgnoreArg(),
+                endpoint=mox.IgnoreArg(),
                 tenant_name='test_tenant',
                 tenant_id='test_tenant_id',
                 username='test_username',
@@ -70,19 +72,20 @@ class KeystoneClientTest(common.HeatTestCase):
                 cacert=None,
                 cert=None,
                 insecure=False,
-                region_name=None,
+                region_name=region,
                 key=None).AndReturn(self.mock_ks_client)
             self.mock_ks_client.authenticate().AndReturn(auth_ok)
         if method == 'trust':
             heat_keystoneclient.kc.Client(
                 auth_url='http://server.test:5000/v2.0',
+                endpoint='http://server.test:5000/v2.0',
                 password='verybadpass',
                 tenant_name='service',
                 username='heat',
                 cacert=None,
                 cert=None,
                 insecure=False,
-                region_name=None,
+                region_name=region,
                 key=None).AndReturn(self.mock_ks_client)
             self.mock_ks_client.authenticate(trust_id='atrust123',
                                              tenant_id='test_tenant_id'
@@ -211,6 +214,21 @@ class KeystoneClientTest(common.HeatTestCase):
         self.ctx.trustor_user_id = 'trustor_user_id'
         heat_ks_client = heat_keystoneclient.KeystoneClientV2(self.ctx)
         self.assertIsNotNone(heat_ks_client._client)
+
+    def test_region_name(self):
+        """Test region_name is used when specified."""
+
+        self._stubs_v2(method='trust', region='region123')
+        self.m.ReplayAll()
+
+        self.ctx.username = None
+        self.ctx.password = None
+        self.ctx.auth_token = None
+        self.ctx.trust_id = 'atrust123'
+        self.ctx.trustor_user_id = 'trustor_user_id'
+        self.ctx.region_name = 'region123'
+        heat_keystoneclient.KeystoneClientV2(self.ctx)
+        self.m.VerifyAll()
 
     # ##################### #
     # V3 Compatible Methods #

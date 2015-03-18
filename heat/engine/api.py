@@ -13,14 +13,14 @@
 
 import collections
 
-from oslo.utils import timeutils
+from oslo_log import log as logging
+from oslo_utils import timeutils
 
 from heat.common.i18n import _
 from heat.common.i18n import _LE
 from heat.common import param_utils
 from heat.common import template_format
 from heat.engine import constraints as constr
-from heat.openstack.common import log as logging
 from heat.rpc import api as rpc_api
 
 LOG = logging.getLogger(__name__)
@@ -180,8 +180,8 @@ def format_stack_resource(resource, detail=True, with_props=False,
             resource.nested() is not None):
         res[rpc_api.RES_NESTED_STACK_ID] = dict(resource.nested().identifier())
 
-    if resource.stack.parent_resource:
-        res[rpc_api.RES_PARENT_RESOURCE] = resource.stack.parent_resource.name
+    if resource.stack.parent_resource_name:
+        res[rpc_api.RES_PARENT_RESOURCE] = resource.stack.parent_resource_name
 
     if detail:
         res[rpc_api.RES_DESCRIPTION] = resource.t.description
@@ -387,7 +387,9 @@ def format_software_config(sc):
         rpc_api.SOFTWARE_CONFIG_CONFIG: sc.config['config'],
         rpc_api.SOFTWARE_CONFIG_INPUTS: sc.config['inputs'],
         rpc_api.SOFTWARE_CONFIG_OUTPUTS: sc.config['outputs'],
-        rpc_api.SOFTWARE_CONFIG_OPTIONS: sc.config['options']
+        rpc_api.SOFTWARE_CONFIG_OPTIONS: sc.config['options'],
+        rpc_api.SOFTWARE_CONFIG_CREATION_TIME: timeutils.isotime(
+            sc.created_at),
     }
     return result
 
@@ -404,7 +406,12 @@ def format_software_deployment(sd):
         rpc_api.SOFTWARE_DEPLOYMENT_STATUS: sd.status,
         rpc_api.SOFTWARE_DEPLOYMENT_STATUS_REASON: sd.status_reason,
         rpc_api.SOFTWARE_DEPLOYMENT_CONFIG_ID: sd.config.id,
+        rpc_api.SOFTWARE_DEPLOYMENT_CREATION_TIME: timeutils.isotime(
+            sd.created_at)
     }
+    if sd.updated_at:
+        result[rpc_api.SOFTWARE_DEPLOYMENT_UPDATED_TIME] = timeutils.isotime(
+            sd.updated_at)
     return result
 
 

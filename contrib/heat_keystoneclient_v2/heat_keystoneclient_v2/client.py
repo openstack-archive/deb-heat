@@ -14,14 +14,14 @@
 """Client Library for Keystone Resources."""
 
 from keystoneclient.v2_0 import client as kc
-from oslo.config import cfg
-from oslo.utils import importutils
+from oslo_config import cfg
+from oslo_log import log as logging
+from oslo_utils import importutils
 
 from heat.common import exception
 from heat.common.i18n import _LE
 from heat.common.i18n import _LI
 from heat.common.i18n import _LW
-from heat.openstack.common import log as logging
 
 LOG = logging.getLogger('heat.common.keystoneclient')
 LOG.info(_LI("Keystone V2 loaded"))
@@ -31,7 +31,7 @@ class KeystoneClientV2(object):
 
     """Wrap keystone client so we can encapsulate logic used in resources.
 
-    Note this is intended to be initialized from a resource on a per-session
+    Note: This is intended to be initialized from a resource on a per-session
     basis, so the session context is passed in on initialization
     Also note that a copy of this is created every resource as self.keystone()
     via the code in engine/client.py, so there should not be any need to
@@ -65,8 +65,13 @@ class KeystoneClientV2(object):
     def _v2_client_init(self):
         kwargs = {
             'auth_url': self.context.auth_url,
+            'endpoint': self.context.auth_url,
             'region_name': cfg.CONF.region_name_for_services
         }
+
+        if self.context.region_name is not None:
+            kwargs['region_name'] = self.context.region_name
+
         auth_kwargs = {}
         # Note try trust_id first, as we can't reuse auth_token in that case
         if self.context.trust_id is not None:

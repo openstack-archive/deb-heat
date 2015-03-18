@@ -11,14 +11,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo.config import cfg
+from oslo_config import cfg
 
 from heat.common import exception
 from heat.common import short_id
 from heat.common import template_format
-from heat.db import api as db_api
-from heat.engine.resources import user
+from heat.engine.resources.aws.iam import user
+from heat.engine.resources.openstack.heat import access_policy as ap
 from heat.engine import scheduler
+from heat.objects import resource_data as resource_data_object
 from heat.tests import common
 from heat.tests import fakes
 from heat.tests import utils
@@ -126,7 +127,7 @@ class UserTest(common.HeatTestCase):
         rsrc._store()
 
         self.m.StubOutWithMock(short_id, 'get_id')
-        short_id.get_id(rsrc.id).MultipleTimes().AndReturn('aabbcc')
+        short_id.get_id(rsrc.uuid).MultipleTimes().AndReturn('aabbcc')
 
         self.m.StubOutWithMock(fakes.FakeKeystoneClient,
                                'create_stack_domain_user')
@@ -232,9 +233,9 @@ class UserTest(common.HeatTestCase):
                           rsrc.handle_create)
 
     def test_user_access_allowed(self):
-        self.m.StubOutWithMock(user.AccessPolicy, 'access_allowed')
-        user.AccessPolicy.access_allowed('a_resource').AndReturn(True)
-        user.AccessPolicy.access_allowed('b_resource').AndReturn(False)
+        self.m.StubOutWithMock(ap.AccessPolicy, 'access_allowed')
+        ap.AccessPolicy.access_allowed('a_resource').AndReturn(True)
+        ap.AccessPolicy.access_allowed('b_resource').AndReturn(False)
 
         self.m.ReplayAll()
 
@@ -251,9 +252,9 @@ class UserTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_user_access_allowed_ignorepolicy(self):
-        self.m.StubOutWithMock(user.AccessPolicy, 'access_allowed')
-        user.AccessPolicy.access_allowed('a_resource').AndReturn(True)
-        user.AccessPolicy.access_allowed('b_resource').AndReturn(False)
+        self.m.StubOutWithMock(ap.AccessPolicy, 'access_allowed')
+        ap.AccessPolicy.access_allowed('a_resource').AndReturn(True)
+        ap.AccessPolicy.access_allowed('b_resource').AndReturn(False)
 
         self.m.ReplayAll()
 
@@ -320,7 +321,7 @@ class AccessKeyTest(common.HeatTestCase):
                          rsrc._secret)
 
         # Ensure the resource data has been stored correctly
-        rs_data = db_api.resource_data_get_all(rsrc)
+        rs_data = resource_data_object.ResourceData.get_all(rsrc)
         self.assertEqual(self.fc.secret, rs_data.get('secret_key'))
         self.assertEqual(self.fc.credential_id, rs_data.get('credential_id'))
         self.assertEqual(2, len(rs_data.keys()))
@@ -354,9 +355,9 @@ class AccessKeyTest(common.HeatTestCase):
         # Delete the resource data for secret_key, to test that existing
         # stacks which don't have the resource_data stored will continue
         # working via retrieving the keypair from keystone
-        db_api.resource_data_delete(rsrc, 'credential_id')
-        db_api.resource_data_delete(rsrc, 'secret_key')
-        rs_data = db_api.resource_data_get_all(rsrc)
+        resource_data_object.ResourceData.delete(rsrc, 'credential_id')
+        resource_data_object.ResourceData.delete(rsrc, 'secret_key')
+        rs_data = resource_data_object.ResourceData.get_all(rsrc)
         self.assertEqual(0, len(rs_data.keys()))
 
         rsrc._secret = None
@@ -398,9 +399,9 @@ class AccessPolicyTest(common.HeatTestCase):
 
         resource_name = 'WebServerAccessPolicy'
         resource_defns = stack.t.resource_definitions(stack)
-        rsrc = user.AccessPolicy(resource_name,
-                                 resource_defns[resource_name],
-                                 stack)
+        rsrc = ap.AccessPolicy(resource_name,
+                               resource_defns[resource_name],
+                               stack)
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
@@ -411,9 +412,9 @@ class AccessPolicyTest(common.HeatTestCase):
         stack = utils.parse_stack(t)
 
         resource_defns = stack.t.resource_definitions(stack)
-        rsrc = user.AccessPolicy(resource_name,
-                                 resource_defns[resource_name],
-                                 stack)
+        rsrc = ap.AccessPolicy(resource_name,
+                               resource_defns[resource_name],
+                               stack)
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
@@ -432,9 +433,9 @@ class AccessPolicyTest(common.HeatTestCase):
         stack = utils.parse_stack(t)
 
         resource_defns = stack.t.resource_definitions(stack)
-        rsrc = user.AccessPolicy(resource_name,
-                                 resource_defns[resource_name],
-                                 stack)
+        rsrc = ap.AccessPolicy(resource_name,
+                               resource_defns[resource_name],
+                               stack)
         self.assertTrue(rsrc.access_allowed('WikiDatabase'))
         self.assertFalse(rsrc.access_allowed('NotWikiDatabase'))
         self.assertFalse(rsrc.access_allowed(None))

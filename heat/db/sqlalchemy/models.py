@@ -16,8 +16,8 @@ SQLAlchemy models for heat data.
 
 import uuid
 
-from oslo.db.sqlalchemy import models
-from oslo.utils import timeutils
+from oslo_db.sqlalchemy import models
+from oslo_utils import timeutils
 import six
 import sqlalchemy
 from sqlalchemy.ext import declarative
@@ -107,12 +107,55 @@ class RawTemplate(BASE, HeatBase):
     id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
     template = sqlalchemy.Column(types.Json)
     files = sqlalchemy.Column(types.Json)
+    environment = sqlalchemy.Column('environment', types.Json)
+    predecessor = sqlalchemy.Column('predecessor', sqlalchemy.Integer,
+                                    sqlalchemy.ForeignKey('raw_template.id'))
+
+
+class StackTag(BASE, HeatBase):
+    """Key/value store of arbitrary stack tags."""
+
+    __tablename__ = 'stack_tag'
+
+    id = sqlalchemy.Column('id',
+                           sqlalchemy.Integer,
+                           primary_key=True,
+                           nullable=False)
+    tag = sqlalchemy.Column('tag', sqlalchemy.Unicode(80))
+    stack_id = sqlalchemy.Column('stack_id',
+                                 sqlalchemy.String(36),
+                                 sqlalchemy.ForeignKey('stack.id'),
+                                 nullable=False)
+
+
+class SyncPoint(BASE, HeatBase):
+    """Represents an syncpoint for an stack that is being worked on."""
+    __tablename__ = 'sync_point'
+    __table_args__ = (
+        sqlalchemy.PrimaryKeyConstraint('entity_id',
+                                        'traversal_id',
+                                        'is_update'),
+        sqlalchemy.ForeignKeyConstraint(['stack_id'], ['stack.id'])
+    )
+
+    entity_id = sqlalchemy.Column(sqlalchemy.String(36))
+    traversal_id = sqlalchemy.Column(sqlalchemy.String(36))
+    is_update = sqlalchemy.Column(sqlalchemy.Boolean)
+    # integer field for atomic update operations
+    atomic_key = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)
+    stack_id = sqlalchemy.Column(sqlalchemy.String(36),
+                                 nullable=False)
+    input_data = sqlalchemy.Column(types.Json)
 
 
 class Stack(BASE, HeatBase, SoftDelete, StateAware):
     """Represents a stack created by the heat engine."""
 
     __tablename__ = 'stack'
+    __table_args__ = (
+        sqlalchemy.Index('ix_stack_name', 'name', mysql_length=255),
+        sqlalchemy.Index('ix_stack_tenant', 'tenant', mysql_length=255),
+    )
 
     id = sqlalchemy.Column(sqlalchemy.String(36), primary_key=True,
                            default=lambda: str(uuid.uuid4()))
@@ -121,10 +164,16 @@ class Stack(BASE, HeatBase, SoftDelete, StateAware):
         sqlalchemy.Integer,
         sqlalchemy.ForeignKey('raw_template.id'),
         nullable=False)
-    raw_template = relationship(RawTemplate, backref=backref('stack'))
+    raw_template = relationship(RawTemplate, backref=backref('stack'),
+                                foreign_keys=[raw_template_id])
+    prev_raw_template_id = sqlalchemy.Column(
+        'prev_raw_template_id',
+        sqlalchemy.Integer,
+        sqlalchemy.ForeignKey('raw_template.id'))
+    prev_raw_template = relationship(RawTemplate,
+                                     foreign_keys=[prev_raw_template_id])
     username = sqlalchemy.Column(sqlalchemy.String(256))
     tenant = sqlalchemy.Column(sqlalchemy.String(256))
-    parameters = sqlalchemy.Column('parameters', types.Json)
     user_creds_id = sqlalchemy.Column(
         sqlalchemy.Integer,
         sqlalchemy.ForeignKey('user_creds.id'))
@@ -135,7 +184,12 @@ class Stack(BASE, HeatBase, SoftDelete, StateAware):
                                               nullable=True)
     backup = sqlalchemy.Column('backup', sqlalchemy.Boolean)
     nested_depth = sqlalchemy.Column('nested_depth', sqlalchemy.Integer)
-    tags = sqlalchemy.Column('tags', types.Json)
+    convergence = sqlalchemy.Column('convergence', sqlalchemy.Boolean)
+    tags = relationship(StackTag, cascade="all,delete",
+                        backref=backref('stack'))
+    current_traversal = sqlalchemy.Column('current_traversal',
+                                          sqlalchemy.String(36))
+    current_deps = sqlalchemy.Column('current_deps', types.Json)
 
     # Override timestamp column to store the correct value: it should be the
     # time the create/update call was issued, not the time the DB entry is
@@ -221,7 +275,7 @@ class ResourceData(BASE, HeatBase):
     redact = sqlalchemy.Column('redact', sqlalchemy.Boolean)
     decrypt_method = sqlalchemy.Column(sqlalchemy.String(64))
     resource_id = sqlalchemy.Column('resource_id',
-                                    sqlalchemy.String(36),
+                                    sqlalchemy.Integer,
                                     sqlalchemy.ForeignKey('resource.id'),
                                     nullable=False)
 
@@ -231,9 +285,10 @@ class Resource(BASE, HeatBase, StateAware):
 
     __tablename__ = 'resource'
 
-    id = sqlalchemy.Column(sqlalchemy.String(36),
-                           primary_key=True,
-                           default=lambda: str(uuid.uuid4()))
+    id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
+    uuid = sqlalchemy.Column(sqlalchemy.String(36),
+                             default=lambda: str(uuid.uuid4()),
+                             unique=True)
     name = sqlalchemy.Column('name', sqlalchemy.String(255), nullable=True)
     nova_instance = sqlalchemy.Column('nova_instance', sqlalchemy.String(255))
     # odd name as "metadata" is reserved
@@ -252,6 +307,19 @@ class Resource(BASE, HeatBase, StateAware):
     # created/modified. (bug #1193269)
     updated_at = sqlalchemy.Column(sqlalchemy.DateTime)
     properties_data = sqlalchemy.Column('properties_data', types.Json)
+    engine_id = sqlalchemy.Column(sqlalchemy.String(36))
+    atomic_key = sqlalchemy.Column(sqlalchemy.Integer)
+
+    needed_by = sqlalchemy.Column('needed_by', types.List)
+    requires = sqlalchemy.Column('requires', types.List)
+    replaces = sqlalchemy.Column('replaces', sqlalchemy.Integer,
+                                 default=None)
+    replaced_by = sqlalchemy.Column('replaced_by', sqlalchemy.Integer,
+                                    default=None)
+    current_template_id = sqlalchemy.Column(
+        'current_template_id',
+        sqlalchemy.Integer,
+        sqlalchemy.ForeignKey('raw_template.id'))
 
 
 class WatchRule(BASE, HeatBase):
@@ -331,6 +399,7 @@ class SoftwareDeployment(BASE, HeatBase, StateAware):
         'tenant', sqlalchemy.String(64), nullable=False, index=True)
     stack_user_project_id = sqlalchemy.Column(sqlalchemy.String(64),
                                               nullable=True)
+    updated_at = sqlalchemy.Column(sqlalchemy.DateTime)
 
 
 class Snapshot(BASE, HeatBase):

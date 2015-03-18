@@ -21,7 +21,7 @@ from heat.common import template_format
 from heat.engine.clients.os import neutron
 from heat.engine.clients.os import nova
 from heat.engine.clients.os import sahara
-from heat.engine.resources import sahara_templates as st
+from heat.engine.resources.openstack.sahara import sahara_templates as st
 from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
@@ -123,6 +123,7 @@ class SaharaNodeGroupTemplateTest(common.HeatTestCase):
                            'node_processes': ['namenode', 'jobtracker'],
                            'floating_ip_pool': 'some_pool_id',
                            'node_configs': None,
+                           'image_id': None,
                            }
         self.ngt_mgr.create.assert_called_once_with(*expected_args,
                                                     **expected_kwargs)

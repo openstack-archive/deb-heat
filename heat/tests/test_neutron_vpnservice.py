@@ -21,7 +21,7 @@ import six
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine.resources.neutron import vpnservice
+from heat.engine.resources.openstack.neutron import vpnservice
 from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
@@ -174,6 +174,8 @@ class VPNServiceTest(common.HeatTestCase):
         self.stub_keystoneclient()
 
     def create_vpnservice(self, resolve_neutron=True, resolve_router=True):
+        self.stub_SubnetConstraint_validate()
+        self.stub_RouterConstraint_validate()
         if resolve_neutron:
             neutronV20.find_resourceid_by_name_or_id(
                 mox.IsA(neutronclient.Client),
@@ -222,7 +224,8 @@ class VPNServiceTest(common.HeatTestCase):
             mox.IsA(neutronclient.Client),
             'subnet',
             'sub123'
-        ).AndReturn('sub123')
+        ).MultipleTimes().AndReturn('sub123')
+        self.stub_RouterConstraint_validate()
 
         neutronclient.Client.create_vpnservice(self.VPN_SERVICE_CONF).AndRaise(
             exceptions.NeutronClientException())

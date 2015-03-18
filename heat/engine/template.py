@@ -16,13 +16,14 @@ import collections
 import copy
 import functools
 
+from oslo_log import log as logging
 import six
 from stevedore import extension
 
 from heat.common import exception
 from heat.common.i18n import _
-from heat.db import api as db_api
-from heat.openstack.common import log as logging
+from heat.engine import environment
+from heat.objects import raw_template as template_object
 
 LOG = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ class Template(collections.Mapping):
 
         return super(Template, cls).__new__(TemplateClass)
 
-    def __init__(self, template, template_id=None, files=None):
+    def __init__(self, template, template_id=None, files=None, env=None):
         '''
         Initialise the template with a JSON object and a set of Parameters
         '''
@@ -114,29 +115,33 @@ class Template(collections.Mapping):
         self.t = template
         self.files = files or {}
         self.maps = self[self.MAPPINGS]
+        self.env = env or environment.Environment({})
         self.version = get_version(self.t, _template_classes.keys())
 
     def __deepcopy__(self, memo):
-        return Template(copy.deepcopy(self.t, memo), files=self.files)
+        return Template(copy.deepcopy(self.t, memo), files=self.files,
+                        env=self.env)
 
     @classmethod
     def load(cls, context, template_id, t=None):
         '''Retrieve a Template with the given ID from the database.'''
         if t is None:
-            t = db_api.raw_template_get(context, template_id)
-        return cls(t.template, template_id=template_id, files=t.files)
+            t = template_object.RawTemplate.get_by_id(context, template_id)
+        env = environment.Environment(t.environment)
+        return cls(t.template, template_id=template_id, files=t.files, env=env)
 
     def store(self, context=None):
         '''Store the Template in the database and return its ID.'''
         rt = {
             'template': self.t,
-            'files': self.files
+            'files': self.files,
+            'environment': self.env.user_env_as_dict()
         }
         if self.id is None:
-            new_rt = db_api.raw_template_create(context, rt)
+            new_rt = template_object.RawTemplate.create(context, rt)
             self.id = new_rt.id
         else:
-            db_api.raw_template_update(context, self.id, rt)
+            template_object.RawTemplate.update_by_id(context, self.id, rt)
         return self.id
 
     def __iter__(self):
@@ -156,6 +161,34 @@ class Template(collections.Mapping):
     @abc.abstractmethod
     def parameters(self, stack_identifier, user_params, param_defaults=None):
         '''Return a parameters.Parameters object for the stack.'''
+        pass
+
+    @classmethod
+    def validate_resource_key_type(cls, key, valid_types, typename,
+                                   allowed_keys, rsrc_name, rsrc_data):
+        """Validation type of the specific resource key.
+
+        Used in validate_resource_definition and check correctness of
+        key's type.
+        """
+        if key not in allowed_keys:
+            raise ValueError(_('"%s" is not a valid '
+                               'keyword inside a resource '
+                               'definition') % key)
+        if key in rsrc_data:
+            if not isinstance(rsrc_data.get(key), valid_types):
+                args = {'name': rsrc_name, 'key': key,
+                        'typename': typename}
+                message = _('Resource %(name)s %(key)s type '
+                            'must be %(typename)s') % args
+                raise TypeError(message)
+            return True
+        else:
+            return False
+
+    @abc.abstractmethod
+    def validate_resource_definitions(self, stack):
+        """Check section's type of ResourceDefinitions."""
         pass
 
     @abc.abstractmethod

@@ -16,16 +16,14 @@
 
 """Heat exception subclasses"""
 
-import functools
 import sys
 
+from oslo_log import log as logging
 import six
 from six.moves.urllib import parse as urlparse
 
 from heat.common.i18n import _
 from heat.common.i18n import _LE
-from heat.openstack.common import log as logging
-
 
 _FATAL_EXCEPTION_FORMAT_ERRORS = False
 
@@ -80,7 +78,7 @@ def wrap_exception(notifier=None, publisher_id=None, event_type=None,
                     temp_type = event_type
                     if not temp_type:
                         # If f has multiple decorators, they must use
-                        # functools.wraps to ensure the name is
+                        # six.wraps to ensure the name is
                         # propagated.
                         temp_type = f.__name__
 
@@ -90,7 +88,7 @@ def wrap_exception(notifier=None, publisher_id=None, event_type=None,
                 # re-raise original exception since it may have been clobbered
                 raise exc_info[0], exc_info[1], exc_info[2]
 
-        return functools.wraps(f)(wrapped)
+        return six.wraps(f)(wrapped)
     return inner
 
 
@@ -248,6 +246,10 @@ class VolumeTypeNotFound(HeatException):
     msg_fmt = _("The VolumeType (%(volume_type)s) could not be found.")
 
 
+class NovaNetworkNotFound(HeatException):
+    msg_fmt = _("The Nova network (%(network)s) could not be found.")
+
+
 class PhysicalResourceNameAmbiguity(HeatException):
     msg_fmt = _(
         "Multiple physical resources were found with name (%(name)s).")
@@ -267,7 +269,41 @@ class StackExists(HeatException):
 
 
 class StackValidationFailed(HeatException):
-    msg_fmt = _("%(message)s")
+    msg_fmt = _("%(error)s%(path)s%(message)s")
+
+    def __init__(self, error=None, path=None, message=None):
+        self.error = error or ''
+        self.path = []
+        if path is not None:
+            if isinstance(path, list):
+                self.path = path
+            elif isinstance(path, six.string_types):
+                self.path = [path]
+
+        result_path = ''
+        for path_item in self.path:
+            if isinstance(path_item, int) or path_item.isdigit():
+                result_path += '[%s]' % path_item
+            elif len(result_path) > 0:
+                result_path += '.%s' % path_item
+            else:
+                result_path = path_item
+
+        self.error_message = message or ''
+        super(StackValidationFailed, self).__init__(
+            error=('%s : ' % self.error if self.error != '' else ''),
+            path=('%s: ' % result_path if len(result_path) > 0 else ''),
+            message=self.error_message
+        )
+
+    def error(self):
+        return self.error
+
+    def path(self):
+        return self.path
+
+    def error_message(self):
+        return self.error_message
 
 
 class InvalidSchemaError(HeatException):
@@ -394,3 +430,27 @@ class EventSendFailed(HeatException):
 
 class ServiceNotFound(HeatException):
     msg_fmt = _("Service %(service_id)s does not found")
+
+
+class UnsupportedObjectError(HeatException):
+    msg_fmt = _('Unsupported object type %(objtype)s')
+
+
+class OrphanedObjectError(HeatException):
+    msg_fmt = _('Cannot call %(method)s on orphaned %(objtype)s object')
+
+
+class IncompatibleObjectVersion(HeatException):
+    msg_fmt = _('Version %(objver)s of %(objname)s is not supported')
+
+
+class ObjectActionError(HeatException):
+    msg_fmt = _('Object action %(action)s failed because: %(reason)s')
+
+
+class ReadOnlyFieldError(HeatException):
+    msg_fmt = _('Cannot modify readonly field %(field)s')
+
+
+class ObjectFieldInvalid(HeatException):
+    msg_fmt = _('Field %(field)s of %(objname)s is not an instance of Field')

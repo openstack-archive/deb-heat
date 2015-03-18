@@ -16,7 +16,7 @@ import json
 import uuid
 
 import mock
-from oslo.config import cfg
+from oslo_config import cfg
 import six
 
 from heat.common import exception
@@ -34,6 +34,8 @@ from heat.engine import resources
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.engine import template
+from heat.objects import resource as resource_objects
+from heat.objects import resource_data as resource_data_object
 from heat.tests import common
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
@@ -60,8 +62,9 @@ class ResourceTest(common.HeatTestCase):
                        u'ResourceWithCustomConstraint'}})
 
         self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
-                                  parser.Template(empty_template),
-                                  env=self.env, stack_id=str(uuid.uuid4()))
+                                  parser.Template(empty_template,
+                                                  env=self.env),
+                                  stack_id=str(uuid.uuid4()))
         self.patch('heat.engine.resource.warnings')
 
     def test_get_class_ok(self):
@@ -170,7 +173,7 @@ class ResourceTest(common.HeatTestCase):
         self.assertIsNotNone(res.id)
         expected = '%s-%s-%s' % (self.stack.name,
                                  res.name,
-                                 short_id.get_id(res.id))
+                                 short_id.get_id(res.uuid))
         self.assertEqual(expected, res.physical_resource_name_or_FnGetRefId())
 
         # otherwise use parent method
@@ -328,7 +331,7 @@ class ResourceTest(common.HeatTestCase):
         self.assertEqual(res.IN_PROGRESS, res.status)
         self.assertEqual('test_store', res.status_reason)
 
-        db_res = db_api.resource_get(res.context, res.id)
+        db_res = resource_objects.Resource.get_obj(res.context, res.id)
         self.assertEqual(res.CREATE, db_res.action)
         self.assertEqual(res.IN_PROGRESS, db_res.status)
         self.assertEqual('test_store', db_res.status_reason)
@@ -337,6 +340,7 @@ class ResourceTest(common.HeatTestCase):
         self.assertEqual(res.CREATE, res.action)
         self.assertEqual(res.COMPLETE, res.status)
         self.assertEqual('test_update', res.status_reason)
+        db_res.refresh()
         self.assertEqual(res.CREATE, db_res.action)
         self.assertEqual(res.COMPLETE, db_res.status)
         self.assertEqual('test_update', db_res.status_reason)
@@ -1080,7 +1084,7 @@ class ResourceTest(common.HeatTestCase):
         self.assertFalse(res.is_using_neutron())
 
     def _test_skip_validation_if_custom_constraint(self, tmpl):
-        stack = parser.Stack(utils.dummy_context(), 'test', tmpl, env=self.env)
+        stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
         stack.store()
         path = ('heat.engine.clients.os.neutron.NetworkConstraint.'
                 'validate_with_client')
@@ -1101,7 +1105,7 @@ class ResourceTest(common.HeatTestCase):
                     }
                 }
             }
-        })
+        }, env=self.env)
         self._test_skip_validation_if_custom_constraint(tmpl)
 
     def test_hot_ref_skip_validation_if_custom_constraint(self):
@@ -1116,7 +1120,7 @@ class ResourceTest(common.HeatTestCase):
                     }
                 }
             }
-        })
+        }, env=self.env)
         self._test_skip_validation_if_custom_constraint(tmpl)
 
 
@@ -1179,8 +1183,9 @@ class ResourceAdoptTest(common.HeatTestCase):
         }
         adopt = scheduler.TaskRunner(res.adopt, res_data)
         adopt()
-        self.assertEqual("test-value",
-                         db_api.resource_data_get(res, "test-key"))
+        self.assertEqual(
+            "test-value",
+            resource_data_object.ResourceData.get_val(res, "test-key"))
         self.assertEqual({"os_distro": "test-distro"}, res.metadata_get())
         self.assertEqual({"os_distro": "test-distro"}, res.metadata)
         self.assertEqual((res.ADOPT, res.COMPLETE), res.state)

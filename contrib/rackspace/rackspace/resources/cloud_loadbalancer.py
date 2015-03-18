@@ -12,9 +12,9 @@
 #    under the License.
 
 import copy
-import functools
 import itertools
 
+from oslo_log import log as logging
 import six
 
 from heat.common import exception
@@ -26,7 +26,6 @@ from heat.engine import function
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine import scheduler
-from heat.openstack.common import log as logging
 
 try:
     from pyrax.exceptions import NotFound  # noqa
@@ -48,7 +47,7 @@ def lb_immutable(exc):
 
 
 def retry_if_immutable(task):
-    @functools.wraps(task)
+    @six.wraps(task)
     def wrapper(*args, **kwargs):
         while True:
             yield
@@ -915,7 +914,8 @@ class CloudLoadBalancer(resource.Resource):
                 self.PUBLIC_IP: self._public_ip(lb),
                 self.VIPS: [{"id": vip.id,
                              "type": vip.type,
-                             "ip_version": vip.ip_version}
+                             "ip_version": vip.ip_version,
+                             "address": vip.address}
                             for vip in lb.virtual_ips]
             }
             if key not in attribute_function:

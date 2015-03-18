@@ -12,6 +12,8 @@
 #    under the License.
 
 import copy
+import re
+import uuid
 
 import mock
 import six
@@ -19,8 +21,9 @@ import six
 from heat.common import exception as exc
 from heat.common.i18n import _
 from heat.engine.clients.os import nova
+from heat.engine.clients.os import swift
 from heat.engine import parser
-from heat.engine.resources.software_config import software_deployment as sd
+from heat.engine.resources.openstack.heat import software_deployment as sd
 from heat.engine import rsrc_defn
 from heat.engine import template
 from heat.tests import common
@@ -81,6 +84,22 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         }
     }
 
+    template_temp_url_signal = {
+        'HeatTemplateFormatVersion': '2012-12-12',
+        'Resources': {
+            'deployment_mysql': {
+                'Type': 'OS::Heat::SoftwareDeployment',
+                'Properties': {
+                    'server': '9f1f0e00-05d2-4ca5-8602-95021f19c9d0',
+                    'config': '48e8ade1-9196-42d5-89a2-f709fde42632',
+                    'input_values': {'foo': 'bar', 'bink': 'bonk'},
+                    'signal_transport': 'TEMP_URL_SIGNAL',
+                    'name': '00_run_me_first'
+                }
+            }
+        }
+    }
+
     template_delete_suspend_resume = {
         'HeatTemplateFormatVersion': '2012-12-12',
         'Resources': {
@@ -129,6 +148,7 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         props['user_data_format'] = 'SOFTWARE_CONFIG'
         self._create_stack(self.template_with_server)
         sd = self.deployment
+        self.assertEqual('CFN_SIGNAL', sd.properties.get('signal_transport'))
         sd.validate()
         server = self.stack['server']
         self.assertTrue(server.user_data_software_config())
@@ -281,6 +301,12 @@ class SoftwareDeploymentTest(common.HeatTestCase):
                 'name': 'deploy_resource_name',
                 'type': 'String',
                 'value': 'deployment_mysql'
+            }, {
+                'description': ('How the server should signal to heat with '
+                                'the deployment output values.'),
+                'name': 'deploy_signal_transport',
+                'type': 'String',
+                'value': 'NO_SIGNAL'
             }],
             'options': {},
             'outputs': []
@@ -372,6 +398,12 @@ class SoftwareDeploymentTest(common.HeatTestCase):
                 'name': 'deploy_resource_name',
                 'type': 'String',
                 'value': 'deployment_mysql'
+            }, {
+                'description': ('How the server should signal to heat with '
+                                'the deployment output values.'),
+                'name': 'deploy_signal_transport',
+                'type': 'String',
+                'value': 'NO_SIGNAL'
             }],
             'options': {},
             'outputs': []
@@ -482,10 +514,15 @@ class SoftwareDeploymentTest(common.HeatTestCase):
 
         self.deployment.resource_id = sd['id']
         self.deployment.handle_delete()
-
+        self.deployment.check_delete_complete()
         self.assertEqual(
             (self.ctx, sd['id']),
             self.rpc_client.delete_software_deployment.call_args[0])
+
+    def test_handle_delete_resource_id_is_None(self):
+        self._create_stack(self.template_delete_suspend_resume)
+        self.mock_software_config()
+        self.assertIsNone(self.deployment.handle_delete())
 
     def test_delete_complete(self):
         self._create_stack(self.template_delete_suspend_resume)
@@ -528,6 +565,7 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         self.rpc_client.delete_software_deployment.side_effect = nf
         self.rpc_client.delete_software_config.side_effect = nf
         self.assertIsNone(self.deployment.handle_delete())
+        self.assertTrue(self.deployment.check_delete_complete())
         self.assertEqual(
             (self.ctx, derived_sc['id']),
             self.rpc_client.delete_software_config.call_args[0])
@@ -635,155 +673,91 @@ class SoftwareDeploymentTest(common.HeatTestCase):
     def test_handle_signal_ok_zero(self):
         self._create_stack(self.template)
         self.deployment.resource_id = 'c8a19429-7fde-47ea-a42f-40045488226c'
-        sc = {
-            'outputs': [
-                {'name': 'foo'},
-                {'name': 'foo2'},
-                {'name': 'failed', 'error_output': True}
-            ]
-        }
-        sd = {
-            'output_values': {},
-            'status': self.deployment.IN_PROGRESS
-        }
-        self.rpc_client.show_software_deployment.return_value = sd
-        self.rpc_client.show_software_config.return_value = sc
+        rpcc = self.rpc_client
+        rpcc.signal_software_deployment.return_value = 'deployment succeeded'
         details = {
             'foo': 'bar',
             'deploy_status_code': 0
         }
         ret = self.deployment.handle_signal(details)
         self.assertEqual('deployment succeeded', ret)
-        self.assertEqual({
-            'deployment_id': 'c8a19429-7fde-47ea-a42f-40045488226c',
-            'output_values': {
-                'foo': 'bar',
-                'deploy_status_code': 0,
-                'deploy_stderr': None,
-                'deploy_stdout': None
-            },
-            'status': 'COMPLETE',
-            'status_reason': 'Outputs received'},
-            self.rpc_client.update_software_deployment.call_args[1])
+        ca = rpcc.signal_software_deployment.call_args[0]
+        self.assertEqual(self.ctx, ca[0])
+        self.assertEqual('c8a19429-7fde-47ea-a42f-40045488226c', ca[1])
+        self.assertEqual({'foo': 'bar', 'deploy_status_code': 0}, ca[2])
+        self.assertIsNotNone(ca[3])
 
     def test_handle_signal_ok_str_zero(self):
         self._create_stack(self.template)
         self.deployment.resource_id = 'c8a19429-7fde-47ea-a42f-40045488226c'
-        sc = {
-            'outputs': [
-                {'name': 'foo'},
-                {'name': 'foo2'},
-                {'name': 'failed', 'error_output': True}
-            ]
-        }
-        sd = {
-            'output_values': {},
-            'status': self.deployment.IN_PROGRESS
-        }
-        self.rpc_client.show_software_deployment.return_value = sd
-        self.rpc_client.show_software_config.return_value = sc
+        rpcc = self.rpc_client
+        rpcc.signal_software_deployment.return_value = 'deployment succeeded'
         details = {
             'foo': 'bar',
             'deploy_status_code': '0'
         }
         ret = self.deployment.handle_signal(details)
         self.assertEqual('deployment succeeded', ret)
-        self.assertEqual({
-            'deployment_id': 'c8a19429-7fde-47ea-a42f-40045488226c',
-            'output_values': {
-                'foo': 'bar',
-                'deploy_status_code': '0',
-                'deploy_stderr': None,
-                'deploy_stdout': None
-            },
-            'status': 'COMPLETE',
-            'status_reason': 'Outputs received'},
-            self.rpc_client.update_software_deployment.call_args[1])
+        ca = rpcc.signal_software_deployment.call_args[0]
+        self.assertEqual(self.ctx, ca[0])
+        self.assertEqual('c8a19429-7fde-47ea-a42f-40045488226c', ca[1])
+        self.assertEqual({'foo': 'bar', 'deploy_status_code': '0'}, ca[2])
+        self.assertIsNotNone(ca[3])
 
     def test_handle_signal_failed(self):
         self._create_stack(self.template)
         self.deployment.resource_id = 'c8a19429-7fde-47ea-a42f-40045488226c'
-        sc = {
-            'outputs': [
-                {'name': 'foo'},
-                {'name': 'foo2'},
-                {'name': 'failed', 'error_output': True}
-            ]
-        }
-        sd = {
-            'output_values': {},
-            'status': self.deployment.IN_PROGRESS
-        }
-        self.rpc_client.show_software_deployment.return_value = sd
-        self.rpc_client.show_software_config.return_value = sc
+        rpcc = self.rpc_client
+        rpcc.signal_software_deployment.return_value = 'deployment failed'
+
         details = {'failed': 'no enough memory found.'}
         ret = self.deployment.handle_signal(details)
         self.assertEqual('deployment failed', ret)
-        self.assertEqual({
-            'deployment_id': 'c8a19429-7fde-47ea-a42f-40045488226c',
-            'output_values': {
-                'deploy_status_code': None,
-                'deploy_stderr': None,
-                'deploy_stdout': None,
-                'failed': 'no enough memory found.'
-            },
-            'status': 'FAILED',
-            'status_reason': 'failed : no enough memory found.'},
-            self.rpc_client.update_software_deployment.call_args[1])
+        ca = rpcc.signal_software_deployment.call_args[0]
+        self.assertEqual(self.ctx, ca[0])
+        self.assertEqual('c8a19429-7fde-47ea-a42f-40045488226c', ca[1])
+        self.assertEqual(details, ca[2])
+        self.assertIsNotNone(ca[3])
 
         # Test bug 1332355, where details contains a translateable message
         details = {'failed': _('need more memory.')}
-        self.deployment.handle_signal(details)
-        self.assertEqual({
-            'deployment_id': 'c8a19429-7fde-47ea-a42f-40045488226c',
-            'output_values': {
-                'deploy_status_code': None,
-                'deploy_stderr': None,
-                'deploy_stdout': None,
-                'failed': 'need more memory.'
-            },
-            'status': 'FAILED',
-            'status_reason': 'failed : need more memory.'},
-            self.rpc_client.update_software_deployment.call_args[1])
+        ret = self.deployment.handle_signal(details)
+        self.assertEqual('deployment failed', ret)
+        ca = rpcc.signal_software_deployment.call_args[0]
+        self.assertEqual(self.ctx, ca[0])
+        self.assertEqual('c8a19429-7fde-47ea-a42f-40045488226c', ca[1])
+        self.assertEqual(details, ca[2])
+        self.assertIsNotNone(ca[3])
 
     def test_handle_status_code_failed(self):
         self._create_stack(self.template)
         self.deployment.resource_id = 'c8a19429-7fde-47ea-a42f-40045488226c'
-        sd = {
-            'outputs': [],
-            'output_values': {},
-            'status': self.deployment.IN_PROGRESS
-        }
-        self.rpc_client.show_software_deployment.return_value = sd
+        rpcc = self.rpc_client
+        rpcc.signal_software_deployment.return_value = 'deployment failed'
+
         details = {
             'deploy_stdout': 'A thing happened',
             'deploy_stderr': 'Then it broke',
             'deploy_status_code': -1
         }
         self.deployment.handle_signal(details)
-        self.assertEqual(
-            'c8a19429-7fde-47ea-a42f-40045488226c',
-            self.rpc_client.show_software_deployment.call_args[0][1])
-        self.assertEqual({
-            'deployment_id': 'c8a19429-7fde-47ea-a42f-40045488226c',
-            'output_values': {
-                'deploy_stdout': 'A thing happened',
-                'deploy_stderr': 'Then it broke',
-                'deploy_status_code': -1
-            },
-            'status': 'FAILED',
-            'status_reason': ('deploy_status_code : Deployment exited '
-                              'with non-zero status code: -1')},
-            self.rpc_client.update_software_deployment.call_args[1])
+        ca = rpcc.signal_software_deployment.call_args[0]
+        self.assertEqual(self.ctx, ca[0])
+        self.assertEqual('c8a19429-7fde-47ea-a42f-40045488226c', ca[1])
+        self.assertEqual(details, ca[2])
+        self.assertIsNotNone(ca[3])
 
     def test_handle_signal_not_waiting(self):
         self._create_stack(self.template)
-        sd = {
-            'status': self.deployment.COMPLETE
-        }
-        self.rpc_client.show_software_deployment.return_value = sd
+        rpcc = self.rpc_client
+        rpcc.signal_software_deployment.return_value = None
         details = None
         self.assertIsNone(self.deployment.handle_signal(details))
+        ca = rpcc.signal_software_deployment.call_args[0]
+        self.assertEqual(self.ctx, ca[0])
+        self.assertIsNone(ca[1])
+        self.assertIsNone(ca[2])
+        self.assertIsNotNone(ca[3])
 
     def test_fn_get_att(self):
         self._create_stack(self.template)
@@ -828,18 +802,151 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         self._create_stack(self.template)
 
         self.mock_software_config()
+        sd = self.mock_deployment()
+        rsrc = self.stack['deployment_mysql']
 
-        for action in ('DELETE', 'SUSPEND', 'RESUME'):
-            self.assertIsNone(self.deployment._handle_action(action))
-        for action in ('CREATE', 'UPDATE'):
-            self.assertIsNotNone(self.deployment._handle_action(action))
+        self.rpc_client.show_software_deployment.return_value = sd
+        self.deployment.resource_id = sd['id']
+        config_id = '0ff2e903-78d7-4cca-829e-233af3dae705'
+        prop_diff = {'config': config_id}
+        props = copy.copy(rsrc.properties.data)
+        props.update(prop_diff)
+        snippet = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(), props)
+
+        # by default (no 'actions' property) SoftwareDeployment must only
+        # trigger for CREATE and UPDATE
+        self.assertIsNotNone(self.deployment.handle_create())
+        self.assertIsNotNone(self.deployment.handle_update(
+            json_snippet=snippet, tmpl_diff=None, prop_diff=prop_diff))
+        # ... but it must not trigger for SUSPEND, RESUME and DELETE
+        self.assertIsNone(self.deployment.handle_suspend())
+        self.assertIsNone(self.deployment.handle_resume())
+        self.assertIsNone(self.deployment.handle_delete())
 
     def test_handle_action_for_component(self):
         self._create_stack(self.template)
 
         self.mock_software_component()
+        sd = self.mock_deployment()
+        rsrc = self.stack['deployment_mysql']
 
-        for action in ('CREATE', 'UPDATE', 'DELETE', 'SUSPEND', 'RESUME'):
+        self.rpc_client.show_software_deployment.return_value = sd
+        self.deployment.resource_id = sd['id']
+        config_id = '0ff2e903-78d7-4cca-829e-233af3dae705'
+        prop_diff = {'config': config_id}
+        props = copy.copy(rsrc.properties.data)
+        props.update(prop_diff)
+        snippet = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(), props)
+
+        # for a SoftwareComponent, SoftwareDeployment must always trigger
+        self.assertIsNotNone(self.deployment.handle_create())
+        self.assertIsNotNone(self.deployment.handle_update(
+            json_snippet=snippet, tmpl_diff=None, prop_diff=prop_diff))
+        self.assertIsNotNone(self.deployment.handle_suspend())
+        self.assertIsNotNone(self.deployment.handle_resume())
+        self.assertIsNotNone(self.deployment.handle_delete())
+
+    def test_get_temp_url(self):
+        dep_data = {}
+
+        sc = mock.MagicMock()
+        scc = self.patch(
+            'heat.engine.clients.os.swift.SwiftClientPlugin._create')
+        scc.return_value = sc
+        sc.head_account.return_value = {
+            'x-account-meta-temp-url-key': 'secrit'
+        }
+        sc.url = 'http://192.0.2.1/v1/AUTH_test_tenant_id'
+
+        self._create_stack(self.template_temp_url_signal)
+
+        def data_set(key, value, redact=False):
+            dep_data[key] = value
+
+        self.deployment.data_set = data_set
+        self.deployment.data = mock.Mock(
+            return_value=dep_data)
+
+        self.deployment.id = 23
+        self.deployment.uuid = str(uuid.uuid4())
+        container = self.deployment.physical_resource_name()
+
+        temp_url = self.deployment._get_temp_url()
+        temp_url_pattern = re.compile(
+            '^http://192.0.2.1/v1/AUTH_test_tenant_id/'
+            '(software_deployment_test_stack-deployment_mysql-.*)/(.*)'
+            '\\?temp_url_sig=.*&temp_url_expires=\\d*$')
+        self.assertRegex(temp_url, temp_url_pattern)
+        m = temp_url_pattern.search(temp_url)
+        object_name = m.group(2)
+        self.assertEqual(container, m.group(1))
+        self.assertEqual(dep_data['signal_object_name'], object_name)
+
+        self.assertEqual(dep_data['signal_temp_url'], temp_url)
+
+        self.assertEqual(temp_url, self.deployment._get_temp_url())
+
+        sc.put_container.assert_called_once_with(container)
+        sc.put_object.assert_called_once_with(container, object_name, '')
+
+    def test_delete_temp_url(self):
+        object_name = str(uuid.uuid4())
+        dep_data = {
+            'signal_object_name': object_name
+        }
+        self._create_stack(self.template_temp_url_signal)
+
+        self.deployment.data_delete = mock.MagicMock()
+        self.deployment.data = mock.Mock(
+            return_value=dep_data)
+
+        sc = mock.MagicMock()
+        sc.head_container.return_value = {
+            'x-container-object-count': 0
+        }
+        scc = self.patch(
+            'heat.engine.clients.os.swift.SwiftClientPlugin._create')
+        scc.return_value = sc
+
+        self.deployment.id = 23
+        self.deployment.uuid = str(uuid.uuid4())
+        container = self.deployment.physical_resource_name()
+        self.deployment._delete_temp_url()
+        sc.delete_object.assert_called_once_with(container, object_name)
+        self.assertEqual(
+            [mock.call('signal_object_name'), mock.call('signal_temp_url')],
+            self.deployment.data_delete.mock_calls)
+
+        swift_exc = swift.SwiftClientPlugin.exceptions_module
+        sc.delete_object.side_effect = swift_exc.ClientException(
+            'Not found', http_status=404)
+        self.deployment._delete_temp_url()
+        self.assertEqual(
+            [mock.call('signal_object_name'), mock.call('signal_temp_url'),
+             mock.call('signal_object_name'), mock.call('signal_temp_url')],
+            self.deployment.data_delete.mock_calls)
+
+        del(dep_data['signal_object_name'])
+        self.deployment.physical_resource_name = mock.Mock()
+        self.deployment._delete_temp_url()
+        self.assertFalse(self.deployment.physical_resource_name.called)
+
+    def test_handle_action_temp_url(self):
+
+        self._create_stack(self.template_temp_url_signal)
+        dep_data = {
+            'signal_temp_url': (
+                'http://192.0.2.1/v1/AUTH_a/b/c'
+                '?temp_url_sig=ctemp_url_expires=1234')
+        }
+        self.deployment.data = mock.Mock(
+            return_value=dep_data)
+
+        self.mock_software_config()
+
+        for action in ('DELETE', 'SUSPEND', 'RESUME'):
+            self.assertIsNone(self.deployment._handle_action(action))
+        for action in ('CREATE', 'UPDATE'):
             self.assertIsNotNone(self.deployment._handle_action(action))
 
 
@@ -977,5 +1084,5 @@ class SoftwareDeploymentsTest(common.HeatTestCase):
     def test_validate(self):
         stack = utils.parse_stack(self.template)
         snip = stack.t.resource_definitions(stack)['deploy_mysql']
-        resg = sd.SoftwareDeployments('test', snip, stack)
+        resg = sd.SoftwareDeployments('deploy_mysql', snip, stack)
         self.assertIsNone(resg.validate())

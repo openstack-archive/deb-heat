@@ -11,75 +11,29 @@
 #    under the License.
 
 import json
-import logging
 
 from heat_integrationtests.common import exceptions
-from heat_integrationtests.common import test
-
-LOG = logging.getLogger(__name__)
+from heat_integrationtests.scenario import scenario_base
 
 
-class CfnInitIntegrationTest(test.HeatIntegrationTest):
+class CfnInitIntegrationTest(scenario_base.ScenarioTestsBase):
+    """
+    The class is responsible for testing cfn-init and cfn-signal workability
+    """
 
     def setUp(self):
         super(CfnInitIntegrationTest, self).setUp()
-        if not self.conf.image_ref:
-            raise self.skipException("No image configured to test")
-        self.client = self.orchestration_client
-        self.template_name = 'test_server_cfn_init.yaml'
 
-    def assign_keypair(self):
-        self.stack_name = self._stack_rand_name()
-        if self.conf.keypair_name:
-            self.keypair = None
-            self.keypair_name = self.conf.keypair_name
-        else:
-            self.keypair = self.create_keypair()
-            self.keypair_name = self.keypair.id
-
-    def launch_stack(self):
-        net = self._get_default_network()
-        self.parameters = {
-            'key_name': self.keypair_name,
-            'flavor': self.conf.instance_type,
-            'image': self.conf.image_ref,
-            'timeout': self.conf.build_timeout,
-            'network': net['id'],
-        }
-
-        # create the stack
-        self.template = self._load_template(__file__, self.template_name)
-        self.client.stacks.create(
-            stack_name=self.stack_name,
-            template=self.template,
-            parameters=self.parameters)
-
-        self.stack = self.client.stacks.get(self.stack_name)
-        self.stack_identifier = '%s/%s' % (self.stack_name, self.stack.id)
-        self.addCleanup(self._stack_delete, self.stack_identifier)
-
-    def check_stack(self):
-        sid = self.stack_identifier
-        self._wait_for_resource_status(
-            sid, 'WaitHandle', 'CREATE_COMPLETE')
-        self._wait_for_resource_status(
-            sid, 'SmokeSecurityGroup', 'CREATE_COMPLETE')
-        self._wait_for_resource_status(
-            sid, 'SmokeKeys', 'CREATE_COMPLETE')
-        self._wait_for_resource_status(
-            sid, 'CfnUser', 'CREATE_COMPLETE')
-        self._wait_for_resource_status(
-            sid, 'SmokeServer', 'CREATE_COMPLETE')
+    def check_stack(self, sid):
+        # Check status of all resources
+        for res in ('WaitHandle', 'SmokeSecurityGroup', 'SmokeKeys',
+                    'CfnUser', 'SmokeServer', 'IPAddress'):
+            self._wait_for_resource_status(
+                sid, res, 'CREATE_COMPLETE')
 
         server_resource = self.client.resources.get(sid, 'SmokeServer')
         server_id = server_resource.physical_resource_id
         server = self.compute_client.servers.get(server_id)
-        server_ip = server.networks[self.conf.network_for_ssh][0]
-
-        if not self._ping_ip_address(server_ip):
-            self._log_console_output(servers=[server])
-            self.fail(
-                "Timed out waiting for %s to become reachable" % server_ip)
 
         try:
             self._wait_for_resource_status(
@@ -93,6 +47,7 @@ class CfnInitIntegrationTest(test.HeatIntegrationTest):
             # logs to be compared
             self._log_console_output(servers=[server])
 
+        # Check stack status
         self._wait_for_stack_status(sid, 'CREATE_COMPLETE')
 
         stack = self.client.stacks.get(sid)
@@ -107,9 +62,16 @@ class CfnInitIntegrationTest(test.HeatIntegrationTest):
             self._stack_output(stack, 'WaitConditionStatus'))
         self.assertEqual('smoke test complete', wait_status['smoke_status'])
 
+        server_ip = self._stack_output(stack, 'SmokeServerIp')
+
+        # Check that created server is reachable
+        if not self._ping_ip_address(server_ip):
+            self._log_console_output(servers=[server])
+            self.fail(
+                "Timed out waiting for %s to become reachable" % server_ip)
+
+        # Check that the user can authenticate with the generated keypair
         if self.keypair:
-            # Check that the user can authenticate with the generated
-            # keypair
             try:
                 linux_client = self.get_remote_client(
                     server_ip, username='ec2-user')
@@ -120,6 +82,31 @@ class CfnInitIntegrationTest(test.HeatIntegrationTest):
                 raise e
 
     def test_server_cfn_init(self):
-        self.assign_keypair()
-        self.launch_stack()
-        self.check_stack()
+        """
+        Check cfn-init and cfn-signal availability on the created server.
+
+        The alternative scenario is the following:
+            1. Create a stack with a server and configured security group.
+            2. Check that all stack resources were created.
+            3. Check that created server is reachable.
+            4. Check that stack was created successfully.
+            5. Check that is it possible to connect to server
+               via generated keypair.
+        """
+        parameters = {
+            "key_name": self.keypair_name,
+            "flavor": self.conf.instance_type,
+            "image": self.conf.image_ref,
+            "timeout": self.conf.build_timeout,
+            "subnet": self.net["subnets"][0],
+        }
+
+        # Launch stack
+        stack_id = self.launch_stack(
+            template_name="test_server_cfn_init.yaml",
+            parameters=parameters,
+            expected_status=None
+        )
+
+        # Check stack
+        self.check_stack(stack_id)

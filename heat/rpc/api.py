@@ -16,11 +16,13 @@ ENGINE_TOPIC = 'engine'
 PARAM_KEYS = (
     PARAM_TIMEOUT, PARAM_DISABLE_ROLLBACK, PARAM_ADOPT_STACK_DATA,
     PARAM_SHOW_DELETED, PARAM_SHOW_NESTED, PARAM_EXISTING,
-    PARAM_CLEAR_PARAMETERS
+    PARAM_CLEAR_PARAMETERS, PARAM_GLOBAL_TENANT, PARAM_LIMIT,
+    PARAM_NESTED_DEPTH,
 ) = (
     'timeout_mins', 'disable_rollback', 'adopt_stack_data',
     'show_deleted', 'show_nested', 'existing',
-    'clear_parameters'
+    'clear_parameters', 'global_tenant', 'limit',
+    'nested_depth',
 )
 
 STACK_KEYS = (
@@ -199,6 +201,7 @@ SOFTWARE_CONFIG_KEYS = (
     SOFTWARE_CONFIG_INPUTS,
     SOFTWARE_CONFIG_OUTPUTS,
     SOFTWARE_CONFIG_OPTIONS,
+    SOFTWARE_CONFIG_CREATION_TIME
 ) = (
     'id',
     'name',
@@ -207,6 +210,7 @@ SOFTWARE_CONFIG_KEYS = (
     'inputs',
     'outputs',
     'options',
+    'creation_time'
 )
 
 SOFTWARE_DEPLOYMENT_KEYS = (
@@ -217,7 +221,9 @@ SOFTWARE_DEPLOYMENT_KEYS = (
     SOFTWARE_DEPLOYMENT_OUTPUT_VALUES,
     SOFTWARE_DEPLOYMENT_ACTION,
     SOFTWARE_DEPLOYMENT_STATUS,
-    SOFTWARE_DEPLOYMENT_STATUS_REASON
+    SOFTWARE_DEPLOYMENT_STATUS_REASON,
+    SOFTWARE_DEPLOYMENT_CREATION_TIME,
+    SOFTWARE_DEPLOYMENT_UPDATED_TIME
 ) = (
     'id',
     'config_id',
@@ -226,7 +232,29 @@ SOFTWARE_DEPLOYMENT_KEYS = (
     'output_values',
     'action',
     'status',
-    'status_reason'
+    'status_reason',
+    'creation_time',
+    'updated_time'
+)
+
+SOFTWARE_DEPLOYMENT_STATUSES = (
+    SOFTWARE_DEPLOYMENT_IN_PROGRESS,
+    SOFTWARE_DEPLOYMENT_FAILED,
+    SOFTWARE_DEPLOYMENT_COMPLETE
+) = (
+    'IN_PROGRESS',
+    'FAILED',
+    'COMPLETE'
+)
+
+SOFTWARE_DEPLOYMENT_OUTPUTS = (
+    SOFTWARE_DEPLOYMENT_OUTPUT_STDOUT,
+    SOFTWARE_DEPLOYMENT_OUTPUT_STDERR,
+    SOFTWARE_DEPLOYMENT_OUTPUT_STATUS_CODE
+) = (
+    'deploy_stdout',
+    'deploy_stderr',
+    'deploy_status_code'
 )
 
 SNAPSHOT_KEYS = (

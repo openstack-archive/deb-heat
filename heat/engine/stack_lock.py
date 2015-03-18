@@ -14,16 +14,16 @@
 import contextlib
 import uuid
 
-from oslo.config import cfg
-from oslo import messaging
-from oslo.utils import excutils
+from oslo_config import cfg
+from oslo_log import log as logging
+import oslo_messaging as messaging
+from oslo_utils import excutils
 
 from heat.common import exception
 from heat.common.i18n import _LI
 from heat.common.i18n import _LW
 from heat.common import messaging as rpc_messaging
 from heat.db import api as db_api
-from heat.openstack.common import log as logging
 
 cfg.CONF.import_opt('engine_life_check_timeout', 'heat.common.config')
 
@@ -39,7 +39,9 @@ class StackLock(object):
 
     @staticmethod
     def engine_alive(context, engine_id):
-        client = rpc_messaging.get_rpc_client(version='1.0', topic=engine_id)
+        client = rpc_messaging.get_rpc_client(
+            version='1.0', topic="heat-engine-listener",
+            server=engine_id)
         client_context = client.prepare(
             timeout=cfg.CONF.engine_life_check_timeout)
         try:
@@ -132,6 +134,8 @@ class StackLock(object):
         try:
             self.acquire()
             yield
+        except exception.ActionInProgress:
+            raise
         except:  # noqa
             with excutils.save_and_reraise_exception():
                 self.release(stack_id)

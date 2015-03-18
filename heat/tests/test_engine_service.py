@@ -11,8 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import functools
-import json
+import datetime
 import sys
 import uuid
 
@@ -20,9 +19,10 @@ import eventlet
 from eventlet import event as grevent
 import mock
 import mox
-from oslo.config import cfg
-from oslo.messaging.rpc import dispatcher
-from oslo.serialization import jsonutils
+from oslo_config import cfg
+from oslo_messaging.rpc import dispatcher
+from oslo_serialization import jsonutils as json
+from oslo_utils import timeutils
 import six
 
 from heat.common import context
@@ -34,19 +34,27 @@ from heat.db import api as db_api
 from heat.engine.clients.os import glance
 from heat.engine.clients.os import keystone
 from heat.engine.clients.os import nova
+from heat.engine.clients.os import swift
 from heat.engine import dependencies
 from heat.engine import environment
 from heat.engine import properties
 from heat.engine import resource as res
-from heat.engine.resources import instance as instances
+from heat.engine.resources.aws.ec2 import instance as instances
 from heat.engine import service
+from heat.engine import service_software_config
 from heat.engine import service_stack_watch
 from heat.engine import stack as parser
 from heat.engine import stack_lock
 from heat.engine import template as templatem
 from heat.engine import watchrule
+from heat.engine import worker
+from heat.objects import resource as resource_objects
+from heat.objects import service as service_objects
+from heat.objects import software_deployment as software_deployment_object
+from heat.objects import stack as stack_object
 from heat.openstack.common import threadgroup
 from heat.rpc import api as rpc_api
+from heat.rpc import worker_api
 from heat.tests import common
 from heat.tests import fakes as test_fakes
 from heat.tests import generic_resource as generic_rsrc
@@ -170,17 +178,16 @@ resources:
 
 def get_wordpress_stack(stack_name, ctx):
     t = template_format.parse(wp_template)
-    template = templatem.Template(t)
-    stack = parser.Stack(ctx, stack_name, template,
-                         environment.Environment({'KeyName': 'test'}))
+    template = templatem.Template(
+        t, env=environment.Environment({'KeyName': 'test'}))
+    stack = parser.Stack(ctx, stack_name, template)
     return stack
 
 
 def get_wordpress_stack_no_params(stack_name, ctx):
     t = template_format.parse(wp_template)
     template = templatem.Template(t)
-    stack = parser.Stack(ctx, stack_name, template,
-                         environment.Environment({}))
+    stack = parser.Stack(ctx, stack_name, template)
     return stack
 
 
@@ -228,14 +235,18 @@ def setup_mocks(mocks, stack, mock_image_constraint=True):
         'ec2-user').AndReturn(server_userdata)
 
     mocks.StubOutWithMock(fc.servers, 'create')
-    fc.servers.create(image=744, flavor=3, key_name='test',
-                      name=utils.PhysName(stack.name, 'WebServer'),
-                      security_groups=None,
-                      userdata=server_userdata, scheduler_hints=None,
-                      meta=None, nics=None,
-                      availability_zone=None,
-                      block_device_mapping=None).AndReturn(
-                          fc.servers.list()[4])
+    fc.servers.create(
+        image=744,
+        flavor=3,
+        key_name='test',
+        name=utils.PhysName(stack.name, 'WebServer'),
+        security_groups=None,
+        userdata=server_userdata,
+        scheduler_hints=None,
+        meta=None,
+        nics=None,
+        availability_zone=None,
+        block_device_mapping=None).AndReturn(fc.servers.list()[4])
     return fc
 
 
@@ -273,7 +284,7 @@ def stack_context(stack_name, create_res=True):
     of test success/failure
     """
     def stack_delete(test_fn):
-        @functools.wraps(test_fn)
+        @six.wraps(test_fn)
         def wrapped_test(test_case, *args, **kwargs):
             def create_stack():
                 ctx = getattr(test_case, 'ctx', None)
@@ -409,7 +420,7 @@ class StackCreateTest(common.HeatTestCase):
         stack_id = stack.store()
         stack.create()
 
-        db_s = db_api.stack_get(ctx, stack_id)
+        db_s = stack_object.Stack.get_by_id(ctx, stack_id)
         self.assertIsNotNone(db_s)
 
         self.assertIsNotNone(stack['WebServer'])
@@ -424,7 +435,9 @@ class StackCreateTest(common.HeatTestCase):
         rsrc = stack['WebServer']
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
         self.assertEqual((stack.DELETE, stack.COMPLETE), rsrc.state)
-        self.assertIsNone(db_api.stack_get(ctx, stack_id))
+        self.assertIsNone(stack_object.Stack.get_by_id(ctx, stack_id))
+
+        db_s.refresh()
         self.assertEqual('DELETE', db_s.action)
         self.assertEqual('COMPLETE', db_s.status, )
 
@@ -448,12 +461,14 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         self.m.StubOutWithMock(environment, 'Environment')
         self.m.StubOutWithMock(parser, 'Stack')
 
-        templatem.Template(template, files=None).AndReturn(stack.t)
+        templatem.Template(template, files=None,
+                           env=stack.env).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.env, owner_id=None,
+                     stack.t, owner_id=None,
                      nested_depth=0, user_creds_id=None,
-                     stack_user_project_id=None).AndReturn(stack)
+                     stack_user_project_id=None,
+                     convergence=False).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -499,15 +514,16 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         self.m.StubOutWithMock(environment, 'Environment')
         self.m.StubOutWithMock(parser, 'Stack')
 
-        templatem.Template(template, files=None).AndReturn(stack.t)
+        templatem.Template(template, files=None,
+                           env=stack.env).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
                      stack.t,
-                     stack.env,
                      owner_id=None,
                      nested_depth=0,
                      user_creds_id=None,
-                     stack_user_project_id=None).AndReturn(stack)
+                     stack_user_project_id=None,
+                     convergence=False).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndRaise(exception.StackValidationFailed(
@@ -556,10 +572,10 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
                                        template, {}, None,
                                        {'adopt_stack_data': str(adopt_data)})
 
-        stack = db_api.stack_get(self.ctx, result['stack_id'])
+        stack = stack_object.Stack.get_by_id(self.ctx, result['stack_id'])
         self.assertEqual(template, stack.raw_template.template)
         self.assertEqual(environment['parameters'],
-                         stack.parameters['parameters'])
+                         stack.raw_template.environment['parameters'])
 
     def test_stack_adopt_saves_input_params(self):
         cfg.CONF.set_override('enable_stack_adopt', True)
@@ -578,7 +594,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         stack = db_api.stack_get(self.ctx, result['stack_id'])
         self.assertEqual(template, stack.raw_template.template)
         self.assertEqual(input_params['parameters'],
-                         stack.parameters['parameters'])
+                         stack.raw_template.environment['parameters'])
 
     def test_stack_adopt_stack_state(self):
         cfg.CONF.set_override('enable_stack_adopt', True)
@@ -620,6 +636,15 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
                           self.man.create_stack,
                           self.ctx, stack_name, stack.t.t, {}, None, {})
 
+    def test_stack_create_enabled_convergence_engine(self):
+        cfg.CONF.set_override('convergence_engine', True)
+        ex = self.assertRaises(dispatcher.ExpectedException,
+                               self.man.create_stack, self.ctx, 'test',
+                               wp_template, {}, None, {})
+        self.assertEqual(exception.NotSupported, ex.exc_info[0])
+        self.assertEqual('Convergence engine is not supported.',
+                         six.text_type(ex.exc_info[1]))
+
     def test_stack_create_invalid_resource_name(self):
         stack_name = 'service_create_test_stack_invalid_res'
         stack = get_wordpress_stack(stack_name, self.ctx)
@@ -659,19 +684,23 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         ctx_no_pwd = utils.dummy_context(password=None)
         ctx_no_user = utils.dummy_context(user=None)
 
-        templatem.Template(template, files=None).AndReturn(stack.t)
+        templatem.Template(template, files=None,
+                           env=stack.env).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(ctx_no_pwd, stack.name,
-                     stack.t, stack.env, owner_id=None,
+                     stack.t, owner_id=None,
                      nested_depth=0, user_creds_id=None,
-                     stack_user_project_id=None).AndReturn(stack)
+                     stack_user_project_id=None,
+                     convergence=False).AndReturn(stack)
 
-        templatem.Template(template, files=None).AndReturn(stack.t)
+        templatem.Template(template, files=None,
+                           env=stack.env).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(ctx_no_user, stack.name,
-                     stack.t, stack.env, owner_id=None,
+                     stack.t, owner_id=None,
                      nested_depth=0, user_creds_id=None,
-                     stack_user_project_id=None).AndReturn(stack)
+                     stack_user_project_id=None,
+                     convergence=False).AndReturn(stack)
 
         self.m.ReplayAll()
 
@@ -705,22 +734,22 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
                    'C': {'Type': 'GenericResourceType'}}}
 
         template = templatem.Template(tpl)
-        stack = parser.Stack(self.ctx, stack_name, template,
-                             environment.Environment({}))
+        stack = parser.Stack(self.ctx, stack_name, template)
 
         self.m.StubOutWithMock(templatem, 'Template')
         self.m.StubOutWithMock(environment, 'Environment')
         self.m.StubOutWithMock(parser, 'Stack')
 
-        templatem.Template(template, files=None).AndReturn(stack.t)
+        templatem.Template(template, files=None,
+                           env=stack.env).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
                      stack.t,
-                     stack.env,
                      owner_id=None,
                      nested_depth=0,
                      user_creds_id=None,
-                     stack_user_project_id=None).AndReturn(stack)
+                     stack_user_project_id=None,
+                     convergence=False).AndReturn(stack)
 
         self.m.ReplayAll()
 
@@ -785,7 +814,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         stack = get_wordpress_stack(stack_name, self.ctx)
         sid = stack.store()
 
-        s = db_api.stack_get(self.ctx, sid)
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
         self.m.StubOutWithMock(parser.Stack, 'load')
 
         parser.Stack.load(self.ctx, stack=s).AndReturn(stack)
@@ -812,7 +841,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         stack = get_wordpress_stack(stack_name, self.ctx)
         sid = stack.store()
 
-        st = db_api.stack_get(self.ctx, sid)
+        st = stack_object.Stack.get_by_id(self.ctx, sid)
         self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.ctx, stack=st).MultipleTimes().AndReturn(stack)
 
@@ -829,7 +858,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         stack = get_wordpress_stack(stack_name, self.ctx)
         sid = stack.store()
 
-        st = db_api.stack_get(self.ctx, sid)
+        st = stack_object.Stack.get_by_id(self.ctx, sid)
         self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.ctx, stack=st).MultipleTimes().AndReturn(stack)
 
@@ -856,7 +885,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         # Create a fake ThreadGroup too
         self.man.thread_group_mgr.groups[stack.id] = DummyThreadGroup()
 
-        st = db_api.stack_get(self.ctx, sid)
+        st = stack_object.Stack.get_by_id(self.ctx, sid)
         self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.ctx, stack=st).MultipleTimes().AndReturn(stack)
 
@@ -882,7 +911,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         # Insert a fake lock into the db
         db_api.stack_lock_create(stack.id, "other-engine-fake-uuid")
 
-        st = db_api.stack_get(self.ctx, sid)
+        st = stack_object.Stack.get_by_id(self.ctx, sid)
         self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.ctx, stack=st).AndReturn(stack)
 
@@ -915,7 +944,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         # Insert a fake lock into the db
         db_api.stack_lock_create(stack.id, "other-engine-fake-uuid")
 
-        st = db_api.stack_get(self.ctx, sid)
+        st = stack_object.Stack.get_by_id(self.ctx, sid)
         self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.ctx, stack=st).MultipleTimes().AndReturn(stack)
 
@@ -947,7 +976,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         # Insert a fake lock into the db
         db_api.stack_lock_create(stack.id, "other-engine-fake-uuid")
 
-        st = db_api.stack_get(self.ctx, sid)
+        st = stack_object.Stack.get_by_id(self.ctx, sid)
         self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.ctx, stack=st).MultipleTimes().AndReturn(stack)
 
@@ -981,17 +1010,19 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         template = '{ "Template": "data" }'
         old_stack = get_wordpress_stack(stack_name, self.ctx)
         sid = old_stack.store()
-        s = db_api.stack_get(self.ctx, sid)
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
 
         stack = get_wordpress_stack(stack_name, self.ctx)
 
         self._stub_update_mocks(s, old_stack)
 
-        templatem.Template(template, files=None).AndReturn(stack.t)
+        templatem.Template(template, files=None,
+                           env=stack.env).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.env,
-                     timeout_mins=60, disable_rollback=True).AndReturn(stack)
+                     stack.t,
+                     timeout_mins=60, disable_rollback=True,
+                     convergence=False).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -1024,22 +1055,23 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
 
         old_stack = get_wordpress_stack_no_params(stack_name, self.ctx)
         sid = old_stack.store()
-        s = db_api.stack_get(self.ctx, sid)
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
 
         t = template_format.parse(wp_template_no_default)
-        template = templatem.Template(t)
         env = environment.Environment({'parameters': with_params,
                                        'resource_registry': {'rsc': 'test'}})
-        stack = parser.Stack(self.ctx, stack_name, template, env)
+        template = templatem.Template(t, env=env)
+        stack = parser.Stack(self.ctx, stack_name, template)
 
         self._stub_update_mocks(s, old_stack)
 
         templatem.Template(wp_template_no_default,
-                           files=None).AndReturn(stack.t)
+                           files=None, env=old_stack.env).AndReturn(stack.t)
         environment.Environment(no_params).AndReturn(old_stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, old_stack.env,
-                     timeout_mins=60, disable_rollback=True).AndReturn(stack)
+                     stack.t,
+                     timeout_mins=60, disable_rollback=True,
+                     convergence=False).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -1072,17 +1104,19 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         old_stack.timeout_mins = 1
         old_stack.disable_rollback = False
         sid = old_stack.store()
-        s = db_api.stack_get(self.ctx, sid)
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
 
         stack = get_wordpress_stack(stack_name, self.ctx)
 
         self._stub_update_mocks(s, old_stack)
 
-        templatem.Template(template, files=None).AndReturn(stack.t)
+        templatem.Template(template, files=None,
+                           env=stack.env).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.env,
-                     timeout_mins=1, disable_rollback=False).AndReturn(stack)
+                     stack.t,
+                     timeout_mins=1, disable_rollback=False,
+                     convergence=False).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -1149,17 +1183,19 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
 
         old_stack = parser.Stack(self.ctx, stack_name, template)
         sid = old_stack.store()
-        s = db_api.stack_get(self.ctx, sid)
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
 
         stack = parser.Stack(self.ctx, stack_name, template)
 
         self._stub_update_mocks(s, old_stack)
 
-        templatem.Template(template, files=None).AndReturn(stack.t)
+        templatem.Template(template, files=None,
+                           env=stack.env).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.env,
-                     timeout_mins=60, disable_rollback=True).AndReturn(stack)
+                     stack.t,
+                     timeout_mins=60, disable_rollback=True,
+                     convergence=False).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -1204,7 +1240,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         self.assertEqual((create_stack.CREATE, create_stack.COMPLETE),
                          create_stack.state)
 
-        s = db_api.stack_get(self.ctx, sid)
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
 
         old_stack = parser.Stack.load(self.ctx, stack=s)
 
@@ -1214,7 +1250,9 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
                          old_stack['A'].properties['Foo'])
 
         self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(self.ctx, stack=s).AndReturn(old_stack)
+        parser.Stack.load(
+            self.ctx,
+            stack=s).AndReturn(old_stack)
 
         self.m.ReplayAll()
 
@@ -1269,17 +1307,18 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         old_stack = get_wordpress_stack(stack_name, self.ctx)
         old_stack.store()
         sid = old_stack.store()
-        s = db_api.stack_get(self.ctx, sid)
-
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
         stack = get_wordpress_stack(stack_name, self.ctx)
 
         self._stub_update_mocks(s, old_stack)
 
-        templatem.Template(template, files=None).AndReturn(stack.t)
+        templatem.Template(template, files=None,
+                           env=stack.env).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
-                     stack.t, stack.env,
-                     timeout_mins=60, disable_rollback=True).AndReturn(stack)
+                     stack.t,
+                     timeout_mins=60, disable_rollback=True,
+                     convergence=False).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndRaise(exception.StackValidationFailed(
@@ -1321,7 +1360,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         old_stack['WebServer'].requires_deferred_auth = True
 
         sid = old_stack.store()
-        s = db_api.stack_get(self.ctx, sid)
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
 
         self.ctx = utils.dummy_context(password=None)
 
@@ -1331,12 +1370,13 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
 
         self._stub_update_mocks(s, old_stack)
 
-        templatem.Template(template, files=None).AndReturn(old_stack.t)
+        templatem.Template(template, files=None,
+                           env=old_stack.env).AndReturn(old_stack.t)
         environment.Environment(params).AndReturn(old_stack.env)
         parser.Stack(self.ctx, old_stack.name,
-                     old_stack.t, old_stack.env,
-                     timeout_mins=60, disable_rollback=True
-                     ).AndReturn(old_stack)
+                     old_stack.t,
+                     timeout_mins=60, disable_rollback=True,
+                     convergence=False).AndReturn(old_stack)
 
         self.m.ReplayAll()
 
@@ -1418,7 +1458,7 @@ class StackServiceUpdateActionsNotSupportedTest(common.HeatTestCase):
         old_stack.status = self.status
 
         sid = old_stack.store()
-        s = db_api.stack_get(self.ctx, sid)
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
 
         self.m.StubOutWithMock(parser, 'Stack')
         self.m.StubOutWithMock(parser.Stack, 'load')
@@ -1449,7 +1489,7 @@ class StackServiceActionsTest(common.HeatTestCase):
         stack_name = 'service_suspend_test_stack'
         stack = get_wordpress_stack(stack_name, self.ctx)
         sid = stack.store()
-        s = db_api.stack_get(self.ctx, sid)
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
 
         self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.ctx, stack=s).AndReturn(stack)
@@ -1634,8 +1674,16 @@ class StackServiceTest(common.HeatTestCase):
         res._register_class('ResourceWithPropsType',
                             generic_rsrc.ResourceWithProps)
 
+    def test_make_sure_rpc_version(self):
+        self.assertEqual(
+            '1.6',
+            service.EngineService.RPC_API_VERSION,
+            ('RPC version is changed, please update this test to new version '
+             'and make sure additional test cases are added for RPC APIs '
+             'added in new version'))
+
     @mock.patch.object(service_stack_watch.StackWatch, 'start_watch_task')
-    @mock.patch.object(service.db_api, 'stack_get_all')
+    @mock.patch.object(service.stack_object.Stack, 'get_all')
     @mock.patch.object(service.service.Service, 'start')
     def test_start_watches_all_stacks(self, mock_super_start, mock_get_all,
                                       start_watch_task):
@@ -1703,16 +1751,18 @@ class StackServiceTest(common.HeatTestCase):
 
     @stack_context('service_name_tenants_test_stack', False)
     def test_stack_by_name_tenants(self):
-        self.assertEqual(self.stack.id,
-                         db_api.stack_get_by_name(self.ctx,
-                                                  self.stack.name).id)
+        self.assertEqual(
+            self.stack.id,
+            stack_object.Stack.get_by_name(self.ctx, self.stack.name).id)
         ctx2 = utils.dummy_context(tenant_id='stack_service_test_tenant2')
-        self.assertIsNone(db_api.stack_get_by_name(ctx2, self.stack.name))
+        self.assertIsNone(stack_object.Stack.get_by_name(
+            ctx2,
+            self.stack.name))
 
     @stack_context('service_event_list_test_stack')
     def test_stack_event_list(self):
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = db_api.stack_get(self.ctx, self.stack.id)
+        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         service.EngineService._get_stack(self.ctx,
                                          self.stack.identifier(),
                                          show_deleted=True).AndReturn(s)
@@ -2141,7 +2191,7 @@ class StackServiceTest(common.HeatTestCase):
     @stack_context('service_describe_test_stack', False)
     def test_stack_describe(self):
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = db_api.stack_get(self.ctx, self.stack.id)
+        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         service.EngineService._get_stack(self.ctx,
                                          self.stack.identifier(),
                                          show_deleted=True).AndReturn(s)
@@ -2553,7 +2603,7 @@ class StackServiceTest(common.HeatTestCase):
         test_data = {'food': 'yum'}
 
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = db_api.stack_get(self.ctx, self.stack.id)
+        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         service.EngineService._get_stack(self.ctx,
                                          self.stack.identifier()).AndReturn(s)
 
@@ -2582,7 +2632,7 @@ class StackServiceTest(common.HeatTestCase):
         test_data = {'food': 'yum'}
 
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = db_api.stack_get(self.ctx, self.stack.id)
+        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         service.EngineService._get_stack(self.ctx,
                                          self.stack.identifier()).AndReturn(s)
         self.m.ReplayAll()
@@ -2639,7 +2689,7 @@ class StackServiceTest(common.HeatTestCase):
         rsrc.metadata_set(test_metadata)
 
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = db_api.stack_get(self.ctx, self.stack.id)
+        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         service.EngineService._get_stack(self.ctx,
                                          self.stack.identifier()).AndReturn(s)
 
@@ -2661,7 +2711,7 @@ class StackServiceTest(common.HeatTestCase):
         pre_update_meta = self.stack['WebServer'].metadata_get()
 
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = db_api.stack_get(self.ctx, self.stack.id)
+        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         service.EngineService._get_stack(self.ctx,
                                          self.stack.identifier()).AndReturn(s)
         self.m.StubOutWithMock(instances.Instance, 'metadata_update')
@@ -2952,8 +3002,7 @@ class StackServiceTest(common.HeatTestCase):
             }
         }
         templ = templatem.Template(lazy_load_template)
-        stack = parser.Stack(self.ctx, stack_name, templ,
-                             environment.Environment({}))
+        stack = parser.Stack(self.ctx, stack_name, templ)
 
         self.assertIsNone(stack._resources)
         self.assertIsNone(stack._dependencies)
@@ -3028,7 +3077,7 @@ class StackServiceTest(common.HeatTestCase):
                                self._preview_stack)
         self.assertEqual(exception.StackValidationFailed, ex.exc_info[0])
 
-    @mock.patch.object(service.db_api, 'stack_get_by_name')
+    @mock.patch.object(service.stack_object.Stack, 'get_by_name')
     def test_validate_new_stack_checks_existing_stack(self, mock_stack_get):
         mock_stack_get.return_value = 'existing_db_stack'
         tmpl = templatem.Template(
@@ -3086,17 +3135,17 @@ class StackServiceTest(common.HeatTestCase):
                           self.eng._validate_new_stack,
                           self.ctx, 'test_existing_stack', parsed_template)
 
-    @mock.patch.object(service.db_api, 'service_get_all')
+    @mock.patch.object(service_objects.Service, 'get_all')
     @mock.patch.object(service_utils, 'format_service')
     def test_service_get_all(self, mock_format_service, mock_get_all):
         mock_get_all.return_value = [mock.Mock()]
         mock_format_service.return_value = mock.Mock()
         self.assertEqual(1, len(self.eng.list_services(self.ctx)))
-        self.assertTrue(service.db_api.service_get_all.called)
+        self.assertTrue(mock_get_all.called)
         mock_format_service.assert_called_once_with(mock.ANY)
 
-    @mock.patch.object(service.db_api, 'service_get_all_by_args')
-    @mock.patch.object(service.db_api, 'service_create')
+    @mock.patch.object(service_objects.Service, 'get_all_by_args')
+    @mock.patch.object(service_objects.Service, 'create')
     @mock.patch.object(context, 'get_admin_context')
     def test_service_manage_report_start(self,
                                          mock_admin_context,
@@ -3124,8 +3173,8 @@ class StackServiceTest(common.HeatTestCase):
 
         self.assertEqual(self.eng.service_id, srv['id'])
 
-    @mock.patch.object(service.db_api, 'service_get_all_by_args')
-    @mock.patch.object(service.db_api, 'service_update')
+    @mock.patch.object(service_objects.Service, 'get_all_by_args')
+    @mock.patch.object(service_objects.Service, 'update_by_id')
     @mock.patch.object(context, 'get_admin_context')
     def test_service_manage_report_restart(
             self,
@@ -3152,7 +3201,7 @@ class StackServiceTest(common.HeatTestCase):
 
         self.assertEqual(self.eng.service_id, srv['id'])
 
-    @mock.patch.object(service.db_api, 'service_update')
+    @mock.patch.object(service_objects.Service, 'update_by_id')
     @mock.patch.object(context, 'get_admin_context')
     def test_service_manage_report_update(
             self,
@@ -3166,6 +3215,250 @@ class StackServiceTest(common.HeatTestCase):
             self.ctx,
             'mock_id',
             dict())
+
+    def test_stop_rpc_server(self):
+        with mock.patch.object(self.eng,
+                               '_rpc_server') as mock_rpc_server:
+            self.eng._stop_rpc_server()
+            mock_rpc_server.stop.assert_called_once_with()
+            mock_rpc_server.wait.assert_called_once_with()
+
+    def _test_engine_service_start(
+            self,
+            thread_group_class,
+            worker_service_class,
+            engine_listener_class,
+            thread_group_manager_class,
+            sample_uuid_method,
+            rpc_client_class,
+            target_class,
+            rpc_server_method):
+        self.eng.start()
+
+        # engine id
+        sample_uuid_method.assert_called_once_with()
+        sampe_uuid = sample_uuid_method.return_value
+        self.assertEqual(sampe_uuid,
+                         self.eng.engine_id,
+                         'Failed to generated engine_id')
+
+        # Thread group manager
+        thread_group_manager_class.assert_called_once_with()
+        thread_group_manager = thread_group_manager_class.return_value
+        self.assertEqual(thread_group_manager,
+                         self.eng.thread_group_mgr,
+                         'Failed to create Thread Group Manager')
+
+        # Engine Listener
+        engine_listener_class.assert_called_once_with(
+            self.eng.host,
+            self.eng.engine_id,
+            self.eng.thread_group_mgr
+        )
+        engine_lister = engine_listener_class.return_value
+        engine_lister.start.assert_called_once_with()
+
+        # Worker Service
+        if cfg.CONF.convergence_engine:
+            worker_service_class.assert_called_once_with(
+                host=self.eng.host,
+                topic=worker_api.TOPIC,
+                engine_id=self.eng.engine_id,
+                thread_group_mgr=self.eng.thread_group_mgr
+            )
+            worker_service = worker_service_class.return_value
+            worker_service.start.assert_called_once_with()
+
+        # RPC Target
+        target_class.assert_called_once_with(
+            version=service.EngineService.RPC_API_VERSION,
+            server=self.eng.host,
+            topic=self.eng.topic)
+
+        # RPC server
+        target = target_class.return_value
+        rpc_server_method.assert_called_once_with(target,
+                                                  self.eng)
+        rpc_server = rpc_server_method.return_value
+        self.assertEqual(rpc_server,
+                         self.eng._rpc_server,
+                         "Failed to create RPC server")
+
+        rpc_server.start.assert_called_once_with()
+
+        # RPC client
+        rpc_client = rpc_client_class.return_value
+        rpc_client_class.assert_called_once_with(
+            version=service.EngineService.RPC_API_VERSION)
+        self.assertEqual(rpc_client,
+                         self.eng._client,
+                         "Failed to create RPC client")
+
+        # Manage Thread group
+        thread_group_class.assert_called_once_with()
+        manage_thread_group = thread_group_class.return_value
+        manage_thread_group.add_timer.assert_called_once_with(
+            cfg.CONF.periodic_interval,
+            self.eng.service_manage_report
+        )
+
+    @mock.patch('heat.common.messaging.get_rpc_server',
+                return_value=mock.Mock())
+    @mock.patch('oslo_messaging.Target',
+                return_value=mock.Mock())
+    @mock.patch('heat.common.messaging.get_rpc_client',
+                return_value=mock.Mock())
+    @mock.patch('heat.engine.stack_lock.StackLock.generate_engine_id',
+                return_value='sample-uuid')
+    @mock.patch('heat.engine.service.ThreadGroupManager',
+                return_value=mock.Mock())
+    @mock.patch('heat.engine.service.EngineListener',
+                return_value=mock.Mock())
+    @mock.patch('heat.openstack.common.threadgroup.ThreadGroup',
+                return_value=mock.Mock())
+    def test_engine_service_start_in_non_convergence_mode(
+            self,
+            thread_group_class,
+            engine_listener_class,
+            thread_group_manager_class,
+            sample_uuid_method,
+            rpc_client_class,
+            target_class,
+            rpc_server_method):
+        cfg.CONF.set_default('convergence_engine', False)
+        self._test_engine_service_start(
+            thread_group_class,
+            None,
+            engine_listener_class,
+            thread_group_manager_class,
+            sample_uuid_method,
+            rpc_client_class,
+            target_class,
+            rpc_server_method
+        )
+
+    @mock.patch('heat.common.messaging.get_rpc_server',
+                return_value=mock.Mock())
+    @mock.patch('oslo_messaging.Target',
+                return_value=mock.Mock())
+    @mock.patch('heat.common.messaging.get_rpc_client',
+                return_value=mock.Mock())
+    @mock.patch('heat.engine.stack_lock.StackLock.generate_engine_id',
+                return_value=mock.Mock())
+    @mock.patch('heat.engine.service.ThreadGroupManager',
+                return_value=mock.Mock())
+    @mock.patch('heat.engine.service.EngineListener',
+                return_value=mock.Mock())
+    @mock.patch('heat.engine.worker.WorkerService',
+                return_value=mock.Mock())
+    @mock.patch('heat.openstack.common.threadgroup.ThreadGroup',
+                return_value=mock.Mock())
+    def test_engine_service_start_in_convergence_mode(
+            self,
+            thread_group_class,
+            worker_service_class,
+            engine_listener_class,
+            thread_group_manager_class,
+            sample_uuid_method,
+            rpc_client_class,
+            target_class,
+            rpc_server_method):
+        cfg.CONF.set_default('convergence_engine', True)
+        self._test_engine_service_start(
+            thread_group_class,
+            worker_service_class,
+            engine_listener_class,
+            thread_group_manager_class,
+            sample_uuid_method,
+            rpc_client_class,
+            target_class,
+            rpc_server_method
+        )
+
+    def _test_engine_service_stop(
+            self,
+            service_delete_method,
+            admin_context_method):
+        cfg.CONF.set_default('periodic_interval', 60)
+
+        self.eng.start()
+        # Add dummy thread group to test thread_group_mgr.stop() is executed?
+        self.eng.thread_group_mgr.groups['sample-uuid'] = DummyThreadGroup()
+        self.eng.service_id = 'sample-service-uuid'
+
+        self.eng.stop()
+
+        # RPC server
+        self.eng._stop_rpc_server.assert_called_once_with()
+
+        if cfg.CONF.convergence_engine:
+            # WorkerService
+            self.eng.worker_service.stop.assert_called_once_with()
+
+        # Wait for all active threads to be finished
+        self.eng.thread_group_mgr.stop.assert_called_with(
+            'sample-uuid',
+            True)
+
+        # # Manage Thread group
+        self.eng.manage_thread_grp.stop.assert_called_with(False)
+
+        # Service delete
+        admin_context_method.assert_called_once_with()
+        ctxt = admin_context_method.return_value
+        service_delete_method.assert_called_once_with(
+            ctxt,
+            self.eng.service_id
+        )
+
+    @mock.patch.object(service.EngineService,
+                       '_stop_rpc_server')
+    @mock.patch.object(worker.WorkerService,
+                       'stop')
+    @mock.patch.object(threadgroup.ThreadGroup,
+                       'stop')
+    @mock.patch.object(service.ThreadGroupManager,
+                       'stop')
+    @mock.patch('heat.common.context.get_admin_context',
+                return_value=mock.Mock())
+    @mock.patch('heat.objects.service.Service.delete',
+                return_value=mock.Mock())
+    def test_engine_service_stop_in_convergence_mode(
+            self,
+            service_delete_method,
+            admin_context_method,
+            thread_group_mgr_stop,
+            thread_group_stop,
+            worker_service_stop,
+            rpc_server_stop):
+        cfg.CONF.set_default('convergence_engine', True)
+        self._test_engine_service_stop(
+            service_delete_method,
+            admin_context_method
+        )
+
+    @mock.patch.object(service.EngineService,
+                       '_stop_rpc_server')
+    @mock.patch.object(threadgroup.ThreadGroup,
+                       'stop')
+    @mock.patch.object(service.ThreadGroupManager,
+                       'stop')
+    @mock.patch('heat.common.context.get_admin_context',
+                return_value=mock.Mock())
+    @mock.patch('heat.objects.service.Service.delete',
+                return_value=mock.Mock())
+    def test_engine_service_stop_in_non_convergence_mode(
+            self,
+            service_delete_method,
+            admin_context_method,
+            thread_group_mgr_stop,
+            thread_group_stop,
+            rpc_server_stop):
+        cfg.CONF.set_default('convergence_engine', False)
+        self._test_engine_service_stop(
+            service_delete_method,
+            admin_context_method
+        )
 
 
 class SoftwareConfigServiceTest(common.HeatTestCase):
@@ -3280,7 +3573,8 @@ class SoftwareConfigServiceTest(common.HeatTestCase):
             self.ctx, server_id=server.resource_id)
         self.assertEqual([deployment], deployments)
 
-        rs = db_api.resource_get_by_physical_resource_id(self.ctx, server_id)
+        rs = resource_objects.Resource.get_by_physical_resource_id(
+            self.ctx, server_id)
         self.assertEqual(deployment['config_id'],
                          rs.rsrc_metadata.get('deployments')[0]['id'])
 
@@ -3326,7 +3620,8 @@ class SoftwareConfigServiceTest(common.HeatTestCase):
 
         # assert that metadata via metadata_software_deployments matches
         # metadata via server resource
-        rs = db_api.resource_get_by_physical_resource_id(self.ctx, server_id)
+        rs = resource_objects.Resource.get_by_physical_resource_id(
+            self.ctx, server_id)
         self.assertEqual(metadata,
                          rs.rsrc_metadata.get('deployments'))
 
@@ -3361,6 +3656,129 @@ class SoftwareConfigServiceTest(common.HeatTestCase):
             deployment,
             self.engine.show_software_deployment(self.ctx, deployment_id))
 
+    @mock.patch.object(service_software_config.SoftwareConfigService,
+                       '_push_metadata_software_deployments')
+    def test_signal_software_deployment(self, pmsd):
+        self.assertRaises(ValueError,
+                          self.engine.signal_software_deployment,
+                          self.ctx, None, {}, None)
+        deployment_id = str(uuid.uuid4())
+        ex = self.assertRaises(dispatcher.ExpectedException,
+                               self.engine.signal_software_deployment,
+                               self.ctx, deployment_id, {}, None)
+        self.assertEqual(exception.NotFound, ex.exc_info[0])
+
+        deployment = self._create_software_deployment()
+        deployment_id = deployment['id']
+
+        # signal is ignore unless deployment is IN_PROGRESS
+        self.assertIsNone(self.engine.signal_software_deployment(
+            self.ctx, deployment_id, {}, None))
+
+        # simple signal, no data
+        deployment = self._create_software_deployment(
+            action='INIT', status='IN_PROGRESS')
+        deployment_id = deployment['id']
+        self.assertEqual(
+            'deployment succeeded',
+            self.engine.signal_software_deployment(
+                self.ctx, deployment_id, {}, None))
+        sd = software_deployment_object.SoftwareDeployment.get_by_id(
+            self.ctx, deployment_id)
+        self.assertEqual('COMPLETE', sd.status)
+        self.assertEqual('Outputs received', sd.status_reason)
+        self.assertEqual({
+            'deploy_status_code': None,
+            'deploy_stderr': None,
+            'deploy_stdout': None
+        }, sd.output_values)
+        self.assertIsNotNone(sd.updated_at)
+
+        # simple signal, some data
+        config = self._create_software_config(outputs=[{'name': 'foo'}])
+        deployment = self._create_software_deployment(
+            config_id=config['id'], action='INIT', status='IN_PROGRESS')
+        deployment_id = deployment['id']
+        result = self.engine.signal_software_deployment(
+            self.ctx,
+            deployment_id,
+            {'foo': 'bar', 'deploy_status_code': 0},
+            None)
+        self.assertEqual('deployment succeeded', result)
+        sd = software_deployment_object.SoftwareDeployment.get_by_id(
+            self.ctx, deployment_id)
+        self.assertEqual('COMPLETE', sd.status)
+        self.assertEqual('Outputs received', sd.status_reason)
+        self.assertEqual({
+            'deploy_status_code': 0,
+            'foo': 'bar',
+            'deploy_stderr': None,
+            'deploy_stdout': None
+        }, sd.output_values)
+        self.assertIsNotNone(sd.updated_at)
+
+        # failed signal on deploy_status_code
+        config = self._create_software_config(outputs=[
+            {'name': 'foo'}])
+        deployment = self._create_software_deployment(
+            config_id=config['id'], action='INIT', status='IN_PROGRESS')
+        deployment_id = deployment['id']
+        result = self.engine.signal_software_deployment(
+            self.ctx,
+            deployment_id,
+            {
+                'foo': 'bar',
+                'deploy_status_code': -1,
+                'deploy_stderr': 'Its gone Pete Tong'
+            },
+            None)
+        self.assertEqual('deployment failed (-1)', result)
+        sd = software_deployment_object.SoftwareDeployment.get_by_id(
+            self.ctx, deployment_id)
+        self.assertEqual('FAILED', sd.status)
+        self.assertEqual(
+            ('deploy_status_code : Deployment exited with non-zero '
+             'status code: -1'),
+            sd.status_reason)
+        self.assertEqual({
+            'deploy_status_code': -1,
+            'foo': 'bar',
+            'deploy_stderr': 'Its gone Pete Tong',
+            'deploy_stdout': None
+        }, sd.output_values)
+        self.assertIsNotNone(sd.updated_at)
+
+        # failed signal on error_output foo
+        config = self._create_software_config(outputs=[
+            {'name': 'foo', 'error_output': True}])
+        deployment = self._create_software_deployment(
+            config_id=config['id'], action='INIT', status='IN_PROGRESS')
+        deployment_id = deployment['id']
+        result = self.engine.signal_software_deployment(
+            self.ctx,
+            deployment_id,
+            {
+                'foo': 'bar',
+                'deploy_status_code': -1,
+                'deploy_stderr': 'Its gone Pete Tong'
+            },
+            None)
+        self.assertEqual('deployment failed', result)
+        sd = software_deployment_object.SoftwareDeployment.get_by_id(
+            self.ctx, deployment_id)
+        self.assertEqual('FAILED', sd.status)
+        self.assertEqual(
+            ('foo : bar, deploy_status_code : Deployment exited with '
+             'non-zero status code: -1'),
+            sd.status_reason)
+        self.assertEqual({
+            'deploy_status_code': -1,
+            'foo': 'bar',
+            'deploy_stderr': 'Its gone Pete Tong',
+            'deploy_stdout': None
+        }, sd.output_values)
+        self.assertIsNotNone(sd.updated_at)
+
     def test_create_software_deployment(self):
         kwargs = {
             'group': 'Heat::Chef',
@@ -3386,17 +3804,50 @@ class SoftwareConfigServiceTest(common.HeatTestCase):
         self.assertEqual(deployment_id, deployment['id'])
         self.assertEqual(kwargs['input_values'], deployment['input_values'])
 
+    @mock.patch.object(service_software_config.SoftwareConfigService,
+                       '_refresh_software_deployment')
+    def test_show_software_deployment_refresh(
+            self, _refresh_software_deployment):
+        temp_url = ('http://192.0.2.1/v1/AUTH_a/b/c'
+                    '?temp_url_sig=ctemp_url_expires=1234')
+        config = self._create_software_config(inputs=[
+            {
+                'name': 'deploy_signal_transport',
+                'type': 'String',
+                'value': 'TEMP_URL_SIGNAL'
+            }, {
+                'name': 'deploy_signal_id',
+                'type': 'String',
+                'value': temp_url
+            }
+        ])
+
+        deployment = self._create_software_deployment(
+            status='IN_PROGRESS', config_id=config['id'])
+
+        deployment_id = deployment['id']
+        sd = software_deployment_object.SoftwareDeployment.get_by_id(
+            self.ctx, deployment_id)
+        _refresh_software_deployment.return_value = sd
+        self.assertEqual(
+            deployment,
+            self.engine.show_software_deployment(self.ctx, deployment_id))
+        self.assertEqual(
+            (self.ctx, sd, temp_url),
+            _refresh_software_deployment.call_args[0])
+
     def test_update_software_deployment_new_config(self):
 
         server_id = str(uuid.uuid4())
         self.m.StubOutWithMock(
-            self.engine, '_push_metadata_software_deployments')
+            self.engine.software_config,
+            '_push_metadata_software_deployments')
 
         # push on create
-        self.engine._push_metadata_software_deployments(
+        self.engine.software_config._push_metadata_software_deployments(
             self.ctx, server_id).AndReturn(None)
         # push on update with new config_id
-        self.engine._push_metadata_software_deployments(
+        self.engine.software_config._push_metadata_software_deployments(
             self.ctx, server_id).AndReturn(None)
 
         self.m.ReplayAll()
@@ -3411,7 +3862,7 @@ class SoftwareConfigServiceTest(common.HeatTestCase):
         updated = self.engine.update_software_deployment(
             self.ctx, deployment_id=deployment_id, config_id=config_id,
             input_values={}, output_values={}, action='DEPLOY',
-            status='WAITING', status_reason='')
+            status='WAITING', status_reason='', updated_at=None)
         self.assertIsNotNone(updated)
         self.assertEqual(config_id, updated['config_id'])
         self.assertEqual('DEPLOY', updated['action'])
@@ -3422,9 +3873,10 @@ class SoftwareConfigServiceTest(common.HeatTestCase):
 
         server_id = str(uuid.uuid4())
         self.m.StubOutWithMock(
-            self.engine, '_push_metadata_software_deployments')
+            self.engine.software_config,
+            '_push_metadata_software_deployments')
         # push on create
-        self.engine._push_metadata_software_deployments(
+        self.engine.software_config._push_metadata_software_deployments(
             self.ctx, server_id).AndReturn(None)
         # _push_metadata_software_deployments should not be called
         # on update because config_id isn't being updated
@@ -3438,7 +3890,7 @@ class SoftwareConfigServiceTest(common.HeatTestCase):
         updated = self.engine.update_software_deployment(
             self.ctx, deployment_id=deployment_id, config_id=None,
             input_values=None, output_values={}, action='DEPLOY',
-            status='WAITING', status_reason='')
+            status='WAITING', status_reason='', updated_at=None)
         self.assertIsNotNone(updated)
         self.assertEqual('DEPLOY', updated['action'])
         self.assertEqual('WAITING', updated['status'])
@@ -3461,7 +3913,7 @@ class SoftwareConfigServiceTest(common.HeatTestCase):
             }
             values.update(kwargs)
             updated = self.engine.update_software_deployment(
-                self.ctx, deployment_id, **values)
+                self.ctx, deployment_id, updated_at=None, **values)
             for key, value in six.iteritems(kwargs):
                 self.assertEqual(value, updated[key])
 
@@ -3492,9 +3944,11 @@ class SoftwareConfigServiceTest(common.HeatTestCase):
         deployment_ids = [x['id'] for x in deployments]
         self.assertNotIn(deployment_id, deployment_ids)
 
-    @mock.patch.object(service.EngineService, 'metadata_software_deployments')
-    @mock.patch.object(service.db_api, 'resource_get_by_physical_resource_id')
-    @mock.patch.object(service.requests, 'put')
+    @mock.patch.object(service_software_config.SoftwareConfigService,
+                       'metadata_software_deployments')
+    @mock.patch.object(service_software_config.db_api,
+                       'resource_get_by_physical_resource_id')
+    @mock.patch.object(service_software_config.requests, 'put')
     def test_push_metadata_software_deployments(self, put, res_get, md_sd):
         rs = mock.Mock()
         rs.rsrc_metadata = {'original': 'metadata'}
@@ -3509,14 +3963,17 @@ class SoftwareConfigServiceTest(common.HeatTestCase):
             'deployments': {'deploy': 'this'}
         }
 
-        self.engine._push_metadata_software_deployments(self.ctx, '1234')
+        self.engine.software_config._push_metadata_software_deployments(
+            self.ctx, '1234')
         rs.update_and_save.assert_called_once_with(
             {'rsrc_metadata': result_metadata})
         put.side_effect = Exception('Unexpected requests.put')
 
-    @mock.patch.object(service.EngineService, 'metadata_software_deployments')
-    @mock.patch.object(service.db_api, 'resource_get_by_physical_resource_id')
-    @mock.patch.object(service.requests, 'put')
+    @mock.patch.object(service_software_config.SoftwareConfigService,
+                       'metadata_software_deployments')
+    @mock.patch.object(service_software_config.db_api,
+                       'resource_get_by_physical_resource_id')
+    @mock.patch.object(service_software_config.requests, 'put')
     def test_push_metadata_software_deployments_temp_url(
             self, put, res_get, md_sd):
         rs = mock.Mock()
@@ -3535,12 +3992,129 @@ class SoftwareConfigServiceTest(common.HeatTestCase):
             'deployments': {'deploy': 'this'}
         }
 
-        self.engine._push_metadata_software_deployments(self.ctx, '1234')
+        self.engine.software_config._push_metadata_software_deployments(
+            self.ctx, '1234')
         rs.update_and_save.assert_called_once_with(
             {'rsrc_metadata': result_metadata})
 
         put.assert_called_once_with(
-            'http://192.168.2.2/foo/bar', jsonutils.dumps(result_metadata))
+            'http://192.168.2.2/foo/bar', json.dumps(result_metadata))
+
+    @mock.patch.object(service_software_config.SoftwareConfigService,
+                       'signal_software_deployment')
+    @mock.patch.object(swift.SwiftClientPlugin, '_create')
+    def test_refresh_software_deployment(self, scc, ssd):
+        temp_url = ('http://192.0.2.1/v1/AUTH_a/b/c'
+                    '?temp_url_sig=ctemp_url_expires=1234')
+        container = 'b'
+        object_name = 'c'
+
+        config = self._create_software_config(inputs=[
+            {
+                'name': 'deploy_signal_transport',
+                'type': 'String',
+                'value': 'TEMP_URL_SIGNAL'
+            }, {
+                'name': 'deploy_signal_id',
+                'type': 'String',
+                'value': temp_url
+            }
+        ])
+
+        timeutils.set_time_override(
+            datetime.datetime(2013, 1, 23, 22, 48, 5, 0))
+        self.addCleanup(timeutils.clear_time_override)
+        now = timeutils.utcnow()
+        then = now - datetime.timedelta(0, 60)
+
+        last_modified_1 = 'Wed, 23 Jan 2013 22:47:05 GMT'
+        last_modified_2 = 'Wed, 23 Jan 2013 22:48:05 GMT'
+
+        sc = mock.MagicMock()
+        headers = {
+            'last-modified': last_modified_1
+        }
+        sc.head_object.return_value = headers
+        sc.get_object.return_value = (headers, '{"foo": "bar"}')
+        scc.return_value = sc
+
+        deployment = self._create_software_deployment(
+            status='IN_PROGRESS', config_id=config['id'])
+
+        deployment_id = six.text_type(deployment['id'])
+        sd = software_deployment_object.SoftwareDeployment.get_by_id(
+            self.ctx, deployment_id)
+
+        # poll with missing object
+        swift_exc = swift.SwiftClientPlugin.exceptions_module
+        sc.head_object.side_effect = swift_exc.ClientException(
+            'Not found', http_status=404)
+
+        self.assertEqual(
+            sd,
+            self.engine.software_config._refresh_software_deployment(
+                self.ctx, sd, temp_url))
+        sc.head_object.assert_called_once_with(container, object_name)
+        # no call to get_object or signal_last_modified
+        self.assertEqual([], sc.get_object.mock_calls)
+        self.assertEqual([], ssd.mock_calls)
+
+        # poll with other error
+        sc.head_object.side_effect = swift_exc.ClientException(
+            'Ouch', http_status=409)
+        self.assertRaises(
+            swift_exc.ClientException,
+            self.engine.software_config._refresh_software_deployment,
+            self.ctx,
+            sd,
+            temp_url)
+        # no call to get_object or signal_last_modified
+        self.assertEqual([], sc.get_object.mock_calls)
+        self.assertEqual([], ssd.mock_calls)
+        sc.head_object.side_effect = None
+
+        # first poll populates data signal_last_modified
+        self.engine.software_config._refresh_software_deployment(
+            self.ctx, sd, temp_url)
+        sc.head_object.assert_called_with(container, object_name)
+        sc.get_object.assert_called_once_with(container, object_name)
+        # signal_software_deployment called with signal
+        ssd.assert_called_once_with(self.ctx, deployment_id, {u"foo": u"bar"},
+                                    timeutils.strtime(then))
+
+        # second poll updated_at populated with first poll last-modified
+        software_deployment_object.SoftwareDeployment.update_by_id(
+            self.ctx, deployment_id, {'updated_at': then})
+        sd = software_deployment_object.SoftwareDeployment.get_by_id(
+            self.ctx, deployment_id)
+        self.assertEqual(then, sd.updated_at)
+        self.engine.software_config._refresh_software_deployment(
+            self.ctx, sd, temp_url)
+        sc.get_object.assert_called_once_with(container, object_name)
+        # signal_software_deployment has not been called again
+        ssd.assert_called_once_with(self.ctx, deployment_id, {"foo": "bar"},
+                                    timeutils.strtime(then))
+
+        # third poll last-modified changed, new signal
+        headers['last-modified'] = last_modified_2
+        sc.head_object.return_value = headers
+        sc.get_object.return_value = (headers, '{"bar": "baz"}')
+        self.engine.software_config._refresh_software_deployment(
+            self.ctx, sd, temp_url)
+
+        # two calls to signal_software_deployment, for then and now
+        self.assertEqual(2, len(ssd.mock_calls))
+        ssd.assert_called_with(self.ctx, deployment_id, {"bar": "baz"},
+                               timeutils.strtime(now))
+
+        # four polls result in only two signals, for then and now
+        software_deployment_object.SoftwareDeployment.update_by_id(
+            self.ctx, deployment_id, {'updated_at': now})
+        sd = software_deployment_object.SoftwareDeployment.get_by_id(
+            self.ctx, deployment_id)
+        self.engine.software_config._refresh_software_deployment(
+            self.ctx, sd, temp_url)
+        self.assertEqual(2, len(ssd.mock_calls))
 
 
 class ThreadGroupManagerTest(common.HeatTestCase):
@@ -3670,7 +4244,7 @@ class SnapshotServiceTest(common.HeatTestCase):
         stack = get_wordpress_stack('stack', self.ctx)
         sid = stack.store()
 
-        s = db_api.stack_get(self.ctx, sid)
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
         if stub:
             self.m.StubOutWithMock(parser.Stack, 'load')
         stack.state_set(stack.CREATE, stack.COMPLETE, 'mock completion')
@@ -3771,12 +4345,14 @@ class SnapshotServiceTest(common.HeatTestCase):
 
     def test_restore_snapshot_other_stack(self):
         stack1 = self._create_stack()
-        stack2 = self._create_stack(stub=False)
         self.m.ReplayAll()
         snapshot1 = self.engine.stack_snapshot(
             self.ctx, stack1.identifier(), 'snap1')
         self.engine.thread_group_mgr.groups[stack1.id].wait()
         snapshot_id = snapshot1['id']
+        self.m.UnsetStubs()
+        stack2 = self._create_stack()
+        self.m.ReplayAll()
         self.engine.stack_restore(self.ctx, stack2.identifier(), snapshot_id)
         self.engine.thread_group_mgr.groups[stack2.id].wait()
         self.assertEqual((stack2.RESTORE, stack2.FAILED), stack2.state)

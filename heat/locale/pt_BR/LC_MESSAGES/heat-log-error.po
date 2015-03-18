@@ -8,8 +8,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Heat\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2015-01-29 06:17+0000\n"
-"PO-Revision-Date: 2015-01-28 07:02+0000\n"
+"POT-Creation-Date: 2015-03-07 06:04+0000\n"
+"PO-Revision-Date: 2015-02-25 19:06+0000\n"
 "Last-Translator: openstackjenkins <jenkins@openstack.org>\n"
 "Language-Team: Portuguese (Brazil) (http://www.transifex.com/projects/p/heat/"
 "language/pt_BR/)\n"
@@ -26,7 +26,7 @@ msgstr ""
 "Autorização Ec2Token falhou, auth_uri não especificada no arquivo de "
 "configuração"
 
-#: heat/api/aws/utils.py:98
+#: heat/api/aws/utils.py:99
 #, python-format
 msgid "Request does not contain %s parameter!"
 msgstr "Requisição não contém parâmetro %s!"
@@ -35,11 +35,11 @@ msgstr "Requisição não contém parâmetro %s!"
 msgid "Request does not contain required MetricData"
 msgstr "Requisição não contém MetricData requerida"
 
-#: heat/common/context.py:200
+#: heat/common/context.py:202
 msgid "Keystone v3 API connection failed, no password trust or auth_token!"
 msgstr ""
 
-#: heat/common/exception.py:116
+#: heat/common/exception.py:114
 msgid "Exception in string format operation"
 msgstr "Exceção na operação de formato de sequência"
 
@@ -63,26 +63,26 @@ msgstr ""
 msgid "Trust impersonation failed"
 msgstr ""
 
-#: heat/common/heat_keystoneclient.py:323
-#: heat/common/heat_keystoneclient.py:397
+#: heat/common/heat_keystoneclient.py:310
+#: heat/common/heat_keystoneclient.py:384
 #, python-format
 msgid "Failed to add user %(user)s to role %(role)s, check role exists!"
 msgstr ""
 
-#: heat/common/lifecycle_plugin_utils.py:44
+#: heat/common/lifecycle_plugin_utils.py:46
 msgid "failed to get lifecycle plug point classes"
 msgstr ""
 
-#: heat/common/lifecycle_plugin_utils.py:51
+#: heat/common/lifecycle_plugin_utils.py:53
 #, python-format
 msgid "failed to instantiate stack lifecycle class %s"
 msgstr ""
 
-#: heat/common/lifecycle_plugin_utils.py:56
+#: heat/common/lifecycle_plugin_utils.py:58
 msgid "failed to sort lifecycle plug point classes"
 msgstr ""
 
-#: heat/common/lifecycle_plugin_utils.py:109
+#: heat/common/lifecycle_plugin_utils.py:111
 #, python-format
 msgid "%(opname) %(ci)s failed for %(a)s on %(sid)s"
 msgstr ""
@@ -92,30 +92,30 @@ msgstr ""
 msgid "Failed to import module %s"
 msgstr "Falha ao importar módulo %s"
 
-#: heat/common/wsgi.py:266
+#: heat/common/wsgi.py:265
 msgid "SIGTERM received"
 msgstr "SIGTERM recebido"
 
-#: heat/common/wsgi.py:275
+#: heat/common/wsgi.py:274
 msgid "SIGHUP received"
 msgstr "SIGHUP recebido"
 
-#: heat/common/wsgi.py:303
+#: heat/common/wsgi.py:302
 #, python-format
 msgid "Removing dead child %s"
 msgstr "Removendo filho inativo %s"
 
-#: heat/common/wsgi.py:661
+#: heat/common/wsgi.py:660
 #, python-format
 msgid "Exception handling resource: %s"
 msgstr "Exceção ao manipular recurso: %s"
 
-#: heat/common/wsgi.py:683
+#: heat/common/wsgi.py:682
 #, python-format
 msgid "Returning %(code)s to user: %(explanation)s"
 msgstr "Retornando %(code)s para o usuário: %(explanation)s"
 
-#: heat/common/wsgi.py:757
+#: heat/common/wsgi.py:756
 #, python-format
 msgid "Unexpected error occurred serving API: %s"
 msgstr ""
@@ -128,17 +128,17 @@ msgstr ""
 msgid "Unexpected number of keys in watch_data.data!"
 msgstr ""
 
-#: heat/engine/environment.py:470
+#: heat/engine/environment.py:492
 #, python-format
 msgid "Failed to read %s"
 msgstr ""
 
-#: heat/engine/environment.py:482
+#: heat/engine/environment.py:504
 #, python-format
 msgid "Failed to parse %(file_path)s"
 msgstr ""
 
-#: heat/engine/environment.py:486
+#: heat/engine/environment.py:508
 #, python-format
 msgid "Failed to read %(file_path)s"
 msgstr ""
@@ -153,21 +153,26 @@ msgstr ""
 msgid "Invalid type for %(mapping_name)s from %(module)s"
 msgstr ""
 
-#: heat/engine/resource.py:482
+#: heat/engine/resource.py:459
 msgid "Error marking resource as failed"
 msgstr ""
 
-#: heat/engine/resource.py:935 heat/engine/resource.py:962
+#: heat/engine/resource.py:912 heat/engine/resource.py:939
 #, python-format
 msgid "DB error %s"
 msgstr ""
 
-#: heat/engine/resource.py:1086
+#: heat/engine/resource.py:1063
 #, python-format
 msgid "signal %(name)s : %(msg)s"
 msgstr ""
 
-#: heat/engine/service.py:1326
+#: heat/engine/service.py:356
+#, python-format
+msgid "Failed to stop engine service, %s"
+msgstr ""
+
+#: heat/engine/service.py:1374
 msgid "Filtering by namespace/metric not yet supported"
 msgstr ""
 
@@ -176,24 +181,34 @@ msgstr ""
 msgid "Unable to retrieve stack %s for periodic task"
 msgstr ""
 
-#: heat/engine/stack.py:730
+#: heat/engine/stack.py:520
+#, python-format
+msgid "Exception: %s"
+msgstr ""
+
+#: heat/engine/stack.py:770
 #, python-format
 msgid "Unexpected action %s passed to update!"
 msgstr ""
 
-#: heat/engine/stack.py:960
+#: heat/engine/stack.py:1000
 #, python-format
 msgid "Unexpected action %s passed to delete!"
 msgstr ""
 
-#: heat/engine/stack.py:1144
+#: heat/engine/stack.py:1184
 #, python-format
 msgid "Resource %(name)s delete failed: %(ex)s"
 msgstr ""
 
-#: heat/engine/stack.py:1153
+#: heat/engine/stack.py:1193
 #, python-format
 msgid "Resource %(name)s create failed: %(ex)s"
+msgstr ""
+
+#: heat/engine/worker.py:76
+#, python-format
+msgid "WorkerService is failed to stop, %s"
 msgstr ""
 
 #: heat/engine/clients/__init__.py:143
@@ -201,34 +216,35 @@ msgstr ""
 msgid "Invalid cloud_backend setting in heat.conf detected  - %s"
 msgstr ""
 
-#: heat/engine/resources/eip.py:114
+#: heat/engine/resources/wait_condition.py:72
+#, python-format
+msgid "Metadata failed validation for %s"
+msgstr ""
+
+#: heat/engine/resources/aws/autoscaling/autoscaling_group.py:341
+msgid "Failed sending error notification"
+msgstr ""
+
+#: heat/engine/resources/aws/ec2/eip.py:113
 msgid ""
 "No default floating IP pool configured. Set 'default_floating_pool' in nova."
 "conf."
 msgstr ""
 
-#: heat/engine/resources/eip.py:328 heat/engine/resources/eip.py:351
+#: heat/engine/resources/aws/ec2/eip.py:327
+#: heat/engine/resources/aws/ec2/eip.py:350
 msgid "Port not specified."
 msgstr ""
 
-#: heat/engine/resources/nova_floatingip.py:77
-msgid ""
-"Could not allocate floating IP. Probably there is no default floating IP "
-"pool is configured."
-msgstr ""
-
-#: heat/engine/resources/remote_stack.py:148
+#: heat/engine/resources/openstack/heat/remote_stack.py:148
 #, python-format
 msgid "exception: %s"
 msgstr ""
 
-#: heat/engine/resources/wait_condition.py:71
-#, python-format
-msgid "Metadata failed validation for %s"
-msgstr ""
-
-#: heat/engine/resources/aws/autoscaling_group.py:305
-msgid "Failed sending error notification"
+#: heat/engine/resources/openstack/nova/nova_floatingip.py:78
+msgid ""
+"Could not allocate floating IP. Probably there is no default floating IP "
+"pool is configured."
 msgstr ""
 
 #: heat/openstack/common/loopingcall.py:95
@@ -249,6 +265,6 @@ msgstr "Falha ao interpretar regra %s"
 msgid "No handler for matches of kind %s"
 msgstr "Nenhum manipulador para correspondências do tipo %s"
 
-#: heat/openstack/common/service.py:269
+#: heat/openstack/common/service.py:268
 msgid "Unhandled exception"
 msgstr "Exceção não tratada"

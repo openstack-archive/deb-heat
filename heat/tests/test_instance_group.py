@@ -20,11 +20,13 @@ from heat.common import exception
 from heat.common import grouputils
 from heat.common import template_format
 from heat.engine import resource
-from heat.engine.resources import instance_group as instgrp
+from heat.engine.resources.openstack.heat import instance_group as instgrp
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
+from heat.engine import stack as parser
 from heat.tests.autoscaling import inline_templates
 from heat.tests import common
+from heat.tests import generic_resource
 from heat.tests import utils
 
 
@@ -168,7 +170,6 @@ class TestLaunchConfig(common.HeatTestCase):
         self.stub_ImageConstraint_validate()
         self.stub_FlavorConstraint_validate()
         self.stub_KeypairConstraint_validate()
-        self.m.ReplayAll()
 
         t = template_format.parse(lc_template)
         stack = utils.parse_stack(t)
@@ -190,7 +191,6 @@ class TestLaunchConfig(common.HeatTestCase):
         # Changing metadata in the second update triggers UpdateReplace
         updater = scheduler.TaskRunner(rsrc.update, update_snippet)
         self.assertRaises(resource.UpdateReplace, updater)
-        self.m.VerifyAll()
 
 
 class LoadbalancerReloadTest(common.HeatTestCase):
@@ -286,3 +286,90 @@ class LoadbalancerReloadTest(common.HeatTestCase):
             "Unsupported resource 'ElasticLoadBalancer' in "
             "LoadBalancerNames",
             six.text_type(error))
+
+    def test_lb_reload_static_resolve(self):
+        t = template_format.parse(inline_templates.as_template)
+        properties = t['Resources']['ElasticLoadBalancer']['Properties']
+        properties['AvailabilityZones'] = {'Fn::GetAZs': ''}
+
+        self.patchobject(parser.Stack, 'get_availability_zones',
+                         return_value=['abc', 'xyz'])
+
+        mock_members = self.patchobject(grouputils, 'get_member_refids')
+        mock_members.return_value = ['aaaabbbbcccc']
+
+        # Check that the Fn::GetAZs is correctly resolved
+        expected = {u'Properties': {'Instances': ['aaaabbbbcccc'],
+                                    u'Listeners': [{u'InstancePort': u'80',
+                                                    u'LoadBalancerPort': u'80',
+                                                    u'Protocol': u'HTTP'}],
+                                    u'AvailabilityZones': ['abc', 'xyz']}}
+
+        stack = utils.parse_stack(t, params=inline_templates.as_params)
+        lb = stack['ElasticLoadBalancer']
+        lb.handle_update = mock.Mock(return_value=None)
+        group = stack['WebServerGroup']
+        group._lb_reload()
+        lb.handle_update.assert_called_once_with(
+            mock.ANY, expected,
+            {'Instances': ['aaaabbbbcccc']})
+
+
+class ReplaceTest(common.HeatTestCase):
+    scenarios = [
+        ('1', dict(min_in_service=0, batch_size=1, updates=2)),
+        ('2', dict(min_in_service=0, batch_size=2, updates=1)),
+        ('3', dict(min_in_service=3, batch_size=1, updates=3)),
+        ('4', dict(min_in_service=3, batch_size=2, updates=2))]
+
+    def setUp(self):
+        super(ReplaceTest, self).setUp()
+        resource._register_class('ResourceWithPropsAndAttrs',
+                                 generic_resource.ResourceWithPropsAndAttrs)
+        t = template_format.parse(inline_templates.as_template)
+        stack = utils.parse_stack(t, params=inline_templates.as_params)
+        lc = self.create_launch_config(t, stack)
+        lcid = lc.FnGetRefId()
+        self.defn = rsrc_defn.ResourceDefinition(
+            'asg', 'OS::Heat::InstanceGroup',
+            {'Size': 2, 'AvailabilityZones': ['zoneb'],
+             'LaunchConfigurationName': lcid})
+        self.group = instgrp.InstanceGroup('asg', self.defn, stack)
+
+        self.group._lb_reload = mock.Mock()
+        self.group.update_with_template = mock.Mock()
+        self.group.check_update_complete = mock.Mock()
+        self.group._nested = self.get_fake_nested_stack()
+
+    def create_launch_config(self, t, stack):
+        self.stub_ImageConstraint_validate()
+        self.stub_FlavorConstraint_validate()
+        self.stub_SnapshotConstraint_validate()
+        rsrc = stack['LaunchConfig']
+        self.assertIsNone(rsrc.validate())
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        return rsrc
+
+    def get_fake_nested_stack(self):
+        nested_t = '''
+        heat_template_version: 2013-05-23
+        description: AutoScaling Test
+        resources:
+          one:
+            type: ResourceWithPropsAndAttrs
+            properties:
+              Foo: hello
+          two:
+            type: ResourceWithPropsAndAttrs
+            properties:
+              Foo: fee
+        '''
+        return utils.parse_stack(template_format.parse(nested_t))
+
+    def test_rolling_updates(self):
+        self.group._replace(self.min_in_service, self.batch_size, 0)
+        self.assertEqual(self.updates,
+                         len(self.group.update_with_template.call_args_list))
+        self.assertEqual(self.updates + 1,
+                         len(self.group._lb_reload.call_args_list))

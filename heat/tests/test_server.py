@@ -16,24 +16,24 @@ import copy
 
 import mock
 import mox
-from novaclient import exceptions as nova_exceptions
-from oslo.utils import uuidutils
+from oslo_utils import uuidutils
 import six
 from six.moves.urllib import parse as urlparse
 
 from heat.common import exception
 from heat.common.i18n import _
 from heat.common import template_format
-from heat.db import api as db_api
 from heat.engine.clients.os import glance
+from heat.engine.clients.os import neutron
 from heat.engine.clients.os import nova
 from heat.engine.clients.os import swift
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
-from heat.engine.resources import server as servers
+from heat.engine.resources.openstack.nova import server as servers
 from heat.engine import scheduler
 from heat.engine import template
+from heat.objects import resource_data as resource_data_object
 from heat.tests import common
 from heat.tests import utils
 from heat.tests.v1_1 import fakes as fakes_v1_1
@@ -119,9 +119,10 @@ class ServersTest(common.HeatTestCase):
 
     def _setup_test_stack(self, stack_name, test_templ=wp_template):
         t = template_format.parse(test_templ)
-        templ = template.Template(t)
+        templ = template.Template(t,
+                                  env=environment.Environment(
+                                      {'key_name': 'test'}))
         stack = parser.Stack(utils.dummy_context(), stack_name, templ,
-                             environment.Environment({'key_name': 'test'}),
                              stack_id=uuidutils.generate_uuid(),
                              stack_user_project_id='8888')
         return (templ, stack)
@@ -667,6 +668,8 @@ class ServersTest(common.HeatTestCase):
         self.assertEqual('4567', server.access_key)
         self.assertEqual('8901', server.secret_key)
         self.assertEqual('1234', server._get_user_id())
+        self.assertEqual('POLL_SERVER_CFN',
+                         server.properties.get('software_config_transport'))
 
         self.assertTrue(stack.access_allowed('4567', 'WebServer'))
         self.assertFalse(stack.access_allowed('45678', 'WebServer'))
@@ -1028,7 +1031,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
-
+        self.stub_NetworkConstraint_validate()
         self.m.ReplayAll()
 
         ex = self.assertRaises(exception.StackValidationFailed,
@@ -1060,6 +1063,7 @@ class ServersTest(common.HeatTestCase):
         nova.NovaClientPlugin._create().AndReturn(self.fc)
 
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self.stub_PortConstraint_validate()
         self.m.ReplayAll()
 
         error = self.assertRaises(exception.ResourcePropertyConflict,
@@ -1828,31 +1832,42 @@ class ServersTest(common.HeatTestCase):
         return_server = self.fc.servers.list()[1]
         server = self._create_test_server(return_server,
                                           'test_server_create')
+        self.patchobject(server, 'is_using_neutron', return_value=True)
+
         self.assertIsNone(server._build_nics([]))
         self.assertIsNone(server._build_nics(None))
         self.assertEqual([{'port-id': 'aaaabbbb'},
                           {'v4-fixed-ip': '192.0.2.0'}],
                          server._build_nics([{'port': 'aaaabbbb'},
                                              {'fixed_ip': '192.0.2.0'}]))
-
+        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
+                         return_value='1234abcd')
         self.assertEqual([{'net-id': '1234abcd'}],
                          server._build_nics([{'uuid': '1234abcd'}]))
 
+        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
+                         return_value='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
         self.assertEqual([{'net-id': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}],
                          server._build_nics(
                              [{'network':
                                'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}]))
 
+        self.patchobject(server, 'is_using_neutron', return_value=False)
         self.assertEqual([{'net-id': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}],
                          server._build_nics([{'network': 'public'}]))
 
-        self.assertRaises(nova_exceptions.NoUniqueMatch,
-                          server._build_nics,
-                          ([{'network': 'foo'}]))
+        expected = ('Multiple physical resources were found with name (foo)')
+        exc = self.assertRaises(
+            exception.PhysicalResourceNameAmbiguity,
+            server._build_nics, ([{'network': 'foo'}]))
+        self.assertIn(expected, six.text_type(exc))
+        expected = 'The Nova network (bar) could not be found'
+        exc = self.assertRaises(
+            exception.NovaNetworkNotFound,
+            server._build_nics, ([{'network': 'bar'}]))
+        self.assertIn(expected, six.text_type(exc))
 
-        self.assertRaises(nova_exceptions.NotFound,
-                          server._build_nics,
-                          ([{'network': 'bar'}]))
+        self.m.VerifyAll()
 
     def test_server_without_ip_address(self):
         return_server = self.fc.servers.list()[3]
@@ -2302,8 +2317,8 @@ class ServersTest(common.HeatTestCase):
         scheduler.TaskRunner(server.create)()
         self.m.VerifyAll()
 
-    def create_old_net(self, port=None, net=None, ip=None):
-        return {'port': port, 'network': net, 'fixed_ip': ip, 'uuid': None}
+    def create_old_net(self, port=None, net=None, ip=None, uuid=None):
+        return {'port': port, 'network': net, 'fixed_ip': ip, 'uuid': uuid}
 
     def create_fake_iface(self, port, net, ip):
         class fake_interface(object):
@@ -2375,22 +2390,18 @@ class ServersTest(common.HeatTestCase):
 
         # old order 0 1 2 3 4 5
         nets = [
-            {'port': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-             'network': None, 'fixed_ip': None},
-            {'port': None, 'network': 'gggggggg-1111-1111-1111-gggggggggggg',
-             'fixed_ip': '1.2.3.4', },
-            {'port': None, 'network': 'f3ef5d2f-d7ba-4b27-af66-58ca0b81e032',
-             'fixed_ip': None},
-            {'port': 'dddddddd-dddd-dddd-dddd-dddddddddddd',
-             'network': None, 'fixed_ip': None},
-            {'port': None, 'network': 'gggggggg-1111-1111-1111-gggggggggggg',
-             'fixed_ip': '5.6.7.8'},
-            {'port': None, 'network': '0da8adbf-a7e2-4c59-a511-96b03d2da0d7',
-             'fixed_ip': None}]
+            self.create_old_net(port='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+            self.create_old_net(net='gggggggg-1111-1111-1111-gggggggggggg',
+                                ip='1.2.3.4'),
+            self.create_old_net(net='f3ef5d2f-d7ba-4b27-af66-58ca0b81e032'),
+            self.create_old_net(port='dddddddd-dddd-dddd-dddd-dddddddddddd'),
+            self.create_old_net(uuid='gggggggg-1111-1111-1111-gggggggggggg',
+                                ip='5.6.7.8'),
+            self.create_old_net(uuid='0da8adbf-a7e2-4c59-a511-96b03d2da0d7')]
         # new order 5 2 3 0 1 4
         interfaces = [
             self.create_fake_iface('ffffffff-ffff-ffff-ffff-ffffffffffff',
-                                   nets[5]['network'], '10.0.0.10'),
+                                   nets[5]['uuid'], '10.0.0.10'),
             self.create_fake_iface('cccccccc-cccc-cccc-cccc-cccccccccccc',
                                    nets[2]['network'], '10.0.0.11'),
             self.create_fake_iface(nets[3]['port'],
@@ -2402,25 +2413,33 @@ class ServersTest(common.HeatTestCase):
             self.create_fake_iface('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
                                    nets[1]['network'], nets[1]['fixed_ip']),
             self.create_fake_iface('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
-                                   nets[4]['network'], nets[4]['fixed_ip'])]
+                                   nets[4]['uuid'], nets[4]['fixed_ip'])]
         # all networks should get port id
         expected = [
             {'port': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-             'network': None, 'fixed_ip': None},
+             'network': None,
+             'fixed_ip': None,
+             'uuid': None},
             {'port': 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
              'network': 'gggggggg-1111-1111-1111-gggggggggggg',
-             'fixed_ip': '1.2.3.4'},
+             'fixed_ip': '1.2.3.4',
+             'uuid': None},
             {'port': 'cccccccc-cccc-cccc-cccc-cccccccccccc',
              'network': 'f3ef5d2f-d7ba-4b27-af66-58ca0b81e032',
-             'fixed_ip': None},
+             'fixed_ip': None,
+             'uuid': None},
             {'port': 'dddddddd-dddd-dddd-dddd-dddddddddddd',
-             'network': None, 'fixed_ip': None},
+             'network': None,
+             'fixed_ip': None,
+             'uuid': None},
             {'port': 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
-             'network': 'gggggggg-1111-1111-1111-gggggggggggg',
-             'fixed_ip': '5.6.7.8'},
+             'uuid': 'gggggggg-1111-1111-1111-gggggggggggg',
+             'fixed_ip': '5.6.7.8',
+             'network': None},
             {'port': 'ffffffff-ffff-ffff-ffff-ffffffffffff',
-             'network': '0da8adbf-a7e2-4c59-a511-96b03d2da0d7',
-             'fixed_ip': None}]
+             'network': None,
+             'fixed_ip': None,
+             'uuid': '0da8adbf-a7e2-4c59-a511-96b03d2da0d7'}]
 
         server.update_networks_matching_iface_port(nets, interfaces)
         self.assertEqual(expected, nets)
@@ -2452,6 +2471,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(return_server, 'interface_attach')
         return_server.interface_attach(new_networks[0]['port'],
                                        None, None).AndReturn(None)
+        self.stub_PortConstraint_validate()
         self.m.ReplayAll()
 
         scheduler.TaskRunner(server.update, update_template)()
@@ -2487,6 +2507,7 @@ class ServersTest(common.HeatTestCase):
         return_server.interface_attach(None, new_networks[0]['network'],
                                        new_networks[0]['fixed_ip']).AndReturn(
                                            None)
+        self.stub_NetworkConstraint_validate()
         self.m.ReplayAll()
 
         scheduler.TaskRunner(server.update, update_template)()
@@ -2522,7 +2543,8 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(return_server, 'interface_attach')
         return_server.interface_attach(
             new_networks[0]['port'], None, None).AndReturn(None)
-
+        self.stub_NetworkConstraint_validate()
+        self.stub_PortConstraint_validate()
         self.m.ReplayAll()
 
         scheduler.TaskRunner(server.update, update_template)()
@@ -2584,6 +2606,8 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(return_server, 'interface_attach')
         return_server.interface_attach(
             new_networks[1]['port'], None, None).AndReturn(None)
+        self.stub_NetworkConstraint_validate()
+        self.stub_PortConstraint_validate()
         self.m.ReplayAll()
 
         scheduler.TaskRunner(server.update, update_template)()
@@ -2753,7 +2777,7 @@ class ServersTest(common.HeatTestCase):
         self.assertEqual((server.SNAPSHOT, server.COMPLETE), server.state)
 
         self.assertEqual({'snapshot_image_id': '1'},
-                         db_api.resource_data_get_all(server))
+                         resource_data_object.ResourceData.get_all(server))
         self.m.VerifyAll()
 
     def test_server_dont_validate_personality_if_personality_isnt_set(self):

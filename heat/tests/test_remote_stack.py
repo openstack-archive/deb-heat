@@ -16,7 +16,7 @@ import copy
 from heatclient import exc
 from heatclient.v1 import stacks
 import mock
-from oslo.config import cfg
+from oslo_config import cfg
 import six
 
 from heat.common import exception
@@ -25,7 +25,7 @@ from heat.common import template_format
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
-from heat.engine.resources import remote_stack
+from heat.engine.resources.openstack.heat import remote_stack
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.tests import common as tests_common
@@ -574,6 +574,24 @@ class RemoteStackTest(tests_common.HeatTestCase):
         self.assertEqual(error_msg, six.text_type(error))
         self.assertEqual((rsrc.UPDATE, rsrc.FAILED), rsrc.state)
         self.assertEqual(2, len(self.heat.stacks.get.call_args_list))
+
+    def test_update_no_change(self):
+        stacks = [get_stack(stack_status='UPDATE_IN_PROGRESS'),
+                  get_stack(stack_status='UPDATE_COMPLETE')]
+
+        def side_effect(*args, **kwargs):
+            return stacks.pop(0)
+
+        rsrc = self.create_remote_stack()
+
+        props = copy.deepcopy(rsrc.parsed_template()['Properties'])
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name,
+                                                      rsrc.type(),
+                                                      props)
+
+        self.heat.stacks.get = mock.MagicMock(side_effect=side_effect)
+        scheduler.TaskRunner(rsrc.update, update_snippet)()
+        self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
 
     def test_stack_status_error(self):
         returns = [get_stack(stack_status='DELETE_IN_PROGRESS'),

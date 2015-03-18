@@ -13,17 +13,20 @@
 
 
 import mock
+from oslo_config import cfg
 from requests import exceptions
+import six
 import yaml
 
 from heat.common import exception
+from heat.common import identifier
 from heat.common import template_format
 from heat.common import urlfetch
-from heat.db import api as db_api
 from heat.engine import parser
 from heat.engine import resource
-from heat.engine.resources import stack as stack_res
+from heat.engine.resources.aws.cfn import stack as stack_res
 from heat.engine import rsrc_defn
+from heat.objects import resource_data as resource_data_object
 from heat.tests import common
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
@@ -63,13 +66,13 @@ Outputs:
 
     def setUp(self):
         super(NestedStackTest, self).setUp()
-        self.m.StubOutWithMock(urlfetch, 'get')
+        self.patchobject(urlfetch, 'get')
 
-    def create_stack(self, template):
+    def validate_stack(self, template):
         t = template_format.parse(template)
         stack = self.parse_stack(t)
-        stack.create()
-        self.assertEqual((stack.CREATE, stack.COMPLETE), stack.state)
+        res = stack.validate()
+        self.assertIsNone(res)
         return stack
 
     def parse_stack(self, t, data=None):
@@ -107,75 +110,58 @@ Resources:
             Parameters:
                 KeyName: foo
 '''
-        urlfetch.get(
-            'https://server.test/depth1.template').AndReturn(
-                depth1_template)
-        urlfetch.get(
-            'https://server.test/depth2.template').AndReturn(
-                depth2_template)
-        urlfetch.get(
-            'https://server.test/depth3.template').AndReturn(
-                self.nested_template)
-        self.m.StubOutWithMock(parser.Stack, 'validate')
-        parser.Stack.validate().MultipleTimes().AndReturn(None)
-        self.m.ReplayAll()
-        self.create_stack(root_template)
-        self.m.VerifyAll()
+        urlfetch.get.side_effect = [
+            depth1_template,
+            depth2_template,
+            self.nested_template]
 
-    def test_nested_stack_four_deep(self):
-        root_template = '''
+        self.validate_stack(root_template)
+        calls = [mock.call('https://server.test/depth1.template'),
+                 mock.call('https://server.test/depth2.template'),
+                 mock.call('https://server.test/depth3.template')]
+        urlfetch.get.assert_has_calls(calls)
+
+    def test_nested_stack_six_deep(self):
+        template = '''
 HeatTemplateFormatVersion: 2012-12-12
 Resources:
     Nested:
         Type: AWS::CloudFormation::Stack
         Properties:
-            TemplateURL: 'https://server.test/depth1.template'
+            TemplateURL: 'https://server.test/depth%i.template'
 '''
-        depth1_template = '''
-HeatTemplateFormatVersion: 2012-12-12
-Resources:
-    Nested:
-        Type: AWS::CloudFormation::Stack
-        Properties:
-            TemplateURL: 'https://server.test/depth2.template'
-'''
-        depth2_template = '''
-HeatTemplateFormatVersion: 2012-12-12
-Resources:
-    Nested:
-        Type: AWS::CloudFormation::Stack
-        Properties:
-            TemplateURL: 'https://server.test/depth3.template'
-'''
-        depth3_template = '''
-HeatTemplateFormatVersion: 2012-12-12
-Resources:
-    Nested:
-        Type: AWS::CloudFormation::Stack
-        Properties:
-            TemplateURL: 'https://server.test/depth4.template'
+        root_template = template % 1
+        depth1_template = template % 2
+        depth2_template = template % 3
+        depth3_template = template % 4
+        depth4_template = template % 5
+        depth5_template = template % 6
+        depth5_template += '''
             Parameters:
                 KeyName: foo
 '''
-        urlfetch.get(
-            'https://server.test/depth1.template').AndReturn(
-                depth1_template)
-        urlfetch.get(
-            'https://server.test/depth2.template').AndReturn(
-                depth2_template)
-        urlfetch.get(
-            'https://server.test/depth3.template').AndReturn(
-                depth3_template)
-        urlfetch.get(
-            'https://server.test/depth4.template').AndReturn(
-                self.nested_template)
-        self.m.ReplayAll()
+
+        urlfetch.get.side_effect = [
+            depth1_template,
+            depth2_template,
+            depth3_template,
+            depth4_template,
+            depth5_template,
+            self.nested_template]
+
         t = template_format.parse(root_template)
         stack = self.parse_stack(t)
-        stack.create()
-        self.assertEqual((stack.CREATE, stack.FAILED), stack.state)
-        self.assertIn('Recursion depth exceeds', stack.status_reason)
-        self.m.VerifyAll()
+        res = self.assertRaises(exception.StackValidationFailed,
+                                stack.validate)
+        self.assertIn('Recursion depth exceeds', six.text_type(res))
+
+        calls = [mock.call('https://server.test/depth1.template'),
+                 mock.call('https://server.test/depth2.template'),
+                 mock.call('https://server.test/depth3.template'),
+                 mock.call('https://server.test/depth4.template'),
+                 mock.call('https://server.test/depth5.template'),
+                 mock.call('https://server.test/depth6.template')]
+        urlfetch.get.assert_has_calls(calls)
 
     def test_nested_stack_four_wide(self):
         root_template = '''
@@ -206,21 +192,14 @@ Resources:
             Parameters:
                 KeyName: foo
 '''
-        urlfetch.get(
-            'https://server.test/depth1.template').InAnyOrder().AndReturn(
-                self.nested_template)
-        urlfetch.get(
-            'https://server.test/depth2.template').InAnyOrder().AndReturn(
-                self.nested_template)
-        urlfetch.get(
-            'https://server.test/depth3.template').InAnyOrder().AndReturn(
-                self.nested_template)
-        urlfetch.get(
-            'https://server.test/depth4.template').InAnyOrder().AndReturn(
-                self.nested_template)
-        self.m.ReplayAll()
-        self.create_stack(root_template)
-        self.m.VerifyAll()
+        urlfetch.get.return_value = self.nested_template
+
+        self.validate_stack(root_template)
+        calls = [mock.call('https://server.test/depth1.template'),
+                 mock.call('https://server.test/depth2.template'),
+                 mock.call('https://server.test/depth3.template'),
+                 mock.call('https://server.test/depth4.template')]
+        urlfetch.get.assert_has_calls(calls, any_order=True)
 
     def test_nested_stack_infinite_recursion(self):
         template = '''
@@ -231,35 +210,14 @@ Resources:
         Properties:
             TemplateURL: 'https://server.test/the.template'
 '''
-        urlfetch.get(
-            'https://server.test/the.template').MultipleTimes().AndReturn(
-                template)
-        self.m.ReplayAll()
+        urlfetch.get.return_value = template
         t = template_format.parse(template)
         stack = self.parse_stack(t)
-        stack.create()
-        self.assertEqual((stack.CREATE, stack.FAILED), stack.state)
-        self.assertIn('Recursion depth exceeds', stack.status_reason)
-        self.m.VerifyAll()
-
-    def test_nested_stack_delete_then_delete_parent_stack(self):
-        urlfetch.get('https://server.test/the.template'
-                     ).MultipleTimes().AndReturn(self.nested_template)
-        self.m.ReplayAll()
-
-        stack = self.create_stack(self.test_template)
-        rsrc = stack['the_nested']
-
-        nested_stack = parser.Stack.load(utils.dummy_context(
-            'test_username', 'aaaa', 'password'), rsrc.resource_id)
-        nested_stack.delete()
-
-        stack = parser.Stack.load(utils.dummy_context(
-            'test_username', 'aaaa', 'password'), stack.id)
-        stack.delete()
-        self.assertEqual((stack.DELETE, stack.COMPLETE), stack.state)
-
-        self.m.VerifyAll()
+        res = self.assertRaises(exception.StackValidationFailed,
+                                stack.validate)
+        self.assertIn('Recursion depth exceeds', six.text_type(res))
+        expected_count = cfg.CONF.get('max_nested_stack_depth') + 1
+        self.assertEqual(expected_count, urlfetch.get.call_count)
 
     def test_child_params(self):
         t = template_format.parse(self.test_template)
@@ -269,9 +227,8 @@ Resources:
 
         self.assertEqual({'foo': 'bar'}, nested_stack.child_params())
 
-    @mock.patch.object(urlfetch, 'get')
-    def test_child_template_when_file_is_fetched(self, mock_get):
-        mock_get.return_value = 'template_file'
+    def test_child_template_when_file_is_fetched(self):
+        urlfetch.get.return_value = 'template_file'
         t = template_format.parse(self.test_template)
         stack = self.parse_stack(t)
         nested_stack = stack['the_nested']
@@ -281,18 +238,16 @@ Resources:
             self.assertEqual('child_template', nested_stack.child_template())
             mock_parse.assert_called_once_with('template_file')
 
-    @mock.patch.object(urlfetch, 'get')
-    def test_child_template_when_fetching_file_fails(self, mock_get):
-        mock_get.side_effect = exceptions.RequestException()
+    def test_child_template_when_fetching_file_fails(self):
+        urlfetch.get.side_effect = exceptions.RequestException()
         t = template_format.parse(self.test_template)
         stack = self.parse_stack(t)
         nested_stack = stack['the_nested']
         self.assertRaises(ValueError, nested_stack.child_template)
 
-    @mock.patch.object(urlfetch, 'get')
-    def test_child_template_when_io_error(self, mock_get):
+    def test_child_template_when_io_error(self):
         msg = 'Failed to retrieve template'
-        mock_get.side_effect = urlfetch.URLFetchError(msg)
+        urlfetch.get.side_effect = urlfetch.URLFetchError(msg)
         t = template_format.parse(self.test_template)
         stack = self.parse_stack(t)
         nested_stack = stack['the_nested']
@@ -304,15 +259,14 @@ class ResDataResource(generic_rsrc.GenericResource):
         self.data_set("test", 'A secret value', True)
 
 
-class ResDataNestedStackTest(NestedStackTest):
-
-    nested_template = '''
+class ResDataStackTest(common.HeatTestCase):
+    template = '''
 HeatTemplateFormatVersion: "2012-12-12"
 Parameters:
   KeyName:
     Type: String
 Resources:
-  nested_res:
+  res:
     Type: "res.data.resource"
 Outputs:
   Foo:
@@ -320,19 +274,24 @@ Outputs:
 '''
 
     def setUp(self):
-        super(ResDataNestedStackTest, self).setUp()
+        super(ResDataStackTest, self).setUp()
         resource._register_class("res.data.resource", ResDataResource)
 
+    def create_stack(self, template):
+        t = template_format.parse(template)
+        stack = utils.parse_stack(t)
+        stack.create()
+        self.assertEqual((stack.CREATE, stack.COMPLETE), stack.state)
+        return stack
+
     def test_res_data_delete(self):
-        urlfetch.get('https://server.test/the.template').AndReturn(
-            self.nested_template)
-        self.m.ReplayAll()
-        stack = self.create_stack(self.test_template)
-        res = stack['the_nested'].nested()['nested_res']
+        stack = self.create_stack(self.template)
+        res = stack['res']
         stack.delete()
         self.assertEqual((stack.DELETE, stack.COMPLETE), stack.state)
-        self.assertRaises(exception.NotFound, db_api.resource_data_get, res,
-                          'test')
+        self.assertRaises(
+            exception.NotFound,
+            resource_data_object.ResourceData.get_val, res, 'test')
 
 
 class NestedStackCrudTest(common.HeatTestCase):
@@ -349,9 +308,9 @@ Outputs:
     def setUp(self):
         super(NestedStackCrudTest, self).setUp()
 
-        ctx = utils.dummy_context('test_username', 'aaaa', 'password')
+        self.ctx = utils.dummy_context('test_username', 'aaaa', 'password')
         empty_template = {"HeatTemplateFormatVersion": "2012-12-12"}
-        stack = parser.Stack(ctx, 'test', parser.Template(empty_template))
+        stack = parser.Stack(self.ctx, 'test', parser.Template(empty_template))
         stack.store()
 
         self.patchobject(urlfetch, 'get', return_value=self.nested_template)
@@ -365,6 +324,7 @@ Outputs:
         self.res = stack_res.NestedStack('test_t_res',
                                          self.defn, stack)
         self.assertIsNone(self.res.validate())
+        self.res._store()
 
     def test_handle_create(self):
         self.res.create_with_template = mock.Mock(return_value=None)
@@ -392,7 +352,12 @@ Outputs:
             self.nested_parsed, self.nested_params, None)
 
     def test_handle_delete(self):
-        self.res.nested = mock.MagicMock()
-        self.res.nested.return_value.delete.return_value = None
+        self.res.rpc_client = mock.MagicMock()
+        stack_identity = identifier.HeatIdentifier(
+            self.ctx.tenant_id,
+            self.res.physical_resource_name(),
+            self.res.resource_id)
+
         self.res.handle_delete()
-        self.res.nested.return_value.delete.assert_called_once_with()
+        self.res.rpc_client.return_value.delete_stack.assert_called_once_with(
+            self.ctx, stack_identity)

@@ -20,8 +20,8 @@ from heat.engine.clients.os import neutron
 from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import parser
-from heat.engine.resources import instance as instances
-from heat.engine.resources import network_interface as network_interfaces
+from heat.engine.resources.aws.ec2 import instance as instances
+from heat.engine.resources.aws.ec2 import network_interface as net_interfaces
 from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
@@ -198,12 +198,12 @@ class instancesTest(common.HeatTestCase):
     def _create_test_instance(self, return_server, name):
         stack_name = '%s_s' % name
         t = template_format.parse(wp_template)
-        template = parser.Template(t)
         kwargs = {'KeyName': 'test',
                   'InstanceType': 'm1.large',
                   'SubnetId': '4156c7a5-e8c4-4aff-a6e1-8f3c7bc83861'}
+        template = parser.Template(t,
+                                   env=environment.Environment(kwargs))
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
-                             environment.Environment(kwargs),
                              stack_id=str(uuid.uuid4()))
         image_id = 'CentOS 5.2'
         t['Resources']['WebServer']['Properties']['ImageId'] = image_id
@@ -216,7 +216,7 @@ class instancesTest(common.HeatTestCase):
         nova.NovaClientPlugin._create().AndReturn(self.fc)
 
         self._mock_get_image_id_success(image_id, 1)
-
+        self.stub_SubnetConstraint_validate()
         self.m.StubOutWithMock(instance, 'neutron')
         instance.neutron().MultipleTimes().AndReturn(FakeNeutron())
 
@@ -253,26 +253,27 @@ class instancesTest(common.HeatTestCase):
     def _create_test_instance_with_nic(self, return_server, name):
         stack_name = '%s_s' % name
         t = template_format.parse(wp_template_with_nic)
-        template = parser.Template(t)
         kwargs = {'KeyName': 'test',
                   'InstanceType': 'm1.large',
                   'SubnetId': '4156c7a5-e8c4-4aff-a6e1-8f3c7bc83861'}
+        template = parser.Template(t,
+                                   env=environment.Environment(kwargs))
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
-                             environment.Environment(kwargs),
                              stack_id=str(uuid.uuid4()))
         image_id = 'CentOS 5.2'
         t['Resources']['WebServer']['Properties']['ImageId'] = image_id
 
         resource_defns = stack.t.resource_definitions(stack)
-        nic = network_interfaces.NetworkInterface('%s_nic' % name,
-                                                  resource_defns['nic1'],
-                                                  stack)
+        nic = net_interfaces.NetworkInterface('%s_nic' % name,
+                                              resource_defns['nic1'],
+                                              stack)
 
         instance = instances.Instance('%s_name' % name,
                                       resource_defns['WebServer'], stack)
         metadata = instance.metadata_get()
 
         self._mock_get_image_id_success(image_id, 1)
+        self.stub_SubnetConstraint_validate()
         self.m.StubOutWithMock(nic, 'neutron')
         nic.neutron().MultipleTimes().AndReturn(FakeNeutron())
 

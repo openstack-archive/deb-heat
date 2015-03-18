@@ -13,10 +13,10 @@
 
 import collections
 import itertools
-import json
 
-from oslo.utils import encodeutils
-from oslo.utils import strutils
+from oslo_serialization import jsonutils
+from oslo_utils import encodeutils
+from oslo_utils import strutils
 import six
 
 from heat.common import exception
@@ -250,7 +250,7 @@ class Parameter(object):
 
     def has_value(self):
         '''Parameter has a user or default value.'''
-        return self.user_value or self.has_default()
+        return self.user_value is not None or self.has_default()
 
     def hidden(self):
         '''
@@ -274,7 +274,9 @@ class Parameter(object):
 
     def default(self):
         '''Return the default value of the parameter.'''
-        return self.user_default or self.schema.default
+        if self.user_default is not None:
+            return self.user_default
+        return self.schema.default
 
     def set_default(self, value):
         self.user_default = value
@@ -340,7 +342,13 @@ class CommaDelimitedListParam(Parameter, collections.Sequence):
 
     def __init__(self, name, schema, value=None):
         super(CommaDelimitedListParam, self).__init__(name, schema, value)
-        self.parsed = self.parse(self.user_value or self.default())
+        if self.has_value():
+            if self.user_value is not None:
+                self.parsed = self.parse(self.user_value)
+            else:
+                self.parsed = self.parse(self.default())
+        else:
+            self.parsed = []
 
     def parse(self, value):
         # only parse when value is not already a list
@@ -357,7 +365,10 @@ class CommaDelimitedListParam(Parameter, collections.Sequence):
         return value
 
     def value(self):
-        return self.parsed
+        if self.has_value():
+            return self.parsed
+
+        raise exception.UserParameterMissing(key=self.name)
 
     def __len__(self):
         '''Return the length of the list.'''
@@ -382,22 +393,32 @@ class JsonParam(Parameter):
 
     def __init__(self, name, schema, value=None):
         super(JsonParam, self).__init__(name, schema, value)
-        self.parsed = self.parse(self.user_value or self.default())
+        if self.has_value():
+            if self.user_value is not None:
+                self.parsed = self.parse(self.user_value)
+            else:
+                self.parsed = self.parse(self.default())
+        else:
+            self.parsed = {}
 
     def parse(self, value):
         try:
             val = value
             if not isinstance(val, six.string_types):
-                val = json.dumps(val)
+                # turn off oslo_serialization's clever to_primitive()
+                val = jsonutils.dumps(val, default=None)
             if val:
-                return json.loads(val)
+                return jsonutils.loads(val)
         except (ValueError, TypeError) as err:
             message = _('Value must be valid JSON: %s') % err
             raise ValueError(message)
         return value
 
     def value(self):
-        return self.parsed
+        if self.has_value():
+            return self.parsed
+
+        raise exception.UserParameterMissing(key=self.name)
 
     def __getitem__(self, key):
         return self.parsed[key]
@@ -411,7 +432,7 @@ class JsonParam(Parameter):
     def __str__(self):
         if self.hidden():
             return super(JsonParam, self).__str__()
-        return encodeutils.safe_decode(json.dumps(self.value()))
+        return encodeutils.safe_decode(jsonutils.dumps(self.value()))
 
     def _validate(self, val, context):
         val = self.parse(val)

@@ -19,7 +19,7 @@ import time
 
 import fixtures
 import mox
-from oslo.config import cfg
+from oslo_config import cfg
 from oslotest import mockpatch
 import testscenarios
 import testtools
@@ -29,7 +29,9 @@ from heat.common import messaging
 from heat.engine.clients.os import cinder
 from heat.engine.clients.os import glance
 from heat.engine.clients.os import keystone
+from heat.engine.clients.os import neutron
 from heat.engine.clients.os import nova
+from heat.engine.clients.os import trove
 from heat.engine import environment
 from heat.engine import resources
 from heat.engine import scheduler
@@ -152,42 +154,53 @@ class HeatTestCase(testscenarios.WithScenarios,
         return fkc
 
     def stub_KeypairConstraint_validate(self):
-        self.m.StubOutWithMock(nova.KeypairConstraint, 'validate')
-        nova.KeypairConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        validate = self.patchobject(nova.KeypairConstraint, 'validate')
+        validate.return_value = True
 
     def stub_ImageConstraint_validate(self, num=None):
-        self.m.StubOutWithMock(glance.ImageConstraint, 'validate')
+        validate = self.patchobject(glance.ImageConstraint, 'validate')
         if num is None:
-            glance.ImageConstraint.validate(
-                mox.IgnoreArg(), mox.IgnoreArg()
-            ).MultipleTimes().AndReturn(True)
+            validate.return_value = True
         else:
-            for x in range(num):
-                glance.ImageConstraint.validate(
-                    mox.IgnoreArg(), mox.IgnoreArg()).AndReturn(True)
+            validate.side_effect = [True for x in range(num)]
 
     def stub_FlavorConstraint_validate(self):
-        self.m.StubOutWithMock(nova.FlavorConstraint, 'validate')
-        nova.FlavorConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        validate = self.patchobject(nova.FlavorConstraint, 'validate')
+        validate.return_value = True
 
     def stub_VolumeConstraint_validate(self):
-        self.m.StubOutWithMock(cinder.VolumeConstraint, 'validate')
-        cinder.VolumeConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        validate = self.patchobject(cinder.VolumeConstraint, 'validate')
+        validate.return_value = True
 
     def stub_SnapshotConstraint_validate(self):
-        self.m.StubOutWithMock(cinder.VolumeSnapshotConstraint, 'validate')
-        cinder.VolumeSnapshotConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        validate = self.patchobject(
+            cinder.VolumeSnapshotConstraint, 'validate')
+        validate.return_value = True
 
     def stub_VolumeTypeConstraint_validate(self):
-        self.m.StubOutWithMock(cinder.VolumeTypeConstraint, 'validate')
-        cinder.VolumeTypeConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        validate = self.patchobject(cinder.VolumeTypeConstraint, 'validate')
+        validate.return_value = True
 
     def stub_ServerConstraint_validate(self):
-        self.m.StubOutWithMock(nova.ServerConstraint, 'validate')
-        nova.ServerConstraint.validate(
-            mox.IgnoreArg(), mox.IgnoreArg()).MultipleTimes().AndReturn(True)
+        validate = self.patchobject(nova.ServerConstraint, 'validate')
+        validate.return_value = True
+
+    def stub_NetworkConstraint_validate(self):
+        validate = self.patchobject(neutron.NetworkConstraint, 'validate')
+        validate.return_value = True
+
+    def stub_PortConstraint_validate(self):
+        validate = self.patchobject(neutron.PortConstraint, 'validate')
+        validate.return_value = True
+
+    def stub_TroveFlavorConstraint_validate(self):
+        validate = self.patchobject(trove.FlavorConstraint, 'validate')
+        validate.return_value = True
+
+    def stub_SubnetConstraint_validate(self):
+        validate = self.patchobject(neutron.SubnetConstraint, 'validate')
+        validate.return_value = True
+
+    def stub_RouterConstraint_validate(self):
+        validate = self.patchobject(neutron.RouterConstraint, 'validate')
+        validate.return_value = True

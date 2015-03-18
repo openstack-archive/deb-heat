@@ -14,12 +14,12 @@
 import copy
 
 import mock
-from oslo.config import cfg
+from oslo_config import cfg
 
 from heat.common import exception
 from heat.common import template_format
 from heat.engine.clients.os import nova
-from heat.engine.resources import loadbalancer as lb
+from heat.engine.resources.aws.lb import loadbalancer as lb
 from heat.engine import rsrc_defn
 from heat.tests import common
 from heat.tests import utils
@@ -35,6 +35,11 @@ lb_template = '''
       "Description" : "KeyName",
       "Type" : "String",
       "Default" : "test"
+    },
+    "LbFlavor" : {
+      "Description" : "Flavor to use for LoadBalancer instance",
+      "Type": "String",
+      "Default": "m1.heat"
     }
    },
   "Resources": {
@@ -148,10 +153,11 @@ class LoadBalancerTest(common.HeatTestCase):
         rsrc = self.setup_loadbalancer()
         self.assertRaises(exception.StackValidationFailed, rsrc.validate)
 
-    def setup_loadbalancer(self, include_keyname=True):
+    def setup_loadbalancer(self, include_magic=True):
         template = template_format.parse(lb_template)
-        if not include_keyname:
+        if not include_magic:
             del template['Parameters']['KeyName']
+            del template['Parameters']['LbFlavor']
         stack = utils.parse_stack(template)
 
         resource_name = 'LoadBalancer'
@@ -184,7 +190,7 @@ class LoadBalancerTest(common.HeatTestCase):
 
     def test_child_params_without_key_name(self):
         rsrc = self.setup_loadbalancer(False)
-        self.assertEqual({}, rsrc.child_params())
+        self.assertNotIn('KeyName', rsrc.child_params())
 
     def test_child_params_with_key_name(self):
         rsrc = self.setup_loadbalancer()
@@ -209,6 +215,16 @@ class LoadBalancerTest(common.HeatTestCase):
         rsrc.get_parsed_template = mock.Mock(return_value='foo')
 
         self.assertEqual('foo', rsrc.child_template())
+
+    def test_child_params_with_flavor(self):
+        rsrc = self.setup_loadbalancer()
+        params = rsrc.child_params()
+        self.assertEqual('m1.heat', params['LbFlavor'])
+
+    def test_child_params_without_flavor(self):
+        rsrc = self.setup_loadbalancer(False)
+        params = rsrc.child_params()
+        self.assertNotIn('LbFlavor', params)
 
 
 class HaProxyConfigTest(common.HeatTestCase):

@@ -10,16 +10,17 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import logging
 import os
 import random
 import re
 import subprocess
 import time
+import urllib
 
 import fixtures
 from heatclient import exc as heat_exceptions
-from oslo.utils import timeutils
+from oslo_log import log as logging
+from oslo_utils import timeutils
 import six
 import testscenarios
 import testtools
@@ -33,7 +34,7 @@ LOG = logging.getLogger(__name__)
 _LOG_FORMAT = "%(levelname)8s [%(name)s] %(message)s"
 
 
-def call_until_true(func, duration, sleep_for):
+def call_until_true(duration, sleep_for, func, *args, **kwargs):
     """
     Call the given function until it returns True (and return True) or
     until the specified duration (in seconds) elapses (and return
@@ -48,7 +49,7 @@ def call_until_true(func, duration, sleep_for):
     now = time.time()
     timeout = now + duration
     while now < timeout:
-        if func():
+        if func(*args, **kwargs):
             return True
         LOG.debug("Sleeping for %d seconds", sleep_for)
         time.sleep(sleep_for)
@@ -88,71 +89,6 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
         self.object_client = self.manager.object_client
         self.useFixture(fixtures.FakeLogger(format=_LOG_FORMAT))
 
-    def status_timeout(self, things, thing_id, expected_status,
-                       error_status='ERROR',
-                       not_found_exception=heat_exceptions.NotFound):
-        """
-        Given a thing and an expected status, do a loop, sleeping
-        for a configurable amount of time, checking for the
-        expected status to show. At any time, if the returned
-        status of the thing is ERROR, fail out.
-        """
-        self._status_timeout(things, thing_id,
-                             expected_status=expected_status,
-                             error_status=error_status,
-                             not_found_exception=not_found_exception)
-
-    def _status_timeout(self,
-                        things,
-                        thing_id,
-                        expected_status=None,
-                        allow_notfound=False,
-                        error_status='ERROR',
-                        not_found_exception=heat_exceptions.NotFound):
-
-        log_status = expected_status if expected_status else ''
-        if allow_notfound:
-            log_status += ' or NotFound' if log_status != '' else 'NotFound'
-
-        def check_status():
-            # python-novaclient has resources available to its client
-            # that all implement a get() method taking an identifier
-            # for the singular resource to retrieve.
-            try:
-                thing = things.get(thing_id)
-            except not_found_exception:
-                if allow_notfound:
-                    return True
-                raise
-            except Exception as e:
-                if allow_notfound and self.not_found_exception(e):
-                    return True
-                raise
-
-            new_status = thing.status
-
-            # Some components are reporting error status in lower case
-            # so case sensitive comparisons can really mess things
-            # up.
-            if new_status.lower() == error_status.lower():
-                message = ("%s failed to get to expected status (%s). "
-                           "In %s state.") % (thing, expected_status,
-                                              new_status)
-                raise exceptions.BuildErrorException(message,
-                                                     server_id=thing_id)
-            elif new_status == expected_status and expected_status is not None:
-                return True  # All good.
-            LOG.debug("Waiting for %s to get to %s status. "
-                      "Currently in %s status",
-                      thing, log_status, new_status)
-        if not call_until_true(
-                check_status,
-                self.conf.build_timeout,
-                self.conf.build_interval):
-            message = ("Timed out waiting for thing %s "
-                       "to become %s") % (thing_id, log_status)
-            raise exceptions.TimeoutException(message)
-
     def get_remote_client(self, server_or_ip, username, private_key=None):
         if isinstance(server_or_ip, six.string_types):
             ip = server_or_ip
@@ -172,16 +108,33 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
 
         return linux_client
 
+    def check_connectivity(self, check_ip):
+        def try_connect(ip):
+            try:
+                urllib.urlopen('http://%s/' % ip)
+                return True
+            except IOError:
+                return False
+
+        timeout = self.conf.connectivity_timeout
+        elapsed_time = 0
+        while not try_connect(check_ip):
+            time.sleep(10)
+            elapsed_time += 10
+            if elapsed_time > timeout:
+                raise exceptions.TimeoutException()
+
     def _log_console_output(self, servers=None):
         if not servers:
             servers = self.compute_client.servers.list()
         for server in servers:
-            LOG.debug('Console output for %s', server.id)
-            LOG.debug(server.get_console_output())
+            LOG.info('Console output for %s', server.id)
+            LOG.info(server.get_console_output())
 
-    def _load_template(self, base_file, file_name):
+    def _load_template(self, base_file, file_name, sub_dir=None):
+        sub_dir = sub_dir or ''
         filepath = os.path.join(os.path.dirname(os.path.realpath(base_file)),
-                                file_name)
+                                sub_dir, file_name)
         with open(filepath) as f:
             return f.read()
 
@@ -199,14 +152,24 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
         self.addCleanup(delete_keypair)
         return keypair
 
+    def assign_keypair(self):
+        if self.conf.keypair_name:
+            self.keypair = None
+            self.keypair_name = self.conf.keypair_name
+        else:
+            self.keypair = self.create_keypair()
+            self.keypair_name = self.keypair.id
+
     @classmethod
     def _stack_rand_name(cls):
         return rand_name(cls.__name__)
 
-    def _get_default_network(self):
+    def _get_network(self, net_name=None):
+        if net_name is None:
+            net_name = self.conf.fixed_network_name
         networks = self.network_client.list_networks()
         for net in networks['networks']:
-            if net['name'] == self.conf.fixed_network_name:
+            if net['name'] == net_name:
                 return net
 
     @staticmethod
@@ -226,7 +189,7 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
             return (proc.returncode == 0) == should_succeed
 
         return call_until_true(
-            ping, self.conf.build_timeout, 1)
+            self.conf.build_timeout, 1, ping)
 
     def _wait_for_resource_status(self, stack_identifier, resource_name,
                                   status, failure_pattern='^.*_FAILED$',
@@ -260,7 +223,7 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
 
         message = ('Resource %s failed to reach %s status within '
                    'the required time (%s s).' %
-                   (res.resource_name, status, build_timeout))
+                   (resource_name, status, build_timeout))
         raise exceptions.TimeoutException(message)
 
     def _wait_for_stack_status(self, stack_identifier, status,
@@ -299,7 +262,7 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
 
         message = ('Stack %s failed to reach %s status within '
                    'the required time (%s s).' %
-                   (stack.stack_name, status, build_timeout))
+                   (stack_identifier, status, build_timeout))
         raise exceptions.TimeoutException(message)
 
     def _stack_delete(self, stack_identifier):
@@ -312,9 +275,10 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
             success_on_not_found=True)
 
     def update_stack(self, stack_identifier, template, environment=None,
-                     files=None):
+                     files=None, parameters=None):
         env = environment or {}
         env_files = files or {}
+        parameters = parameters or {}
         stack_name = stack_identifier.split('/')[0]
         self.client.stacks.update(
             stack_id=stack_identifier,
@@ -322,7 +286,7 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
             template=template,
             files=env_files,
             disable_rollback=True,
-            parameters={},
+            parameters=parameters,
             environment=env
         )
         self._wait_for_stack_status(stack_identifier, 'UPDATE_COMPLETE')
@@ -367,12 +331,15 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
 
         stack = self.client.stacks.get(name)
         stack_identifier = '%s/%s' % (name, stack.id)
-        self._wait_for_stack_status(stack_identifier, expected_status)
+        if expected_status:
+            self._wait_for_stack_status(stack_identifier, expected_status)
         return stack_identifier
 
     def stack_adopt(self, stack_name=None, files=None,
                     parameters=None, environment=None, adopt_data=None,
                     wait_for_status='ADOPT_COMPLETE'):
+        if self.conf.skip_stack_adopt_tests:
+            self.skipTest('Testing Stack adopt disabled in conf, skipping')
         name = stack_name or self._stack_rand_name()
         templ_files = files or {}
         params = parameters or {}
@@ -391,3 +358,10 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
         stack_identifier = '%s/%s' % (name, stack.id)
         self._wait_for_stack_status(stack_identifier, wait_for_status)
         return stack_identifier
+
+    def stack_abandon(self, stack_id):
+        if self.conf.skip_stack_abandon_tests:
+            self.addCleanup(self.client.stacks.delete, stack_id)
+            self.skipTest('Testing Stack abandon disabled in conf, skipping')
+        info = self.client.stacks.abandon(stack_id=stack_id)
+        return info

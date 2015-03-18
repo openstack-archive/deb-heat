@@ -17,10 +17,10 @@ import six
 from heat.common import exception
 from heat.common import short_id
 from heat.common import template_format
-from heat.db import api as db_api
 from heat.engine import resource
+from heat.engine.resources import stack_user
 from heat.engine import scheduler
-from heat.engine import stack_user
+from heat.objects import resource_data as resource_data_object
 from heat.tests import common
 from heat.tests import fakes
 from heat.tests import generic_resource
@@ -44,9 +44,6 @@ class StackUserTest(common.HeatTestCase):
                                  generic_resource.StackUserResource)
         self.fc = fakes.FakeKeystoneClient()
 
-    def tearDown(self):
-        super(StackUserTest, self).tearDown()
-
     def _user_create(self, stack_name, project_id, user_id,
                      resource_name='user', create_project=True,
                      password=None):
@@ -67,7 +64,7 @@ class StackUserTest(common.HeatTestCase):
 
         rsrc._store()
         self.m.StubOutWithMock(short_id, 'get_id')
-        short_id.get_id(rsrc.id).AndReturn('aabbcc')
+        short_id.get_id(rsrc.uuid).AndReturn('aabbcc')
 
         self.m.StubOutWithMock(fakes.FakeKeystoneClient,
                                'create_stack_domain_user')
@@ -86,7 +83,7 @@ class StackUserTest(common.HeatTestCase):
 
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
-        rs_data = db_api.resource_data_get_all(rsrc)
+        rs_data = resource_data_object.ResourceData.get_all(rsrc)
         self.assertEqual({'user_id': 'auser123'}, rs_data)
         self.m.VerifyAll()
 
@@ -99,7 +96,7 @@ class StackUserTest(common.HeatTestCase):
 
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
-        rs_data = db_api.resource_data_get_all(rsrc)
+        rs_data = resource_data_object.ResourceData.get_all(rsrc)
         self.assertEqual({'user_id': 'auser456'}, rs_data)
         self.m.VerifyAll()
 
@@ -149,7 +146,7 @@ class StackUserTest(common.HeatTestCase):
 
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
-        db_api.resource_data_delete(rsrc, 'user_id')
+        resource_data_object.ResourceData.delete(rsrc, 'user_id')
         scheduler.TaskRunner(rsrc.delete)()
         self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
@@ -255,7 +252,7 @@ class StackUserTest(common.HeatTestCase):
         self.assertEqual(self.fc.credential_id, kp.id)
         self.assertEqual(self.fc.access, kp.access)
         self.assertEqual(self.fc.secret, kp.secret)
-        rs_data = db_api.resource_data_get_all(rsrc)
+        rs_data = resource_data_object.ResourceData.get_all(rsrc)
         self.assertEqual(self.fc.credential_id, rs_data['credential_id'])
         self.assertEqual(self.fc.access, rs_data['access_key'])
         self.assertEqual(self.fc.secret, rs_data['secret_key'])
@@ -296,7 +293,7 @@ class StackUserTest(common.HeatTestCase):
         rsrc.data_set('access_key', 'access123')
         rsrc.data_set('secret_key', 'verysecret')
         rsrc._delete_keypair()
-        rs_data = db_api.resource_data_get_all(rsrc)
+        rs_data = resource_data_object.ResourceData.get_all(rsrc)
         self.assertEqual({'user_id': 'auserdel'}, rs_data)
         self.m.VerifyAll()
 
@@ -328,7 +325,7 @@ class StackUserTest(common.HeatTestCase):
         rsrc.data_set('access_key', 'access123')
         rsrc.data_set('secret_key', 'verysecret')
         rsrc._delete_keypair()
-        rs_data = db_api.resource_data_get_all(rsrc)
+        rs_data = resource_data_object.ResourceData.get_all(rsrc)
         self.assertEqual({'user_id': 'auserdel'}, rs_data)
         self.m.VerifyAll()
 
@@ -348,7 +345,7 @@ class StackUserTest(common.HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         rsrc.data_set('credential_id', 'acredential')
         rsrc._delete_keypair()
-        rs_data = db_api.resource_data_get_all(rsrc)
+        rs_data = resource_data_object.ResourceData.get_all(rsrc)
         self.assertEqual({'user_id': 'auserdel'}, rs_data)
         self.m.VerifyAll()
 

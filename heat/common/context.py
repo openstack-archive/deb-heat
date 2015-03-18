@@ -15,10 +15,13 @@ from keystoneclient import access
 from keystoneclient.auth.identity import base
 from keystoneclient.auth.identity import v3
 from keystoneclient.auth import token_endpoint
-from oslo.config import cfg
-from oslo.middleware import request_id as oslo_request_id
-from oslo.utils import importutils
+from oslo_config import cfg
 from oslo_context import context
+from oslo_log import log as logging
+import oslo_messaging
+from oslo_middleware import request_id as oslo_request_id
+from oslo_utils import importutils
+import six
 
 from heat.common import exception
 from heat.common.i18n import _LE
@@ -27,7 +30,6 @@ from heat.common import wsgi
 from heat.db import api as db_api
 from heat.engine import clients
 from heat.openstack.common import local
-from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
 
@@ -289,3 +291,15 @@ def ContextMiddleware_filter_factory(global_conf, **local_conf):
         return ContextMiddleware(app, conf)
 
     return filter
+
+
+def request_context(func):
+    @six.wraps(func)
+    def wrapped(self, ctx, *args, **kwargs):
+        if ctx is not None and not isinstance(ctx, context.RequestContext):
+            ctx = context.RequestContext.from_dict(ctx.to_dict())
+        try:
+            return func(self, ctx, *args, **kwargs)
+        except exception.HeatException:
+            raise oslo_messaging.rpc.dispatcher.ExpectedException()
+    return wrapped

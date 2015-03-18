@@ -23,15 +23,12 @@ import six
 
 import traceback
 
-from oslo.config import cfg
+from oslo_config import cfg
 import webob
 
 from heat.common import exception
 from heat.common import serializers
 from heat.common import wsgi
-
-
-cfg.CONF.import_opt('debug', 'heat.openstack.common.log')
 
 
 class Fault(object):
@@ -87,6 +84,12 @@ class FaultWrapper(wsgi.Middleware):
         'Invalid': webob.exc.HTTPBadRequest,
         'ResourcePropertyConflict': webob.exc.HTTPBadRequest,
         'PropertyUnspecifiedError': webob.exc.HTTPBadRequest,
+        'ObjectFieldInvalid': webob.exc.HTTPBadRequest,
+        'ReadOnlyFieldError': webob.exc.HTTPBadRequest,
+        'ObjectActionError': webob.exc.HTTPBadRequest,
+        'IncompatibleObjectVersion': webob.exc.HTTPBadRequest,
+        'OrphanedObjectError': webob.exc.HTTPBadRequest,
+        'UnsupportedObjectError': webob.exc.HTTPBadRequest,
     }
 
     def _map_exception_to_error(self, class_exception):
@@ -101,6 +104,7 @@ class FaultWrapper(wsgi.Middleware):
     def _error(self, ex):
 
         trace = None
+        traceback_marker = 'Traceback (most recent call last)'
         webob_exc = None
         if isinstance(ex, exception.HTTPExceptionDisguise):
             # An HTTP exception was disguised so it could make it here
@@ -117,8 +121,12 @@ class FaultWrapper(wsgi.Middleware):
             ex_type = ex_type[:-len('_Remote')]
 
         full_message = six.text_type(ex)
-        if full_message.find('\n') > -1 and is_remote:
+        if '\n' in full_message and is_remote:
             message, msg_trace = full_message.split('\n', 1)
+        elif traceback_marker in full_message:
+            message, msg_trace = full_message.split(traceback_marker, 1)
+            message = message.rstrip('\n')
+            msg_trace = traceback_marker + msg_trace
         else:
             msg_trace = traceback.format_exc()
             message = full_message

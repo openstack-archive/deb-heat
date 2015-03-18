@@ -528,19 +528,32 @@ class EngineClient(object):
     def update_software_deployment(self, cnxt, deployment_id,
                                    config_id=None, input_values=None,
                                    output_values=None, action=None,
-                                   status=None, status_reason=None):
-        return self.call(cnxt, self.make_msg('update_software_deployment',
-                                             deployment_id=deployment_id,
-                                             config_id=config_id,
-                                             input_values=input_values,
-                                             output_values=output_values,
-                                             action=action,
-                                             status=status,
-                                             status_reason=status_reason))
+                                   status=None, status_reason=None,
+                                   updated_at=None):
+        return self.call(
+            cnxt, self.make_msg('update_software_deployment',
+                                deployment_id=deployment_id,
+                                config_id=config_id,
+                                input_values=input_values,
+                                output_values=output_values,
+                                action=action,
+                                status=status,
+                                status_reason=status_reason,
+                                updated_at=updated_at),
+            version='1.5')
 
     def delete_software_deployment(self, cnxt, deployment_id):
         return self.call(cnxt, self.make_msg('delete_software_deployment',
                                              deployment_id=deployment_id))
+
+    def signal_software_deployment(self, cnxt, deployment_id, details,
+                                   updated_at=None):
+        return self.call(
+            cnxt, self.make_msg('signal_software_deployment',
+                                deployment_id=deployment_id,
+                                details=details,
+                                updated_at=updated_at),
+            version='1.6')
 
     def stack_snapshot(self, ctxt, stack_identity, name):
         return self.call(ctxt, self.make_msg('stack_snapshot',

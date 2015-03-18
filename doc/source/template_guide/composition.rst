@@ -39,7 +39,7 @@ To achieve this:
 
 The following examples illustrate how you can use a custom template to define
 new types of resources. These examples use a custom template stored in a
-:file:`my_nova.yml` file:
+:file:`my_nova.yaml` file:
 
 .. code-block:: yaml
 
@@ -139,7 +139,7 @@ To create the stack run:
 Get access to nested attributes
 ===============================
 There are implicit attributes of a template resource. These are
-accessable as follows:
+accessible as follows:
 
 .. code-block:: yaml
 

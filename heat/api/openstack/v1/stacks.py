@@ -15,6 +15,7 @@
 Stack endpoint for Heat v1 ReST API.
 """
 
+from oslo_log import log as logging
 import six
 from six.moves.urllib import parse
 from webob import exc
@@ -30,7 +31,6 @@ from heat.common import serializers
 from heat.common import template_format
 from heat.common import urlfetch
 from heat.common import wsgi
-from heat.openstack.common import log as logging
 from heat.rpc import api as rpc_api
 from heat.rpc import client as rpc_client
 
@@ -199,6 +199,11 @@ class StackController(object):
             params[rpc_api.PARAM_SHOW_NESTED] = param_utils.extract_bool(
                 params[rpc_api.PARAM_SHOW_NESTED])
             show_nested = params[rpc_api.PARAM_SHOW_NESTED]
+
+        key = rpc_api.PARAM_LIMIT
+        if key in params:
+            params[key] = param_utils.extract_int(key, params[key])
+
         # get the with_count value, if invalid, raise ValueError
         with_count = False
         if req.params.get('with_count'):
@@ -238,7 +243,11 @@ class StackController(object):
         """
         Lists summary information for all stacks
         """
-        global_tenant = bool(req.params.get('global_tenant', False))
+        global_tenant = False
+        if rpc_api.PARAM_GLOBAL_TENANT in req.params:
+            global_tenant = param_utils.extract_bool(
+                req.params.get(rpc_api.PARAM_GLOBAL_TENANT))
+
         if global_tenant:
             return self.global_index(req, req.context.tenant_id)
 
@@ -278,12 +287,17 @@ class StackController(object):
         """
         data = InstantiationData(body)
 
+        args = data.args()
+        key = rpc_api.PARAM_TIMEOUT
+        if key in args:
+            args[key] = param_utils.extract_int(key, args[key])
+
         result = self.rpc_client.create_stack(req.context,
                                               data.stack_name(),
                                               data.template(),
                                               data.environment(),
                                               data.files(),
-                                              data.args())
+                                              args)
 
         formatted_stack = stacks_view.format_stack(
             req,
@@ -350,12 +364,17 @@ class StackController(object):
         """
         data = InstantiationData(body)
 
+        args = data.args()
+        key = rpc_api.PARAM_TIMEOUT
+        if key in args:
+            args[key] = param_utils.extract_int(key, args[key])
+
         self.rpc_client.update_stack(req.context,
                                      identity,
                                      data.template(),
                                      data.environment(),
                                      data.files(),
-                                     data.args())
+                                     args)
 
         raise exc.HTTPAccepted()
 
@@ -366,12 +385,18 @@ class StackController(object):
         Add the flag patch to the args so the engine code can distinguish
         """
         data = InstantiationData(body, patch=True)
+
+        args = data.args()
+        key = rpc_api.PARAM_TIMEOUT
+        if key in args:
+            args[key] = param_utils.extract_int(key, args[key])
+
         self.rpc_client.update_stack(req.context,
                                      identity,
                                      data.template(),
                                      data.environment(),
                                      data.files(),
-                                     data.args())
+                                     args)
 
         raise exc.HTTPAccepted()
 

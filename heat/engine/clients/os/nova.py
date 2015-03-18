@@ -15,7 +15,6 @@ import collections
 import email
 from email.mime import multipart
 from email.mime import text
-import json
 import logging
 import os
 import pkgutil
@@ -24,7 +23,9 @@ import string
 from novaclient import client as nc
 from novaclient import exceptions
 from novaclient import shell as novashell
-from oslo.config import cfg
+from oslo_config import cfg
+from oslo_serialization import jsonutils
+from oslo_utils import uuidutils
 import six
 from six.moves.urllib import parse as urlparse
 
@@ -258,7 +259,7 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
                                'loguserdata.py', 'x-shellscript'))
 
         if metadata:
-            attachments.append((json.dumps(metadata),
+            attachments.append((jsonutils.dumps(metadata),
                                 'cfn-init-data', 'x-cfninitdata'))
 
         attachments.append((cfg.CONF.heat_watch_server_url,
@@ -385,7 +386,7 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
 
         return dict((key, (value if isinstance(value,
                                                six.string_types)
-                           else json.dumps(value))
+                           else jsonutils.dumps(value))
                      ) for (key, value) in metadata.items())
 
     def meta_update(self, server, metadata):
@@ -462,6 +463,30 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
                 return (key for key in self.console_methods)
 
         return ConsoleUrls(server)
+
+    def get_net_id_by_label(self, label):
+        try:
+            net_id = self.client().networks.find(label=label).id
+        except exceptions.NotFound as ex:
+            LOG.debug('Nova network (%(net)s) not found: %(ex)s',
+                      {'net': label, 'ex': ex})
+            raise exception.NovaNetworkNotFound(network=label)
+        except exceptions.NoUniqueMatch as exc:
+            LOG.debug('Nova network (%(net)s) is not unique matched: %(exc)s',
+                      {'net': label, 'exc': exc})
+            raise exception.PhysicalResourceNameAmbiguity(name=label)
+        return net_id
+
+    def get_nova_network_id(self, net_identifier):
+        if uuidutils.is_uuid_like(net_identifier):
+            try:
+                net_id = self.client().networks.get(net_identifier).id
+            except exceptions.NotFound:
+                net_id = self.get_net_id_by_label(net_identifier)
+        else:
+            net_id = self.get_net_id_by_label(net_identifier)
+
+        return net_id
 
 
 class ServerConstraint(constraints.BaseCustomConstraint):

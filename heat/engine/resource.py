@@ -16,9 +16,10 @@ import contextlib
 import datetime as dt
 import warnings
 
-from oslo.config import cfg
-from oslo.utils import encodeutils
-from oslo.utils import excutils
+from oslo_config import cfg
+from oslo_log import log as logging
+from oslo_utils import encodeutils
+from oslo_utils import excutils
 import six
 
 from heat.common import exception
@@ -29,9 +30,7 @@ from heat.common.i18n import _LW
 from heat.common import identifier
 from heat.common import short_id
 from heat.common import timeutils
-from heat.db import api as db_api
 from heat.engine import attributes
-from heat.engine import environment
 from heat.engine import event
 from heat.engine import function
 from heat.engine import properties
@@ -39,7 +38,8 @@ from heat.engine import resources
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.engine import support
-from heat.openstack.common import log as logging
+from heat.objects import resource as resource_objects
+from heat.objects import resource_data as resource_data_objects
 from heat.rpc import client as rpc_client
 
 cfg.CONF.import_opt('action_retry_limit', 'heat.common.config')
@@ -125,33 +125,11 @@ class Resource(object):
             ResourceClass = cls
         else:
             from heat.engine.resources import template_resource
-            # Select the correct subclass to instantiate.
-
-            # Note: If the current stack is an implementation of
-            # a resource type (a TemplateResource mapped in the environment)
-            # then don't infinitely recurse by creating a child stack
-            # of the same type. Instead get the next match which will get
-            # us closer to a concrete class.
-            def get_ancestor_template_resources():
-                """Return an ancestry list (TemplateResources only)."""
-                parent = stack.parent_resource
-                while parent is not None:
-                    if isinstance(parent, template_resource.TemplateResource):
-                        yield parent.template_name
-                    parent = parent.stack.parent_resource
-
-            ancestor_list = set(get_ancestor_template_resources())
-
-            def accept_class(res_info):
-                if not isinstance(res_info, environment.TemplateResourceInfo):
-                    return True
-                return res_info.template_name not in ancestor_list
 
             registry = stack.env.registry
             try:
                 ResourceClass = registry.get_class(definition.resource_type,
-                                                   resource_name=name,
-                                                   accept_fn=accept_class)
+                                                   resource_name=name)
             except exception.NotFound:
                 ResourceClass = template_resource.TemplateResource
             assert issubclass(ResourceClass, Resource)
@@ -186,12 +164,18 @@ class Resource(object):
         self.status = self.COMPLETE
         self.status_reason = ''
         self.id = None
+        self.uuid = None
         self._data = {}
         self._rsrc_metadata = None
         self._stored_properties_data = None
         self.created_time = None
         self.updated_time = None
         self._rpc_client = None
+        self.needed_by = None
+        self.requires = None
+        self.replaces = None
+        self.replaced_by = None
+        self.current_template_id = stack.t.id
 
         resource = stack.db_resource_get(name)
         if resource:
@@ -210,14 +194,21 @@ class Resource(object):
         self.status = resource.status
         self.status_reason = resource.status_reason
         self.id = resource.id
+        self.uuid = resource.uuid
         try:
-            self._data = db_api.resource_data_get_all(self, resource.data)
+            self._data = resource_data_objects.ResourceData.get_all(
+                self, resource.data)
         except exception.NotFound:
             self._data = {}
         self._rsrc_metadata = resource.rsrc_metadata
         self._stored_properties_data = resource.properties_data
         self.created_time = resource.created_at
         self.updated_time = resource.updated_at
+        self.needed_by = resource.needed_by
+        self.requires = resource.requires
+        self.replaces = resource.replaces
+        self.replaced_by = resource.replaced_by
+        self.current_template_id = resource.current_template_id
 
     def reparse(self):
         self.properties = self.t.properties(self.properties_schema,
@@ -262,7 +253,7 @@ class Resource(object):
             return self.t.metadata()
         if self._rsrc_metadata is not None:
             return self._rsrc_metadata
-        rs = db_api.resource_get(self.stack.context, self.id)
+        rs = resource_objects.Resource.get_obj(self.stack.context, self.id)
         rs.refresh(attrs=['rsrc_metadata'])
         self._rsrc_metadata = rs.rsrc_metadata
         return rs.rsrc_metadata
@@ -270,7 +261,7 @@ class Resource(object):
     def metadata_set(self, metadata):
         if self.id is None:
             raise exception.ResourceNotAvailable(resource_name=self.name)
-        rs = db_api.resource_get(self.stack.context, self.id)
+        rs = resource_objects.Resource.get_obj(self.stack.context, self.id)
         rs.update_and_save({'rsrc_metadata': metadata})
         self._rsrc_metadata = metadata
 
@@ -804,7 +795,7 @@ class Resource(object):
 
         name = '%s-%s-%s' % (self.stack.name,
                              self.name,
-                             short_id.get_id(self.id))
+                             short_id.get_id(self.uuid))
 
         if self.physical_resource_name_limit:
             name = self.reduce_physical_resource_name(
@@ -896,7 +887,7 @@ class Resource(object):
             return
 
         try:
-            db_api.resource_get(self.context, self.id).delete()
+            resource_objects.Resource.delete(self.context, self.id)
         except exception.NotFound:
             # Don't fail on delete if the db entry has
             # not been created yet.
@@ -908,7 +899,7 @@ class Resource(object):
         self.resource_id = inst
         if self.id is not None:
             try:
-                rs = db_api.resource_get(self.context, self.id)
+                rs = resource_objects.Resource.get_obj(self.context, self.id)
                 rs.update_and_save({'nova_instance': self.resource_id})
             except Exception as ex:
                 LOG.warn(_LW('db error %s'), ex)
@@ -925,10 +916,16 @@ class Resource(object):
                   'name': self.name,
                   'rsrc_metadata': metadata,
                   'properties_data': self._stored_properties_data,
+                  'needed_by': self.needed_by,
+                  'requires': self.requires,
+                  'replaces': self.replaces,
+                  'replaced_by': self.replaced_by,
+                  'current_template_id': self.current_template_id,
                   'stack_name': self.stack.name}
 
-            new_rs = db_api.resource_create(self.context, rs)
+            new_rs = resource_objects.Resource.create(self.context, rs)
             self.id = new_rs.id
+            self.uuid = new_rs.uuid
             self.created_time = new_rs.created_at
             self._rsrc_metadata = metadata
         except Exception as ex:
@@ -949,7 +946,7 @@ class Resource(object):
 
         if self.id is not None:
             try:
-                rs = db_api.resource_get(self.context, self.id)
+                rs = resource_objects.Resource.get_obj(self.context, self.id)
                 rs.update_and_save({
                     'action': self.action,
                     'status': self.status,
@@ -957,6 +954,11 @@ class Resource(object):
                     'stack_id': self.stack.id,
                     'updated_at': self.updated_time,
                     'properties_data': self._stored_properties_data,
+                    'needed_by': self.needed_by,
+                    'requires': self.requires,
+                    'replaces': self.replaces,
+                    'replaced_by': self.replaced_by,
+                    'current_template_id': self.current_template_id,
                     'nova_instance': self.resource_id})
             except Exception as ex:
                 LOG.error(_LE('DB error %s'), ex)
@@ -1081,7 +1083,7 @@ class Resource(object):
                 reason_string = "Signal: %s" % signal_result
             else:
                 reason_string = get_string_details()
-            self._add_event('signal', self.status, reason_string)
+            self._add_event('SIGNAL', self.status, reason_string)
         except Exception as ex:
             LOG.exception(_LE('signal %(name)s : %(msg)s')
                           % {'name': six.text_type(self), 'msg': ex})
@@ -1136,7 +1138,7 @@ class Resource(object):
         '''
         if self._data is None and self.id:
             try:
-                self._data = db_api.resource_data_get_all(self)
+                self._data = resource_data_objects.ResourceData.get_all(self)
             except exception.NotFound:
                 pass
 
@@ -1144,7 +1146,7 @@ class Resource(object):
 
     def data_set(self, key, value, redact=False):
         '''Save resource's key/value pair to database.'''
-        db_api.resource_data_set(self, key, value, redact)
+        resource_data_objects.ResourceData.set(self, key, value, redact)
         # force fetch all resource data from the database again
         self._data = None
 
@@ -1155,7 +1157,7 @@ class Resource(object):
         :returns: True if the key existed to delete
         '''
         try:
-            db_api.resource_data_delete(self, key)
+            resource_data_objects.ResourceData.delete(self, key)
         except exception.NotFound:
             return False
         else:

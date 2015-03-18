@@ -12,7 +12,7 @@
 #    under the License.
 
 import mock
-from oslo.config import cfg
+from oslo_config import cfg
 import six
 
 from heat.common import exception
@@ -54,10 +54,10 @@ class LaunchConfigurationTest(common.HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
 
         # use physical_resource_name when rsrc.id is not None
-        self.assertIsNotNone(rsrc.id)
+        self.assertIsNotNone(rsrc.uuid)
         expected = '%s-%s-%s' % (rsrc.stack.name,
                                  rsrc.name,
-                                 short_id.get_id(rsrc.id))
+                                 short_id.get_id(rsrc.uuid))
         self.assertEqual(expected, rsrc.FnGetRefId())
 
         # otherwise use parent method

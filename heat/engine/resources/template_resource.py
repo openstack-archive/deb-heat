@@ -11,8 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import json
-
+from oslo_serialization import jsonutils
 from requests import exceptions
 import six
 
@@ -23,7 +22,7 @@ from heat.common import urlfetch
 from heat.engine import attributes
 from heat.engine import environment
 from heat.engine import properties
-from heat.engine import stack_resource
+from heat.engine.resources import stack_resource
 from heat.engine import template
 
 
@@ -53,6 +52,7 @@ class TemplateResource(stack_resource.StackResource):
 
         tri = stack.env.get_resource_info(
             json_snippet['Type'],
+            resource_name=name,
             registry_type=environment.TemplateResourceInfo)
         if tri is None:
             self.validation_exception = ValueError(_(
@@ -69,6 +69,7 @@ class TemplateResource(stack_resource.StackResource):
         self.properties_schema = {}
         self.attributes_schema = {}
         super(TemplateResource, self).__init__(name, json_snippet, stack)
+        self.resource_info = tri
         if self.validation_exception is None:
             self._generate_schema(self.t)
 
@@ -173,7 +174,7 @@ class TemplateResource(stack_resource.StackResource):
 
         if t_data is None:
             if self.nested() is not None:
-                t_data = json.dumps(self.nested().t.t)
+                t_data = jsonutils.dumps(self.nested().t.t)
 
         if t_data is not None:
             self.stack.t.files[self.template_name] = t_data
@@ -229,6 +230,7 @@ class TemplateResource(stack_resource.StackResource):
             raise exception.StackValidationFailed(message=msg)
         cri = self.stack.env.get_resource_info(
             self.type(),
+            resource_name=self.name,
             registry_type=environment.ClassResourceInfo)
 
         # If we're using an existing resource type as a facade for this
@@ -247,6 +249,13 @@ class TemplateResource(stack_resource.StackResource):
     def handle_create(self):
         return self.create_with_template(self.child_template(),
                                          self.child_params())
+
+    def metadata_update(self, new_metadata=None):
+        '''
+        Refresh the metadata if new_metadata is None
+        '''
+        if new_metadata is None:
+            self.metadata_set(self.t.metadata())
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         self._generate_schema(json_snippet)

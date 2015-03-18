@@ -13,15 +13,15 @@
 
 import warnings
 
-from oslo.config import cfg
-from oslo.utils import importutils
+from oslo_config import cfg
+from oslo_log import log as logging
+from oslo_utils import importutils
 import six
 from stevedore import extension
 
 from heat.common import exception
 from heat.common.i18n import _LE
 from heat.common.i18n import _LW
-from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
 

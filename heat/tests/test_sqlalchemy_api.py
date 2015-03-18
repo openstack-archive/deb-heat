@@ -17,7 +17,7 @@ import uuid
 
 import mock
 import mox
-from oslo.utils import timeutils
+from oslo_utils import timeutils
 import six
 
 from heat.common import context
@@ -29,7 +29,7 @@ from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource as rsrc
-from heat.engine.resources import instance as instances
+from heat.engine.resources.aws.ec2 import instance as instances
 from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
@@ -100,10 +100,10 @@ class SqlAlchemyTest(common.HeatTestCase):
     def _setup_test_stack(self, stack_name, stack_id=None, owner_id=None,
                           stack_user_project_id=None, backup=False):
         t = template_format.parse(wp_template)
-        template = parser.Template(t)
+        template = parser.Template(
+            t, env=environment.Environment({'KeyName': 'test'}))
         stack_id = stack_id or str(uuid.uuid4())
         stack = parser.Stack(self.ctx, stack_name, template,
-                             environment.Environment({'KeyName': 'test'}),
                              owner_id=owner_id,
                              stack_user_project_id=stack_user_project_id)
         with utils.UUIDStub(stack_id):
@@ -1122,7 +1122,8 @@ def create_stack(ctx, template, user_creds, **kwargs):
         'user_creds_id': user_creds.id,
         'owner_id': None,
         'timeout': '60',
-        'disable_rollback': 0
+        'disable_rollback': 0,
+        'current_traversal': 'dummy-uuid'
     }
     values.update(kwargs)
     return db_api.stack_create(ctx, values)
@@ -1199,6 +1200,17 @@ def create_service(ctx, **kwargs):
 
     values.update(kwargs)
     return db_api.service_create(ctx, values)
+
+
+def create_sync_point(ctx, **kwargs):
+    values = {'entity_id': '0782c463-064a-468d-98fd-442efb638e3a',
+              'is_update': True,
+              'traversal_id': '899ff81e-fc1f-41f9-f41d-ad1ea7f31d19',
+              'atomic_key': 0,
+              'stack_id': 'f6359498-764b-49e7-a515-ad31cbef885b',
+              'input_data': {}}
+    values.update(kwargs)
+    return db_api.sync_point_create(ctx, values)
 
 
 class DBAPIRawTemplateTest(common.HeatTestCase):
@@ -1366,6 +1378,7 @@ class DBAPIStackTest(common.HeatTestCase):
             'status': 'failed',
             'status_reason': "update_failed",
             'timeout': '90',
+            'current_traversal': 'dummy-uuid',
         }
         db_api.stack_update(self.ctx, stack.id, values)
         stack = db_api.stack_get(self.ctx, stack.id)
@@ -1373,7 +1386,8 @@ class DBAPIStackTest(common.HeatTestCase):
         self.assertEqual('update', stack.action)
         self.assertEqual('failed', stack.status)
         self.assertEqual('update_failed', stack.status_reason)
-        self.assertEqual('90', stack.timeout)
+        self.assertEqual(90, stack.timeout)
+        self.assertEqual('dummy-uuid', stack.current_traversal)
 
         self.assertRaises(exception.NotFound, db_api.stack_update, self.ctx,
                           UUID2, values)
@@ -2069,3 +2083,281 @@ class DBAPIServiceTest(common.HeatTestCase):
         db_api.service_delete(self.ctx, service.id, False)
         self.assertRaises(exception.ServiceNotFound, db_api.service_get,
                           self.ctx, service.id)
+
+
+class DBAPIResourceUpdateTest(common.HeatTestCase):
+    def setUp(self):
+        super(DBAPIResourceUpdateTest, self).setUp()
+        self.ctx = utils.dummy_context()
+        template = create_raw_template(self.ctx)
+        user_creds = create_user_creds(self.ctx)
+        stack = create_stack(self.ctx, template, user_creds)
+        self.resource = create_resource(self.ctx, stack,
+                                        atomic_key=0)
+
+    def test_unlocked_resource_update(self):
+        values = {'engine_id': 'engine-1',
+                  'action': 'CREATE',
+                  'status': 'IN_PROGRESS'}
+        db_res = db_api.resource_get(self.ctx, self.resource.id)
+        ret = db_api.resource_update(self.ctx, self.resource.id,
+                                     values, db_res.atomic_key, None)
+        self.assertTrue(ret)
+        db_res = db_api.resource_get(self.ctx, self.resource.id)
+        self.assertEqual('engine-1', db_res.engine_id)
+        self.assertEqual('CREATE', db_res.action)
+        self.assertEqual('IN_PROGRESS', db_res.status)
+        self.assertEqual(1, db_res.atomic_key)
+
+    def test_locked_resource_update_by_same_engine(self):
+        values = {'engine_id': 'engine-1',
+                  'action': 'CREATE',
+                  'status': 'IN_PROGRESS'}
+        db_res = db_api.resource_get(self.ctx, self.resource.id)
+        ret = db_api.resource_update(self.ctx, self.resource.id,
+                                     values, db_res.atomic_key, None)
+        self.assertTrue(ret)
+        db_res = db_api.resource_get(self.ctx, self.resource.id)
+        self.assertEqual('engine-1', db_res.engine_id)
+        self.assertEqual(1, db_res.atomic_key)
+        values = {'engine_id': 'engine-1',
+                  'action': 'CREATE',
+                  'status': 'FAILED'}
+        ret = db_api.resource_update(self.ctx, self.resource.id,
+                                     values, db_res.atomic_key, 'engine-1')
+        self.assertTrue(ret)
+        db_res = db_api.resource_get(self.ctx, self.resource.id)
+        self.assertEqual('engine-1', db_res.engine_id)
+        self.assertEqual('CREATE', db_res.action)
+        self.assertEqual('FAILED', db_res.status)
+        self.assertEqual(2, db_res.atomic_key)
+
+    def test_locked_resource_update_by_other_engine(self):
+        values = {'engine_id': 'engine-1',
+                  'action': 'CREATE',
+                  'status': 'IN_PROGRESS'}
+        db_res = db_api.resource_get(self.ctx, self.resource.id)
+        ret = db_api.resource_update(self.ctx, self.resource.id,
+                                     values, db_res.atomic_key, None)
+        self.assertTrue(ret)
+        db_res = db_api.resource_get(self.ctx, self.resource.id)
+        self.assertEqual('engine-1', db_res.engine_id)
+        self.assertEqual(1, db_res.atomic_key)
+        values = {'engine_id': 'engine-2',
+                  'action': 'CREATE',
+                  'status': 'FAILED'}
+        ret = db_api.resource_update(self.ctx, self.resource.id,
+                                     values, db_res.atomic_key, 'engine-2')
+        self.assertFalse(ret)
+
+    def test_release_resource_lock(self):
+        values = {'engine_id': 'engine-1',
+                  'action': 'CREATE',
+                  'status': 'IN_PROGRESS'}
+        db_res = db_api.resource_get(self.ctx, self.resource.id)
+        ret = db_api.resource_update(self.ctx, self.resource.id,
+                                     values, db_res.atomic_key, None)
+        self.assertTrue(ret)
+        db_res = db_api.resource_get(self.ctx, self.resource.id)
+        self.assertEqual('engine-1', db_res.engine_id)
+        self.assertEqual(1, db_res.atomic_key)
+        # Set engine id as None to release the lock
+        values = {'engine_id': None,
+                  'action': 'CREATE',
+                  'status': 'COMPLETE'}
+        ret = db_api.resource_update(self.ctx, self.resource.id,
+                                     values, db_res.atomic_key, 'engine-1')
+        self.assertTrue(ret)
+        db_res = db_api.resource_get(self.ctx, self.resource.id)
+        self.assertIsNone(db_res.engine_id)
+        self.assertEqual('CREATE', db_res.action)
+        self.assertEqual('COMPLETE', db_res.status)
+        self.assertEqual(2, db_res.atomic_key)
+
+    def test_steal_resource_lock(self):
+        values = {'engine_id': 'engine-1',
+                  'action': 'CREATE',
+                  'status': 'IN_PROGRESS'}
+        db_res = db_api.resource_get(self.ctx, self.resource.id)
+        ret = db_api.resource_update(self.ctx, self.resource.id,
+                                     values, db_res.atomic_key, None)
+        self.assertTrue(ret)
+        db_res = db_api.resource_get(self.ctx, self.resource.id)
+        self.assertEqual('engine-1', db_res.engine_id)
+        self.assertEqual(1, db_res.atomic_key)
+        # Set engine id as engine-2 and pass expected engine id as old engine
+        # i.e engine-1 in db api steal the lock
+        values = {'engine_id': 'engine-2',
+                  'action': 'DELETE',
+                  'status': 'IN_PROGRESS'}
+        ret = db_api.resource_update(self.ctx, self.resource.id,
+                                     values, db_res.atomic_key, 'engine-1')
+        self.assertTrue(ret)
+        db_res = db_api.resource_get(self.ctx, self.resource.id)
+        self.assertEqual('engine-2', db_res.engine_id)
+        self.assertEqual('DELETE', db_res.action)
+        self.assertEqual(2, db_res.atomic_key)
+
+
+class DBAPISyncPointTest(common.HeatTestCase):
+    def setUp(self):
+        super(DBAPISyncPointTest, self).setUp()
+        self.ctx = utils.dummy_context()
+        self.template = create_raw_template(self.ctx)
+        self.user_creds = create_user_creds(self.ctx)
+        self.stack = create_stack(self.ctx, self.template, self.user_creds)
+        self.resources = [create_resource(self.ctx, self.stack, name='res1'),
+                          create_resource(self.ctx, self.stack, name='res2'),
+                          create_resource(self.ctx, self.stack, name='res3')]
+
+    def test_sync_point_create_get(self):
+        for res in self.resources:
+            # create sync_point for resources and verify
+            sync_point_rsrc = create_sync_point(
+                self.ctx, entity_id=str(res.id), stack_id=self.stack.id,
+                traversal_id=self.stack.current_traversal
+            )
+
+            ret_sync_point_rsrc = db_api.sync_point_get(
+                self.ctx, sync_point_rsrc.entity_id,
+                sync_point_rsrc.traversal_id, sync_point_rsrc.is_update
+            )
+
+            self.assertIsNotNone(ret_sync_point_rsrc)
+            self.assertEqual(sync_point_rsrc.entity_id,
+                             ret_sync_point_rsrc.entity_id)
+            self.assertEqual(sync_point_rsrc.traversal_id,
+                             ret_sync_point_rsrc.traversal_id)
+            self.assertEqual(sync_point_rsrc.is_update,
+                             ret_sync_point_rsrc.is_update)
+            self.assertEqual(sync_point_rsrc.atomic_key,
+                             ret_sync_point_rsrc.atomic_key)
+            self.assertEqual(sync_point_rsrc.stack_id,
+                             ret_sync_point_rsrc.stack_id)
+            self.assertEqual(sync_point_rsrc.input_data,
+                             ret_sync_point_rsrc.input_data)
+
+        # Finally create sync_point for stack and verify
+        sync_point_stack = create_sync_point(
+            self.ctx, entity_id=self.stack.id, stack_id=self.stack.id,
+            traversal_id=self.stack.current_traversal
+        )
+
+        ret_sync_point_stack = db_api.sync_point_get(
+            self.ctx, sync_point_stack.entity_id,
+            sync_point_stack.traversal_id, sync_point_stack.is_update
+        )
+
+        self.assertIsNotNone(ret_sync_point_stack)
+        self.assertEqual(sync_point_stack.entity_id,
+                         ret_sync_point_stack.entity_id)
+        self.assertEqual(sync_point_stack.traversal_id,
+                         ret_sync_point_stack.traversal_id)
+        self.assertEqual(sync_point_stack.is_update,
+                         ret_sync_point_stack.is_update)
+        self.assertEqual(sync_point_stack.atomic_key,
+                         ret_sync_point_stack.atomic_key)
+        self.assertEqual(sync_point_stack.stack_id,
+                         ret_sync_point_stack.stack_id)
+        self.assertEqual(sync_point_stack.input_data,
+                         ret_sync_point_stack.input_data)
+
+    def test_sync_point_update(self):
+        sync_point = create_sync_point(
+            self.ctx, entity_id=str(self.resources[0].id),
+            stack_id=self.stack.id, traversal_id=self.stack.current_traversal
+        )
+        self.assertEqual({}, sync_point.input_data)
+        self.assertEqual(0, sync_point.atomic_key)
+
+        # first update
+        rows_updated = db_api.sync_point_update_input_data(
+            self.ctx, sync_point.entity_id, sync_point.traversal_id,
+            sync_point.is_update, sync_point.atomic_key,
+            {'input_data': '{key: value}'}
+        )
+        self.assertEqual(1, rows_updated)
+
+        ret_sync_point = db_api.sync_point_get(self.ctx,
+                                               sync_point.entity_id,
+                                               sync_point.traversal_id,
+                                               sync_point.is_update)
+        self.assertIsNotNone(ret_sync_point)
+        # check if atomic_key was incremented on write
+        self.assertEqual(1, ret_sync_point.atomic_key)
+        self.assertEqual({'input_data': '{key: value}'},
+                         ret_sync_point.input_data)
+
+        # second update
+        rows_updated = db_api.sync_point_update_input_data(
+            self.ctx, sync_point.entity_id, sync_point.traversal_id,
+            sync_point.is_update, sync_point.atomic_key,
+            {'input_data': '{key1: value1}'}
+        )
+        self.assertEqual(1, rows_updated)
+
+        ret_sync_point = db_api.sync_point_get(self.ctx,
+                                               sync_point.entity_id,
+                                               sync_point.traversal_id,
+                                               sync_point.is_update)
+        self.assertIsNotNone(ret_sync_point)
+        # check if atomic_key was incremented on write
+        self.assertEqual(2, ret_sync_point.atomic_key)
+        self.assertEqual({'input_data': '{key1: value1}'},
+                         ret_sync_point.input_data)
+
+    def test_sync_point_concurrent_update(self):
+        sync_point = create_sync_point(
+            self.ctx, entity_id=str(self.resources[0].id),
+            stack_id=self.stack.id, traversal_id=self.stack.current_traversal
+        )
+        self.assertEqual({}, sync_point.input_data)
+        self.assertEqual(0, sync_point.atomic_key)
+
+        # update where atomic_key is 0 and succeeds.
+        rows_updated = db_api.sync_point_update_input_data(
+            self.ctx, sync_point.entity_id, sync_point.traversal_id,
+            sync_point.is_update, 0, {'input_data': '{key: value}'}
+        )
+        self.assertEqual(1, rows_updated)
+
+        # another update where atomic_key is 0 and does not update.
+        rows_updated = db_api.sync_point_update_input_data(
+            self.ctx, sync_point.entity_id, sync_point.traversal_id,
+            sync_point.is_update, 0, {'input_data': '{key: value}'}
+        )
+        self.assertEqual(0, rows_updated)
+
+    def test_sync_point_delete(self):
+        for res in self.resources:
+            sync_point_rsrc = create_sync_point(
+                self.ctx, entity_id=str(res.id), stack_id=self.stack.id,
+                traversal_id=self.stack.current_traversal
+            )
+            self.assertIsNotNone(sync_point_rsrc)
+
+        sync_point_stack = create_sync_point(
+            self.ctx, entity_id=self.stack.id,
+            stack_id=self.stack.id,
+            traversal_id=self.stack.current_traversal
+        )
+        self.assertIsNotNone(sync_point_stack)
+
+        rows_deleted = db_api.sync_point_delete_all_by_stack_and_traversal(
+            self.ctx, self.stack.id,
+            self.stack.current_traversal
+        )
+        self.assertGreater(rows_deleted, 0)
+        self.assertEqual(4, rows_deleted)
+
+        # Additionally check if sync_point_get returns None.
+        for res in self.resources:
+            ret_sync_point_rsrc = db_api.sync_point_get(
+                self.ctx, str(res.id), self.stack.current_traversal, True
+            )
+            self.assertEqual(None, ret_sync_point_rsrc)
+
+        ret_sync_point_stack = db_api.sync_point_get(
+            self.ctx, self.stack.id, self.stack.current_traversal, True
+        )
+        self.assertEqual(None, ret_sync_point_stack)

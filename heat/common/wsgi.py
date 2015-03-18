@@ -20,8 +20,8 @@
 Utility methods for working with WSGI servers
 """
 
+import abc
 import errno
-import json
 import logging
 import os
 import signal
@@ -33,9 +33,10 @@ from eventlet.green import socket
 from eventlet.green import ssl
 import eventlet.greenio
 import eventlet.wsgi
-from oslo.config import cfg
-from oslo import i18n
-from oslo.utils import importutils
+from oslo_config import cfg
+import oslo_i18n as i18n
+from oslo_serialization import jsonutils
+from oslo_utils import importutils
 from paste import deploy
 import routes
 import routes.middleware
@@ -155,8 +156,6 @@ api_cw_group = cfg.OptGroup('heat_api_cloudwatch')
 cfg.CONF.register_group(api_cw_group)
 cfg.CONF.register_opts(api_cw_opts,
                        group=api_cw_group)
-cfg.CONF.import_opt('debug', 'heat.openstack.common.log')
-cfg.CONF.import_opt('verbose', 'heat.openstack.common.log')
 
 json_size_opt = cfg.IntOpt('max_json_body_size',
                            default=1048576,
@@ -591,7 +590,7 @@ class JSONRequestDeserializer(object):
                         ) % {'len': len(datastring),
                              'limit': cfg.CONF.max_json_body_size}
                 raise exception.RequestLimitExceeded(message=msg)
-            return json.loads(datastring)
+            return jsonutils.loads(datastring)
         except ValueError as ex:
             raise webob.exc.HTTPBadRequest(six.text_type(ex))
 
@@ -771,6 +770,7 @@ def translate_exception(exc, locale):
     return exc
 
 
+@six.add_metaclass(abc.ABCMeta)
 class BasePasteFactory(object):
 
     """A base class for paste app and filter factories.
@@ -784,8 +784,9 @@ class BasePasteFactory(object):
     def __init__(self, conf):
         self.conf = conf
 
+    @abc.abstractmethod
     def __call__(self, global_conf, **local_conf):
-        raise NotImplementedError
+        return
 
     def _import_factory(self, local_conf):
         """Import an app/filter class.

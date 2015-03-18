@@ -29,7 +29,7 @@ from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
-from heat.engine.resources import instance as instances
+from heat.engine.resources.aws.ec2 import instance as instances
 from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
@@ -79,9 +79,9 @@ class InstancesTest(common.HeatTestCase):
 
     def _setup_test_stack(self, stack_name):
         t = template_format.parse(wp_template)
-        template = parser.Template(t)
+        template = parser.Template(
+            t, env=environment.Environment({'KeyName': 'test'}))
         stack = parser.Stack(utils.dummy_context(), stack_name, template,
-                             environment.Environment({'KeyName': 'test'}),
                              stack_id=str(uuid.uuid4()))
         return (template, stack)
 

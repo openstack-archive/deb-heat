@@ -25,11 +25,11 @@ import os
 import uuid
 
 from migrate.versioning import repository
-from oslo.db.sqlalchemy import test_base
-from oslo.db.sqlalchemy import test_migrations
-from oslo.db.sqlalchemy import utils
-from oslo.serialization import jsonutils
-import pkg_resources as pkg
+from oslo_db.sqlalchemy import test_base
+from oslo_db.sqlalchemy import test_migrations
+from oslo_db.sqlalchemy import utils
+from oslo_serialization import jsonutils
+import six
 
 from heat.db.sqlalchemy import migrate_repo
 from heat.db.sqlalchemy import migration
@@ -66,13 +66,7 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
         return self.engine
 
     def test_walk_versions(self):
-        # TODO(viktors): Refactor this method, when we will be totally sure,
-        #                that Heat use oslo.db>=0.4.0
-        try:
-            pkg.require('oslo.db>=0.4.0')
-            self._walk_versions(self.snake_walk, self.downgrade)
-        except pkg.VersionConflict:
-            self._walk_versions(self.engine, self.snake_walk, self.downgrade)
+        self.walk_versions(self.snake_walk, self.downgrade)
 
     def assertColumnExists(self, engine, table, column):
         t = utils.get_table(engine, table)
@@ -111,8 +105,11 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
 
     def _pre_upgrade_031(self, engine):
         raw_template = utils.get_table(engine, 'raw_template')
-        templ = [dict(id=3, template='{}')]
-        engine.execute(raw_template.insert(), templ)
+        templ = []
+        for i in range(300, 303, 1):
+            t = dict(id=i, template='{}', files='{}')
+            engine.execute(raw_template.insert(), [t])
+            templ.append(t)
 
         user_creds = utils.get_table(engine, 'user_creds')
         user = [dict(id=4, username='angus', password='notthis',
@@ -123,14 +120,14 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
         engine.execute(user_creds.insert(), user)
 
         stack = utils.get_table(engine, 'stack')
-        stack_ids = ['967aaefb-152e-405d-b13a-35d4c816390c',
-                     '9e9deba9-a303-4f29-84d3-c8165647c47e',
-                     '9a4bd1ec-8b21-46cd-964a-f66cb1cfa2f9']
+        stack_ids = [('967aaefb-152e-405d-b13a-35d4c816390c', 0),
+                     ('9e9deba9-a303-4f29-84d3-c8165647c47e', 1),
+                     ('9a4bd1ec-8b21-46cd-964a-f66cb1cfa2f9', 2)]
         data = [dict(id=ll_id, name='fruity',
-                     raw_template_id=templ[0]['id'],
+                     raw_template_id=templ[templ_id]['id'],
                      user_creds_id=user[0]['id'],
                      username='angus', disable_rollback=True)
-                for ll_id in stack_ids]
+                for ll_id, templ_id in stack_ids]
 
         engine.execute(stack.insert(), data)
         return data
@@ -287,8 +284,11 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
 
     def _pre_upgrade_045(self, engine):
         raw_template = utils.get_table(engine, 'raw_template')
-        templ = [dict(id=5, template='{}', files='{}')]
-        engine.execute(raw_template.insert(), templ)
+        templ = []
+        for i in range(200, 203, 1):
+            t = dict(id=i, template='{}', files='{}')
+            engine.execute(raw_template.insert(), [t])
+            templ.append(t)
 
         user_creds = utils.get_table(engine, 'user_creds')
         user = [dict(id=6, username='steve', password='notthis',
@@ -299,14 +299,14 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
         engine.execute(user_creds.insert(), user)
 
         stack = utils.get_table(engine, 'stack')
-        stack_ids = [('s1', '967aaefb-152e-505d-b13a-35d4c816390c'),
-                     ('s2', '9e9deba9-a303-5f29-84d3-c8165647c47e'),
-                     ('s1*', '9a4bd1ec-8b21-56cd-964a-f66cb1cfa2f9')]
+        stack_ids = [('s1', '967aaefb-152e-505d-b13a-35d4c816390c', 0),
+                     ('s2', '9e9deba9-a303-5f29-84d3-c8165647c47e', 1),
+                     ('s1*', '9a4bd1ec-8b21-56cd-964a-f66cb1cfa2f9', 2)]
         data = [dict(id=ll_id, name=name,
-                     raw_template_id=templ[0]['id'],
+                     raw_template_id=templ[templ_id]['id'],
                      user_creds_id=user[0]['id'],
                      username='steve', disable_rollback=True)
-                for name, ll_id in stack_ids]
+                for name, ll_id, templ_id in stack_ids]
         data[2]['owner_id'] = '967aaefb-152e-505d-b13a-35d4c816390c'
 
         engine.execute(stack.insert(), data)
@@ -332,8 +332,11 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
 
     def _pre_upgrade_047(self, engine):
         raw_template = utils.get_table(engine, 'raw_template')
-        templ = [dict(id=6, template='{}', files='{}')]
-        engine.execute(raw_template.insert(), templ)
+        templ = []
+        for i in range(100, 105, 1):
+            t = dict(id=i, template='{}', files='{}')
+            engine.execute(raw_template.insert(), [t])
+            templ.append(t)
 
         user_creds = utils.get_table(engine, 'user_creds')
         user = [dict(id=7, username='steve', password='notthis',
@@ -344,18 +347,19 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
         engine.execute(user_creds.insert(), user)
 
         stack = utils.get_table(engine, 'stack')
-        stack_ids = [('s9', '167aaefb-152e-505d-b13a-35d4c816390c'),
-                     ('n1', '1e9deba9-a303-5f29-84d3-c8165647c47e'),
-                     ('n2', '1e9deba9-a304-5f29-84d3-c8165647c47e'),
-                     ('n3', '1e9deba9-a305-5f29-84d3-c8165647c47e'),
-                     ('s9*', '1a4bd1ec-8b21-56cd-964a-f66cb1cfa2f9')]
+        stack_ids = [
+            ('s9', '167aaefb-152e-505d-b13a-35d4c816390c', 0),
+            ('n1', '1e9deba9-a303-5f29-84d3-c8165647c47e', 1),
+            ('n2', '1e9deba9-a304-5f29-84d3-c8165647c47e', 2),
+            ('n3', '1e9deba9-a305-5f29-84d3-c8165647c47e', 3),
+            ('s9*', '1a4bd1ec-8b21-56cd-964a-f66cb1cfa2f9', 4)]
         data = [dict(id=ll_id, name=name,
-                     raw_template_id=templ[0]['id'],
+                     raw_template_id=templ[tmpl_id]['id'],
                      user_creds_id=user[0]['id'],
                      owner_id=None,
                      backup=False,
                      username='steve', disable_rollback=True)
-                for name, ll_id in stack_ids]
+                for name, ll_id, tmpl_id in stack_ids]
         # Make a nested tree s1->s2->s3->s4 with a s1 backup
         data[1]['owner_id'] = '167aaefb-152e-505d-b13a-35d4c816390c'
         data[2]['owner_id'] = '1e9deba9-a303-5f29-84d3-c8165647c47e'
@@ -406,6 +410,181 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
                 self.assertColumnIsNotNullable(engine, 'service', column[0])
             else:
                 self.assertColumnIsNullable(engine, 'service', column[0])
+
+    def _check_052(self, engine, data):
+        self.assertColumnExists(engine, 'stack', 'convergence')
+
+    def _check_055(self, engine, data):
+        self.assertColumnExists(engine, 'stack', 'prev_raw_template_id')
+        self.assertColumnExists(engine, 'stack', 'current_traversal')
+        self.assertColumnExists(engine, 'stack', 'current_deps')
+
+    def _pre_upgrade_056(self, engine):
+        raw_template = utils.get_table(engine, 'raw_template')
+        templ = []
+        for i in range(900, 903, 1):
+            t = dict(id=i, template='{}', files='{}')
+            engine.execute(raw_template.insert(), [t])
+            templ.append(t)
+
+        user_creds = utils.get_table(engine, 'user_creds')
+        user = [dict(id=900, username='test_user', password='password',
+                     tenant='test_project', auth_url='bla',
+                     tenant_id=str(uuid.uuid4()),
+                     trust_id='',
+                     trustor_user_id='')]
+        engine.execute(user_creds.insert(), user)
+
+        stack = utils.get_table(engine, 'stack')
+        stack_ids = [('967aaefa-152e-405d-b13a-35d4c816390c', 0),
+                     ('9e9debab-a303-4f29-84d3-c8165647c47e', 1),
+                     ('9a4bd1e9-8b21-46cd-964a-f66cb1cfa2f9', 2)]
+        data = [dict(id=ll_id, name=ll_id,
+                     raw_template_id=templ[templ_id]['id'],
+                     user_creds_id=user[0]['id'],
+                     username='test_user',
+                     disable_rollback=True,
+                     parameters='test_params')
+                for ll_id, templ_id in stack_ids]
+
+        engine.execute(stack.insert(), data)
+        return data
+
+    def _check_056(self, engine, data):
+        self.assertColumnNotExists(engine, 'stack', 'parameters')
+
+        self.assertColumnExists(engine, 'raw_template', 'environment')
+        self.assertColumnExists(engine, 'raw_template', 'predecessor')
+
+        # Get the parameters in stack table
+        stack_parameters = {}
+        for stack in data:
+            stack_parameters[stack['raw_template_id']] = stack['parameters']
+
+        # validate whether its moved to raw_template
+        raw_template_table = utils.get_table(engine, 'raw_template')
+        raw_templates = raw_template_table.select().execute()
+
+        for raw_template in raw_templates:
+            if stack_parameters.get(raw_template.id) is not None:
+                stack_param = stack_parameters[raw_template.id]
+                tmpl_env = raw_template.environment
+                if engine.name == 'sqlite':
+                    stack_param = '"%s"' % stack_param
+
+                self.assertEqual(stack_param,
+                                 tmpl_env,
+                                 'parameters migration from stack to '
+                                 'raw_template failed')
+
+    def _pre_upgrade_057(self, engine):
+        # template
+        raw_template = utils.get_table(engine, 'raw_template')
+        templ = [dict(id=11, template='{}', files='{}')]
+        engine.execute(raw_template.insert(), templ)
+
+        # credentials
+        user_creds = utils.get_table(engine, 'user_creds')
+        user = [dict(id=11, username='steve', password='notthis',
+                     tenant='mine', auth_url='bla',
+                     tenant_id=str(uuid.uuid4()),
+                     trust_id='',
+                     trustor_user_id='')]
+        engine.execute(user_creds.insert(), user)
+
+        # stack
+        stack = utils.get_table(engine, 'stack')
+        stack_data = [dict(id='867aaefb-152e-505d-b13a-35d4c816390c',
+                           name='s1',
+                           raw_template_id=templ[0]['id'],
+                           user_creds_id=user[0]['id'],
+                           username='steve', disable_rollback=True)]
+        engine.execute(stack.insert(), stack_data)
+
+        # resource
+        resource = utils.get_table(engine, 'resource')
+        res_data = [dict(id='167aaefb-152e-505d-b13a-35d4c816390c',
+                         name='res-4',
+                         stack_id=stack_data[0]['id'],
+                         user_creds_id=user[0]['id']),
+                    dict(id='177aaefb-152e-505d-b13a-35d4c816390c',
+                         name='res-5',
+                         stack_id=stack_data[0]['id'],
+                         user_creds_id=user[0]['id'])]
+        engine.execute(resource.insert(), res_data)
+
+        # resource_data
+        resource_data = utils.get_table(engine, 'resource_data')
+        rd_data = [dict(key='fruit',
+                        value='blueberries',
+                        reduct=False,
+                        resource_id=res_data[0]['id']),
+                   dict(key='fruit',
+                        value='apples',
+                        reduct=False,
+                        resource_id=res_data[1]['id'])]
+        engine.execute(resource_data.insert(), rd_data)
+
+        return {'resource': res_data, 'resource_data': rd_data}
+
+    def _check_057(self, engine, data):
+        def uuid_in_res_data(res_uuid):
+            for rd in data['resource']:
+                if rd['id'] == res_uuid:
+                    return True
+            return False
+
+        def rd_matches_old_data(key, value, res_uuid):
+            for rd in data['resource_data']:
+                if (rd['resource_id'] == res_uuid and rd['key'] == key
+                        and rd['value'] == value):
+                    return True
+            return False
+
+        self.assertColumnIsNotNullable(engine, 'resource', 'id')
+        res_table = utils.get_table(engine, 'resource')
+        res_in_db = list(res_table.select().execute())
+        # confirm the resource.id is an int and the uuid field has been
+        # copied from the old id.
+        for r in res_in_db:
+            self.assertIsInstance(r.id, six.integer_types)
+            self.assertTrue(uuid_in_res_data(r.uuid))
+
+        # confirm that the new resource_id points to the correct resource.
+        rd_table = utils.get_table(engine, 'resource_data')
+        rd_in_db = list(rd_table.select().execute())
+        for rd in rd_in_db:
+            for r in res_in_db:
+                if rd.resource_id == r.id:
+                    self.assertTrue(rd_matches_old_data(rd.key, rd.value,
+                                                        r.uuid))
+
+    def _check_058(self, engine, data):
+        self.assertColumnExists(engine, 'resource', 'engine_id')
+        self.assertColumnExists(engine, 'resource', 'atomic_key')
+
+    def _check_059(self, engine, data):
+        column_list = [('entity_id', False),
+                       ('traversal_id', False),
+                       ('is_update', False),
+                       ('atomic_key', False),
+                       ('stack_id', False),
+                       ('input_data', True),
+                       ('updated_at', True),
+                       ('created_at', True)]
+        for column in column_list:
+            self.assertColumnExists(engine, 'sync_point', column[0])
+            if not column[1]:
+                self.assertColumnIsNotNullable(engine, 'sync_point',
+                                               column[0])
+            else:
+                self.assertColumnIsNullable(engine, 'sync_point', column[0])
+
+    def _check_060(self, engine, data):
+        column_list = ['needed_by', 'requires', 'replaces', 'replaced_by',
+                       'current_template_id']
+        for column in column_list:
+            self.assertColumnExists(engine, 'resource', column)
 
 
 class TestHeatMigrationsMySQL(HeatMigrationsCheckers,

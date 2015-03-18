@@ -18,13 +18,13 @@ import time
 import types
 
 import eventlet
-from oslo.utils import encodeutils
-from oslo.utils import excutils
+from oslo_log import log as logging
+from oslo_utils import encodeutils
+from oslo_utils import excutils
 import six
 
 from heat.common.i18n import _
 from heat.common.i18n import _LI
-from heat.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
 
@@ -281,7 +281,7 @@ def wrappertask(task):
             self.cleanup()
     """
 
-    @functools.wraps(task)
+    @six.wraps(task)
     def wrapper(*args, **kwargs):
         parent = task(*args, **kwargs)
 
@@ -472,13 +472,14 @@ class PollingTaskGroup(object):
         Each argument to use should be passed as a list (or iterable) of values
         such that one is passed in the corresponding position for each subtask.
         The number of subtasks spawned depends on the length of the argument
-        lists. For example:
+        lists.
+        For example::
 
             PollingTaskGroup.from_task_with_args(my_task,
                                                  [1, 2, 3],
                                                  alpha=['a', 'b', 'c'])
 
-        will start three TaskRunners that will run:
+        will start three TaskRunners that will run::
 
             my_task(1, alpha='a')
             my_task(2, alpha='b')

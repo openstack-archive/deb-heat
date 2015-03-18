@@ -14,8 +14,9 @@
 import inspect
 import re
 
-from oslo.config import cfg
-from oslo.messaging._drivers import common as rpc_common
+from oslo_config import cfg
+from oslo_log import log
+from oslo_messaging._drivers import common as rpc_common
 import six
 import webob
 
@@ -34,10 +35,28 @@ class ErrorWithNewline(webob.exc.HTTPBadRequest):
 
 
 class FaultMiddlewareTest(common.HeatTestCase):
+    def setUp(self):
+        super(FaultMiddlewareTest, self).setUp()
+        log.register_options(cfg.CONF)
 
     def test_disguised_http_exception_with_newline(self):
         wrapper = fault.FaultWrapper(None)
         newline_error = ErrorWithNewline('Error with \n newline')
+        msg = wrapper._error(heat_exc.HTTPExceptionDisguise(newline_error))
+        expected = {'code': 400,
+                    'error': {'message': 'Error with \n newline',
+                              'traceback': None,
+                              'type': 'ErrorWithNewline'},
+                    'explanation': ('The server could not comply with the '
+                                    'request since it is either malformed '
+                                    'or otherwise incorrect.'),
+                    'title': 'Bad Request'}
+        self.assertEqual(expected, msg)
+
+    def test_http_exception_with_traceback(self):
+        wrapper = fault.FaultWrapper(None)
+        newline_error = ErrorWithNewline(
+            'Error with \n newline\nTraceback (most recent call last):\nFoo')
         msg = wrapper._error(heat_exc.HTTPExceptionDisguise(newline_error))
         expected = {'code': 400,
                     'error': {'message': 'Error with \n newline',

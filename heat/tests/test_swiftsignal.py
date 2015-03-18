@@ -26,7 +26,6 @@ from testtools import matchers
 from heat.common import exception
 from heat.common import template_format
 from heat.engine.clients.os import swift
-from heat.engine import environment
 from heat.engine import resource
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
@@ -88,7 +87,6 @@ def create_stack(template, stack_id=None):
     template = templatem.Template(tmpl)
     ctx = utils.dummy_context(tenant_id='test_tenant')
     st = stack.Stack(ctx, 'test_st', template,
-                     environment.Environment(),
                      disable_rollback=True)
 
     # Stub out the stack ID so we have a known value
@@ -392,7 +390,7 @@ class SwiftSignalTest(common.HeatTestCase):
                       st.status_reason)
         wc = st['test_wait_condition']
         self.assertEqual("SwiftSignalTimeout: 1 of 2 received - Signal 1 "
-                         "recieved", wc.status_reason)
+                         "received", wc.status_reason)
 
     @mock.patch.object(swift.SwiftClientPlugin, '_create')
     @mock.patch.object(resource.Resource, 'physical_resource_name')
@@ -573,9 +571,9 @@ class SwiftSignalTest(common.HeatTestCase):
 
         st.create()
         self.assertEqual(['SUCCESS', 'SUCCESS'], wc.get_status())
-        expected = [{'status': 'SUCCESS', 'reason': 'Signal 1 recieved',
+        expected = [{'status': 'SUCCESS', 'reason': 'Signal 1 received',
                      'data': None, 'id': 1},
-                    {'status': 'SUCCESS', 'reason': 'Signal 2 recieved',
+                    {'status': 'SUCCESS', 'reason': 'Signal 2 received',
                      'data': None, 'id': 2}]
         self.assertEqual(expected, wc.get_signals())
 
@@ -599,9 +597,9 @@ class SwiftSignalTest(common.HeatTestCase):
 
         st.create()
         self.assertEqual(['SUCCESS', 'SUCCESS'], wc.get_status())
-        expected = [{'status': 'SUCCESS', 'reason': 'Signal 1 recieved',
+        expected = [{'status': 'SUCCESS', 'reason': 'Signal 1 received',
                      'data': None, 'id': 1},
-                    {'status': 'SUCCESS', 'reason': 'Signal 2 recieved',
+                    {'status': 'SUCCESS', 'reason': 'Signal 2 received',
                      'data': None, 'id': 2}]
         self.assertEqual(expected, wc.get_signals())
 
@@ -626,7 +624,7 @@ class SwiftSignalTest(common.HeatTestCase):
 
         st.create()
         self.assertEqual(['SUCCESS'], wc.get_status())
-        expected = [{'status': 'SUCCESS', 'reason': 'Signal 1 recieved',
+        expected = [{'status': 'SUCCESS', 'reason': 'Signal 1 received',
                      'data': None, 'id': 1}]
         self.assertEqual(expected, wc.get_signals())
 
@@ -652,7 +650,7 @@ class SwiftSignalTest(common.HeatTestCase):
         st.create()
         self.assertEqual(('CREATE', 'FAILED'), st.state)
         self.assertEqual(['FAILURE'], wc.get_status())
-        expected = [{'status': 'FAILURE', 'reason': 'Signal 1 recieved',
+        expected = [{'status': 'FAILURE', 'reason': 'Signal 1 received',
                      'data': None, 'id': 1}]
         self.assertEqual(expected, wc.get_signals())
 

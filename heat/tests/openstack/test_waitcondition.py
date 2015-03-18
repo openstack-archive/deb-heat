@@ -19,12 +19,12 @@ import six
 
 from heat.common import identifier
 from heat.common import template_format
-from heat.db import api as db_api
 from heat.engine.clients.os import heat_plugin
 from heat.engine import environment
 from heat.engine import parser
 from heat.engine import resource
-from heat.engine.resources.openstack import wait_condition_handle as heat_wch
+from heat.engine.resources.openstack.heat import wait_condition_handle as h_wch
+from heat.objects import resource as resource_objects
 from heat.tests import common
 from heat.tests import utils
 
@@ -80,10 +80,10 @@ class HeatWaitConditionTest(common.HeatTestCase):
                      params={},
                      stub=True, stub_status=True):
         temp = template_format.parse(template)
-        template = parser.Template(temp)
+        template = parser.Template(temp,
+                                   env=environment.Environment(params))
         ctx = utils.dummy_context(tenant_id=self.tenant_id)
         stack = parser.Stack(ctx, 'test_stack', template,
-                             environment.Environment(params),
                              disable_rollback=True)
 
         # Stub out the stack ID so we have a known value
@@ -97,25 +97,25 @@ class HeatWaitConditionTest(common.HeatTestCase):
         if stub:
             id = identifier.ResourceIdentifier('test_tenant', stack.name,
                                                stack.id, '', 'wait_handle')
-            self.m.StubOutWithMock(heat_wch.HeatWaitConditionHandle,
+            self.m.StubOutWithMock(h_wch.HeatWaitConditionHandle,
                                    'identifier')
-            heat_wch.HeatWaitConditionHandle.identifier(
+            h_wch.HeatWaitConditionHandle.identifier(
             ).MultipleTimes().AndReturn(id)
 
         if stub_status:
-            self.m.StubOutWithMock(heat_wch.HeatWaitConditionHandle,
+            self.m.StubOutWithMock(h_wch.HeatWaitConditionHandle,
                                    'get_status')
 
         return stack
 
     def test_post_complete_to_handle(self):
         self.stack = self.create_stack()
-        heat_wch.HeatWaitConditionHandle.get_status().AndReturn(['SUCCESS'])
-        heat_wch.HeatWaitConditionHandle.get_status().AndReturn(['SUCCESS',
-                                                                 'SUCCESS'])
-        heat_wch.HeatWaitConditionHandle.get_status().AndReturn(['SUCCESS',
-                                                                 'SUCCESS',
-                                                                 'SUCCESS'])
+        h_wch.HeatWaitConditionHandle.get_status().AndReturn(['SUCCESS'])
+        h_wch.HeatWaitConditionHandle.get_status().AndReturn(['SUCCESS',
+                                                              'SUCCESS'])
+        h_wch.HeatWaitConditionHandle.get_status().AndReturn(['SUCCESS',
+                                                              'SUCCESS',
+                                                              'SUCCESS'])
 
         self.m.ReplayAll()
 
@@ -125,19 +125,19 @@ class HeatWaitConditionTest(common.HeatTestCase):
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE),
                          rsrc.state)
 
-        r = db_api.resource_get_by_name_and_stack(None, 'wait_handle',
-                                                  self.stack.id)
+        r = resource_objects.Resource.get_by_name_and_stack(
+            None, 'wait_handle', self.stack.id)
         self.assertEqual('wait_handle', r.name)
         self.m.VerifyAll()
 
     def test_post_failed_to_handle(self):
         self.stack = self.create_stack()
-        heat_wch.HeatWaitConditionHandle.get_status().AndReturn(['SUCCESS'])
-        heat_wch.HeatWaitConditionHandle.get_status().AndReturn(['SUCCESS',
-                                                                 'SUCCESS'])
-        heat_wch.HeatWaitConditionHandle.get_status().AndReturn(['SUCCESS',
-                                                                 'SUCCESS',
-                                                                 'FAILURE'])
+        h_wch.HeatWaitConditionHandle.get_status().AndReturn(['SUCCESS'])
+        h_wch.HeatWaitConditionHandle.get_status().AndReturn(['SUCCESS',
+                                                              'SUCCESS'])
+        h_wch.HeatWaitConditionHandle.get_status().AndReturn(['SUCCESS',
+                                                              'SUCCESS',
+                                                              'FAILURE'])
 
         self.m.ReplayAll()
 
@@ -149,8 +149,8 @@ class HeatWaitConditionTest(common.HeatTestCase):
         reason = rsrc.status_reason
         self.assertTrue(reason.startswith('WaitConditionFailure:'))
 
-        r = db_api.resource_get_by_name_and_stack(None, 'wait_handle',
-                                                  self.stack.id)
+        r = resource_objects.Resource.get_by_name_and_stack(
+            None, 'wait_handle', self.stack.id)
         self.assertEqual('wait_handle', r.name)
         self.m.VerifyAll()
 
@@ -167,7 +167,7 @@ class HeatWaitConditionTest(common.HeatTestCase):
         timeutils.set_time_override(fake_clock)
         self.addCleanup(timeutils.clear_time_override)
 
-        heat_wch.HeatWaitConditionHandle.get_status(
+        h_wch.HeatWaitConditionHandle.get_status(
         ).MultipleTimes().AndReturn([])
 
         self.m.ReplayAll()
@@ -185,7 +185,7 @@ class HeatWaitConditionTest(common.HeatTestCase):
     def _create_heat_wc_and_handle(self):
         self.stack = self.create_stack(
             template=test_template_heat_waitcondition)
-        heat_wch.HeatWaitConditionHandle.get_status().AndReturn(['SUCCESS'])
+        h_wch.HeatWaitConditionHandle.get_status().AndReturn(['SUCCESS'])
 
         self.m.ReplayAll()
         self.stack.create()

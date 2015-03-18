@@ -12,7 +12,7 @@
 
 import os
 
-from oslo.config import cfg
+from oslo_config import cfg
 
 import heat_integrationtests
 
@@ -68,6 +68,12 @@ IntegrationTestGroup = [
     cfg.StrOpt('fixed_network_name',
                default='private',
                help="Visible fixed network name "),
+    cfg.StrOpt('boot_config_env',
+               default='heat_integrationtests/scenario/templates'
+                       '/boot_config_none_env.yaml',
+               help="Path to environment file which defines the "
+                    "resource type Heat::InstallConfigAgent. Needs to "
+                    "be appropriate for the image_ref."),
     cfg.StrOpt('fixed_subnet_name',
                default='private-subnet',
                help="Visible fixed sub-network name "),
@@ -85,9 +91,22 @@ IntegrationTestGroup = [
     cfg.IntOpt('tenant_network_mask_bits',
                default=28,
                help="The mask bits for tenant ipv4 subnets"),
+    cfg.BoolOpt('skip_software_config_tests',
+                default=True,
+                help="Skip software config deployment tests"),
     cfg.IntOpt('volume_size',
                default=1,
                help='Default size in GB for volumes created by volumes tests'),
+    cfg.BoolOpt('skip_stack_adopt_tests',
+                default=False,
+                help="Skip Stack Adopt Integration tests"),
+    cfg.BoolOpt('skip_stack_abandon_tests',
+                default=False,
+                help="Skip Stack Abandon Integration tests"),
+    cfg.IntOpt('connectivity_timeout',
+               default=120,
+               help="Timeout in seconds to wait for connectivity to "
+                    "server."),
 ]
 
 

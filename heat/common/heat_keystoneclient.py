@@ -14,21 +14,21 @@
 """Keystone Client functionality for use by resources."""
 
 import collections
-import json
 import uuid
 
 import keystoneclient.exceptions as kc_exception
 from keystoneclient import session
 from keystoneclient.v3 import client as kc_v3
-from oslo.config import cfg
-from oslo.utils import importutils
+from oslo_config import cfg
+from oslo_log import log as logging
+from oslo_serialization import jsonutils
+from oslo_utils import importutils
 
 from heat.common import context
 from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LE
 from heat.common.i18n import _LW
-from heat.openstack.common import log as logging
 
 LOG = logging.getLogger('heat.common.keystoneclient')
 
@@ -280,19 +280,6 @@ class KeystoneClientV3(object):
         # get the last 64 characters of the username
         return username[-64:]
 
-    def _get_domain_id_from_name(self, domain_name):
-        domains = self.domain_admin_client.domains.list(name=domain_name)
-        if len(domains) == 1:
-            return domains[0].id
-        elif len(domains) == 0:
-            msg = _("Can't find domain id for %s!")
-            LOG.error(msg, domain_name)
-            raise exception.Error(msg % domain_name)
-        else:
-            msg = _('Multiple domain ids were found for %s!')
-            LOG.error(msg, domain_name)
-            raise exception.Error(msg % domain_name)
-
     def create_stack_user(self, username, password=''):
         """Create a user defined as part of a stack.
 
@@ -409,8 +396,8 @@ class KeystoneClientV3(object):
             if self._stack_domain_is_id:
                 self._stack_domain_id = self.stack_domain
             else:
-                domain_id = self._get_domain_id_from_name(self.stack_domain)
-                self._stack_domain_id = domain_id
+                self._stack_domain_id = (
+                    self._domain_admin_client.auth_ref.domain_id)
         return self._stack_domain_id
 
     def _check_stack_domain_user(self, user_id, project_id, action):
@@ -475,6 +462,8 @@ class KeystoneClientV3(object):
         # to get the project, so again we should do nothing
         try:
             project = self.domain_admin_client.projects.get(project=project_id)
+        except kc_exception.NotFound:
+            return
         except kc_exception.Forbidden:
             LOG.warning(_LW('Unable to get details for project %s, '
                             'not deleting') % project_id)
@@ -495,7 +484,7 @@ class KeystoneClientV3(object):
         # extensible-crud-manager-operations bp lands
         credentials = self.client.credentials.list()
         for cr in credentials:
-            ec2_creds = json.loads(cr.blob)
+            ec2_creds = jsonutils.loads(cr.blob)
             if ec2_creds.get('access') == access:
                 return AccessKey(id=cr.id,
                                  access=ec2_creds['access'],
@@ -525,7 +514,7 @@ class KeystoneClientV3(object):
         # then we'll have to do a brute-force lookup locally
         if credential_id:
             cred = self.client.credentials.get(credential_id)
-            ec2_creds = json.loads(cred.blob)
+            ec2_creds = jsonutils.loads(cred.blob)
             return AccessKey(id=cred.id,
                              access=ec2_creds['access'],
                              secret=ec2_creds['secret'])
@@ -540,7 +529,7 @@ class KeystoneClientV3(object):
         data_blob = {'access': uuid.uuid4().hex,
                      'secret': uuid.uuid4().hex}
         ec2_creds = self.client.credentials.create(
-            user=user_id, type='ec2', data=json.dumps(data_blob),
+            user=user_id, type='ec2', data=jsonutils.dumps(data_blob),
             project=project_id)
 
         # Return a AccessKey namedtuple for easier access to the blob contents
@@ -561,7 +550,7 @@ class KeystoneClientV3(object):
         data_blob = {'access': uuid.uuid4().hex,
                      'secret': uuid.uuid4().hex}
         creds = self.domain_admin_client.credentials.create(
-            user=user_id, type='ec2', data=json.dumps(data_blob),
+            user=user_id, type='ec2', data=jsonutils.dumps(data_blob),
             project=project_id)
         return AccessKey(id=creds.id,
                          access=data_blob['access'],

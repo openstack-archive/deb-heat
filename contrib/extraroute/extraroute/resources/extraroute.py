@@ -14,8 +14,9 @@
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.engine import constraints
 from heat.engine import properties
-from heat.engine.resources.neutron import neutron
+from heat.engine.resources.openstack.neutron import neutron
 
 
 class ExtraRoute(neutron.NeutronResource):
@@ -30,7 +31,11 @@ class ExtraRoute(neutron.NeutronResource):
         ROUTER_ID: properties.Schema(
             properties.Schema.STRING,
             description=_('The router id.'),
-            required=True),
+            required=True,
+            constraints=[
+                constraints.CustomConstraint('neutron.router')
+            ]
+        ),
         DESTINATION: properties.Schema(
             properties.Schema.STRING,
             description=_('Network in CIDR notation.'),

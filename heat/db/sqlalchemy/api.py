@@ -15,10 +15,10 @@
 import datetime
 import sys
 
-from oslo.config import cfg
-from oslo.db.sqlalchemy import session as db_session
-from oslo.db.sqlalchemy import utils
-from oslo.utils import timeutils
+from oslo_config import cfg
+from oslo_db.sqlalchemy import session as db_session
+from oslo_db.sqlalchemy import utils
+from oslo_utils import timeutils
 import osprofiler.sqlalchemy
 import six
 import sqlalchemy
@@ -152,6 +152,18 @@ def resource_get_all(context):
     if not results:
         raise exception.NotFound(_('no resources were found'))
     return results
+
+
+def resource_update(context, resource_id, values, atomic_key,
+                    expected_engine_id=None):
+    session = _session(context)
+    with session.begin():
+        values['atomic_key'] = atomic_key + 1
+        rows_updated = session.query(models.Resource).filter_by(
+            id=resource_id, engine_id=expected_engine_id,
+            atomic_key=atomic_key).update(values)
+
+        return bool(rows_updated)
 
 
 def resource_data_get_all(resource, data=None):
@@ -416,14 +428,21 @@ def stack_create(context, values):
 def stack_update(context, stack_id, values):
     stack = stack_get(context, stack_id)
 
-    if not stack:
+    if stack is None:
         raise exception.NotFound(_('Attempt to update a stack with id: '
                                  '%(id)s %(msg)s') % {
                                      'id': stack_id,
                                      'msg': 'that does not exist'})
 
-    stack.update(values)
-    stack.save(_session(context))
+    session = _session(context)
+    rows_updated = (session.query(models.Stack)
+                    .filter(models.Stack.id == stack.id)
+                    .filter(models.Stack.current_traversal
+                            == stack.current_traversal)
+                    .update(values, synchronize_session=False))
+    session.expire_all()
+
+    return (rows_updated is not None and rows_updated > 0)
 
 
 def stack_delete(context, stack_id):
@@ -706,6 +725,12 @@ def watch_data_get_all(context):
     return results
 
 
+def watch_data_get_all_by_watch_rule_id(context, watch_rule_id):
+    results = model_query(context, models.WatchData).filter_by(
+        watch_rule_id=watch_rule_id).all()
+    return results
+
+
 def software_config_create(context, values):
     obj_ref = models.SoftwareConfig()
     obj_ref.update(values)
@@ -918,6 +943,38 @@ def purge_deleted(age, granularity='days'):
     for s in deleted_services:
         stmt = service.delete().where(service.c.id == s[0])
         engine.execute(stmt)
+
+
+def sync_point_delete_all_by_stack_and_traversal(context, stack_id,
+                                                 traversal_id):
+    rows_deleted = model_query(context, models.SyncPoint).filter_by(
+        stack_id=stack_id, traversal_id=traversal_id).delete()
+    return rows_deleted
+
+
+def sync_point_create(context, values):
+    sync_point_ref = models.SyncPoint()
+    sync_point_ref.update(values)
+    sync_point_ref.save(_session(context))
+    return sync_point_ref
+
+
+def sync_point_get(context, entity_id, traversal_id, is_update):
+    return model_query(context, models.SyncPoint).get(
+        (entity_id, traversal_id, is_update)
+    )
+
+
+def sync_point_update_input_data(context, entity_id,
+                                 traversal_id, is_update, atomic_key,
+                                 input_data):
+    rows_updated = model_query(context, models.SyncPoint).filter_by(
+        entity_id=entity_id,
+        traversal_id=traversal_id,
+        is_update=is_update,
+        atomic_key=atomic_key
+    ).update({"input_data": input_data, "atomic_key": atomic_key + 1})
+    return rows_updated
 
 
 def db_sync(engine, version=None):

@@ -20,7 +20,7 @@ Unit Tests for heat.rpc.client
 import copy
 
 import mock
-from oslo.messaging._drivers import common as rpc_common
+from oslo_messaging._drivers import common as rpc_common
 import stubout
 import testtools
 
@@ -315,7 +315,8 @@ class EngineRpcAPITestCase(testtools.TestCase):
                               output_values={},
                               action='DEPLOYED',
                               status='COMPLETE',
-                              status_reason=None)
+                              status_reason=None,
+                              updated_at=None)
 
     def test_delete_software_deployment(self):
         deployment_id = '86729f02-4648-44d8-af44-d0ec65b6abc9'

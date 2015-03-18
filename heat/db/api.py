@@ -24,8 +24,8 @@ The underlying driver is loaded . SQLAlchemy is currently the only
 supported backend.
 '''
 
-from oslo.config import cfg
-from oslo.db import api
+from oslo_config import cfg
+from oslo_db import api
 
 CONF = cfg.CONF
 
@@ -82,6 +82,12 @@ def resource_get(context, resource_id):
 
 def resource_get_all(context):
     return IMPL.resource_get_all(context)
+
+
+def resource_update(context, resource_id, values, atomic_key,
+                    expected_engine_id=None):
+    return IMPL.resource_update(context, resource_id, values, atomic_key,
+                                expected_engine_id)
 
 
 def resource_create(context, values):
@@ -250,6 +256,10 @@ def watch_data_get_all(context):
     return IMPL.watch_data_get_all(context)
 
 
+def watch_data_get_all_by_watch_rule_id(context, watch_rule_id):
+    return IMPL.watch_data_get_all_by_watch_rule_id(context, watch_rule_id)
+
+
 def software_config_create(context, values):
     return IMPL.software_config_create(context, values)
 
@@ -324,6 +334,29 @@ def service_get_all(context):
 
 def service_get_all_by_args(context, host, binary, hostname):
     return IMPL.service_get_all_by_args(context, host, binary, hostname)
+
+
+def sync_point_delete_all_by_stack_and_traversal(context, stack_id,
+                                                 traversal_id):
+    return IMPL.sync_point_delete_all_by_stack_and_traversal(context,
+                                                             stack_id,
+                                                             traversal_id)
+
+
+def sync_point_create(context, values):
+    return IMPL.sync_point_create(context, values)
+
+
+def sync_point_get(context, entity_id, traversal_id, is_update):
+    return IMPL.sync_point_get(context, entity_id, traversal_id, is_update)
+
+
+def sync_point_update_input_data(context, entity_id,
+                                 traversal_id, is_update, atomic_key,
+                                 input_data):
+    return IMPL.sync_point_update_input_data(context, entity_id,
+                                             traversal_id, is_update,
+                                             atomic_key, input_data)
 
 
 def db_sync(engine, version=None):

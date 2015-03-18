@@ -14,7 +14,7 @@
 from neutronclient.common import exceptions
 from neutronclient.neutron import v2_0 as neutronV20
 from neutronclient.v2_0 import client as nc
-from oslo.utils import uuidutils
+from oslo_utils import uuidutils
 
 from heat.common import exception
 from heat.engine.clients import client_plugin
@@ -129,12 +129,19 @@ class NeutronClientPlugin(client_plugin.ClientPlugin):
 
 class NetworkConstraint(constraints.BaseCustomConstraint):
 
-    expected_exceptions = (exceptions.NeutronClientException,)
+    expected_exceptions = (exceptions.NeutronClientException,
+                           exception.NovaNetworkNotFound,
+                           exception.PhysicalResourceNameAmbiguity)
 
     def validate_with_client(self, client, value):
-        neutron_client = client.client('neutron')
-        neutronV20.find_resourceid_by_name_or_id(
-            neutron_client, 'network', value)
+        try:
+            neutron_client = client.client('neutron')
+        except Exception:
+            # is not using neutron
+            client.client_plugin('nova').get_nova_network_id(value)
+        else:
+            neutronV20.find_resourceid_by_name_or_id(
+                neutron_client, 'network', value)
 
 
 class PortConstraint(constraints.BaseCustomConstraint):
