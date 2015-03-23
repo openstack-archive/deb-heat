@@ -1,4 +1,4 @@
-heat (2015.1~b2+git20150318+2956841a2e-1) UNRELEASED; urgency=medium
+heat (2015.1~b3-1) UNRELEASED; urgency=medium
 
   * New upstream release.
   * Reviewed (build-)depends for this release.
