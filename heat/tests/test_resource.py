@@ -23,7 +23,6 @@ from heat.common import exception
 from heat.common.i18n import _
 from heat.common import short_id
 from heat.common import timeutils
-from heat.db import api as db_api
 from heat.engine import attributes
 from heat.engine.cfn import functions as cfn_funcs
 from heat.engine import dependencies
@@ -96,8 +95,9 @@ class ResourceTest(common.HeatTestCase):
         snippet = rsrc_defn.ResourceDefinition('aresource',
                                                'GenericResourceType')
         self.stack.id = None
-        db_method = 'resource_get_by_name_and_stack'
-        with mock.patch.object(db_api, db_method) as resource_get:
+        db_method = 'get_by_name_and_stack'
+        with mock.patch.object(resource_objects.Resource,
+                               db_method) as resource_get:
             res = resource.Resource('aresource', snippet, self.stack)
             self.assertEqual("INIT", res.action)
             self.assertIs(False, resource_get.called)
@@ -122,6 +122,23 @@ class ResourceTest(common.HeatTestCase):
         res = generic_rsrc.GenericResource('test_res_def', tmpl, self.stack)
         self.assertEqual((res.INIT, res.COMPLETE), res.state)
         self.assertEqual('', res.status_reason)
+
+    def test_signal_wrong_action_state(self):
+        snippet = rsrc_defn.ResourceDefinition('res',
+                                               'GenericResourceType')
+        res = resource.Resource('res', snippet, self.stack)
+        actions = [res.SUSPEND, res.DELETE]
+        for action in actions:
+            for status in res.STATUSES:
+                res.state_set(action, status)
+                ev = self.patchobject(res, '_add_event')
+                ex = self.assertRaises(exception.ResourceFailure,
+                                       res.signal)
+                self.assertEqual('Exception: Cannot signal resource during '
+                                 '%s' % action, six.text_type(ex))
+                ev.assert_called_with(
+                    action, status,
+                    'Cannot signal resource during %s' % action)
 
     def test_resource_str_repr_stack_id_resource_id(self):
         tmpl = rsrc_defn.ResourceDefinition('test_res_str_repr', 'Foo')
@@ -1812,3 +1829,92 @@ class ReducePhysicalResourceNameTest(common.HeatTestCase):
             else:
                 # check that nothing has changed
                 self.assertEqual(self.original, reduced)
+
+
+class ResourceHookTest(common.HeatTestCase):
+
+    def setUp(self):
+        super(ResourceHookTest, self).setUp()
+
+        resource._register_class('GenericResourceType',
+                                 generic_rsrc.GenericResource)
+        resource._register_class('ResourceWithCustomConstraint',
+                                 generic_rsrc.ResourceWithCustomConstraint)
+
+        self.env = environment.Environment()
+        self.env.load({u'resource_registry':
+                      {u'OS::Test::GenericResource': u'GenericResourceType',
+                       u'OS::Test::ResourceWithCustomConstraint':
+                       u'ResourceWithCustomConstraint'}})
+
+        self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                                  parser.Template(empty_template,
+                                                  env=self.env),
+                                  stack_id=str(uuid.uuid4()))
+
+    def test_hook(self):
+        snippet = rsrc_defn.ResourceDefinition('res',
+                                               'GenericResourceType')
+        res = resource.Resource('res', snippet, self.stack)
+
+        res.data = mock.Mock(return_value={})
+        self.assertFalse(res.has_hook('pre-create'))
+        self.assertFalse(res.has_hook('pre-update'))
+
+        res.data = mock.Mock(return_value={'pre-create': 'True'})
+        self.assertTrue(res.has_hook('pre-create'))
+        self.assertFalse(res.has_hook('pre-update'))
+
+        res.data = mock.Mock(return_value={'pre-create': 'False'})
+        self.assertFalse(res.has_hook('pre-create'))
+        self.assertFalse(res.has_hook('pre-update'))
+
+        res.data = mock.Mock(return_value={'pre-update': 'True'})
+        self.assertFalse(res.has_hook('pre-create'))
+        self.assertTrue(res.has_hook('pre-update'))
+
+    def test_set_hook(self):
+        snippet = rsrc_defn.ResourceDefinition('res',
+                                               'GenericResourceType')
+        res = resource.Resource('res', snippet, self.stack)
+
+        res.data_set = mock.Mock()
+        res.data_delete = mock.Mock()
+
+        res.trigger_hook('pre-create')
+        res.data_set.assert_called_with('pre-create', 'True')
+
+        res.trigger_hook('pre-update')
+        res.data_set.assert_called_with('pre-update', 'True')
+
+        res.clear_hook('pre-create')
+        res.data_delete.assert_called_with('pre-create')
+
+    def test_signal_clear_hook(self):
+        snippet = rsrc_defn.ResourceDefinition('res',
+                                               'GenericResourceType')
+        res = resource.Resource('res', snippet, self.stack)
+
+        res.clear_hook = mock.Mock()
+        res.has_hook = mock.Mock(return_value=True)
+        self.assertRaises(exception.ResourceActionNotSupported,
+                          res.signal, None)
+        self.assertFalse(res.clear_hook.called)
+
+        self.assertRaises(exception.ResourceActionNotSupported,
+                          res.signal, {})
+        self.assertFalse(res.clear_hook.called)
+
+        self.assertRaises(exception.ResourceActionNotSupported,
+                          res.signal, {'unset_hook': 'unknown_hook'})
+        self.assertFalse(res.clear_hook.called)
+
+        res.signal({'unset_hook': 'pre-create'})
+        res.clear_hook.assert_called_with('pre-create')
+
+        res.signal({'unset_hook': 'pre-update'})
+        res.clear_hook.assert_called_with('pre-update')
+
+        res.has_hook = mock.Mock(return_value=False)
+        self.assertRaises(exception.ResourceActionNotSupported,
+                          res.signal, {'unset_hook': 'pre-create'})

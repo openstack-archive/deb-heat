@@ -35,6 +35,7 @@ from heat.rpc import api as rpc_api
 
 cfg.CONF.import_opt('instance_user', 'heat.common.config')
 cfg.CONF.import_opt('default_software_config_transport', 'heat.common.config')
+cfg.CONF.import_opt('stack_scheduler_hints', 'heat.common.config')
 
 LOG = logging.getLogger(__name__)
 
@@ -651,6 +652,14 @@ class Server(stack_user.StackUser):
                 instance_meta)
 
         scheduler_hints = self.properties.get(self.SCHEDULER_HINTS)
+        if cfg.CONF.stack_scheduler_hints:
+            if scheduler_hints is None:
+                scheduler_hints = {}
+            scheduler_hints['heat_root_stack_id'] = self.stack.root_stack.id
+            scheduler_hints['heat_stack_id'] = self.stack.id
+            scheduler_hints['heat_stack_name'] = self.stack.name
+            scheduler_hints['heat_path_in_stack'] = self.stack.path_in_stack()
+            scheduler_hints['heat_resource_name'] = self.name
         nics = self._build_nics(self.properties.get(self.NETWORKS))
         block_device_mapping = self._build_block_device_mapping(
             self.properties.get(self.BLOCK_DEVICE_MAPPING))
@@ -920,20 +929,34 @@ class Server(stack_user.StackUser):
             old_networks.remove(net)
         return not_updated_networks
 
+    def _get_network_id(self, net):
+        net_id = None
+        if net.get(self.NETWORK_ID):
+            if self.is_using_neutron():
+                net_id = self.client_plugin(
+                    'neutron').resolve_network(
+                    net,
+                    self.NETWORK_ID, self.NETWORK_UUID)
+            else:
+                net_id = self.client_plugin(
+                    'nova').get_nova_network_id(net.get(self.NETWORK_ID))
+        return net_id
+
     def update_networks_matching_iface_port(self, nets, interfaces):
 
         def find_equal(port, net_id, ip, nets):
             for net in nets:
+
                 if (net.get('port') == port or
                         (net.get('fixed_ip') == ip and
-                         (net.get('network') == net_id or
+                         (self._get_network_id(net) == net_id or
                           net.get('uuid') == net_id))):
                     return net
 
         def find_poor_net(net_id, nets):
             for net in nets:
                 if (not net.get('port') and not net.get('fixed_ip') and
-                        (net.get('network') == net_id or
+                        (self._get_network_id(net) == net_id or
                          net.get('uuid') == net_id)):
                     return net
 
@@ -1026,21 +1049,23 @@ class Server(stack_user.StackUser):
             # according to nova interface-detach command detached port
             # will be deleted
             for net in old_networks:
-                checker = scheduler.TaskRunner(server.interface_detach,
-                                               net.get('port'))
-                checkers.append(checker)
+                if net.get(self.NETWORK_PORT):
+                    checker = scheduler.TaskRunner(server.interface_detach,
+                                                   net.get(self.NETWORK_PORT))
+                    checkers.append(checker)
 
         # attach section similar for both variants that
         # were mentioned above
 
         for net in new_networks:
-            if net.get('port'):
+            if net.get(self.NETWORK_PORT):
                 checker = scheduler.TaskRunner(server.interface_attach,
-                                               net['port'], None, None)
+                                               net.get(self.NETWORK_PORT),
+                                               None, None)
                 checkers.append(checker)
-            elif net.get('network'):
+            elif net.get(self.NETWORK_ID):
                 checker = scheduler.TaskRunner(server.interface_attach,
-                                               None, net['network'],
+                                               None, self._get_network_id(net),
                                                net.get('fixed_ip'))
                 checkers.append(checker)
 

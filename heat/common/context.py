@@ -29,7 +29,6 @@ from heat.common import policy
 from heat.common import wsgi
 from heat.db import api as db_api
 from heat.engine import clients
-from heat.openstack.common import local
 
 LOG = logging.getLogger(__name__)
 
@@ -105,8 +104,6 @@ class RequestContext(context.RequestContext):
         self.auth_token_info = auth_token_info
         self.auth_url = auth_url
         self.roles = roles or []
-        if overwrite or not hasattr(local.store, 'context'):
-            self.update_store()
         self._session = None
         self._clients = None
         self.trust_id = trust_id
@@ -118,9 +115,6 @@ class RequestContext(context.RequestContext):
             self.is_admin = self.policy.check_is_admin(self)
         else:
             self.is_admin = is_admin
-
-    def update_store(self):
-        local.store.context = self
 
     @property
     def session(self):
@@ -135,6 +129,9 @@ class RequestContext(context.RequestContext):
         return self._clients
 
     def to_dict(self):
+        user_idt = '{user} {tenant}'.format(user=self.username or '-',
+                                            tenant=self.tenant or '-')
+
         return {'auth_token': self.auth_token,
                 'username': self.username,
                 'user_id': self.user_id,
@@ -151,7 +148,8 @@ class RequestContext(context.RequestContext):
                 'user': self.user,
                 'request_id': self.request_id,
                 'show_deleted': self.show_deleted,
-                'region_name': self.region_name}
+                'region_name': self.region_name,
+                'user_identity': user_idt}
 
     @classmethod
     def from_dict(cls, values):

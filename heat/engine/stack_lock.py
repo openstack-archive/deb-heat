@@ -23,7 +23,8 @@ from heat.common import exception
 from heat.common.i18n import _LI
 from heat.common.i18n import _LW
 from heat.common import messaging as rpc_messaging
-from heat.db import api as db_api
+from heat.objects import stack_lock as stack_lock_object
+from heat.rpc import api as rpc_api
 
 cfg.CONF.import_opt('engine_life_check_timeout', 'heat.common.config')
 
@@ -40,7 +41,7 @@ class StackLock(object):
     @staticmethod
     def engine_alive(context, engine_id):
         client = rpc_messaging.get_rpc_client(
-            version='1.0', topic="heat-engine-listener",
+            version='1.0', topic=rpc_api.LISTENER_TOPIC,
             server=engine_id)
         client_context = client.prepare(
             timeout=cfg.CONF.engine_life_check_timeout)
@@ -53,12 +54,16 @@ class StackLock(object):
     def generate_engine_id():
         return str(uuid.uuid4())
 
+    def get_engine_id(self):
+        return stack_lock_object.StackLock.get_engine_id(self.stack.id)
+
     def try_acquire(self):
         """
         Try to acquire a stack lock, but don't raise an ActionInProgress
         exception or try to steal lock.
         """
-        return db_api.stack_lock_create(self.stack.id, self.engine_id)
+        return stack_lock_object.StackLock.create(self.stack.id,
+                                                  self.engine_id)
 
     def acquire(self, retry=True):
         """
@@ -67,8 +72,8 @@ class StackLock(object):
         :param retry: When True, retry if lock was released while stealing.
         :type retry: boolean
         """
-        lock_engine_id = db_api.stack_lock_create(self.stack.id,
-                                                  self.engine_id)
+        lock_engine_id = stack_lock_object.StackLock.create(self.stack.id,
+                                                            self.engine_id)
         if lock_engine_id is None:
             LOG.debug("Engine %(engine)s acquired lock on stack "
                       "%(stack)s" % {'engine': self.engine_id,
@@ -87,8 +92,9 @@ class StackLock(object):
                          "%(engine)s will attempt to steal the lock"),
                      {'stack': self.stack.id, 'engine': self.engine_id})
 
-            result = db_api.stack_lock_steal(self.stack.id, lock_engine_id,
-                                             self.engine_id)
+            result = stack_lock_object.StackLock.steal(self.stack.id,
+                                                       lock_engine_id,
+                                                       self.engine_id)
 
             if result is None:
                 LOG.info(_LI("Engine %(engine)s successfully stole the lock "
@@ -116,7 +122,8 @@ class StackLock(object):
     def release(self, stack_id):
         """Release a stack lock."""
         # Only the engine that owns the lock will be releasing it.
-        result = db_api.stack_lock_release(stack_id, self.engine_id)
+        result = stack_lock_object.StackLock.release(stack_id,
+                                                     self.engine_id)
         if result is True:
             LOG.warn(_LW("Lock was already released on stack %s!"), stack_id)
         else:

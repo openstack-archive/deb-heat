@@ -75,7 +75,10 @@ class Port(neutron.NeutronResource):
 
         NETWORK: properties.Schema(
             properties.Schema.STRING,
-            _('Network this port belongs to.'),
+            _('Network this port belongs to. If you plan to use current port '
+              'to assign Floating IP, you should specify %(fixed_ips)s '
+              'with %(subnet)s') % {'fixed_ips': FIXED_IPS,
+                                    'subnet': FIXED_IP_SUBNET},
             support_status=support.SupportStatus(version='2014.2'),
             constraints=[
                 constraints.CustomConstraint('neutron.network')
@@ -178,7 +181,7 @@ class Port(neutron.NeutronResource):
               'REPLACE_ALWAYS will replace the port regardless of any '
               'property changes. AUTO will update the existing port for any '
               'changed update-allowed property.'),
-            default='REPLACE_ALWAYS',
+            default='AUTO',
             constraints=[
                 constraints.AllowedValues(['REPLACE_ALWAYS', 'AUTO']),
             ],
@@ -196,6 +199,7 @@ class Port(neutron.NeutronResource):
             constraints=[
                 constraints.AllowedValues(['normal', 'direct', 'macvtap']),
             ],
+            support_status=support.SupportStatus(version='2015.1'),
             update_allowed=True
         ),
     }

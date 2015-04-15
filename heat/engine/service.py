@@ -12,6 +12,7 @@
 #    under the License.
 
 import collections
+import datetime
 import os
 import socket
 import warnings
@@ -232,7 +233,7 @@ class EngineListener(service.Service):
         super(EngineListener, self).start()
         self.target = messaging.Target(
             server=self.engine_id,
-            topic="heat-engine-listener")
+            topic=rpc_api.LISTENER_TOPIC)
         server = rpc_messaging.get_rpc_server(self.target, self)
         server.start()
 
@@ -347,9 +348,11 @@ class EngineService(service.Service):
         self._client = rpc_messaging.get_rpc_client(
             version=self.RPC_API_VERSION)
 
+        self.service_manage_cleanup()
         self.manage_thread_grp = threadgroup.ThreadGroup()
         self.manage_thread_grp.add_timer(cfg.CONF.periodic_interval,
                                          self.service_manage_report)
+        self.manage_thread_grp.add_thread(self.reset_stack_status)
 
         super(EngineService, self).start()
 
@@ -710,15 +713,17 @@ class EngineService(service.Service):
             raise exception.RequestLimitExceeded(
                 message=exception.StackResourceLimitExceeded.msg_fmt)
         stack_name = current_stack.name
-        convergence = current_stack.convergence
+        current_kwargs = current_stack.get_kwargs_for_cloning()
+
         common_params = api.extract_args(args)
         common_params.setdefault(rpc_api.PARAM_TIMEOUT,
                                  current_stack.timeout_mins)
         common_params.setdefault(rpc_api.PARAM_DISABLE_ROLLBACK,
                                  current_stack.disable_rollback)
+
+        current_kwargs.update(common_params)
         updated_stack = parser.Stack(cnxt, stack_name, tmpl,
-                                     convergence=convergence,
-                                     **common_params)
+                                     **current_kwargs)
         updated_stack.parameters.set_stack_id(current_stack.identifier())
 
         self._validate_deferred_auth_context(cnxt, updated_stack)
@@ -863,7 +868,8 @@ class EngineService(service.Service):
         self.cctxt = self._client.prepare(
             version='1.0',
             timeout=timeout,
-            topic=lock_engine_id)
+            topic=rpc_api.LISTENER_TOPIC,
+            server=lock_engine_id)
         try:
             self.cctxt.call(cnxt, call, *args, **kwargs)
         except messaging.MessagingTimeout:
@@ -1517,39 +1523,65 @@ class EngineService(service.Service):
             service_objects.Service.update_by_id(
                 cnxt,
                 self.service_id,
-                dict())
+                dict(deleted_at=None))
             LOG.info(_LI('Service %s is updated'), self.service_id)
         else:
-            service_refs = service_objects.Service.get_all_by_args(
+            service_ref = service_objects.Service.create(
                 cnxt,
-                self.host,
-                self.binary,
-                self.hostname)
-            if len(service_refs) == 1:
-                # Service was aborted or stopped
-                service_ref = service_refs[0]
+                dict(host=self.host,
+                     hostname=self.hostname,
+                     binary=self.binary,
+                     engine_id=self.engine_id,
+                     topic=self.topic,
+                     report_interval=cfg.CONF.periodic_interval)
+            )
+            self.service_id = service_ref['id']
+            LOG.info(_LI('Service %s is started'), self.service_id)
 
-                if service_ref['deleted_at'] is None:
-                    LOG.info(_LI('Service %s was aborted'), self.service_id)
+    def service_manage_cleanup(self):
+        cnxt = context.get_admin_context()
+        last_updated_window = (3 * cfg.CONF.periodic_interval)
+        time_line = datetime.datetime.utcnow() - datetime.timedelta(
+            seconds=last_updated_window)
 
-                service_ref = service_objects.Service.update_by_id(
-                    cnxt,
-                    service_ref['id'],
-                    dict(engine_id=self.engine_id,
-                         deleted_at=None,
-                         report_interval=cfg.CONF.periodic_interval))
-                self.service_id = service_ref['id']
-                LOG.info(_LI('Service %s is restarted'), self.service_id)
-            elif len(service_refs) == 0:
-                # Service is started now
-                service_ref = service_objects.Service.create(
-                    cnxt,
-                    dict(host=self.host,
-                         hostname=self.hostname,
-                         binary=self.binary,
-                         engine_id=self.engine_id,
-                         topic=self.topic,
-                         report_interval=cfg.CONF.periodic_interval)
-                )
-                self.service_id = service_ref['id']
-                LOG.info(_LI('Service %s is started'), self.service_id)
+        service_refs = service_objects.Service.get_all_by_args(
+            cnxt, self.host, self.binary, self.hostname)
+        for service_ref in service_refs:
+            if (service_ref['id'] == self.service_id or
+                    service_ref['deleted_at'] is not None or
+                    service_ref['updated_at'] is None):
+                continue
+            if service_ref['updated_at'] < time_line:
+                # hasn't been updated, assuming it's died.
+                LOG.info(_LI('Service %s was aborted'), service_ref['id'])
+                service_objects.Service.delete(cnxt, service_ref['id'])
+
+    def reset_stack_status(self):
+        cnxt = context.get_admin_context()
+        filters = {'status': parser.Stack.IN_PROGRESS}
+        stacks = stack_object.Stack.get_all(cnxt,
+                                            filters=filters,
+                                            tenant_safe=False) or []
+        for s in stacks:
+            stk = parser.Stack.load(cnxt, stack=s,
+                                    use_stored_context=True)
+            lock = stack_lock.StackLock(cnxt, stk, self.engine_id)
+            # If stacklock is released, means stack status may changed.
+            engine_id = lock.get_engine_id()
+            if not engine_id:
+                continue
+            # Try to steal the lock and set status to failed.
+            try:
+                lock.acquire(retry=False)
+            except exception.ActionInProgress:
+                continue
+            LOG.info(_LI('Engine %(engine)s went down when stack %(stack_id)s'
+                         ' was in action %(action)s'),
+                     {'engine': engine_id, 'action': stk.action,
+                      'stack_id': stk.id})
+            # Set stack status to FAILED.
+            status_reason = ('Engine went down during stack %s' % stk.action)
+            self.thread_group_mgr.start_with_acquired_lock(
+                stk, lock, stk.state_set, stk.action,
+                stk.FAILED, six.text_type(status_reason)
+            )

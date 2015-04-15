@@ -36,17 +36,16 @@ IntegrationTestGroup = [
                default=os.environ.get('OS_REGION_NAME'),
                help="The region name to us"),
     cfg.StrOpt('instance_type',
-               default=os.environ.get('HEAT_TEST_INSTANCE_TYPE'),
                help="Instance type for tests. Needs to be big enough for a "
                     "full OS plus the test workload"),
+    cfg.StrOpt('minimal_instance_type',
+               help="Instance type enough for simplest cases."),
     cfg.StrOpt('image_ref',
-               default=os.environ.get('HEAT_TEST_IMAGE_REF'),
                help="Name of image to use for tests which boot servers."),
     cfg.StrOpt('keypair_name',
                default=None,
                help="Name of existing keypair to launch servers with."),
     cfg.StrOpt('minimal_image_ref',
-               default=os.environ.get('HEAT_TEST_MINIMAL_IMAGE_REF'),
                help="Name of minimal (e.g cirros) image to use when "
                     "launching test instances."),
     cfg.StrOpt('auth_version',
@@ -68,9 +67,12 @@ IntegrationTestGroup = [
     cfg.StrOpt('fixed_network_name',
                default='private',
                help="Visible fixed network name "),
+    cfg.StrOpt('floating_network_name',
+               default='public',
+               help="Visible floating network name "),
     cfg.StrOpt('boot_config_env',
-               default='heat_integrationtests/scenario/templates'
-                       '/boot_config_none_env.yaml',
+               default=('heat_integrationtests/scenario/templates'
+                        '/boot_config_none_env.yaml'),
                help="Path to environment file which defines the "
                     "resource type Heat::InstallConfigAgent. Needs to "
                     "be appropriate for the image_ref."),

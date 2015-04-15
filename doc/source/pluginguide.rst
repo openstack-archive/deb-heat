@@ -255,9 +255,9 @@ from the ``Resource`` class::
             return None
 
 If the plug-in needs to be more sophisticated in its attribute resolution, the
-plug-in may instead choose to override ``FnGetAttr``. If this method is chosen,
-however, responsibility for validating the attribute and its accessibility is
-the responsibility of the plug-in.
+plug-in may instead choose to override ``FnGetAtt``. However, if this method is
+chosen, validation and accessibility of the attribute would be the plug-in's
+responsibility.
 
 Property and Attribute Example
 ******************************
@@ -272,7 +272,7 @@ Assume the following simple property and attribute definition:
                 default='foo',
                 required=True
             ),
-            'bar': properies.Schema(
+            'bar': properties.Schema(
                 properties.Schema.INTEGER,
                 _('bar prop description'),
                 required=True,

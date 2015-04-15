@@ -14,6 +14,7 @@
 import collections
 import copy
 import datetime
+import itertools
 import re
 import warnings
 
@@ -251,6 +252,32 @@ class Stack(collections.Mapping):
             return self.parent_resource.stack.root_stack
         return self
 
+    def object_path_in_stack(self):
+        '''
+        If this is not nested return (None, self), else return stack resources
+        and stacks in path from the root stack and including this stack
+
+        :returns: a list of (stack_resource, stack) tuples
+        '''
+        if self.parent_resource and self.parent_resource.stack:
+            path = self.parent_resource.stack.object_path_in_stack()
+            path.extend([(self.parent_resource, self)])
+            return path
+        return [(None, self)]
+
+    def path_in_stack(self):
+        '''
+        If this is not nested return (None, self.name), else return tuples of
+        names (stack_resource.name, stack.name) in path from the root stack and
+        including this stack.
+
+        :returns: a list of (string, string) tuples.
+
+        '''
+        opis = self.object_path_in_stack()
+        return [(stckres.name if stckres else None,
+                 stck.name if stck else None) for stckres, stck in opis]
+
     def total_resources(self):
         '''
         Return the total number of resources in a stack, including nested
@@ -278,6 +305,19 @@ class Stack(collections.Mapping):
         '''
         if not self.parameters.set_stack_id(self.identifier()):
             LOG.warn(_LW("Unable to set parameters StackId identifier"))
+
+    @staticmethod
+    def get_dep_attrs(resources, outputs, resource_name):
+        '''
+        Return the set of dependent attributes for specified resource name by
+        inspecting all resources and outputs in template.
+        '''
+        attr_lists = itertools.chain((res.dep_attrs(resource_name)
+                                      for res in resources),
+                                     (function.dep_attrs(out.get('Value', ''),
+                                                         resource_name)
+                                      for out in six.itervalues(outputs)))
+        return set(itertools.chain.from_iterable(attr_lists))
 
     @staticmethod
     def _get_dependencies(resources):
@@ -348,31 +388,64 @@ class Stack(collections.Mapping):
                    username=stack.username, convergence=stack.convergence,
                    current_traversal=stack.current_traversal)
 
+    def get_kwargs_for_cloning(self, keep_status=False, only_db=False):
+        """Get common kwargs for calling Stack() for cloning.
+
+        The point of this method is to reduce the number of places that we
+        need to update when a kwarg to Stack.__init__() is modified. It
+        is otherwise easy to forget an option and cause some unexpected
+        error if this option is lost.
+
+        Note:
+        - This doesn't return the args(name, template) but only the kwargs.
+        - We often want to start 'fresh' so don't want to maintain the old
+          status, action and status_reason.
+        - We sometimes only want the DB attributes.
+        """
+
+        stack = {
+            'owner_id': self.owner_id,
+            'username': self.username,
+            'tenant_id': self.tenant_id,
+            'timeout_mins': self.timeout_mins,
+            'disable_rollback': self.disable_rollback,
+            'stack_user_project_id': self.stack_user_project_id,
+            'user_creds_id': self.user_creds_id,
+            'nested_depth': self.nested_depth,
+            'convergence': self.convergence,
+            'current_traversal': self.current_traversal,
+        }
+        if keep_status:
+            stack.update({
+                'action': self.action,
+                'status': self.status,
+                'status_reason': self.status_reason})
+        if not only_db:
+            stack['parent_resource'] = self.parent_resource_name
+            stack['strict_validate'] = self.strict_validate
+
+        return stack
+
     @profiler.trace('Stack.store', hide_args=False)
     def store(self, backup=False):
         '''
         Store the stack in the database and return its ID
         If self.id is set, we update the existing stack.
         '''
-        s = {
-            'name': self._backup_name() if backup else self.name,
-            'raw_template_id': self.t.store(self.context),
-            'owner_id': self.owner_id,
-            'username': self.username,
-            'tenant': self.tenant_id,
-            'action': self.action,
-            'status': self.status,
-            'status_reason': self.status_reason,
-            'timeout': self.timeout_mins,
-            'disable_rollback': self.disable_rollback,
-            'stack_user_project_id': self.stack_user_project_id,
-            'updated_at': self.updated_time,
-            'user_creds_id': self.user_creds_id,
-            'backup': backup,
-            'nested_depth': self.nested_depth,
-            'convergence': self.convergence,
-            'current_traversal': self.current_traversal,
-        }
+        s = self.get_kwargs_for_cloning(keep_status=True, only_db=True)
+        s['name'] = self._backup_name() if backup else self.name
+        s['backup'] = backup
+        s['updated_at'] = self.updated_time
+        if self.t.id is None:
+            s['raw_template_id'] = self.t.store(self.context)
+        else:
+            s['raw_template_id'] = self.t.id
+        # name inconsistencies
+        s['tenant'] = s['tenant_id']
+        del s['tenant_id']
+        s['timeout'] = s['timeout_mins']
+        del s['timeout_mins']
+
         if self.id:
             stack_object.Stack.update_by_id(self.context, self.id, s)
         else:
@@ -693,12 +766,17 @@ class Stack(collections.Mapping):
 
         try:
             yield action_task()
-        except (exception.ResourceFailure, scheduler.ExceptionGroup) as ex:
-            stack_status = self.FAILED
-            reason = 'Resource %s failed: %s' % (action, six.text_type(ex))
         except scheduler.Timeout:
             stack_status = self.FAILED
             reason = '%s timed out' % action.title()
+        except Exception as ex:
+            # We use a catch-all here to ensure any raised exceptions
+            # make the stack fail. This is necessary for when
+            # aggregate_exceptions is false, as in that case we don't get
+            # ExceptionGroup, but the raw exception.
+            # see scheduler.py line 395-399
+            stack_status = self.FAILED
+            reason = 'Resource %s failed: %s' % (action, six.text_type(ex))
 
         self.state_set(action, stack_status, reason)
 
@@ -746,10 +824,10 @@ class Stack(collections.Mapping):
             LOG.debug('Loaded existing backup stack')
             return self.load(self.context, stack=s)
         elif create_if_missing:
+            kwargs = self.get_kwargs_for_cloning()
+            kwargs['owner_id'] = self.id
             prev = type(self)(self.context, self.name, copy.deepcopy(self.t),
-                              owner_id=self.id,
-                              user_creds_id=self.user_creds_id,
-                              convergence=self.convergence)
+                              **kwargs)
             prev.store(backup=True)
             LOG.debug('Created new backup stack')
             return prev
@@ -823,8 +901,10 @@ class Stack(collections.Mapping):
         if action == self.UPDATE:
             # Oldstack is useless when the action is not UPDATE , so we don't
             # need to build it, this can avoid some unexpected errors.
+            kwargs = self.get_kwargs_for_cloning()
             oldstack = Stack(self.context, self.name, copy.deepcopy(self.t),
-                             convergence=self.convergence)
+                             **kwargs)
+
         backup_stack = self._backup_stack()
         try:
             update_task = update.StackUpdate(
@@ -1052,6 +1132,7 @@ class Stack(collections.Mapping):
                                                      self.id)
         for snapshot in snapshots:
             self.delete_snapshot(snapshot)
+            snapshot_object.Snapshot.delete(self.context, snapshot.id)
 
         if not backup:
             try:
@@ -1155,8 +1236,10 @@ class Stack(collections.Mapping):
     def delete_snapshot(self, snapshot):
         '''Remove a snapshot from the backends.'''
         for name, rsrc in six.iteritems(self.resources):
-            data = snapshot.data['resources'].get(name)
-            scheduler.TaskRunner(rsrc.delete_snapshot, data)()
+            snapshot_data = snapshot.data
+            if snapshot_data:
+                data = snapshot.data['resources'].get(name)
+                scheduler.TaskRunner(rsrc.delete_snapshot, data)()
 
     @profiler.trace('Stack.restore', hide_args=False)
     def restore(self, snapshot):

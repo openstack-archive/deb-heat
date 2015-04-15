@@ -24,7 +24,6 @@ import six
 from heat.common import context
 from heat.common import exception
 from heat.common import template_format
-import heat.db.api as db_api
 from heat.engine.clients.os import keystone
 from heat.engine.clients.os import nova
 from heat.engine import environment
@@ -134,8 +133,9 @@ class StackTest(common.HeatTestCase):
         self.stack.id = '1234'
 
         # Simulate a deleted stack
-        self.m.StubOutWithMock(db_api, 'stack_get')
-        db_api.stack_get(self.stack.context, self.stack.id).AndReturn(None)
+        self.m.StubOutWithMock(stack_object.Stack, 'get_by_id')
+        stack_object.Stack.get_by_id(self.stack.context,
+                                     self.stack.id).AndReturn(None)
 
         self.m.ReplayAll()
 
@@ -501,28 +501,20 @@ class StackTest(common.HeatTestCase):
                          self.stack.state)
 
     def test_abandon_nodelete_project(self):
-        fkc = fakes.FakeKeystoneClient()
-        fkc.delete_stack_domain_project = mock.Mock()
-
-        self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
-        keystone.KeystoneClientPlugin._create().AndReturn(fkc)
-        self.m.ReplayAll()
-
         self.stack = stack.Stack(self.ctx, 'delete_trust', self.tmpl)
         stack_id = self.stack.store()
 
         self.stack.set_stack_user_project_id(project_id='aproject456')
 
-        db_s = db_api.stack_get(self.ctx, stack_id)
+        db_s = stack_object.Stack.get_by_id(self.ctx, stack_id)
         self.assertIsNotNone(db_s)
 
         self.stack.delete(abandon=True)
 
-        db_s = db_api.stack_get(self.ctx, stack_id)
+        db_s = stack_object.Stack.get_by_id(self.ctx, stack_id)
         self.assertIsNone(db_s)
         self.assertEqual((stack.Stack.DELETE, stack.Stack.COMPLETE),
                          self.stack.state)
-        self.assertFalse(fkc.delete_stack_domain_project.called)
 
     def test_suspend_resume(self):
         self.m.ReplayAll()
@@ -944,6 +936,35 @@ class StackTest(common.HeatTestCase):
 
         self.m.VerifyAll()
 
+    def test_create_bad_attribute(self):
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Resources': {
+                    'AResource': {'Type': 'GenericResourceType'},
+                    'BResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {
+                                      'Foo': {'Fn::GetAtt': ['AResource',
+                                                             'Foo']}}}}}
+        self.stack = stack.Stack(self.ctx, 'bad_attr_test_stack',
+                                 template.Template(tmpl),
+                                 disable_rollback=True)
+
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps,
+                               '_update_stored_properties')
+
+        generic_rsrc.ResourceWithProps._update_stored_properties().AndRaise(
+            exception.InvalidTemplateAttribute(resource='a', key='foo'))
+
+        self.m.ReplayAll()
+
+        self.stack.store()
+        self.stack.create()
+
+        self.assertEqual((stack.Stack.CREATE, stack.Stack.FAILED),
+                         self.stack.state)
+        self.assertEqual('Resource CREATE failed: The Referenced Attribute '
+                         '(a foo) is incorrect.', self.stack.status_reason)
+        self.m.VerifyAll()
+
     def test_stack_create_timeout(self):
         self.m.StubOutWithMock(scheduler.DependencyTaskGroup, '__call__')
         self.m.StubOutWithMock(scheduler, 'wallclock')
@@ -1087,7 +1108,7 @@ class StackTest(common.HeatTestCase):
         stack_ownee = stack.Stack(self.ctx, 'ownee_stack', self.tmpl,
                                   owner_id=self.stack.id)
         stack_ownee.store()
-        db_stack = db_api.stack_get(self.ctx, stack_ownee.id)
+        db_stack = stack_object.Stack.get_by_id(self.ctx, stack_ownee.id)
         self.assertEqual(self.stack.id, db_stack.owner_id)
 
     def test_init_user_creds_id(self):
@@ -1107,11 +1128,12 @@ class StackTest(common.HeatTestCase):
         """
         A user_creds entry is created on first stack store
         """
+        cfg.CONF.set_default('deferred_auth_method', 'password')
         self.stack = stack.Stack(self.ctx, 'creds_stack', self.tmpl)
         self.stack.store()
 
         # The store should've created a user_creds row and set user_creds_id
-        db_stack = db_api.stack_get(self.ctx, self.stack.id)
+        db_stack = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         user_creds_id = db_stack.user_creds_id
         self.assertIsNotNone(user_creds_id)
 
@@ -1147,7 +1169,7 @@ class StackTest(common.HeatTestCase):
         self.stack.store()
 
         # The store should've created a user_creds row and set user_creds_id
-        db_stack = db_api.stack_get(self.ctx, self.stack.id)
+        db_stack = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         user_creds_id = db_stack.user_creds_id
         self.assertIsNotNone(user_creds_id)
 
@@ -1197,7 +1219,7 @@ class StackTest(common.HeatTestCase):
                                  self.tmpl, username='foobar')
         self.ctx.username = 'not foobar'
         self.stack.store()
-        db_stack = db_api.stack_get(self.ctx, self.stack.id)
+        db_stack = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         self.assertEqual('foobar', db_stack.username)
 
     def test_store_backup_true(self):
@@ -1205,7 +1227,7 @@ class StackTest(common.HeatTestCase):
                                  self.tmpl, username='foobar')
         self.ctx.username = 'not foobar'
         self.stack.store(backup=True)
-        db_stack = db_api.stack_get(self.ctx, self.stack.id)
+        db_stack = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         self.assertTrue(db_stack.backup)
 
     def test_store_backup_false(self):
@@ -1213,7 +1235,7 @@ class StackTest(common.HeatTestCase):
                                  self.tmpl, username='foobar')
         self.ctx.username = 'not foobar'
         self.stack.store(backup=False)
-        db_stack = db_api.stack_get(self.ctx, self.stack.id)
+        db_stack = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         self.assertFalse(db_stack.backup)
 
     def test_init_stored_context_false(self):
@@ -1303,7 +1325,7 @@ class StackTest(common.HeatTestCase):
         self.stack = stack.Stack(self.ctx, 'user_project_none', self.tmpl)
         self.stack.store()
         self.assertIsNone(self.stack.stack_user_project_id)
-        db_stack = db_api.stack_get(self.ctx, self.stack.id)
+        db_stack = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         self.assertIsNone(db_stack.stack_user_project_id)
 
     def test_stack_user_project_id_constructor(self):
@@ -1315,7 +1337,7 @@ class StackTest(common.HeatTestCase):
                                  stack_user_project_id='aproject1234')
         self.stack.store()
         self.assertEqual('aproject1234', self.stack.stack_user_project_id)
-        db_stack = db_api.stack_get(self.ctx, self.stack.id)
+        db_stack = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         self.assertEqual('aproject1234', db_stack.stack_user_project_id)
 
         self.stack.delete()
@@ -1332,7 +1354,7 @@ class StackTest(common.HeatTestCase):
         self.assertIsNone(self.stack.stack_user_project_id)
         self.stack.set_stack_user_project_id(project_id='aproject456')
         self.assertEqual('aproject456', self.stack.stack_user_project_id)
-        db_stack = db_api.stack_get(self.ctx, self.stack.id)
+        db_stack = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         self.assertEqual('aproject456', db_stack.stack_user_project_id)
 
         self.stack.delete()
@@ -1350,7 +1372,7 @@ class StackTest(common.HeatTestCase):
         self.stack.create_stack_user_project_id()
 
         self.assertEqual('aprojectid', self.stack.stack_user_project_id)
-        db_stack = db_api.stack_get(self.ctx, self.stack.id)
+        db_stack = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         self.assertEqual('aprojectid', db_stack.stack_user_project_id)
 
         self.stack.delete()
@@ -1501,6 +1523,14 @@ class StackTest(common.HeatTestCase):
         fake_snapshot = collections.namedtuple('Snapshot', ('data',))(data)
         self.stack.delete_snapshot(fake_snapshot)
         self.assertEqual([data['resources']['AResource']], snapshots)
+
+    def test_delete_snapshot_without_data(self):
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Resources': {'R1': {'Type': 'GenericResourceType'}}}
+        self.stack = stack.Stack(self.ctx, 'snapshot_stack',
+                                 template.Template(tmpl))
+        fake_snapshot = collections.namedtuple('Snapshot', ('data',))(None)
+        self.assertIsNone(self.stack.delete_snapshot(fake_snapshot))
 
     def test_incorrect_outputs_cfn_get_attr(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
@@ -1743,3 +1773,45 @@ class StackTest(common.HeatTestCase):
 
         self.assertEqual(
             'foo', self.stack.resources['A'].properties['a_string'])
+
+
+class StackKwargsForCloningTest(common.HeatTestCase):
+    scenarios = [
+        ('default', dict(keep_status=False, only_db=False,
+                         not_included=['action', 'status', 'status_reason'])),
+        ('only_db', dict(keep_status=False, only_db=True,
+                         not_included=['action', 'status', 'status_reason',
+                                       'parent_resource',
+                                       'strict_validate'])),
+        ('keep_status', dict(keep_status=True, only_db=False,
+                             not_included=[])),
+        ('status_db', dict(keep_status=True, only_db=True,
+                           not_included=['parent_resource',
+                                         'strict_validate'])),
+    ]
+
+    def test_kwargs(self):
+        tmpl = template.Template(copy.deepcopy(empty_template))
+        ctx = utils.dummy_context()
+        test_data = dict(action='x', status='y',
+                         status_reason='z', timeout_mins=33,
+                         disable_rollback=True, parent_resource='fred',
+                         owner_id=32, stack_user_project_id=569,
+                         user_creds_id=123, tenant_id='some-uuid',
+                         username='jo', nested_depth=3,
+                         strict_validate=True, convergence=False,
+                         current_traversal=45)
+        self.stack = stack.Stack(ctx, utils.random_name(), tmpl,
+                                 **test_data)
+        res = self.stack.get_kwargs_for_cloning(keep_status=self.keep_status,
+                                                only_db=self.only_db)
+        for key in self.not_included:
+            self.assertNotIn(key, res)
+
+        for key in test_data:
+            if key not in self.not_included:
+                self.assertEqual(test_data[key], res[key])
+
+        # just make sure that the kwargs are valid
+        # (no exception should be raised)
+        stack.Stack(ctx, utils.random_name(), tmpl, **res)

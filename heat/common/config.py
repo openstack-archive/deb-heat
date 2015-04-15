@@ -18,12 +18,17 @@ import logging as sys_logging
 import os
 
 from eventlet.green import socket
+from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_log import log as logging
 
+from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LW
 from heat.common import wsgi
 
+
+LOG = logging.getLogger(__name__)
 paste_deploy_group = cfg.OptGroup('paste_deploy')
 paste_deploy_opts = [
     cfg.StrOpt('flavor',
@@ -80,7 +85,7 @@ service_opts = [
                default=5,
                help=_('Maximum depth allowed when using nested stacks.')),
     cfg.IntOpt('num_engine_workers',
-               default=1,
+               default=processutils.get_worker_count(),
                help=_('Number of heat-engine processes to fork and run.'))]
 
 engine_opts = [
@@ -92,14 +97,15 @@ engine_opts = [
                       "with your cloud image (for OS::Nova::Server) or "
                       "'ec2-user' (for AWS::EC2::Instance).")),
     cfg.ListOpt('plugin_dirs',
-                default=['/usr/lib64/heat', '/usr/lib/heat'],
+                default=['/usr/lib64/heat', '/usr/lib/heat',
+                         '/usr/local/lib/heat', '/usr/local/lib64/heat'],
                 help=_('List of directories to search for plug-ins.')),
     cfg.StrOpt('environment_dir',
                default='/etc/heat/environment.d',
                help=_('The directory to search for environment files.')),
     cfg.StrOpt('deferred_auth_method',
                choices=['password', 'trusts'],
-               default='password',
+               default='trusts',
                help=_('Select deferred auth method, '
                       'stored password or trusts.')),
     cfg.ListOpt('trusts_delegated_roles',
@@ -189,7 +195,24 @@ engine_opts = [
                       'resource-signal using the provided keystone '
                       'credentials')),
     cfg.StrOpt('onready',
-               help=_('Deprecated.'))]
+               help=_('Deprecated.')),
+    cfg.BoolOpt('stack_scheduler_hints',
+                default=False,
+                help=_('When this feature is enabled, scheduler hints'
+                       ' identifying the heat stack context of a server'
+                       ' resource are passed to the configured schedulers in'
+                       ' nova, for server creates done using heat resource'
+                       ' types OS::Nova::Server and AWS::EC2::Instance.'
+                       ' heat_root_stack_id will be set to the id of the root'
+                       ' stack of the resource, heat_stack_id will be set to'
+                       ' the id of the resource\'s parent stack,'
+                       ' heat_stack_name will be set to the name of the'
+                       ' resource\'s parent stack, heat_path_in_stack will be'
+                       ' set to a list of tuples,'
+                       ' (stackresourcename, stackname) with list[0] being'
+                       ' (None, rootstackname), and heat_resource_name will'
+                       ' be set to the resource\'s name.'))]
+
 
 rpc_opts = [
     cfg.StrOpt('host',
@@ -275,6 +298,24 @@ revision_opts = [
                       'If you would prefer to manage your build revision '
                       'separately, you can move this section to a different '
                       'file and add it as another config option.'))]
+
+
+def startup_sanity_check():
+    if (not cfg.CONF.stack_user_domain_id and
+            not cfg.CONF.stack_user_domain_name):
+        # FIXME(shardy): Legacy fallback for folks using old heat.conf
+        # files which lack domain configuration
+        LOG.warn(_LW('stack_user_domain_id or stack_user_domain_name not '
+                     'set in heat.conf falling back to using default'))
+    else:
+        domain_admin_user = cfg.CONF.stack_domain_admin
+        domain_admin_password = cfg.CONF.stack_domain_admin_password
+        if not (domain_admin_user and domain_admin_password):
+            raise exception.Error(_('heat.conf misconfigured, cannot '
+                                    'specify "stack_user_domain_id" or '
+                                    '"stack_user_domain_name" without '
+                                    '"stack_domain_admin" and '
+                                    '"stack_domain_admin_password"'))
 
 
 def list_opts():

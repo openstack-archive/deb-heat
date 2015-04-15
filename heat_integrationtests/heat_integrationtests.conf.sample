@@ -23,6 +23,9 @@
 # workload (string value)
 #instance_type = <None>
 
+# Instance type enough for simplest cases. (string value)
+#minimal_instance_type = <None>
+
 # Name of image to use for tests which boot servers. (string value)
 #image_ref = <None>
 
@@ -52,6 +55,14 @@
 # Visible fixed network name  (string value)
 #fixed_network_name = private
 
+# Visible floating network name  (string value)
+#floating_network_name = public
+
+# Path to environment file which defines the resource type
+# Heat::InstallConfigAgent. Needs to be appropriate for the image_ref. (string
+# value)
+#boot_config_env = heat_integrationtests/scenario/templates/boot_config_none_env.yaml
+
 # Visible fixed sub-network name  (string value)
 #fixed_subnet_name = private-subnet
 
@@ -79,5 +90,5 @@
 # Skip Stack Abandon Integration tests (boolean value)
 #skip_stack_abandon_tests = false
 
-# Timeout in seconds to wait for connectivity to server
+# Timeout in seconds to wait for connectivity to server. (integer value)
 #connectivity_timeout = 120

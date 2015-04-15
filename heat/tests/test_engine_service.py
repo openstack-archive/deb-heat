@@ -30,7 +30,6 @@ from heat.common import exception
 from heat.common import identifier
 from heat.common import service_utils
 from heat.common import template_format
-from heat.db import api as db_api
 from heat.engine.clients.os import glance
 from heat.engine.clients.os import keystone
 from heat.engine.clients.os import nova
@@ -48,10 +47,14 @@ from heat.engine import stack_lock
 from heat.engine import template as templatem
 from heat.engine import watchrule
 from heat.engine import worker
+from heat.objects import event as event_object
 from heat.objects import resource as resource_objects
 from heat.objects import service as service_objects
 from heat.objects import software_deployment as software_deployment_object
 from heat.objects import stack as stack_object
+from heat.objects import stack_lock as stack_lock_object
+from heat.objects import watch_data as watch_data_object
+from heat.objects import watch_rule as watch_rule_object
 from heat.openstack.common import threadgroup
 from heat.rpc import api as rpc_api
 from heat.rpc import worker_api
@@ -211,7 +214,8 @@ def setup_mock_for_image_constraint(mocks, imageId_input,
         imageId_input).MultipleTimes().AndReturn(imageId_output)
 
 
-def setup_mocks(mocks, stack, mock_image_constraint=True):
+def setup_mocks(mocks, stack, mock_image_constraint=True,
+                mock_keystone=True):
     fc = fakes_v1_1.FakeClient()
     mocks.StubOutWithMock(instances.Instance, 'nova')
     instances.Instance.nova().MultipleTimes().AndReturn(fc)
@@ -223,7 +227,8 @@ def setup_mocks(mocks, stack, mock_image_constraint=True):
         setup_mock_for_image_constraint(mocks,
                                         instance.t['Properties']['ImageId'])
 
-    setup_keystone_mocks(mocks, stack)
+    if mock_keystone:
+        setup_keystone_mocks(mocks, stack)
 
     user_data = instance.properties['UserData']
     server_userdata = instance.client_plugin().build_userdata(
@@ -415,7 +420,7 @@ class StackCreateTest(common.HeatTestCase):
     def test_wordpress_single_instance_stack_delete(self):
         ctx = utils.dummy_context()
         stack = get_wordpress_stack('test_stack', ctx)
-        fc = setup_mocks(self.m, stack)
+        fc = setup_mocks(self.m, stack, mock_keystone=False)
         self.m.ReplayAll()
         stack_id = stack.store()
         stack.create()
@@ -591,7 +596,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
                                        template, input_params, None,
                                        {'adopt_stack_data': str(adopt_data)})
 
-        stack = db_api.stack_get(self.ctx, result['stack_id'])
+        stack = stack_object.Stack.get_by_id(self.ctx, result['stack_id'])
         self.assertEqual(template, stack.raw_template.template)
         self.assertEqual(input_params['parameters'],
                          stack.raw_template.environment['parameters'])
@@ -607,7 +612,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
                                        template, {}, None,
                                        {'adopt_stack_data': str(adopt_data)})
 
-        stack = db_api.stack_get(self.ctx, result['stack_id'])
+        stack = stack_object.Stack.get_by_id(self.ctx, result['stack_id'])
         self.assertEqual((parser.Stack.ADOPT, parser.Stack.IN_PROGRESS),
                          (stack.action, stack.status))
 
@@ -669,6 +674,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
                           stack.t.t, {}, None, {})
 
     def test_stack_create_no_credentials(self):
+        cfg.CONF.set_default('deferred_auth_method', 'password')
         stack_name = 'test_stack_create_no_credentials'
         params = {'foo': 'bar'}
         template = '{ "Template": "data" }'
@@ -880,7 +886,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         sid = stack.store()
 
         # Insert a fake lock into the db
-        db_api.stack_lock_create(stack.id, self.man.engine_id)
+        stack_lock_object.StackLock.create(stack.id, self.man.engine_id)
 
         # Create a fake ThreadGroup too
         self.man.thread_group_mgr.groups[stack.id] = DummyThreadGroup()
@@ -909,7 +915,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         sid = stack.store()
 
         # Insert a fake lock into the db
-        db_api.stack_lock_create(stack.id, "other-engine-fake-uuid")
+        stack_lock_object.StackLock.create(stack.id, "other-engine-fake-uuid")
 
         st = stack_object.Stack.get_by_id(self.ctx, sid)
         self.m.StubOutWithMock(parser.Stack, 'load')
@@ -942,7 +948,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         sid = stack.store()
 
         # Insert a fake lock into the db
-        db_api.stack_lock_create(stack.id, "other-engine-fake-uuid")
+        stack_lock_object.StackLock.create(stack.id, "other-engine-fake-uuid")
 
         st = stack_object.Stack.get_by_id(self.ctx, sid)
         self.m.StubOutWithMock(parser.Stack, 'load')
@@ -974,7 +980,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         sid = stack.store()
 
         # Insert a fake lock into the db
-        db_api.stack_lock_create(stack.id, "other-engine-fake-uuid")
+        stack_lock_object.StackLock.create(stack.id, "other-engine-fake-uuid")
 
         st = stack_object.Stack.get_by_id(self.ctx, sid)
         self.m.StubOutWithMock(parser.Stack, 'load')
@@ -1010,6 +1016,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         template = '{ "Template": "data" }'
         old_stack = get_wordpress_stack(stack_name, self.ctx)
         sid = old_stack.store()
+        old_stack.set_stack_user_project_id('1234')
         s = stack_object.Stack.get_by_id(self.ctx, sid)
 
         stack = get_wordpress_stack(stack_name, self.ctx)
@@ -1021,8 +1028,18 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
                      stack.t,
-                     timeout_mins=60, disable_rollback=True,
-                     convergence=False).AndReturn(stack)
+                     convergence=False,
+                     current_traversal=None,
+                     disable_rollback=True,
+                     nested_depth=0,
+                     owner_id=None,
+                     parent_resource=None,
+                     stack_user_project_id='1234',
+                     strict_validate=True,
+                     tenant_id='test_tenant_id',
+                     timeout_mins=60,
+                     user_creds_id=u'1',
+                     username='test_username').AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -1055,6 +1072,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
 
         old_stack = get_wordpress_stack_no_params(stack_name, self.ctx)
         sid = old_stack.store()
+        old_stack.set_stack_user_project_id('1234')
         s = stack_object.Stack.get_by_id(self.ctx, sid)
 
         t = template_format.parse(wp_template_no_default)
@@ -1070,8 +1088,14 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         environment.Environment(no_params).AndReturn(old_stack.env)
         parser.Stack(self.ctx, stack.name,
                      stack.t,
-                     timeout_mins=60, disable_rollback=True,
-                     convergence=False).AndReturn(stack)
+                     convergence=False, current_traversal=None,
+                     disable_rollback=True, nested_depth=0,
+                     owner_id=None, parent_resource=None,
+                     stack_user_project_id='1234',
+                     strict_validate=True,
+                     tenant_id='test_tenant_id', timeout_mins=60,
+                     user_creds_id=u'1',
+                     username='test_username').AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -1104,6 +1128,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         old_stack.timeout_mins = 1
         old_stack.disable_rollback = False
         sid = old_stack.store()
+        old_stack.set_stack_user_project_id('1234')
         s = stack_object.Stack.get_by_id(self.ctx, sid)
 
         stack = get_wordpress_stack(stack_name, self.ctx)
@@ -1115,8 +1140,14 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
                      stack.t,
-                     timeout_mins=1, disable_rollback=False,
-                     convergence=False).AndReturn(stack)
+                     convergence=False, current_traversal=None,
+                     disable_rollback=False, nested_depth=0,
+                     owner_id=None, parent_resource=None,
+                     stack_user_project_id='1234',
+                     strict_validate=True,
+                     tenant_id='test_tenant_id', timeout_mins=1,
+                     user_creds_id=u'1',
+                     username='test_username').AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -1183,6 +1214,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
 
         old_stack = parser.Stack(self.ctx, stack_name, template)
         sid = old_stack.store()
+        old_stack.set_stack_user_project_id('1234')
         s = stack_object.Stack.get_by_id(self.ctx, sid)
 
         stack = parser.Stack(self.ctx, stack_name, template)
@@ -1194,8 +1226,13 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
                      stack.t,
-                     timeout_mins=60, disable_rollback=True,
-                     convergence=False).AndReturn(stack)
+                     convergence=False, current_traversal=None,
+                     disable_rollback=True, nested_depth=0,
+                     owner_id=None, parent_resource=None,
+                     stack_user_project_id='1234', strict_validate=True,
+                     tenant_id='test_tenant_id',
+                     timeout_mins=60, user_creds_id=u'1',
+                     username='test_username').AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
@@ -1307,6 +1344,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         old_stack = get_wordpress_stack(stack_name, self.ctx)
         old_stack.store()
         sid = old_stack.store()
+        old_stack.set_stack_user_project_id('1234')
         s = stack_object.Stack.get_by_id(self.ctx, sid)
         stack = get_wordpress_stack(stack_name, self.ctx)
 
@@ -1317,8 +1355,13 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
                      stack.t,
-                     timeout_mins=60, disable_rollback=True,
-                     convergence=False).AndReturn(stack)
+                     convergence=False, current_traversal=None,
+                     disable_rollback=True, nested_depth=0,
+                     owner_id=None, parent_resource=None,
+                     stack_user_project_id='1234', strict_validate=True,
+                     tenant_id='test_tenant_id',
+                     timeout_mins=60, user_creds_id=u'1',
+                     username='test_username').AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndRaise(exception.StackValidationFailed(
@@ -1351,6 +1394,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_stack_update_no_credentials(self):
+        cfg.CONF.set_default('deferred_auth_method', 'password')
         stack_name = 'test_stack_update_no_credentials'
         params = {'foo': 'bar'}
         template = '{ "Template": "data" }'
@@ -1360,6 +1404,7 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         old_stack['WebServer'].requires_deferred_auth = True
 
         sid = old_stack.store()
+        old_stack.set_stack_user_project_id('1234')
         s = stack_object.Stack.get_by_id(self.ctx, sid)
 
         self.ctx = utils.dummy_context(password=None)
@@ -1375,8 +1420,18 @@ class StackServiceCreateUpdateDeleteTest(common.HeatTestCase):
         environment.Environment(params).AndReturn(old_stack.env)
         parser.Stack(self.ctx, old_stack.name,
                      old_stack.t,
-                     timeout_mins=60, disable_rollback=True,
-                     convergence=False).AndReturn(old_stack)
+                     convergence=False,
+                     current_traversal=None,
+                     disable_rollback=True,
+                     nested_depth=0,
+                     owner_id=None,
+                     parent_resource=None,
+                     stack_user_project_id='1234',
+                     strict_validate=True,
+                     tenant_id='test_tenant_id',
+                     timeout_mins=60,
+                     user_creds_id=u'1',
+                     username='test_username').AndReturn(old_stack)
 
         self.m.ReplayAll()
 
@@ -1917,7 +1972,7 @@ class StackServiceTest(common.HeatTestCase):
 
         self.m.VerifyAll()
 
-    @mock.patch.object(db_api, 'event_get_all_by_stack')
+    @mock.patch.object(event_object.Event, 'get_all_by_stack')
     @mock.patch.object(service.EngineService, '_get_stack')
     def test_stack_events_list_passes_marker_and_filters(self,
                                                          mock_get_stack,
@@ -1940,7 +1995,7 @@ class StackServiceTest(common.HeatTestCase):
                                                     sort_dir=sort_dir,
                                                     filters=filters)
 
-    @mock.patch.object(db_api, 'event_get_all_by_tenant')
+    @mock.patch.object(event_object.Event, 'get_all_by_tenant')
     def test_tenant_events_list_passes_marker_and_filters(
             self, mock_tenant_events_get_all):
         limit = object()
@@ -1985,7 +2040,7 @@ class StackServiceTest(common.HeatTestCase):
 
         self.m.VerifyAll()
 
-    @mock.patch.object(db_api, 'stack_get_all')
+    @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_passes_marker_info(self, mock_stack_get_all):
         limit = object()
         marker = object()
@@ -2004,7 +2059,7 @@ class StackServiceTest(common.HeatTestCase):
                                                    mock.ANY,
                                                    )
 
-    @mock.patch.object(db_api, 'stack_get_all')
+    @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_passes_filtering_info(self, mock_stack_get_all):
         filters = {'foo': 'bar'}
         self.eng.list_stacks(self.ctx, filters=filters)
@@ -2019,7 +2074,7 @@ class StackServiceTest(common.HeatTestCase):
                                                    mock.ANY,
                                                    )
 
-    @mock.patch.object(db_api, 'stack_get_all')
+    @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_tenant_safe_defaults_to_true(self, mock_stack_get_all):
         self.eng.list_stacks(self.ctx)
         mock_stack_get_all.assert_called_once_with(mock.ANY,
@@ -2033,7 +2088,7 @@ class StackServiceTest(common.HeatTestCase):
                                                    mock.ANY,
                                                    )
 
-    @mock.patch.object(db_api, 'stack_get_all')
+    @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_passes_tenant_safe_info(self, mock_stack_get_all):
         self.eng.list_stacks(self.ctx, tenant_safe=False)
         mock_stack_get_all.assert_called_once_with(mock.ANY,
@@ -2047,7 +2102,7 @@ class StackServiceTest(common.HeatTestCase):
                                                    mock.ANY,
                                                    )
 
-    @mock.patch.object(db_api, 'stack_get_all')
+    @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_show_nested(self, mock_stack_get_all):
         self.eng.list_stacks(self.ctx, show_nested=True)
         mock_stack_get_all.assert_called_once_with(mock.ANY,
@@ -2061,7 +2116,7 @@ class StackServiceTest(common.HeatTestCase):
                                                    True,
                                                    )
 
-    @mock.patch.object(db_api, 'stack_get_all')
+    @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_show_deleted(self, mock_stack_get_all):
         self.eng.list_stacks(self.ctx, show_deleted=True)
         mock_stack_get_all.assert_called_once_with(mock.ANY,
@@ -2075,7 +2130,7 @@ class StackServiceTest(common.HeatTestCase):
                                                    mock.ANY,
                                                    )
 
-    @mock.patch.object(db_api, 'stack_count_all')
+    @mock.patch.object(stack_object.Stack, 'count_all')
     def test_count_stacks_passes_filter_info(self, mock_stack_count_all):
         self.eng.count_stacks(self.ctx, filters={'foo': 'bar'})
         mock_stack_count_all.assert_called_once_with(mock.ANY,
@@ -2084,7 +2139,7 @@ class StackServiceTest(common.HeatTestCase):
                                                      show_deleted=False,
                                                      show_nested=False)
 
-    @mock.patch.object(db_api, 'stack_count_all')
+    @mock.patch.object(stack_object.Stack, 'count_all')
     def test_count_stacks_tenant_safe_default_true(self, mock_stack_count_all):
         self.eng.count_stacks(self.ctx)
         mock_stack_count_all.assert_called_once_with(mock.ANY,
@@ -2093,7 +2148,7 @@ class StackServiceTest(common.HeatTestCase):
                                                      show_deleted=False,
                                                      show_nested=False)
 
-    @mock.patch.object(db_api, 'stack_count_all')
+    @mock.patch.object(stack_object.Stack, 'count_all')
     def test_count_stacks_passes_tenant_safe_info(self, mock_stack_count_all):
         self.eng.count_stacks(self.ctx, tenant_safe=False)
         mock_stack_count_all.assert_called_once_with(mock.ANY,
@@ -2102,7 +2157,7 @@ class StackServiceTest(common.HeatTestCase):
                                                      show_deleted=False,
                                                      show_nested=False)
 
-    @mock.patch.object(db_api, 'stack_count_all')
+    @mock.patch.object(stack_object.Stack, 'count_all')
     def test_count_stacks_show_nested(self, mock_stack_count_all):
         self.eng.count_stacks(self.ctx, show_nested=True)
         mock_stack_count_all.assert_called_once_with(mock.ANY,
@@ -2111,7 +2166,7 @@ class StackServiceTest(common.HeatTestCase):
                                                      show_deleted=False,
                                                      show_nested=True)
 
-    @mock.patch.object(db_api, 'stack_count_all')
+    @mock.patch.object(stack_object.Stack, 'count_all')
     def test_count_stack_show_deleted(self, mock_stack_count_all):
         self.eng.count_stacks(self.ctx, show_deleted=True)
         mock_stack_count_all.assert_called_once_with(mock.ANY,
@@ -2568,7 +2623,7 @@ class StackServiceTest(common.HeatTestCase):
         test_data = {'food': 'yum'}
 
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = db_api.stack_get(self.ctx, self.stack.id)
+        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         service.EngineService._get_stack(self.ctx,
                                          self.stack.identifier()).AndReturn(s)
 
@@ -2661,7 +2716,7 @@ class StackServiceTest(common.HeatTestCase):
 
         test_data = {'food': 'yum'}
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = db_api.stack_get(self.ctx, self.stack.id)
+        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
         service.EngineService._get_stack(self.ctx,
                                          self.stack.identifier()).AndReturn(s)
         self.m.ReplayAll()
@@ -2837,13 +2892,14 @@ class StackServiceTest(common.HeatTestCase):
         self.wr.store()
 
         # And add a metric datapoint
-        watch = db_api.watch_rule_get_by_name(self.ctx, 'show_watch_metric_1')
+        watch = watch_rule_object.WatchRule.get_by_name(self.ctx,
+                                                        'show_watch_metric_1')
         self.assertIsNotNone(watch)
         values = {'watch_rule_id': watch.id,
                   'data': {u'Namespace': u'system/linux',
                            u'ServiceFailure': {
                                u'Units': u'Counter', u'Value': 1}}}
-        watch = db_api.watch_data_create(self.ctx, values)
+        watch_data_object.WatchData.create(self.ctx, values)
 
         # Check there is one result returned
         result = self.eng.show_watch_metric(self.ctx,
@@ -2852,7 +2908,7 @@ class StackServiceTest(common.HeatTestCase):
         self.assertEqual(1, len(result))
 
         # Create another metric datapoint and check we get two
-        watch = db_api.watch_data_create(self.ctx, values)
+        watch_data_object.WatchData.create(self.ctx, values)
         result = self.eng.show_watch_metric(self.ctx,
                                             metric_namespace=None,
                                             metric_name=None)
@@ -3085,7 +3141,7 @@ class StackServiceTest(common.HeatTestCase):
         self.assertRaises(exception.StackExists, self.eng._validate_new_stack,
                           self.ctx, 'test_existing_stack', tmpl)
 
-    @mock.patch.object(service.db_api, 'stack_count_all')
+    @mock.patch.object(service.stack_object.Stack, 'count_all')
     def test_validate_new_stack_checks_stack_limit(self, mock_db_count):
         cfg.CONF.set_override('max_stacks_per_tenant', 99)
         mock_db_count.return_value = 99
@@ -3144,24 +3200,17 @@ class StackServiceTest(common.HeatTestCase):
         self.assertTrue(mock_get_all.called)
         mock_format_service.assert_called_once_with(mock.ANY)
 
-    @mock.patch.object(service_objects.Service, 'get_all_by_args')
     @mock.patch.object(service_objects.Service, 'create')
     @mock.patch.object(context, 'get_admin_context')
     def test_service_manage_report_start(self,
                                          mock_admin_context,
-                                         mock_service_create,
-                                         mock_get_all):
+                                         mock_service_create):
         self.eng.service_id = None
         mock_admin_context.return_value = self.ctx
-        mock_get_all.return_value = []
         srv = dict(id='mock_id')
         mock_service_create.return_value = srv
         self.eng.service_manage_report()
         mock_admin_context.assert_called_once_with()
-        mock_get_all.assert_called_once_with(self.ctx,
-                                             self.eng.host,
-                                             self.eng.binary,
-                                             self.eng.hostname)
         mock_service_create.assert_called_once_with(
             self.ctx,
             dict(host=self.eng.host,
@@ -3174,32 +3223,26 @@ class StackServiceTest(common.HeatTestCase):
         self.assertEqual(self.eng.service_id, srv['id'])
 
     @mock.patch.object(service_objects.Service, 'get_all_by_args')
-    @mock.patch.object(service_objects.Service, 'update_by_id')
+    @mock.patch.object(service_objects.Service, 'delete')
     @mock.patch.object(context, 'get_admin_context')
-    def test_service_manage_report_restart(
-            self,
-            mock_admin_context,
-            mock_service_update,
-            mock_get_all):
-        self.eng.service_id = None
-        srv = dict(id='mock_id', deleted_at=None)
-        mock_get_all.return_value = [srv]
+    def test_service_manage_report_cleanup(self,
+                                           mock_admin_context,
+                                           mock_service_delete,
+                                           mock_get_all):
         mock_admin_context.return_value = self.ctx
-        mock_service_update.return_value = srv
-        self.eng.service_manage_report()
+        ages_a_go = datetime.datetime.utcnow() - datetime.timedelta(
+            seconds=4000)
+        mock_get_all.return_value = [{'id': 'foo',
+                                      'deleted_at': None,
+                                      'updated_at': ages_a_go}]
+        self.eng.service_manage_cleanup()
         mock_admin_context.assert_called_once_with()
         mock_get_all.assert_called_once_with(self.ctx,
                                              self.eng.host,
                                              self.eng.binary,
                                              self.eng.hostname)
-        mock_service_update.assert_called_once_with(
-            self.ctx,
-            srv['id'],
-            dict(engine_id=self.eng.engine_id,
-                 deleted_at=None,
-                 report_interval=cfg.CONF.periodic_interval))
-
-        self.assertEqual(self.eng.service_id, srv['id'])
+        mock_service_delete.assert_called_once_with(
+            self.ctx, 'foo')
 
     @mock.patch.object(service_objects.Service, 'update_by_id')
     @mock.patch.object(context, 'get_admin_context')
@@ -3214,7 +3257,7 @@ class StackServiceTest(common.HeatTestCase):
         mock_service_update.assert_called_once_with(
             self.ctx,
             'mock_id',
-            dict())
+            dict(deleted_at=None))
 
     def test_stop_rpc_server(self):
         with mock.patch.object(self.eng,
@@ -3233,6 +3276,8 @@ class StackServiceTest(common.HeatTestCase):
             rpc_client_class,
             target_class,
             rpc_server_method):
+        self.patchobject(self.eng, 'service_manage_cleanup')
+        self.patchobject(self.eng, 'reset_stack_status')
         self.eng.start()
 
         # engine id
@@ -3300,6 +3345,57 @@ class StackServiceTest(common.HeatTestCase):
         manage_thread_group.add_timer.assert_called_once_with(
             cfg.CONF.periodic_interval,
             self.eng.service_manage_report
+        )
+
+    @mock.patch('heat.engine.service.ThreadGroupManager',
+                return_value=mock.Mock())
+    @mock.patch.object(service_objects.Stack, 'get_all')
+    @mock.patch('heat.engine.stack_lock.StackLock',
+                return_value=mock.Mock())
+    @mock.patch.object(parser.Stack, 'load')
+    @mock.patch.object(context, 'get_admin_context')
+    def test_engine_reset_stack_status(
+            self,
+            mock_admin_context,
+            mock_stack_load,
+            mock_stacklock,
+            mock_get_all,
+            mock_thread):
+        mock_admin_context.return_value = self.ctx
+
+        db_stack = mock.MagicMock()
+        db_stack.id = 'foo'
+        db_stack.status = 'IN_PROGRESS'
+        db_stack.status_reason = None
+        mock_get_all.return_value = [db_stack]
+
+        fake_stack = mock.MagicMock()
+        fake_stack.action = 'CREATE'
+        fake_stack.id = 'foo'
+        fake_stack.status = 'IN_PROGRESS'
+        fake_stack.state_set.return_value = None
+        mock_stack_load.return_value = fake_stack
+
+        fake_lock = mock.MagicMock()
+        fake_lock.get_engine_id.return_value = 'old-engine'
+        fake_lock.acquire.return_value = None
+        mock_stacklock.return_value = fake_lock
+
+        self.eng.thread_group_mgr = mock_thread
+
+        self.eng.reset_stack_status()
+
+        mock_admin_context.assert_called_once_with()
+        filters = {'status': parser.Stack.IN_PROGRESS}
+        mock_get_all.assert_called_once_with(self.ctx,
+                                             filters=filters,
+                                             tenant_safe=False)
+        mock_stack_load.assert_call_once_with(self.ctx,
+                                              stack=db_stack,
+                                              use_stored_context=True)
+        mock_thread.start_with_acquired_lock.assert_call_once_with(
+            fake_stack, fake_stack.state_set, fake_stack.action,
+            parser.Stack.FAILED, 'Engine went down during stack CREATE'
         )
 
     @mock.patch('heat.common.messaging.get_rpc_server',
@@ -3380,6 +3476,8 @@ class StackServiceTest(common.HeatTestCase):
             service_delete_method,
             admin_context_method):
         cfg.CONF.set_default('periodic_interval', 60)
+        self.patchobject(self.eng, 'service_manage_cleanup')
+        self.patchobject(self.eng, 'reset_stack_status')
 
         self.eng.start()
         # Add dummy thread group to test thread_group_mgr.stop() is executed?

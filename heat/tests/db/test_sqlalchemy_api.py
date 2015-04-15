@@ -541,7 +541,7 @@ class SqlAlchemyTest(common.HeatTestCase):
     def test_stack_get_all_non_existing_marker(self):
         [self._setup_test_stack('stack', x)[1] for x in UUIDs]
 
-        uuid = 'this stack doesnt exist'
+        uuid = 'this stack doesn\'t exist'
         st_db = db_api.stack_get_all(self.ctx, marker=uuid)
         self.assertEqual(3, len(st_db))
 
@@ -1572,11 +1572,6 @@ class DBAPIStackTest(common.HeatTestCase):
             self.assertIsNone(db_api.stack_get(ctx, stacks[s].id,
                                                show_deleted=True))
 
-    def test_stack_status_reason_truncate(self):
-        stack = create_stack(self.ctx, self.template, self.user_creds,
-                             status_reason='a' * 1024)
-        self.assertEqual('a' * 255, stack.status_reason)
-
 
 class DBAPIResourceTest(common.HeatTestCase):
     def setUp(self):
@@ -1663,12 +1658,6 @@ class DBAPIResourceTest(common.HeatTestCase):
         self.assertRaises(exception.NotFound, db_api.resource_get_all_by_stack,
                           self.ctx, self.stack2.id)
 
-    def test_resource_status_reason_truncate(self):
-        res = create_resource(self.ctx, self.stack,
-                              status_reason='a' * 1024)
-        ret_res = db_api.resource_get(self.ctx, res.id)
-        self.assertEqual('a' * 255, ret_res.status_reason)
-
 
 class DBAPIStackLockTest(common.HeatTestCase):
     def setUp(self):
@@ -1691,6 +1680,15 @@ class DBAPIStackLockTest(common.HeatTestCase):
         db_api.stack_lock_create(self.stack.id, UUID1)
         observed = db_api.stack_lock_create(self.stack.id, UUID2)
         self.assertEqual(UUID1, observed)
+
+    def test_stack_lock_get_id_success(self):
+        db_api.stack_lock_create(self.stack.id, UUID1)
+        observed = db_api.stack_lock_get_engine_id(self.stack.id)
+        self.assertEqual(UUID1, observed)
+
+    def test_stack_lock_get_id_return_none(self):
+        observed = db_api.stack_lock_get_engine_id(self.stack.id)
+        self.assertIsNone(observed)
 
     def test_stack_lock_steal_success(self):
         db_api.stack_lock_create(self.stack.id, UUID1)
@@ -1893,11 +1891,6 @@ class DBAPIEventTest(common.HeatTestCase):
 
         self.assertEqual(1, db_api.event_count_all_by_stack(self.ctx,
                                                             self.stack2.id))
-
-    def test_event_resource_status_reason_truncate(self):
-        event = create_event(self.ctx, resource_status_reason='a' * 1024)
-        ret_event = db_api.event_get(self.ctx, event.id)
-        self.assertEqual('a' * 255, ret_event.resource_status_reason)
 
 
 class DBAPIWatchRuleTest(common.HeatTestCase):

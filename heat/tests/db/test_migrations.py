@@ -30,6 +30,7 @@ from oslo_db.sqlalchemy import test_migrations
 from oslo_db.sqlalchemy import utils
 from oslo_serialization import jsonutils
 import six
+import sqlalchemy
 
 from heat.db.sqlalchemy import migrate_repo
 from heat.db.sqlalchemy import migration
@@ -71,6 +72,11 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
     def assertColumnExists(self, engine, table, column):
         t = utils.get_table(engine, table)
         self.assertIn(column, t.c)
+
+    def assertColumnType(self, engine, table, column, sqltype):
+        t = utils.get_table(engine, table)
+        col = getattr(t.c, column)
+        self.assertIsInstance(col.type, sqltype)
 
     def assertColumnNotExists(self, engine, table, column):
         t = utils.get_table(engine, table)
@@ -428,11 +434,11 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
             templ.append(t)
 
         user_creds = utils.get_table(engine, 'user_creds')
-        user = [dict(id=900, username='test_user', password='password',
+        user = [dict(id=uid, username='test_user', password='password',
                      tenant='test_project', auth_url='bla',
                      tenant_id=str(uuid.uuid4()),
                      trust_id='',
-                     trustor_user_id='')]
+                     trustor_user_id='') for uid in range(900, 903)]
         engine.execute(user_creds.insert(), user)
 
         stack = utils.get_table(engine, 'stack')
@@ -441,11 +447,14 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
                      ('9a4bd1e9-8b21-46cd-964a-f66cb1cfa2f9', 2)]
         data = [dict(id=ll_id, name=ll_id,
                      raw_template_id=templ[templ_id]['id'],
-                     user_creds_id=user[0]['id'],
+                     user_creds_id=user[templ_id]['id'],
                      username='test_user',
                      disable_rollback=True,
-                     parameters='test_params')
+                     parameters='test_params',
+                     created_at=datetime.datetime.utcnow(),
+                     deleted_at=None)
                 for ll_id, templ_id in stack_ids]
+        data[-1]['deleted_at'] = datetime.datetime.utcnow()
 
         engine.execute(stack.insert(), data)
         return data
@@ -459,23 +468,29 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
         # Get the parameters in stack table
         stack_parameters = {}
         for stack in data:
-            stack_parameters[stack['raw_template_id']] = stack['parameters']
+            templ_id = stack['raw_template_id']
+            stack_parameters[templ_id] = (stack['parameters'],
+                                          stack.get('deleted_at'))
 
         # validate whether its moved to raw_template
         raw_template_table = utils.get_table(engine, 'raw_template')
         raw_templates = raw_template_table.select().execute()
 
         for raw_template in raw_templates:
-            if stack_parameters.get(raw_template.id) is not None:
-                stack_param = stack_parameters[raw_template.id]
+            if raw_template.id in stack_parameters:
+                stack_param, deleted_at = stack_parameters[raw_template.id]
                 tmpl_env = raw_template.environment
-                if engine.name == 'sqlite':
+                if engine.name == 'sqlite' and deleted_at is None:
                     stack_param = '"%s"' % stack_param
-
-                self.assertEqual(stack_param,
-                                 tmpl_env,
-                                 'parameters migration from stack to '
-                                 'raw_template failed')
+                if deleted_at is None:
+                    self.assertEqual(stack_param,
+                                     tmpl_env,
+                                     'parameters migration from stack to '
+                                     'raw_template failed')
+                else:
+                    self.assertIsNone(tmpl_env,
+                                      'parameters migration did not skip '
+                                      'deleted stack')
 
     def _pre_upgrade_057(self, engine):
         # template
@@ -585,6 +600,11 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
                        'current_template_id']
         for column in column_list:
             self.assertColumnExists(engine, 'resource', column)
+
+    def _check_061(self, engine, data):
+        for tab_name in ['stack', 'resource', 'software_deployment']:
+            self.assertColumnType(engine, tab_name, 'status_reason',
+                                  sqlalchemy.Text)
 
 
 class TestHeatMigrationsMySQL(HeatMigrationsCheckers,
