@@ -6,9 +6,11 @@ Author: Thomas Goirand <zigo@debian.org>
 Forwarded: not-needed
 Last-Update: 2015-03-19
 
---- heat-2015.1~b2+git20150318+2956841a2e.orig/requirements.txt
-+++ heat-2015.1~b2+git20150318+2956841a2e/requirements.txt
-@@ -39,7 +39,7 @@ python-troveclient>=1.0.7
+Index: heat/requirements.txt
+===================================================================
+--- heat.orig/requirements.txt
++++ heat/requirements.txt
+@@ -40,7 +40,7 @@ python-troveclient>=1.0.7
  PyYAML>=3.1.0
  qpid-python
  requests>=2.2.0,!=2.4.0
