@@ -1,0 +1,16 @@
+Description: Only run tests within heat/tests
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: no
+Last-Update: 2015-04-16
+
+--- heat-2015.1~rc1.orig/.testr.conf
++++ heat-2015.1~rc1/.testr.conf
+@@ -2,7 +2,7 @@
+ test_command=
+     PYTHON=$(echo ${PYTHON:-python} | sed 's/--source heat//g')
+     START_AT=${TESTR_START_DIR:-.}
+-    ${PYTHON} -m subunit.run discover -s $START_AT -t . $LISTOPT $IDOPTION
++    ${PYTHON} -m subunit.run discover -s $START_AT -t . ./heat/tests $IDOPTION
+     if [ "$START_AT" = "." ]; then for plugin in $START_AT/contrib/*; do ${PYTHON} -m subunit.run discover -s $plugin $LISTOPT $IDOPTION; done; fi
+ test_id_option=--load-list $IDFILE
+ test_list_option=--list
