@@ -15,7 +15,7 @@ override_dh_auto_test:
 	testr init
 	set -e && set -x && \
 		TEMP_REZ=`mktemp -t` && \
-		PYTHONPATH=$(CURDIR) testr run --subunit '^(?!(heat_integrationtests|heat\.tests\.test_server\.ServersTest\.test_resolve_attribute_console_url))' | tee $$TEMP_REZ | subunit2pyunit || true ; \
+		PYTHONPATH=$(CURDIR) testr run --subunit 'heat.tests.*' | tee $$TEMP_REZ | subunit2pyunit || true ; \
 		cat $$TEMP_REZ | subunit-filter -s --no-passthrough | subunit-stats || true ; \
 		rm -f $$TEMP_REZ ;
 	testr slowest
