@@ -1,0 +1,19 @@
+Description: Adding a p to self.assertRegex
+ The version in Debian doesn't have the last letter of self.assertRegexp.
+ This patch goes backward in time and fixes that, to allow the unit test
+ to pass.
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: not-needed
+Last-Update: 2015-04-16
+
+--- heat-2015.1~rc1.orig/heat/tests/test_software_deployment.py
++++ heat-2015.1~rc1/heat/tests/test_software_deployment.py
+@@ -951,7 +951,7 @@ class SoftwareDeploymentTest(common.Heat
+             '^http://192.0.2.1/v1/AUTH_test_tenant_id/'
+             '(software_deployment_test_stack-deployment_mysql-.*)/(.*)'
+             '\\?temp_url_sig=.*&temp_url_expires=\\d*$')
+-        self.assertRegex(temp_url, temp_url_pattern)
++        self.assertRegexp(temp_url, temp_url_pattern)
+         m = temp_url_pattern.search(temp_url)
+         object_name = m.group(2)
+         self.assertEqual(container, m.group(1))
