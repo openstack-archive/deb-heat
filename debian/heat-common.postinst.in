@@ -23,7 +23,7 @@ if [ "$1" = "configure" ] || [ "$1" = "reconfigure" ] ; then
 	if [ "$RET" = "true" ] ; then
 		pkgos_dbc_postinst ${CONF} database connection heat $@
 	fi
-	pkgos_rabbit_write_conf ${CONF} DEFAULT heat
+	pkgos_rabbit_write_conf ${CONF} oslo_messaging_rabbit heat
         pkgos_write_admin_creds ${CONF} keystone_authtoken heat
 	pkgos_register_endpoint_postinst heat heat orchestration "Heat Orchestration API" 8004 /v1/'%(tenant_id)s'
 	# This is the equivalent of db-sync:
