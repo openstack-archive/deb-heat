@@ -35,8 +35,8 @@ from heat.engine import scheduler
 from heat.engine import template
 from heat.objects import resource_data as resource_data_object
 from heat.tests import common
+from heat.tests.nova import fakes as fakes_nova
 from heat.tests import utils
-from heat.tests.v1_1 import fakes as fakes_v1_1
 
 
 wp_template = '''
@@ -98,7 +98,7 @@ resources:
 class ServersTest(common.HeatTestCase):
     def setUp(self):
         super(ServersTest, self).setUp()
-        self.fc = fakes_v1_1.FakeClient()
+        self.fc = fakes_nova.FakeClient()
         self.limits = self.m.CreateMockAnything()
         self.limits.absolute = self._limits_absolute()
 
@@ -1126,7 +1126,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
         get = self.fc.client.get_servers_1234
         get().AndReturn(server_get)
-        get().AndRaise(fakes_v1_1.fake_exception())
+        get().AndRaise(fakes_nova.fake_exception())
         mox.Replay(get)
         self.m.ReplayAll()
 
@@ -1145,7 +1145,7 @@ class ServersTest(common.HeatTestCase):
 
         self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
         get = self.fc.client.get_servers_1234
-        get().AndRaise(fakes_v1_1.fake_exception())
+        get().AndRaise(fakes_nova.fake_exception())
         mox.Replay(get)
 
         scheduler.TaskRunner(server.delete)()
@@ -1590,6 +1590,7 @@ class ServersTest(common.HeatTestCase):
 
         update_template = copy.deepcopy(server.t)
         update_template['Properties']['image'] = 'mustreplace'
+        update_template['Properties']['image_update_policy'] = 'REPLACE'
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(resource.UpdateReplace, updater)
 
@@ -1633,7 +1634,7 @@ class ServersTest(common.HeatTestCase):
         server.resource_id = '1234'
         self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
         get = self.fc.client.get_servers_1234
-        get().AndRaise(fakes_v1_1.fake_exception())
+        get().AndRaise(fakes_nova.fake_exception())
         mox.Replay(get)
         self.m.ReplayAll()
 
@@ -1802,7 +1803,7 @@ class ServersTest(common.HeatTestCase):
         # return the SUSPENDED state first (twice, so we sleep)
         self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
         get = self.fc.client.get_servers_1234
-        get().AndRaise(fakes_v1_1.fake_exception())
+        get().AndRaise(fakes_nova.fake_exception())
         self.m.ReplayAll()
 
         server.state_set(server.SUSPEND, server.COMPLETE)
@@ -1880,6 +1881,10 @@ class ServersTest(common.HeatTestCase):
                           {'v4-fixed-ip': '192.0.2.0'}],
                          server._build_nics([{'port': 'aaaabbbb'},
                                              {'fixed_ip': '192.0.2.0'}]))
+        self.assertEqual([{'port-id': 'aaaabbbb'},
+                          {'v6-fixed-ip': '2002::2'}],
+                         server._build_nics([{'port': 'aaaabbbb'},
+                                             {'fixed_ip': '2002::2'}]))
         self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
                          return_value='1234abcd')
         self.assertEqual([{'net-id': '1234abcd'}],
@@ -2339,7 +2344,7 @@ class ServersTest(common.HeatTestCase):
         server.resource_id = '1234'
         self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
         get = self.fc.client.get_servers_1234
-        get().AndRaise(fakes_v1_1.fake_exception())
+        get().AndRaise(fakes_nova.fake_exception())
         mox.Replay(get)
         self.m.ReplayAll()
 
@@ -2874,6 +2879,49 @@ class ServersTest(common.HeatTestCase):
         self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
         self.m.VerifyAll()
 
+    def test_server_update_networks_with_uuid(self):
+        return_server = self.fc.servers.list()[1]
+        return_server.id = '5678'
+        server = self._create_test_server(return_server, 'networks_update')
+
+        old_networks = [
+            {'network': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}]
+        new_networks = [
+            {'uuid': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}]
+
+        server.t['Properties']['networks'] = old_networks
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['networks'] = new_networks
+
+        self.m.StubOutWithMock(self.fc.servers, 'get')
+        self.fc.servers.get('5678').MultipleTimes().AndReturn(return_server)
+
+        self.m.StubOutWithMock(return_server, 'interface_list')
+
+        poor_interfaces = [
+            self.create_fake_iface('95e25541-d26a-478d-8f36-ae1c8f6b74dc',
+                                   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                   '11.12.13.14')
+        ]
+
+        return_server.interface_list().AndReturn(poor_interfaces)
+
+        self.m.StubOutWithMock(return_server, 'interface_detach')
+        return_server.interface_detach(
+            poor_interfaces[0].port_id).AndReturn(None)
+
+        self.m.StubOutWithMock(return_server, 'interface_attach')
+        return_server.interface_attach(None, new_networks[0]['uuid'],
+                                       None).AndReturn(None)
+        self.stub_NetworkConstraint_validate()
+        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
+                         return_value='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(server.update, update_template)()
+        self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
+        self.m.VerifyAll()
+
     def test_server_update_networks_with_empty_list(self):
         return_server = self.fc.servers.list()[1]
         return_server.id = '5678'
@@ -2945,6 +2993,7 @@ class ServersTest(common.HeatTestCase):
 
         update_template = copy.deepcopy(server.t)
         update_template['Properties']['image'] = 'Update Image'
+        update_template['Properties']['image_update_policy'] = 'REPLACE'
 
         # update
         updater = scheduler.TaskRunner(server.update, update_template)
@@ -3034,15 +3083,6 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(self.fc.servers, 'create')
         self.fc.servers.create(
             image=744, flavor=3, key_name='test',
-            name=utils.PhysName("server_restore", "WebServer"),
-            security_groups=[],
-            userdata=mox.IgnoreArg(), scheduler_hints=None,
-            meta=None, nics=None, availability_zone=None,
-            block_device_mapping=None, block_device_mapping_v2=None,
-            config_drive=None, disk_config=None, reservation_id=None,
-            files={}, admin_pass=None).AndReturn(return_server)
-        self.fc.servers.create(
-            image=1, flavor=3, key_name='test',
             name=utils.PhysName("server_restore", "WebServer"),
             security_groups=[],
             userdata=mox.IgnoreArg(), scheduler_hints=None,
