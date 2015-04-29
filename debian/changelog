@@ -1,6 +1,7 @@
-heat (2015.1~rc1-1) UNRELEASED; urgency=medium
+heat (2015.1~rc1-1) unstable; urgency=medium
 
   * New upstream release.
+  * Uploading to unstable.
   * Reviewed (build-)depends for this release.
   * Build the heat.conf.sample on the fly at build time.
   * Refreshed allow-route-2.0.patch.
