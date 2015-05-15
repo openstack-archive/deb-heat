@@ -50,9 +50,12 @@ override_dh_install:
 		--namespace keystonemiddleware.auth_token \
 		--namespace oslo.messaging \
 		--namespace oslo.db \
+		--namespace oslo.log \
 		--wrap-width 120 \
 		--output-file $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
 	sed -i 's|^[# \t]*connection[\t #]*=.*|connection=sqlite:////var/lib/heat/heatdb|' $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
+	sed -i 's|^[# \t]*auth_protocol[\t #]*=.*|auth_protocol = http|' $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
+
 
 	dh_install --fail-missing -Xbin/cinder-keystone-setup
 	set -e && for pyvers in $(PYTHONS); do \

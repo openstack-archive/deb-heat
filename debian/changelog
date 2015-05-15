@@ -1,3 +1,9 @@
+heat (2015.1.0-2) unstable; urgency=medium
+
+  * Added missing oslo.log namespace when generating default config.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 15 May 2015 16:27:46 +0200
+
 heat (2015.1.0-1) unstable; urgency=medium
 
   * New upstream release.
