@@ -13,8 +13,8 @@ ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 override_dh_auto_test:
 	rm -rf .testrepository
 	testr init
-	set -e && set -x && \
-		TEMP_REZ=`mktemp -t` && \
+	set -e ; set -x ; \
+		TEMP_REZ=`mktemp -t` ; \
 		PYTHONPATH=$(CURDIR) testr run --subunit 'heat.tests.*' | tee $$TEMP_REZ | subunit2pyunit || true ; \
 		cat $$TEMP_REZ | subunit-filter -s --no-passthrough | subunit-stats || true ; \
 		rm -f $$TEMP_REZ ;
@@ -58,7 +58,7 @@ override_dh_install:
 
 
 	dh_install --fail-missing -Xbin/cinder-keystone-setup
-	set -e && for pyvers in $(PYTHONS); do \
+	set -e ; for pyvers in $(PYTHONS); do \
 		mkdir -p $(CURDIR)/debian/python-heat/usr/lib/python$$pyvers/dist-packages/heat/plugins ; \
 		cp -rf contrib/heat_keystoneclient_v2/heat_keystoneclient_v2 $(CURDIR)/debian/python-heat/usr/lib/python$$pyvers/dist-packages/heat/plugins ; \
         done
