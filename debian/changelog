@@ -1,8 +1,10 @@
-heat (2015.1.0-3) UNRELEASED; urgency=medium
+heat (2015.1.0-3) unstable; urgency=medium
 
   * Replaced && by ; in debian/rules.
+  * Purges correctly log files on purge.
+  * Removes double definition of PATH= in init scripts.
 
- -- Thomas Goirand <zigo@debian.org>  Wed, 03 Jun 2015 11:40:02 +0200
+ -- Thomas Goirand <zigo@debian.org>  Wed, 03 Jun 2015 14:57:22 +0200
 
 heat (2015.1.0-2) unstable; urgency=medium
 

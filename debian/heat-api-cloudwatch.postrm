@@ -3,7 +3,7 @@
 set -e
 
 if [ "${1}" = "purge" ] ; then
-	rm -rf /var/log/heat/heat-api-cfn*
+	rm -rf /var/log/heat/heat-api-cloudwatch.*
 	[ -d /var/log/heat ] && rmdir --ignore-fail-on-non-empty /var/log/heat
 fi
 

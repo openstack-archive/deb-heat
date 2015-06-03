@@ -12,7 +12,6 @@
 # Author: Thomas Goirand <zigo@debian.or>
 
 # PATH should only include /usr/* if it runs after the mountnfs.sh script
-PATH=/sbin:/usr/sbin:/bin:/usr/bin
 DESC="Heat API"
 PROJECT_NAME=heat
 NAME=${PROJECT_NAME}-api
