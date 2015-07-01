@@ -6,9 +6,11 @@ Author: Thomas Goirand <zigo@debian.org>
 Forwarded: not-needed
 Last-Update: 2015-04-16
 
---- heat-2015.1~rc1.orig/heat/tests/test_software_deployment.py
-+++ heat-2015.1~rc1/heat/tests/test_software_deployment.py
-@@ -951,7 +951,7 @@ class SoftwareDeploymentTest(common.Heat
+Index: heat/heat/tests/test_software_deployment.py
+===================================================================
+--- heat.orig/heat/tests/test_software_deployment.py
++++ heat/heat/tests/test_software_deployment.py
+@@ -952,7 +952,7 @@ class SoftwareDeploymentTest(common.Heat
              '^http://192.0.2.1/v1/AUTH_test_tenant_id/'
              '(software_deployment_test_stack-deployment_mysql-.*)/(.*)'
              '\\?temp_url_sig=.*&temp_url_expires=\\d*$')

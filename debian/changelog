@@ -1,6 +1,8 @@
 heat (2015.1.0-4) unstable; urgency=medium
 
   * Rebuilt with sqlalchemy 1.0.6.
+  * Refreshed patch.
+  * Added sqlalchemy version patch in requirements.txt.
 
  -- Thomas Goirand <zigo@debian.org>  Wed, 01 Jul 2015 02:27:14 +0000
 
