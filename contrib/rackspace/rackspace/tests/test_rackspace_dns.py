@@ -18,10 +18,10 @@ import mock
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import environment
-from heat.engine import parser
 from heat.engine import resource
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
+from heat.engine import stack as parser
 from heat.engine import template
 from heat.tests import common
 from heat.tests import utils
@@ -103,15 +103,15 @@ class RackspaceDnsTest(common.HeatTestCase):
         t = parsed_t
         templ = template.Template(
             t, env=environment.Environment({'name': 'test'}))
-        stack = parser.Stack(utils.dummy_context(),
-                             stack_name,
-                             templ,
-                             stack_id=str(uuid.uuid4()))
+        self.stack = parser.Stack(utils.dummy_context(),
+                                  stack_name,
+                                  templ,
+                                  stack_id=str(uuid.uuid4()))
 
         instance = cloud_dns.CloudDns(
             '%s_name' % name,
-            templ.resource_definitions(stack)['domain'],
-            stack)
+            templ.resource_definitions(self.stack)['domain'],
+            self.stack)
         return instance
 
     def _stubout_create(self, instance, fake_dnsinstance, **create_args):
@@ -257,7 +257,7 @@ class RackspaceDnsTest(common.HeatTestCase):
         ut = rsrc_defn.ResourceDefinition(instance.name,
                                           instance.type(),
                                           uprops)
-
+        instance.state_set(instance.CREATE, instance.COMPLETE)
         scheduler.TaskRunner(instance.update, ut)()
         self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
         self.m.VerifyAll()
@@ -316,6 +316,7 @@ class RackspaceDnsTest(common.HeatTestCase):
         ut = rsrc_defn.ResourceDefinition(instance.name,
                                           instance.type(),
                                           uprops)
+        instance.state_set(instance.CREATE, instance.COMPLETE)
 
         scheduler.TaskRunner(instance.update, ut)()
         self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)

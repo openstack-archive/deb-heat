@@ -47,9 +47,6 @@ class CfnInitIntegrationTest(scenario_base.ScenarioTestsBase):
             # logs to be compared
             self._log_console_output(servers=[server])
 
-        # Check stack status
-        self._wait_for_stack_status(sid, 'CREATE_COMPLETE')
-
         stack = self.client.stacks.get(sid)
 
         # This is an assert of great significance, as it means the following
@@ -94,11 +91,11 @@ class CfnInitIntegrationTest(scenario_base.ScenarioTestsBase):
                via generated keypair.
         """
         parameters = {
-            "key_name": self.keypair_name,
-            "flavor": self.conf.instance_type,
-            "image": self.conf.image_ref,
-            "timeout": self.conf.build_timeout,
-            "subnet": self.net["subnets"][0],
+            'key_name': self.keypair_name,
+            'flavor': self.conf.instance_type,
+            'image': self.conf.image_ref,
+            'timeout': self.conf.build_timeout,
+            'subnet': self.net['subnets'][0],
         }
 
         # Launch stack

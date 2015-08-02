@@ -12,35 +12,24 @@
 #    under the License.
 
 import mock
+import six
 
 from heat.common import grouputils
 from heat.common import template_format
-from heat.engine import resource
 from heat.tests import common
-from heat.tests import generic_resource
 from heat.tests import utils
 
 nested_stack = '''
 heat_template_version: 2013-05-23
 resources:
   r0:
-    type: dummy.resource
+    type: OverwrittenFnGetRefIdType
   r1:
-    type: dummy.resource
+    type: OverwrittenFnGetRefIdType
 '''
 
 
-class SimpleResource(generic_resource.ResourceWithProps):
-
-    def FnGetRefId(self):
-        return 'ID-%s' % self.name
-
-
 class GroupUtilsTest(common.HeatTestCase):
-
-    def setUp(self):
-        super(GroupUtilsTest, self).setUp()
-        resource._register_class('dummy.resource', SimpleResource)
 
     def test_non_nested_resource(self):
         group = mock.Mock()
@@ -61,7 +50,7 @@ class GroupUtilsTest(common.HeatTestCase):
         self.assertEqual(2, grouputils.get_size(group))
 
         # member list (sorted)
-        members = [r for r in stack.itervalues()]
+        members = [r for r in six.itervalues(stack)]
         expected = sorted(members, key=lambda r: (r.created_time, r.name))
         actual = grouputils.get_members(group)
         self.assertEqual(expected, actual)

@@ -30,49 +30,37 @@ from heat.tests import utils
 
 
 gw_template_deprecated = '''
-{
-  'AWSTemplateFormatVersion': '2010-09-09',
-  'Description': 'Template to test Network Gateway resource',
-  'Parameters': {},
-  'Resources': {
-    'NetworkGateway': {
-      'Type': 'OS::Neutron::NetworkGateway',
-      'Properties': {
-        'name': 'NetworkGateway',
-        'devices': [{
-          'id': 'e52148ca-7db9-4ec3-abe6-2c7c0ff316eb',
-          'interface_name': 'breth1'}],
-        'connections': [{
-          'network_id': '6af055d3-26f6-48dd-a597-7611d7e58d35',
-          'segmentation_type': 'vlan',
-          'segmentation_id': 10}]
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test Network Gateway resource
+resources:
+  NetworkGateway:
+    type: OS::Neutron::NetworkGateway
+    properties:
+      name: NetworkGateway
+      devices:
+        - id: e52148ca-7db9-4ec3-abe6-2c7c0ff316eb
+          interface_name: breth1
+      connections:
+        - network_id: 6af055d3-26f6-48dd-a597-7611d7e58d35
+          segmentation_type: vlan
+          segmentation_id: 10
 '''
 
 gw_template = '''
-{
-  'AWSTemplateFormatVersion': '2010-09-09',
-  'Description': 'Template to test Network Gateway resource',
-  'Parameters': {},
-  'Resources': {
-    'NetworkGateway': {
-      'Type': 'OS::Neutron::NetworkGateway',
-      'Properties': {
-        'name': 'NetworkGateway',
-        'devices': [{
-          'id': 'e52148ca-7db9-4ec3-abe6-2c7c0ff316eb',
-          'interface_name': 'breth1'}],
-        'connections': [{
-          'network': '6af055d3-26f6-48dd-a597-7611d7e58d35',
-          'segmentation_type': 'vlan',
-          'segmentation_id': 10}]
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test Network Gateway resource
+resources:
+  NetworkGateway:
+    type: OS::Neutron::NetworkGateway
+    properties:
+      name: NetworkGateway
+      devices:
+        - id: e52148ca-7db9-4ec3-abe6-2c7c0ff316eb
+          interface_name: breth1
+      connections:
+        - network: 6af055d3-26f6-48dd-a597-7611d7e58d35
+          segmentation_type: vlan
+          segmentation_id: 10
 '''
 
 sng = {
@@ -141,11 +129,11 @@ class NeutronNetworkGatewayTest(common.HeatTestCase):
 
         t = template_format.parse(gw_template)
 
-        stack = utils.parse_stack(t)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(t)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         rsrc = network_gateway.NetworkGateway(
             'test_network_gateway',
-            resource_defns['NetworkGateway'], stack)
+            resource_defns['NetworkGateway'], self.stack)
         return rsrc
 
     def prepare_create_network_gateway(self, resolve_neutron=True):
@@ -192,11 +180,11 @@ class NeutronNetworkGatewayTest(common.HeatTestCase):
         else:
             t = template_format.parse(gw_template_deprecated)
 
-        stack = utils.parse_stack(t)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(t)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         rsrc = network_gateway.NetworkGateway(
             'test_network_gateway',
-            resource_defns['NetworkGateway'], stack)
+            resource_defns['NetworkGateway'], self.stack)
         return rsrc
 
     def _test_network_gateway_create(self, resolve_neutron=True):
@@ -518,7 +506,8 @@ class NeutronNetworkGatewayTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.network_gateway: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.assertIsNone(scheduler.TaskRunner(rsrc.delete)())
@@ -528,7 +517,7 @@ class NeutronNetworkGatewayTest(common.HeatTestCase):
 
     def test_gateway_validate_failed_with_vlan(self):
         t = template_format.parse(gw_template)
-        del t['Resources']['NetworkGateway']['Properties'][
+        del t['resources']['NetworkGateway']['properties'][
             'connections'][0]['segmentation_id']
         stack = utils.parse_stack(t)
         resource_defns = stack.t.resource_definitions(stack)
@@ -550,7 +539,7 @@ class NeutronNetworkGatewayTest(common.HeatTestCase):
 
     def test_gateway_validate_failed_with_flat(self):
         t = template_format.parse(gw_template)
-        t['Resources']['NetworkGateway']['Properties'][
+        t['resources']['NetworkGateway']['properties'][
             'connections'][0]['segmentation_type'] = 'flat'
         stack = utils.parse_stack(t)
         resource_defns = stack.t.resource_definitions(stack)

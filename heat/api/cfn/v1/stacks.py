@@ -165,7 +165,7 @@ class StackController(object):
             }
 
             def replacecolon(d):
-                return dict(map(lambda (k, v): (k.replace(':', '.'), v),
+                return dict(map(lambda k_v: (k_v[0].replace(':', '.'), k_v[1]),
                                 d.items()))
 
             def transform(attrs):
@@ -395,7 +395,7 @@ class StackController(object):
             return exception.map_remote_error(ex)
 
         if templ is None:
-            msg = _('stack not not found')
+            msg = _('stack not found')
             return exception.HeatInvalidParameterValueError(detail=msg)
 
         return api_utils.format_response('GetTemplate',

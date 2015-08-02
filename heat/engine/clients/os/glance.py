@@ -29,15 +29,17 @@ class GlanceClientPlugin(client_plugin.ClientPlugin):
 
     exceptions_module = exc
 
+    service_types = [IMAGE] = ['image']
+
     def _create(self):
 
         con = self.context
         endpoint_type = self._get_client_option('glance', 'endpoint_type')
-        endpoint = self.url_for(service_type='image',
+        endpoint = self.url_for(service_type=self.IMAGE,
                                 endpoint_type=endpoint_type)
         args = {
             'auth_url': con.auth_url,
-            'service_type': 'image',
+            'service_type': self.IMAGE,
             'project_id': con.tenant,
             'token': self.auth_token,
             'endpoint_type': endpoint_type,
@@ -64,7 +66,7 @@ class GlanceClientPlugin(client_plugin.ClientPlugin):
 
         :param image_identifier: image name or a UUID-like identifier
         :returns: the id of the requested :image_identifier:
-        :raises: exception.ImageNotFound,
+        :raises: exception.EntityNotFound,
                  exception.PhysicalResourceNameAmbiguity
         '''
         if uuidutils.is_uuid_like(image_identifier):
@@ -82,7 +84,7 @@ class GlanceClientPlugin(client_plugin.ClientPlugin):
 
         :param image_identifier: image name
         :returns: the id of the requested :image_identifier:
-        :raises: exception.ImageNotFound,
+        :raises: exception.EntityNotFound,
                  exception.PhysicalResourceNameAmbiguity
         '''
         try:
@@ -95,7 +97,8 @@ class GlanceClientPlugin(client_plugin.ClientPlugin):
         if num_matches == 0:
             LOG.info(_LI("Image %s was not found in glance"),
                      image_identifier)
-            raise exception.ImageNotFound(image_name=image_identifier)
+            raise exception.EntityNotFound(entity='Image',
+                                           name=image_identifier)
         elif num_matches > 1:
             LOG.info(_LI("Multiple images %s were found in glance with name"),
                      image_identifier)
@@ -107,7 +110,7 @@ class GlanceClientPlugin(client_plugin.ClientPlugin):
 
 class ImageConstraint(constraints.BaseCustomConstraint):
 
-    expected_exceptions = (exception.ImageNotFound,)
+    expected_exceptions = (exception.EntityNotFound,)
 
     def validate_with_client(self, client, value):
         client.client_plugin('glance').get_image_id(value)

@@ -29,12 +29,13 @@ class Restarter(signal_responder.SignalResponder):
 
     support_status = support.SupportStatus(
         support.DEPRECATED,
-        _('The HARestarter resource type is unsupported and will be removed '
+        _('The HARestarter resource type is deprecated and will be removed '
           'in a future release of Heat, once it has support for auto-healing '
           'any type of resource. Note that HARestarter does *not* actually '
           'restart servers - it deletes and then recreates them. It also does '
           'the same to all dependent resources, and may therefore exhibit '
-          'unexpected and undesirable behaviour. Avoid.')
+          'unexpected and undesirable behaviour. Avoid.'),
+        version='2015.1'
     )
 
     PROPERTIES = (
@@ -62,7 +63,8 @@ class Restarter(signal_responder.SignalResponder):
 
     attributes_schema = {
         ALARM_URL: attributes.Schema(
-            _("A signed url to handle the alarm (Heat extension).")
+            _("A signed url to handle the alarm (Heat extension)."),
+            type=attributes.Schema.STRING
         ),
     }
 
@@ -101,7 +103,7 @@ class Restarter(signal_responder.SignalResponder):
         when there is an alarm.
         '''
         if name == self.ALARM_URL and self.resource_id is not None:
-            return six.text_type(self._get_signed_url())
+            return six.text_type(self._get_ec2_signed_url())
 
 
 def resource_mapping():

@@ -20,6 +20,7 @@ from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources import signal_responder
+from heat.engine.resources import stack_resource
 from heat.engine.resources import stack_user
 
 LOG = logging.getLogger(__name__)
@@ -32,6 +33,10 @@ class GenericResource(resource.Resource):
     properties_schema = {}
     attributes_schema = {'foo': attributes.Schema('A generic attribute'),
                          'Foo': attributes.Schema('Another generic attribute')}
+
+    @classmethod
+    def is_service_available(cls, context):
+        return True
 
     def handle_create(self):
         LOG.warn(_LW('Creating generic resource (Type "%s")'),
@@ -55,6 +60,21 @@ class GenericResource(resource.Resource):
     def handle_resume(self):
         LOG.warn(_LW('Resuming generic resource (Type "%s")'),
                  self.type())
+
+
+class ResWithShowAttr(GenericResource):
+    attributes_schema = {'foo': attributes.Schema('A generic attribute'),
+                         'Foo': attributes.Schema('Another generic attribute'),
+                         'show': attributes.Schema('A dict of all details '
+                                                   'of attributes')}
+
+    def _resolve_attribute(self, name):
+        if name == 'show':
+            return {'foo': self.name,
+                    'Foo': self.name,
+                    'Another': self.name}
+        else:
+            return self.name
 
 
 class ResWithComplexPropsAndAttrs(GenericResource):
@@ -132,8 +152,11 @@ class ResourceWithRequiredProps(GenericResource):
 
 
 class SignalResource(signal_responder.SignalResponder):
-    properties_schema = {}
-    attributes_schema = {'AlarmUrl': attributes.Schema('Get a signed webhook')}
+    properties_schema = {
+        'signal_transport': properties.Schema(properties.Schema.STRING,
+                                              default='CFN_SIGNAL')}
+    attributes_schema = {'AlarmUrl': attributes.Schema('Get a signed webhook'),
+                         'signal': attributes.Schema('Get a signal')}
 
     def handle_create(self):
         super(SignalResource, self).handle_create()
@@ -144,8 +167,22 @@ class SignalResource(signal_responder.SignalResponder):
                  {'type': self.type(), 'details': details})
 
     def _resolve_attribute(self, name):
-        if name == 'AlarmUrl' and self.resource_id is not None:
-            return six.text_type(self._get_signed_url())
+        if self.resource_id is not None:
+            if self.properties['signal_transport'] == 'CFN_SIGNAL':
+                d = {'alarm_url': six.text_type(self._get_ec2_signed_url())}
+            elif self.properties['signal_transport'] == 'HEAT_SIGNAL':
+                d = self._get_heat_signal_credentials()
+                d['alarm_url'] = six.text_type(self._get_heat_signal_url())
+            elif self.properties['signal_transport'] == 'TEMP_URL_SIGNAL':
+                d = {'alarm_url': six.text_type(self._get_swift_signal_url())}
+            elif self.properties['signal_transport'] == 'ZAQAR_SIGNAL':
+                d = self._get_heat_signal_credentials()
+                d['queue_id'] = six.text_type(
+                    self._get_zaqar_signal_queue_id())
+            if name == 'AlarmUrl':
+                return d['alarm_url']
+            elif name == 'signal':
+                return d
 
 
 class StackUserResource(stack_user.StackUser):
@@ -162,3 +199,69 @@ class ResourceWithCustomConstraint(GenericResource):
         'Foo': properties.Schema(
             properties.Schema.STRING,
             constraints=[constraints.CustomConstraint('neutron.network')])}
+
+
+class ResourceWithAttributeType(GenericResource):
+    attributes_schema = {
+        'attr1': attributes.Schema('A generic attribute',
+                                   type=attributes.Schema.STRING),
+        'attr2': attributes.Schema('Another generic attribute',
+                                   type=attributes.Schema.MAP)
+    }
+
+    def _resolve_attribute(self, name):
+        if name == 'attr1':
+            return "valid_sting"
+        elif name == 'attr2':
+            return "invalid_type"
+
+
+class ResourceWithDefaultClientName(resource.Resource):
+    default_client_name = 'sample'
+
+
+class ResourceWithFnGetAttType(GenericResource):
+    def FnGetAtt(self, name):
+        pass
+
+
+class ResourceWithFnGetRefIdType(ResourceWithProps):
+    def FnGetRefId(self):
+        return 'ID-%s' % self.name
+
+
+class ResourceWithListProp(ResourceWithFnGetRefIdType):
+    properties_schema = {"listprop": properties.Schema(properties.Schema.LIST)}
+
+
+class StackResourceType(stack_resource.StackResource, GenericResource):
+    def physical_resource_name(self):
+        return "cb2f2b28-a663-4683-802c-4b40c916e1ff"
+
+    def set_template(self, nested_template, params):
+        self.nested_template = nested_template
+        self.nested_params = params
+
+    def handle_create(self):
+        return self.create_with_template(self.nested_template,
+                                         self.nested_params)
+
+    def handle_adopt(self, resource_data):
+        return self.create_with_template(self.nested_template,
+                                         self.nested_params,
+                                         adopt_data=resource_data)
+
+    def handle_delete(self):
+        self.delete_nested()
+
+
+class ResourceWithRestoreType(ResWithComplexPropsAndAttrs):
+
+    def handle_restore(self, defn, data):
+        props = dict(
+            (key, value) for (key, value) in
+            six.iteritems(defn.properties(self.properties_schema))
+            if value is not None)
+        value = data['resource_data']['a_string']
+        props['a_string'] = value
+        return defn.freeze(properties=props)

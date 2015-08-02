@@ -11,6 +11,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_utils import netutils
+
 from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import attributes
@@ -53,20 +55,20 @@ class Subnet(neutron.NeutronResource):
     ATTRIBUTES = (
         NAME_ATTR, NETWORK_ID_ATTR, TENANT_ID_ATTR, ALLOCATION_POOLS_ATTR,
         GATEWAY_IP_ATTR, HOST_ROUTES_ATTR, IP_VERSION_ATTR, CIDR_ATTR,
-        DNS_NAMESERVERS_ATTR, ENABLE_DHCP_ATTR, SHOW,
+        DNS_NAMESERVERS_ATTR, ENABLE_DHCP_ATTR,
     ) = (
         'name', 'network_id', 'tenant_id', 'allocation_pools',
         'gateway_ip', 'host_routes', 'ip_version', 'cidr',
-        'dns_nameservers', 'enable_dhcp', 'show',
+        'dns_nameservers', 'enable_dhcp',
     )
 
     properties_schema = {
         NETWORK_ID: properties.Schema(
             properties.Schema.STRING,
             support_status=support.SupportStatus(
-                support.DEPRECATED,
-                _('Use property %s.') % NETWORK),
-            required=False,
+                status=support.DEPRECATED,
+                message=_('Use property %s.') % NETWORK,
+                version='2014.2'),
             constraints=[
                 constraints.CustomConstraint('neutron.network')
             ],
@@ -74,15 +76,18 @@ class Subnet(neutron.NeutronResource):
         NETWORK: properties.Schema(
             properties.Schema.STRING,
             _('The ID of the attached network.'),
-            required=False,
             constraints=[
                 constraints.CustomConstraint('neutron.network')
             ],
+            support_status=support.SupportStatus(version='2014.2')
         ),
         CIDR: properties.Schema(
             properties.Schema.STRING,
             _('The CIDR.'),
-            required=True
+            required=True,
+            constraints=[
+                constraints.CustomConstraint('net_cidr')
+            ]
         ),
         VALUE_SPECS: properties.Schema(
             properties.Schema.MAP,
@@ -130,11 +135,17 @@ class Subnet(neutron.NeutronResource):
                 schema={
                     ALLOCATION_POOL_START: properties.Schema(
                         properties.Schema.STRING,
-                        required=True
+                        required=True,
+                        constraints=[
+                            constraints.CustomConstraint('ip_addr')
+                        ]
                     ),
                     ALLOCATION_POOL_END: properties.Schema(
                         properties.Schema.STRING,
-                        required=True
+                        required=True,
+                        constraints=[
+                            constraints.CustomConstraint('ip_addr')
+                        ]
                     ),
                 },
             )
@@ -155,7 +166,10 @@ class Subnet(neutron.NeutronResource):
                     ),
                     ROUTE_NEXTHOP: properties.Schema(
                         properties.Schema.STRING,
-                        required=True
+                        required=True,
+                        constraints=[
+                            constraints.CustomConstraint('ip_addr')
+                        ]
                     ),
                 },
             ),
@@ -185,37 +199,44 @@ class Subnet(neutron.NeutronResource):
 
     attributes_schema = {
         NAME_ATTR: attributes.Schema(
-            _("Friendly name of the subnet.")
+            _("Friendly name of the subnet."),
+            type=attributes.Schema.STRING
         ),
         NETWORK_ID_ATTR: attributes.Schema(
-            _("Parent network of the subnet.")
+            _("Parent network of the subnet."),
+            type=attributes.Schema.STRING
         ),
         TENANT_ID_ATTR: attributes.Schema(
-            _("Tenant owning the subnet.")
+            _("Tenant owning the subnet."),
+            type=attributes.Schema.STRING
         ),
         ALLOCATION_POOLS_ATTR: attributes.Schema(
-            _("Ip allocation pools and their ranges.")
+            _("Ip allocation pools and their ranges."),
+            type=attributes.Schema.LIST
         ),
         GATEWAY_IP_ATTR: attributes.Schema(
-            _("Ip of the subnet's gateway.")
+            _("Ip of the subnet's gateway."),
+            type=attributes.Schema.STRING
         ),
         HOST_ROUTES_ATTR: attributes.Schema(
-            _("Additional routes for this subnet.")
+            _("Additional routes for this subnet."),
+            type=attributes.Schema.LIST
         ),
         IP_VERSION_ATTR: attributes.Schema(
-            _("Ip version for the subnet.")
+            _("Ip version for the subnet."),
+            type=attributes.Schema.STRING
         ),
         CIDR_ATTR: attributes.Schema(
-            _("CIDR block notation for this subnet.")
+            _("CIDR block notation for this subnet."),
+            type=attributes.Schema.STRING
         ),
         DNS_NAMESERVERS_ATTR: attributes.Schema(
-            _("List of dns nameservers.")
+            _("List of dns nameservers."),
+            type=attributes.Schema.LIST
         ),
         ENABLE_DHCP_ATTR: attributes.Schema(
-            _("'true' if DHCP is enabled for this subnet; 'false' otherwise.")
-        ),
-        SHOW: attributes.Schema(
-            _("All attributes.")
+            _("'true' if DHCP is enabled for this subnet; 'false' otherwise."),
+            type=attributes.Schema.STRING
         ),
     }
 
@@ -235,9 +256,9 @@ class Subnet(neutron.NeutronResource):
         super(Subnet, self).validate()
         self._validate_depr_property_required(self.properties,
                                               self.NETWORK, self.NETWORK_ID)
-        ra_mode = self.properties.get(self.IPV6_RA_MODE)
-        address_mode = self.properties.get(self.IPV6_ADDRESS_MODE)
-        if (self.properties.get(self.IP_VERSION) == 4) and (
+        ra_mode = self.properties[self.IPV6_RA_MODE]
+        address_mode = self.properties[self.IPV6_ADDRESS_MODE]
+        if (self.properties[self.IP_VERSION] == 4) and (
                 ra_mode or address_mode):
             msg = _('ipv6_ra_mode and ipv6_address_mode are not supported '
                     'for ipv4.')
@@ -245,6 +266,13 @@ class Subnet(neutron.NeutronResource):
         if ra_mode and address_mode and (ra_mode != address_mode):
             msg = _('When both ipv6_ra_mode and ipv6_address_mode are set, '
                     'they must be equal.')
+            raise exception.StackValidationFailed(message=msg)
+
+        gateway_ip = self.properties.get(self.GATEWAY_IP)
+        if (gateway_ip and gateway_ip not in ['~', ''] and
+                not netutils.is_valid_ip(gateway_ip)):
+            msg = (_('Gateway IP address "%(gateway)" is in '
+                     'invalid format.'), gateway_ip)
             raise exception.StackValidationFailed(message=msg)
 
     def handle_create(self):

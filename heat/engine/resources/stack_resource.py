@@ -11,17 +11,18 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import copy
 import hashlib
 import json
 
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
+from oslo_utils import excutils
 import six
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LE
 from heat.common.i18n import _LW
 from heat.common import identifier
 from heat.common import template_format
@@ -65,9 +66,13 @@ class StackResource(resource.Resource):
                 self.child_params())
             nested_stack.strict_validate = False
             nested_stack.validate()
+        except AssertionError:
+            raise
         except Exception as ex:
-            msg = _("Failed to validate: %s") % six.text_type(ex)
-            raise exception.StackValidationFailed(message=msg)
+            raise exception.StackValidationFailed(
+                error=_("Failed to validate"),
+                path=[self.stack.t.get_section_name('resources'), self.name],
+                message=six.text_type(ex))
 
     def _outputs_to_attribs(self, json_snippet):
         outputs = json_snippet.get('Outputs')
@@ -80,9 +85,32 @@ class StackResource(resource.Resource):
 
     def _needs_update(self, after, before, after_props, before_props,
                       prev_resource):
-        # Always issue an update to the nested stack and let the individual
+        # Issue an update to the nested stack if the stack resource
+        # is able to update. If return true, let the individual
         # resources in it decide if they need updating.
+
+        # FIXME (ricolin): seems currently can not call super here
+        if self.nested() is None and (
+                self.status == self.FAILED
+                or (self.action == self.INIT
+                    and self.status == self.COMPLETE)):
+            raise resource.UpdateReplace(self)
+
         return True
+
+    @scheduler.wrappertask
+    def update(self, after, before=None, prev_resource=None):
+        try:
+            yield super(StackResource, self).update(after, before,
+                                                    prev_resource)
+        except StopIteration:
+            with excutils.save_and_reraise_exception():
+                stack_identity = identifier.HeatIdentifier(
+                    self.context.tenant_id,
+                    self.physical_resource_name(),
+                    self.resource_id)
+                self.rpc_client().stack_cancel_update(self.context,
+                                                      stack_identity)
 
     def nested(self, force_reload=False, show_deleted=False):
         '''Return a Stack object representing the nested (child) stack.
@@ -205,8 +233,11 @@ class StackResource(resource.Resource):
         return parsed_template
 
     def _validate_nested_resources(self, templ):
+        if cfg.CONF.max_resources_per_stack == -1:
+            return
+        root_stack_id = self.stack.root_stack_id()
         total_resources = (len(templ[templ.RESOURCES]) +
-                           self.stack.root_stack.total_resources())
+                           self.stack.total_resources(root_stack_id))
 
         if self.nested():
             # It's an update and these resources will be deleted
@@ -266,23 +297,23 @@ class StackResource(resource.Resource):
         self.resource_id_set(result['stack_id'])
 
     def raise_local_exception(self, ex):
-        ex_type = ex.__class__.__name__
+        if (isinstance(ex, exception.ActionInProgress) and
+                self.stack.action == self.stack.ROLLBACK):
+            # The update was interrupted and the rollback is already in
+            # progress, so just ignore the error and wait for the rollback to
+            # finish
+            return
 
-        is_remote = ex_type.endswith('_Remote')
-        if is_remote:
-            ex_type = ex_type[:-len('_Remote')]
+        if not ex.__class__.__name__.endswith('_Remote'):
+            raise ex
 
         full_message = six.text_type(ex)
-        if full_message.find('\n') > -1 and is_remote:
+        if full_message.find('\n') > -1:
             message, msg_trace = full_message.split('\n', 1)
         else:
             message = full_message
 
-        if isinstance(ex, exception.HeatException):
-            message = ex.message
-        local_ex = copy.copy(getattr(exception, ex_type))
-        local_ex.msg_fmt = "%(message)s"
-        raise local_ex(message=message)
+        raise exception.ResourceFailure(message, self, action=self.action)
 
     def check_create_complete(self, cookie=None):
         return self._check_status_complete(resource.Resource.CREATE)
@@ -300,6 +331,9 @@ class StackResource(resource.Resource):
 
         if nested is None:
             return True
+
+        if nested.action != action:
+            return False
 
         # Has the action really started?
         #
@@ -326,12 +360,12 @@ class StackResource(resource.Resource):
         elif nested.status == resource.Resource.COMPLETE:
             return True
         elif nested.status == resource.Resource.FAILED:
-            raise resource.ResourceUnknownStatus(
-                resource_status=nested.status,
-                status_reason=nested.status_reason)
+            raise exception.ResourceFailure(nested.status_reason, self,
+                                            action=action)
         else:
             raise resource.ResourceUnknownStatus(
                 resource_status=nested.status,
+                status_reason=nested.status_reason,
                 result=_('Stack unknown status'))
 
     def check_adopt_complete(self, cookie=None):
@@ -391,7 +425,7 @@ class StackResource(resource.Resource):
                 parsed_template.files,
                 args)
         except Exception as ex:
-            LOG.exception('update_stack')
+            LOG.exception(_LE('update_stack'))
             self.raise_local_exception(ex)
         return cookie
 
@@ -403,15 +437,23 @@ class StackResource(resource.Resource):
         '''
         Delete the nested stack.
         '''
-        stack_identity = identifier.HeatIdentifier(
-            self.context.tenant_id,
-            self.physical_resource_name(),
-            self.resource_id)
+        try:
+            stack = self.nested()
+        except exception.NotFound:
+            return
+
+        if stack is None:
+            return
+
+        stack_identity = stack.identifier()
 
         try:
             self.rpc_client().delete_stack(self.context, stack_identity)
         except Exception as ex:
             self.rpc_client().ignore_error_named(ex, 'NotFound')
+
+    def handle_delete(self):
+        return self.delete_nested()
 
     def check_delete_complete(self, cookie=None):
         return self._check_status_complete(resource.Resource.DELETE,
@@ -476,16 +518,23 @@ class StackResource(resource.Resource):
         if op not in stack.outputs:
             raise exception.InvalidTemplateAttribute(resource=self.name,
                                                      key=op)
-        return stack.output(op)
+        result = stack.output(op)
+        if result is None and stack.outputs[op].get('error_msg') is not None:
+            raise exception.InvalidTemplateAttribute(resource=self.name,
+                                                     key=op)
+        return result
 
     def _resolve_attribute(self, name):
-        return self.get_output(name)
+        # NOTE(skraynev): should be removed in patch with methods,
+        # which resolve base attributes
+        if name != 'show':
+            return self.get_output(name)
 
     def implementation_signature(self):
         schema_names = ([prop for prop in self.properties_schema] +
                         [at for at in self.attributes_schema])
-        schema_hash = hashlib.sha1(';'.join(schema_names))
+        schema_hash = hashlib.sha256(';'.join(schema_names))
         definition = {'template': self.child_template(),
                       'files': self.stack.t.files}
-        definition_hash = hashlib.sha1(jsonutils.dumps(definition))
+        definition_hash = hashlib.sha256(jsonutils.dumps(definition))
         return (schema_hash.hexdigest(), definition_hash.hexdigest())

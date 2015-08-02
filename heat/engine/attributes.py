@@ -12,13 +12,18 @@
 #    under the License.
 
 import collections
-import warnings
 
+from oslo_utils import strutils
 import six
 
 from heat.common.i18n import _
+from heat.common.i18n import _LW
 from heat.engine import constraints as constr
 from heat.engine import support
+
+from oslo_log import log as logging
+
+LOG = logging.getLogger(__name__)
 
 
 class Schema(constr.Schema):
@@ -30,9 +35,9 @@ class Schema(constr.Schema):
     """
 
     KEYS = (
-        DESCRIPTION,
+        DESCRIPTION, TYPE
     ) = (
-        'description',
+        'description', 'type',
     )
 
     CACHE_MODES = (
@@ -43,17 +48,29 @@ class Schema(constr.Schema):
         'cache_none'
     )
 
+    TYPES = (
+        STRING, MAP, LIST, INTEGER, BOOLEAN
+    ) = (
+        'String', 'Map', 'List', 'Integer', 'Boolean'
+    )
+
     def __init__(self, description=None,
                  support_status=support.SupportStatus(),
-                 cache_mode=CACHE_LOCAL):
+                 cache_mode=CACHE_LOCAL,
+                 type=None):
         self.description = description
         self.support_status = support_status
         self.cache_mode = cache_mode
+        self.type = type
 
     def __getitem__(self, key):
         if key == self.DESCRIPTION:
             if self.description is not None:
                 return self.description
+
+        elif key == self.TYPE:
+            if self.type is not None:
+                return self.type.lower()
 
         raise KeyError(key)
 
@@ -62,12 +79,9 @@ class Schema(constr.Schema):
         """
         Return a Property Schema corresponding to a Attribute Schema.
         """
-        if isinstance(schema_dict, cls):
-            return schema_dict
-        warnings.warn('<name>: <description> schema definition is deprecated. '
-                      'Use <name>: attributes.Schema(<description>) instead.',
-                      DeprecationWarning)
-        return cls(schema_dict)
+        msg = 'Old attribute schema is not supported'
+        assert isinstance(schema_dict, cls), msg
+        return schema_dict
 
 
 def schemata(schema):
@@ -95,19 +109,28 @@ class Attribute(object):
     def support_status(self):
         return self.schema.support_status
 
-    def as_output(self, resource_name):
+    def as_output(self, resource_name, template_type='cfn'):
         """
         Return an Output schema entry for a provider template with the given
         resource name.
 
         :param resource_name: the logical name of the provider resource
-        :returns: This attribute as a template 'Output' entry
+        :param template_type: the template type to generate
+        :returns: This attribute as a template 'Output' entry for
+                  cfn template and 'output' entry for hot template
         """
-        return {
-            "Value": '{"Fn::GetAtt": ["%s", "%s"]}' % (resource_name,
-                                                       self.name),
-            "Description": self.schema.description
-        }
+        if template_type == 'hot':
+            return {
+                "value": '{"get_attr": ["%s", "%s"]}' % (resource_name,
+                                                         self.name),
+                "description": self.schema.description
+            }
+        else:
+            return {
+                "Value": '{"Fn::GetAtt": ["%s", "%s"]}' % (resource_name,
+                                                           self.name),
+                "Description": self.schema.description
+            }
 
 
 class Attributes(collections.Mapping):
@@ -127,7 +150,7 @@ class Attributes(collections.Mapping):
         return dict((n, Attribute(n, d)) for n, d in schema.items())
 
     @staticmethod
-    def as_outputs(resource_name, resource_class):
+    def as_outputs(resource_name, resource_class, template_type='cfn'):
         """
         :param resource_name: logical name of the resource
         :param resource_class: resource implementation class
@@ -137,7 +160,8 @@ class Attributes(collections.Mapping):
         schema = resource_class.attributes_schema
         attribs = Attributes._make_attributes(schema).items()
 
-        return dict((n, att.as_output(resource_name)) for n, att in attribs)
+        return dict((n, att.as_output(resource_name,
+                                      template_type)) for n, att in attribs)
 
     @staticmethod
     def schema_from_outputs(json_snippet):
@@ -145,6 +169,36 @@ class Attributes(collections.Mapping):
             return dict((k, Schema(v.get("Description")))
                         for k, v in json_snippet.items())
         return {}
+
+    def _validate_type(self, attrib, value):
+        if attrib.schema.type == attrib.schema.STRING:
+            if not isinstance(value, six.string_types):
+                LOG.warn(_LW("Attribute %(name)s is not of type %(att_type)s"),
+                         {'name': attrib.name,
+                          'att_type': attrib.schema.STRING})
+        elif attrib.schema.type == attrib.schema.LIST:
+            if (not isinstance(value, collections.Sequence)
+                    or isinstance(value, six.string_types)):
+                LOG.warn(_LW("Attribute %(name)s is not of type %(att_type)s"),
+                         {'name': attrib.name,
+                          'att_type': attrib.schema.LIST})
+        elif attrib.schema.type == attrib.schema.MAP:
+            if not isinstance(value, collections.Mapping):
+                LOG.warn(_LW("Attribute %(name)s is not of type %(att_type)s"),
+                         {'name': attrib.name,
+                          'att_type': attrib.schema.MAP})
+        elif attrib.schema.type == attrib.schema.INTEGER:
+            if not isinstance(value, int):
+                LOG.warn(_LW("Attribute %(name)s is not of type %(att_type)s"),
+                         {'name': attrib.name,
+                          'att_type': attrib.schema.INTEGER})
+        elif attrib.schema.type == attrib.schema.BOOLEAN:
+            try:
+                strutils.bool_from_string(value, strict=True)
+            except ValueError:
+                LOG.warn(_LW("Attribute %(name)s is not of type %(att_type)s"),
+                         {'name': attrib.name,
+                          'att_type': attrib.schema.BOOLEAN})
 
     def __getitem__(self, key):
         if key not in self:
@@ -159,7 +213,10 @@ class Attributes(collections.Mapping):
             return self._resolved_values[key]
 
         value = self._resolver(key)
+
         if value is not None:
+            # validate the value against its type
+            self._validate_type(attrib, value)
             # only store if not None, it may resolve to an actual value
             # on subsequent calls
             self._resolved_values[key] = value
@@ -176,7 +233,7 @@ class Attributes(collections.Mapping):
 
     def __repr__(self):
         return ("Attributes for %s:\n\t" % self._resource_name +
-                '\n\t'.join(self._attributes.values()))
+                '\n\t'.join(six.itervalues(self)))
 
 
 def select_from_attribute(attribute_value, path):
@@ -198,6 +255,6 @@ def select_from_attribute(attribute_value, path):
         return collection[key]
 
     try:
-        return reduce(get_path_component, path, attribute_value)
+        return six.moves.reduce(get_path_component, path, attribute_value)
     except (KeyError, IndexError, TypeError):
         return None

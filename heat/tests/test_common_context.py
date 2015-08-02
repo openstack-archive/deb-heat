@@ -16,6 +16,7 @@ import os
 import mock
 from oslo_config import cfg
 from oslo_middleware import request_id
+from oslo_policy import opts as policy_opts
 import webob
 
 from heat.common import context
@@ -43,7 +44,7 @@ class TestRequestContext(common.HeatTestCase):
                     'tenant': 'atenant',
                     'auth_url': 'http://xyz',
                     'aws_creds': 'blah',
-                    'region_name': 'regionOne',
+                    'region_name': 'RegionOne',
                     'user_identity': 'mick atenant'}
 
         super(TestRequestContext, self).setUp()
@@ -147,8 +148,8 @@ class RequestContextMiddlewareTest(common.HeatTestCase):
                 'X-Auth-EC2-Creds': '{"ec2Credentials": {}}',
                 'X-User-Id': '7a87ff18-31c6-45ce-a186-ec7987f488c3',
                 'X-Auth-Token': 'atoken',
-                'X-Tenant-Name': 'my_tenant',
-                'X-Tenant-Id': 'db6808c8-62d0-4d92-898c-d644a6af20e9',
+                'X-Project-Name': 'my_tenant',
+                'X-Project-Id': 'db6808c8-62d0-4d92-898c-d644a6af20e9',
                 'X-Auth-Url': 'http://192.0.2.1:5000/v1',
                 'X-Roles': 'role1,role2,role3'
             },
@@ -177,8 +178,8 @@ class RequestContextMiddlewareTest(common.HeatTestCase):
                 'X-Auth-EC2-Creds': '{"ec2Credentials": {}}',
                 'X-User-Id': '7a87ff18-31c6-45ce-a186-ec7987f488c3',
                 'X-Auth-Token': 'atoken',
-                'X-Tenant-Name': 'my_tenant',
-                'X-Tenant-Id': 'db6808c8-62d0-4d92-898c-d644a6af20e9',
+                'X-Project-Name': 'my_tenant',
+                'X-Project-Id': 'db6808c8-62d0-4d92-898c-d644a6af20e9',
                 'X-Auth-Url': 'http://192.0.2.1:5000/v1',
                 'X-Roles': 'role1,role2,role3',
             },
@@ -206,8 +207,8 @@ class RequestContextMiddlewareTest(common.HeatTestCase):
             headers={
                 'X-User-Id': '7a87ff18-31c6-45ce-a186-ec7987f488c3',
                 'X-Auth-Token': 'atoken2',
-                'X-Tenant-Name': 'my_tenant2',
-                'X-Tenant-Id': 'bb9108c8-62d0-4d92-898c-d644a6af20e9',
+                'X-Project-Name': 'my_tenant2',
+                'X-Project-Id': 'bb9108c8-62d0-4d92-898c-d644a6af20e9',
                 'X-Auth-Url': 'http://192.0.2.1:5000/v1',
                 'X-Roles': 'role1,role2,role3',
             },
@@ -247,7 +248,7 @@ class RequestContextMiddlewareTest(common.HeatTestCase):
             cfg.StrOpt('project', default='heat'),
         ]
         cfg.CONF.register_opts(opts)
-        cfg.CONF.set_override('policy_file', 'check_admin.json')
+        policy_opts.set_defaults(cfg.CONF, 'check_admin.json')
 
     def test_context_middleware(self):
 

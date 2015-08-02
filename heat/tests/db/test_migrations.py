@@ -42,8 +42,8 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
                              common.FakeLogMixin):
     """Test sqlalchemy-migrate migrations."""
 
-    snake_walk = True
-    downgrade = True
+    snake_walk = False
+    downgrade = False
 
     @property
     def INIT_VERSION(self):
@@ -58,7 +58,7 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
 
     @property
     def migration_api(self):
-        temp = __import__('oslo.db.sqlalchemy.migration', globals(),
+        temp = __import__('oslo_db.sqlalchemy.migration', globals(),
                           locals(), ['versioning_api'], -1)
         return temp.versioning_api
 
@@ -104,7 +104,7 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
         index_columns = None
         for idx in t.indexes:
             if idx.name == index:
-                index_columns = idx.columns.keys()
+                index_columns = six.iterkeys(idx.columns)
                 break
 
         self.assertEqual(sorted(members), sorted(index_columns))
@@ -608,6 +608,14 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
 
     def _check_062(self, engine, data):
         self.assertColumnExists(engine, 'stack', 'parent_resource_name')
+
+    def _check_063(self, engine, data):
+        self.assertColumnExists(engine, 'resource',
+                                'properties_data_encrypted')
+
+    def _check_064(self, engine, data):
+        self.assertColumnNotExists(engine, 'raw_template',
+                                   'predecessor')
 
 
 class TestHeatMigrationsMySQL(HeatMigrationsCheckers,

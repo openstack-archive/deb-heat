@@ -11,11 +11,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import collections
-
 from oslo_log import log as logging
 from oslo_utils import timeutils
+import six
 
+from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LE
 from heat.common import param_utils
@@ -45,14 +45,14 @@ def extract_args(params):
             else:
                 raise ValueError(_('Invalid timeout value %s') % timeout)
 
-    if rpc_api.PARAM_DISABLE_ROLLBACK in params:
-        disable_rollback = param_utils.extract_bool(
-            params[rpc_api.PARAM_DISABLE_ROLLBACK])
-        kwargs[rpc_api.PARAM_DISABLE_ROLLBACK] = disable_rollback
+    name = rpc_api.PARAM_DISABLE_ROLLBACK
+    if name in params:
+        disable_rollback = param_utils.extract_bool(name, params[name])
+        kwargs[name] = disable_rollback
 
-    if rpc_api.PARAM_SHOW_DELETED in params:
-        params[rpc_api.PARAM_SHOW_DELETED] = param_utils.extract_bool(
-            params[rpc_api.PARAM_SHOW_DELETED])
+    name = rpc_api.PARAM_SHOW_DELETED
+    if name in params:
+        params[name] = param_utils.extract_bool(name, params[name])
 
     adopt_data = params.get(rpc_api.PARAM_ADOPT_STACK_DATA)
     if adopt_data:
@@ -61,6 +61,25 @@ def extract_args(params):
         except ValueError as exc:
             raise ValueError(_('Invalid adopt data: %s') % exc)
         kwargs[rpc_api.PARAM_ADOPT_STACK_DATA] = adopt_data
+
+    tags = params.get(rpc_api.PARAM_TAGS)
+    if tags:
+        if not isinstance(tags, list):
+            raise ValueError(_('Invalid tags, not a list: %s') % tags)
+
+        for tag in tags:
+            if not isinstance(tag, six.string_types):
+                raise ValueError(_('Invalid tag, "%s" is not a string') % tag)
+
+            if len(tag) > 80:
+                raise ValueError(_('Invalid tag, "%s" is longer than 80 '
+                                   'characters') % tag)
+
+            # Comma is not allowed as per the API WG tagging guidelines
+            if ',' in tag:
+                raise ValueError(_('Invalid tag, "%s" contains a comma') % tag)
+
+        kwargs[rpc_api.PARAM_TAGS] = tags
 
     return kwargs
 
@@ -89,11 +108,12 @@ def format_stack(stack, preview=False):
     Return a representation of the given stack that matches the API output
     expectations.
     '''
-    updated_time = stack.updated_time and timeutils.isotime(stack.updated_time)
+    updated_time = stack.updated_time and stack.updated_time.isoformat()
+    created_time = stack.created_time or timeutils.utcnow()
     info = {
         rpc_api.STACK_NAME: stack.name,
         rpc_api.STACK_ID: dict(stack.identifier()),
-        rpc_api.STACK_CREATION_TIME: timeutils.isotime(stack.created_time),
+        rpc_api.STACK_CREATION_TIME: created_time.isoformat(),
         rpc_api.STACK_UPDATED_TIME: updated_time,
         rpc_api.STACK_NOTIFICATION_TOPICS: [],  # TODO(?) Not implemented yet
         rpc_api.STACK_PARAMETERS: stack.parameters.map(str),
@@ -105,6 +125,7 @@ def format_stack(stack, preview=False):
         rpc_api.STACK_OWNER: stack.username,
         rpc_api.STACK_PARENT: stack.owner_id,
         rpc_api.STACK_USER_PROJECT_ID: stack.stack_user_project_id,
+        rpc_api.STACK_TAGS: stack.tags,
     }
 
     if not preview:
@@ -124,24 +145,29 @@ def format_stack(stack, preview=False):
 
 
 def format_resource_attributes(resource, with_attr=None):
-    def resolve(attr, resolver):
-        try:
-            return resolver[attr]
-        except Exception:
-            return None
-
     resolver = resource.attributes
-    if 'show' in resolver.keys():
-        show_attr = resolver['show']
-        if isinstance(show_attr, collections.Mapping):
-            resolver = show_attr
-
     if not with_attr:
         with_attr = []
 
-    attributes = set(resolver.keys() + with_attr)
-    return dict((attr, resolve(attr, resolver))
-                for attr in attributes)
+    def resolve(attr, resolver):
+        try:
+            return resolver._resolver(attr)
+        except Exception:
+            return None
+    # if 'show' in attribute_schema, will resolve all attributes of resource
+    # including the ones are not represented in response of show API, such as
+    # 'console_urls' for nova server, user can view it by taking with_attr
+    # parameter
+    if 'show' in six.iterkeys(resolver):
+        show_attr = resolver['show']
+        for a in with_attr:
+            if a not in show_attr:
+                show_attr[a] = resolve(a, resolver)
+        return show_attr
+    else:
+        attributes = set(list(six.iterkeys(resolver)) + with_attr)
+        return dict((attr, resolve(attr, resolver))
+                    for attr in attributes)
 
 
 def format_resource_properties(resource):
@@ -152,7 +178,7 @@ def format_resource_properties(resource):
             return None
 
     return dict((prop, get_property(prop))
-                for prop in resource.properties_schema.keys())
+                for prop in six.iterkeys(resource.properties_schema))
 
 
 def format_stack_resource(resource, detail=True, with_props=False,
@@ -161,9 +187,11 @@ def format_stack_resource(resource, detail=True, with_props=False,
     Return a representation of the given resource that matches the API output
     expectations.
     '''
-    last_updated_time = resource.updated_time or resource.created_time
+    created_time = resource.created_time or timeutils.utcnow()
+    last_updated_time = resource.updated_time or created_time
     res = {
-        rpc_api.RES_UPDATED_TIME: timeutils.isotime(last_updated_time),
+        rpc_api.RES_UPDATED_TIME: last_updated_time.isoformat(),
+        rpc_api.RES_CREATION_TIME: created_time.isoformat(),
         rpc_api.RES_NAME: resource.name,
         rpc_api.RES_PHYSICAL_ID: resource.resource_id or '',
         rpc_api.RES_ACTION: resource.action,
@@ -176,9 +204,13 @@ def format_stack_resource(resource, detail=True, with_props=False,
         rpc_api.RES_REQUIRED_BY: resource.required_by(),
     }
 
-    if (hasattr(resource, 'nested') and callable(resource.nested) and
-            resource.nested() is not None):
-        res[rpc_api.RES_NESTED_STACK_ID] = dict(resource.nested().identifier())
+    try:
+        if (hasattr(resource, 'nested') and callable(resource.nested) and
+                resource.nested() is not None):
+            res[rpc_api.RES_NESTED_STACK_ID] = dict(
+                resource.nested().identifier())
+    except exception.NotFound:
+        pass
 
     if resource.stack.parent_resource_name:
         res[rpc_api.RES_PARENT_RESOURCE] = resource.stack.parent_resource_name
@@ -211,12 +243,13 @@ def format_stack_preview(stack):
 
 def format_event(event):
     stack_identifier = event.stack.identifier()
+    event_timestamp = event.timestamp or timeutils.utcnow()
 
     result = {
         rpc_api.EVENT_ID: dict(event.identifier()),
         rpc_api.EVENT_STACK_ID: dict(stack_identifier),
         rpc_api.EVENT_STACK_NAME: stack_identifier.stack_name,
-        rpc_api.EVENT_TIMESTAMP: timeutils.isotime(event.timestamp),
+        rpc_api.EVENT_TIMESTAMP: event_timestamp.isoformat(),
         rpc_api.EVENT_RES_NAME: event.resource_name,
         rpc_api.EVENT_RES_PHYSICAL_ID: event.physical_resource_id,
         rpc_api.EVENT_RES_ACTION: event.action,
@@ -241,24 +274,25 @@ def format_notification_body(stack):
     result = {
         rpc_api.NOTIFY_TENANT_ID: stack.context.tenant_id,
         rpc_api.NOTIFY_USER_ID: stack.context.user,
-        rpc_api.NOTIFY_STACK_ID: stack.identifier().arn(),
+        rpc_api.NOTIFY_STACK_ID: stack.id,
         rpc_api.NOTIFY_STACK_NAME: stack.name,
         rpc_api.NOTIFY_STATE: state,
         rpc_api.NOTIFY_STATE_REASON: stack.status_reason,
-        rpc_api.NOTIFY_CREATE_AT: timeutils.isotime(stack.created_time),
+        rpc_api.NOTIFY_CREATE_AT: stack.created_time.isoformat(),
     }
     return result
 
 
 def format_watch(watch):
 
+    updated_at = watch.updated_at or timeutils.utcnow()
     result = {
         rpc_api.WATCH_ACTIONS_ENABLED: watch.rule.get(
             rpc_api.RULE_ACTIONS_ENABLED),
         rpc_api.WATCH_ALARM_ACTIONS: watch.rule.get(
             rpc_api.RULE_ALARM_ACTIONS),
         rpc_api.WATCH_TOPIC: watch.rule.get(rpc_api.RULE_TOPIC),
-        rpc_api.WATCH_UPDATED_TIME: timeutils.isotime(watch.updated_at),
+        rpc_api.WATCH_UPDATED_TIME: updated_at.isoformat(),
         rpc_api.WATCH_DESCRIPTION: watch.rule.get(rpc_api.RULE_DESCRIPTION),
         rpc_api.WATCH_NAME: watch.name,
         rpc_api.WATCH_COMPARISON: watch.rule.get(rpc_api.RULE_COMPARISON),
@@ -274,8 +308,8 @@ def format_watch(watch):
         rpc_api.WATCH_STATE_REASON: watch.rule.get(rpc_api.RULE_STATE_REASON),
         rpc_api.WATCH_STATE_REASON_DATA:
         watch.rule.get(rpc_api.RULE_STATE_REASON_DATA),
-        rpc_api.WATCH_STATE_UPDATED_TIME: timeutils.isotime(
-            watch.rule.get(rpc_api.RULE_STATE_UPDATED_TIME)),
+        rpc_api.WATCH_STATE_UPDATED_TIME: watch.rule.get(
+            rpc_api.RULE_STATE_UPDATED_TIME, timeutils.utcnow()).isoformat(),
         rpc_api.WATCH_STATE_VALUE: watch.state,
         rpc_api.WATCH_STATISTIC: watch.rule.get(rpc_api.RULE_STATISTIC),
         rpc_api.WATCH_THRESHOLD: watch.rule.get(rpc_api.RULE_THRESHOLD),
@@ -302,7 +336,7 @@ def format_watch_data(wd):
     result = {
         rpc_api.WATCH_DATA_ALARM: wd.watch_rule.name,
         rpc_api.WATCH_DATA_METRIC: metric_name,
-        rpc_api.WATCH_DATA_TIME: timeutils.isotime(wd.created_at),
+        rpc_api.WATCH_DATA_TIME: wd.created_at.isoformat(),
         rpc_api.WATCH_DATA_NAMESPACE: namespace,
         rpc_api.WATCH_DATA: metric_data
     }
@@ -377,20 +411,20 @@ def format_validate_parameter(param):
     return res
 
 
-def format_software_config(sc):
+def format_software_config(sc, detail=True):
     if sc is None:
         return
     result = {
         rpc_api.SOFTWARE_CONFIG_ID: sc.id,
         rpc_api.SOFTWARE_CONFIG_NAME: sc.name,
         rpc_api.SOFTWARE_CONFIG_GROUP: sc.group,
-        rpc_api.SOFTWARE_CONFIG_CONFIG: sc.config['config'],
-        rpc_api.SOFTWARE_CONFIG_INPUTS: sc.config['inputs'],
-        rpc_api.SOFTWARE_CONFIG_OUTPUTS: sc.config['outputs'],
-        rpc_api.SOFTWARE_CONFIG_OPTIONS: sc.config['options'],
-        rpc_api.SOFTWARE_CONFIG_CREATION_TIME: timeutils.isotime(
-            sc.created_at),
+        rpc_api.SOFTWARE_CONFIG_CREATION_TIME: sc.created_at.isoformat()
     }
+    if detail:
+        result[rpc_api.SOFTWARE_CONFIG_CONFIG] = sc.config['config']
+        result[rpc_api.SOFTWARE_CONFIG_INPUTS] = sc.config['inputs']
+        result[rpc_api.SOFTWARE_CONFIG_OUTPUTS] = sc.config['outputs']
+        result[rpc_api.SOFTWARE_CONFIG_OPTIONS] = sc.config['options']
     return result
 
 
@@ -406,12 +440,11 @@ def format_software_deployment(sd):
         rpc_api.SOFTWARE_DEPLOYMENT_STATUS: sd.status,
         rpc_api.SOFTWARE_DEPLOYMENT_STATUS_REASON: sd.status_reason,
         rpc_api.SOFTWARE_DEPLOYMENT_CONFIG_ID: sd.config.id,
-        rpc_api.SOFTWARE_DEPLOYMENT_CREATION_TIME: timeutils.isotime(
-            sd.created_at)
+        rpc_api.SOFTWARE_DEPLOYMENT_CREATION_TIME: sd.created_at.isoformat(),
     }
     if sd.updated_at:
-        result[rpc_api.SOFTWARE_DEPLOYMENT_UPDATED_TIME] = timeutils.isotime(
-            sd.updated_at)
+        result[rpc_api.SOFTWARE_DEPLOYMENT_UPDATED_TIME] = (
+            sd.updated_at.isoformat())
     return result
 
 
@@ -424,7 +457,6 @@ def format_snapshot(snapshot):
         rpc_api.SNAPSHOT_STATUS: snapshot.status,
         rpc_api.SNAPSHOT_STATUS_REASON: snapshot.status_reason,
         rpc_api.SNAPSHOT_DATA: snapshot.data,
-        rpc_api.SNAPSHOT_CREATION_TIME: timeutils.isotime(
-            snapshot.created_at),
+        rpc_api.SNAPSHOT_CREATION_TIME: snapshot.created_at.isoformat(),
     }
     return result

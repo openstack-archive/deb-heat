@@ -35,13 +35,14 @@ if os.path.exists(os.path.join(POSSIBLE_TOPDIR, 'heat', '__init__.py')):
 from oslo_config import cfg
 import oslo_i18n as i18n
 from oslo_log import log as logging
+from oslo_reports import guru_meditation_report as gmr
+from oslo_service import service
 
 from heat.common import config
 from heat.common.i18n import _LC
 from heat.common import messaging
 from heat.common import profiler
 from heat.engine import template
-from heat.openstack.common import service
 from heat.rpc import api as rpc_api
 from heat import version
 
@@ -51,8 +52,8 @@ LOG = logging.getLogger('heat.engine')
 
 if __name__ == '__main__':
     logging.register_options(cfg.CONF)
-    version = version.version_info.version_string()
-    cfg.CONF(project='heat', prog='heat-engine', version=version)
+    cfg.CONF(project='heat', prog='heat-engine',
+             version=version.version_info.version_string())
     logging.setup(cfg.CONF, 'heat-engine')
     logging.set_defaults()
     messaging.setup()
@@ -70,8 +71,10 @@ if __name__ == '__main__':
     from heat.engine import service as engine  # noqa
 
     profiler.setup('heat-engine', cfg.CONF.host)
+    gmr.TextGuruMeditation.setup_autorun(version)
     srv = engine.EngineService(cfg.CONF.host, rpc_api.ENGINE_TOPIC)
-    launcher = service.launch(srv, workers=cfg.CONF.num_engine_workers)
+    launcher = service.launch(cfg.CONF, srv,
+                              workers=cfg.CONF.num_engine_workers)
     if cfg.CONF.enable_cloud_watch_lite:
         # We create the periodic tasks here, which mean they are created
         # only in the parent process when num_engine_workers>1 is specified

@@ -120,10 +120,12 @@ class TroveCluster(resource.Resource):
 
     attributes_schema = {
         INSTANCES: attributes.Schema(
-            _("A list of instances ids.")
+            _("A list of instances ids."),
+            type=attributes.Schema.LIST
         ),
         IP: attributes.Schema(
-            _("IP of the cluster.")
+            _("A list of cluster instance IPs."),
+            type=attributes.Schema.LIST
         )
     }
 
@@ -153,11 +155,11 @@ class TroveCluster(resource.Resource):
         }
         cluster = self.client().clusters.create(**args)
         self.resource_id_set(cluster.id)
-        return cluster
+        return cluster.id
 
-    def _refresh_cluster(self, cluster):
+    def _refresh_cluster(self, cluster_id):
         try:
-            cluster = self.client().clusters.get(cluster.id)
+            cluster = self.client().clusters.get(cluster_id)
             return cluster
         except Exception as exc:
             if self.client_plugin().is_over_limit(exc):
@@ -167,12 +169,15 @@ class TroveCluster(resource.Resource):
                          {'name': self.stack.name,
                           'id': self.stack.id,
                           'exception': exc})
-                return cluster
+                return None
             else:
                 raise
 
-    def check_create_complete(self, cluster):
-        cluster = self._refresh_cluster(cluster)
+    def check_create_complete(self, cluster_id):
+        cluster = self._refresh_cluster(cluster_id)
+
+        if cluster is None:
+            return False
 
         for instance in cluster.instances:
             if instance['status'] in self.BAD_STATUSES:
@@ -197,15 +202,15 @@ class TroveCluster(resource.Resource):
             self.client_plugin().ignore_not_found(ex)
         else:
             cluster.delete()
-            return cluster
+            return cluster.id
 
-    def check_delete_complete(self, cluster):
-        if not cluster:
+    def check_delete_complete(self, cluster_id):
+        if not cluster_id:
             return True
 
         try:
             # For some time trove cluster may continue to live
-            self._refresh_cluster(cluster)
+            self._refresh_cluster(cluster_id)
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
             return True

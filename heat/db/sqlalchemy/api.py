@@ -18,11 +18,13 @@ import sys
 from oslo_config import cfg
 from oslo_db.sqlalchemy import session as db_session
 from oslo_db.sqlalchemy import utils
+from oslo_serialization import jsonutils
 from oslo_utils import timeutils
 import osprofiler.sqlalchemy
 import six
 import sqlalchemy
 from sqlalchemy import orm
+from sqlalchemy.orm import aliased as orm_aliased
 from sqlalchemy.orm import session as orm_session
 
 from heat.common import crypt
@@ -34,6 +36,7 @@ from heat.db.sqlalchemy import models
 from heat.rpc import api as rpc_api
 
 CONF = cfg.CONF
+CONF.import_opt('hidden_stack_tags', 'heat.common.config')
 CONF.import_opt('max_events_per_stack', 'heat.common.config')
 CONF.import_group('profiler', 'heat.common.config')
 
@@ -114,6 +117,11 @@ def raw_template_update(context, template_id, values):
     return raw_template_ref
 
 
+def raw_template_delete(context, template_id):
+    raw_template = raw_template_get(context, template_id)
+    raw_template.delete()
+
+
 def resource_get(context, resource_id):
     result = model_query(context, models.Resource).get(resource_id)
 
@@ -158,7 +166,10 @@ def resource_update(context, resource_id, values, atomic_key,
                     expected_engine_id=None):
     session = _session(context)
     with session.begin():
-        values['atomic_key'] = atomic_key + 1
+        if atomic_key is None:
+            values['atomic_key'] = 1
+        else:
+            values['atomic_key'] = atomic_key + 1
         rows_updated = session.query(models.Resource).filter_by(
             id=resource_id, engine_id=expected_engine_id,
             atomic_key=atomic_key).update(values)
@@ -182,7 +193,7 @@ def resource_data_get_all(resource, data=None):
 
     for res in data:
         if res.redact:
-            ret[res.key] = _decrypt(res.value, res.decrypt_method)
+            ret[res.key] = crypt.decrypt(res.decrypt_method, res.value)
         else:
             ret[res.key] = res.value
     return ret
@@ -196,24 +207,38 @@ def resource_data_get(resource, key):
                                       resource.id,
                                       key)
     if result.redact:
-        return _decrypt(result.value, result.decrypt_method)
+        return crypt.decrypt(result.decrypt_method, result.value)
     return result.value
 
 
-def _encrypt(value):
-    if value is not None:
-        return crypt.encrypt(value.encode('utf-8'))
-    else:
-        return None, None
+def stack_tags_set(context, stack_id, tags):
+    session = get_session()
+    with session.begin():
+        stack_tags_delete(context, stack_id)
+        result = []
+        for tag in tags:
+            stack_tag = models.StackTag()
+            stack_tag.tag = tag
+            stack_tag.stack_id = stack_id
+            stack_tag.save(session=session)
+            result.append(stack_tag)
+        return result or None
 
 
-def _decrypt(enc_value, method):
-    if method is None:
-        return None
-    decryptor = getattr(crypt, method)
-    value = decryptor(enc_value)
-    if value is not None:
-        return unicode(value, 'utf-8')
+def stack_tags_delete(context, stack_id):
+    session = get_session()
+    with session.begin():
+        result = stack_tags_get(context, stack_id)
+        if result:
+            for tag in result:
+                tag.delete()
+
+
+def stack_tags_get(context, stack_id):
+    result = (model_query(context, models.StackTag)
+              .filter_by(stack_id=stack_id)
+              .all())
+    return result or None
 
 
 def resource_data_get_by_key(context, resource_id, key):
@@ -232,7 +257,7 @@ def resource_data_get_by_key(context, resource_id, key):
 def resource_data_set(resource, key, value, redact=False):
     """Save resource's key/value pair to database."""
     if redact:
-        method, value = _encrypt(value)
+        method, value = crypt.encrypt(value)
     else:
         method = ''
     try:
@@ -368,7 +393,8 @@ def _paginate_query(context, query, model, limit=None, sort_keys=None,
 
 
 def _query_stack_get_all(context, tenant_safe=True, show_deleted=False,
-                         show_nested=False):
+                         show_nested=False, show_hidden=False, tags=None,
+                         tags_any=None, not_tags=None, not_tags_any=None):
     if show_nested:
         query = soft_delete_aware_query(
             context, models.Stack, show_deleted=show_deleted
@@ -380,15 +406,53 @@ def _query_stack_get_all(context, tenant_safe=True, show_deleted=False,
 
     if tenant_safe:
         query = query.filter_by(tenant=context.tenant_id)
+
+    if tags:
+        for tag in tags:
+            tag_alias = orm_aliased(models.StackTag)
+            query = query.join(tag_alias, models.Stack.tags)
+            query = query.filter(tag_alias.tag == tag)
+
+    if tags_any:
+        query = query.filter(
+            models.Stack.tags.any(
+                models.StackTag.tag.in_(tags_any)))
+
+    if not_tags:
+        subquery = soft_delete_aware_query(
+            context, models.Stack, show_deleted=show_deleted
+        )
+        for tag in not_tags:
+            tag_alias = orm_aliased(models.StackTag)
+            subquery = subquery.join(tag_alias, models.Stack.tags)
+            subquery = subquery.filter(tag_alias.tag == tag)
+        not_stack_ids = [s.id for s in subquery.all()]
+        query = query.filter(models.Stack.id.notin_(not_stack_ids))
+
+    if not_tags_any:
+        query = query.filter(
+            ~models.Stack.tags.any(
+                models.StackTag.tag.in_(not_tags_any)))
+
+    if not show_hidden and cfg.CONF.hidden_stack_tags:
+        query = query.filter(
+            ~models.Stack.tags.any(
+                models.StackTag.tag.in_(cfg.CONF.hidden_stack_tags)))
+
     return query
 
 
 def stack_get_all(context, limit=None, sort_keys=None, marker=None,
                   sort_dir=None, filters=None, tenant_safe=True,
-                  show_deleted=False, show_nested=False):
+                  show_deleted=False, show_nested=False, show_hidden=False,
+                  tags=None, tags_any=None, not_tags=None,
+                  not_tags_any=None):
     query = _query_stack_get_all(context, tenant_safe,
                                  show_deleted=show_deleted,
-                                 show_nested=show_nested)
+                                 show_nested=show_nested,
+                                 show_hidden=show_hidden, tags=tags,
+                                 tags_any=tags_any, not_tags=not_tags,
+                                 not_tags_any=not_tags_any)
     return _filter_and_page_query(context, query, limit, sort_keys,
                                   marker, sort_dir, filters).all()
 
@@ -410,10 +474,15 @@ def _filter_and_page_query(context, query, limit=None, sort_keys=None,
 
 
 def stack_count_all(context, filters=None, tenant_safe=True,
-                    show_deleted=False, show_nested=False):
+                    show_deleted=False, show_nested=False, show_hidden=False,
+                    tags=None, tags_any=None, not_tags=None,
+                    not_tags_any=None):
     query = _query_stack_get_all(context, tenant_safe=tenant_safe,
                                  show_deleted=show_deleted,
-                                 show_nested=show_nested)
+                                 show_nested=show_nested,
+                                 show_hidden=show_hidden, tags=tags,
+                                 tags_any=tags_any, not_tags=not_tags,
+                                 not_tags_any=not_tags_any)
     query = db_filters.exact_filter(query, models.Stack, filters)
     return query.count()
 
@@ -500,11 +569,41 @@ def stack_lock_release(stack_id, engine_id):
         return True
 
 
+def stack_get_root_id(context, stack_id):
+    s = stack_get(context, stack_id)
+    while s.owner_id:
+        s = stack_get(context, s.owner_id)
+    return s.id
+
+
+def stack_count_total_resources(context, stack_id):
+
+    # start with a stack_get to confirm the context can access the stack
+    if stack_id is None or stack_get(context, stack_id) is None:
+        return 0
+
+    def nested_stack_ids(sid):
+        yield sid
+        for child in stack_get_all_by_owner_id(context, sid):
+            for stack in nested_stack_ids(child.id):
+                yield stack
+
+    stack_ids = list(nested_stack_ids(stack_id))
+
+    # count all resources which belong to the stacks
+    results = model_query(
+        context, models.Resource
+    ).filter(
+        models.Resource.stack_id.in_(stack_ids)
+    ).count()
+    return results
+
+
 def user_creds_create(context):
     values = context.to_dict()
     user_creds_ref = models.UserCreds()
     if values.get('trust_id'):
-        method, trust_id = _encrypt(values.get('trust_id'))
+        method, trust_id = crypt.encrypt(values.get('trust_id'))
         user_creds_ref.trust_id = trust_id
         user_creds_ref.decrypt_method = method
         user_creds_ref.trustor_user_id = values.get('trustor_user_id')
@@ -516,14 +615,21 @@ def user_creds_create(context):
         user_creds_ref.region_name = values.get('region_name')
     else:
         user_creds_ref.update(values)
-        method, password = _encrypt(values['password'])
+        method, password = crypt.encrypt(values['password'])
         if len(six.text_type(password)) > 255:
             raise exception.Error(_("Length of OS_PASSWORD after encryption"
                                     " exceeds Heat limit (255 chars)"))
         user_creds_ref.password = password
         user_creds_ref.decrypt_method = method
     user_creds_ref.save(_session(context))
-    return user_creds_ref
+    result = dict(user_creds_ref)
+
+    if values.get('trust_id'):
+        result['trust_id'] = values.get('trust_id')
+    else:
+        result['password'] = values.get('password')
+
+    return result
 
 
 def user_creds_get(user_creds_id):
@@ -534,8 +640,10 @@ def user_creds_get(user_creds_id):
     # or it can be committed back to the DB in decrypted form
     result = dict(db_result)
     del result['decrypt_method']
-    result['password'] = _decrypt(result['password'], db_result.decrypt_method)
-    result['trust_id'] = _decrypt(result['trust_id'], db_result.decrypt_method)
+    result['password'] = crypt.decrypt(
+        db_result.decrypt_method, result['password'])
+    result['trust_id'] = crypt.decrypt(
+        db_result.decrypt_method, result['trust_id'])
     return result
 
 
@@ -758,6 +866,15 @@ def software_config_get(context, config_id):
     return result
 
 
+def software_config_get_all(context, limit=None, marker=None,
+                            tenant_safe=True):
+    query = model_query(context, models.SoftwareConfig)
+    if tenant_safe:
+        query = query.filter_by(tenant=context.tenant_id)
+    return _paginate_query(context, query, models.SoftwareConfig,
+                           limit=limit, marker=marker).all()
+
+
 def software_config_delete(context, config_id):
     config = software_config_get(context, config_id)
     session = orm_session.Session.object_session(config)
@@ -829,6 +946,15 @@ def snapshot_get(context, snapshot_id):
         raise exception.NotFound(_('Snapshot with id %s not found') %
                                  snapshot_id)
     return result
+
+
+def snapshot_get_by_stack(context, snapshot_id, stack):
+    snapshot = snapshot_get(context, snapshot_id)
+    if snapshot.stack_id != stack.id:
+        raise exception.SnapshotNotFound(snapshot=snapshot_id,
+                                         stack=stack.name)
+
+    return snapshot
 
 
 def snapshot_update(context, snapshot_id, values):
@@ -918,39 +1044,54 @@ def purge_deleted(age, granularity='days'):
     meta = sqlalchemy.MetaData()
     meta.bind = engine
 
-    # Purge deleted stacks
     stack = sqlalchemy.Table('stack', meta, autoload=True)
+    stack_lock = sqlalchemy.Table('stack_lock', meta, autoload=True)
+    resource = sqlalchemy.Table('resource', meta, autoload=True)
+    resource_data = sqlalchemy.Table('resource_data', meta, autoload=True)
     event = sqlalchemy.Table('event', meta, autoload=True)
     raw_template = sqlalchemy.Table('raw_template', meta, autoload=True)
     user_creds = sqlalchemy.Table('user_creds', meta, autoload=True)
-
-    stmt = sqlalchemy.select(
-        [stack.c.id,
-         stack.c.raw_template_id,
-         stack.c.user_creds_id]
-    ).where(stack.c.deleted_at < time_line)
-    deleted_stacks = engine.execute(stmt)
-
-    for s in deleted_stacks:
-        event_del = event.delete().where(event.c.stack_id == s[0])
-        engine.execute(event_del)
-        stack_del = stack.delete().where(stack.c.id == s[0])
-        engine.execute(stack_del)
-        raw_template_del = raw_template.delete().where(
-            raw_template.c.id == s[1])
-        engine.execute(raw_template_del)
-        user_creds_del = user_creds.delete().where(user_creds.c.id == s[2])
-        engine.execute(user_creds_del)
-
-    # Purge deleted services
     service = sqlalchemy.Table('service', meta, autoload=True)
-    stmt = (sqlalchemy.select([service.c.id]).
-            where(service.c.deleted_at < time_line))
-    deleted_services = engine.execute(stmt)
+    syncpoint = sqlalchemy.Table('sync_point', meta, autoload=True)
 
-    for s in deleted_services:
-        stmt = service.delete().where(service.c.id == s[0])
-        engine.execute(stmt)
+    # find the soft-deleted stacks that are past their expiry
+    stack_where = sqlalchemy.select([stack.c.id]).where(
+        stack.c.deleted_at < time_line)
+    # delete stack locks (just in case some got stuck)
+    stack_lock_del = stack_lock.delete().where(
+        stack_lock.c.stack_id.in_(stack_where))
+    engine.execute(stack_lock_del)
+    # delete resource_data
+    res_where = sqlalchemy.select([resource.c.id]).where(
+        resource.c.stack_id.in_(stack_where))
+    res_data_del = resource_data.delete().where(
+        resource_data.c.resource_id.in_(res_where))
+    engine.execute(res_data_del)
+    # delete resources
+    res_del = resource.delete().where(resource.c.stack_id.in_(stack_where))
+    engine.execute(res_del)
+    # delete events
+    event_del = event.delete().where(event.c.stack_id.in_(stack_where))
+    engine.execute(event_del)
+    # clean up any sync_points that may have lingered
+    sync_del = syncpoint.delete().where(syncpoint.c.stack_id.in_(stack_where))
+    engine.execute(sync_del)
+    # delete the stacks
+    stack_del = stack.delete().where(stack.c.deleted_at < time_line)
+    engine.execute(stack_del)
+    # delete orphaned raw templates
+    stack_templ_sel = sqlalchemy.select([stack.c.raw_template_id])
+    raw_templ_sel = sqlalchemy.not_(raw_template.c.id.in_(stack_templ_sel))
+    raw_templ_del = raw_template.delete().where(raw_templ_sel)
+    engine.execute(raw_templ_del)
+    # purge any user creds that are no longer referenced
+    stack_creds_sel = sqlalchemy.select([stack.c.user_creds_id])
+    user_creds_sel = sqlalchemy.not_(user_creds.c.id.in_(stack_creds_sel))
+    usr_creds_del = user_creds.delete().where(user_creds_sel)
+    engine.execute(usr_creds_del)
+    # Purge deleted services
+    srvc_del = service.delete().where(service.c.deleted_at < time_line)
+    engine.execute(srvc_del)
 
 
 def sync_point_delete_all_by_stack_and_traversal(context, stack_id,
@@ -961,6 +1102,7 @@ def sync_point_delete_all_by_stack_and_traversal(context, stack_id,
 
 
 def sync_point_create(context, values):
+    values['entity_id'] = str(values['entity_id'])
     sync_point_ref = models.SyncPoint()
     sync_point_ref.update(values)
     sync_point_ref.save(_session(context))
@@ -968,6 +1110,7 @@ def sync_point_create(context, values):
 
 
 def sync_point_get(context, entity_id, traversal_id, is_update):
+    entity_id = str(entity_id)
     return model_query(context, models.SyncPoint).get(
         (entity_id, traversal_id, is_update)
     )
@@ -976,6 +1119,7 @@ def sync_point_get(context, entity_id, traversal_id, is_update):
 def sync_point_update_input_data(context, entity_id,
                                  traversal_id, is_update, atomic_key,
                                  input_data):
+    entity_id = str(entity_id)
     rows_updated = model_query(context, models.SyncPoint).filter_by(
         entity_id=entity_id,
         traversal_id=traversal_id,
@@ -987,9 +1131,103 @@ def sync_point_update_input_data(context, entity_id,
 
 def db_sync(engine, version=None):
     """Migrate the database to `version` or the most recent version."""
+    if version is not None and int(version) < db_version(engine):
+        raise exception.Error(_("Cannot migrate to lower schema version."))
+
     return migration.db_sync(engine, version=version)
 
 
 def db_version(engine):
     """Display the current database version."""
     return migration.db_version(engine)
+
+
+def db_encrypt_parameters_and_properties(ctxt, encryption_key):
+    from heat.engine import template
+    session = get_session()
+    with session.begin():
+
+        raw_templates = session.query(models.RawTemplate).all()
+
+        for raw_template in raw_templates:
+            tmpl = template.Template.load(ctxt, raw_template.id, raw_template)
+            env = raw_template.environment
+
+            if 'encrypted_param_names' in env:
+                encrypted_params = env['encrypted_param_names']
+            else:
+                encrypted_params = []
+            for param_name, param in tmpl.param_schemata().items():
+                if (param_name in encrypted_params) or (not param.hidden):
+                    continue
+
+                try:
+                    param_val = env['parameters'][param_name]
+                except KeyError:
+                    param_val = param.default
+
+                encrypted_val = crypt.encrypt(param_val, encryption_key)
+                env['parameters'][param_name] = encrypted_val
+                encrypted_params.append(param_name)
+
+            if encrypted_params:
+                environment = env.copy()
+                environment['encrypted_param_names'] = encrypted_params
+                raw_template_update(ctxt, raw_template.id,
+                                    {'environment': environment})
+
+        resources = session.query(models.Resource).filter(
+            ~models.Resource.properties_data.is_(None),
+            ~models.Resource.properties_data_encrypted.is_(True)).all()
+        for resource in resources:
+            result = {}
+            for prop_name, prop_value in resource.properties_data.items():
+                prop_string = jsonutils.dumps(prop_value)
+                encrypted_value = crypt.encrypt(prop_string,
+                                                encryption_key)
+                result[prop_name] = encrypted_value
+            resource.properties_data = result
+            resource.properties_data_encrypted = True
+            resource_update(ctxt, resource.id,
+                            {'properties_data': result,
+                             'properties_data_encrypted': True},
+                            resource.atomic_key)
+
+
+def db_decrypt_parameters_and_properties(ctxt, encryption_key):
+    session = get_session()
+
+    with session.begin():
+        raw_templates = session.query(models.RawTemplate).all()
+
+        for raw_template in raw_templates:
+            parameters = raw_template.environment['parameters']
+            encrypted_params = raw_template.environment[
+                'encrypted_param_names']
+            for param_name in encrypted_params:
+                method, value = parameters[param_name]
+                decrypted_val = crypt.decrypt(method, value, encryption_key)
+                parameters[param_name] = decrypted_val
+
+            environment = raw_template.environment.copy()
+            environment['encrypted_param_names'] = []
+            raw_template_update(ctxt, raw_template.id,
+                                {'environment': environment})
+
+        resources = session.query(models.Resource).filter(
+            ~models.Resource.properties_data.is_(None),
+            models.Resource.properties_data_encrypted.is_(True)).all()
+        for resource in resources:
+            result = {}
+            for prop_name, prop_value in resource.properties_data.items():
+                method, value = prop_value
+                decrypted_value = crypt.decrypt(method, value,
+                                                encryption_key)
+                prop_string = jsonutils.loads(decrypted_value)
+                result[prop_name] = prop_string
+            resource.properties_data = result
+            resource.properties_data_encrypted = False
+            resource_update(ctxt, resource.id,
+                            {'properties_data': result,
+                             'properties_data_encrypted': False},
+                            resource.atomic_key)

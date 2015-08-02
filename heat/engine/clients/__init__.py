@@ -11,16 +11,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import warnings
-
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import importutils
 import six
-from stevedore import extension
+from stevedore import enabled
 
 from heat.common import exception
-from heat.common.i18n import _LE
+from heat.common.i18n import _
 from heat.common.i18n import _LW
 
 LOG = logging.getLogger(__name__)
@@ -79,54 +77,6 @@ class OpenStackClients(object):
         # auth_token expiry (e.g trust_id or username/password)
         return self.client('keystone').auth_token
 
-    def keystone(self):
-        warnings.warn('keystone() is deprecated. '
-                      'Replace with calls to client("keystone")')
-        return self.client('keystone')
-
-    def url_for(self, **kwargs):
-        return self.client('keystone').url_for(**kwargs)
-
-    def nova(self):
-        warnings.warn('nova() is deprecated. '
-                      'Replace with calls to client("nova")')
-        return self.client('nova')
-
-    def swift(self):
-        warnings.warn('swift() is deprecated. '
-                      'Replace with calls to client("swift")')
-        return self.client('swift')
-
-    def glance(self):
-        warnings.warn('glance() is deprecated. '
-                      'Replace with calls to client("glance")')
-        return self.client('glance')
-
-    def neutron(self):
-        warnings.warn('neutron() is deprecated. '
-                      'Replace with calls to client("neutron")')
-        return self.client('neutron')
-
-    def cinder(self):
-        warnings.warn('cinder() is deprecated. '
-                      'Replace with calls to client("cinder")')
-        return self.client('cinder')
-
-    def trove(self):
-        warnings.warn('trove() is deprecated. '
-                      'Replace with calls to client("trove")')
-        return self.client('trove')
-
-    def ceilometer(self):
-        warnings.warn('ceilometer() is deprecated. '
-                      'Replace with calls to client("ceilometer")')
-        return self.client('ceilometer')
-
-    def heat(self):
-        warnings.warn('heat() is deprecated. '
-                      'Replace with calls to client("heat")')
-        return self.client('heat')
-
 
 class ClientBackend(object):
     '''Delay choosing the backend client module until the client's class needs
@@ -140,8 +90,8 @@ class ClientBackend(object):
                 return importutils.import_object(cfg.CONF.cloud_backend,
                                                  context)
             except (ImportError, RuntimeError) as err:
-                msg = _LE('Invalid cloud_backend setting in heat.conf '
-                          'detected  - %s') % six.text_type(err)
+                msg = _('Invalid cloud_backend setting in heat.conf '
+                        'detected  - %s') % six.text_type(err)
                 LOG.error(msg)
                 raise exception.Invalid(reason=msg)
 
@@ -161,10 +111,18 @@ def initialise():
     if _mgr:
         return
 
-    _mgr = extension.ExtensionManager(
+    def client_is_available(client_plugin):
+        if not hasattr(client_plugin.plugin, 'is_available'):
+            # if the client does not have a is_available() class method, then
+            # we assume it wants to be always available
+            return True
+        # let the client plugin decide if it wants to register or not
+        return client_plugin.plugin.is_available()
+
+    _mgr = enabled.EnabledExtensionManager(
         namespace='heat.clients',
-        invoke_on_load=False,
-        verify_requirements=True)
+        check_func=client_is_available,
+        invoke_on_load=False)
 
 
 def list_opts():

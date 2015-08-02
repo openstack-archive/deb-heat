@@ -11,10 +11,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import netaddr
 from oslo_log import log as logging
 
-from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LW
 from heat.engine import attributes
@@ -22,6 +20,7 @@ from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine import support
+import six
 
 try:
     from pyrax.exceptions import NetworkInUse  # noqa
@@ -48,8 +47,10 @@ class CloudNetwork(resource.Resource):
     """
 
     support_status = support.SupportStatus(
-        support.DEPRECATED,
-        _('Use OS::Neutron::Net instead.'),
+        status=support.DEPRECATED,
+        message=_('Use OS::Neutron::Net instead.'),
+        version='2015.1',
+        previous_status=support.SupportStatus(version='2014.1')
     )
 
     PROPERTIES = (
@@ -77,7 +78,10 @@ class CloudNetwork(resource.Resource):
             properties.Schema.STRING,
             _("The IP block from which to allocate the network. For example, "
               "172.16.0.0/24 or 2001:DB8::/64."),
-            required=True
+            required=True,
+            constraints=[
+                constraints.CustomConstraint('net_cidr')
+            ]
         )
     }
 
@@ -138,7 +142,7 @@ class CloudNetwork(resource.Resource):
             try:
                 network.delete()
             except NetworkInUse:
-                LOG.warn("Network '%s' still in use." % network.id)
+                LOG.warn(_LW("Network '%s' still in use."), network.id)
             else:
                 network_info['delete_issued'] = True
             return False
@@ -152,15 +156,11 @@ class CloudNetwork(resource.Resource):
 
     def validate(self):
         super(CloudNetwork, self).validate()
-        try:
-            netaddr.IPNetwork(self.properties[self.CIDR])
-        except netaddr.core.AddrFormatError:
-            raise exception.StackValidationFailed(message=_("Invalid cidr"))
 
     def _resolve_attribute(self, name):
         net = self.network()
         if net:
-            return unicode(getattr(net, name))
+            return six.text_type(getattr(net, name))
         return ""
 
 

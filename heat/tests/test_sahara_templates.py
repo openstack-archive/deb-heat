@@ -57,6 +57,32 @@ resources:
       neutron_management_network: some_network
 """
 
+cluster_template_without_name = """
+heat_template_version: 2013-05-23
+resources:
+  cluster_template!:
+    type: OS::Sahara::ClusterTemplate
+    properties:
+      plugin_name: vanilla
+      hadoop_version: 2.3.0
+      neutron_management_network: some_network
+"""
+
+node_group_template_without_name = """
+heat_template_version: 2013-05-23
+resources:
+  node_group!:
+    type: OS::Sahara::NodeGroupTemplate
+    properties:
+        plugin_name: vanilla
+        hadoop_version: 2.3.0
+        flavor: m1.large
+        floating_ip_pool: some_pool_name
+        node_processes:
+          - namenode
+          - jobtracker
+"""
+
 
 class FakeNodeGroupTemplate(object):
     def __init__(self):
@@ -89,8 +115,8 @@ class SaharaNodeGroupTemplateTest(common.HeatTestCase):
         self.t = template_format.parse(node_group_template)
 
     def _init_ngt(self, template):
-        stack = utils.parse_stack(template)
-        return stack['node-group']
+        self.stack = utils.parse_stack(template)
+        return self.stack['node-group']
 
     def test_ngt_resource_mapping(self):
         ngt = self._init_ngt(self.t)
@@ -146,7 +172,7 @@ class SaharaNodeGroupTemplateTest(common.HeatTestCase):
         self.ngt_mgr.delete.side_effect = sahara.sahara_base.APIException()
         delete_task = scheduler.TaskRunner(ngt.delete)
         ex = self.assertRaises(exception.ResourceFailure, delete_task)
-        expected = "APIException: None"
+        expected = "APIException: resources.node-group: None"
         self.assertEqual(expected, six.text_type(ex))
         self.ngt_mgr.delete.assert_called_once_with(self.fake_ngt.id)
 
@@ -188,8 +214,21 @@ class SaharaNodeGroupTemplateTest(common.HeatTestCase):
         self.patchobject(ngt, 'is_using_neutron').return_value = False
 
         ex = self.assertRaises(exception.StackValidationFailed, ngt.validate)
-        self.assertEqual(u"Property error : node-group: flavor Error "
-                         u"validating value u'm1.large'", six.text_type(ex))
+        self.assertEqual(u"Property error: "
+                         u"resources.node-group.properties.flavor: "
+                         u"Error validating value u'm1.large'",
+                         six.text_type(ex))
+
+    def test_template_invalid_name(self):
+        tmpl = template_format.parse(node_group_template_without_name)
+        stack = utils.parse_stack(tmpl)
+        ngt = stack['node_group!']
+        self.ngt_mgr.create.return_value = self.fake_ngt
+        scheduler.TaskRunner(ngt.create)()
+        self.assertEqual((ngt.CREATE, ngt.COMPLETE), ngt.state)
+        self.assertEqual(self.fake_ngt.id, ngt.resource_id)
+        name = self.ngt_mgr.create.call_args[0][0]
+        self.assertIn('-nodegroup-', name)
 
 
 class SaharaClusterTemplateTest(common.HeatTestCase):
@@ -209,8 +248,8 @@ class SaharaClusterTemplateTest(common.HeatTestCase):
         self.t = template_format.parse(cluster_template)
 
     def _init_ct(self, template):
-        stack = utils.parse_stack(template)
-        return stack['cluster-template']
+        self.stack = utils.parse_stack(template)
+        return self.stack['cluster-template']
 
     def test_ct_resource_mapping(self):
         ct = self._init_ct(self.t)
@@ -260,7 +299,7 @@ class SaharaClusterTemplateTest(common.HeatTestCase):
         self.ct_mgr.delete.side_effect = sahara.sahara_base.APIException()
         delete_task = scheduler.TaskRunner(ct.delete)
         ex = self.assertRaises(exception.ResourceFailure, delete_task)
-        expected = "APIException: None"
+        expected = "APIException: resources.cluster-template: None"
         self.assertEqual(expected, six.text_type(ex))
         self.ct_mgr.delete.assert_called_once_with(self.fake_ct.id)
 
@@ -273,3 +312,14 @@ class SaharaClusterTemplateTest(common.HeatTestCase):
                                ct.validate)
         self.assertEqual("neutron_management_network must be provided",
                          six.text_type(ex))
+
+    def test_template_invalid_name(self):
+        tmpl = template_format.parse(cluster_template_without_name)
+        stack = utils.parse_stack(tmpl)
+        ct = stack['cluster_template!']
+        self.ct_mgr.create.return_value = self.fake_ct
+        scheduler.TaskRunner(ct.create)()
+        self.assertEqual((ct.CREATE, ct.COMPLETE), ct.state)
+        self.assertEqual(self.fake_ct.id, ct.resource_id)
+        name = self.ct_mgr.create.call_args[0][0]
+        self.assertIn('-clustertemplate-', name)

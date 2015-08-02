@@ -3,7 +3,7 @@
 *~
 build
 dist
-*.egg-info
+*.egg*
 tags
 *.log
 heat-test.db
@@ -19,3 +19,5 @@ cover
 .testrepository
 .project
 .pydevproject
+doc/source/api/
+etc/heat/heat.conf.sample

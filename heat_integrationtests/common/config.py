@@ -62,10 +62,10 @@ IntegrationTestGroup = [
                default=1200,
                help="Timeout in seconds to wait for a stack to build."),
     cfg.StrOpt('network_for_ssh',
-               default='private',
+               default='heat-net',
                help="Network used for SSH connections."),
     cfg.StrOpt('fixed_network_name',
-               default='private',
+               default='heat-net',
                help="Visible fixed network name "),
     cfg.StrOpt('floating_network_name',
                default='public',
@@ -77,7 +77,7 @@ IntegrationTestGroup = [
                     "resource type Heat::InstallConfigAgent. Needs to "
                     "be appropriate for the image_ref."),
     cfg.StrOpt('fixed_subnet_name',
-               default='private-subnet',
+               default='heat-subnet',
                help="Visible fixed sub-network name "),
     cfg.IntOpt('ssh_timeout',
                default=300,
@@ -109,6 +109,10 @@ IntegrationTestGroup = [
                default=120,
                help="Timeout in seconds to wait for connectivity to "
                     "server."),
+    cfg.IntOpt('sighup_timeout',
+               default=30,
+               help="Timeout in seconds to wait for adding or removing child"
+                    "process after receiving of sighup signal")
 ]
 
 

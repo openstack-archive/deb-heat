@@ -12,7 +12,6 @@
 #    under the License.
 
 import mock
-from oslo_config import cfg
 import six
 
 from heat.common import exception
@@ -28,8 +27,6 @@ from heat.tests import utils
 class LaunchConfigurationTest(common.HeatTestCase):
     def setUp(self):
         super(LaunchConfigurationTest, self).setUp()
-        cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://server.test:8000/v1/waitcondition')
 
     def validate_launch_config(self, t, stack, resource_name):
         # create the launch configuration resource
@@ -132,9 +129,12 @@ class LaunchConfigurationTest(common.HeatTestCase):
         rsrc = stack['LaunchConfig']
 
         self.patchobject(nova.NovaClientPlugin, 'get_server',
-                         side_effect=exception.ServerNotFound(server='5678'))
-        msg = ("Property error : LaunchConfig: InstanceId Error validating "
-               "value '5678': The server (5678) could not be found.")
+                         side_effect=exception.EntityNotFound(
+                             entity='Server', name='5678'))
+        msg = ("Property error: "
+               "Resources.LaunchConfig.Properties.InstanceId: "
+               "Error validating value '5678': The Server (5678) "
+               "could not be found.")
         exc = self.assertRaises(exception.StackValidationFailed,
                                 rsrc.validate)
         self.assertIn(msg, six.text_type(exc))
@@ -193,9 +193,10 @@ class LaunchConfigurationTest(common.HeatTestCase):
                               self.validate_launch_config, t,
                               stack, 'LaunchConfig')
 
-        excepted_error = ('Property error : LaunchConfig: BlockDeviceMappings '
-                          'Property error : BlockDeviceMappings: 0 Property '
-                          'error : 0: Property DeviceName not assigned')
+        excepted_error = (
+            'Property error: '
+            'Resources.LaunchConfig.Properties.BlockDeviceMappings[0]: '
+            'Property DeviceName not assigned')
         self.assertIn(excepted_error, six.text_type(e))
 
         self.m.VerifyAll()

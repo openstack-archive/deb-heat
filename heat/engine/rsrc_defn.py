@@ -14,6 +14,7 @@ import collections
 import copy
 import itertools
 import operator
+import warnings
 
 import six
 
@@ -165,9 +166,9 @@ class ResourceDefinitionCore(object):
             return stack[res_name]
 
         def strict_func_deps(data, datapath):
-            return itertools.ifilter(lambda r: getattr(r, 'strict_dependency',
-                                                       True),
-                                     function.dependencies(data, datapath))
+            return six.moves.filter(lambda r: getattr(r, 'strict_dependency',
+                                                      True),
+                                    function.dependencies(data, datapath))
 
         return itertools.chain((get_resource(dep) for dep in self._depends),
                                strict_func_deps(self._properties,
@@ -183,7 +184,8 @@ class ResourceDefinitionCore(object):
         require a context to validate constraints.
         """
         return properties.Properties(schema, self._properties or {},
-                                     function.resolve, self.name, context)
+                                     function.resolve, self.name, context,
+                                     section=PROPERTIES)
 
     def deletion_policy(self):
         """
@@ -201,7 +203,8 @@ class ResourceDefinitionCore(object):
         require a context to validate constraints.
         """
         return properties.Properties(schema, self._update_policy or {},
-                                     function.resolve, self.name, context)
+                                     function.resolve, self.name, context,
+                                     section=UPDATE_POLICY)
 
     def metadata(self):
         """
@@ -283,7 +286,7 @@ class ResourceDefinitionCore(object):
         data = {
             'classname': type(self).__name__,
             'name': repr(self.name),
-            'type': repr(self.type),
+            'type': repr(self.resource_type),
             'args': ', '.join(arg_repr(n) for n in args)
         }
         return '%(classname)s(%(name)s, %(type)s, %(args)s)' % data
@@ -303,9 +306,16 @@ class ResourceDefinition(ResourceDefinitionCore, collections.Mapping):
     A resource definition that also acts like a cfn template snippet.
 
     This class exists only for backwards compatibility with existing resource
-    plugins and unit tests; it will at some point be deprecated and then
-    replaced with ResourceDefinitionCore.
+    plugins and unit tests; it is deprecated and then could be replaced with
+    ResourceDefinitionCore as soon as M release.
     """
+
+    _deprecation_msg = (
+        'Reading the ResourceDefinition as if it were a snippet of a '
+        'CloudFormation template is deprecated, and the ability to treat it '
+        'as such will be removed in the future. Resource plugins should use '
+        'the ResourceDefinition API to work with the definition of the '
+        'resource instance.')
 
     def __eq__(self, other):
         """
@@ -335,6 +345,8 @@ class ResourceDefinition(ResourceDefinitionCore, collections.Mapping):
         This is for backwards compatibility with existing code that expects a
         parsed-JSON template snippet.
         """
+        warnings.warn(self._deprecation_msg, DeprecationWarning)
+
         yield TYPE
         if self._properties is not None:
             yield PROPERTIES
@@ -356,6 +368,8 @@ class ResourceDefinition(ResourceDefinitionCore, collections.Mapping):
         This is for backwards compatibility with existing code that expects a
         parsed-JSON template snippet.
         """
+        warnings.warn(self._deprecation_msg, DeprecationWarning)
+
         if key == TYPE:
             return self.resource_type
         elif key == PROPERTIES:
@@ -381,6 +395,13 @@ class ResourceDefinition(ResourceDefinitionCore, collections.Mapping):
 
         raise KeyError(key)
 
+    def __hash__(self):
+        """
+        Return a hash of the ResourceDefinition object.
+        """
+        warnings.warn(self._deprecation_msg, DeprecationWarning)
+        return super(ResourceDefinition, self).__hash__()
+
     def __len__(self):
         """
         Return the number of available CFN template keys.
@@ -388,6 +409,8 @@ class ResourceDefinition(ResourceDefinitionCore, collections.Mapping):
         This is for backwards compatibility with existing code that expects a
         parsed-JSON template snippet.
         """
+        warnings.warn(self._deprecation_msg, DeprecationWarning)
+
         return len(list(iter(self)))
 
     def __repr__(self):
@@ -410,6 +433,6 @@ def _hash_data(data):
 
         if isinstance(data, collections.Mapping):
             item_hashes = (hash(k) ^ _hash_data(v) for k, v in data.items())
-            return reduce(operator.xor, item_hashes, 0L)
+            return six.moves.reduce(operator.xor, item_hashes, 0)
 
     return hash(data)

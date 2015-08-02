@@ -183,7 +183,6 @@ class AutoscalingGroupBasicTest(AutoscalingGroupTest):
                                'flavor': self.conf.instance_type}}
         self.update_stack(stack_identifier, self.template,
                           environment=env2, files=files)
-        self._wait_for_stack_status(stack_identifier, 'UPDATE_COMPLETE')
         stack = self.client.stacks.get(stack_identifier)
         self.assert_instance_count(stack, 5)
 
@@ -318,21 +317,11 @@ class AutoscalingGroupBasicTest(AutoscalingGroupTest):
         nested_ident = self.assert_resource_is_a_stack(stack_identifier,
                                                        'JobServerGroup')
 
-        self.client.actions.suspend(stack_id=stack_identifier)
-        self._wait_for_resource_status(
-            stack_identifier, 'JobServerGroup', 'SUSPEND_COMPLETE')
-        for res in self.client.resources.list(nested_ident):
-            self._wait_for_resource_status(nested_ident,
-                                           res.resource_name,
-                                           'SUSPEND_COMPLETE')
+        self.stack_suspend(stack_identifier)
+        self._wait_for_all_resource_status(nested_ident, 'SUSPEND_COMPLETE')
 
-        self.client.actions.resume(stack_id=stack_identifier)
-        self._wait_for_resource_status(
-            stack_identifier, 'JobServerGroup', 'RESUME_COMPLETE')
-        for res in self.client.resources.list(nested_ident):
-            self._wait_for_resource_status(nested_ident,
-                                           res.resource_name,
-                                           'RESUME_COMPLETE')
+        self.stack_resume(stack_identifier)
+        self._wait_for_all_resource_status(nested_ident, 'RESUME_COMPLETE')
 
 
 class AutoscalingGroupUpdatePolicyTest(AutoscalingGroupTest):
@@ -384,7 +373,6 @@ class AutoscalingGroupUpdatePolicyTest(AutoscalingGroupTest):
         # test stack update
         self.update_stack(stack_identifier, updt_template,
                           environment=env, files=files)
-        self._wait_for_stack_status(stack_identifier, 'UPDATE_COMPLETE')
         updt_stack = self.client.stacks.get(stack_identifier)
 
         # test that the launch configuration is replaced

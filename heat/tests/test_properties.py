@@ -11,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import mock
 from oslo_serialization import jsonutils
 import six
 
@@ -19,6 +20,7 @@ from heat.engine.cfn import functions as cfn_funcs
 from heat.engine import constraints
 from heat.engine.hot import parameters as hot_param
 from heat.engine import parameters
+from heat.engine import plugin_manager
 from heat.engine import properties
 from heat.engine import resources
 from heat.engine import support
@@ -31,7 +33,7 @@ class PropertySchemaTest(common.HeatTestCase):
             'type': 'string',
             'description': 'A string',
             'default': 'wibble',
-            'required': True,
+            'required': False,
             'update_allowed': False,
             'immutable': False,
             'constraints': [
@@ -39,7 +41,7 @@ class PropertySchemaTest(common.HeatTestCase):
             ]
         }
         s = properties.Schema(properties.Schema.STRING, 'A string',
-                              default='wibble', required=True,
+                              default='wibble',
                               constraints=[constraints.Length(4, 8)])
         self.assertEqual(d, dict(s))
 
@@ -52,7 +54,7 @@ class PropertySchemaTest(common.HeatTestCase):
                     'type': 'string',
                     'description': 'A string',
                     'default': 'wibble',
-                    'required': True,
+                    'required': False,
                     'update_allowed': False,
                     'immutable': False,
                     'constraints': [
@@ -65,7 +67,7 @@ class PropertySchemaTest(common.HeatTestCase):
             'immutable': False,
         }
         s = properties.Schema(properties.Schema.STRING, 'A string',
-                              default='wibble', required=True,
+                              default='wibble',
                               constraints=[constraints.Length(4, 8)])
         l = properties.Schema(properties.Schema.LIST, 'A list', schema=s)
         self.assertEqual(d, dict(l))
@@ -79,7 +81,7 @@ class PropertySchemaTest(common.HeatTestCase):
                     'type': 'string',
                     'description': 'A string',
                     'default': 'wibble',
-                    'required': True,
+                    'required': False,
                     'update_allowed': False,
                     'immutable': False,
                     'constraints': [
@@ -92,7 +94,7 @@ class PropertySchemaTest(common.HeatTestCase):
             'immutable': False,
         }
         s = properties.Schema(properties.Schema.STRING, 'A string',
-                              default='wibble', required=True,
+                              default='wibble',
                               constraints=[constraints.Length(4, 8)])
         m = properties.Schema(properties.Schema.MAP, 'A map',
                               schema={'Foo': s})
@@ -111,7 +113,7 @@ class PropertySchemaTest(common.HeatTestCase):
                             'type': 'string',
                             'description': 'A string',
                             'default': 'wibble',
-                            'required': True,
+                            'required': False,
                             'update_allowed': False,
                             'immutable': False,
                             'constraints': [
@@ -129,7 +131,7 @@ class PropertySchemaTest(common.HeatTestCase):
             'immutable': False,
         }
         s = properties.Schema(properties.Schema.STRING, 'A string',
-                              default='wibble', required=True,
+                              default='wibble',
                               constraints=[constraints.Length(4, 8)])
         m = properties.Schema(properties.Schema.MAP, 'A map',
                               schema={'Foo': s})
@@ -138,9 +140,9 @@ class PropertySchemaTest(common.HeatTestCase):
 
     def test_all_resource_schemata(self):
         for resource_type in resources.global_env().get_types():
-            for schema in getattr(resource_type,
-                                  'properties_schema',
-                                  {}).itervalues():
+            for schema in six.itervalues(getattr(resource_type,
+                                                 'properties_schema',
+                                                 {})):
                 properties.Schema.from_legacy(schema)
 
     def test_from_legacy_idempotency(self):
@@ -162,7 +164,6 @@ class PropertySchemaTest(common.HeatTestCase):
             'Type': 'String',
             'Description': 'a string',
             'Default': 'wibble',
-            'Required': True,
             'Implemented': False,
             'MinLength': 4,
             'MaxLength': 8,
@@ -172,7 +173,7 @@ class PropertySchemaTest(common.HeatTestCase):
         self.assertEqual(properties.Schema.STRING, s.type)
         self.assertEqual('a string', s.description)
         self.assertEqual('wibble', s.default)
-        self.assertTrue(s.required)
+        self.assertFalse(s.required)
         self.assertEqual(3, len(s.constraints))
         self.assertFalse(s.immutable)
 
@@ -344,7 +345,7 @@ class PropertySchemaTest(common.HeatTestCase):
 
         self.assertEqual(properties.Schema.STRING, schema.type)
         self.assertEqual(description, schema.description)
-        self.assertIsNone(schema.default)
+        self.assertEqual("m1.large", schema.default)
         self.assertFalse(schema.required)
         self.assertEqual(1, len(schema.constraints))
 
@@ -369,7 +370,7 @@ class PropertySchemaTest(common.HeatTestCase):
 
         self.assertEqual(properties.Schema.STRING, schema.type)
         self.assertEqual(description, schema.description)
-        self.assertIsNone(schema.default)
+        self.assertEqual("m1.large", schema.default)
         self.assertFalse(schema.required)
         self.assertEqual(1, len(schema.constraints))
 
@@ -395,7 +396,7 @@ class PropertySchemaTest(common.HeatTestCase):
 
         self.assertEqual(properties.Schema.STRING, schema.type)
         self.assertEqual(description, schema.description)
-        self.assertIsNone(schema.default)
+        self.assertEqual("m1.large", schema.default)
         self.assertFalse(schema.required)
         self.assertEqual(2, len(schema.constraints))
 
@@ -482,7 +483,7 @@ class PropertySchemaTest(common.HeatTestCase):
         schema = properties.Schema.from_parameter(param)
 
         self.assertEqual(properties.Schema.NUMBER, schema.type)
-        self.assertIsNone(schema.default)
+        self.assertEqual(default, schema.default)
         self.assertFalse(schema.required)
         self.assertEqual(1, len(schema.constraints))
 
@@ -502,7 +503,7 @@ class PropertySchemaTest(common.HeatTestCase):
         schema = properties.Schema.from_parameter(param)
 
         self.assertEqual(properties.Schema.NUMBER, schema.type)
-        self.assertIsNone(schema.default)
+        self.assertEqual(default, schema.default)
         self.assertFalse(schema.required)
         self.assertEqual(1, len(schema.constraints))
 
@@ -523,7 +524,7 @@ class PropertySchemaTest(common.HeatTestCase):
         schema = properties.Schema.from_parameter(param)
 
         self.assertEqual(properties.Schema.NUMBER, schema.type)
-        self.assertIsNone(schema.default)
+        self.assertEqual(default, schema.default)
         self.assertFalse(schema.required)
         self.assertEqual(1, len(schema.constraints))
 
@@ -545,7 +546,7 @@ class PropertySchemaTest(common.HeatTestCase):
         schema = properties.Schema.from_parameter(param)
 
         self.assertEqual(properties.Schema.NUMBER, schema.type)
-        self.assertIsNone(schema.default)
+        self.assertEqual(default, schema.default)
         self.assertFalse(schema.required)
         self.assertEqual(1, len(schema.constraints))
         self.assertFalse(schema.allow_conversion)
@@ -564,7 +565,7 @@ class PropertySchemaTest(common.HeatTestCase):
         schema = properties.Schema.from_parameter(param)
 
         self.assertEqual(properties.Schema.LIST, schema.type)
-        self.assertIsNone(schema.default)
+        self.assertEqual("foo,bar,baz", schema.default)
         self.assertFalse(schema.required)
         self.assertFalse(schema.allow_conversion)
 
@@ -577,9 +578,47 @@ class PropertySchemaTest(common.HeatTestCase):
         schema = properties.Schema.from_parameter(param)
 
         self.assertEqual(properties.Schema.MAP, schema.type)
-        self.assertIsNone(schema.default)
+        self.assertEqual({"foo": "bar", "blarg": "wibble"},
+                         schema.default)
         self.assertFalse(schema.required)
         self.assertTrue(schema.allow_conversion)
+
+    def test_no_mismatch_in_update_policy(self):
+        manager = plugin_manager.PluginManager('heat.engine.resources')
+        resource_mapping = plugin_manager.PluginMapping('resource')
+        res_plugin_mappings = resource_mapping.load_all(manager)
+        all_resources = {}
+        for mapping in res_plugin_mappings:
+            name, cls = mapping
+            all_resources[name] = cls
+
+        def check_update_policy(resource_type, prop_key, prop, update=False):
+            if prop.update_allowed:
+                update = True
+            sub_schema = prop.schema
+            if sub_schema:
+                for sub_prop_key, sub_prop in six.iteritems(sub_schema):
+                    if not update:
+                        self.assertEqual(update, sub_prop.update_allowed,
+                                         "Mismatch in update policies: "
+                                         "resource %(res)s, properties "
+                                         "'%(prop)s' and '%(nested_prop)s'." %
+                                         {'res': resource_type,
+                                          'prop': prop_key,
+                                          'nested_prop': sub_prop_key})
+                    if sub_prop_key is '*':
+                        check_update_policy(resource_type, prop_key,
+                                            sub_prop, update)
+                    else:
+                        check_update_policy(resource_type, sub_prop_key,
+                                            sub_prop, update)
+
+        for resource_type, resource_class in six.iteritems(all_resources):
+            props_schemata = properties.schemata(
+                resource_class.properties_schema)
+
+            for prop_key, prop in six.iteritems(props_schemata):
+                check_update_policy(resource_type, prop_key, prop)
 
 
 class PropertyTest(common.HeatTestCase):
@@ -883,8 +922,8 @@ class PropertyTest(common.HeatTestCase):
         p = properties.Property({'Type': 'Map', 'Schema': map_schema})
         ex = self.assertRaises(exception.StackValidationFailed,
                                p.get_value, {'valid': 'fish'}, True)
-        self.assertEqual('Property error : valid "fish" is not '
-                         'a valid boolean', six.text_type(ex))
+        self.assertEqual('Property error: valid: "fish" is not a '
+                         'valid boolean', six.text_type(ex))
 
     def test_map_schema_missing_data(self):
         map_schema = {'valid': {'Type': 'Boolean'}}
@@ -896,7 +935,7 @@ class PropertyTest(common.HeatTestCase):
         p = properties.Property({'Type': 'Map', 'Schema': map_schema})
         ex = self.assertRaises(exception.StackValidationFailed,
                                p.get_value, {}, True)
-        self.assertEqual('Property error : Property valid not assigned',
+        self.assertEqual('Property error: Property valid not assigned',
                          six.text_type(ex))
 
     def test_list_schema_good(self):
@@ -915,8 +954,8 @@ class PropertyTest(common.HeatTestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                p.get_value,
                                [{'valid': 'True'}, {'valid': 'fish'}], True)
-        self.assertEqual('Property error : 1 Property error : 1: valid '
-                         '"fish" is not a valid boolean', six.text_type(ex))
+        self.assertEqual('Property error: [1].valid: "fish" is not '
+                         'a valid boolean', six.text_type(ex))
 
     def test_list_schema_int_good(self):
         list_schema = {'Type': 'Integer'}
@@ -928,7 +967,7 @@ class PropertyTest(common.HeatTestCase):
         p = properties.Property({'Type': 'List', 'Schema': list_schema})
         ex = self.assertRaises(exception.StackValidationFailed,
                                p.get_value, [42, 'fish'], True)
-        self.assertEqual("Property error : 1 Value 'fish' is not "
+        self.assertEqual("Property error: [1]: Value 'fish' is not "
                          "an integer", six.text_type(ex))
 
 
@@ -1057,21 +1096,14 @@ class PropertiesTest(common.HeatTestCase):
         props = properties.Properties(schema, {'foo': None})
         self.assertEqual(['one', 'two'], props['foo'])
 
-    def test_bad_resolver(self):
-        schema = {'foo': {'Type': 'String', 'Default': 'bar'}}
-
-        def bad_resolver(prop):
-            raise Exception('resolution failed!')
-
-        props = properties.Properties(schema, {'foo': 'baz'}, bad_resolver)
-        err = self.assertRaises(ValueError, props.get, 'foo')
-        self.assertEqual('foo resolution failed!', six.text_type(err))
-
     def test_resolve_returns_none(self):
         schema = {'foo': {'Type': 'String', "MinLength": "5"}}
 
         def test_resolver(prop):
             return None
+
+        self.patchobject(properties.Properties,
+                         '_find_deps_any_in_init').return_value = True
 
         props = properties.Properties(schema,
                                       {'foo': 'get_attr: [db, value]'},
@@ -1110,7 +1142,10 @@ class PropertiesTest(common.HeatTestCase):
         class rsrc(object):
             action = INIT = "INIT"
 
-        stack = {'another_res': rsrc()}
+        class DummyStack(dict):
+            pass
+
+        stack = DummyStack(another_res=rsrc())
 
         # define properties with function and constraint
         props = properties.Properties(
@@ -1212,6 +1247,7 @@ class PropertiesTest(common.HeatTestCase):
             "DBUsername": {
                 "type": "string",
                 "description": "The WordPress database admin account username",
+                "default": "admin",
                 "required": False,
                 'update_allowed': True,
                 'immutable': False,
@@ -1227,6 +1263,7 @@ class PropertiesTest(common.HeatTestCase):
             "LinuxDistribution": {
                 "type": "string",
                 "description": "Distribution of choice",
+                "default": "F17",
                 "required": False,
                 'update_allowed': True,
                 'immutable': False,
@@ -1238,6 +1275,7 @@ class PropertiesTest(common.HeatTestCase):
             "InstanceType": {
                 "type": "string",
                 "description": "WebServer EC2 instance type",
+                "default": "m1.large",
                 "required": False,
                 'update_allowed': True,
                 'immutable': False,
@@ -1258,6 +1296,7 @@ class PropertiesTest(common.HeatTestCase):
             "DBRootPassword": {
                 "type": "string",
                 "description": "Root password for MySQL",
+                "default": "admin",
                 "required": False,
                 'update_allowed': True,
                 'immutable': False,
@@ -1281,6 +1320,7 @@ class PropertiesTest(common.HeatTestCase):
             "DBPassword": {
                 "type": "string",
                 "description": "The WordPress database admin account password",
+                "default": "admin",
                 "required": False,
                 'update_allowed': True,
                 'immutable': False,
@@ -1296,6 +1336,7 @@ class PropertiesTest(common.HeatTestCase):
             "DBName": {
                 "type": "string",
                 "description": "The WordPress database name",
+                "default": "wordpress",
                 "required": False,
                 'update_allowed': True,
                 'immutable': False,
@@ -1409,6 +1450,7 @@ class PropertiesTest(common.HeatTestCase):
             "InstanceType": {
                 "type": "string",
                 "description": "WebServer EC2 instance type",
+                "default": "m1.large",
                 "required": False,
                 'update_allowed': True,
                 'immutable': False,
@@ -1421,6 +1463,7 @@ class PropertiesTest(common.HeatTestCase):
                 ]
             },
             "LinuxDistribution": {
+                "default": "F17",
                 "type": "string",
                 "description": "Distribution of choice",
                 "required": False,
@@ -1435,6 +1478,7 @@ class PropertiesTest(common.HeatTestCase):
             "DBName": {
                 "type": "string",
                 "description": "The WordPress database name",
+                "default": "wordpress",
                 "required": False,
                 'update_allowed': True,
                 'immutable': False,
@@ -1449,6 +1493,7 @@ class PropertiesTest(common.HeatTestCase):
             "DBUsername": {
                 "type": "string",
                 "description": "The WordPress database admin account username",
+                "default": "admin",
                 "required": False,
                 'update_allowed': True,
                 'immutable': False,
@@ -1463,6 +1508,7 @@ class PropertiesTest(common.HeatTestCase):
             "DBPassword": {
                 "type": "string",
                 "description": "The WordPress database admin account password",
+                "default": "admin",
                 "required": False,
                 'update_allowed': True,
                 'immutable': False,
@@ -1477,6 +1523,7 @@ class PropertiesTest(common.HeatTestCase):
             "DBRootPassword": {
                 "type": "string",
                 "description": "Root password for MySQL",
+                "default": "admin",
                 "required": False,
                 'update_allowed': True,
                 'immutable': False,
@@ -1544,14 +1591,14 @@ class PropertiesValidationTest(common.HeatTestCase):
         schema = {'foo': {'Type': 'String'}}
         props = properties.Properties(schema, {'foo': ['foo', 'bar']})
         ex = self.assertRaises(exception.StackValidationFailed, props.validate)
-        self.assertEqual('Property error : foo Value must be a string',
+        self.assertEqual('Property error: foo: Value must be a string',
                          six.text_type(ex))
 
     def test_dict_instead_string(self):
         schema = {'foo': {'Type': 'String'}}
         props = properties.Properties(schema, {'foo': {'foo': 'bar'}})
         ex = self.assertRaises(exception.StackValidationFailed, props.validate)
-        self.assertEqual('Property error : foo Value must be a string',
+        self.assertEqual('Property error: foo: Value must be a string',
                          six.text_type(ex))
 
     def test_none_string(self):
@@ -1618,7 +1665,6 @@ class PropertiesValidationTest(common.HeatTestCase):
         nested_schema = {'Key': {'Type': 'String',
                          'Required': True},
                          'Value': {'Type': 'String',
-                                   'Required': True,
                                    'Default': 'fewaf'}}
         schema = {'foo': {'Type': 'Map', 'Schema': nested_schema}}
 
@@ -1707,7 +1753,6 @@ class PropertiesValidationTest(common.HeatTestCase):
         child_schema = {'Key': {'Type': 'String',
                                 'Required': True},
                         'Value': {'Type': 'Boolean',
-                                  'Required': True,
                                   'Default': True}}
         list_schema = {'Type': 'Map', 'Schema': child_schema}
         schema = {'foo': {'Type': 'List', 'Schema': list_schema}}
@@ -1720,14 +1765,13 @@ class PropertiesValidationTest(common.HeatTestCase):
         props = properties.Properties(schema, invalid_data)
         ex = self.assertRaises(exception.StackValidationFailed,
                                props.validate)
-        self.assertEqual('Property error : foo Property error : foo: 0 '
-                         'Unknown Property bar', six.text_type(ex))
+        self.assertEqual('Property error: foo[0]: Unknown Property bar',
+                         six.text_type(ex))
 
     def test_nested_properties_schema_invalid_property_in_map(self):
         child_schema = {'Key': {'Type': 'String',
                                 'Required': True},
                         'Value': {'Type': 'Boolean',
-                                  'Required': True,
                                   'Default': True}}
         map_schema = {'boo': {'Type': 'Map', 'Schema': child_schema}}
         schema = {'foo': {'Type': 'Map', 'Schema': map_schema}}
@@ -1740,8 +1784,8 @@ class PropertiesValidationTest(common.HeatTestCase):
         props = properties.Properties(schema, invalid_data)
         ex = self.assertRaises(exception.StackValidationFailed,
                                props.validate)
-        self.assertEqual('Property error : foo Property error : foo: boo '
-                         'Unknown Property bar', six.text_type(ex))
+        self.assertEqual('Property error: foo.boo: Unknown Property bar',
+                         six.text_type(ex))
 
     def test_more_nested_properties_schema_invalid_property_in_list(self):
         nested_child_schema = {'Key': {'Type': 'String',
@@ -1758,8 +1802,7 @@ class PropertiesValidationTest(common.HeatTestCase):
         props = properties.Properties(schema, invalid_data)
         ex = self.assertRaises(exception.StackValidationFailed,
                                props.validate)
-        self.assertEqual('Property error : foo Property error : foo: 0 '
-                         'Property error : 0: doo Unknown Property bar',
+        self.assertEqual('Property error: foo[0].doo: Unknown Property bar',
                          six.text_type(ex))
 
     def test_more_nested_properties_schema_invalid_property_in_map(self):
@@ -1777,8 +1820,7 @@ class PropertiesValidationTest(common.HeatTestCase):
         props = properties.Properties(schema, invalid_data)
         ex = self.assertRaises(exception.StackValidationFailed,
                                props.validate)
-        self.assertEqual('Property error : foo Property error : foo: boo '
-                         'Property error : boo: doo Unknown Property bar',
+        self.assertEqual('Property error: foo.boo.doo: Unknown Property bar',
                          six.text_type(ex))
 
     def test_schema_to_template_empty_schema(self):
@@ -1797,3 +1839,412 @@ class PropertiesValidationTest(common.HeatTestCase):
             immutable=True)}
         props = properties.Properties(schema, {})
         self.assertRaises(exception.InvalidSchemaError, props.validate)
+
+
+class TestTranslationRule(common.HeatTestCase):
+
+    def test_translation_rule(self):
+        for r in properties.TranslationRule.RULE_KEYS:
+            props = properties.Properties({}, {})
+            rule = properties.TranslationRule(
+                props,
+                r,
+                ['any'],
+                ['value'] if r == 'Add' else 'value',
+                'value_name' if r == 'Replace' else None)
+            self.assertEqual(rule.properties, props)
+            self.assertEqual(rule.rule, r)
+            if r == 'Add':
+                self.assertEqual(['value'], rule.value)
+            else:
+                self.assertEqual('value', rule.value)
+            if r == 'Replace':
+                self.assertEqual('value_name', rule.value_name)
+            else:
+                self.assertIsNone(rule.value_name)
+
+    def test_invalid_translation_rule(self):
+        props = properties.Properties({}, {})
+        exc = self.assertRaises(ValueError,
+                                properties.TranslationRule, 'proppy', mock.ANY,
+                                mock.ANY)
+        self.assertEqual('Properties must be Properties type. '
+                         'Found %s.' % str, six.text_type(exc))
+
+        exc = self.assertRaises(ValueError,
+                                properties.TranslationRule,
+                                props,
+                                'EatTheCookie',
+                                mock.ANY,
+                                mock.ANY)
+        self.assertEqual('There is no rule EatTheCookie. List of allowed '
+                         'rules is: Add, Replace, Delete.',
+                         six.text_type(exc))
+
+        exc = self.assertRaises(ValueError,
+                                properties.TranslationRule,
+                                props,
+                                properties.TranslationRule.ADD,
+                                'networks.network',
+                                'value')
+        self.assertEqual('source_path should be a list with path instead of '
+                         '%s.' % str, six.text_type(exc))
+
+        exc = self.assertRaises(ValueError,
+                                properties.TranslationRule,
+                                props,
+                                properties.TranslationRule.ADD,
+                                [],
+                                mock.ANY)
+        self.assertEqual('source_path must be non-empty list with path.',
+                         six.text_type(exc))
+
+        exc = self.assertRaises(ValueError,
+                                properties.TranslationRule,
+                                props,
+                                properties.TranslationRule.ADD,
+                                ['any'],
+                                mock.ANY,
+                                'value_name')
+        self.assertEqual('Use value_name only for replacing list elements.',
+                         six.text_type(exc))
+
+        exc = self.assertRaises(ValueError,
+                                properties.TranslationRule,
+                                props,
+                                properties.TranslationRule.ADD,
+                                ['any'],
+                                'value')
+        self.assertEqual('value must be list type when rule is ADD.',
+                         six.text_type(exc))
+
+    def test_add_rule_exist(self):
+        schema = {
+            'far': properties.Schema(
+                properties.Schema.LIST,
+                schema=properties.Schema(
+                    properties.Schema.MAP,
+                    schema={
+                        'red': properties.Schema(
+                            properties.Schema.STRING
+                        )
+                    }
+                )
+            ),
+            'bar': properties.Schema(
+                properties.Schema.STRING
+            )}
+
+        data = {
+            'far': [
+                {'red': 'blue'}
+            ],
+            'bar': 'dak'
+        }
+        props = properties.Properties(schema, data)
+
+        rule = properties.TranslationRule(props,
+                                          properties.TranslationRule.ADD,
+                                          ['far'],
+                                          [{'red': props.get('bar')}])
+        rule.execute_rule()
+
+        self.assertIn({'red': 'dak'}, props.get('far'))
+
+    def test_add_rule_dont_exist(self):
+        schema = {
+            'far': properties.Schema(
+                properties.Schema.LIST,
+                schema=properties.Schema(
+                    properties.Schema.MAP,
+                    schema={
+                        'red': properties.Schema(
+                            properties.Schema.STRING
+                        )
+                    }
+                )
+            ),
+            'bar': properties.Schema(
+                properties.Schema.STRING
+            )}
+
+        data = {
+            'bar': 'dak'
+        }
+        props = properties.Properties(schema, data)
+
+        rule = properties.TranslationRule(props,
+                                          properties.TranslationRule.ADD,
+                                          ['far'],
+                                          [{'red': props.get('bar')}])
+        rule.execute_rule()
+
+        self.assertEqual([{'red': 'dak'}], props.get('far'))
+
+    def test_add_rule_invalid(self):
+        schema = {
+            'far': properties.Schema(
+                properties.Schema.MAP,
+                schema={
+                    'red': properties.Schema(
+                        properties.Schema.STRING
+                    )
+                }
+            ),
+            'bar': properties.Schema(
+                properties.Schema.STRING
+            )}
+
+        data = {
+            'far': 'tran',
+            'bar': 'dak'
+        }
+        props = properties.Properties(schema, data)
+
+        rule = properties.TranslationRule(props,
+                                          properties.TranslationRule.ADD,
+                                          ['far'],
+                                          [props.get('bar')])
+        exc = self.assertRaises(ValueError, rule.execute_rule)
+
+        self.assertEqual('ADD rule must be used only for lists.',
+                         six.text_type(exc))
+
+    def test_replace_rule_map_exist(self):
+        schema = {
+            'far': properties.Schema(
+                properties.Schema.MAP,
+                schema={
+                    'red': properties.Schema(
+                        properties.Schema.STRING
+                    )
+                }
+            ),
+            'bar': properties.Schema(
+                properties.Schema.STRING
+            )}
+
+        data = {
+            'far': {'red': 'tran'},
+            'bar': 'dak'
+        }
+        props = properties.Properties(schema, data)
+
+        rule = properties.TranslationRule(props,
+                                          properties.TranslationRule.REPLACE,
+                                          ['far', 'red'],
+                                          props.get('bar'))
+        rule.execute_rule()
+
+        self.assertEqual({'red': 'dak'}, props.get('far'))
+
+    def test_replace_rule_map_dont_exist(self):
+        schema = {
+            'far': properties.Schema(
+                properties.Schema.MAP,
+                schema={
+                    'red': properties.Schema(
+                        properties.Schema.STRING
+                    )
+                }
+            ),
+            'bar': properties.Schema(
+                properties.Schema.STRING
+            )}
+
+        data = {
+            'bar': 'dak'
+        }
+        props = properties.Properties(schema, data)
+
+        rule = properties.TranslationRule(props,
+                                          properties.TranslationRule.REPLACE,
+                                          ['far', 'red'],
+                                          props.get('bar'))
+        rule.execute_rule()
+
+        self.assertEqual({'red': 'dak'}, props.get('far'))
+
+    def test_replace_rule_list_different(self):
+        schema = {
+            'far': properties.Schema(
+                properties.Schema.LIST,
+                schema=properties.Schema(
+                    properties.Schema.MAP,
+                    schema={
+                        'red': properties.Schema(
+                            properties.Schema.STRING
+                        )
+                    }
+                )
+            ),
+            'bar': properties.Schema(
+                properties.Schema.STRING
+            )}
+
+        data = {
+            'far': [{'red': 'blue'},
+                    {'red': 'roses'}],
+            'bar': 'dak'
+        }
+        props = properties.Properties(schema, data)
+
+        rule = properties.TranslationRule(props,
+                                          properties.TranslationRule.REPLACE,
+                                          ['far', 'red'],
+                                          props.get('bar'))
+        rule.execute_rule()
+
+        self.assertEqual([{'red': 'dak'}, {'red': 'dak'}], props.get('far'))
+
+    def test_replace_rule_list_same(self):
+        schema = {
+            'far': properties.Schema(
+                properties.Schema.LIST,
+                schema=properties.Schema(
+                    properties.Schema.MAP,
+                    schema={
+                        'red': properties.Schema(
+                            properties.Schema.STRING
+                        ),
+                        'blue': properties.Schema(
+                            properties.Schema.STRING
+                        )
+                    }
+                )
+            )}
+
+        data = {
+            'far': [{'blue': 'white'},
+                    {'red': 'roses'}]
+        }
+        props = properties.Properties(schema, data)
+
+        rule = properties.TranslationRule(props,
+                                          properties.TranslationRule.REPLACE,
+                                          ['far', 'red'],
+                                          None,
+                                          'blue')
+        rule.execute_rule()
+
+        self.assertEqual([{'red': 'white', 'blue': None},
+                          {'blue': None, 'red': 'roses'}],
+                         props.get('far'))
+
+    def test_replace_rule_str(self):
+        schema = {
+            'far': properties.Schema(properties.Schema.STRING),
+            'bar': properties.Schema(properties.Schema.STRING)
+        }
+
+        data = {'far': 'one', 'bar': 'two'}
+
+        props = properties.Properties(schema, data)
+
+        rule = properties.TranslationRule(props,
+                                          properties.TranslationRule.REPLACE,
+                                          ['bar'],
+                                          props.get('far'))
+        rule.execute_rule()
+
+        self.assertEqual('one', props.get('bar'))
+
+    def test_replace_rule_str_value_path_error(self):
+        schema = {
+            'far': properties.Schema(properties.Schema.STRING),
+            'bar': properties.Schema(properties.Schema.STRING)
+        }
+
+        data = {'far': 'one', 'bar': 'two'}
+
+        props = properties.Properties(schema, data)
+
+        rule = properties.TranslationRule(props,
+                                          properties.TranslationRule.REPLACE,
+                                          ['bar'],
+                                          value_path=['far'])
+        ex = self.assertRaises(ValueError, rule.execute_rule)
+        self.assertEqual('Cannot use bar and far at the same time.',
+                         six.text_type(ex))
+
+    def test_replace_rule_str_value_path(self):
+        schema = {
+            'far': properties.Schema(properties.Schema.STRING),
+            'bar': properties.Schema(properties.Schema.STRING)
+        }
+
+        data = {'far': 'one'}
+
+        props = properties.Properties(schema, data)
+
+        rule = properties.TranslationRule(props,
+                                          properties.TranslationRule.REPLACE,
+                                          ['bar'],
+                                          value_path=['far'])
+        rule.execute_rule()
+
+        self.assertEqual('one', props.get('bar'))
+
+    def test_replace_rule_str_invalid(self):
+        schema = {
+            'far': properties.Schema(properties.Schema.STRING),
+            'bar': properties.Schema(properties.Schema.INTEGER)
+        }
+
+        data = {'far': 'one', 'bar': 2}
+
+        props = properties.Properties(schema, data)
+
+        rule = properties.TranslationRule(props,
+                                          properties.TranslationRule.REPLACE,
+                                          ['bar'],
+                                          props.get('far'))
+        rule.execute_rule()
+
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                props.validate)
+        self.assertEqual("Property error: bar: Value 'one' is not an integer",
+                         six.text_type(exc))
+
+    def test_delete_rule_list(self):
+        schema = {
+            'far': properties.Schema(
+                properties.Schema.LIST,
+                schema=properties.Schema(
+                    properties.Schema.MAP,
+                    schema={
+                        'red': properties.Schema(
+                            properties.Schema.STRING
+                        )
+                    }
+                )
+            )}
+
+        data = {
+            'far': [{'red': 'blue'},
+                    {'red': 'roses'}],
+        }
+        props = properties.Properties(schema, data)
+
+        rule = properties.TranslationRule(props,
+                                          properties.TranslationRule.DELETE,
+                                          ['far', 'red'])
+        rule.execute_rule()
+
+        self.assertEqual([{'red': None}, {'red': None}], props.get('far'))
+
+    def test_delete_rule_other(self):
+        schema = {
+            'far': properties.Schema(properties.Schema.STRING)
+        }
+
+        data = {'far': 'one'}
+
+        props = properties.Properties(schema, data)
+
+        rule = properties.TranslationRule(props,
+                                          properties.TranslationRule.DELETE,
+                                          ['far'])
+        rule.execute_rule()
+
+        self.assertIsNone(props.get('far'))

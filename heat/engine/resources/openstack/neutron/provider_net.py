@@ -11,6 +11,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import six
+
 from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import attributes
@@ -33,9 +35,9 @@ class ProviderNet(net.Net):
     )
 
     ATTRIBUTES = (
-        STATUS, SUBNETS, SHOW,
+        STATUS, SUBNETS,
     ) = (
-        'status', 'subnets', 'show',
+        'status', 'subnets',
     )
 
     properties_schema = {
@@ -74,13 +76,12 @@ class ProviderNet(net.Net):
 
     attributes_schema = {
         STATUS: attributes.Schema(
-            _("The status of the network.")
+            _("The status of the network."),
+            type=attributes.Schema.STRING
         ),
         SUBNETS: attributes.Schema(
-            _("Subnets of this network.")
-        ),
-        SHOW: attributes.Schema(
-            _("All attributes.")
+            _("Subnets of this network."),
+            type=attributes.Schema.LIST
         ),
     }
 
@@ -91,8 +92,8 @@ class ProviderNet(net.Net):
         '''
         super(ProviderNet, self).validate()
 
-        if (self.properties.get(self.PROVIDER_SEGMENTATION_ID) and
-                self.properties.get(self.PROVIDER_NETWORK_TYPE) != 'vlan'):
+        if (self.properties[self.PROVIDER_SEGMENTATION_ID] and
+                self.properties[self.PROVIDER_NETWORK_TYPE] != 'vlan'):
             msg = _('segmentation_id not allowed for flat network type.')
             raise exception.StackValidationFailed(message=msg)
 
@@ -106,7 +107,7 @@ class ProviderNet(net.Net):
 
         self.add_provider_extension(props, self.PROVIDER_PHYSICAL_NETWORK)
 
-        if self.PROVIDER_SEGMENTATION_ID in props.keys():
+        if self.PROVIDER_SEGMENTATION_ID in six.iterkeys(props):
             self.add_provider_extension(props, self.PROVIDER_SEGMENTATION_ID)
 
     def handle_create(self):

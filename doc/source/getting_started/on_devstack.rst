@@ -11,7 +11,7 @@
       License for the specific language governing permissions and limitations
       under the License.
 
-Heat and Devstack
+Heat and DevStack
 =================
 Heat is fully integrated into DevStack. This is a convenient way to try out or develop heat alongside the current development state of all the other OpenStack projects. Heat on DevStack works on both Ubuntu and Fedora.
 
@@ -19,8 +19,16 @@ These instructions assume you already have a working DevStack installation which
 
 Configure DevStack to enable Heat
 ---------------------------------
-Heat is configured by default on devstack for Icehouse or newer
-versions of OpenStack.
+Heat is configured by default on devstack for Icehouse and Juno releases.
+Newer versions of OpenStack require enabling heat services in devstack
+`local.conf`.
+
+Add the following to `[[local|localrc]]` section of `local.conf`::
+
+  [[local|localrc]]
+
+  #Enable heat services
+  enable_service h-eng h-api h-api-cfn h-api-cw
 
 It would also be useful to automatically download and register
 a VM image that Heat can launch. To do that add the following to your
@@ -37,11 +45,11 @@ Configure DevStack to enable Ceilometer (if using Alarms)
 To use Ceilometer Alarms you need to enable Ceilometer in devstack.
 Adding the following lines to your `localrc` file will enable the ceilometer services::
 
-    CEILOMETER_BACKEND=mongo
+    CEILOMETER_BACKEND=mongodb
     enable_service ceilometer-acompute ceilometer-acentral ceilometer-collector ceilometer-api
     enable_service ceilometer-alarm-notifier ceilometer-alarm-evaluator
 
-Configure Devstack to enable OSprofiler
+Configure DevStack to enable OSprofiler
 ---------------------------------------
 
 Add the profiler notifier to your Ceilometer to your config::

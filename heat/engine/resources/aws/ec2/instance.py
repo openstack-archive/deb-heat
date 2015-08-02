@@ -21,11 +21,12 @@ from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LI
 from heat.engine import attributes
+from heat.engine.clients.os import cinder as cinder_cp
+from heat.engine.clients.os import nova as nova_cp
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine import scheduler
-from heat.engine import volume_tasks as vol_task
 
 cfg.CONF.import_opt('instance_user', 'heat.common.config')
 cfg.CONF.import_opt('stack_scheduler_hints', 'heat.common.config')
@@ -322,19 +323,24 @@ class Instance(resource.Resource):
     attributes_schema = {
         AVAILABILITY_ZONE_ATTR: attributes.Schema(
             _('The Availability Zone where the specified instance is '
-              'launched.')
+              'launched.'),
+            type=attributes.Schema.STRING
         ),
         PRIVATE_DNS_NAME: attributes.Schema(
-            _('Private DNS name of the specified instance.')
+            _('Private DNS name of the specified instance.'),
+            type=attributes.Schema.STRING
         ),
         PUBLIC_DNS_NAME: attributes.Schema(
-            _('Public DNS name of the specified instance.')
+            _('Public DNS name of the specified instance.'),
+            type=attributes.Schema.STRING
         ),
         PRIVATE_IP: attributes.Schema(
-            _('Private IP address of the specified instance.')
+            _('Private IP address of the specified instance.'),
+            type=attributes.Schema.STRING
         ),
         PUBLIC_IP: attributes.Schema(
-            _('Public IP address of the specified instance.')
+            _('Public IP address of the specified instance.'),
+            type=attributes.Schema.STRING
         ),
     }
 
@@ -528,7 +534,7 @@ class Instance(resource.Resource):
         if cfg.CONF.stack_scheduler_hints:
             if scheduler_hints is None:
                 scheduler_hints = {}
-            scheduler_hints['heat_root_stack_id'] = self.stack.root_stack.id
+            scheduler_hints['heat_root_stack_id'] = self.stack.root_stack_id()
             scheduler_hints['heat_stack_id'] = self.stack.id
             scheduler_hints['heat_stack_name'] = self.stack.name
             scheduler_hints['heat_path_in_stack'] = self.stack.path_in_stack()
@@ -571,54 +577,46 @@ class Instance(resource.Resource):
             if server is not None:
                 self.resource_id_set(server.id)
 
-        return server, scheduler.TaskRunner(self._attach_volumes_task())
-
-    def _attach_volumes_task(self):
-        attach_tasks = (vol_task.VolumeAttachTask(self.stack,
-                                                  self.resource_id,
-                                                  volume_id,
-                                                  device)
-                        for volume_id, device in self.volumes())
-        return scheduler.PollingTaskGroup(attach_tasks)
+        creator = nova_cp.ServerCreateProgress(server.id)
+        attachers = []
+        for vol_id, device in self.volumes():
+            attachers.append(cinder_cp.VolumeAttachProgress(self.resource_id,
+                                                            vol_id, device))
+        return creator, tuple(attachers)
 
     def check_create_complete(self, cookie):
-        server, volume_attach_task = cookie
-        return (self._check_active(server) and
-                self._check_volume_attached(server, volume_attach_task))
+        creator, attachers = cookie
 
-    def _check_volume_attached(self, server, volume_attach_task):
-        if not volume_attach_task.started():
-            self._set_ipaddress(server.networks)
-            volume_attach_task.start()
-            return volume_attach_task.done()
-        else:
-            return volume_attach_task.step()
+        if not creator.complete:
+            creator.complete = self.client_plugin()._check_active(
+                creator.server_id, 'Instance')
+            if creator.complete:
+                server = self.client_plugin().get_server(creator.server_id)
+                self._set_ipaddress(server.networks)
+                # NOTE(pas-ha) small optimization,
+                # return True if there are no volumes to attach
+                # to save one check_create_complete call
+                return not len(attachers)
+            else:
+                return False
+        return self._attach_volumes(attachers)
 
-    def _check_active(self, server):
-        cp = self.client_plugin()
-        status = cp.get_status(server)
-        if status != 'ACTIVE':
-            cp.refresh_server(server)
-            status = cp.get_status(server)
+    def _attach_volumes(self, attachers):
+        for attacher in attachers:
+            if not attacher.called:
+                self.client_plugin().attach_volume(attacher.srv_id,
+                                                   attacher.vol_id,
+                                                   attacher.device)
+                attacher.called = True
+                return False
 
-        if status == 'ACTIVE':
-            return True
-
-        if status in cp.deferred_server_statuses:
-            return False
-
-        if status == 'ERROR':
-            fault = getattr(server, 'fault', {})
-            raise resource.ResourceInError(
-                resource_status=status,
-                status_reason=_("Message: %(message)s, Code: %(code)s") % {
-                    'message': fault.get('message', _('Unknown')),
-                    'code': fault.get('code', _('Unknown'))
-                })
-
-        raise resource.ResourceUnknownStatus(
-            resource_status=server.status,
-            result=_('Instance is not active'))
+        for attacher in attachers:
+            if not attacher.complete:
+                attacher.complete = self.client_plugin(
+                    'cinder').check_attach_volume_complete(attacher.vol_id)
+                break
+        out = all(attacher.complete for attacher in attachers)
+        return out
 
     def volumes(self):
         """
@@ -640,7 +638,7 @@ class Instance(resource.Resource):
 
     def handle_check(self):
         server = self.nova().servers.get(self.resource_id)
-        if not self._check_active(server):
+        if not self.client_plugin()._check_active(server, 'Instance'):
             raise exception.Error(_("Instance is not ACTIVE (was: %s)") %
                                   server.status.strip())
 
@@ -779,16 +777,6 @@ class Instance(resource.Resource):
                             "when specifying BlockDeviceMappings.")
                     raise exception.StackValidationFailed(message=msg)
 
-    def _detach_volumes_task(self):
-        '''
-        Detach volumes from the instance
-        '''
-        detach_tasks = (vol_task.VolumeDetachTask(self.stack,
-                                                  self.resource_id,
-                                                  volume_id)
-                        for volume_id, device in self.volumes())
-        return scheduler.PollingTaskGroup(detach_tasks)
-
     def handle_delete(self):
         # make sure to delete the port which implicit-created by heat
         self._port_data_delete()
@@ -796,26 +784,16 @@ class Instance(resource.Resource):
         if self.resource_id is None:
             return
         try:
-            server = self.nova().servers.get(self.resource_id)
+            self.client().servers.delete(self.resource_id)
         except Exception as e:
             self.client_plugin().ignore_not_found(e)
             return
-        deleters = (
-            scheduler.TaskRunner(self._detach_volumes_task()),
-            scheduler.TaskRunner(self.client_plugin().delete_server,
-                                 server))
-        deleters[0].start()
-        return deleters
+        return self.resource_id
 
-    def check_delete_complete(self, deleters):
-        # if the resource was already deleted, deleters will be None
-        if deleters:
-            for deleter in deleters:
-                if not deleter.started():
-                    deleter.start()
-                if not deleter.step():
-                    return False
-        return True
+    def check_delete_complete(self, server_id):
+        if not server_id:
+            return True
+        return self.client_plugin().check_delete_server_complete(server_id)
 
     def handle_suspend(self):
         '''
@@ -833,46 +811,31 @@ class Instance(resource.Resource):
             if self.client_plugin().is_not_found(e):
                 raise exception.NotFound(_('Failed to find instance %s') %
                                          self.resource_id)
-        else:
-            LOG.debug("suspending instance %s" % self.resource_id)
-            # We want the server.suspend to happen after the volume
-            # detachement has finished, so pass both tasks and the server
-            suspend_runner = scheduler.TaskRunner(server.suspend)
-            volumes_runner = scheduler.TaskRunner(self._detach_volumes_task())
-            return server, suspend_runner, volumes_runner
-
-    def check_suspend_complete(self, cookie):
-        server, suspend_runner, volumes_runner = cookie
-
-        if not volumes_runner.started():
-            volumes_runner.start()
-
-        if volumes_runner.done():
-            if not suspend_runner.started():
-                suspend_runner.start()
-
-            if suspend_runner.done():
-                if server.status == 'SUSPENDED':
-                    return True
-
-                cp = self.client_plugin()
-                cp.refresh_server(server)
-                LOG.debug("%(name)s check_suspend_complete "
-                          "status = %(status)s",
-                          {'name': self.name, 'status': server.status})
-                if server.status in list(cp.deferred_server_statuses +
-                                         ['ACTIVE']):
-                    return server.status == 'SUSPENDED'
-                else:
-                    raise exception.Error(_(' nova reported unexpected '
-                                            'instance[%(instance)s] '
-                                            'status[%(status)s]') %
-                                          {'instance': self.name,
-                                           'status': server.status})
             else:
-                suspend_runner.step()
+                raise
         else:
-            volumes_runner.step()
+            # if the instance has been suspended successful,
+            # no need to suspend again
+            if self.client_plugin().get_status(server) != 'SUSPENDED':
+                LOG.debug("suspending instance %s" % self.resource_id)
+                server.suspend()
+            return server.id
+
+    def check_suspend_complete(self, server_id):
+        cp = self.client_plugin()
+        server = cp.fetch_server(server_id)
+        if not server:
+            return False
+        status = cp.get_status(server)
+        LOG.debug('%(name)s check_suspend_complete status = %(status)s'
+                  % {'name': self.name, 'status': status})
+        if status in list(cp.deferred_server_statuses + ['ACTIVE']):
+            return status == 'SUSPENDED'
+        else:
+            exc = resource.ResourceUnknownStatus(
+                result=_('Suspend of instance %s failed') % server.name,
+                resource_status=status)
+            raise exc
 
     def handle_resume(self):
         '''
@@ -890,15 +853,18 @@ class Instance(resource.Resource):
             if self.client_plugin().is_not_found(e):
                 raise exception.NotFound(_('Failed to find instance %s') %
                                          self.resource_id)
+            else:
+                raise
         else:
-            LOG.debug("resuming instance %s" % self.resource_id)
-            server.resume()
-            return server, scheduler.TaskRunner(self._attach_volumes_task())
+            # if the instance has been resumed successful,
+            # no need to resume again
+            if self.client_plugin().get_status(server) != 'ACTIVE':
+                LOG.debug("resuming instance %s" % self.resource_id)
+                server.resume()
+            return server.id
 
-    def check_resume_complete(self, cookie):
-        server, volume_attach_task = cookie
-        return (self._check_active(server) and
-                self._check_volume_attached(server, volume_attach_task))
+    def check_resume_complete(self, server_id):
+        return self.client_plugin()._check_active(server_id, 'Instance')
 
 
 def resource_mapping():

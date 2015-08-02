@@ -20,7 +20,7 @@ to be handled, the API and engine services can be overloaded. In those
 scenarios, in order to increase the system performance, it can be helpful to run
 multiple load-balanced APIs and engines.
 
-This guide details how to scale out the ReST API, the CFN API, and the engine,
+This guide details how to scale out the REST API, the CFN API, and the engine,
 also known as the *heat-api*, *heat-api-cfn*, and *heat-engine* services,
 respectively.
 
@@ -33,7 +33,7 @@ This guide, using a devstack installation of OpenStack, assumes that:
 
     1. You have configured devstack from `Single Machine Installation Guide
        <http://devstack.org/guides/single-machine.html>`_;
-    2. You have set up Heat on devstack, as defined at `Heat and Devstack
+    2. You have set up heat on devstack, as defined at `heat and DevStack
        <http://docs.openstack.org/developer/heat/getting_started/
        on_devstack.html>`_;
     3. You have installed `HAProxy <http://haproxy.1wt.eu>`_ on the devstack
@@ -42,16 +42,16 @@ This guide, using a devstack installation of OpenStack, assumes that:
 Architecture
 ============
 
-This section shows the basic Heat architecture, the load balancing mechanism
+This section shows the basic heat architecture, the load balancing mechanism
 used and the target scaled out architecture.
 
 Basic Architecture
 ------------------
 
-The Heat architecture is as defined at `Heat Architecture
+The heat architecture is as defined at `heat architecture
 <http://docs.openstack.org/developer/heat/architecture.html>`_ and shown in the
-diagram below, where we have a CLI that sends HTTP requests to the ReST and CFN
-APIs, which in turn make calls using AMQP to the Heat engine.
+diagram below, where we have a CLI that sends HTTP requests to the REST and CFN
+APIs, which in turn make calls using AMQP to the heat-engine.
 ::
 
                    |- [REST API] -|
@@ -64,7 +64,7 @@ Load Balancing
 As there is a need to use a load balancer mechanism between the multiple APIs
 and the CLI, a proxy has to be deployed.
 
-Because the Heat CLI and APIs communicate by exchanging HTTP requests and
+Because the heat CLI and APIs communicate by exchanging HTTP requests and
 responses, a `HAProxy <http://haproxy.1wt.eu>`_ HTTP load balancer server will
 be deployed between them.
 
@@ -79,7 +79,7 @@ distribute messages round-robin (RabbitMQ does this by default).
 Target Architecture
 -------------------
 
-A scaled out Heat architecture is represented in the diagram below:
+A scaled out heat architecture is represented in the diagram below:
 ::
 
                               |- [REST-API] -|
@@ -102,19 +102,19 @@ Thus, a request sent from the CLI looks like:
 Deploying Multiple APIs
 =======================
 
-In order to run a Heat component separately, you have to execute one of the
-python scripts located at the *bin* directory of your Heat repository.
+In order to run a heat component separately, you have to execute one of the
+python scripts located at the *bin* directory of your heat repository.
 
 These scripts take as argument a configuration file. When using devstack, the
 configuration file is located at */etc/heat/heat.conf*. For instance, to start
-new ReST and CFN API services, you must run:
+new REST and CFN API services, you must run:
 ::
 
     python bin/heat-api --config-file=/etc/heat/heat.conf
     python bin/heat-api-cfn --config-file=/etc/heat/heat.conf
 
 Each API service must have a unique address to listen. This address have to be
-defined in the configuration file. For ReST and CFN APIs, modify the
+defined in the configuration file. For REST and CFN APIs, modify the
 *[heat_api]* and *[heat_api_cfn]* blocks, respectively.
 ::
 
@@ -161,7 +161,7 @@ Deploying the Proxy
 ===================
 
 In order to simplify the deployment of the HAProxy server, we will replace
-the ReST and CFN APIs deployed when installing devstack by the HAProxy server.
+the REST and CFN APIs deployed when installing devstack by the HAProxy server.
 This way, there is no need to update, on the CLI, the addresses where it should
 look for the APIs. In this case, when it makes a call to any API, it will find
 the proxy, acting on their behalf.
@@ -201,7 +201,7 @@ To deploy the HAProxy server on the devstack server, run
         option  tcpka
         option  httpchk
         # The values required below are the different addresses supplied when
-        # running the ReST API instances.
+        # running the REST API instances.
         server SERVER_1 {HOST_1}:{PORT_1}
         ...
         server SERVER_N {HOST_N}:{PORT_N}
@@ -238,7 +238,7 @@ For this sample, consider that:
 
     1. We have an architecture composed by 3 machines configured in a LAN, with
        the addresses A: 10.0.0.1; B: 10.0.0.2; and C: 10.0.0.3;
-    2. The OpenStack devstack installation, including the Heat module, has been
+    2. The OpenStack devstack installation, including the heat module, has been
        done in the machine A, as shown in the
        :ref:`scale_deployment_assumptions` section.
 
@@ -246,9 +246,9 @@ Target Architecture
 ^^^^^^^^^^^^^^^^^^^
 
 At this moment, everything is running in a single devstack server. The next
-subsections show how to deploy a scaling out Heat architecture by:
+subsections show how to deploy a scaling out heat architecture by:
 
-    1. Running one ReST and one CFN API on the machines B and C;
+    1. Running one REST and one CFN API on the machines B and C;
     2. Setting up the HAProxy server on the machine A.
 
 Running the API and Engine Services
@@ -256,11 +256,11 @@ Running the API and Engine Services
 
 For each machine, B and C, you must do the following steps:
 
-    1. Clone the Heat repository https://github.com/openstack/heat;
+    1. Clone the heat repository https://github.com/openstack/heat;
     2. Create a local copy of the configuration file */etc/heat/heat.conf* from
        the machine A;
     3. Make required changes on the configuration file;
-    4. Enter the Heat local repository and run:
+    4. Enter the heat local repository and run:
 
     ::
 
@@ -284,7 +284,7 @@ The original file from A looks like:
 
     [DEFAULT]
     ...
-    sql_connection = mysql://root:admin@127.0.0.1/heat?charset=utf8
+    sql_connection = mysql+pymysql://root:admin@127.0.0.1/heat?charset=utf8
     rabbit_host = localhost
     ...
     [heat_api]
@@ -300,7 +300,7 @@ After the changes for B, it looks like:
 
     [DEFAULT]
     ...
-    sql_connection = mysql://root:admin@10.0.0.1/heat?charset=utf8
+    sql_connection = mysql+pymysql://root:admin@10.0.0.1/heat?charset=utf8
     rabbit_host = 10.0.0.1
     ...
     [heat_api]

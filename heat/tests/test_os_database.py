@@ -22,11 +22,12 @@ from heat.common import template_format
 from heat.engine.clients.os import neutron
 from heat.engine.clients.os import nova
 from heat.engine.clients.os import trove
-from heat.engine import parser
 from heat.engine import resource
 from heat.engine.resources.openstack.trove import os_database
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
+from heat.engine import stack as parser
+from heat.engine import template as tmpl
 from heat.tests import common
 from heat.tests import utils
 
@@ -105,16 +106,16 @@ class OSDBInstanceTest(common.HeatTestCase):
 
     def _setup_test_clouddbinstance(self, name, t):
         stack_name = '%s_stack' % name
-        template = parser.Template(t)
-        stack = parser.Stack(utils.dummy_context(),
-                             stack_name,
-                             template,
-                             stack_id=str(uuid.uuid4()))
+        template = tmpl.Template(t)
+        self.stack = parser.Stack(utils.dummy_context(),
+                                  stack_name,
+                                  template,
+                                  stack_id=str(uuid.uuid4()))
 
         instance = os_database.OSDBInstance(
             '%s_name' % name,
-            template.resource_definitions(stack)['MySqlCloudDB'],
-            stack)
+            template.resource_definitions(self.stack)['MySqlCloudDB'],
+            self.stack)
         return instance
 
     def _stubout_common_create(self):
@@ -140,7 +141,9 @@ class OSDBInstanceTest(common.HeatTestCase):
                                  availability_zone=None,
                                  datastore="SomeDStype",
                                  datastore_version="MariaDB-5.5",
-                                 nics=[]
+                                 nics=[],
+                                 replica_of=None,
+                                 replica_count=None
                                  ).AndReturn(fake_dbinstance)
 
     def _stubout_check_create_complete(self, fake_dbinstance):
@@ -183,7 +186,7 @@ class OSDBInstanceTest(common.HeatTestCase):
         osdb_res = os_database.OSDBInstance("test", res_def, mock_stack)
 
         trove_mock = mock.Mock()
-        self.patchobject(osdb_res, 'trove', return_value=trove_mock)
+        self.patchobject(osdb_res, 'client', return_value=trove_mock)
 
         # test for bad statuses
         mock_input = mock.Mock()
@@ -246,7 +249,9 @@ class OSDBInstanceTest(common.HeatTestCase):
                                  availability_zone=None,
                                  datastore="SomeDStype",
                                  datastore_version="MariaDB-5.5",
-                                 nics=[]
+                                 nics=[],
+                                 replica_of=None,
+                                 replica_count=None
                                  ).AndReturn(fake_dbinstance)
         self.fc.instances.get(fake_dbinstance.id).AndReturn(fake_dbinstance)
         self.m.ReplayAll()
@@ -265,6 +270,9 @@ class OSDBInstanceTest(common.HeatTestCase):
         # Simulate an OverLimit exception
         self.fc.instances.get(fake_dbinstance.id).AndRaise(
             troveexc.RequestEntityTooLarge)
+
+        self.fc.instances.get(fake_dbinstance.id).AndReturn(
+            fake_dbinstance)
 
         self.m.ReplayAll()
 
@@ -288,8 +296,8 @@ class OSDBInstanceTest(common.HeatTestCase):
         fake_dbinstance = FakeDBInstance()
         t = template_format.parse(db_template)
         res = self._setup_test_clouddbinstance('trove_check', t)
-        res.trove = mock.Mock()
-        res.trove().instances.get.return_value = fake_dbinstance
+        res.client = mock.Mock()
+        res.client().instances.get.return_value = fake_dbinstance
         res.flavor = 'Foo Flavor'
         res.volume = 'Foo Volume'
         res.datastore_type = 'Foo Type'
@@ -612,7 +620,9 @@ class OSDBInstanceTest(common.HeatTestCase):
                                  datastore=None,
                                  datastore_version=None,
                                  nics=[{'port-id': 'someportid',
-                                        'v4-fixed-ip': '1.2.3.4'}]
+                                        'v4-fixed-ip': '1.2.3.4'}],
+                                 replica_of=None,
+                                 replica_count=None
                                  ).AndReturn(fake_dbinstance)
         self._stubout_check_create_complete(fake_dbinstance)
         self.stub_PortConstraint_validate()
@@ -643,7 +653,9 @@ class OSDBInstanceTest(common.HeatTestCase):
                                  availability_zone=None,
                                  datastore=None,
                                  datastore_version=None,
-                                 nics=[{'net-id': net_id}]
+                                 nics=[{'net-id': net_id}],
+                                 replica_of=None,
+                                 replica_count=None
                                  ).AndReturn(fake_dbinstance)
         self._stubout_check_create_complete(fake_dbinstance)
         self.m.ReplayAll()
@@ -677,7 +689,48 @@ class OSDBInstanceTest(common.HeatTestCase):
                                  availability_zone=None,
                                  datastore=None,
                                  datastore_version=None,
-                                 nics=[{'net-id': 'somenetid'}]
+                                 nics=[{'net-id': 'somenetid'}],
+                                 replica_of=None,
+                                 replica_count=None
+                                 ).AndReturn(fake_dbinstance)
+        self._stubout_check_create_complete(fake_dbinstance)
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(instance.create)()
+        self.assertEqual((instance.CREATE, instance.COMPLETE), instance.state)
+        self.m.VerifyAll()
+
+    def test_osdatabase_create_with_replication(self):
+
+        db_template_with_replication = '''
+        heat_template_version: 2013-05-23
+        description: MySQL instance running on openstack DBaaS cloud
+        resources:
+          MySqlCloudDB:
+            type: OS::Trove::Instance
+            properties:
+              name: test
+              flavor: 1GB
+              size: 30
+              replica_of: 0e642916-dd64-43b3-933f-ff34fff69a7f
+              replica_count: 2
+        '''
+
+        fake_dbinstance = FakeDBInstance()
+        t = template_format.parse(db_template_with_replication)
+        instance = self._setup_test_clouddbinstance('dbinstance_test', t)
+        self._stubout_common_create()
+        self.fc.instances.create('test', 1, volume={'size': 30},
+                                 databases=[],
+                                 users=[],
+                                 restorePoint=None,
+                                 availability_zone=None,
+                                 datastore=None,
+                                 datastore_version=None,
+                                 nics=[],
+                                 replica_of=("0e642916-dd64-43b3-933f-"
+                                             "ff34fff69a7f"),
+                                 replica_count=2
                                  ).AndReturn(fake_dbinstance)
         self._stubout_check_create_complete(fake_dbinstance)
         self.m.ReplayAll()

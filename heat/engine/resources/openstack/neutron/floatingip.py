@@ -25,28 +25,28 @@ from heat.engine import support
 
 class FloatingIP(neutron.NeutronResource):
     PROPERTIES = (
-        FLOATING_NETWORK_ID, FLOATING_NETWORK,
-        VALUE_SPECS, PORT_ID, FIXED_IP_ADDRESS,
+        FLOATING_NETWORK_ID, FLOATING_NETWORK, VALUE_SPECS,
+        PORT_ID, FIXED_IP_ADDRESS, FLOATING_IP_ADDRESS,
     ) = (
-        'floating_network_id', 'floating_network',
-        'value_specs', 'port_id', 'fixed_ip_address',
+        'floating_network_id', 'floating_network', 'value_specs',
+        'port_id', 'fixed_ip_address', 'floating_ip_address',
     )
 
     ATTRIBUTES = (
         ROUTER_ID, TENANT_ID, FLOATING_NETWORK_ID_ATTR, FIXED_IP_ADDRESS_ATTR,
-        FLOATING_IP_ADDRESS_ATTR, PORT_ID_ATTR, SHOW,
+        FLOATING_IP_ADDRESS_ATTR, PORT_ID_ATTR,
     ) = (
         'router_id', 'tenant_id', 'floating_network_id', 'fixed_ip_address',
-        'floating_ip_address', 'port_id', 'show',
+        'floating_ip_address', 'port_id',
     )
 
     properties_schema = {
         FLOATING_NETWORK_ID: properties.Schema(
             properties.Schema.STRING,
             support_status=support.SupportStatus(
-                support.DEPRECATED,
-                _('Use property %s.') % FLOATING_NETWORK),
-            required=False,
+                status=support.DEPRECATED,
+                message=_('Use property %s.') % FLOATING_NETWORK,
+                version='2014.2'),
             constraints=[
                 constraints.CustomConstraint('neutron.network')
             ],
@@ -54,7 +54,6 @@ class FloatingIP(neutron.NeutronResource):
         FLOATING_NETWORK: properties.Schema(
             properties.Schema.STRING,
             _('Network to allocate floating IP from.'),
-            required=False,
             support_status=support.SupportStatus(version='2014.2'),
             constraints=[
                 constraints.CustomConstraint('neutron.network')
@@ -79,48 +78,64 @@ class FloatingIP(neutron.NeutronResource):
         FIXED_IP_ADDRESS: properties.Schema(
             properties.Schema.STRING,
             _('IP address to use if the port has multiple addresses.'),
-            update_allowed=True
+            update_allowed=True,
+            constraints=[
+                constraints.CustomConstraint('ip_addr')
+            ]
+        ),
+        FLOATING_IP_ADDRESS: properties.Schema(
+            properties.Schema.STRING,
+            _('IP address of the floating IP. NOTE: The default policy '
+              'setting in Neutron restricts usage of this property to '
+              'administrative users only.'),
+            constraints=[
+                constraints.CustomConstraint('ip_addr')
+            ],
+            support_status=support.SupportStatus(version='5.0.0'),
         ),
     }
 
     attributes_schema = {
         ROUTER_ID: attributes.Schema(
             _('ID of the router used as gateway, set when associated with a '
-              'port.')
+              'port.'),
+            type=attributes.Schema.STRING
         ),
         TENANT_ID: attributes.Schema(
-            _('The tenant owning this floating IP.')
+            _('The tenant owning this floating IP.'),
+            type=attributes.Schema.STRING
         ),
         FLOATING_NETWORK_ID_ATTR: attributes.Schema(
-            _('ID of the network in which this IP is allocated.')
+            _('ID of the network in which this IP is allocated.'),
+            type=attributes.Schema.STRING
         ),
         FIXED_IP_ADDRESS_ATTR: attributes.Schema(
-            _('IP address of the associated port, if specified.')
+            _('IP address of the associated port, if specified.'),
+            type=attributes.Schema.STRING
         ),
         FLOATING_IP_ADDRESS_ATTR: attributes.Schema(
-            _('The allocated address of this IP.')
+            _('The allocated address of this IP.'),
+            type=attributes.Schema.STRING
         ),
         PORT_ID_ATTR: attributes.Schema(
-            _('ID of the port associated with this IP.')
-        ),
-        SHOW: attributes.Schema(
-            _('All attributes.')
+            _('ID of the port associated with this IP.'),
+            type=attributes.Schema.STRING
         ),
     }
 
     def add_dependencies(self, deps):
         super(FloatingIP, self).add_dependencies(deps)
 
-        for resource in self.stack.itervalues():
+        for resource in six.itervalues(self.stack):
             # depend on any RouterGateway in this template with the same
             # network_id as this floating_network_id
             if resource.has_interface('OS::Neutron::RouterGateway'):
                 gateway_network = resource.properties.get(
                     router.RouterGateway.NETWORK) or resource.properties.get(
                         router.RouterGateway.NETWORK_ID)
-                floating_network = self.properties.get(
-                    self.FLOATING_NETWORK) or self.properties.get(
-                        self.FLOATING_NETWORK_ID)
+                floating_network = self.properties[
+                    self.FLOATING_NETWORK] or self.properties[
+                    self.FLOATING_NETWORK_ID]
                 if gateway_network == floating_network:
                     deps += (self, resource)
 
@@ -169,9 +184,9 @@ class FloatingIP(neutron.NeutronResource):
                 if gateway:
                     gateway_network = gateway.get(
                         router.Router.EXTERNAL_GATEWAY_NETWORK)
-                    floating_network = self.properties.get(
-                        self.FLOATING_NETWORK) or self.properties.get(
-                            self.FLOATING_NETWORK_ID)
+                    floating_network = self.properties[
+                        self.FLOATING_NETWORK] or self.properties[
+                            self.FLOATING_NETWORK_ID]
                     if gateway_network == floating_network:
                         deps += (self, resource)
 
@@ -179,6 +194,11 @@ class FloatingIP(neutron.NeutronResource):
         super(FloatingIP, self).validate()
         self._validate_depr_property_required(
             self.properties, self.FLOATING_NETWORK, self.FLOATING_NETWORK_ID)
+        # fixed_ip_address cannot be specified without a port_id
+        if self.properties[self.PORT_ID] is None and self.properties[
+                self.FIXED_IP_ADDRESS] is not None:
+            raise exception.ResourcePropertyDependency(
+                prop1=self.FIXED_IP_ADDRESS, prop2=self.PORT_ID)
 
     def handle_create(self):
         props = self.prepare_properties(
@@ -205,11 +225,11 @@ class FloatingIP(neutron.NeutronResource):
             neutron_client = self.neutron()
 
             port_id = prop_diff.get(self.PORT_ID,
-                                    self.properties.get(self.PORT_ID))
+                                    self.properties[self.PORT_ID])
 
             fixed_ip_address = prop_diff.get(
                 self.FIXED_IP_ADDRESS,
-                self.properties.get(self.FIXED_IP_ADDRESS))
+                self.properties[self.FIXED_IP_ADDRESS])
 
             request_body = {
                 'floatingip': {
@@ -246,7 +266,10 @@ class FloatingIPAssociation(neutron.NeutronResource):
         FIXED_IP_ADDRESS: properties.Schema(
             properties.Schema.STRING,
             _('IP address to use if the port has multiple addresses.'),
-            update_allowed=True
+            update_allowed=True,
+            constraints=[
+                constraints.CustomConstraint('ip_addr')
+            ]
         ),
     }
 
@@ -283,10 +306,7 @@ class FloatingIPAssociation(neutron.NeutronResource):
 
         self.neutron().update_floatingip(floatingip_id, {
             'floatingip': props})
-        if self.id is not None:
-            self.resource_id_set(self.id)
-        else:
-            raise exception.ResourceNotAvailable(resource_name=self.name)
+        self.resource_id_set(self.id)
 
     def handle_delete(self):
         if not self.resource_id:
@@ -294,15 +314,15 @@ class FloatingIPAssociation(neutron.NeutronResource):
         client = self.neutron()
         try:
             client.update_floatingip(
-                self.properties.get(self.FLOATINGIP_ID),
+                self.properties[self.FLOATINGIP_ID],
                 {'floatingip': {'port_id': None}})
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
-            floatingip_id = self.properties.get(self.FLOATINGIP_ID)
-            port_id = self.properties.get(self.PORT_ID)
+            floatingip_id = self.properties[self.FLOATINGIP_ID]
+            port_id = self.properties[self.PORT_ID]
             neutron_client = self.neutron()
             # if the floatingip_id is changed, disassociate the port which
             # associated with the old floatingip_id
@@ -320,7 +340,7 @@ class FloatingIPAssociation(neutron.NeutronResource):
             port_id = prop_diff.get(self.PORT_ID) or port_id
 
             fixed_ip_address = (prop_diff.get(self.FIXED_IP_ADDRESS) or
-                                self.properties.get(self.FIXED_IP_ADDRESS))
+                                self.properties[self.FIXED_IP_ADDRESS])
 
             request_body = {
                 'floatingip': {
@@ -328,10 +348,7 @@ class FloatingIPAssociation(neutron.NeutronResource):
                     'fixed_ip_address': fixed_ip_address}}
 
             neutron_client.update_floatingip(floatingip_id, request_body)
-            if self.id is not None:
-                self.resource_id_set(self.id)
-            else:
-                raise exception.ResourceNotAvailable(resource_name=self.name)
+            self.resource_id_set(self.id)
 
 
 def resource_mapping():

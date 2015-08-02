@@ -14,7 +14,6 @@
 import json
 
 import mock
-from oslo_config import cfg
 import six
 
 from heat.common import exception
@@ -36,8 +35,6 @@ as_template = inline_templates.as_template
 class TestAutoScalingGroupValidation(common.HeatTestCase):
     def setUp(self):
         super(TestAutoScalingGroupValidation, self).setUp()
-        cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://server.test:8000/v1/waitcondition')
 
     def validate_scaling_group(self, t, stack, resource_name):
         # create the launch configuration resource
@@ -183,8 +180,8 @@ class TestAutoScalingGroupValidation(common.HeatTestCase):
         mock_server.security_groups = [{u'name': u'hth_test'}]
         if not_found:
             self.patchobject(nova.NovaClientPlugin, 'get_server',
-                             side_effect=exception.ServerNotFound(
-                                 server='5678'))
+                             side_effect=exception.EntityNotFound(
+                                 entity='Server', name='5678'))
         else:
             self.patchobject(nova.NovaClientPlugin, 'get_server',
                              return_value=mock_server)
@@ -220,8 +217,10 @@ class TestAutoScalingGroupValidation(common.HeatTestCase):
         rsrc = stack['WebServerGroup']
         self._stub_nova_server_get(not_found=True)
         self.m.ReplayAll()
-        msg = ("Property error : WebServerGroup: InstanceId Error validating "
-               "value '5678': The server (5678) could not be found")
+        msg = ("Property error: "
+               "Resources.WebServerGroup.Properties.InstanceId: "
+               "Error validating value '5678': The Server (5678) could "
+               "not be found.")
         exc = self.assertRaises(exception.StackValidationFailed,
                                 rsrc.validate)
         self.assertIn(msg, six.text_type(exc))
@@ -233,8 +232,8 @@ class TestScalingGroupTags(common.HeatTestCase):
     def setUp(self):
         super(TestScalingGroupTags, self).setUp()
         t = template_format.parse(as_template)
-        stack = utils.parse_stack(t, params=inline_templates.as_params)
-        self.group = stack['WebServerGroup']
+        self.stack = utils.parse_stack(t, params=inline_templates.as_params)
+        self.group = self.stack['WebServerGroup']
 
     def test_tags_default(self):
         expected = [{'Key': 'metering.groupname',
@@ -274,8 +273,6 @@ class TestInitialGroupSize(common.HeatTestCase):
 
     def setUp(self):
         super(TestInitialGroupSize, self).setUp()
-        cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://server.test:8000/v1/waitcondition')
 
     def test_initial_size(self):
         t = template_format.parse(as_template)
@@ -293,12 +290,10 @@ class TestInitialGroupSize(common.HeatTestCase):
 class TestGroupAdjust(common.HeatTestCase):
     def setUp(self):
         super(TestGroupAdjust, self).setUp()
-        cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://server.test:8000/v1/waitcondition')
 
         t = template_format.parse(as_template)
-        stack = utils.parse_stack(t, params=inline_templates.as_params)
-        self.group = stack['WebServerGroup']
+        self.stack = utils.parse_stack(t, params=inline_templates.as_params)
+        self.group = self.stack['WebServerGroup']
         self.stub_ImageConstraint_validate()
         self.stub_FlavorConstraint_validate()
         self.stub_SnapshotConstraint_validate()
@@ -307,7 +302,7 @@ class TestGroupAdjust(common.HeatTestCase):
     def test_scaling_policy_cooldown_toosoon(self):
         """If _cooldown_inprogress() returns True don't progress."""
 
-        dont_call = self.patchobject(grouputils, 'get_members')
+        dont_call = self.patchobject(grouputils, 'get_size')
         with mock.patch.object(self.group, '_cooldown_inprogress',
                                return_value=True):
             self.group.adjust(1)
@@ -343,8 +338,68 @@ class TestGroupAdjust(common.HeatTestCase):
         resize.assert_called_once_with(3)
         cd_stamp.assert_called_once_with('ExactCapacity : 3')
 
+    def test_scale_up_min_adjustment(self):
+        self.patchobject(grouputils, 'get_size', return_value=1)
+        resize = self.patchobject(self.group, 'resize')
+        cd_stamp = self.patchobject(self.group, '_cooldown_timestamp')
+        notify = self.patch('heat.engine.notification.autoscaling.send')
+        self.patchobject(self.group, '_cooldown_inprogress',
+                         return_value=False)
+        self.group.adjust(33, adjustment_type='PercentChangeInCapacity',
+                          min_adjustment_step=2)
+
+        expected_notifies = [
+            mock.call(
+                capacity=1, suffix='start',
+                adjustment_type='PercentChangeInCapacity',
+                groupname=u'WebServerGroup',
+                message=u'Start resizing the group WebServerGroup',
+                adjustment=33,
+                stack=self.group.stack),
+            mock.call(
+                capacity=3, suffix='end',
+                adjustment_type='PercentChangeInCapacity',
+                groupname=u'WebServerGroup',
+                message=u'End resizing the group WebServerGroup',
+                adjustment=33,
+                stack=self.group.stack)]
+
+        self.assertEqual(expected_notifies, notify.call_args_list)
+        resize.assert_called_once_with(3)
+        cd_stamp.assert_called_once_with('PercentChangeInCapacity : 33')
+
+    def test_scale_down_min_adjustment(self):
+        self.patchobject(grouputils, 'get_size', return_value=5)
+        resize = self.patchobject(self.group, 'resize')
+        cd_stamp = self.patchobject(self.group, '_cooldown_timestamp')
+        notify = self.patch('heat.engine.notification.autoscaling.send')
+        self.patchobject(self.group, '_cooldown_inprogress',
+                         return_value=False)
+        self.group.adjust(-33, adjustment_type='PercentChangeInCapacity',
+                          min_adjustment_step=2)
+
+        expected_notifies = [
+            mock.call(
+                capacity=5, suffix='start',
+                adjustment_type='PercentChangeInCapacity',
+                groupname=u'WebServerGroup',
+                message=u'Start resizing the group WebServerGroup',
+                adjustment=-33,
+                stack=self.group.stack),
+            mock.call(
+                capacity=3, suffix='end',
+                adjustment_type='PercentChangeInCapacity',
+                groupname=u'WebServerGroup',
+                message=u'End resizing the group WebServerGroup',
+                adjustment=-33,
+                stack=self.group.stack)]
+
+        self.assertEqual(expected_notifies, notify.call_args_list)
+        resize.assert_called_once_with(3)
+        cd_stamp.assert_called_once_with('PercentChangeInCapacity : -33')
+
     def test_scaling_policy_cooldown_ok(self):
-        self.patchobject(grouputils, 'get_members', return_value=[])
+        self.patchobject(grouputils, 'get_size', return_value=0)
         resize = self.patchobject(self.group, 'resize')
         cd_stamp = self.patchobject(self.group, '_cooldown_timestamp')
         notify = self.patch('heat.engine.notification.autoscaling.send')
@@ -370,14 +425,16 @@ class TestGroupAdjust(common.HeatTestCase):
         self.assertEqual(expected_notifies, notify.call_args_list)
         resize.assert_called_once_with(1)
         cd_stamp.assert_called_once_with('ChangeInCapacity : 1')
+        grouputils.get_size.assert_called_once_with(self.group)
 
     def test_scaling_policy_resize_fail(self):
-        self.patchobject(grouputils, 'get_members', return_value=[])
+        self.patchobject(grouputils, 'get_size', return_value=0)
         self.patchobject(self.group, 'resize',
                          side_effect=ValueError('test error'))
         notify = self.patch('heat.engine.notification.autoscaling.send')
         self.patchobject(self.group, '_cooldown_inprogress',
                          return_value=False)
+        self.patchobject(self.group, '_cooldown_timestamp')
         self.assertRaises(ValueError, self.group.adjust, 1)
 
         expected_notifies = [
@@ -397,17 +454,49 @@ class TestGroupAdjust(common.HeatTestCase):
                 stack=self.group.stack)]
 
         self.assertEqual(expected_notifies, notify.call_args_list)
+        grouputils.get_size.assert_called_with(self.group)
+
+    def test_notification_send_if_resize_failed(self):
+        """If resize failed, the capacity of group might have been changed"""
+        self.patchobject(grouputils, 'get_size', side_effect=[3, 4])
+        self.patchobject(self.group, 'resize',
+                         side_effect=ValueError('test error'))
+        notify = self.patch('heat.engine.notification.autoscaling.send')
+        self.patchobject(self.group, '_cooldown_inprogress',
+                         return_value=False)
+        self.patchobject(self.group, '_cooldown_timestamp')
+
+        self.assertRaises(ValueError, self.group.adjust,
+                          5, adjustment_type='ExactCapacity')
+
+        expected_notifies = [
+            mock.call(
+                capacity=3, suffix='start',
+                adjustment_type='ExactCapacity',
+                groupname=u'WebServerGroup',
+                message=u'Start resizing the group WebServerGroup',
+                adjustment=5,
+                stack=self.group.stack),
+            mock.call(
+                capacity=4, suffix='error',
+                adjustment_type='ExactCapacity',
+                groupname=u'WebServerGroup',
+                message=u'test error',
+                adjustment=5,
+                stack=self.group.stack)]
+
+        self.assertEqual(expected_notifies, notify.call_args_list)
+        self.group.resize.assert_called_once_with(5)
+        grouputils.get_size.assert_has_calls([mock.call(self.group),
+                                              mock.call(self.group)])
 
 
 class TestGroupCrud(common.HeatTestCase):
     def setUp(self):
         super(TestGroupCrud, self).setUp()
-        cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://server.test:8000/v1/waitcondition')
-
         t = template_format.parse(as_template)
-        stack = utils.parse_stack(t, params=inline_templates.as_params)
-        self.group = stack['WebServerGroup']
+        self.stack = utils.parse_stack(t, params=inline_templates.as_params)
+        self.group = self.stack['WebServerGroup']
         self.assertIsNone(self.group.validate())
 
     def test_handle_create(self):
@@ -525,8 +614,6 @@ class RollingUpdatePolicyTest(common.HeatTestCase):
         self.stub_ImageConstraint_validate()
         self.stub_FlavorConstraint_validate()
         self.stub_SnapshotConstraint_validate()
-        cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://127.0.0.1:8000/v1/waitcondition')
 
     def test_parse_without_update_policy(self):
         tmpl = template_format.parse(inline_templates.as_template)
@@ -592,8 +679,6 @@ class RollingUpdatePolicyDiffTest(common.HeatTestCase):
         super(RollingUpdatePolicyDiffTest, self).setUp()
         self.fc = fakes_nova.FakeClient()
         self.stub_keystoneclient(username='test_stack.CfnLBUser')
-        cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://127.0.0.1:8000/v1/waitcondition')
 
     def validate_update_policy_diff(self, current, updated):
         # load current stack

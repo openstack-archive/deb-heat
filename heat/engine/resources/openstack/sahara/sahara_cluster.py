@@ -80,9 +80,10 @@ class SaharaCluster(resource.Resource):
             properties.Schema.STRING,
             _('Name or UUID of the image used to boot Hadoop nodes.'),
             support_status=support.SupportStatus(
-                support.DEPRECATED,
-                _('Property was deprecated in Kilo release. '
-                  'Use property %s.') % IMAGE_ID),
+                status=support.DEPRECATED,
+                message=_('Use property %s.') % IMAGE_ID,
+                version='2015.1',
+                previous_status=support.SupportStatus(version='2014.2')),
             constraints=[
                 constraints.CustomConstraint('glance.image')
             ],
@@ -93,6 +94,7 @@ class SaharaCluster(resource.Resource):
             constraints=[
                 constraints.CustomConstraint('sahara.image'),
             ],
+            support_status=support.SupportStatus(version='2015.1')
         ),
         MANAGEMENT_NETWORK: properties.Schema(
             properties.Schema.STRING,
@@ -106,9 +108,11 @@ class SaharaCluster(resource.Resource):
     attributes_schema = {
         STATUS: attributes.Schema(
             _("Cluster status."),
+            type=attributes.Schema.STRING
         ),
         INFO: attributes.Schema(
             _("Cluster information."),
+            type=attributes.Schema.MAP
         ),
     }
 
@@ -121,7 +125,7 @@ class SaharaCluster(resource.Resource):
             raise exception.ResourcePropertyConflict(value, depr_value)
 
     def _cluster_name(self):
-        name = self.properties.get(self.NAME)
+        name = self.properties[self.NAME]
         if name:
             return name
         return self.physical_resource_name()
@@ -145,8 +149,8 @@ class SaharaCluster(resource.Resource):
                         'img': self.IMAGE, 'tmpl': cluster_template_id}
             raise exception.StackValidationFailed(message=msg)
 
-        key_name = self.properties.get(self.KEY_NAME)
-        net_id = self.properties.get(self.MANAGEMENT_NETWORK)
+        key_name = self.properties[self.KEY_NAME]
+        net_id = self.properties[self.MANAGEMENT_NETWORK]
         if net_id:
             if self.is_using_neutron():
                 net_id = self.client_plugin('neutron').find_neutron_resource(
@@ -219,7 +223,7 @@ class SaharaCluster(resource.Resource):
         self._validate_depr_keys(self.properties, self.IMAGE_ID, self.IMAGE)
         # check if running on neutron and MANAGEMENT_NETWORK missing
         if (self.is_using_neutron() and
-                not self.properties.get(self.MANAGEMENT_NETWORK)):
+                not self.properties[self.MANAGEMENT_NETWORK]):
             msg = _("%s must be provided"
                     ) % self.MANAGEMENT_NETWORK
             raise exception.StackValidationFailed(message=msg)

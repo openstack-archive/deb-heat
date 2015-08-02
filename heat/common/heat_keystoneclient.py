@@ -16,6 +16,7 @@
 import collections
 import uuid
 
+from keystoneclient.auth.identity import v3 as kc_auth_v3
 import keystoneclient.exceptions as kc_exception
 from keystoneclient import session
 from keystoneclient.v3 import client as kc_v3
@@ -70,7 +71,8 @@ class KeystoneClientV3(object):
         #   path, we will work with either a v2.0 or v3 path
         self.context = context
         self._client = None
-        self._admin_client = None
+        self._admin_auth = None
+        self._domain_admin_auth = None
         self._domain_admin_client = None
 
         self.session = session.Session.construct(self._ssl_options())
@@ -94,15 +96,20 @@ class KeystoneClientV3(object):
         # If the domain is specified, then you must specify a domain
         # admin user.  If no domain is specified, we fall back to
         # legacy behavior with warnings.
-        self._stack_domain_is_id = True
-        self._stack_domain_id = None
-        self.stack_domain = cfg.CONF.stack_user_domain_id
-        if not self.stack_domain and cfg.CONF.stack_user_domain_name:
-            self.stack_domain = cfg.CONF.stack_user_domain_name
-            self._stack_domain_is_id = False
+        self._stack_domain_id = cfg.CONF.stack_user_domain_id
+        self.stack_domain_name = cfg.CONF.stack_user_domain_name
         self.domain_admin_user = cfg.CONF.stack_domain_admin
         self.domain_admin_password = cfg.CONF.stack_domain_admin_password
+
         LOG.debug('Using stack domain %s' % self.stack_domain)
+
+    @property
+    def stack_domain(self):
+        """Domain scope data.
+
+        This is only used for checking for scoping data, not using the value
+        """
+        return self._stack_domain_id or self.stack_domain_name
 
     @property
     def client(self):
@@ -112,39 +119,49 @@ class KeystoneClientV3(object):
         return self._client
 
     @property
-    def admin_client(self):
-        if not self._admin_client:
-            # Create admin client connection to v3 API
-            admin_creds = self._service_admin_creds()
-            admin_creds.update(self._ssl_options())
-            c = kc_v3.Client(**admin_creds)
+    def admin_auth(self):
+        if not self._admin_auth:
+            importutils.import_module('keystonemiddleware.auth_token')
+
+            self._admin_auth = kc_auth_v3.Password(
+                username=cfg.CONF.keystone_authtoken.admin_user,
+                password=cfg.CONF.keystone_authtoken.admin_password,
+                user_domain_id='default',
+                auth_url=self.v3_endpoint)
+
+        return self._admin_auth
+
+    @property
+    def domain_admin_auth(self):
+        if not self._domain_admin_auth:
+            # Note we must specify the domain when getting the token
+            # as only a domain scoped token can create projects in the domain
+            auth = kc_auth_v3.Password(username=self.domain_admin_user,
+                                       password=self.domain_admin_password,
+                                       auth_url=self.v3_endpoint,
+                                       domain_id=self._stack_domain_id,
+                                       domain_name=self.stack_domain_name,
+                                       user_domain_id=self._stack_domain_id,
+                                       user_domain_name=self.stack_domain_name)
+
+            # NOTE(jamielennox): just do something to ensure a valid token
             try:
-                c.authenticate()
-                self._admin_client = c
+                auth.get_token(self.session)
             except kc_exception.Unauthorized:
-                LOG.error(_LE("Admin client authentication failed"))
+                LOG.error(_LE("Domain admin client authentication failed"))
                 raise exception.AuthorizationFailure()
-        return self._admin_client
+
+            self._domain_admin_auth = auth
+
+        return self._domain_admin_auth
 
     @property
     def domain_admin_client(self):
         if not self._domain_admin_client:
-            # Create domain admin client connection to v3 API
-            admin_creds = self._domain_admin_creds()
-            admin_creds.update(self._ssl_options())
-            c = kc_v3.Client(**admin_creds)
-            # Note we must specify the domain when getting the token
-            # as only a domain scoped token can create projects in the domain
-            if self._stack_domain_is_id:
-                auth_kwargs = {'domain_id': self.stack_domain}
-            else:
-                auth_kwargs = {'domain_name': self.stack_domain}
-            try:
-                c.authenticate(**auth_kwargs)
-                self._domain_admin_client = c
-            except kc_exception.Unauthorized:
-                LOG.error(_LE("Domain admin client authentication failed"))
-                raise exception.AuthorizationFailure()
+            self._domain_admin_client = kc_v3.Client(
+                session=self.session,
+                auth=self.domain_admin_auth)
+
         return self._domain_admin_client
 
     def _v3_client_init(self):
@@ -171,29 +188,6 @@ class KeystoneClientV3(object):
                     raise exception.AuthorizationFailure()
 
         return client
-
-    def _service_admin_creds(self):
-        # Import auth_token to have keystone_authtoken settings setup.
-        importutils.import_module('keystonemiddleware.auth_token')
-        creds = {
-            'username': cfg.CONF.keystone_authtoken.admin_user,
-            'password': cfg.CONF.keystone_authtoken.admin_password,
-            'auth_url': self.v3_endpoint,
-            'endpoint': self.v3_endpoint,
-            'project_name': cfg.CONF.keystone_authtoken.admin_tenant_name}
-        return creds
-
-    def _domain_admin_creds(self):
-        creds = {
-            'username': self.domain_admin_user,
-            'password': self.domain_admin_password,
-            'auth_url': self.v3_endpoint,
-            'endpoint': self.v3_endpoint}
-        if self._stack_domain_is_id:
-            creds['user_domain_id'] = self.stack_domain
-        else:
-            creds['user_domain_name'] = self.stack_domain
-        return creds
 
     def _ssl_options(self):
         opts = {'cacert': self._get_client_option('ca_file'),
@@ -230,8 +224,15 @@ class KeystoneClientV3(object):
         # We need the service admin user ID (not name), as the trustor user
         # can't lookup the ID in keystoneclient unless they're admin
         # workaround this by getting the user_id from admin_client
-        trustee_user_id = self.admin_client.auth_ref.user_id
-        trustor = self.context.auth_plugin.get_access(self.session)
+
+        try:
+            trustee_user_id = self.admin_auth.get_user_id(self.session)
+        except kc_exception.Unauthorized:
+            LOG.error(_LE("Domain admin client authentication failed"))
+            raise exception.AuthorizationFailure()
+
+        trustor_user_id = self.context.auth_plugin.get_user_id(self.session)
+        trustor_proj_id = self.context.auth_plugin.get_project_id(self.session)
 
         # inherit the roles of the trustor, unless set trusts_delegated_roles
         if cfg.CONF.trusts_delegated_roles:
@@ -239,21 +240,21 @@ class KeystoneClientV3(object):
         else:
             roles = self.context.roles
         try:
-            trust = self.client.trusts.create(trustor_user=trustor.user_id,
+            trust = self.client.trusts.create(trustor_user=trustor_user_id,
                                               trustee_user=trustee_user_id,
-                                              project=trustor.project_id,
+                                              project=trustor_proj_id,
                                               impersonation=True,
                                               role_names=roles)
         except kc_exception.NotFound:
             LOG.debug("Failed to find roles %s for user %s"
-                      % (roles, trustor.user_id))
+                      % (roles, trustor_user_id))
             raise exception.MissingCredentialError(
                 required=_("roles %s") % roles)
 
         trust_context = context.RequestContext.from_dict(
             self.context.to_dict())
         trust_context.trust_id = trust.id
-        trust_context.trustor_user_id = trustor.user_id
+        trust_context.trustor_user_id = trustor_user_id
         return trust_context
 
     def delete_trust(self, trust_id):
@@ -319,23 +320,13 @@ class KeystoneClientV3(object):
         # catalog (the token is expected to be used inside an instance
         # where a specific endpoint will be specified, and user-data
         # space is limited..)
-        # Note we do this directly via a post as there's currently
-        # no way to get a nocatalog token via keystoneclient
-        token_url = "%s/auth/tokens?nocatalog" % self.v3_endpoint
-        headers = {'Accept': 'application/json'}
-        if self._stack_domain_is_id:
-            domain = {'id': self.stack_domain}
-        else:
-            domain = {'name': self.stack_domain}
-        body = {'auth': {'scope':
-                         {'project': {'id': project_id}},
-                         'identity': {'password': {'user': {
-                             'domain': domain,
-                             'password': password, 'id': user_id}},
-                             'methods': ['password']}}}
-        t = self.session.post(token_url, headers=headers,
-                              json=body, authenticated=False)
-        return t.headers['X-Subject-Token']
+        auth = kc_auth_v3.Password(auth_url=self.v3_endpoint,
+                                   user_id=user_id,
+                                   password=password,
+                                   project_id=project_id,
+                                   include_catalog=False)
+
+        return auth.get_token(self.session)
 
     def create_stack_domain_user(self, username, project_id, password=None):
         """Create a domain user defined as part of a stack.
@@ -381,11 +372,14 @@ class KeystoneClientV3(object):
     @property
     def stack_domain_id(self):
         if not self._stack_domain_id:
-            if self._stack_domain_is_id:
-                self._stack_domain_id = self.stack_domain
-            else:
-                self._stack_domain_id = (
-                    self._domain_admin_client.auth_ref.domain_id)
+            try:
+                access = self.domain_admin_auth.get_access(self.session)
+            except kc_exception.Unauthorized:
+                LOG.error(_LE("Keystone client authentication failed"))
+                raise exception.AuthorizationFailure()
+
+            self._stack_domain_id = access.domain_id
+
         return self._stack_domain_id
 
     def _check_stack_domain_user(self, user_id, project_id, action):
@@ -448,7 +442,7 @@ class KeystoneClientV3(object):
             return
         except kc_exception.Forbidden:
             LOG.warning(_LW('Unable to get details for project %s, '
-                            'not deleting') % project_id)
+                            'not deleting'), project_id)
             return
 
         if project.domain_id != self.stack_domain_id:

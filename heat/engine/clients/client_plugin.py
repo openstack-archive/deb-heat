@@ -32,6 +32,10 @@ class ClientPlugin(object):
     # may emit
     exceptions_module = None
 
+    # supported service types, service like cinder support multiple service
+    # types, so its used in list format
+    service_types = []
+
     def __init__(self, context):
         self.context = context
         self.clients = context.clients
@@ -147,10 +151,11 @@ class ClientPlugin(object):
         if self.exceptions_module:
             if isinstance(self.exceptions_module, list):
                 for m in self.exceptions_module:
-                    if type(ex) in m.__dict__.values():
+                    if type(ex) in six.itervalues(m.__dict__):
                         return True
             else:
-                return type(ex) in self.exceptions_module.__dict__.values()
+                return type(ex) in six.itervalues(
+                    self.exceptions_module.__dict__)
         return False
 
     def is_not_found(self, ex):
@@ -176,3 +181,39 @@ class ClientPlugin(object):
             return
         else:
             raise ex
+
+    def _get_client_args(self,
+                         service_name,
+                         service_type):
+        endpoint_type = self._get_client_option(service_name,
+                                                'endpoint_type')
+        endpoint = self.url_for(service_type=service_type,
+                                endpoint_type=endpoint_type)
+        args = {
+            'auth_url': self.context.auth_url,
+            'service_type': service_type,
+            'project_id': self.context.tenant_id,
+            'token': lambda: self.auth_token,
+            'endpoint_type': endpoint_type,
+            'os_endpoint': endpoint,
+            'cacert': self._get_client_option(service_name, 'ca_file'),
+            'cert_file': self._get_client_option(service_name, 'cert_file'),
+            'key_file': self._get_client_option(service_name, 'key_file'),
+            'insecure': self._get_client_option(service_name, 'insecure')
+        }
+
+        return args
+        # FIXME(kanagaraj-manickam) Update other client plugins to leverage
+        # this method (bug 1461041)
+
+    def does_endpoint_exist(self,
+                            service_type,
+                            service_name):
+        endpoint_type = self._get_client_option(service_name,
+                                                'endpoint_type')
+        try:
+            self.url_for(service_type=service_type,
+                         endpoint_type=endpoint_type)
+            return True
+        except exceptions.EndpointNotFound:
+            return False

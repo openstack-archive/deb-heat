@@ -21,7 +21,6 @@ import warnings
 
 from oslo_config import cfg
 from oslo_log import log
-from oslo_utils import encodeutils
 import six
 
 from heat.common import environment_format as env_fmt
@@ -43,14 +42,20 @@ def valid_hook_type(hook):
 
 
 def is_hook_definition(key, value):
+    is_valid_hook = False
     if key == 'hooks':
         if isinstance(value, six.string_types):
-            return valid_hook_type(value)
+            is_valid_hook = valid_hook_type(value)
         elif isinstance(value, collections.Sequence):
-            return all(valid_hook_type(hook) for hook in value)
-        else:
-            return False
-    return False
+            is_valid_hook = all(valid_hook_type(hook) for hook in value)
+
+        if not is_valid_hook:
+            msg = (_('Invalid hook type "%(value)s" for resource '
+                     'breakpoint, acceptable hook types are: %(types)s') %
+                   {'value': value, 'types': HOOK_TYPES})
+            raise exception.InvalidBreakPointHook(message=msg)
+
+    return is_valid_hook
 
 
 class ResourceInfo(object):
@@ -187,9 +192,11 @@ class ResourceRegistry(object):
     def load(self, json_snippet):
         self._load_registry([], json_snippet)
 
-    def register_class(self, resource_type, resource_class):
-        ri = ResourceInfo(self, [resource_type], resource_class)
-        self._register_info([resource_type], ri)
+    def register_class(self, resource_type, resource_class, path=None):
+        if path is None:
+            path = [resource_type]
+        ri = ResourceInfo(self, path, resource_class)
+        self._register_info(path, ri)
 
     def _load_registry(self, path, registry):
         for k, v in iter(registry.items()):
@@ -228,7 +235,7 @@ class ResourceRegistry(object):
         if info is None:
             if name.endswith('*'):
                 # delete all matching entries.
-                for res_name in registry.keys():
+                for res_name in list(six.iterkeys(registry)):
                     if (isinstance(registry[res_name], ResourceInfo) and
                             res_name.startswith(name[:-1])):
                         LOG.warn(_LW('Removing %(item)s from %(path)s'), {
@@ -259,8 +266,9 @@ class ResourceRegistry(object):
 
         if isinstance(info, ClassResourceInfo):
             if info.value.support_status.status != support.SUPPORTED:
-                warnings.warn(encodeutils.safe_encode(
-                    info.value.support_status.message))
+                if info.value.support_status.message is not None:
+                    warnings.warn(six.text_type(
+                        info.value.support_status.message))
 
         info.user_resource = (self.global_registry is not None)
         registry[name] = info
@@ -348,7 +356,7 @@ class ResourceRegistry(object):
         # handle: "OS::*" -> "Dreamhost::*"
         def is_a_glob(resource_type):
             return resource_type.endswith('*')
-        globs = itertools.ifilter(is_a_glob, self._registry.keys())
+        globs = six.moves.filter(is_a_glob, six.iterkeys(self._registry))
         for pattern in globs:
             if self._registry[pattern].matches(resource_type):
                 yield self._registry[pattern]
@@ -385,26 +393,34 @@ class ResourceRegistry(object):
         for info in sorted(matches):
             match = info.get_resource_info(resource_type,
                                            resource_name)
-            if ((registry_type is None or isinstance(match, registry_type))):
+            if registry_type is None or isinstance(match, registry_type):
+                # NOTE(prazumovsky): if resource_type defined in outer env
+                # there is a risk to lose it due to h-eng restarting, so
+                # store it to local env (exclude ClassResourceInfo because it
+                # loads from resources; TemplateResourceInfo handles by
+                # template_resource module).
+                if (match and not match.user_resource and
+                    not isinstance(info, (TemplateResourceInfo,
+                                          ClassResourceInfo))):
+                        self._register_info([resource_type], info)
                 return match
 
     def get_class(self, resource_type, resource_name=None):
         if resource_type == "":
             msg = _('Resource "%s" has no type') % resource_name
-            raise exception.StackValidationFailed(message=msg)
+            raise exception.InvalidResourceType(message=msg)
         elif resource_type is None:
             msg = _('Non-empty resource type is required '
                     'for resource "%s"') % resource_name
-            raise exception.StackValidationFailed(message=msg)
+            raise exception.InvalidResourceType(message=msg)
         elif not isinstance(resource_type, six.string_types):
             msg = _('Resource "%s" type is not a string') % resource_name
-            raise exception.StackValidationFailed(message=msg)
+            raise exception.InvalidResourceType(message=msg)
 
         info = self.get_resource_info(resource_type,
                                       resource_name=resource_name)
         if info is None:
-            msg = _("Unknown resource Type : %s") % resource_type
-            raise exception.StackValidationFailed(message=msg)
+            raise exception.ResourceTypeNotFound(type_name=resource_type)
         return info.get_class()
 
     def as_dict(self):
@@ -422,7 +438,7 @@ class ResourceRegistry(object):
 
         return _as_dict(self._registry)
 
-    def get_types(self, support_status):
+    def get_types(self, cnxt=None, support_status=None):
         '''Return a list of valid resource types.'''
 
         def is_resource(key):
@@ -434,8 +450,20 @@ class ResourceRegistry(object):
                     cls.get_class().support_status.status ==
                     support_status.encode())
 
+        def is_available(cls):
+            if cnxt is None:
+                return True
+
+            return cls.get_class().is_service_available(cnxt)
+
+        def not_hidden_matches(cls):
+            return cls.get_class().support_status.status != support.HIDDEN
+
         return [name for name, cls in six.iteritems(self._registry)
-                if is_resource(name) and status_matches(cls)]
+                if (is_resource(name) and
+                    status_matches(cls) and
+                    is_available(cls) and
+                    not_hidden_matches(cls))]
 
 
 class Environment(object):
@@ -463,6 +491,8 @@ class Environment(object):
             self.param_defaults = env[env_fmt.PARAMETER_DEFAULTS]
         else:
             self.param_defaults = {}
+
+        self.encrypted_param_names = env.get(env_fmt.ENCRYPTED_PARAM_NAMES, [])
 
         if env_fmt.PARAMETERS in env:
             self.params = env[env_fmt.PARAMETERS]
@@ -496,10 +526,11 @@ class Environment(object):
         """Get the environment as a dict, ready for storing in the db."""
         return {env_fmt.RESOURCE_REGISTRY: self.registry.as_dict(),
                 env_fmt.PARAMETERS: self.params,
-                env_fmt.PARAMETER_DEFAULTS: self.param_defaults}
+                env_fmt.PARAMETER_DEFAULTS: self.param_defaults,
+                env_fmt.ENCRYPTED_PARAM_NAMES: self.encrypted_param_names}
 
-    def register_class(self, resource_type, resource_class):
-        self.registry.register_class(resource_type, resource_class)
+    def register_class(self, resource_type, resource_class, path=None):
+        self.registry.register_class(resource_type, resource_class, path=path)
 
     def register_constraint(self, constraint_name, constraint):
         self.constraints[constraint_name] = constraint
@@ -512,8 +543,8 @@ class Environment(object):
     def get_class(self, resource_type, resource_name=None):
         return self.registry.get_class(resource_type, resource_name)
 
-    def get_types(self, support_status=None):
-        return self.registry.get_types(support_status)
+    def get_types(self, cnxt=None, support_status=None):
+        return self.registry.get_types(cnxt, support_status)
 
     def get_resource_info(self, resource_type, resource_name=None,
                           registry_type=None):

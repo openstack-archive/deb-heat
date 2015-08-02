@@ -83,7 +83,8 @@ class GetParam(function.Function):
             return collection[key]
 
         try:
-            return reduce(get_path_component, path_components, parameter)
+            return six.moves.reduce(get_path_component, path_components,
+                                    parameter)
         except (KeyError, IndexError, TypeError):
             return ''
 
@@ -230,12 +231,54 @@ class Join(cfn_funcs.Join):
 
     Takes the form::
 
-        { "list_join" : [ "<delim>", [ "<string_1>", "<string_2>", ... ] }
+        { "list_join" : [ "<delim>", [ "<string_1>", "<string_2>", ... ] ] }
 
     And resolves to::
 
         "<string_1><delim><string_2><delim>..."
+
     '''
+
+
+class JoinMultiple(cfn_funcs.Join):
+    '''
+    A function for joining strings.
+
+    Takes the form::
+
+        { "list_join" : [ "<delim>", [ "<string_1>", "<string_2>", ... ] ] }
+
+    And resolves to::
+
+        "<string_1><delim><string_2><delim>..."
+
+    Optionally multiple lists may be specified, which will also be joined.
+    '''
+
+    def __init__(self, stack, fn_name, args):
+        example = '"%s" : [ " ", [ "str1", "str2"] ...]' % fn_name
+        fmt_data = {'fn_name': fn_name,
+                    'example': example}
+
+        if isinstance(args, (six.string_types, collections.Mapping)):
+            raise TypeError(_('Incorrect arguments to "%(fn_name)s" '
+                              'should be: %(example)s') % fmt_data)
+
+        try:
+            delim = args.pop(0)
+            joinlist = args.pop(0)
+        except IndexError:
+            raise ValueError(_('Incorrect arguments to "%(fn_name)s" '
+                               'should be: %(example)s') % fmt_data)
+        # Optionally allow additional lists, which are appended
+        for l in args:
+            try:
+                joinlist += l
+            except (AttributeError, TypeError):
+                raise TypeError(_('Incorrect arguments to "%(fn_name)s" '
+                                'should be: %(example)s') % fmt_data)
+        super(JoinMultiple, self).__init__(stack, fn_name,
+                                           args=[delim, joinlist])
 
 
 class ResourceFacade(cfn_funcs.ResourceFacade):
@@ -300,7 +343,7 @@ class Repeat(function.Function):
                             self.fn_name)
 
         try:
-            for_each = self.args['for_each']
+            for_each = function.resolve(self.args['for_each'])
             template = self.args['template']
         except (KeyError, TypeError):
             example = ('''repeat:
@@ -334,9 +377,8 @@ class Repeat(function.Function):
                         for (k, v) in template.items())
 
     def result(self):
-        for_each = function.resolve(self._for_each)
-        keys = for_each.keys()
-        lists = [for_each[key] for key in keys]
+        keys = list(six.iterkeys(self._for_each))
+        lists = [self._for_each[key] for key in keys]
         template = function.resolve(self._template)
         return [self._do_replacement(keys, items, template)
                 for items in itertools.product(*lists)]
@@ -381,3 +423,66 @@ class Digest(function.Function):
         self.validate_usage(args)
 
         return self.digest(*args)
+
+
+class StrSplit(function.Function):
+    '''
+    A function for splitting delimited strings into a list
+    and optionally extracting a specific list member by index.
+
+    Takes the form::
+
+        str_split: [delimiter, string, <index> ]
+
+    or::
+
+        str_split:
+          - delimiter
+          - string
+          - <index>
+    If <index> is specified, the specified list item will be returned
+    otherwise, the whole list is returned, similar to get_attr with
+    path based attributes accessing lists.
+    '''
+
+    def __init__(self, stack, fn_name, args):
+        super(StrSplit, self).__init__(stack, fn_name, args)
+        example = '"%s" : [ ",", "apples,pears", <index>]' % fn_name
+        self.fmt_data = {'fn_name': fn_name,
+                         'example': example}
+        self.fn_name = fn_name
+
+        if isinstance(args, (six.string_types, collections.Mapping)):
+            raise TypeError(_('Incorrect arguments to "%(fn_name)s" '
+                              'should be: %(example)s') % self.fmt_data)
+
+    def result(self):
+        args = function.resolve(self.args)
+
+        try:
+            delim = args.pop(0)
+            str_to_split = args.pop(0)
+        except (AttributeError, IndexError):
+            raise ValueError(_('Incorrect arguments to "%(fn_name)s" '
+                               'should be: %(example)s') % self.fmt_data)
+        split_list = str_to_split.split(delim)
+
+        # Optionally allow an index to be specified
+        if args:
+            try:
+                index = int(args.pop(0))
+            except ValueError:
+                raise ValueError(_('Incorrect index to "%(fn_name)s" '
+                                   'should be: %(example)s') % self.fmt_data)
+            else:
+                try:
+                    res = split_list[index]
+                except IndexError:
+                    raise ValueError(_('Incorrect index to "%(fn_name)s" '
+                                       'should be between 0 and '
+                                       '%(max_index)s')
+                                     % {'fn_name': self.fn_name,
+                                        'max_index': len(split_list) - 1})
+        else:
+            res = split_list
+        return res

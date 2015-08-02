@@ -66,7 +66,8 @@ class ElasticIp(resource.Resource):
         ALLOCATION_ID: attributes.Schema(
             _('ID that AWS assigns to represent the allocation of the address '
               'for use with Amazon VPC. Returned only for VPC elastic IP '
-              'addresses.')
+              'addresses.'),
+            type=attributes.Schema.STRING
         ),
     }
 
@@ -175,7 +176,11 @@ class ElasticIp(resource.Resource):
                         server.remove_floating_ip(self._ipaddress())
 
     def FnGetRefId(self):
-        return six.text_type(self._ipaddress())
+        eip = self._ipaddress()
+        if eip:
+            return six.text_type(eip)
+        else:
+            return six.text_type(self.name)
 
     def _resolve_attribute(self, name):
         if name == self.ALLOCATION_ID:
@@ -201,7 +206,10 @@ class ElasticIpAssociation(resource.Resource):
         EIP: properties.Schema(
             properties.Schema.STRING,
             _('EIP address to associate with instance.'),
-            update_allowed=True
+            update_allowed=True,
+            constraints=[
+                constraints.CustomConstraint('ip_addr')
+            ]
         ),
         ALLOCATION_ID: properties.Schema(
             properties.Schema.STRING,

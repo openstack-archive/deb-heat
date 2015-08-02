@@ -12,7 +12,7 @@
 #    under the License.
 
 import copy
-import uuid
+import six
 
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -96,20 +96,24 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         DEPLOY_RESOURCE_NAME, DEPLOY_AUTH_URL,
         DEPLOY_USERNAME, DEPLOY_PASSWORD,
         DEPLOY_PROJECT_ID, DEPLOY_USER_ID,
-        DEPLOY_SIGNAL_VERB, DEPLOY_SIGNAL_TRANSPORT
+        DEPLOY_SIGNAL_VERB, DEPLOY_SIGNAL_TRANSPORT,
+        DEPLOY_QUEUE_ID
     ) = (
         'deploy_server_id', 'deploy_action',
         'deploy_signal_id', 'deploy_stack_id',
         'deploy_resource_name', 'deploy_auth_url',
         'deploy_username', 'deploy_password',
         'deploy_project_id', 'deploy_user_id',
-        'deploy_signal_verb', 'deploy_signal_transport'
+        'deploy_signal_verb', 'deploy_signal_transport',
+        'deploy_queue_id'
     )
 
     SIGNAL_TRANSPORTS = (
-        CFN_SIGNAL, TEMP_URL_SIGNAL, HEAT_SIGNAL, NO_SIGNAL
+        CFN_SIGNAL, TEMP_URL_SIGNAL, HEAT_SIGNAL, NO_SIGNAL,
+        ZAQAR_SIGNAL
     ) = (
-        'CFN_SIGNAL', 'TEMP_URL_SIGNAL', 'HEAT_SIGNAL', 'NO_SIGNAL'
+        'CFN_SIGNAL', 'TEMP_URL_SIGNAL', 'HEAT_SIGNAL', 'NO_SIGNAL',
+        'ZAQAR_SIGNAL'
     )
 
     properties_schema = {
@@ -122,6 +126,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         SERVER: properties.Schema(
             properties.Schema.STRING,
             _('ID of Nova server to apply configuration to.'),
+            required=True,
             constraints=[
                 constraints.CustomConstraint('nova.server')
             ]
@@ -165,33 +170,42 @@ class SoftwareDeployment(signal_responder.SignalResponder):
 
     attributes_schema = {
         STDOUT: attributes.Schema(
-            _("Captured stdout from the configuration execution.")
+            _("Captured stdout from the configuration execution."),
+            type=attributes.Schema.STRING
         ),
         STDERR: attributes.Schema(
-            _("Captured stderr from the configuration execution.")
+            _("Captured stderr from the configuration execution."),
+            type=attributes.Schema.STRING
         ),
         STATUS_CODE: attributes.Schema(
-            _("Returned status code from the configuration execution")
+            _("Returned status code from the configuration execution"),
+            type=attributes.Schema.STRING
         ),
     }
 
     default_client_name = 'heat'
 
+    no_signal_actions = ()
+
     def _signal_transport_cfn(self):
-        return self.properties.get(
-            self.SIGNAL_TRANSPORT) == self.CFN_SIGNAL
+        return self.properties[
+            self.SIGNAL_TRANSPORT] == self.CFN_SIGNAL
 
     def _signal_transport_heat(self):
-        return self.properties.get(
-            self.SIGNAL_TRANSPORT) == self.HEAT_SIGNAL
+        return self.properties[
+            self.SIGNAL_TRANSPORT] == self.HEAT_SIGNAL
 
     def _signal_transport_none(self):
-        return self.properties.get(
-            self.SIGNAL_TRANSPORT) == self.NO_SIGNAL
+        return self.properties[
+            self.SIGNAL_TRANSPORT] == self.NO_SIGNAL
 
     def _signal_transport_temp_url(self):
+        return self.properties[
+            self.SIGNAL_TRANSPORT] == self.TEMP_URL_SIGNAL
+
+    def _signal_transport_zaqar(self):
         return self.properties.get(
-            self.SIGNAL_TRANSPORT) == self.TEMP_URL_SIGNAL
+            self.SIGNAL_TRANSPORT) == self.ZAQAR_SIGNAL
 
     def _build_properties(self, properties, config_id, action):
         props = {
@@ -257,6 +271,8 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             if prev_derived_config:
                 self._delete_derived_config(prev_derived_config)
         if not self._signal_transport_none():
+            # NOTE(pshchelo): sd is a simple dict, easy to serialize,
+            # does not need fixing re LP bug #1393268
             return sd
 
     def _check_complete(self):
@@ -299,41 +315,6 @@ class SoftwareDeployment(signal_responder.SignalResponder):
     def _build_derived_options(self, action, source):
         return source.get(sc.SoftwareConfig.OPTIONS)
 
-    def _get_temp_url(self):
-        put_url = self.data().get('signal_temp_url')
-        if put_url:
-            return put_url
-
-        container = self.physical_resource_name()
-        object_name = str(uuid.uuid4())
-
-        self.client('swift').put_container(container)
-
-        put_url = self.client_plugin('swift').get_temp_url(
-            container, object_name)
-        self.data_set('signal_temp_url', put_url)
-        self.data_set('signal_object_name', object_name)
-
-        self.client('swift').put_object(
-            container, object_name, '')
-        return put_url
-
-    def _delete_temp_url(self):
-        object_name = self.data().get('signal_object_name')
-        if not object_name:
-            return
-        try:
-            container = self.physical_resource_name()
-            swift = self.client('swift')
-            swift.delete_object(container, object_name)
-            headers = swift.head_container(container)
-            if int(headers['x-container-object-count']) == 0:
-                swift.delete_container(container)
-        except Exception as ex:
-            self.client_plugin('swift').ignore_not_found(ex)
-        self.data_delete('signal_object_name')
-        self.data_delete('signal_temp_url')
-
     def _build_derived_inputs(self, action, source):
         scl = sc.SoftwareConfig
         inputs = copy.deepcopy(source.get(scl.INPUTS)) or []
@@ -357,7 +338,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             scl.NAME: self.DEPLOY_SERVER_ID,
             scl.DESCRIPTION: _('ID of the server being deployed to'),
             scl.TYPE: 'String',
-            'value': self.properties.get(self.SERVER)
+            'value': self.properties[self.SERVER]
         }, {
             scl.NAME: self.DEPLOY_ACTION,
             scl.DESCRIPTION: _('Name of the current action being deployed'),
@@ -379,7 +360,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             scl.DESCRIPTION: _('How the server should signal to heat with '
                                'the deployment output values.'),
             scl.TYPE: 'String',
-            'value': self.properties.get(self.SIGNAL_TRANSPORT)
+            'value': self.properties[self.SIGNAL_TRANSPORT]
         }])
         if self._signal_transport_cfn():
             inputs.append({
@@ -387,7 +368,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
                 scl.DESCRIPTION: _('ID of signal to use for signaling '
                                    'output values'),
                 scl.TYPE: 'String',
-                'value': self._get_signed_url()
+                'value': self._get_ec2_signed_url()
             })
             inputs.append({
                 scl.NAME: self.DEPLOY_SIGNAL_VERB,
@@ -402,7 +383,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
                 scl.DESCRIPTION: _('ID of signal to use for signaling '
                                    'output values'),
                 scl.TYPE: 'String',
-                'value': self._get_temp_url()
+                'value': self._get_swift_signal_url()
             })
             inputs.append({
                 scl.NAME: self.DEPLOY_SIGNAL_VERB,
@@ -411,55 +392,47 @@ class SoftwareDeployment(signal_responder.SignalResponder):
                 scl.TYPE: 'String',
                 'value': 'PUT'
             })
-        elif self._signal_transport_heat():
+        elif self._signal_transport_heat() or self._signal_transport_zaqar():
+            creds = self._get_heat_signal_credentials()
             inputs.extend([{
                 scl.NAME: self.DEPLOY_AUTH_URL,
                 scl.DESCRIPTION: _('URL for API authentication'),
                 scl.TYPE: 'String',
-                'value': self.keystone().v3_endpoint
+                'value': creds['auth_url']
             }, {
                 scl.NAME: self.DEPLOY_USERNAME,
                 scl.DESCRIPTION: _('Username for API authentication'),
                 scl.TYPE: 'String',
-                'value': self.physical_resource_name(),
+                'value': creds['username']
             }, {
                 scl.NAME: self.DEPLOY_USER_ID,
                 scl.DESCRIPTION: _('User ID for API authentication'),
                 scl.TYPE: 'String',
-                'value': self._get_user_id(),
+                'value': creds['user_id']
             }, {
                 scl.NAME: self.DEPLOY_PASSWORD,
                 scl.DESCRIPTION: _('Password for API authentication'),
                 scl.TYPE: 'String',
-                'value': self.password
+                'value': creds['password']
             }, {
                 scl.NAME: self.DEPLOY_PROJECT_ID,
                 scl.DESCRIPTION: _('ID of project for API authentication'),
                 scl.TYPE: 'String',
-                'value': self.stack.stack_user_project_id
+                'value': creds['project_id']
             }])
+        if self._signal_transport_zaqar():
+            inputs.append({
+                scl.NAME: self.DEPLOY_QUEUE_ID,
+                scl.DESCRIPTION: _('ID of queue to use for signaling '
+                                   'output values'),
+                scl.TYPE: 'String',
+                'value': self._get_zaqar_signal_queue_id()
+            })
 
         return inputs
 
     def handle_create(self):
-        if self._signal_transport_cfn():
-            self._create_user()
-            self._create_keypair()
-        if self._signal_transport_heat():
-            self.password = uuid.uuid4().hex
-            self._create_user()
         return self._handle_action(self.CREATE)
-
-    @property
-    def password(self):
-        return self.data().get('password')
-
-    @password.setter
-    def password(self, password):
-        if password is None:
-            self.data_delete('password')
-        else:
-            self.data_set('password', password, True)
 
     def check_create_complete(self, sd):
         if not sd:
@@ -490,13 +463,8 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             return True
 
     def _delete_resource(self):
-        if self._signal_transport_cfn():
-            self._delete_signed_url()
-            self._delete_user()
-        elif self._signal_transport_heat():
-            self._delete_user()
-        elif self._signal_transport_temp_url():
-            self._delete_temp_url()
+        self._delete_signals()
+        self._delete_user()
 
         derived_config_id = None
         if self.resource_id is not None:
@@ -531,7 +499,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
     def handle_signal(self, details):
         return self.rpc_client().signal_software_deployment(
             self.context, self.resource_id, details,
-            timeutils.strtime())
+            timeutils.utcnow().isoformat())
 
     def FnGetAtt(self, key, *path):
         '''
@@ -562,7 +530,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         :raises StackValidationFailed: if any property failed validation.
         '''
         super(SoftwareDeployment, self).validate()
-        server = self.properties.get(self.SERVER)
+        server = self.properties[self.SERVER]
         if server:
             res = self.stack.resource_by_refid(server)
             if res:
@@ -573,9 +541,9 @@ class SoftwareDeployment(signal_responder.SignalResponder):
                         "deployments on it.") % server)
 
 
-class SoftwareDeployments(resource_group.ResourceGroup):
+class SoftwareDeploymentGroup(resource_group.ResourceGroup):
 
-    support_status = support.SupportStatus(version='2014.2')
+    support_status = support.SupportStatus(version='5.0.0')
 
     PROPERTIES = (
         SERVERS,
@@ -618,20 +586,23 @@ class SoftwareDeployments(resource_group.ResourceGroup):
     attributes_schema = {
         STDOUTS: attributes.Schema(
             _("A map of Nova names and captured stdouts from the "
-              "configuration execution to each server.")
+              "configuration execution to each server."),
+            type=attributes.Schema.MAP
         ),
         STDERRS: attributes.Schema(
             _("A map of Nova names and captured stderrs from the "
-              "configuration execution to each server.")
+              "configuration execution to each server."),
+            type=attributes.Schema.MAP
         ),
         STATUS_CODES: attributes.Schema(
             _("A map of Nova names and returned status code from the "
-              "configuration execution")
+              "configuration execution"),
+            type=attributes.Schema.MAP
         ),
     }
 
     def _resource_names(self):
-        return self.properties.get(self.SERVERS, {}).keys()
+        return six.iterkeys(self.properties.get(self.SERVERS, {}))
 
     def _do_prop_replace(self, res_name, res_def_template):
         res_def = copy.deepcopy(res_def_template)
@@ -654,7 +625,7 @@ class SoftwareDeployments(resource_group.ResourceGroup):
         }
 
     def FnGetAtt(self, key, *path):
-        rg = super(SoftwareDeployments, self)
+        rg = super(SoftwareDeploymentGroup, self)
         if key == self.STDOUTS:
             return rg.FnGetAtt(
                 rg.ATTR_ATTRIBUTES, SoftwareDeployment.STDOUT)
@@ -666,8 +637,19 @@ class SoftwareDeployments(resource_group.ResourceGroup):
                 rg.ATTR_ATTRIBUTES, SoftwareDeployment.STATUS_CODE)
 
 
+class SoftwareDeployments(SoftwareDeploymentGroup):
+
+    deprecation_msg = _('This resource is deprecated and use is discouraged. '
+                        'Please use resource OS::Heat:SoftwareDeploymentGroup '
+                        'instead.')
+    support_status = support.SupportStatus(status=support.DEPRECATED,
+                                           message=deprecation_msg,
+                                           version='2014.2')
+
+
 def resource_mapping():
     return {
         'OS::Heat::SoftwareDeployment': SoftwareDeployment,
+        'OS::Heat::SoftwareDeploymentGroup': SoftwareDeploymentGroup,
         'OS::Heat::SoftwareDeployments': SoftwareDeployments,
     }

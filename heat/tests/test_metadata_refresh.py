@@ -11,19 +11,19 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
+import mock
 import mox
-from oslo_config import cfg
 
 from heat.common import identifier
 from heat.common import template_format
 from heat.engine import environment
-from heat.engine import parser
 from heat.engine.resources.aws.cfn import wait_condition_handle as aws_wch
 from heat.engine.resources.aws.ec2 import instance
 from heat.engine.resources.openstack.nova import server
 from heat.engine import scheduler
 from heat.engine import service
+from heat.engine import stack as parser
+from heat.engine import template as tmpl
 from heat.tests import common
 from heat.tests import utils
 
@@ -153,8 +153,8 @@ class MetadataRefreshTest(common.HeatTestCase):
     def create_stack(self, stack_name='test_stack', params=None):
         params = params or {}
         temp = template_format.parse(test_template_metadata)
-        template = parser.Template(temp,
-                                   env=environment.Environment(params))
+        template = tmpl.Template(temp,
+                                 env=environment.Environment(params))
         ctx = utils.dummy_context()
         stack = parser.Stack(ctx, stack_name, template,
                              disable_rollback=True)
@@ -210,16 +210,12 @@ class MetadataRefreshTest(common.HeatTestCase):
 class WaitCondMetadataUpdateTest(common.HeatTestCase):
     def setUp(self):
         super(WaitCondMetadataUpdateTest, self).setUp()
-        self.patch('heat.engine.service.warnings')
-
         self.man = service.EngineService('a-host', 'a-topic')
         self.man.create_periodic_tasks()
-        cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://server.test:8000/v1/waitcondition')
 
     def create_stack(self, stack_name='test_stack'):
         temp = template_format.parse(test_template_waitcondition)
-        template = parser.Template(temp)
+        template = tmpl.Template(temp)
         ctx = utils.dummy_context()
         stack = parser.Stack(ctx, stack_name, template, disable_rollback=True)
 
@@ -243,7 +239,9 @@ class WaitCondMetadataUpdateTest(common.HeatTestCase):
         self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
         return stack
 
-    def test_wait_meta(self):
+    @mock.patch(('heat.engine.resources.aws.ec2.instance.Instance'
+                 '.is_service_available'))
+    def test_wait_meta(self, mock_is_service_available):
         '''
         1 create stack
         2 assert empty instance metadata
@@ -251,6 +249,7 @@ class WaitCondMetadataUpdateTest(common.HeatTestCase):
         4 assert valid waitcond metadata
         5 assert valid instance metadata
         '''
+        mock_is_service_available.return_value = True
         self.stack = self.create_stack()
 
         watch = self.stack['WC']
@@ -311,8 +310,8 @@ class MetadataRefreshTestServer(common.HeatTestCase):
     def create_stack(self, stack_name='test_stack_native', params=None):
         params = params or {}
         temp = template_format.parse(test_template_server)
-        template = parser.Template(temp,
-                                   env=environment.Environment(params))
+        template = tmpl.Template(temp,
+                                 env=environment.Environment(params))
         ctx = utils.dummy_context()
         stack = parser.Stack(ctx, stack_name, template,
                              disable_rollback=True)

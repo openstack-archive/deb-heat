@@ -11,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
 import copy
 
 from heatclient import exc
@@ -23,11 +24,12 @@ from heat.common import exception
 from heat.common.i18n import _
 from heat.common import template_format
 from heat.engine import environment
-from heat.engine import parser
 from heat.engine import resource
 from heat.engine.resources.openstack.heat import remote_stack
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
+from heat.engine import stack
+from heat.engine import template
 from heat.tests import common as tests_common
 from heat.tests import utils
 
@@ -105,7 +107,7 @@ class FakeClients(object):
         self.hc = None
         self.plugin = None
 
-    def heat(self):
+    def client(self, name):
         if self.region_name in ['RegionOne', 'RegionTwo']:
             if self.hc is None:
                 self.hc = mock.MagicMock()
@@ -146,7 +148,7 @@ class RemoteStackTest(tests_common.HeatTestCase):
     def initialize(self):
         parent, rsrc = self.create_parent_stack(remote_region='RegionTwo')
         self.parent = parent
-        self.heat = rsrc._context().clients.heat()
+        self.heat = rsrc._context().clients.client("heat")
         self.client_plugin = rsrc._context().clients.client_plugin('heat')
 
     def create_parent_stack(self, remote_region=None, custom_template=None):
@@ -168,8 +170,8 @@ class RemoteStackTest(tests_common.HeatTestCase):
             self.this_context = utils.dummy_context(
                 region_name=self.this_region)
 
-        tmpl = parser.Template(snippet, files=self.files)
-        parent = parser.Stack(self.this_context, 'parent_stack', tmpl)
+        tmpl = template.Template(snippet, files=self.files)
+        parent = stack.Stack(self.this_context, 'parent_stack', tmpl)
 
         # parent context checking
         ctx = parent.context.to_dict()
@@ -200,15 +202,12 @@ class RemoteStackTest(tests_common.HeatTestCase):
         defaults = [get_stack(stack_status='CREATE_IN_PROGRESS'),
                     get_stack(stack_status='CREATE_COMPLETE')]
 
-        def side_effect(*args, **kwargs):
-            return defaults.pop(0)
-
         if self.parent is None:
             self.initialize()
 
         # prepare clients to return status
         self.heat.stacks.create.return_value = {'stack': get_stack().to_dict()}
-        self.heat.stacks.get = mock.MagicMock(side_effect=side_effect)
+        self.heat.stacks.get = mock.MagicMock(side_effect=defaults)
         rsrc = self.parent['remote_stack']
         scheduler.TaskRunner(rsrc.create)()
 
@@ -269,7 +268,7 @@ class RemoteStackTest(tests_common.HeatTestCase):
 
         # not setting or using self.heat because this test case is a special
         # one with the RemoteStack resource initialized but not created.
-        heat = rsrc._context().clients.heat()
+        heat = rsrc._context().clients.client("heat")
 
         # heatclient.exc.BadRequest is the exception returned by a failed
         # validation
@@ -305,21 +304,19 @@ class RemoteStackTest(tests_common.HeatTestCase):
                              stack_status_reason='Remote stack creation '
                                                  'failed')]
 
-        def side_effect(*args, **kwargs):
-            return returns.pop(0)
-
         # Note: only this test case does a out-of-band intialization, most of
         # the other test cases will have self.parent initialized.
         if self.parent is None:
             self.initialize()
 
         self.heat.stacks.create.return_value = {'stack': get_stack().to_dict()}
-        self.heat.stacks.get = mock.MagicMock(side_effect=side_effect)
+        self.heat.stacks.get = mock.MagicMock(side_effect=returns)
 
         rsrc = self.parent['remote_stack']
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
-        error_msg = ('ResourceInError: Went to status CREATE_FAILED due to '
+        error_msg = ('ResourceInError: resources.remote_stack: '
+                     'Went to status CREATE_FAILED due to '
                      '"Remote stack creation failed"')
         self.assertEqual(error_msg, six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
@@ -328,12 +325,9 @@ class RemoteStackTest(tests_common.HeatTestCase):
         returns = [get_stack(stack_status='DELETE_IN_PROGRESS'),
                    get_stack(stack_status='DELETE_COMPLETE')]
 
-        def side_effect_d(*args, **kwargs):
-            return returns.pop(0)
-
         rsrc = self.create_remote_stack()
 
-        self.heat.stacks.get = mock.MagicMock(side_effect=side_effect_d)
+        self.heat.stacks.get = mock.MagicMock(side_effect=returns)
         self.heat.stacks.delete = mock.MagicMock()
         remote_stack_id = rsrc.resource_id
         scheduler.TaskRunner(rsrc.delete)()
@@ -342,13 +336,11 @@ class RemoteStackTest(tests_common.HeatTestCase):
         self.heat.stacks.delete.assert_called_with(stack_id=remote_stack_id)
 
     def test_delete_already_gone(self):
-        def side_effect(*args, **kwargs):
-            raise exc.HTTPNotFound()
-
         rsrc = self.create_remote_stack()
 
-        self.heat.stacks.delete = mock.MagicMock(side_effect=side_effect)
-        self.heat.stacks.get = mock.MagicMock(side_effect=side_effect)
+        self.heat.stacks.delete = mock.MagicMock(
+            side_effect=exc.HTTPNotFound())
+        self.heat.stacks.get = mock.MagicMock(side_effect=exc.HTTPNotFound())
 
         remote_stack_id = rsrc.resource_id
         scheduler.TaskRunner(rsrc.delete)()
@@ -361,19 +353,16 @@ class RemoteStackTest(tests_common.HeatTestCase):
                    get_stack(stack_status='DELETE_FAILED',
                              stack_status_reason='Remote stack deletion '
                                                  'failed')]
-
-        def side_effect(*args, **kwargs):
-            return returns.pop(0)
-
         rsrc = self.create_remote_stack()
 
-        self.heat.stacks.get = mock.MagicMock(side_effect=side_effect)
+        self.heat.stacks.get = mock.MagicMock(side_effect=returns)
         self.heat.stacks.delete = mock.MagicMock()
 
         remote_stack_id = rsrc.resource_id
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.delete))
-        error_msg = ('ResourceInError: Went to status DELETE_FAILED due to '
+        error_msg = ('ResourceInError: resources.remote_stack: '
+                     'Went to status DELETE_FAILED due to '
                      '"Remote stack deletion failed"')
         self.assertIn(error_msg, six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
@@ -406,17 +395,109 @@ class RemoteStackTest(tests_common.HeatTestCase):
             'incorrect.',
             six.text_type(error))
 
+    def test_snapshot(self):
+        stacks = [get_stack(stack_status='SNAPSHOT_IN_PROGRESS'),
+                  get_stack(stack_status='SNAPSHOT_COMPLETE')]
+        snapshot = {
+            'id': 'a29bc9e25aa44f99a9a3d59cd5b0e263',
+            'status': 'IN_PROGRESS'
+        }
+
+        rsrc = self.create_remote_stack()
+
+        self.heat.stacks.get = mock.MagicMock(side_effect=stacks)
+        self.heat.stacks.snapshot = mock.MagicMock(return_value=snapshot)
+        scheduler.TaskRunner(rsrc.snapshot)()
+
+        self.assertEqual((rsrc.SNAPSHOT, rsrc.COMPLETE), rsrc.state)
+        self.assertEqual('a29bc9e25aa44f99a9a3d59cd5b0e263',
+                         rsrc.data().get('snapshot_id'))
+        self.heat.stacks.snapshot.assert_called_with(
+            stack_id=rsrc.resource_id)
+
+    def test_restore(self):
+        snapshot = {
+            'id': 'a29bc9e25aa44f99a9a3d59cd5b0e263',
+            'status': 'IN_PROGRESS'
+        }
+        remote_stack = mock.MagicMock()
+        remote_stack.action = 'SNAPSHOT'
+        remote_stack.status = 'COMPLETE'
+
+        parent, rsrc = self.create_parent_stack()
+        rsrc.action = rsrc.SNAPSHOT
+
+        heat = rsrc._context().clients.client("heat")
+        heat.stacks.snapshot = mock.MagicMock(return_value=snapshot)
+        heat.stacks.get = mock.MagicMock(return_value=remote_stack)
+        scheduler.TaskRunner(parent.snapshot, None)()
+        self.assertEqual((parent.SNAPSHOT, parent.COMPLETE), parent.state)
+
+        data = parent.prepare_abandon()
+        remote_stack_snapshot = {
+            'snapshot': {
+                'id': 'a29bc9e25aa44f99a9a3d59cd5b0e263',
+                'status': 'COMPLETE',
+                'data': {
+                    'files': data['files'],
+                    'environment': data['environment'],
+                    'template': template_format.parse(
+                        data['files']['remote_template.yaml'])
+                }
+            }
+        }
+        fake_snapshot = collections.namedtuple(
+            'Snapshot', ('data', 'stack_id'))(data, parent.id)
+        heat.stacks.snapshot_show = mock.MagicMock(
+            return_value=remote_stack_snapshot)
+        self.patchobject(rsrc, 'update').return_value = None
+        rsrc.action = rsrc.UPDATE
+        rsrc.status = rsrc.COMPLETE
+        remote_stack.action = 'UPDATE'
+
+        parent.restore(fake_snapshot)
+
+        self.assertEqual((parent.RESTORE, parent.COMPLETE), parent.state)
+
+    def test_check(self):
+        stacks = [get_stack(stack_status='CHECK_IN_PROGRESS'),
+                  get_stack(stack_status='CHECK_COMPLETE')]
+
+        rsrc = self.create_remote_stack()
+
+        self.heat.stacks.get = mock.MagicMock(side_effect=stacks)
+        self.heat.actions.check = mock.MagicMock()
+        scheduler.TaskRunner(rsrc.check)()
+
+        self.assertEqual((rsrc.CHECK, rsrc.COMPLETE), rsrc.state)
+        self.heat.actions.check.assert_called_with(stack_id=rsrc.resource_id)
+
+    def test_check_failed(self):
+        returns = [get_stack(stack_status='CHECK_IN_PROGRESS'),
+                   get_stack(stack_status='CHECK_FAILED',
+                             stack_status_reason='Remote stack check failed')]
+
+        rsrc = self.create_remote_stack()
+
+        self.heat.stacks.get = mock.MagicMock(side_effect=returns)
+        self.heat.actions.resume = mock.MagicMock()
+        error = self.assertRaises(exception.ResourceFailure,
+                                  scheduler.TaskRunner(rsrc.check))
+        error_msg = ('ResourceInError: resources.remote_stack: '
+                     'Went to status CHECK_FAILED due to '
+                     '"Remote stack check failed"')
+        self.assertEqual(error_msg, six.text_type(error))
+        self.assertEqual((rsrc.CHECK, rsrc.FAILED), rsrc.state)
+        self.heat.actions.check.assert_called_with(stack_id=rsrc.resource_id)
+
     def test_resume(self):
         stacks = [get_stack(stack_status='RESUME_IN_PROGRESS'),
                   get_stack(stack_status='RESUME_COMPLETE')]
 
-        def side_effect(*args, **kwargs):
-            return stacks.pop(0)
-
         rsrc = self.create_remote_stack()
         rsrc.action = rsrc.SUSPEND
 
-        self.heat.stacks.get = mock.MagicMock(side_effect=side_effect)
+        self.heat.stacks.get = mock.MagicMock(side_effect=stacks)
         self.heat.actions.resume = mock.MagicMock()
         scheduler.TaskRunner(rsrc.resume)()
 
@@ -428,17 +509,15 @@ class RemoteStackTest(tests_common.HeatTestCase):
                    get_stack(stack_status='RESUME_FAILED',
                              stack_status_reason='Remote stack resume failed')]
 
-        def side_effect(*args, **kwargs):
-            return returns.pop(0)
-
         rsrc = self.create_remote_stack()
         rsrc.action = rsrc.SUSPEND
 
-        self.heat.stacks.get = mock.MagicMock(side_effect=side_effect)
+        self.heat.stacks.get = mock.MagicMock(side_effect=returns)
         self.heat.actions.resume = mock.MagicMock()
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.resume))
-        error_msg = ('ResourceInError: Went to status RESUME_FAILED due to '
+        error_msg = ('ResourceInError: resources.remote_stack: '
+                     'Went to status RESUME_FAILED due to '
                      '"Remote stack resume failed"')
         self.assertEqual(error_msg, six.text_type(error))
         self.assertEqual((rsrc.RESUME, rsrc.FAILED), rsrc.state)
@@ -450,7 +529,8 @@ class RemoteStackTest(tests_common.HeatTestCase):
         rsrc.action = rsrc.SUSPEND
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.resume))
-        error_msg = 'Error: Cannot resume remote_stack, resource not found'
+        error_msg = ('Error: resources.remote_stack: '
+                     'Cannot resume remote_stack, resource not found')
         self.assertEqual(error_msg, six.text_type(error))
         self.assertEqual((rsrc.RESUME, rsrc.FAILED), rsrc.state)
 
@@ -458,12 +538,9 @@ class RemoteStackTest(tests_common.HeatTestCase):
         stacks = [get_stack(stack_status='SUSPEND_IN_PROGRESS'),
                   get_stack(stack_status='SUSPEND_COMPLETE')]
 
-        def side_effect(*args, **kwargs):
-            return stacks.pop(0)
-
         rsrc = self.create_remote_stack()
 
-        self.heat.stacks.get = mock.MagicMock(side_effect=side_effect)
+        self.heat.stacks.get = mock.MagicMock(side_effect=stacks)
         self.heat.actions.suspend = mock.MagicMock()
         scheduler.TaskRunner(rsrc.suspend)()
 
@@ -475,16 +552,14 @@ class RemoteStackTest(tests_common.HeatTestCase):
                   get_stack(stack_status='SUSPEND_FAILED',
                             stack_status_reason='Remote stack suspend failed')]
 
-        def side_effect(*args, **kwargs):
-            return stacks.pop(0)
-
         rsrc = self.create_remote_stack()
 
-        self.heat.stacks.get = mock.MagicMock(side_effect=side_effect)
+        self.heat.stacks.get = mock.MagicMock(side_effect=stacks)
         self.heat.actions.suspend = mock.MagicMock()
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.suspend))
-        error_msg = ('ResourceInError: Went to status SUSPEND_FAILED due to '
+        error_msg = ('ResourceInError: resources.remote_stack: '
+                     'Went to status SUSPEND_FAILED due to '
                      '"Remote stack suspend failed"')
         self.assertEqual(error_msg, six.text_type(error))
         self.assertEqual((rsrc.SUSPEND, rsrc.FAILED), rsrc.state)
@@ -498,7 +573,8 @@ class RemoteStackTest(tests_common.HeatTestCase):
         self.heat.actions.suspend = mock.MagicMock()
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.suspend))
-        error_msg = 'Error: Cannot suspend remote_stack, resource not found'
+        error_msg = ('Error: resources.remote_stack: '
+                     'Cannot suspend remote_stack, resource not found')
         self.assertEqual(error_msg, six.text_type(error))
         self.assertEqual((rsrc.SUSPEND, rsrc.FAILED), rsrc.state)
         # assert suspend was not called
@@ -508,9 +584,6 @@ class RemoteStackTest(tests_common.HeatTestCase):
         stacks = [get_stack(stack_status='UPDATE_IN_PROGRESS'),
                   get_stack(stack_status='UPDATE_COMPLETE')]
 
-        def side_effect(*args, **kwargs):
-            return stacks.pop(0)
-
         rsrc = self.create_remote_stack()
 
         props = copy.deepcopy(rsrc.parsed_template()['Properties'])
@@ -519,7 +592,7 @@ class RemoteStackTest(tests_common.HeatTestCase):
                                                       rsrc.type(),
                                                       props)
 
-        self.heat.stacks.get = mock.MagicMock(side_effect=side_effect)
+        self.heat.stacks.get = mock.MagicMock(side_effect=stacks)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
 
         self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
@@ -554,9 +627,6 @@ class RemoteStackTest(tests_common.HeatTestCase):
                   get_stack(stack_status='UPDATE_FAILED',
                             stack_status_reason='Remote stack update failed')]
 
-        def side_effect(*args, **kwargs):
-            return stacks.pop(0)
-
         rsrc = self.create_remote_stack()
 
         props = copy.deepcopy(rsrc.parsed_template()['Properties'])
@@ -565,11 +635,12 @@ class RemoteStackTest(tests_common.HeatTestCase):
                                                       rsrc.type(),
                                                       props)
 
-        self.heat.stacks.get = mock.MagicMock(side_effect=side_effect)
+        self.heat.stacks.get = mock.MagicMock(side_effect=stacks)
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.update,
                                                        update_snippet))
-        error_msg = _('ResourceInError: Went to status UPDATE_FAILED due to '
+        error_msg = _('ResourceInError: resources.remote_stack: '
+                      'Went to status UPDATE_FAILED due to '
                       '"Remote stack update failed"')
         self.assertEqual(error_msg, six.text_type(error))
         self.assertEqual((rsrc.UPDATE, rsrc.FAILED), rsrc.state)
@@ -579,9 +650,6 @@ class RemoteStackTest(tests_common.HeatTestCase):
         stacks = [get_stack(stack_status='UPDATE_IN_PROGRESS'),
                   get_stack(stack_status='UPDATE_COMPLETE')]
 
-        def side_effect(*args, **kwargs):
-            return stacks.pop(0)
-
         rsrc = self.create_remote_stack()
 
         props = copy.deepcopy(rsrc.parsed_template()['Properties'])
@@ -589,27 +657,6 @@ class RemoteStackTest(tests_common.HeatTestCase):
                                                       rsrc.type(),
                                                       props)
 
-        self.heat.stacks.get = mock.MagicMock(side_effect=side_effect)
+        self.heat.stacks.get = mock.MagicMock(side_effect=stacks)
         scheduler.TaskRunner(rsrc.update, update_snippet)()
         self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
-
-    def test_stack_status_error(self):
-        returns = [get_stack(stack_status='DELETE_IN_PROGRESS'),
-                   get_stack(stack_status='UPDATE_COMPLETE')]
-
-        def side_effect_d(*args, **kwargs):
-            return returns.pop(0)
-
-        rsrc = self.create_remote_stack()
-
-        self.heat.stacks.get = mock.MagicMock(side_effect=side_effect_d)
-        self.heat.stacks.delete = mock.MagicMock()
-        remote_stack_id = rsrc.resource_id
-        error = self.assertRaises(exception.ResourceFailure,
-                                  scheduler.TaskRunner(rsrc.delete))
-        reason = ('Resource action mismatch detected: expected=DELETE '
-                  'actual=UPDATE')
-        error_msg = ('ResourceUnknownStatus: Resource failed - Unknown '
-                     'status UPDATE_COMPLETE due to "%s"') % reason
-        self.assertEqual(error_msg, six.text_type(error))
-        self.heat.stacks.delete.assert_called_with(stack_id=remote_stack_id)

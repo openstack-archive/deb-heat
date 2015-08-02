@@ -14,13 +14,23 @@
 import collections
 import numbers
 import re
+import warnings
 
+from oslo_cache import core
+from oslo_config import cfg
 from oslo_utils import strutils
 import six
 
+from heat.common import cache
 from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import resources
+
+# decorator that allows to cache the value
+# of the function based on input arguments
+MEMOIZE = core.get_memoization_decorator(conf=cfg.CONF,
+                                         region=cache.get_cache_region(),
+                                         group="constraint_validation_cache")
 
 
 class Schema(collections.Mapping):
@@ -84,6 +94,10 @@ class Schema(collections.Mapping):
             raise exception.InvalidSchemaError(
                 message=_('Invalid type (%s)') % self.type)
 
+        if required and default is not None:
+            warnings.warn("Option 'required=True' should not be used with "
+                          "any 'default' value ({0})".format(default))
+
         self.description = description
         self.required = required
 
@@ -128,7 +142,7 @@ class Schema(collections.Mapping):
             if isinstance(self.schema, AnyIndexDict):
                 self.schema.value.validate(context)
             else:
-                for nested_schema in self.schema.values():
+                for nested_schema in six.itervalues(self.schema):
                     nested_schema.validate(context)
 
     def _validate_default(self, context):
@@ -577,10 +591,35 @@ class BaseCustomConstraint(object):
             "value": value, "message": self._error_message}
 
     def validate(self, value, context):
-        try:
-            self.validate_with_client(context.clients, value)
-        except self.expected_exceptions as e:
-            self._error_message = str(e)
-            return False
-        else:
-            return True
+
+        @MEMOIZE
+        def check_cache_or_validate_value(class_name, value_to_validate):
+            """Check if validation result stored in cache or validate value.
+
+            The function checks that value was validated and validation
+            result stored in cache. If not then it executes validation and
+            stores the result of validation in cache.
+            If caching is disable it requests for validation each time.
+
+            :param class_name: name of custom constraint class, it will be
+                               used in cache key to distinguish values
+            :param value_to_validate: value that need to be validated
+            :return: True if value is valid otherwise False
+            """
+            try:
+                self.validate_with_client(context.clients, value_to_validate)
+            except self.expected_exceptions as e:
+                self._error_message = str(e)
+                return False
+            else:
+                return True
+
+        validation_result = check_cache_or_validate_value(
+            self.__class__.__name__, value)
+        # if validation failed we should not store it in cache
+        # cause validation will be fixed soon (by admin or other guy)
+        # and we don't need to require user wait for expiration time
+        if not validation_result:
+            check_cache_or_validate_value.invalidate(self.__class__.__name__,
+                                                     value)
+        return validation_result

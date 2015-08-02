@@ -135,8 +135,8 @@ class StructuredDeployment(sd.SoftwareDeployment):
     def _build_derived_config(self, action, source,
                               derived_inputs, derived_options):
         cfg = source.get(sc.SoftwareConfig.CONFIG)
-        input_key = self.properties.get(self.INPUT_KEY)
-        check_input_val = self.properties.get(self.INPUT_VALUES_VALIDATE)
+        input_key = self.properties[self.INPUT_KEY]
+        check_input_val = self.properties[self.INPUT_VALUES_VALIDATE]
 
         inputs = dict((i['name'], i['value']) for i in derived_inputs)
 
@@ -179,7 +179,7 @@ class StructuredDeployment(sd.SoftwareDeployment):
             return snippet
 
 
-class StructuredDeployments(sd.SoftwareDeployments):
+class StructuredDeploymentGroup(sd.SoftwareDeploymentGroup):
 
     PROPERTIES = (
         SERVERS,
@@ -191,17 +191,17 @@ class StructuredDeployments(sd.SoftwareDeployments):
         INPUT_KEY,
         INPUT_VALUES_VALIDATE,
     ) = (
-        sd.SoftwareDeployments.SERVERS,
-        sd.SoftwareDeployments.CONFIG,
-        sd.SoftwareDeployments.INPUT_VALUES,
-        sd.SoftwareDeployments.DEPLOY_ACTIONS,
-        sd.SoftwareDeployments.NAME,
-        sd.SoftwareDeployments.SIGNAL_TRANSPORT,
+        sd.SoftwareDeploymentGroup.SERVERS,
+        sd.SoftwareDeploymentGroup.CONFIG,
+        sd.SoftwareDeploymentGroup.INPUT_VALUES,
+        sd.SoftwareDeploymentGroup.DEPLOY_ACTIONS,
+        sd.SoftwareDeploymentGroup.NAME,
+        sd.SoftwareDeploymentGroup.SIGNAL_TRANSPORT,
         StructuredDeployment.INPUT_KEY,
         StructuredDeployment.INPUT_VALUES_VALIDATE
     )
 
-    _sds_ps = sd.SoftwareDeployments.properties_schema
+    _sds_ps = sd.SoftwareDeploymentGroup.properties_schema
 
     properties_schema = {
         SERVERS: _sds_ps[SERVERS],
@@ -231,9 +231,20 @@ class StructuredDeployments(sd.SoftwareDeployments):
         }
 
 
+class StructuredDeployments(StructuredDeploymentGroup):
+
+    deprecation_msg = _('This resource is deprecated and use is discouraged. '
+                        'Please use resource '
+                        'OS::Heat:StructuredDeploymentGroup instead.')
+    support_status = support.SupportStatus(status=support.DEPRECATED,
+                                           message=deprecation_msg,
+                                           version='2014.2')
+
+
 def resource_mapping():
     return {
         'OS::Heat::StructuredConfig': StructuredConfig,
         'OS::Heat::StructuredDeployment': StructuredDeployment,
+        'OS::Heat::StructuredDeploymentGroup': StructuredDeploymentGroup,
         'OS::Heat::StructuredDeployments': StructuredDeployments,
     }

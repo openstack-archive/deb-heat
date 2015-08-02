@@ -15,7 +15,6 @@
 import logging
 import os
 import sys
-import time
 
 import fixtures
 import mox
@@ -33,9 +32,11 @@ from heat.engine.clients.os import neutron
 from heat.engine.clients.os import nova
 from heat.engine.clients.os import trove
 from heat.engine import environment
+from heat.engine import resource
 from heat.engine import resources
 from heat.engine import scheduler
 from heat.tests import fakes
+from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
 
 
@@ -70,13 +71,12 @@ class FakeLogMixin(object):
 class HeatTestCase(testscenarios.WithScenarios,
                    testtools.TestCase, FakeLogMixin):
 
-    TIME_STEP = 0.1
-
     def setUp(self, mock_keystone=True):
         super(HeatTestCase, self).setUp()
         self.m = mox.Mox()
         self.addCleanup(self.m.UnsetStubs)
         self.setup_logging()
+        self.warnings = self.useFixture(fixtures.WarningsCapture())
         scheduler.ENABLE_SLEEP = False
         self.useFixture(fixtures.MonkeyPatch(
             'heat.common.exception._FATAL_EXCEPTION_FORMAT_ERRORS',
@@ -99,36 +99,65 @@ class HeatTestCase(testscenarios.WithScenarios,
         messaging.setup("fake://", optional=True)
         self.addCleanup(messaging.cleanup)
 
-        tri = resources.global_env().get_resource_info(
-            'AWS::RDS::DBInstance',
-            registry_type=environment.TemplateResourceInfo)
-        if tri is not None:
-            cur_path = tri.template_name
-            templ_path = os.path.join(project_dir, 'etc', 'heat', 'templates')
-            if templ_path not in cur_path:
-                tri.template_name = cur_path.replace('/etc/heat/templates',
-                                                     templ_path)
+        tri_names = ['AWS::RDS::DBInstance', 'AWS::CloudWatch::Alarm']
+        tris = []
+        for name in tri_names:
+            tris.append(resources.global_env().get_resource_info(
+                name,
+                registry_type=environment.TemplateResourceInfo))
+        for tri in tris:
+            if tri is not None:
+                cur_path = tri.template_name
+                templ_path = os.path.join(project_dir, 'etc',
+                                          'heat', 'templates')
+                if templ_path not in cur_path:
+                    tri.template_name = cur_path.replace(
+                        '/etc/heat/templates',
+                        templ_path)
 
-        # use CWLiteAlarm for testing.
-        resources.global_env().registry.load(
-            {"AWS::CloudWatch::Alarm": "OS::Heat::CWLiteAlarm"})
         if mock_keystone:
             self.stub_keystoneclient()
         utils.setup_dummy_db()
+        self.register_test_resources()
         self.addCleanup(utils.reset_dummy_db)
 
-    def stub_wallclock(self):
-        """
-        Overrides scheduler wallclock to speed up tests expecting timeouts.
-        """
-        self._wallclock = time.time()
-
-        def fake_wallclock():
-            self._wallclock += self.TIME_STEP
-            return self._wallclock
-
-        self.m.StubOutWithMock(scheduler, 'wallclock')
-        scheduler.wallclock = fake_wallclock
+    def register_test_resources(self):
+        resource._register_class('GenericResourceType',
+                                 generic_rsrc.GenericResource)
+        resource._register_class('ResWithShowAttrType',
+                                 generic_rsrc.ResWithShowAttr)
+        resource._register_class('SignalResourceType',
+                                 generic_rsrc.SignalResource)
+        resource._register_class('ResourceWithPropsType',
+                                 generic_rsrc.ResourceWithProps)
+        resource._register_class('StackUserResourceType',
+                                 generic_rsrc.StackUserResource)
+        resource._register_class('ResourceWithResourceIDType',
+                                 generic_rsrc.ResourceWithResourceID)
+        resource._register_class('ResourceWithAttributeType',
+                                 generic_rsrc.ResourceWithAttributeType)
+        resource._register_class('ResourceWithRequiredProps',
+                                 generic_rsrc.ResourceWithRequiredProps)
+        resource._register_class('ResourceWithPropsAndAttrs',
+                                 generic_rsrc.ResourceWithPropsAndAttrs)
+        resource._register_class('ResWithComplexPropsAndAttrs',
+                                 generic_rsrc.ResWithComplexPropsAndAttrs)
+        resource._register_class('ResourceWithCustomConstraint',
+                                 generic_rsrc.ResourceWithCustomConstraint)
+        resource._register_class('ResourceWithComplexAttributesType',
+                                 generic_rsrc.ResourceWithComplexAttributes)
+        resource._register_class('ResourceWithDefaultClientName',
+                                 generic_rsrc.ResourceWithDefaultClientName)
+        resource._register_class('OverwrittenFnGetAttType',
+                                 generic_rsrc.ResourceWithFnGetAttType)
+        resource._register_class('OverwrittenFnGetRefIdType',
+                                 generic_rsrc.ResourceWithFnGetRefIdType)
+        resource._register_class('ResourceWithListProp',
+                                 generic_rsrc.ResourceWithListProp)
+        resource._register_class('StackResourceType',
+                                 generic_rsrc.StackResourceType)
+        resource._register_class('ResourceWithRestoreType',
+                                 generic_rsrc.ResourceWithRestoreType)
 
     def patchobject(self, obj, attr, **kwargs):
         mockfixture = self.useFixture(mockpatch.PatchObject(obj, attr,
@@ -204,4 +233,8 @@ class HeatTestCase(testscenarios.WithScenarios,
 
     def stub_RouterConstraint_validate(self):
         validate = self.patchobject(neutron.RouterConstraint, 'validate')
+        validate.return_value = True
+
+    def stub_NovaNetworkConstraint(self):
+        validate = self.patchobject(nova.NetworkConstraint, 'validate')
         validate.return_value = True

@@ -112,6 +112,21 @@ class API(wsgi.Router):
                         'method': 'GET'
                     },
 
+                    {
+                        'name': 'template_versions',
+                        'url': '/template_versions',
+                        'action': 'list_template_versions',
+                        'method': 'GET'
+                    },
+
+                    {
+                        'name': 'template_functions',
+                        'url': '/template_versions/{template_version}'
+                               '/functions',
+                        'action': 'list_template_functions',
+                        'method': 'GET'
+                    },
+
                     # Stack collection
                     {
                         'name': 'stack_index',
@@ -334,6 +349,12 @@ class API(wsgi.Router):
         connect(controller=software_config_resource,
                 path_prefix='/{tenant_id}/software_configs',
                 routes=[
+                    {
+                        'name': 'software_config_index',
+                        'url': '',
+                        'action': 'index',
+                        'method': 'GET'
+                    },
                     {
                         'name': 'software_config_create',
                         'url': '',

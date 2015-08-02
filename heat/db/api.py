@@ -55,6 +55,10 @@ def raw_template_update(context, template_id, values):
     return IMPL.raw_template_update(context, template_id, values)
 
 
+def raw_template_delete(context, template_id):
+    return IMPL.raw_template_delete(context, template_id)
+
+
 def resource_data_get_all(resource, data=None):
     return IMPL.resource_data_get_all(resource, data)
 
@@ -74,6 +78,18 @@ def resource_data_get_by_key(context, resource_id, key):
 def resource_data_delete(resource, key):
     """Remove a resource_data element associated to a resource."""
     return IMPL.resource_data_delete(resource, key)
+
+
+def stack_tags_set(context, stack_id, tags):
+    return IMPL.stack_tags_set(context, stack_id, tags)
+
+
+def stack_tags_delete(context, stack_id):
+    return IMPL.stack_tags_delete(context, stack_id)
+
+
+def stack_tags_get(context, stack_id):
+    return IMPL.stack_tags_get(context, stack_id)
 
 
 def resource_get(context, resource_id):
@@ -130,10 +146,13 @@ def stack_get_by_name(context, stack_name):
 
 def stack_get_all(context, limit=None, sort_keys=None, marker=None,
                   sort_dir=None, filters=None, tenant_safe=True,
-                  show_deleted=False, show_nested=False):
+                  show_deleted=False, show_nested=False, show_hidden=False,
+                  tags=None, tags_any=None, not_tags=None,
+                  not_tags_any=None):
     return IMPL.stack_get_all(context, limit, sort_keys,
                               marker, sort_dir, filters, tenant_safe,
-                              show_deleted, show_nested)
+                              show_deleted, show_nested, show_hidden,
+                              tags, tags_any, not_tags, not_tags_any)
 
 
 def stack_get_all_by_owner_id(context, owner_id):
@@ -141,11 +160,18 @@ def stack_get_all_by_owner_id(context, owner_id):
 
 
 def stack_count_all(context, filters=None, tenant_safe=True,
-                    show_deleted=False, show_nested=False):
+                    show_deleted=False, show_nested=False, show_hidden=False,
+                    tags=None, tags_any=None, not_tags=None,
+                    not_tags_any=None):
     return IMPL.stack_count_all(context, filters=filters,
                                 tenant_safe=tenant_safe,
                                 show_deleted=show_deleted,
-                                show_nested=show_nested)
+                                show_nested=show_nested,
+                                show_hidden=show_hidden,
+                                tags=tags,
+                                tags_any=tags_any,
+                                not_tags=not_tags,
+                                not_tags_any=not_tags_any)
 
 
 def stack_create(context, values):
@@ -174,6 +200,14 @@ def stack_lock_steal(stack_id, old_engine_id, new_engine_id):
 
 def stack_lock_release(stack_id, engine_id):
     return IMPL.stack_lock_release(stack_id, engine_id)
+
+
+def stack_get_root_id(context, stack_id):
+    return IMPL.stack_get_root_id(context, stack_id)
+
+
+def stack_count_total_resources(context, stack_id):
+    return IMPL.stack_count_total_resources(context, stack_id)
 
 
 def user_creds_create(context):
@@ -272,6 +306,14 @@ def software_config_get(context, config_id):
     return IMPL.software_config_get(context, config_id)
 
 
+def software_config_get_all(context, limit=None, marker=None,
+                            tenant_safe=True):
+    return IMPL.software_config_get_all(context,
+                                        limit=limit,
+                                        marker=marker,
+                                        tenant_safe=tenant_safe)
+
+
 def software_config_delete(context, config_id):
     return IMPL.software_config_delete(context, config_id)
 
@@ -302,6 +344,10 @@ def snapshot_create(context, values):
 
 def snapshot_get(context, snapshot_id):
     return IMPL.snapshot_get(context, snapshot_id)
+
+
+def snapshot_get_by_stack(context, snapshot_id, stack):
+    return IMPL.snapshot_get_by_stack(context, snapshot_id, stack)
 
 
 def snapshot_update(context, snapshot_id, values):

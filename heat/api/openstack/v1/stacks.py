@@ -169,8 +169,29 @@ class StackController(object):
     def default(self, req, **args):
         raise exc.HTTPNotFound()
 
+    def _extract_bool_param(self, name, value):
+        try:
+            return param_utils.extract_bool(name, value)
+        except ValueError as e:
+            raise exc.HTTPBadRequest(six.text_type(e))
+
+    def _extract_int_param(self, name, value,
+                           allow_zero=True, allow_negative=False):
+        try:
+            return param_utils.extract_int(name, value,
+                                           allow_zero, allow_negative)
+        except ValueError as e:
+            raise exc.HTTPBadRequest(six.text_type(e))
+
+    def _extract_tags_param(self, tags):
+        try:
+            return param_utils.extract_tags(tags)
+        except ValueError as e:
+            raise exc.HTTPBadRequest(six.text_type(e))
+
     def _index(self, req, tenant_safe=True):
         filter_whitelist = {
+            'id': 'mixed',
             'status': 'mixed',
             'name': 'mixed',
             'action': 'mixed',
@@ -185,29 +206,66 @@ class StackController(object):
             'sort_keys': 'multi',
             'show_deleted': 'single',
             'show_nested': 'single',
+            'show_hidden': 'single',
+            'tags': 'single',
+            'tags_any': 'single',
+            'not_tags': 'single',
+            'not_tags_any': 'single',
         }
         params = util.get_allowed_params(req.params, whitelist)
         filter_params = util.get_allowed_params(req.params, filter_whitelist)
 
         show_deleted = False
-        if rpc_api.PARAM_SHOW_DELETED in params:
-            params[rpc_api.PARAM_SHOW_DELETED] = param_utils.extract_bool(
-                params[rpc_api.PARAM_SHOW_DELETED])
-            show_deleted = params[rpc_api.PARAM_SHOW_DELETED]
+        p_name = rpc_api.PARAM_SHOW_DELETED
+        if p_name in params:
+            params[p_name] = self._extract_bool_param(p_name, params[p_name])
+            show_deleted = params[p_name]
+
         show_nested = False
-        if rpc_api.PARAM_SHOW_NESTED in params:
-            params[rpc_api.PARAM_SHOW_NESTED] = param_utils.extract_bool(
-                params[rpc_api.PARAM_SHOW_NESTED])
-            show_nested = params[rpc_api.PARAM_SHOW_NESTED]
+        p_name = rpc_api.PARAM_SHOW_NESTED
+        if p_name in params:
+            params[p_name] = self._extract_bool_param(p_name, params[p_name])
+            show_nested = params[p_name]
 
         key = rpc_api.PARAM_LIMIT
         if key in params:
-            params[key] = param_utils.extract_int(key, params[key])
+            params[key] = self._extract_int_param(key, params[key])
+
+        show_hidden = False
+        p_name = rpc_api.PARAM_SHOW_HIDDEN
+        if p_name in params:
+            params[p_name] = self._extract_bool_param(p_name, params[p_name])
+            show_hidden = params[p_name]
+
+        tags = None
+        if rpc_api.PARAM_TAGS in params:
+            params[rpc_api.PARAM_TAGS] = self._extract_tags_param(
+                params[rpc_api.PARAM_TAGS])
+            tags = params[rpc_api.PARAM_TAGS]
+
+        tags_any = None
+        if rpc_api.PARAM_TAGS_ANY in params:
+            params[rpc_api.PARAM_TAGS_ANY] = self._extract_tags_param(
+                params[rpc_api.PARAM_TAGS_ANY])
+            tags_any = params[rpc_api.PARAM_TAGS_ANY]
+
+        not_tags = None
+        if rpc_api.PARAM_NOT_TAGS in params:
+            params[rpc_api.PARAM_NOT_TAGS] = self._extract_tags_param(
+                params[rpc_api.PARAM_NOT_TAGS])
+            not_tags = params[rpc_api.PARAM_NOT_TAGS]
+
+        not_tags_any = None
+        if rpc_api.PARAM_NOT_TAGS_ANY in params:
+            params[rpc_api.PARAM_NOT_TAGS_ANY] = self._extract_tags_param(
+                params[rpc_api.PARAM_NOT_TAGS_ANY])
+            not_tags_any = params[rpc_api.PARAM_NOT_TAGS_ANY]
 
         # get the with_count value, if invalid, raise ValueError
         with_count = False
         if req.params.get('with_count'):
-            with_count = param_utils.extract_bool(
+            with_count = self._extract_bool_param(
+                'with_count',
                 req.params.get('with_count'))
 
         if not filter_params:
@@ -227,9 +285,14 @@ class StackController(object):
                                                      filters=filter_params,
                                                      tenant_safe=tenant_safe,
                                                      show_deleted=show_deleted,
-                                                     show_nested=show_nested)
-            except AttributeError as exc:
-                LOG.warn(_LW("Old Engine Version: %s") % exc)
+                                                     show_nested=show_nested,
+                                                     show_hidden=show_hidden,
+                                                     tags=tags,
+                                                     tags_any=tags_any,
+                                                     not_tags=not_tags,
+                                                     not_tags_any=not_tags_any)
+            except AttributeError as ex:
+                LOG.warn(_LW("Old Engine Version: %s"), ex)
 
         return stacks_view.collection(req, stacks=stacks, count=count,
                                       tenant_safe=tenant_safe)
@@ -244,9 +307,11 @@ class StackController(object):
         Lists summary information for all stacks
         """
         global_tenant = False
-        if rpc_api.PARAM_GLOBAL_TENANT in req.params:
-            global_tenant = param_utils.extract_bool(
-                req.params.get(rpc_api.PARAM_GLOBAL_TENANT))
+        name = rpc_api.PARAM_GLOBAL_TENANT
+        if name in req.params:
+            global_tenant = self._extract_bool_param(
+                name,
+                req.params.get(name))
 
         if global_tenant:
             return self.global_index(req, req.context.tenant_id)
@@ -280,6 +345,16 @@ class StackController(object):
         formatted_stack = stacks_view.format_stack(req, result)
         return {'stack': formatted_stack}
 
+    def prepare_args(self, data):
+        args = data.args()
+        key = rpc_api.PARAM_TIMEOUT
+        if key in args:
+            args[key] = self._extract_int_param(key, args[key])
+        key = rpc_api.PARAM_TAGS
+        if args.get(key) is not None:
+            args[key] = self._extract_tags_param(args[key])
+        return args
+
     @util.policy_enforce
     def create(self, req, body):
         """
@@ -287,11 +362,7 @@ class StackController(object):
         """
         data = InstantiationData(body)
 
-        args = data.args()
-        key = rpc_api.PARAM_TIMEOUT
-        if key in args:
-            args[key] = param_utils.extract_int(key, args[key])
-
+        args = self.prepare_args(data)
         result = self.rpc_client.create_stack(req.context,
                                               data.stack_name(),
                                               data.template(),
@@ -364,11 +435,7 @@ class StackController(object):
         """
         data = InstantiationData(body)
 
-        args = data.args()
-        key = rpc_api.PARAM_TIMEOUT
-        if key in args:
-            args[key] = param_utils.extract_int(key, args[key])
-
+        args = self.prepare_args(data)
         self.rpc_client.update_stack(req.context,
                                      identity,
                                      data.template(),
@@ -386,11 +453,7 @@ class StackController(object):
         """
         data = InstantiationData(body, patch=True)
 
-        args = data.args()
-        key = rpc_api.PARAM_TIMEOUT
-        if key in args:
-            args[key] = param_utils.extract_int(key, args[key])
-
+        args = self.prepare_args(data)
         self.rpc_client.update_stack(req.context,
                                      identity,
                                      data.template(),
@@ -453,6 +516,27 @@ class StackController(object):
             self.rpc_client.list_resource_types(req.context, support_status)}
 
     @util.policy_enforce
+    def list_template_versions(self, req):
+        """
+        Returns a list of available template versions
+        """
+        return {
+            'template_versions':
+            self.rpc_client.list_template_versions(req.context)
+        }
+
+    @util.policy_enforce
+    def list_template_functions(self, req, template_version):
+        """
+        Returns a list of available functions in a given template
+        """
+        return {
+            'template_functions':
+            self.rpc_client.list_template_functions(req.context,
+                                                    template_version)
+        }
+
+    @util.policy_enforce
     def resource_schema(self, req, type_name):
         """
         Returns the schema of the given resource type.
@@ -464,7 +548,18 @@ class StackController(object):
         """
         Generates a template based on the specified type.
         """
-        return self.rpc_client.generate_template(req.context, type_name)
+        template_type = 'cfn'
+        if rpc_api.TEMPLATE_TYPE in req.params:
+            try:
+                template_type = param_utils.extract_template_type(
+                    req.params.get(rpc_api.TEMPLATE_TYPE))
+            except ValueError as ex:
+                msg = _("Template type is not supported: %s") % ex
+                raise exc.HTTPBadRequest(six.text_type(msg))
+
+        return self.rpc_client.generate_template(req.context,
+                                                 type_name,
+                                                 template_type)
 
     @util.identified_stack
     def snapshot(self, req, identity, body):

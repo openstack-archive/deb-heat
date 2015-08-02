@@ -29,6 +29,11 @@ class EngineClient(object):
         1.0 - Initial version.
         1.1 - Add support_status argument to list_resource_types()
         1.4 - Add support for service list
+        1.9 - Add template_type option to generate_template()
+        1.10 - Add support for software config list
+        1.11 - Add support for template versions list
+        1.12 - Add with_detail option for stack resources list
+        1.13 - Add support for template functions list
     '''
 
     BASE_RPC_API_VERSION = '1.0'
@@ -91,7 +96,9 @@ class EngineClient(object):
 
     def list_stacks(self, ctxt, limit=None, marker=None, sort_keys=None,
                     sort_dir=None, filters=None, tenant_safe=True,
-                    show_deleted=False, show_nested=False):
+                    show_deleted=False, show_nested=False, show_hidden=False,
+                    tags=None, tags_any=None, not_tags=None,
+                    not_tags_any=None):
         """
         The list_stacks method returns attributes of all stacks.  It supports
         pagination (``limit`` and ``marker``), sorting (``sort_keys`` and
@@ -106,6 +113,15 @@ class EngineClient(object):
         :param tenant_safe: if true, scope the request by the current tenant
         :param show_deleted: if true, show soft-deleted stacks
         :param show_nested: if true, show nested stacks
+        :param show_hidden: if true, show hidden stacks
+        :param tags: show stacks containing these tags, combine multiple
+            tags using the boolean AND expression
+        :param tags_any: show stacks containing these tags, combine multiple
+            tags using the boolean OR expression
+        :param not_tags: show stacks not containing these tags, combine
+            multiple tags using the boolean AND expression
+        :param not_tags_any: show stacks not containing these tags, combine
+            multiple tags using the boolean OR expression
         :returns: a list of stacks
         """
         return self.call(ctxt,
@@ -114,10 +130,17 @@ class EngineClient(object):
                                        sort_dir=sort_dir, filters=filters,
                                        tenant_safe=tenant_safe,
                                        show_deleted=show_deleted,
-                                       show_nested=show_nested))
+                                       show_nested=show_nested,
+                                       show_hidden=show_hidden,
+                                       tags=tags, tags_any=tags_any,
+                                       not_tags=not_tags,
+                                       not_tags_any=not_tags_any),
+                         version='1.8')
 
     def count_stacks(self, ctxt, filters=None, tenant_safe=True,
-                     show_deleted=False, show_nested=False):
+                     show_deleted=False, show_nested=False, show_hidden=False,
+                     tags=None, tags_any=None, not_tags=None,
+                     not_tags_any=None):
         """
         Return the number of stacks that match the given filters
         :param ctxt: RPC context.
@@ -125,13 +148,28 @@ class EngineClient(object):
         :param tenant_safe: if true, scope the request by the current tenant
         :param show_deleted: if true, count will include the deleted stacks
         :param show_nested: if true, count will include nested stacks
+        :param show_hidden: if true, count will include hidden stacks
+        :param tags: count stacks containing these tags, combine multiple tags
+            using the boolean AND expression
+        :param tags_any: count stacks containing these tags, combine multiple
+            tags using the boolean OR expression
+        :param not_tags: count stacks not containing these tags, combine
+            multiple tags using the boolean AND expression
+        :param not_tags_any: count stacks not containing these tags, combine
+            multiple tags using the boolean OR expression
         :returns: a integer representing the number of matched stacks
         """
         return self.call(ctxt, self.make_msg('count_stacks',
                                              filters=filters,
                                              tenant_safe=tenant_safe,
                                              show_deleted=show_deleted,
-                                             show_nested=show_nested))
+                                             show_nested=show_nested,
+                                             show_hidden=show_hidden,
+                                             tags=tags,
+                                             tags_any=tags_any,
+                                             not_tags=not_tags,
+                                             not_tags_any=not_tags_any),
+                         version='1.8')
 
     def show_stack(self, ctxt, stack_identity):
         """
@@ -201,7 +239,7 @@ class EngineClient(object):
                                 user_creds_id=user_creds_id,
                                 stack_user_project_id=stack_user_project_id,
                                 parent_resource_name=parent_resource_name),
-            version='1.7')
+            version='1.8')
 
     def update_stack(self, ctxt, stack_identity, template, params,
                      files, args):
@@ -292,6 +330,27 @@ class EngineClient(object):
                                              support_status=support_status),
                          version='1.1')
 
+    def list_template_versions(self, ctxt):
+        """
+        Get a list of available template versions
+
+        :param ctxt: RPC context.
+        """
+        return self.call(ctxt, self.make_msg('list_template_versions'),
+                         version='1.11')
+
+    def list_template_functions(self, ctxt, template_version):
+        """
+        Get a list of available functions in a given template
+
+        :param ctxt: RPC context
+        :param template_name : name of the template which function list you
+                               want to get
+        """
+        return self.call(ctxt, self.make_msg(
+            'list_template_functions', template_version=template_version),
+            version='1.13')
+
     def resource_schema(self, ctxt, type_name):
         """
         Get the schema for a resource type.
@@ -301,15 +360,18 @@ class EngineClient(object):
         return self.call(ctxt, self.make_msg('resource_schema',
                                              type_name=type_name))
 
-    def generate_template(self, ctxt, type_name):
+    def generate_template(self, ctxt, type_name, template_type='cfn'):
         """
         Generate a template based on the specified type.
 
         :param ctxt: RPC context.
         :param type_name: The resource type name to generate a template for.
+        :param template_type: the template type to generate, cfn or hot.
         """
         return self.call(ctxt, self.make_msg('generate_template',
-                                             type_name=type_name))
+                                             type_name=type_name,
+                                             template_type=template_type),
+                         version='1.9')
 
     def list_events(self, ctxt, stack_identity, filters=None, limit=None,
                     marker=None, sort_keys=None, sort_dir=None,):
@@ -373,16 +435,21 @@ class EngineClient(object):
                                              stack_identity=stack_identity,
                                              resource_name=resource_name))
 
-    def list_stack_resources(self, ctxt, stack_identity, nested_depth=0):
+    def list_stack_resources(self, ctxt, stack_identity,
+                             nested_depth=0, with_detail=False):
         """
         List the resources belonging to a stack.
         :param ctxt: RPC context.
         :param stack_identity: Name of the stack.
         :param nested_depth: Levels of nested stacks of which list resources.
+        :param with_detail: show detail for resoruces in list.
         """
-        return self.call(ctxt, self.make_msg('list_stack_resources',
-                                             stack_identity=stack_identity,
-                                             nested_depth=nested_depth))
+        return self.call(ctxt,
+                         self.make_msg('list_stack_resources',
+                                       stack_identity=stack_identity,
+                                       nested_depth=nested_depth,
+                                       with_detail=with_detail),
+                         version='1.12')
 
     def stack_suspend(self, ctxt, stack_identity):
         return self.call(ctxt, self.make_msg('stack_suspend',
@@ -399,15 +466,6 @@ class EngineClient(object):
     def stack_cancel_update(self, ctxt, stack_identity):
         return self.call(ctxt, self.make_msg('stack_cancel_update',
                                              stack_identity=stack_identity))
-
-    def metadata_update(self, ctxt, stack_identity, resource_name, metadata):
-        """
-        Update the metadata for the given resource.
-        """
-        return self.call(ctxt, self.make_msg('metadata_update',
-                                             stack_identity=stack_identity,
-                                             resource_name=resource_name,
-                                             metadata=metadata))
 
     def resource_signal(self, ctxt, stack_identity, resource_name, details,
                         sync_call=False):
@@ -482,6 +540,15 @@ class EngineClient(object):
     def show_software_config(self, cnxt, config_id):
         return self.call(cnxt, self.make_msg('show_software_config',
                                              config_id=config_id))
+
+    def list_software_configs(self, cnxt, limit=None, marker=None,
+                              tenant_safe=True):
+        return self.call(cnxt,
+                         self.make_msg('list_software_configs',
+                                       limit=limit,
+                                       marker=marker,
+                                       tenant_safe=tenant_safe),
+                         version='1.10')
 
     def create_software_config(self, cnxt, group, name, config,
                                inputs=None, outputs=None, options=None):

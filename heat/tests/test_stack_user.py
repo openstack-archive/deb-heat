@@ -17,13 +17,11 @@ import six
 from heat.common import exception
 from heat.common import short_id
 from heat.common import template_format
-from heat.engine import resource
 from heat.engine.resources import stack_user
 from heat.engine import scheduler
 from heat.objects import resource_data as resource_data_object
 from heat.tests import common
 from heat.tests import fakes
-from heat.tests import generic_resource
 from heat.tests import utils
 
 
@@ -40,16 +38,14 @@ class StackUserTest(common.HeatTestCase):
 
     def setUp(self):
         super(StackUserTest, self).setUp()
-        resource._register_class('StackUserResourceType',
-                                 generic_resource.StackUserResource)
         self.fc = fakes.FakeKeystoneClient()
 
     def _user_create(self, stack_name, project_id, user_id,
                      resource_name='user', create_project=True,
                      password=None):
         t = template_format.parse(user_template)
-        stack = utils.parse_stack(t, stack_name=stack_name)
-        rsrc = stack[resource_name]
+        self.stack = utils.parse_stack(t, stack_name=stack_name)
+        rsrc = self.stack[resource_name]
 
         self.m.StubOutWithMock(stack_user.StackUser, 'keystone')
         stack_user.StackUser.keystone().MultipleTimes().AndReturn(self.fc)
@@ -58,9 +54,9 @@ class StackUserTest(common.HeatTestCase):
             self.m.StubOutWithMock(fakes.FakeKeystoneClient,
                                    'create_stack_domain_project')
             fakes.FakeKeystoneClient.create_stack_domain_project(
-                stack.id).AndReturn(project_id)
+                self.stack.id).AndReturn(project_id)
         else:
-            stack.set_stack_user_project_id(project_id)
+            self.stack.set_stack_user_project_id(project_id)
 
         rsrc._store()
         self.m.StubOutWithMock(short_id, 'get_id')

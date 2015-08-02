@@ -26,7 +26,6 @@ from heat.engine import scheduler
 from heat.engine import stack as parser
 from heat.tests.autoscaling import inline_templates
 from heat.tests import common
-from heat.tests import generic_resource
 from heat.tests import utils
 
 
@@ -34,13 +33,20 @@ class TestInstanceGroup(common.HeatTestCase):
     def setUp(self):
         super(TestInstanceGroup, self).setUp()
         t = template_format.parse(inline_templates.as_template)
-        stack = utils.parse_stack(t, params=inline_templates.as_params)
+        self.stack = utils.parse_stack(t, params=inline_templates.as_params)
         self.defn = rsrc_defn.ResourceDefinition(
             'asg', 'OS::Heat::InstanceGroup',
             {'Size': 2, 'AvailabilityZones': ['zoneb'],
              'LaunchConfigurationName': 'config'})
         self.instance_group = instgrp.InstanceGroup('asg',
-                                                    self.defn, stack)
+                                                    self.defn, self.stack)
+
+    def test_update_timeout(self):
+        self.stack.timeout_secs = mock.Mock(return_value=100)
+        # there are 3 batches, so we need 2 pauses by 20 sec
+        # result timeout should be 100 - 2 * 20 = 60
+        self.assertEqual(60, self.instance_group._update_timeout(
+            efft_capacity=9, efft_bat_sz=3, pause_sec=20))
 
     def test_child_template(self):
         self.instance_group._create_template = mock.Mock(return_value='tpl')
@@ -217,7 +223,10 @@ class LoadbalancerReloadTest(common.HeatTestCase):
              'Listeners': [{'InstancePort': u'80',
                             'LoadBalancerPort': u'80',
                             'Protocol': 'HTTP'}],
-             'AvailabilityZones': ['nova']})
+             'AvailabilityZones': ['nova']},
+            metadata={},
+            deletion_policy='Delete'
+        )
 
         group._lb_reload()
         mock_members.assert_called_once_with(group, exclude=[])
@@ -250,7 +259,9 @@ class LoadbalancerReloadTest(common.HeatTestCase):
             'ElasticLoadBalancer',
             'OS::Neutron::LoadBalancer',
             {'protocol_port': 8080,
-             'members': ['aaaa', 'bbb']})
+             'members': ['aaaa', 'bbb']},
+            metadata={},
+            deletion_policy='Delete')
 
         group._lb_reload()
         mock_members.assert_called_once_with(group, exclude=[])
@@ -303,10 +314,13 @@ class LoadbalancerReloadTest(common.HeatTestCase):
                                     u'Listeners': [{u'InstancePort': u'80',
                                                     u'LoadBalancerPort': u'80',
                                                     u'Protocol': u'HTTP'}],
-                                    u'AvailabilityZones': ['abc', 'xyz']}}
+                                    u'AvailabilityZones': ['abc', 'xyz']},
+                    u'DeletionPolicy': 'Delete',
+                    u'Metadata': {}}
 
         stack = utils.parse_stack(t, params=inline_templates.as_params)
         lb = stack['ElasticLoadBalancer']
+        lb.state_set(lb.CREATE, lb.COMPLETE)
         lb.handle_update = mock.Mock(return_value=None)
         group = stack['WebServerGroup']
         group._lb_reload()
@@ -324,17 +338,15 @@ class ReplaceTest(common.HeatTestCase):
 
     def setUp(self):
         super(ReplaceTest, self).setUp()
-        resource._register_class('ResourceWithPropsAndAttrs',
-                                 generic_resource.ResourceWithPropsAndAttrs)
         t = template_format.parse(inline_templates.as_template)
-        stack = utils.parse_stack(t, params=inline_templates.as_params)
-        lc = self.create_launch_config(t, stack)
+        self.stack = utils.parse_stack(t, params=inline_templates.as_params)
+        lc = self.create_launch_config(t, self.stack)
         lcid = lc.FnGetRefId()
         self.defn = rsrc_defn.ResourceDefinition(
             'asg', 'OS::Heat::InstanceGroup',
             {'Size': 2, 'AvailabilityZones': ['zoneb'],
              'LaunchConfigurationName': lcid})
-        self.group = instgrp.InstanceGroup('asg', self.defn, stack)
+        self.group = instgrp.InstanceGroup('asg', self.defn, self.stack)
 
         self.group._lb_reload = mock.Mock()
         self.group.update_with_template = mock.Mock()

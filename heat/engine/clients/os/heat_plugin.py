@@ -21,6 +21,9 @@ class HeatClientPlugin(client_plugin.ClientPlugin):
 
     exceptions_module = exc
 
+    service_types = [ORCHESTRATION,
+                     CLOUDFORMATION] = ['orchestration', 'cloudformation']
+
     def _create(self):
         args = {
             'auth_url': self.context.auth_url,
@@ -60,6 +63,13 @@ class HeatClientPlugin(client_plugin.ClientPlugin):
             heat_url = heat_url % {'tenant_id': tenant_id}
         else:
             endpoint_type = self._get_client_option('heat', 'endpoint_type')
-            heat_url = self.url_for(service_type='orchestration',
+            heat_url = self.url_for(service_type=self.ORCHESTRATION,
                                     endpoint_type=endpoint_type)
         return heat_url
+
+    def get_heat_cfn_url(self):
+        endpoint_type = self._get_client_option('heat',
+                                                'endpoint_type')
+        heat_cfn_url = self.url_for(service_type=self.CLOUDFORMATION,
+                                    endpoint_type=endpoint_type)
+        return heat_cfn_url

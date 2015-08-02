@@ -45,7 +45,6 @@ service_opts = [
                default="",
                help=_('URL of the Heat metadata server.')),
     cfg.StrOpt('heat_waitcondition_server_url',
-               default="",
                help=_('URL of the Heat waitcondition server.')),
     cfg.StrOpt('heat_watch_server_url',
                default="",
@@ -90,7 +89,7 @@ service_opts = [
 
 engine_opts = [
     cfg.StrOpt('instance_user',
-               default='ec2-user',
+               default='',
                help=_("The default user for new instances. This option "
                       "is deprecated and will be removed in the Juno release. "
                       "If it's empty, Heat will use the default user set up "
@@ -115,7 +114,8 @@ engine_opts = [
                        ' delegated to heat when creating a stack.')),
     cfg.IntOpt('max_resources_per_stack',
                default=1000,
-               help=_('Maximum resources allowed per top-level stack.')),
+               help=_('Maximum resources allowed per top-level stack. '
+                      '-1 stands for unlimited.')),
     cfg.IntOpt('max_stacks_per_tenant',
                default=100,
                help=_('Maximum number of stacks any one tenant may have'
@@ -149,7 +149,7 @@ engine_opts = [
                help=_('RPC timeout for the engine liveness check that is used'
                       ' for stack locking.')),
     cfg.BoolOpt('enable_cloud_watch_lite',
-                default=True,
+                default=False,
                 help=_('Enable the legacy OS::Heat::CWLiteAlarm resource.')),
     cfg.BoolOpt('enable_stack_abandon',
                 default=False,
@@ -194,6 +194,11 @@ engine_opts = [
                       'HEAT_SIGNAL will allow calls to the Heat API '
                       'resource-signal using the provided keystone '
                       'credentials')),
+    cfg.ListOpt('hidden_stack_tags',
+                default=[],
+                help=_('Stacks containing these tag names will be hidden. '
+                       'Multiple tags should be given in a comma-delimited '
+                       'list (eg. hidden_stack_tags=hide_me,me_too).')),
     cfg.StrOpt('onready',
                help=_('Deprecated.')),
     cfg.BoolOpt('stack_scheduler_hints',
@@ -211,8 +216,12 @@ engine_opts = [
                        ' set to a list of tuples,'
                        ' (stackresourcename, stackname) with list[0] being'
                        ' (None, rootstackname), and heat_resource_name will'
-                       ' be set to the resource\'s name.'))]
-
+                       ' be set to the resource\'s name.')),
+    cfg.BoolOpt('encrypt_parameters_and_properties',
+                default=False,
+                help=_('Encrypt template parameters that were marked as'
+                       ' hidden and also all the resource properties before'
+                       ' storing them in database.'))]
 
 rpc_opts = [
     cfg.StrOpt('host',
@@ -316,6 +325,13 @@ def startup_sanity_check():
                                     '"stack_user_domain_name" without '
                                     '"stack_domain_admin" and '
                                     '"stack_domain_admin_password"'))
+    auth_key_len = len(cfg.CONF.auth_encryption_key)
+    if auth_key_len in (16, 24):
+        LOG.warn(
+            _LW('Please update auth_encryption_key to be 32 characters.'))
+    elif auth_key_len != 32:
+        raise exception.Error(_('heat.conf misconfigured, auth_encryption_key '
+                                'must be 32 characters'))
 
 
 def list_opts():

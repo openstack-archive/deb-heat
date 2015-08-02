@@ -25,6 +25,7 @@ class CircularDependencyException(exception.HeatException):
     msg_fmt = _("Circular Dependency Found: %(cycle)s")
 
 
+@six.python_2_unicode_compatible
 class Node(object):
     '''A node in a dependency graph.'''
 
@@ -53,9 +54,14 @@ class Node(object):
             self.satisfy.add(source)
         return iter(self.satisfy)
 
-    def requires(self, target):
-        '''Add a key that this node requires.'''
-        self.require.add(target)
+    def requires(self, target=None):
+        '''
+        Add a key that this node requires, and optionally add a
+        new one.
+        '''
+        if target is not None:
+            self.require.add(target)
+        return iter(self.require)
 
     def __isub__(self, target):
         '''Remove a key that this node requires.'''
@@ -65,6 +71,10 @@ class Node(object):
     def __nonzero__(self):
         '''Return True if this node is not a leaf (it requires other nodes).'''
         return bool(self.require)
+
+    def __bool__(self):
+        '''Return True if this node is not a leaf (it requires other nodes).'''
+        return self.__nonzero__()
 
     def stem(self):
         '''Return True if this node is a stem (required by nothing).'''
@@ -85,18 +95,14 @@ class Node(object):
     def __str__(self):
         '''Return a human-readable string representation of the node.'''
         text = '{%s}' % ', '.join(str(n) for n in self)
-        return encodeutils.safe_encode(text)
-
-    def __unicode__(self):
-        '''Return a human-readable string representation of the node.'''
-        text = '{%s}' % ', '.join(six.text_type(n) for n in self)
-        return encodeutils.safe_decode(text)
+        return six.text_type(text)
 
     def __repr__(self):
         '''Return a string representation of the node.'''
         return repr(self.require)
 
 
+@six.python_2_unicode_compatible
 class Graph(collections.defaultdict):
     '''A mutable mapping of objects to nodes in a dependency graph.'''
 
@@ -144,14 +150,7 @@ class Graph(collections.defaultdict):
         '''Convert the graph to a human-readable string.'''
         pairs = ('%s: %s' % (str(k), str(v)) for k, v in six.iteritems(self))
         text = '{%s}' % ', '.join(pairs)
-        return encodeutils.safe_encode(text)
-
-    def __unicode__(self):
-        '''Convert the graph to a human-readable string.'''
-        pairs = ('%s: %s' % (six.text_type(k), six.text_type(v))
-                 for k, v in six.iteritems(self))
-        text = '{%s}' % ', '.join(pairs)
-        return encodeutils.safe_decode(text)
+        return six.text_type(text)
 
     @staticmethod
     def toposort(graph):
@@ -172,6 +171,7 @@ class Graph(collections.defaultdict):
                 raise CircularDependencyException(cycle=six.text_type(graph))
 
 
+@six.python_2_unicode_compatible
 class Dependencies(object):
     '''Helper class for calculating a dependency graph.'''
 
@@ -207,6 +207,15 @@ class Dependencies(object):
 
         return self._graph[last].required_by()
 
+    def requires(self, target):
+        '''
+        List the keys that require the specified node.
+        '''
+        if target not in self._graph:
+            raise KeyError
+
+        return self._graph[target].requires()
+
     def __getitem__(self, last):
         '''
         Return a partial dependency graph consisting of the specified node and
@@ -222,8 +231,8 @@ class Dependencies(object):
                 return itertools.chain([(rqr, key)], get_edges(rqr))
 
             # Get the edge list for each node that requires the current node
-            edge_lists = itertools.imap(requirer_edges,
-                                        self._graph[key].required_by())
+            edge_lists = six.moves.map(requirer_edges,
+                                       self._graph[key].required_by())
             # Combine the lists into one long list
             return itertools.chain.from_iterable(edge_lists)
 
@@ -235,13 +244,33 @@ class Dependencies(object):
 
         return Dependencies(edges)
 
-    def __str__(self):
+    def leaves(self):
         '''
-        Return a human-readable string representation of the dependency graph
+        Return an iterator over all of the leaf nodes in the graph.
         '''
-        return str(self._graph)
+        return (requirer for requirer, required in self._graph.items()
+                if not required)
 
-    def __unicode__(self):
+    def roots(self):
+        '''
+        Return an iterator over all of the root nodes in the graph.
+        '''
+        return (requirer for requirer, required in self.graph(
+            reverse=True).items() if not required)
+
+    def translate(self, transform):
+        '''
+        Translate all of the nodes using a transform function.
+
+        Returns a new Dependencies object.
+        '''
+        def transform_key(key):
+            return transform(key) if key is not None else None
+
+        edges = self._graph.edges()
+        return type(self)(tuple(map(transform_key, e)) for e in edges)
+
+    def __str__(self):
         '''
         Return a human-readable string representation of the dependency graph
         '''

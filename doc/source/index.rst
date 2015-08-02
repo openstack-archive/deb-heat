@@ -16,7 +16,7 @@ Welcome to the Heat developer documentation!
 ==================================================
 Heat is a service to :term:`orchestrate` multiple composite cloud
 applications using the AWS CloudFormation template format, through
-both an OpenStack-native ReST API and a CloudFormation-compatible Query API.
+both an OpenStack-native REST API and a CloudFormation-compatible Query API.
 
 What is the purpose of the project and vision for it?
 =====================================================
@@ -54,6 +54,8 @@ Developers Documentation
    architecture
    pluginguide
    schedulerhints
+   gmr
+   supportstatus
 
 API Documentation
 ========================
@@ -72,9 +74,9 @@ Operations Documentation
 Code Documentation
 ==================
 .. toctree::
-   :maxdepth: 3
+   :maxdepth: 1
 
-   sourcecode/autoindex
+   api/autoindex
 
 Indices and tables
 ==================

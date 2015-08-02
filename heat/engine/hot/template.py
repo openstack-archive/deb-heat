@@ -56,6 +56,14 @@ class HOTemplate20130523(template.Template):
                             cfn_template.CfnTemplate.RESOURCES: RESOURCES,
                             cfn_template.CfnTemplate.OUTPUTS: OUTPUTS}
 
+    _RESOURCE_HOT_TO_CFN_ATTRS = {'type': 'Type',
+                                  'properties': 'Properties',
+                                  'metadata': 'Metadata',
+                                  'depends_on': 'DependsOn',
+                                  'deletion_policy': 'DeletionPolicy',
+                                  'update_policy': 'UpdatePolicy',
+                                  'description': 'Description',
+                                  'value': 'Value'}
     functions = {
         'Fn::GetAZs': cfn_funcs.GetAZs,
         'get_param': hot_funcs.GetParam,
@@ -157,15 +165,15 @@ class HOTemplate20130523(template.Template):
 
     def _translate_resources(self, resources):
         """Get the resources of the template translated into CFN format."""
-        HOT_TO_CFN_ATTRS = {'type': 'Type',
-                            'properties': 'Properties',
-                            'metadata': 'Metadata',
-                            'depends_on': 'DependsOn',
-                            'deletion_policy': 'DeletionPolicy',
-                            'update_policy': 'UpdatePolicy'}
 
         return self._translate_section('resources', 'type', resources,
-                                       HOT_TO_CFN_ATTRS)
+                                       self._RESOURCE_HOT_TO_CFN_ATTRS)
+
+    def get_section_name(self, section):
+        cfn_to_hot_attrs = dict(
+            zip(six.itervalues(self._RESOURCE_HOT_TO_CFN_ATTRS),
+                six.iterkeys(self._RESOURCE_HOT_TO_CFN_ATTRS)))
+        return cfn_to_hot_attrs.get(section, section)
 
     def _translate_outputs(self, outputs):
         """Get the outputs of the template translated into CFN format."""
@@ -306,6 +314,36 @@ class HOTemplate20150430(HOTemplate20141016):
         'str_replace': hot_funcs.Replace,
 
         'Fn::Select': cfn_funcs.Select,
+
+        # functions removed from 20130523
+        'Fn::GetAZs': hot_funcs.Removed,
+        'Fn::Join': hot_funcs.Removed,
+        'Fn::Split': hot_funcs.Removed,
+        'Fn::Replace': hot_funcs.Removed,
+        'Fn::Base64': hot_funcs.Removed,
+        'Fn::MemberListToMap': hot_funcs.Removed,
+        'Fn::ResourceFacade': hot_funcs.Removed,
+        'Ref': hot_funcs.Removed,
+    }
+
+
+class HOTemplate20151015(HOTemplate20150430):
+    functions = {
+        'digest': hot_funcs.Digest,
+        'get_attr': hot_funcs.GetAtt,
+        'get_file': hot_funcs.GetFile,
+        'get_param': hot_funcs.GetParam,
+        'get_resource': cfn_funcs.ResourceRef,
+        'list_join': hot_funcs.JoinMultiple,
+        'repeat': hot_funcs.Repeat,
+        'resource_facade': hot_funcs.ResourceFacade,
+        'str_replace': hot_funcs.Replace,
+
+        # functions added since 20150430
+        'str_split': hot_funcs.StrSplit,
+
+        # functions removed from 20150430
+        'Fn::Select': hot_funcs.Removed,
 
         # functions removed from 20130523
         'Fn::GetAZs': hot_funcs.Removed,

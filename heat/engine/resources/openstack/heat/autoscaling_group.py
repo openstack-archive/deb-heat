@@ -19,6 +19,7 @@ from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.aws.autoscaling import autoscaling_group as aws_asg
 from heat.engine import rsrc_defn
+from heat.engine import support
 
 
 class AutoScalingResourceGroup(aws_asg.AutoScalingGroup):
@@ -81,17 +82,16 @@ class AutoScalingResourceGroup(aws_asg.AutoScalingGroup):
         ROLLING_UPDATES: properties.Schema(
             properties.Schema.MAP,
             _('Policy for rolling updates for this scaling group.'),
-            required=False,
             update_allowed=True,
             schema={
                 MIN_IN_SERVICE: properties.Schema(
-                    properties.Schema.NUMBER,
+                    properties.Schema.INTEGER,
                     _('The minimum number of resources in service while '
                       'rolling updates are being executed.'),
                     constraints=[constraints.Range(min=0)],
                     default=0),
                 MAX_BATCH_SIZE: properties.Schema(
-                    properties.Schema.NUMBER,
+                    properties.Schema.INTEGER,
                     _('The maximum number of resources to replace at once.'),
                     constraints=[constraints.Range(min=0)],
                     default=1),
@@ -114,15 +114,24 @@ class AutoScalingResourceGroup(aws_asg.AutoScalingGroup):
     attributes_schema = {
         OUTPUTS: attributes.Schema(
             _("A map of resource names to the specified attribute of each "
-              "individual resource.")
+              "individual resource. "
+              "Requires heat_template_version: 2014-10-16 or higher."),
+            support_status=support.SupportStatus(version='2014.2'),
+            type=attributes.Schema.MAP
         ),
         OUTPUTS_LIST: attributes.Schema(
-            _("A list of the specified attribute of each individual resource.")
+            _("A list of the specified attribute of each individual resource. "
+              "Requires heat_template_version: 2014-10-16 or higher."),
+            support_status=support.SupportStatus(version='2014.2'),
+            type=attributes.Schema.LIST
         ),
         CURRENT_SIZE: attributes.Schema(
-            _("The current size of AutoscalingResourceGroup.")
+            _("The current size of AutoscalingResourceGroup."),
+            support_status=support.SupportStatus(version='2015.1'),
+            type=attributes.Schema.INTEGER
         ),
     }
+    update_policy_schema = {}
 
     def _get_instance_definition(self):
         rsrc = self.properties[self.RESOURCE]

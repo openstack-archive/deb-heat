@@ -115,6 +115,11 @@ class EngineRpcAPITestCase(common.HeatTestCase):
             'tenant_safe': mock.ANY,
             'show_deleted': mock.ANY,
             'show_nested': mock.ANY,
+            'show_hidden': mock.ANY,
+            'tags': mock.ANY,
+            'tags_any': mock.ANY,
+            'not_tags': mock.ANY,
+            'not_tags_any': mock.ANY,
         }
         self._test_engine_api('list_stacks', 'call', **default_args)
 
@@ -124,6 +129,11 @@ class EngineRpcAPITestCase(common.HeatTestCase):
             'tenant_safe': mock.ANY,
             'show_deleted': mock.ANY,
             'show_nested': mock.ANY,
+            'show_hidden': mock.ANY,
+            'tags': mock.ANY,
+            'tags_any': mock.ANY,
+            'not_tags': mock.ANY,
+            'not_tags_any': mock.ANY,
         }
         self._test_engine_api('count_stacks', 'call', **default_args)
 
@@ -190,7 +200,8 @@ class EngineRpcAPITestCase(common.HeatTestCase):
         self._test_engine_api('resource_schema', 'call', type_name="TYPE")
 
     def test_generate_template(self):
-        self._test_engine_api('generate_template', 'call', type_name="TYPE")
+        self._test_engine_api('generate_template', 'call',
+                              type_name="TYPE", template_type='cfn')
 
     def test_list_events(self):
         kwargs = {'stack_identity': self.identity,
@@ -219,7 +230,8 @@ class EngineRpcAPITestCase(common.HeatTestCase):
     def test_list_stack_resources(self):
         self._test_engine_api('list_stack_resources', 'call',
                               stack_identity=self.identity,
-                              nested_depth=0)
+                              nested_depth=0,
+                              with_detail=False)
 
     def test_stack_suspend(self):
         self._test_engine_api('stack_suspend', 'call',
@@ -232,12 +244,6 @@ class EngineRpcAPITestCase(common.HeatTestCase):
     def test_stack_cancel_update(self):
         self._test_engine_api('stack_cancel_update', 'call',
                               stack_identity=self.identity)
-
-    def test_metadata_update(self):
-        self._test_engine_api('metadata_update', 'call',
-                              stack_identity=self.identity,
-                              resource_name='LogicalResourceId',
-                              metadata={u'wordpress': []})
 
     def test_resource_signal(self):
         self._test_engine_api('resource_signal', 'call',
@@ -262,6 +268,11 @@ class EngineRpcAPITestCase(common.HeatTestCase):
     def test_set_watch_state(self):
         self._test_engine_api('set_watch_state', 'call',
                               watch_name='watch1', state="xyz")
+
+    def test_list_software_configs(self):
+        self._test_engine_api('list_software_configs', 'call',
+                              limit=mock.ANY, marker=mock.ANY,
+                              tenant_safe=mock.ANY)
 
     def test_show_software_config(self):
         self._test_engine_api('show_software_config', 'call',

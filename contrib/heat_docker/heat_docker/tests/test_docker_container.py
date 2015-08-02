@@ -19,6 +19,7 @@ from oslo_utils import importutils
 import six
 
 from heat.common import exception
+from heat.common.i18n import _
 from heat.common import template_format
 from heat.engine import resource
 from heat.engine import rsrc_defn
@@ -64,10 +65,11 @@ class DockerContainerTest(common.HeatTestCase):
 
     def create_container(self, resource_name):
         t = template_format.parse(template)
-        stack = utils.parse_stack(t)
+        self.stack = utils.parse_stack(t)
         resource = docker_container.DockerContainer(
             resource_name,
-            stack.t.resource_definitions(stack)[resource_name], stack)
+            self.stack.t.resource_definitions(self.stack)[resource_name],
+            self.stack)
         self.m.StubOutWithMock(resource, 'get_client')
         resource.get_client().MultipleTimes().AndReturn(
             fakeclient.FakeDockerClient())
@@ -93,11 +95,11 @@ class DockerContainerTest(common.HeatTestCase):
 
     def test_create_with_name(self):
         t = template_format.parse(template)
-        stack = utils.parse_stack(t)
-        definition = stack.t.resource_definitions(stack)['Blog']
+        self.stack = utils.parse_stack(t)
+        definition = self.stack.t.resource_definitions(self.stack)['Blog']
         definition['Properties']['name'] = 'super-blog'
         resource = docker_container.DockerContainer(
-            'Blog', definition, stack)
+            'Blog', definition, self.stack)
         self.m.StubOutWithMock(resource, 'get_client')
         resource.get_client().MultipleTimes().AndReturn(
             fakeclient.FakeDockerClient())
@@ -132,13 +134,13 @@ class DockerContainerTest(common.HeatTestCase):
 
     def test_start_with_bindings_and_links(self):
         t = template_format.parse(template)
-        stack = utils.parse_stack(t)
-        definition = stack.t.resource_definitions(stack)['Blog']
+        self.stack = utils.parse_stack(t)
+        definition = self.stack.t.resource_definitions(self.stack)['Blog']
         definition['Properties']['port_bindings'] = {
             '80/tcp': [{'HostPort': '80'}]}
         definition['Properties']['links'] = {'db': 'mysql'}
         resource = docker_container.DockerContainer(
-            'Blog', definition, stack)
+            'Blog', definition, self.stack)
         self.m.StubOutWithMock(resource, 'get_client')
         resource.get_client().MultipleTimes().AndReturn(
             fakeclient.FakeDockerClient())
@@ -222,12 +224,12 @@ class DockerContainerTest(common.HeatTestCase):
 
     def test_start_with_restart_policy_no(self):
         t = template_format.parse(template)
-        stack = utils.parse_stack(t)
-        definition = stack.t.resource_definitions(stack)['Blog']
+        self.stack = utils.parse_stack(t)
+        definition = self.stack.t.resource_definitions(self.stack)['Blog']
         definition['Properties']['restart_policy'] = {
             'Name': 'no', 'MaximumRetryCount': 0}
         resource = docker_container.DockerContainer(
-            'Blog', definition, stack)
+            'Blog', definition, self.stack)
         get_client_mock = self.patchobject(resource, 'get_client')
         get_client_mock.return_value = fakeclient.FakeDockerClient()
         self.assertIsNone(resource.validate())
@@ -241,12 +243,12 @@ class DockerContainerTest(common.HeatTestCase):
 
     def test_start_with_restart_policy_on_failure(self):
         t = template_format.parse(template)
-        stack = utils.parse_stack(t)
-        definition = stack.t.resource_definitions(stack)['Blog']
+        self.stack = utils.parse_stack(t)
+        definition = self.stack.t.resource_definitions(self.stack)['Blog']
         definition['Properties']['restart_policy'] = {
             'Name': 'on-failure', 'MaximumRetryCount': 10}
         resource = docker_container.DockerContainer(
-            'Blog', definition, stack)
+            'Blog', definition, self.stack)
         get_client_mock = self.patchobject(resource, 'get_client')
         get_client_mock.return_value = fakeclient.FakeDockerClient()
         self.assertIsNone(resource.validate())
@@ -260,12 +262,12 @@ class DockerContainerTest(common.HeatTestCase):
 
     def test_start_with_restart_policy_always(self):
         t = template_format.parse(template)
-        stack = utils.parse_stack(t)
-        definition = stack.t.resource_definitions(stack)['Blog']
+        self.stack = utils.parse_stack(t)
+        definition = self.stack.t.resource_definitions(self.stack)['Blog']
         definition['Properties']['restart_policy'] = {
             'Name': 'always', 'MaximumRetryCount': 0}
         resource = docker_container.DockerContainer(
-            'Blog', definition, stack)
+            'Blog', definition, self.stack)
         get_client_mock = self.patchobject(resource, 'get_client')
         get_client_mock.return_value = fakeclient.FakeDockerClient()
         self.assertIsNone(resource.validate())
@@ -279,12 +281,12 @@ class DockerContainerTest(common.HeatTestCase):
 
     def test_start_with_caps(self):
         t = template_format.parse(template)
-        stack = utils.parse_stack(t)
-        definition = stack.t.resource_definitions(stack)['Blog']
+        self.stack = utils.parse_stack(t)
+        definition = self.stack.t.resource_definitions(self.stack)['Blog']
         definition['Properties']['cap_add'] = ['NET_ADMIN']
         definition['Properties']['cap_drop'] = ['MKNOD']
         resource = docker_container.DockerContainer(
-            'Blog', definition, stack)
+            'Blog', definition, self.stack)
         get_client_mock = self.patchobject(resource, 'get_client')
         get_client_mock.return_value = fakeclient.FakeDockerClient()
         self.assertIsNone(resource.validate())
@@ -298,11 +300,11 @@ class DockerContainerTest(common.HeatTestCase):
 
     def test_start_with_read_only(self):
         t = template_format.parse(template)
-        stack = utils.parse_stack(t)
-        definition = stack.t.resource_definitions(stack)['Blog']
+        self.stack = utils.parse_stack(t)
+        definition = self.stack.t.resource_definitions(self.stack)['Blog']
         definition['Properties']['read_only'] = True
         resource = docker_container.DockerContainer(
-            'Blog', definition, stack)
+            'Blog', definition, self.stack)
         get_client_mock = self.patchobject(resource, 'get_client')
         get_client_mock.return_value = fakeclient.FakeDockerClient()
         get_client_mock.return_value.set_api_version('1.17')
@@ -314,24 +316,141 @@ class DockerContainerTest(common.HeatTestCase):
         self.assertEqual(['samalba/wordpress'], client.pulled_images)
         self.assertIs(True, client.container_start[0]['read_only'])
 
-    def test_start_with_read_only_for_low_api_version(self):
+    def arg_for_low_api_version(self, arg, value, low_version):
         t = template_format.parse(template)
-        stack = utils.parse_stack(t)
-        definition = stack.t.resource_definitions(stack)['Blog']
-        definition['Properties']['read_only'] = True
+        self.stack = utils.parse_stack(t)
+        definition = self.stack.t.resource_definitions(self.stack)['Blog']
+        definition['Properties'][arg] = value
         my_resource = docker_container.DockerContainer(
-            'Blog', definition, stack)
+            'Blog', definition, self.stack)
         get_client_mock = self.patchobject(my_resource, 'get_client')
         get_client_mock.return_value = fakeclient.FakeDockerClient()
-        get_client_mock.return_value.set_api_version('1.16')
-        self.assertIsNone(my_resource.validate())
-        msg = self.assertRaises(exception.ResourceFailure,
-                                scheduler.TaskRunner(my_resource.create))
-        expected = ('InvalidArgForVersion: "read_only" is not supported '
-                    'for API version < "1.17"')
+        get_client_mock.return_value.set_api_version(low_version)
+        msg = self.assertRaises(docker_container.InvalidArgForVersion,
+                                my_resource.validate)
+        min_version = docker_container.MIN_API_VERSION_MAP[arg]
+        args = dict(arg=arg, min_version=min_version)
+        expected = _('"%(arg)s" is not supported for API version '
+                     '< "%(min_version)s"') % args
         self.assertEqual(expected, six.text_type(msg))
+
+    def test_start_with_read_only_for_low_api_version(self):
+        self.arg_for_low_api_version('read_only', True, '1.16')
 
     def test_compare_version(self):
         self.assertEqual(docker_container.compare_version('1.17', '1.17'), 0)
         self.assertEqual(docker_container.compare_version('1.17', '1.16'), -1)
         self.assertEqual(docker_container.compare_version('1.17', '1.18'), 1)
+
+    def test_create_with_cpu_shares(self):
+        t = template_format.parse(template)
+        self.stack = utils.parse_stack(t)
+        definition = self.stack.t.resource_definitions(self.stack)['Blog']
+        definition['Properties']['cpu_shares'] = 512
+        my_resource = docker_container.DockerContainer(
+            'Blog', definition, self.stack)
+        get_client_mock = self.patchobject(my_resource, 'get_client')
+        get_client_mock.return_value = fakeclient.FakeDockerClient()
+        self.assertIsNone(my_resource.validate())
+        scheduler.TaskRunner(my_resource.create)()
+        self.assertEqual((my_resource.CREATE, my_resource.COMPLETE),
+                         my_resource.state)
+        client = my_resource.get_client()
+        self.assertEqual(['samalba/wordpress'], client.pulled_images)
+        self.assertEqual(512, client.container_create[0]['cpu_shares'])
+
+    def test_create_with_cpu_shares_for_low_api_version(self):
+        self.arg_for_low_api_version('cpu_shares', 512, '1.7')
+
+    def test_start_with_mapping_devices(self):
+        t = template_format.parse(template)
+        self.stack = utils.parse_stack(t)
+        definition = self.stack.t.resource_definitions(self.stack)['Blog']
+        definition['Properties']['devices'] = (
+            [{'path_on_host': '/dev/sda',
+              'path_in_container': '/dev/xvdc',
+              'permissions': 'r'},
+             {'path_on_host': '/dev/mapper/a_bc-d',
+              'path_in_container': '/dev/xvdd',
+              'permissions': 'rw'}])
+        my_resource = docker_container.DockerContainer(
+            'Blog', definition, self.stack)
+        get_client_mock = self.patchobject(my_resource, 'get_client')
+        get_client_mock.return_value = fakeclient.FakeDockerClient()
+        self.assertIsNone(my_resource.validate())
+        scheduler.TaskRunner(my_resource.create)()
+        self.assertEqual((my_resource.CREATE, my_resource.COMPLETE),
+                         my_resource.state)
+        client = my_resource.get_client()
+        self.assertEqual(['samalba/wordpress'], client.pulled_images)
+        self.assertEqual(['/dev/sda:/dev/xvdc:r',
+                          '/dev/mapper/a_bc-d:/dev/xvdd:rw'],
+                         client.container_start[0]['devices'])
+
+    def test_start_with_mapping_devices_also_with_privileged(self):
+        t = template_format.parse(template)
+        self.stack = utils.parse_stack(t)
+        definition = self.stack.t.resource_definitions(self.stack)['Blog']
+        definition['Properties']['devices'] = (
+            [{'path_on_host': '/dev/sdb',
+              'path_in_container': '/dev/xvdc',
+              'permissions': 'r'}])
+        definition['Properties']['privileged'] = True
+        my_resource = docker_container.DockerContainer(
+            'Blog', definition, self.stack)
+        get_client_mock = self.patchobject(my_resource, 'get_client')
+        get_client_mock.return_value = fakeclient.FakeDockerClient()
+        self.assertIsNone(my_resource.validate())
+        scheduler.TaskRunner(my_resource.create)()
+        self.assertEqual((my_resource.CREATE, my_resource.COMPLETE),
+                         my_resource.state)
+        client = my_resource.get_client()
+        self.assertEqual(['samalba/wordpress'], client.pulled_images)
+        self.assertNotIn('devices', client.container_start[0])
+
+    def test_start_with_mapping_devices_for_low_api_version(self):
+        value = ([{'path_on_host': '/dev/sda',
+                   'path_in_container': '/dev/xvdc',
+                   'permissions': 'rwm'}])
+        self.arg_for_low_api_version('devices', value, '1.13')
+
+    def test_start_with_mapping_devices_not_set_path_in_container(self):
+        t = template_format.parse(template)
+        self.stack = utils.parse_stack(t)
+        definition = self.stack.t.resource_definitions(self.stack)['Blog']
+        definition['Properties']['devices'] = (
+            [{'path_on_host': '/dev/sda',
+              'permissions': 'rwm'}])
+        my_resource = docker_container.DockerContainer(
+            'Blog', definition, self.stack)
+        get_client_mock = self.patchobject(my_resource, 'get_client')
+        get_client_mock.return_value = fakeclient.FakeDockerClient()
+        self.assertIsNone(my_resource.validate())
+        scheduler.TaskRunner(my_resource.create)()
+        self.assertEqual((my_resource.CREATE, my_resource.COMPLETE),
+                         my_resource.state)
+        client = my_resource.get_client()
+        self.assertEqual(['samalba/wordpress'], client.pulled_images)
+        self.assertEqual(['/dev/sda:/dev/sda:rwm'],
+                         client.container_start[0]['devices'])
+
+    def test_create_with_cpu_set(self):
+        t = template_format.parse(template)
+        self.stack = utils.parse_stack(t)
+        definition = self.stack.t.resource_definitions(self.stack)['Blog']
+        definition['Properties']['cpu_set'] = '0-8,16-24,28'
+        my_resource = docker_container.DockerContainer(
+            'Blog', definition, self.stack)
+        get_client_mock = self.patchobject(my_resource, 'get_client')
+        get_client_mock.return_value = fakeclient.FakeDockerClient()
+        self.assertIsNone(my_resource.validate())
+        scheduler.TaskRunner(my_resource.create)()
+        self.assertEqual((my_resource.CREATE, my_resource.COMPLETE),
+                         my_resource.state)
+        client = my_resource.get_client()
+        self.assertEqual(['samalba/wordpress'], client.pulled_images)
+        self.assertEqual('0-8,16-24,28',
+                         client.container_create[0]['cpuset'])
+
+    def test_create_with_cpu_set_for_low_api_version(self):
+        self.arg_for_low_api_version('cpu_set', '0-8,^2', '1.11')

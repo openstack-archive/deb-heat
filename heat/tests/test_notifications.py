@@ -35,7 +35,7 @@ class StackTest(common.HeatTestCase):
         st.status_reason = 'this is why'
         st.created_time = created_time
         st.context = self.ctx
-        st.identifier.return_value.arn.return_value = 'hay-are-en'
+        st.id = 'hay-are-en'
 
         notify = self.patchobject(notification, 'notify')
 
@@ -47,7 +47,7 @@ class StackTest(common.HeatTestCase):
              'stack_identity': 'hay-are-en',
              'stack_name': 'fred',
              'tenant_id': 'test_tenant_id',
-             'create_at': timeutils.isotime(created_time),
+             'create_at': created_time.isoformat(),
              'state': 'x_f'})
 
 
@@ -66,7 +66,7 @@ class AutoScaleTest(common.HeatTestCase):
         st.status_reason = 'this is why'
         st.created_time = created_time
         st.context = self.ctx
-        st.identifier.return_value.arn.return_value = 'hay-are-en'
+        st.id = 'hay-are-en'
 
         notify = self.patchobject(notification, 'notify')
 
@@ -83,7 +83,7 @@ class AutoScaleTest(common.HeatTestCase):
              'stack_identity': 'hay-are-en',
              'stack_name': 'fred',
              'tenant_id': 'test_tenant_id',
-             'create_at': timeutils.isotime(created_time),
+             'create_at': created_time.isoformat(),
              'state': 'x_f', 'adjustment_type': 'y',
              'groupname': 'c', 'capacity': '5',
              'message': 'fred', 'adjustment': 'x'})
@@ -98,7 +98,7 @@ class AutoScaleTest(common.HeatTestCase):
         st.status_reason = 'this is why'
         st.created_time = created_time
         st.context = self.ctx
-        st.identifier.return_value.arn.return_value = 'hay-are-en'
+        st.id = 'hay-are-en'
 
         notify = self.patchobject(notification, 'notify')
 
@@ -114,7 +114,7 @@ class AutoScaleTest(common.HeatTestCase):
              'stack_identity': 'hay-are-en',
              'stack_name': 'fred',
              'tenant_id': 'test_tenant_id',
-             'create_at': timeutils.isotime(created_time),
+             'create_at': created_time.isoformat(),
              'state': 'x_f', 'adjustment_type': 'y',
              'groupname': 'c', 'capacity': '5',
              'message': 'error', 'adjustment': 'x'})

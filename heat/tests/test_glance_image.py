@@ -17,9 +17,9 @@ import six
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import parser
-from heat.engine import resource
 from heat.engine.resources.openstack.glance import glance_image as gi
+from heat.engine import stack as parser
+from heat.engine import template
 from heat.tests import common
 from heat.tests import utils
 
@@ -62,13 +62,10 @@ class GlanceImageTest(common.HeatTestCase):
         utils.setup_dummy_db()
         self.ctx = utils.dummy_context()
 
-        # For unit testing purpose. Register resource provider
-        # explicitly.
-        resource._register_class("OS::Glance::Image", gi.GlanceImage)
         tpl = template_format.parse(image_template)
         self.stack = parser.Stack(
             self.ctx, 'glance_image_test_stack',
-            parser.Template(tpl)
+            template.Template(tpl)
         )
 
         self.my_image = self.stack['my_image']
@@ -94,11 +91,12 @@ class GlanceImageTest(common.HeatTestCase):
         tpl = template_format.parse(image_template_validate)
         stack = parser.Stack(
             self.ctx, 'glance_image_stack_validate',
-            parser.Template(tpl)
+            template.Template(tpl)
         )
         image = stack['image']
         image.t['Properties']['min_disk'] = -1
-        error_msg = 'min_disk -1 is out of range (min: 0, max: None)'
+        error_msg = ('Property error: resources.image.properties.min_disk: '
+                     '-1 is out of range (min: 0, max: None)')
         self._test_validate(image, error_msg)
 
     def test_invalid_min_ram(self):
@@ -106,11 +104,12 @@ class GlanceImageTest(common.HeatTestCase):
         tpl = template_format.parse(image_template_validate)
         stack = parser.Stack(
             self.ctx, 'glance_image_stack_validate',
-            parser.Template(tpl)
+            template.Template(tpl)
         )
         image = stack['image']
         image.t['Properties']['min_ram'] = -1
-        error_msg = 'min_ram -1 is out of range (min: 0, max: None)'
+        error_msg = ('Property error: resources.image.properties.min_ram: '
+                     '-1 is out of range (min: 0, max: None)')
         self._test_validate(image, error_msg)
 
     def test_miss_disk_format(self):
@@ -118,7 +117,7 @@ class GlanceImageTest(common.HeatTestCase):
         tpl = template_format.parse(image_template_validate)
         stack = parser.Stack(
             self.ctx, 'glance_image_stack_validate',
-            parser.Template(tpl)
+            template.Template(tpl)
         )
         image = stack['image']
         image.t['Properties'].pop('disk_format')
@@ -130,11 +129,13 @@ class GlanceImageTest(common.HeatTestCase):
         tpl = template_format.parse(image_template_validate)
         stack = parser.Stack(
             self.ctx, 'glance_image_stack_validate',
-            parser.Template(tpl)
+            template.Template(tpl)
         )
         image = stack['image']
         image.t['Properties']['disk_format'] = 'incorrect_format'
-        error_msg = ('disk_format "incorrect_format" is not an allowed value '
+        error_msg = ('Property error: '
+                     'resources.image.properties.disk_format: '
+                     '"incorrect_format" is not an allowed value '
                      '[ami, ari, aki, vhd, vmdk, raw, qcow2, vdi, iso]')
         self._test_validate(image, error_msg)
 
@@ -143,7 +144,7 @@ class GlanceImageTest(common.HeatTestCase):
         tpl = template_format.parse(image_template_validate)
         stack = parser.Stack(
             self.ctx, 'glance_image_stack_validate',
-            parser.Template(tpl)
+            template.Template(tpl)
         )
         image = stack['image']
         image.t['Properties'].pop('container_format')
@@ -155,12 +156,14 @@ class GlanceImageTest(common.HeatTestCase):
         tpl = template_format.parse(image_template_validate)
         stack = parser.Stack(
             self.ctx, 'glance_image_stack_validate',
-            parser.Template(tpl)
+            template.Template(tpl)
         )
         image = stack['image']
         image.t['Properties']['container_format'] = 'incorrect_format'
-        error_msg = ('container_format "incorrect_format" is not an '
-                     'allowed value [ami, ari, aki, bare, ova, ovf]')
+        error_msg = ('Property error: '
+                     'resources.image.properties.container_format: '
+                     '"incorrect_format" is not an allowed value '
+                     '[ami, ari, aki, bare, ova, ovf]')
         self._test_validate(image, error_msg)
 
     def test_miss_location(self):
@@ -168,7 +171,7 @@ class GlanceImageTest(common.HeatTestCase):
         tpl = template_format.parse(image_template_validate)
         stack = parser.Stack(
             self.ctx, 'glance_image_stack_validate',
-            parser.Template(tpl)
+            template.Template(tpl)
         )
         image = stack['image']
         image.t['Properties'].pop('location')

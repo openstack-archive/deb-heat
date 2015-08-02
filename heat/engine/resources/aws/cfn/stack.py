@@ -42,7 +42,7 @@ class NestedStack(stack_resource.StackResource):
             update_allowed=True
         ),
         TIMEOUT_IN_MINS: properties.Schema(
-            properties.Schema.NUMBER,
+            properties.Schema.INTEGER,
             _('The length of time, in minutes, to wait for the nested stack '
               'creation.'),
             update_allowed=True
@@ -80,9 +80,6 @@ class NestedStack(stack_resource.StackResource):
                                          self.child_params(),
                                          self.properties[self.TIMEOUT_IN_MINS],
                                          adopt_data=resource_adopt_data)
-
-    def handle_delete(self):
-        return self.delete_nested()
 
     def FnGetAtt(self, key, *path):
         if key and not key.startswith('Outputs.'):

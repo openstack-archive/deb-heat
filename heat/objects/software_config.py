@@ -29,7 +29,7 @@ class SoftwareConfig(base.VersionedObject,
                      base.VersionedObjectDictCompat,
                      base.ComparableVersionedObject):
     fields = {
-        'id': fields.StringField(nullable=False),
+        'id': fields.StringField(),
         'name': fields.StringField(nullable=True),
         'group': fields.StringField(nullable=True),
         'tenant': fields.StringField(nullable=True),
@@ -55,6 +55,11 @@ class SoftwareConfig(base.VersionedObject,
     def get_by_id(cls, context, config_id):
         return cls._from_db_object(
             context, cls(), db_api.software_config_get(context, config_id))
+
+    @classmethod
+    def get_all(cls, context, **kwargs):
+        scs = db_api.software_config_get_all(context, **kwargs)
+        return [cls._from_db_object(context, cls(), sc) for sc in scs]
 
     @classmethod
     def delete(cls, context, config_id):

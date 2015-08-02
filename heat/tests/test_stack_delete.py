@@ -12,6 +12,8 @@
 #    under the License.
 
 import copy
+import fixtures
+import logging
 import time
 
 from keystoneclient import exceptions as kc_exceptions
@@ -20,8 +22,8 @@ import mock
 from heat.common import exception
 from heat.common import heat_keystoneclient as hkc
 from heat.common import template_format
+from heat.common import timeutils
 from heat.engine.clients.os import keystone
-from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import stack
 from heat.engine import template
@@ -44,8 +46,6 @@ class StackTest(common.HeatTestCase):
 
         self.tmpl = template.Template(copy.deepcopy(empty_template))
         self.ctx = utils.dummy_context()
-        resource._register_class('GenericResourceType',
-                                 generic_rsrc.GenericResource)
 
     def test_delete(self):
         self.stack = stack.Stack(self.ctx, 'delete_test', self.tmpl)
@@ -380,7 +380,7 @@ class StackTest(common.HeatTestCase):
         start_time = time.time()
         mock_tg = self.patchobject(scheduler.DependencyTaskGroup, '__call__',
                                    return_value=dummy_task())
-        mock_wallclock = self.patchobject(scheduler, 'wallclock')
+        mock_wallclock = self.patchobject(timeutils, 'wallclock')
         mock_wallclock.side_effect = [
             start_time,
             start_time + 1,
@@ -415,11 +415,29 @@ class StackTest(common.HeatTestCase):
 
         self.stack.delete()
 
-        mock_rd.assert_called_once()
+        mock_rd.assert_called_once_with()
         self.assertEqual((self.stack.DELETE, self.stack.FAILED),
                          self.stack.state)
-        self.assertEqual('Resource DELETE failed: Exception: foo',
+        self.assertEqual('Resource DELETE failed: Exception: '
+                         'resources.AResource: foo',
                          self.stack.status_reason)
+
+    def test_delete_stack_with_resource_log_is_clear(self):
+        debug_logger = self.useFixture(
+            fixtures.FakeLogger(level=logging.DEBUG,
+                                format="%(levelname)8s [%(name)s] %("
+                                       "message)s"))
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Resources': {'AResource': {'Type': 'GenericResourceType'}}}
+        self.stack = stack.Stack(self.ctx, 'delete_log_test',
+                                 template.Template(tmpl))
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
+                         self.stack.state)
+        self.stack.delete()
+        self.assertNotIn("destroy from None running",
+                         debug_logger.output)
 
     def test_stack_user_project_id_delete_fail(self):
 

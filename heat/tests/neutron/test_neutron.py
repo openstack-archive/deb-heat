@@ -107,8 +107,13 @@ class NeutronTest(common.HeatTestCase):
         class SomeNeutronResource(nr.NeutronResource):
             properties_schema = {}
 
+            @classmethod
+            def is_service_available(cls, context):
+                return True
+
         tmpl = rsrc_defn.ResourceDefinition('test_res', 'Foo')
         stack = mock.MagicMock()
+        stack.has_cache_data = mock.Mock(return_value=False)
         res = SomeNeutronResource('aresource', tmpl, stack)
 
         mock_show_resource = mock.MagicMock()

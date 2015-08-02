@@ -102,23 +102,48 @@ resource_registry:
         This tests that if you manually delete a nested
         stack, the parent stack is still deletable.
         """
-        name = self._stack_rand_name()
-        # do this manually so we can call _stack_delete() directly.
-        self.client.stacks.create(
-            stack_name=name,
+        # disable cleanup so we can call _stack_delete() directly.
+        stack_identifier = self.stack_create(
             template=self.template,
             files={'nested.yaml': self.nested_templ},
             environment=self.env_templ,
-            disable_rollback=True)
-        stack = self.client.stacks.get(name)
-        stack_identifier = '%s/%s' % (name, stack.id)
-        self._wait_for_stack_status(stack_identifier, 'CREATE_COMPLETE')
+            enable_cleanup=False)
 
         nested_ident = self.assert_resource_is_a_stack(stack_identifier,
                                                        'secret1')
 
         self._stack_delete(nested_ident)
         self._stack_delete(stack_identifier)
+
+    def test_change_in_file_path(self):
+        stack_identifier = self.stack_create(
+            template=self.template,
+            files={'nested.yaml': self.nested_templ},
+            environment=self.env_templ)
+        stack = self.client.stacks.get(stack_identifier)
+        secret_out1 = self._stack_output(stack, 'secret-out')
+
+        nested_templ_2 = '''
+heat_template_version: 2013-05-23
+resources:
+  secret2:
+    type: OS::Heat::RandomString
+outputs:
+  value:
+    value: freddy
+'''
+        env_templ_2 = '''
+resource_registry:
+  "OS::Heat::RandomString": new/nested.yaml
+'''
+        self.update_stack(stack_identifier,
+                          template=self.template,
+                          files={'new/nested.yaml': nested_templ_2},
+                          environment=env_templ_2)
+        stack = self.client.stacks.get(stack_identifier)
+        secret_out2 = self._stack_output(stack, 'secret-out')
+        self.assertNotEqual(secret_out1, secret_out2)
+        self.assertEqual('freddy', secret_out2)
 
 
 class NestedAttributesTest(test.HeatIntegrationTest):
@@ -155,6 +180,9 @@ heat_template_version: 2014-10-16
 resources:
   secret1:
     type: OS::Heat::RandomString
+outputs:
+  nested_str:
+    value: {get_attr: [secret1, value]}
 '''
         stack_identifier = self.stack_create(
             template=self.main_templ,
@@ -226,6 +254,22 @@ Resources:
     Type: the.yaml
     Properties:
       one: my_name
+      two: your_name
+Outputs:
+  identifier:
+    Value: {Ref: the_nested}
+  value:
+    Value: {'Fn::GetAtt': [the_nested, the_str]}
+'''
+
+    main_template_change_prop = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Resources:
+  the_nested:
+    Type: the.yaml
+    Properties:
+      one: updated_name
+      two: your_name
 
 Outputs:
   identifier:
@@ -234,13 +278,30 @@ Outputs:
     Value: {'Fn::GetAtt': [the_nested, the_str]}
 '''
 
-    main_template_2 = '''
+    main_template_add_prop = '''
 HeatTemplateFormatVersion: '2012-12-12'
 Resources:
   the_nested:
     Type: the.yaml
     Properties:
-      one: updated_name
+      one: my_name
+      two: your_name
+      three: third_name
+
+Outputs:
+  identifier:
+    Value: {Ref: the_nested}
+  value:
+    Value: {'Fn::GetAtt': [the_nested, the_str]}
+'''
+
+    main_template_remove_prop = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Resources:
+  the_nested:
+    Type: the.yaml
+    Properties:
+      one: my_name
 
 Outputs:
   identifier:
@@ -255,6 +316,10 @@ Parameters:
   one:
     Default: foo
     Type: String
+  two:
+    Default: bar
+    Type: String
+
 Resources:
   NestedResource:
     Type: OS::Heat::RandomString
@@ -264,6 +329,7 @@ Outputs:
   the_str:
     Value: {'Fn::GetAtt': [NestedResource, value]}
 '''
+
     prop_change_tmpl = '''
 HeatTemplateFormatVersion: '2012-12-12'
 Parameters:
@@ -277,17 +343,62 @@ Resources:
   NestedResource:
     Type: OS::Heat::RandomString
     Properties:
+      salt: {Ref: two}
+Outputs:
+  the_str:
+    Value: {'Fn::GetAtt': [NestedResource, value]}
+'''
+
+    prop_add_tmpl = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Parameters:
+  one:
+    Default: yikes
+    Type: String
+  two:
+    Default: foo
+    Type: String
+  three:
+    Default: bar
+    Type: String
+
+Resources:
+  NestedResource:
+    Type: OS::Heat::RandomString
+    Properties:
+      salt: {Ref: three}
+Outputs:
+  the_str:
+    Value: {'Fn::GetAtt': [NestedResource, value]}
+'''
+
+    prop_remove_tmpl = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Parameters:
+  one:
+    Default: yikes
+    Type: String
+
+Resources:
+  NestedResource:
+    Type: OS::Heat::RandomString
+    Properties:
       salt: {Ref: one}
 Outputs:
   the_str:
     Value: {'Fn::GetAtt': [NestedResource, value]}
 '''
+
     attr_change_tmpl = '''
 HeatTemplateFormatVersion: '2012-12-12'
 Parameters:
   one:
     Default: foo
     Type: String
+  two:
+    Default: bar
+    Type: String
+
 Resources:
   NestedResource:
     Type: OS::Heat::RandomString
@@ -299,12 +410,17 @@ Outputs:
   something_else:
     Value: just_a_string
 '''
+
     content_change_tmpl = '''
 HeatTemplateFormatVersion: '2012-12-12'
 Parameters:
   one:
     Default: foo
     Type: String
+  two:
+    Default: bar
+    Type: String
+
 Resources:
   NestedResource:
     Type: OS::Heat::RandomString
@@ -320,7 +436,7 @@ Outputs:
         ('no_changes', dict(template=main_template,
                             provider=initial_tmpl,
                             expect=NOCHANGE)),
-        ('main_tmpl_change', dict(template=main_template_2,
+        ('main_tmpl_change', dict(template=main_template_change_prop,
                                   provider=initial_tmpl,
                                   expect=UPDATE)),
         ('provider_change', dict(template=main_template,
@@ -328,6 +444,12 @@ Outputs:
                                  expect=UPDATE)),
         ('provider_props_change', dict(template=main_template,
                                        provider=prop_change_tmpl,
+                                       expect=UPDATE)),
+        ('provider_props_add', dict(template=main_template_add_prop,
+                                    provider=prop_add_tmpl,
+                                    expect=UPDATE)),
+        ('provider_props_remove', dict(template=main_template_remove_prop,
+                                       provider=prop_remove_tmpl,
                                        expect=NOCHANGE)),
         ('provider_attr_change', dict(template=main_template,
                                       provider=attr_change_tmpl,
@@ -445,16 +567,11 @@ Outputs:
         return yaml.load(yaml_templ)
 
     def test_abandon(self):
-        stack_name = self._stack_rand_name()
-        self.client.stacks.create(
-            stack_name=stack_name,
+        stack_identifier = self.stack_create(
             template=self.main_template,
             files={'the.yaml': self.nested_templ},
-            disable_rollback=True,
+            enable_cleanup=False
         )
-        stack = self.client.stacks.get(stack_name)
-        stack_identifier = '%s/%s' % (stack_name, stack.id)
-        self._wait_for_stack_status(stack_identifier, 'CREATE_COMPLETE')
 
         info = self.stack_abandon(stack_id=stack_identifier)
         self.assertEqual(self._yaml_to_json(self.main_template),
@@ -527,16 +644,46 @@ Outputs:
         self.client = self.orchestration_client
 
     def test_check(self):
-        stack_name = self._stack_rand_name()
-        self.client.stacks.create(
-            stack_name=stack_name,
+        stack_identifier = self.stack_create(
             template=self.main_template,
-            files={'the.yaml': self.nested_templ},
-            disable_rollback=True,
+            files={'the.yaml': self.nested_templ}
         )
-        stack = self.client.stacks.get(stack_name)
-        stack_identifier = '%s/%s' % (stack_name, stack.id)
-        self._wait_for_stack_status(stack_identifier, 'CREATE_COMPLETE')
 
         self.client.actions.check(stack_id=stack_identifier)
         self._wait_for_stack_status(stack_identifier, 'CHECK_COMPLETE')
+
+
+class TemplateResourceErrorMessageTest(test.HeatIntegrationTest):
+    """Prove that nested stack errors don't suck."""
+    template = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Resources:
+  victim:
+    Type: fail.yaml
+'''
+    nested_templ = '''
+HeatTemplateFormatVersion: '2012-12-12'
+Resources:
+  oops:
+    Type: OS::Heat::TestResource
+    Properties:
+      fail: true
+      wait_secs: 2
+'''
+
+    def setUp(self):
+        super(TemplateResourceErrorMessageTest, self).setUp()
+        self.client = self.orchestration_client
+
+    def test_fail(self):
+        stack_identifier = self.stack_create(
+            template=self.template,
+            files={'fail.yaml': self.nested_templ},
+            expected_status='CREATE_FAILED')
+        stack = self.client.stacks.get(stack_identifier)
+
+        exp_path = 'resources.victim.resources.oops'
+        exp_msg = 'Test Resource failed oops'
+        exp = 'Resource CREATE failed: ValueError: %s: %s' % (exp_path,
+                                                              exp_msg)
+        self.assertEqual(exp, stack.stack_status_reason)

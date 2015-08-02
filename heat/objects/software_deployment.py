@@ -30,12 +30,12 @@ class SoftwareDeployment(base.VersionedObject,
                          base.VersionedObjectDictCompat,
                          base.ComparableVersionedObject):
     fields = {
-        'id': fields.StringField(nullable=False),
-        'config_id': fields.StringField(nullable=False),
-        'server_id': fields.StringField(nullable=False),
+        'id': fields.StringField(),
+        'config_id': fields.StringField(),
+        'server_id': fields.StringField(),
         'input_values': heat_fields.JsonField(nullable=True),
         'output_values': heat_fields.JsonField(nullable=True),
-        'tenant': fields.StringField(nullable=False),
+        'tenant': fields.StringField(),
         'stack_user_project_id': fields.StringField(nullable=True),
         'action': fields.StringField(nullable=True),
         'status': fields.StringField(nullable=True),
@@ -79,6 +79,10 @@ class SoftwareDeployment(base.VersionedObject,
 
     @classmethod
     def update_by_id(cls, context, deployment_id, values):
+        """Note this is a bit unusual as it returns the object.
+
+        Other update_by_id methods return a bool (was it updated).
+        """
         return cls._from_db_object(
             context, cls(),
             db_api.software_deployment_update(context, deployment_id, values))

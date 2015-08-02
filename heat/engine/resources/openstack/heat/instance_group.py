@@ -103,13 +103,14 @@ class InstanceGroup(stack_resource.StackResource):
     attributes_schema = {
         INSTANCE_LIST: attributes.Schema(
             _("A comma-delimited list of server ip addresses. "
-              "(Heat extension).")
+              "(Heat extension)."),
+            type=attributes.Schema.STRING
         ),
     }
     rolling_update_schema = {
-        MIN_INSTANCES_IN_SERVICE: properties.Schema(properties.Schema.NUMBER,
+        MIN_INSTANCES_IN_SERVICE: properties.Schema(properties.Schema.INTEGER,
                                                     default=0),
-        MAX_BATCH_SIZE: properties.Schema(properties.Schema.NUMBER,
+        MAX_BATCH_SIZE: properties.Schema(properties.Schema.INTEGER,
                                           default=1),
         PAUSE_TIME: properties.Schema(properties.Schema.STRING,
                                       default='PT0S')
@@ -135,10 +136,11 @@ class InstanceGroup(stack_resource.StackResource):
         """
         super(InstanceGroup, self).validate()
 
-        if self.update_policy:
+        if self.update_policy is not None:
             self.update_policy.validate()
-            policy_name = self.update_policy_schema.keys()[0]
-            if self.update_policy[policy_name]:
+            policy_name = self.ROLLING_UPDATE
+            if (policy_name in self.update_policy and
+                    self.update_policy[policy_name] is not None):
                 pause_time = self.update_policy[policy_name][self.PAUSE_TIME]
                 if iso8601utils.parse_isoduration(pause_time) > 3600:
                     msg = _('Maximum %s is 1 hour.') % self.PAUSE_TIME
@@ -223,9 +225,6 @@ class InstanceGroup(stack_resource.StackResource):
         return tags + [{self.TAG_KEY: 'metering.groupname',
                         self.TAG_VALUE: self.FnGetRefId()}]
 
-    def handle_delete(self):
-        return self.delete_nested()
-
     def _get_conf_properties(self):
         conf_refid = self.properties[self.LAUNCH_CONFIGURATION_NAME]
         conf = self.stack.resource_by_refid(conf_refid)
@@ -281,6 +280,16 @@ class InstanceGroup(stack_resource.StackResource):
                           policy[self.MAX_BATCH_SIZE],
                           pause_sec)
 
+    def _update_timeout(self, efft_capacity, efft_bat_sz, pause_sec):
+        batch_cnt = (efft_capacity + efft_bat_sz - 1) // efft_bat_sz
+        if pause_sec * (batch_cnt - 1) >= self.stack.timeout_secs():
+            msg = _('The current %s will result in stack update '
+                    'timeout.') % rsrc_defn.UPDATE_POLICY
+            raise ValueError(msg)
+        update_timeout = self.stack.timeout_secs() - (
+            pause_sec * (batch_cnt - 1))
+        return update_timeout
+
     def _replace(self, min_in_service, batch_size, pause_sec):
         """
         Replace the instances in the group using updated launch configuration
@@ -307,13 +316,8 @@ class InstanceGroup(stack_resource.StackResource):
         # effective capacity includes temporary capacity added to accommodate
         # the minimum number of instances in service during update
         efft_capacity = max(capacity - efft_bat_sz, efft_min_sz) + efft_bat_sz
-        batch_cnt = (efft_capacity + efft_bat_sz - 1) // efft_bat_sz
-        if pause_sec * (batch_cnt - 1) >= self.stack.timeout_secs():
-            msg = _('The current %s will result in stack update '
-                    'timeout.') % rsrc_defn.UPDATE_POLICY
-            raise ValueError(msg)
-        update_timeout = (self.stack.timeout_secs() - (
-            pause_sec * (batch_cnt - 1)) / batch_cnt)
+        update_timeout = self._update_timeout(efft_capacity,
+                                              efft_bat_sz, pause_sec)
         try:
             remainder = capacity
             while remainder > 0 or efft_capacity > capacity:

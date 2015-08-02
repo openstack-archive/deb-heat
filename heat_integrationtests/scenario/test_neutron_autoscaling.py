@@ -40,7 +40,7 @@ class NeutronAutoscalingTest(scenario_base.ScenarioTestsBase):
             "image_id": self.conf.minimal_image_ref,
             "capacity": "1",
             "instance_type": self.conf.minimal_instance_type,
-            "fixed_subnet_name": self.conf.fixed_subnet_name,
+            "fixed_subnet": self.net['subnets'][0],
         }
 
         # Launch stack
@@ -50,8 +50,10 @@ class NeutronAutoscalingTest(scenario_base.ScenarioTestsBase):
         )
 
         # Check number of members
-        members = self.network_client.list_members()
-        self.assertEqual(1, len(members["members"]))
+        pool_resource = self.client.resources.get(stack_id, 'test_pool')
+        pool_members = self.network_client.list_members(
+            pool_id=pool_resource.physical_resource_id)['members']
+        self.assertEqual(1, len(pool_members))
 
         # Increase desired capacity and update the stack
         template = self._load_template(
@@ -65,5 +67,6 @@ class NeutronAutoscalingTest(scenario_base.ScenarioTestsBase):
         )
 
         # Check number of members
-        upd_members = self.network_client.list_members()
-        self.assertEqual(2, len(upd_members["members"]))
+        pool_members = self.network_client.list_members(
+            pool_id=pool_resource.physical_resource_id)['members']
+        self.assertEqual(2, len(pool_members))

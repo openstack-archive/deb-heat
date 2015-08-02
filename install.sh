@@ -73,11 +73,10 @@ basic_configuration() {
     if echo $conf_path | grep ".conf$" >/dev/null 2>&1
     then
         iniset $target DEFAULT auth_encryption_key `hexdump -n 16 -v -e '/1 "%02x"' /dev/random`
-        iniset $target database connection "mysql://heat:heat@localhost/heat"
+        iniset $target database connection "mysql+pymysql://heat:heat@localhost/heat"
 
         BRIDGE_IP=127.0.0.1
         iniset $target DEFAULT heat_metadata_server_url "http://${BRIDGE_IP}:8000/"
-        iniset $target DEFAULT heat_waitcondition_server_url "http://${BRIDGE_IP}:8000/v1/waitcondition/"
         iniset $target DEFAULT heat_watch_server_url "http://${BRIDGE_IP}:8003/"
 
         if detect_rabbit

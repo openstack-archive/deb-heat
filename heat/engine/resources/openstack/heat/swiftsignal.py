@@ -11,12 +11,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import urlparse
-
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import timeutils
 import six
+from six.moves.urllib import parse
 
 from heat.common import exception
 from heat.common.i18n import _
@@ -72,11 +71,13 @@ class SwiftSignalHandle(resource.Resource):
             _('Tokens are not needed for Swift TempURLs.  This attribute is '
               'being kept for compatibility with the '
               'OS::Heat::WaitConditionHandle resource'),
-            cache_mode=attributes.Schema.CACHE_NONE
+            cache_mode=attributes.Schema.CACHE_NONE,
+            type=attributes.Schema.STRING
         ),
         ENDPOINT: attributes.Schema(
             _('Endpoint/url which can be used for signalling handle'),
-            cache_mode=attributes.Schema.CACHE_NONE
+            cache_mode=attributes.Schema.CACHE_NONE,
+            type=attributes.Schema.STRING
         ),
         CURL_CLI: attributes.Schema(
             _('Convenience attribute, provides curl CLI command '
@@ -85,7 +86,8 @@ class SwiftSignalHandle(resource.Resource):
               '--data-binary \'{"status": "SUCCESS"}\' '
               ', or signal failure by adding '
               '--data-binary \'{"status": "FAILURE"}\''),
-            cache_mode=attributes.Schema.CACHE_NONE
+            cache_mode=attributes.Schema.CACHE_NONE,
+            type=attributes.Schema.STRING
         ),
     }
 
@@ -95,9 +97,6 @@ class SwiftSignalHandle(resource.Resource):
                                      self.physical_resource_name())
         self.data_set(self.ENDPOINT, url)
         self.resource_id_set(self.physical_resource_name())
-
-    def update(self, after, before=None, prev_resource=None):
-        raise resource.UpdateReplace(self.name)
 
     def _resolve_attribute(self, key):
         if self.resource_id:
@@ -163,7 +162,7 @@ class SwiftSignal(resource.Resource):
             ]
         ),
         COUNT: properties.Schema(
-            properties.Schema.NUMBER,
+            properties.Schema.INTEGER,
             description=_('The number of success signals that must be '
                           'received before the stack creation process '
                           'continues.'),
@@ -178,7 +177,8 @@ class SwiftSignal(resource.Resource):
 
     attributes_schema = {
         DATA: attributes.Schema(
-            _('JSON data that was uploaded via the SwiftSignalHandle.')
+            _('JSON data that was uploaded via the SwiftSignalHandle.'),
+            type=attributes.Schema.STRING
         )
     }
 
@@ -204,7 +204,7 @@ class SwiftSignal(resource.Resource):
     @property
     def url(self):
         if not self._url:
-            self._url = urlparse.urlparse(self.properties[self.HANDLE])
+            self._url = parse.urlparse(self.properties[self.HANDLE])
         return self._url
 
     @property
@@ -252,7 +252,7 @@ class SwiftSignal(resource.Resource):
             try:
                 signal = self.client().get_object(self.stack.id, obj['name'])
             except Exception as exc:
-                self.client_plugin().ignore_not_found()
+                self.client_plugin().ignore_not_found(exc)
                 continue
 
             body = signal[1]
@@ -336,7 +336,3 @@ class SwiftSignal(resource.Resource):
 def resource_mapping():
     return {'OS::Heat::SwiftSignal': SwiftSignal,
             'OS::Heat::SwiftSignalHandle': SwiftSignalHandle}
-
-
-def available_resource_mapping():
-    return resource_mapping()

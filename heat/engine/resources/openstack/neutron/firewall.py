@@ -34,10 +34,10 @@ class Firewall(neutron.NeutronResource):
 
     ATTRIBUTES = (
         NAME_ATTR, DESCRIPTION_ATTR, ADMIN_STATE_UP_ATTR,
-        FIREWALL_POLICY_ID_ATTR, SHARED_ATTR, STATUS, TENANT_ID, SHOW,
+        FIREWALL_POLICY_ID_ATTR, SHARED_ATTR, STATUS, TENANT_ID,
     ) = (
         'name', 'description', 'admin_state_up',
-        'firewall_policy_id', 'shared', 'status', 'tenant_id', 'show',
+        'firewall_policy_id', 'shared', 'status', 'tenant_id',
     )
 
     properties_schema = {
@@ -79,29 +79,33 @@ class Firewall(neutron.NeutronResource):
 
     attributes_schema = {
         NAME_ATTR: attributes.Schema(
-            _('Name for the firewall.')
+            _('Name for the firewall.'),
+            type=attributes.Schema.STRING
         ),
         DESCRIPTION_ATTR: attributes.Schema(
-            _('Description of the firewall.')
+            _('Description of the firewall.'),
+            type=attributes.Schema.STRING
         ),
         ADMIN_STATE_UP_ATTR: attributes.Schema(
-            _('The administrative state of the firewall.')
+            _('The administrative state of the firewall.'),
+            type=attributes.Schema.STRING
         ),
         FIREWALL_POLICY_ID_ATTR: attributes.Schema(
             _('Unique identifier of the firewall policy used to create '
-              'the firewall.')
+              'the firewall.'),
+            type=attributes.Schema.STRING
         ),
         SHARED_ATTR: attributes.Schema(
-            _('Shared status of this firewall.')
+            _('Shared status of this firewall.'),
+            type=attributes.Schema.STRING
         ),
         STATUS: attributes.Schema(
-            _('The status of the firewall.')
+            _('The status of the firewall.'),
+            type=attributes.Schema.STRING
         ),
         TENANT_ID: attributes.Schema(
-            _('Id of the tenant owning the firewall.')
-        ),
-        SHOW: attributes.Schema(
-            _('All attributes.')
+            _('Id of the tenant owning the firewall.'),
+            type=attributes.Schema.STRING
         ),
     }
 
@@ -187,22 +191,28 @@ class FirewallPolicy(neutron.NeutronResource):
 
     attributes_schema = {
         NAME_ATTR: attributes.Schema(
-            _('Name for the firewall policy.')
+            _('Name for the firewall policy.'),
+            type=attributes.Schema.STRING
         ),
         DESCRIPTION_ATTR: attributes.Schema(
-            _('Description of the firewall policy.')
+            _('Description of the firewall policy.'),
+            type=attributes.Schema.STRING
         ),
         FIREWALL_RULES_ATTR: attributes.Schema(
-            _('List of firewall rules in this firewall policy.')
+            _('List of firewall rules in this firewall policy.'),
+            type=attributes.Schema.LIST
         ),
         SHARED_ATTR: attributes.Schema(
-            _('Shared status of this firewall policy.')
+            _('Shared status of this firewall policy.'),
+            type=attributes.Schema.STRING
         ),
         AUDITED_ATTR: attributes.Schema(
-            _('Audit status of this firewall policy.')
+            _('Audit status of this firewall policy.'),
+            type=attributes.Schema.STRING
         ),
         TENANT_ID: attributes.Schema(
-            _('Id of the tenant owning the firewall policy.')
+            _('Id of the tenant owning the firewall policy.'),
+            type=attributes.Schema.STRING
         ),
     }
 
@@ -298,12 +308,18 @@ class FirewallRule(neutron.NeutronResource):
         SOURCE_IP_ADDRESS: properties.Schema(
             properties.Schema.STRING,
             _('Source IP address or CIDR.'),
-            update_allowed=True
+            update_allowed=True,
+            constraints=[
+                constraints.CustomConstraint('net_cidr')
+            ]
         ),
         DESTINATION_IP_ADDRESS: properties.Schema(
             properties.Schema.STRING,
             _('Destination IP address or CIDR.'),
-            update_allowed=True
+            update_allowed=True,
+            constraints=[
+                constraints.CustomConstraint('net_cidr')
+            ]
         ),
         SOURCE_PORT: properties.Schema(
             properties.Schema.STRING,
@@ -334,47 +350,61 @@ class FirewallRule(neutron.NeutronResource):
 
     attributes_schema = {
         NAME_ATTR: attributes.Schema(
-            _('Name for the firewall rule.')
+            _('Name for the firewall rule.'),
+            type=attributes.Schema.STRING
         ),
         DESCRIPTION_ATTR: attributes.Schema(
-            _('Description of the firewall rule.')
+            _('Description of the firewall rule.'),
+            type=attributes.Schema.STRING
         ),
         FIREWALL_POLICY_ID: attributes.Schema(
             _('Unique identifier of the firewall policy to which this '
-              'firewall rule belongs.')
+              'firewall rule belongs.'),
+            type=attributes.Schema.STRING
         ),
         SHARED_ATTR: attributes.Schema(
-            _('Shared status of this firewall rule.')
+            _('Shared status of this firewall rule.'),
+            type=attributes.Schema.STRING
         ),
         PROTOCOL_ATTR: attributes.Schema(
-            _('Protocol value for this firewall rule.')
+            _('Protocol value for this firewall rule.'),
+            type=attributes.Schema.STRING
         ),
         IP_VERSION_ATTR: attributes.Schema(
-            _('Ip_version for this firewall rule.')
+            _('Ip_version for this firewall rule.'),
+            type=attributes.Schema.STRING
         ),
         SOURCE_IP_ADDRESS_ATTR: attributes.Schema(
-            _('Source ip_address for this firewall rule.')
+            _('Source ip_address for this firewall rule.'),
+            type=attributes.Schema.STRING
         ),
         DESTINATION_IP_ADDRESS_ATTR: attributes.Schema(
-            _('Destination ip_address for this firewall rule.')
+            _('Destination ip_address for this firewall rule.'),
+            type=attributes.Schema.STRING
         ),
         SOURCE_PORT_ATTR: attributes.Schema(
-            _('Source port range for this firewall rule.')
+            _('Source port range for this firewall rule.'),
+            type=attributes.Schema.STRING
         ),
         DESTINATION_PORT_ATTR: attributes.Schema(
-            _('Destination port range for this firewall rule.')
+            _('Destination port range for this firewall rule.'),
+            type=attributes.Schema.STRING
         ),
         ACTION_ATTR: attributes.Schema(
-            _('Allow or deny action for this firewall rule.')
+            _('Allow or deny action for this firewall rule.'),
+            type=attributes.Schema.STRING
         ),
         ENABLED_ATTR: attributes.Schema(
-            _('Indicates whether this firewall rule is enabled or not.')
+            _('Indicates whether this firewall rule is enabled or not.'),
+            type=attributes.Schema.STRING
         ),
         POSITION: attributes.Schema(
-            _('Position of the rule within the firewall policy.')
+            _('Position of the rule within the firewall policy.'),
+            type=attributes.Schema.STRING
         ),
         TENANT_ID: attributes.Schema(
-            _('Id of the tenant owning the firewall.')
+            _('Id of the tenant owning the firewall.'),
+            type=attributes.Schema.STRING
         ),
     }
 

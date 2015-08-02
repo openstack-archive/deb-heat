@@ -21,7 +21,6 @@ from heat.api.aws import utils as aws_utils
 from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import function
-from heat.engine import resource
 
 
 class FindInMap(function.Function):
@@ -187,8 +186,9 @@ class GetAtt(function.Function):
         super(GetAtt, self).validate()
         res = self._resource()
         attr = function.resolve(self._attribute)
+        from heat.engine import resource
         if (type(res).FnGetAtt == resource.Resource.FnGetAtt and
-                attr not in res.attributes_schema.keys()):
+                attr not in six.iterkeys(res.attributes_schema)):
             raise exception.InvalidTemplateAttribute(
                 resource=self._resource_name, key=attr)
 
@@ -197,6 +197,10 @@ class GetAtt(function.Function):
 
         r = self._resource()
         if (r.action in (r.CREATE, r.ADOPT, r.SUSPEND, r.RESUME, r.UPDATE)):
+            return r.FnGetAtt(attribute)
+        # NOTE(sirushtim): Add r.INIT to states above once convergence
+        # is the default.
+        elif r.stack.has_cache_data() and r.action == r.INIT:
             return r.FnGetAtt(attribute)
         else:
             return None
@@ -282,7 +286,7 @@ class Join(function.Function):
 
     Takes the form::
 
-        { "Fn::Join" : [ "<delim>", [ "<string_1>", "<string_2>", ... ] }
+        { "Fn::Join" : [ "<delim>", [ "<string_1>", "<string_2>", ... ] ] }
 
     And resolves to::
 
@@ -447,9 +451,9 @@ class Replace(function.Function):
                 raise TypeError(_('"%s" params must be strings or numbers') %
                                 self.fn_name)
 
-            return string.replace(placeholder, unicode(value))
+            return string.replace(placeholder, six.text_type(value))
 
-        return reduce(replace, six.iteritems(mapping), template)
+        return six.moves.reduce(replace, six.iteritems(mapping), template)
 
 
 class Base64(function.Function):

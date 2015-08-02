@@ -27,128 +27,84 @@ from heat.tests import common
 from heat.tests import utils
 
 
-vpnservice_template_deprecated = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test VPN service resource",
-  "Parameters" : {},
-  "Resources" : {
-    "VPNService" : {
-      "Type" : "OS::Neutron::VPNService",
-      "Properties" : {
-        "name" : "VPNService",
-        "description" : "My new VPN service",
-        "admin_state_up" : true,
-        "router_id" : "rou123",
-        "subnet_id" : "sub123"
-      }
-    }
-  }
-}
+vpnservice_template = '''
+heat_template_version: 2015-04-30
+description: Template to test vpnservice Neutron resource
+resources:
+  VPNService:
+    type: OS::Neutron::VPNService
+    properties:
+      name: VPNService
+      description: My new VPN service
+      admin_state_up: true
+      router_id: rou123
+      subnet: sub123
 '''
 
-vpnservice_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test VPN service resource",
-  "Parameters" : {},
-  "Resources" : {
-    "VPNService" : {
-      "Type" : "OS::Neutron::VPNService",
-      "Properties" : {
-        "name" : "VPNService",
-        "description" : "My new VPN service",
-        "admin_state_up" : true,
-        "router_id" : "rou123",
-        "subnet" : "sub123"
-      }
-    }
-  }
-}
-'''
+vpnservice_template_deprecated = vpnservice_template.replace(
+    'subnet', 'subnet_id')
 
 ipsec_site_connection_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test IPsec policy resource",
-  "Parameters" : {},
-  "Resources" : {
-    "IPsecSiteConnection" : {
-      "Type" : "OS::Neutron::IPsecSiteConnection",
-      "Properties" : {
-        "name" : "IPsecSiteConnection",
-        "description" : "My new VPN connection",
-        "peer_address" : "172.24.4.233",
-        "peer_id" : "172.24.4.233",
-        "peer_cidrs" : [ "10.2.0.0/24" ],
-        "mtu" : 1500,
-        "dpd" : {
-            "actions" : "hold",
-            "interval" : 30,
-            "timeout" : 120
-        },
-        "psk" : "secret",
-        "initiator" : "bi-directional",
-        "admin_state_up" : true,
-        "ikepolicy_id" : "ike123",
-        "ipsecpolicy_id" : "ips123",
-        "vpnservice_id" : "vpn123"
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test IPsec policy resource
+resources:
+  IPsecSiteConnection:
+    type: OS::Neutron::IPsecSiteConnection,
+    properties:
+      name: IPsecSiteConnection
+      description: My new VPN connection
+      peer_address: 172.24.4.233
+      peer_id: 172.24.4.233
+      peer_cidrs: [ 10.2.0.0/24 ]
+      mtu: 1500
+      dpd:
+        actions: hold
+        interval: 30
+        timeout: 120
+      psk: secret
+      initiator: bi-directional
+      admin_state_up: true
+      ikepolicy_id: ike123
+      ipsecpolicy_id: ips123
+      vpnservice_id: vpn123
 '''
 
 ikepolicy_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test IKE policy resource",
-  "Parameters" : {},
-  "Resources" : {
-    "IKEPolicy" : {
-      "Type" : "OS::Neutron::IKEPolicy",
-      "Properties" : {
-        "name" : "IKEPolicy",
-        "description" : "My new IKE policy",
-        "auth_algorithm" : "sha1",
-        "encryption_algorithm" : "3des",
-        "phase1_negotiation_mode" : "main",
-        "lifetime" : {
-            "units" : "seconds",
-            "value" : 3600
-        },
-        "pfs" : "group5",
-        "ike_version" : "v1"
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test IKE policy resource
+resources:
+  IKEPolicy:
+    type: OS::Neutron::IKEPolicy
+    properties:
+      name: IKEPolicy
+      description: My new IKE policy
+      auth_algorithm: sha1
+      encryption_algorithm: 3des
+      phase1_negotiation_mode: main
+      lifetime:
+        units: seconds
+        value: 3600
+      pfs: group5
+      ike_version: v1
 '''
 
 ipsecpolicy_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test IPsec policy resource",
-  "Parameters" : {},
-  "Resources" : {
-    "IPsecPolicy" : {
-      "Type" : "OS::Neutron::IPsecPolicy",
-      "Properties" : {
-        "name" : "IPsecPolicy",
-        "description" : "My new IPsec policy",
-        "transform_protocol": "esp",
-        "encapsulation_mode" : "tunnel",
-        "auth_algorithm" : "sha1",
-        "encryption_algorithm" : "3des",
-        "lifetime" : {
-            "units" : "seconds",
-            "value" : 3600
-        },
-        "pfs" : "group5"
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test IPsec policy resource
+resources:
+  IPsecPolicy:
+    type: OS::Neutron::IPsecPolicy
+    properties:
+      name: IPsecPolicy
+      description: My new IPsec policy
+      transform_protocol: esp
+      encapsulation_mode: tunnel
+      auth_algorithm: sha1
+      encryption_algorithm: 3des
+      lifetime:
+        units: seconds
+        value: 3600
+      pfs : group5
 '''
 
 
@@ -190,7 +146,7 @@ class VPNServiceTest(common.HeatTestCase):
                 'router',
                 'rou123'
             ).AndReturn('rou123')
-            props = snippet['Resources']['VPNService']['Properties']
+            props = snippet['resources']['VPNService']['properties']
             props['router'] = 'rou123'
             del props['router_id']
         neutronclient.Client.create_vpnservice(
@@ -238,7 +194,8 @@ class VPNServiceTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.vpnservice: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -273,7 +230,8 @@ class VPNServiceTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.vpnservice: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -384,7 +342,8 @@ class IPsecSiteConnectionTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.ipsec_site_connection: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -419,7 +378,8 @@ class IPsecSiteConnectionTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.ipsec_site_connection: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -529,7 +489,8 @@ class IKEPolicyTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.ikepolicy: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -564,7 +525,8 @@ class IKEPolicyTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.ikepolicy: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -669,7 +631,8 @@ class IPsecPolicyTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.ipsecpolicy: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -704,7 +667,8 @@ class IPsecPolicyTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.ipsecpolicy: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()

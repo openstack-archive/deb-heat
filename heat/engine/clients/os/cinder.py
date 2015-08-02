@@ -22,6 +22,7 @@ from heat.common.i18n import _
 from heat.common.i18n import _LI
 from heat.engine.clients import client_plugin
 from heat.engine import constraints
+from heat.engine import resource
 
 
 LOG = logging.getLogger(__name__)
@@ -31,16 +32,19 @@ class CinderClientPlugin(client_plugin.ClientPlugin):
 
     exceptions_module = exceptions
 
+    service_types = [VOLUME, VOLUME_V2] = ['volume', 'volumev2']
+
     def get_volume_api_version(self):
         '''Returns the most recent API version.'''
 
         endpoint_type = self._get_client_option('cinder', 'endpoint_type')
         try:
-            self.url_for(service_type='volumev2', endpoint_type=endpoint_type)
+            self.url_for(service_type=self.VOLUME_V2,
+                         endpoint_type=endpoint_type)
             return 2
         except ks_exceptions.EndpointNotFound:
             try:
-                self.url_for(service_type='volume',
+                self.url_for(service_type=self.VOLUME,
                              endpoint_type=endpoint_type)
                 return 1
             except ks_exceptions.EndpointNotFound:
@@ -52,10 +56,10 @@ class CinderClientPlugin(client_plugin.ClientPlugin):
 
         volume_api_version = self.get_volume_api_version()
         if volume_api_version == 1:
-            service_type = 'volume'
+            service_type = self.VOLUME
             client_version = '1'
         elif volume_api_version == 2:
-            service_type = 'volumev2'
+            service_type = self.VOLUME_V2
             client_version = '2'
         else:
             raise exception.Error(_('No volume service available.'))
@@ -92,7 +96,7 @@ class CinderClientPlugin(client_plugin.ClientPlugin):
         except exceptions.NotFound as ex:
             LOG.info(_LI('Volume (%(volume)s) not found: %(ex)s'),
                      {'volume': volume, 'ex': ex})
-            raise exception.VolumeNotFound(volume=volume)
+            raise exception.EntityNotFound(entity='Volume', name=volume)
 
     def get_volume_snapshot(self, snapshot):
         try:
@@ -100,7 +104,8 @@ class CinderClientPlugin(client_plugin.ClientPlugin):
         except exceptions.NotFound as ex:
             LOG.info(_LI('VolumeSnapshot (%(snapshot)s) not found: %(ex)s'),
                      {'snapshot': snapshot, 'ex': ex})
-            raise exception.VolumeSnapshotNotFound(snapshot=snapshot)
+            raise exception.EntityNotFound(entity='VolumeSnapshot',
+                                           name=snapshot)
 
     def get_volume_type(self, volume_type):
         vt_id = None
@@ -113,7 +118,8 @@ class CinderClientPlugin(client_plugin.ClientPlugin):
                 vt_id = vt.id
                 break
         if vt_id is None:
-            raise exception.VolumeTypeNotFound(volume_type=volume_type)
+            raise exception.EntityNotFound(entity='VolumeType',
+                                           name=volume_type)
 
         return vt_id
 
@@ -127,10 +133,91 @@ class CinderClientPlugin(client_plugin.ClientPlugin):
         return (isinstance(ex, exceptions.ClientException) and
                 ex.code == 409)
 
+    def check_detach_volume_complete(self, vol_id):
+        try:
+            vol = self.client().volumes.get(vol_id)
+        except Exception as ex:
+            self.ignore_not_found(ex)
+            return True
+
+        if vol.status in ('in-use', 'detaching'):
+            LOG.debug('%s - volume still in use' % vol_id)
+            return False
+
+        LOG.debug('Volume %(id)s - status: %(status)s' % {
+            'id': vol.id, 'status': vol.status})
+
+        if vol.status not in ('available', 'deleting'):
+            LOG.debug("Detachment failed - volume %(vol)s "
+                      "is in %(status)s status" % {"vol": vol.id,
+                                                   "status": vol.status})
+            raise resource.ResourceUnknownStatus(
+                resource_status=vol.status,
+                result=_('Volume detachment failed'))
+        else:
+            return True
+
+    def check_attach_volume_complete(self, vol_id):
+        vol = self.client().volumes.get(vol_id)
+        if vol.status in ('available', 'attaching'):
+            LOG.debug("Volume %(id)s is being attached - "
+                      "volume status: %(status)s" % {'id': vol_id,
+                                                     'status': vol.status})
+            return False
+
+        if vol.status != 'in-use':
+            LOG.debug("Attachment failed - volume %(vol)s is "
+                      "in %(status)s status" % {"vol": vol_id,
+                                                "status": vol.status})
+            raise resource.ResourceUnknownStatus(
+                resource_status=vol.status,
+                result=_('Volume attachment failed'))
+
+        LOG.info(_LI('Attaching volume %(id)s complete'), {'id': vol_id})
+        return True
+
+
+# NOTE(pshchelo): these Volume*Progress classes are simple key-value storages
+# meant to be passed between handle_<action> and check_<action>_complete,
+# being mutated during subsequent check_<action>_complete calls.
+class VolumeDetachProgress(object):
+    def __init__(self, srv_id, vol_id, attach_id, val=False):
+        self.called = val
+        self.cinder_complete = val
+        self.nova_complete = val
+        self.srv_id = srv_id
+        self.vol_id = vol_id
+        self.attach_id = attach_id
+
+
+class VolumeAttachProgress(object):
+    def __init__(self, srv_id, vol_id, device, val=False):
+        self.called = val
+        self.complete = val
+        self.srv_id = srv_id
+        self.vol_id = vol_id
+        self.device = device
+
+
+class VolumeDeleteProgress(object):
+    def __init__(self, val=False):
+        self.backup = {'called': val,
+                       'complete': val}
+        self.delete = {'called': val,
+                       'complete': val}
+        self.backup_id = None
+
+
+class VolumeResizeProgress(object):
+    def __init__(self, val=False, size=None):
+        self.called = val
+        self.complete = val
+        self.size = size
+
 
 class VolumeConstraint(constraints.BaseCustomConstraint):
 
-    expected_exceptions = (exception.VolumeNotFound,)
+    expected_exceptions = (exception.EntityNotFound,)
 
     def validate_with_client(self, client, volume):
         client.client_plugin('cinder').get_volume(volume)
@@ -138,7 +225,7 @@ class VolumeConstraint(constraints.BaseCustomConstraint):
 
 class VolumeSnapshotConstraint(constraints.BaseCustomConstraint):
 
-    expected_exceptions = (exception.VolumeSnapshotNotFound,)
+    expected_exceptions = (exception.EntityNotFound,)
 
     def validate_with_client(self, client, snapshot):
         client.client_plugin('cinder').get_volume_snapshot(snapshot)
@@ -146,7 +233,7 @@ class VolumeSnapshotConstraint(constraints.BaseCustomConstraint):
 
 class VolumeTypeConstraint(constraints.BaseCustomConstraint):
 
-    expected_exceptions = (exception.VolumeTypeNotFound,)
+    expected_exceptions = (exception.EntityNotFound,)
 
     def validate_with_client(self, client, volume_type):
         client.client_plugin('cinder').get_volume_type(volume_type)

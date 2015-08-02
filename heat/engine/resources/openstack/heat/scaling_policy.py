@@ -22,6 +22,7 @@ from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources import signal_responder
+from heat.engine import support
 from heat.scaling import cooldown
 
 LOG = logging.getLogger(__name__)
@@ -37,19 +38,19 @@ class AutoScalingPolicy(signal_responder.SignalResponder,
     """
     PROPERTIES = (
         AUTO_SCALING_GROUP_NAME, SCALING_ADJUSTMENT, ADJUSTMENT_TYPE,
-        COOLDOWN,
+        COOLDOWN, MIN_ADJUSTMENT_STEP
     ) = (
         'auto_scaling_group_id', 'scaling_adjustment', 'adjustment_type',
-        'cooldown',
+        'cooldown', 'min_adjustment_step',
     )
 
     EXACT_CAPACITY, CHANGE_IN_CAPACITY, PERCENT_CHANGE_IN_CAPACITY = (
         'exact_capacity', 'change_in_capacity', 'percent_change_in_capacity')
 
     ATTRIBUTES = (
-        ALARM_URL,
+        ALARM_URL, SIGNAL_URL
     ) = (
-        'alarm_url',
+        'alarm_url', 'signal_url'
     )
 
     properties_schema = {
@@ -81,13 +82,47 @@ class AutoScalingPolicy(signal_responder.SignalResponder,
             _('Cooldown period, in seconds.'),
             update_allowed=True
         ),
+        MIN_ADJUSTMENT_STEP: properties.Schema(
+            properties.Schema.INTEGER,
+            _('Minimum number of resources that are added or removed '
+              'when the AutoScaling group scales up or down. This can '
+              'be used only when specifying percent_change_in_capacity '
+              'for the adjustment_type property.'),
+            constraints=[
+                constraints.Range(
+                    min=0,
+                ),
+            ],
+            update_allowed=True
+        ),
+
     }
 
     attributes_schema = {
         ALARM_URL: attributes.Schema(
-            _("A signed url to handle the alarm.")
+            _("A signed url to handle the alarm."),
+            type=attributes.Schema.STRING
+        ),
+        SIGNAL_URL: attributes.Schema(
+            _("A url to handle the alarm using native API."),
+            support_status=support.SupportStatus(version='5.0.0'),
+            type=attributes.Schema.STRING
         ),
     }
+
+    def validate(self):
+        """
+        Add validation for min_adjustment_step
+        """
+        super(AutoScalingPolicy, self).validate()
+        adjustment_type = self.properties.get(self.ADJUSTMENT_TYPE)
+        adjustment_step = self.properties.get(self.MIN_ADJUSTMENT_STEP)
+        if (adjustment_type != self.PERCENT_CHANGE_IN_CAPACITY
+                and adjustment_step is not None):
+            raise exception.ResourcePropertyValueDependency(
+                prop1=self.MIN_ADJUSTMENT_STEP,
+                prop2=self.ADJUSTMENT_TYPE,
+                value=self.PERCENT_CHANGE_IN_CAPACITY)
 
     def handle_create(self):
         super(AutoScalingPolicy, self).handle_create()
@@ -125,36 +160,43 @@ class AutoScalingPolicy(signal_responder.SignalResponder,
                  {'name': self.name, 'state': alarm_state})
 
         if alarm_state != 'alarm':
-            return
+            raise resource.NoActionRequired()
         if self._cooldown_inprogress():
             LOG.info(_LI("%(name)s NOT performing scaling action, "
                          "cooldown %(cooldown)s"),
                      {'name': self.name,
                       'cooldown': self.properties[self.COOLDOWN]})
-            return
+            raise resource.NoActionRequired()
 
         asgn_id = self.properties[self.AUTO_SCALING_GROUP_NAME]
         group = self.stack.resource_by_refid(asgn_id)
-        if group is None:
-            raise exception.NotFound(_('Alarm %(alarm)s could not find '
-                                       'scaling group named "%(group)s"') % {
-                                           'alarm': self.name,
-                                           'group': asgn_id})
+        try:
+            if group is None:
+                raise exception.NotFound(_('Alarm %(alarm)s could not find '
+                                           'scaling group named "%(group)s"'
+                                           ) % {'alarm': self.name,
+                                                'group': asgn_id})
 
-        LOG.info(_LI('%(name)s Alarm, adjusting Group %(group)s with id '
-                     '%(asgn_id)s by %(filter)s'),
-                 {'name': self.name, 'group': group.name, 'asgn_id': asgn_id,
-                  'filter': self.properties[self.SCALING_ADJUSTMENT]})
-        adjustment_type = self._get_adjustement_type()
-        group.adjust(self.properties[self.SCALING_ADJUSTMENT], adjustment_type)
+            LOG.info(_LI('%(name)s Alarm, adjusting Group %(group)s with id '
+                         '%(asgn_id)s by %(filter)s'),
+                     {'name': self.name, 'group': group.name,
+                      'asgn_id': asgn_id,
+                      'filter': self.properties[self.SCALING_ADJUSTMENT]})
+            adjustment_type = self._get_adjustement_type()
+            group.adjust(self.properties[self.SCALING_ADJUSTMENT],
+                         adjustment_type,
+                         self.properties[self.MIN_ADJUSTMENT_STEP])
 
-        self._cooldown_timestamp("%s : %s" %
-                                 (self.properties[self.ADJUSTMENT_TYPE],
-                                  self.properties[self.SCALING_ADJUSTMENT]))
+        finally:
+            self._cooldown_timestamp("%s : %s" % (
+                self.properties[self.ADJUSTMENT_TYPE],
+                self.properties[self.SCALING_ADJUSTMENT]))
 
     def _resolve_attribute(self, name):
-        if name == self.ALARM_URL and self.resource_id is not None:
-            return six.text_type(self._get_signed_url())
+        if name == self.ALARM_URL:
+            return six.text_type(self._get_ec2_signed_url())
+        elif name == self.SIGNAL_URL:
+            return six.text_type(self._get_heat_signal_url())
 
     def FnGetRefId(self):
         return resource.Resource.FnGetRefId(self)

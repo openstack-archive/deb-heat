@@ -18,9 +18,10 @@ from heat.common import template_format
 from heat.engine.clients.os import glance
 from heat.engine.clients.os import nova
 from heat.engine import environment
-from heat.engine import parser
 from heat.engine.resources.aws.ec2 import instance as instances
 from heat.engine import scheduler
+from heat.engine import stack as parser
+from heat.engine import template as tmpl
 from heat.tests import common
 from heat.tests.nova import fakes as fakes_nova
 from heat.tests import utils
@@ -65,16 +66,16 @@ class ServerTagsTest(common.HeatTestCase):
     def _setup_test_instance(self, intags=None, nova_tags=None):
         stack_name = 'tag_test'
         t = template_format.parse(instance_template)
-        template = parser.Template(t,
-                                   env=environment.Environment(
-                                       {'KeyName': 'test'}))
-        stack = parser.Stack(utils.dummy_context(), stack_name, template,
-                             stack_id=str(uuid.uuid4()))
+        template = tmpl.Template(t,
+                                 env=environment.Environment(
+                                     {'KeyName': 'test'}))
+        self.stack = parser.Stack(utils.dummy_context(), stack_name, template,
+                                  stack_id=str(uuid.uuid4()))
 
         t['Resources']['WebServer']['Properties']['Tags'] = intags
-        resource_defns = template.resource_definitions(stack)
+        resource_defns = template.resource_definitions(self.stack)
         instance = instances.Instance(stack_name,
-                                      resource_defns['WebServer'], stack)
+                                      resource_defns['WebServer'], self.stack)
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)

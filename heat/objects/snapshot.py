@@ -31,9 +31,9 @@ class Snapshot(base.VersionedObject,
     fields = {
         'id': fields.StringField(),
         'name': fields.StringField(nullable=True),
-        'stack_id': fields.StringField(nullable=False),
+        'stack_id': fields.StringField(),
         'data': heat_fields.JsonField(nullable=True),
-        'tenant': fields.StringField(nullable=False),
+        'tenant': fields.StringField(),
         'status': fields.StringField(nullable=True),
         'status_reason': fields.StringField(nullable=True),
         'created_at': fields.DateTimeField(read_only=True),
@@ -54,9 +54,10 @@ class Snapshot(base.VersionedObject,
             context, cls(), db_api.snapshot_create(context, values))
 
     @classmethod
-    def get_by_id(cls, context, snapshot_id):
+    def get_snapshot_by_stack(cls, context, snapshot_id, stack):
         return cls._from_db_object(
-            context, cls(), db_api.snapshot_get(context, snapshot_id))
+            context, cls(), db_api.snapshot_get_by_stack(
+                context, snapshot_id, stack))
 
     @classmethod
     def update(cls, context, snapshot_id, values):

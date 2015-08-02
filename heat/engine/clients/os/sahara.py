@@ -33,13 +33,15 @@ class SaharaClientPlugin(client_plugin.ClientPlugin):
 
     exceptions_module = sahara_base
 
+    service_types = [DATA_PROCESSING] = ['data-processing']
+
     def _create(self):
         con = self.context
         endpoint_type = self._get_client_option('sahara', 'endpoint_type')
-        endpoint = self.url_for(service_type='data-processing',
+        endpoint = self.url_for(service_type=self.DATA_PROCESSING,
                                 endpoint_type=endpoint_type)
         args = {
-            'service_type': 'data-processing',
+            'service_type': self.DATA_PROCESSING,
             'input_auth_token': self.auth_token,
             'auth_url': con.auth_url,
             'project_name': con.tenant,
@@ -73,7 +75,7 @@ class SaharaClientPlugin(client_plugin.ClientPlugin):
 
         :param image_identifier: image name or a UUID-like identifier
         :returns: the id of the requested :image_identifier:
-        :raises: exception.ImageNotFound,
+        :raises: exception.EntityNotFound,
                  exception.PhysicalResourceNameAmbiguity
         '''
         if uuidutils.is_uuid_like(image_identifier):
@@ -92,7 +94,7 @@ class SaharaClientPlugin(client_plugin.ClientPlugin):
 
         :param image_identifier: image name
         :returns: the id of the requested :image_identifier:
-        :raises: exception.ImageNotFound,
+        :raises: exception.EntityNotFound,
                  exception.PhysicalResourceNameAmbiguity
         '''
         try:
@@ -106,7 +108,8 @@ class SaharaClientPlugin(client_plugin.ClientPlugin):
         if num_matches == 0:
             LOG.info(_LI("Image %s was not found in sahara images"),
                      image_identifier)
-            raise exception.ImageNotFound(image_name=image_identifier)
+            raise exception.EntityNotFound(entity='Image',
+                                           name=image_identifier)
         elif num_matches > 1:
             LOG.info(_LI("Multiple images %s were found in sahara with name"),
                      image_identifier)
@@ -118,7 +121,7 @@ class SaharaClientPlugin(client_plugin.ClientPlugin):
 
 class ImageConstraint(constraints.BaseCustomConstraint):
 
-    expected_exceptions = (exception.ImageNotFound,
+    expected_exceptions = (exception.EntityNotFound,
                            exception.PhysicalResourceNameAmbiguity,)
 
     def validate_with_client(self, client, value):

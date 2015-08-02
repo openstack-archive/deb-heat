@@ -19,16 +19,16 @@ import mock
 from oslo_utils import timeutils
 import six
 
+from heat.common import exception
 from heat.common import identifier
 from heat.common import template_format
 from heat.engine import api
 from heat.engine import event
 from heat.engine import parameters
-from heat.engine import parser
-from heat.engine import resource
+from heat.engine import stack as parser
+from heat.engine import template
 from heat.rpc import api as rpc_api
 from heat.tests import common
-from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
 
 datetime = dt.datetime
@@ -38,21 +38,18 @@ class FormatTest(common.HeatTestCase):
     def setUp(self):
         super(FormatTest, self).setUp()
 
-        template = parser.Template({
+        tmpl = template.Template({
             'HeatTemplateFormatVersion': '2012-12-12',
             'Resources': {
                 'generic1': {'Type': 'GenericResourceType'},
                 'generic2': {
                     'Type': 'GenericResourceType',
-                    'DependsOn': 'generic1'}
+                    'DependsOn': 'generic1'},
+                'generic3': {'Type': 'ResWithShowAttrType'}
             }
         })
-        resource._register_class('GenericResourceType',
-                                 generic_rsrc.GenericResource)
-        resource._register_class('ResWithComplexPropsAndAttrs',
-                                 generic_rsrc.ResWithComplexPropsAndAttrs)
         self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
-                                  template, stack_id=str(uuid.uuid4()))
+                                  tmpl, stack_id=str(uuid.uuid4()))
 
     def _dummy_event(self, event_id):
         resource = self.stack['generic1']
@@ -67,6 +64,7 @@ class FormatTest(common.HeatTestCase):
         res = self.stack['generic1']
 
         resource_keys = set((
+            rpc_api.RES_CREATION_TIME,
             rpc_api.RES_UPDATED_TIME,
             rpc_api.RES_NAME,
             rpc_api.RES_PHYSICAL_ID,
@@ -87,10 +85,10 @@ class FormatTest(common.HeatTestCase):
         )))
 
         formatted = api.format_stack_resource(res, True)
-        self.assertEqual(resource_details_keys, set(formatted.keys()))
+        self.assertEqual(resource_details_keys, set(six.iterkeys(formatted)))
 
         formatted = api.format_stack_resource(res, False)
-        self.assertEqual(resource_keys, set(formatted.keys()))
+        self.assertEqual(resource_keys, set(six.iterkeys(formatted)))
 
     @mock.patch.object(api, 'format_resource_properties')
     def test_format_stack_resource_with_props(self, mock_format_props):
@@ -112,40 +110,30 @@ class FormatTest(common.HeatTestCase):
 
     def test_format_resource_attributes(self):
         res = self.stack['generic1']
+        # the _resolve_attribute method of  'generic1' return res.name
         formatted_attributes = api.format_resource_attributes(res)
-        self.assertEqual(2, len(formatted_attributes))
-        self.assertIn('foo', formatted_attributes)
-        self.assertIn('Foo', formatted_attributes)
+        self.assertEqual(res.name, formatted_attributes)
 
     def test_format_resource_attributes_show_attribute(self):
-        res = mock.Mock()
-        res.attributes = {'a': 'a_value', 'show': {'b': 'b_value'}}
-
+        res = self.stack['generic3']
         formatted_attributes = api.format_resource_attributes(res)
-        self.assertIn('b', formatted_attributes)
-        self.assertNotIn('a', formatted_attributes)
+        self.assertEqual(3, len(formatted_attributes))
+        self.assertIn('foo', formatted_attributes)
+        self.assertIn('Foo', formatted_attributes)
+        self.assertIn('Another', formatted_attributes)
 
-    def test_format_resource_attributes_show_attribute_fail(self):
-        res = mock.Mock()
-        res.attributes = {'a': 'a_value', 'show': ''}
-
-        formatted_attributes = api.format_resource_attributes(res)
-        self.assertIn('a', formatted_attributes)
-        self.assertIn('show', formatted_attributes)
-
-    def test_format_resource_attributes_force_attributes(self):
-        res = self.stack['generic1']
-        force_attrs = ['a1', 'a2']
-
-        formatted_attributes = api.format_resource_attributes(res, force_attrs)
+    def test_format_resource_attributes_show_attribute_with_attr(self):
+        res = self.stack['generic3']
+        formatted_attributes = api.format_resource_attributes(
+            res, with_attr=['c'])
         self.assertEqual(4, len(formatted_attributes))
         self.assertIn('foo', formatted_attributes)
         self.assertIn('Foo', formatted_attributes)
-        self.assertIn('a1', formatted_attributes)
-        self.assertIn('a2', formatted_attributes)
+        self.assertIn('Another', formatted_attributes)
+        self.assertIn('c', formatted_attributes)
 
     def _get_formatted_resource_properties(self, res_name):
-        tmpl = parser.Template(template_format.parse('''
+        tmpl = template.Template(template_format.parse('''
             heat_template_version: 2013-05-23
             resources:
               resource1:
@@ -193,6 +181,7 @@ class FormatTest(common.HeatTestCase):
         res.nested.return_value = None
 
         resource_keys = set((
+            rpc_api.RES_CREATION_TIME,
             rpc_api.RES_UPDATED_TIME,
             rpc_api.RES_NAME,
             rpc_api.RES_PHYSICAL_ID,
@@ -206,7 +195,29 @@ class FormatTest(common.HeatTestCase):
             rpc_api.RES_REQUIRED_BY))
 
         formatted = api.format_stack_resource(res, False)
-        self.assertEqual(resource_keys, set(formatted.keys()))
+        self.assertEqual(resource_keys, set(six.iterkeys(formatted)))
+
+    def test_format_stack_resource_with_nested_stack_not_found(self):
+        res = self.stack['generic1']
+        res.nested = mock.Mock()
+        res.nested.side_effect = exception.NotFound()
+
+        resource_keys = set((
+            rpc_api.RES_CREATION_TIME,
+            rpc_api.RES_UPDATED_TIME,
+            rpc_api.RES_NAME,
+            rpc_api.RES_PHYSICAL_ID,
+            rpc_api.RES_ACTION,
+            rpc_api.RES_STATUS,
+            rpc_api.RES_STATUS_DATA,
+            rpc_api.RES_TYPE,
+            rpc_api.RES_ID,
+            rpc_api.RES_STACK_ID,
+            rpc_api.RES_STACK_NAME,
+            rpc_api.RES_REQUIRED_BY))
+
+        formatted = api.format_stack_resource(res, False)
+        self.assertEqual(resource_keys, set(six.iterkeys(formatted)))
 
     def test_format_stack_resource_with_nested_stack_empty(self):
         res = self.stack['generic1']
@@ -253,7 +264,7 @@ class FormatTest(common.HeatTestCase):
             rpc_api.EVENT_RES_PROPERTIES))
 
         formatted = api.format_event(event)
-        self.assertEqual(event_keys, set(formatted.keys()))
+        self.assertEqual(event_keys, set(six.iterkeys(formatted)))
 
         event_id_formatted = formatted[rpc_api.EVENT_ID]
         event_identifier = identifier.EventIdentifier(
@@ -292,7 +303,7 @@ class FormatTest(common.HeatTestCase):
                   'stacks/test_stack/' + self.stack.id)
         expected_stack_info = {
             'capabilities': [],
-            'creation_time': '1970-01-01T00:00:00Z',
+            'creation_time': '1970-01-01T00:00:00',
             'description': 'No description',
             'disable_rollback': True,
             'notification_topics': [],
@@ -304,6 +315,7 @@ class FormatTest(common.HeatTestCase):
             'stack_user_project_id': None,
             'template_description': 'No description',
             'timeout_mins': None,
+            'tags': None,
             'parameters': {
                 'AWS::Region': 'ap-southeast-1',
                 'AWS::StackId': aws_id,
@@ -329,7 +341,7 @@ class FormatTest(common.HeatTestCase):
 
         self.stack.updated_time = datetime(1970, 1, 1)
         info = api.format_stack(self.stack)
-        self.assertEqual('1970-01-01T00:00:00Z', info['updated_time'])
+        self.assertEqual('1970-01-01T00:00:00', info['updated_time'])
 
     @mock.patch.object(api, 'format_stack_outputs')
     def test_format_stack_adds_outputs(self, mock_fmt_outputs):
@@ -340,7 +352,7 @@ class FormatTest(common.HeatTestCase):
         self.assertEqual('foobar', info[rpc_api.STACK_OUTPUTS])
 
     def test_format_stack_outputs(self):
-        template = parser.Template({
+        tmpl = template.Template({
             'HeatTemplateFormatVersion': '2012-12-12',
             'Resources': {
                 'generic': {'Type': 'GenericResourceType'}
@@ -356,7 +368,7 @@ class FormatTest(common.HeatTestCase):
             }
         })
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
-                             template, stack_id=str(uuid.uuid4()))
+                             tmpl, stack_id=str(uuid.uuid4()))
         stack.action = 'CREATE'
         stack.status = 'COMPLETE'
         stack['generic'].action = 'CREATE'
@@ -907,7 +919,7 @@ class FormatValidateParameterTest(common.HeatTestCase):
         """
 
         t = template_format.parse(self.template % self.param)
-        tmpl = parser.Template(t)
+        tmpl = template.Template(t)
 
         tmpl_params = parameters.Parameters(None, tmpl)
         tmpl_params.validate(validate_value=False)
@@ -956,8 +968,7 @@ class FormatSoftwareConfigDeploymentTest(common.HeatTestCase):
         self.assertEqual([{'name': 'result'}], result['outputs'])
         self.assertEqual([{'name': 'result'}], result['outputs'])
         self.assertEqual({}, result['options'])
-        self.assertEqual(timeutils.isotime(self.now),
-                         result['creation_time'])
+        self.assertEqual(self.now.isoformat(), result['creation_time'])
 
     def test_format_software_config_none(self):
         self.assertIsNone(api.format_software_config(None))
@@ -974,10 +985,8 @@ class FormatSoftwareConfigDeploymentTest(common.HeatTestCase):
         self.assertEqual(deployment.action, result['action'])
         self.assertEqual(deployment.status, result['status'])
         self.assertEqual(deployment.status_reason, result['status_reason'])
-        self.assertEqual(timeutils.isotime(self.now),
-                         result['creation_time'])
-        self.assertEqual(timeutils.isotime(self.now),
-                         result['updated_time'])
+        self.assertEqual(self.now.isoformat(), result['creation_time'])
+        self.assertEqual(self.now.isoformat(), result['updated_time'])
 
     def test_format_software_deployment_none(self):
         self.assertIsNone(api.format_software_deployment(None))
@@ -1056,3 +1065,36 @@ class TestExtractArgs(common.HeatTestCase):
     def test_disable_rollback_extract_bad(self):
         self.assertRaises(ValueError, api.extract_args,
                           {'disable_rollback': 'bad'})
+
+    def test_tags_extract(self):
+        p = {'tags': ["tag1", "tag2"]}
+        args = api.extract_args(p)
+        self.assertEqual(['tag1', 'tag2'], args['tags'])
+
+    def test_tags_extract_not_present(self):
+        args = api.extract_args({})
+        self.assertNotIn('tags', args)
+
+    def test_tags_extract_not_map(self):
+        p = {'tags': {"foo": "bar"}}
+        exc = self.assertRaises(ValueError, api.extract_args, p)
+        self.assertIn('Invalid tags, not a list: ', six.text_type(exc))
+
+    def test_tags_extract_not_string(self):
+        p = {'tags': ["tag1", 2]}
+        exc = self.assertRaises(ValueError, api.extract_args, p)
+        self.assertIn('Invalid tag, "2" is not a string', six.text_type(exc))
+
+    def test_tags_extract_over_limit(self):
+        p = {'tags': ["tag1", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}
+        exc = self.assertRaises(ValueError, api.extract_args, p)
+        self.assertIn('Invalid tag, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+                      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" is longer '
+                      'than 80 characters', six.text_type(exc))
+
+    def test_tags_extract_comma(self):
+        p = {'tags': ["tag1", 'tag2,']}
+        exc = self.assertRaises(ValueError, api.extract_args, p)
+        self.assertIn('Invalid tag, "tag2," contains a comma',
+                      six.text_type(exc))

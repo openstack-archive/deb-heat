@@ -42,7 +42,12 @@ Heat Db version
 
 ``heat-manage service list``
 
-    Shows details for all currently running heat engines.
+    Shows details for all currently running heat-engines.
+
+``heat-manage --version``
+
+  Shows program's version number and exit. The output could be empty if
+  the distribution didn't specify any version information.
 
 FILES
 =====

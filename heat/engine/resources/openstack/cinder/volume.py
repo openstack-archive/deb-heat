@@ -19,26 +19,26 @@ from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LI
 from heat.engine import attributes
+from heat.engine.clients.os import cinder as heat_cinder
 from heat.engine import constraints
 from heat.engine import properties
-from heat.engine.resources.aws.ec2 import volume as aws_vol
-from heat.engine import scheduler
+from heat.engine import resource
+from heat.engine.resources import volume_base as vb
 from heat.engine import support
-from heat.engine import volume_tasks as vol_task
 
 LOG = logging.getLogger(__name__)
 
 
-class CinderVolume(aws_vol.Volume):
+class CinderVolume(vb.BaseVolume):
 
     PROPERTIES = (
         AVAILABILITY_ZONE, SIZE, SNAPSHOT_ID, BACKUP_ID, NAME,
         DESCRIPTION, VOLUME_TYPE, METADATA, IMAGE_REF, IMAGE,
-        SOURCE_VOLID, CINDER_SCHEDULER_HINTS,
+        SOURCE_VOLID, CINDER_SCHEDULER_HINTS, READ_ONLY,
     ) = (
         'availability_zone', 'size', 'snapshot_id', 'backup_id', 'name',
         'description', 'volume_type', 'metadata', 'imageRef', 'image',
-        'source_volid', 'scheduler_hints',
+        'source_volid', 'scheduler_hints', 'read_only',
     )
 
     ATTRIBUTES = (
@@ -106,8 +106,9 @@ class CinderVolume(aws_vol.Volume):
             properties.Schema.STRING,
             _('The ID of the image to create the volume from.'),
             support_status=support.SupportStatus(
-                support.DEPRECATED,
-                _('Use property %s.') % IMAGE)
+                status=support.DEPRECATED,
+                message=_('Use property %s.') % IMAGE,
+                version='2014.1')
         ),
         IMAGE: properties.Schema(
             properties.Schema.STRING,
@@ -130,56 +131,74 @@ class CinderVolume(aws_vol.Volume):
               'the Cinder scheduler creating a volume.'),
             support_status=support.SupportStatus(version='2015.1')
         ),
+        READ_ONLY: properties.Schema(
+            properties.Schema.BOOLEAN,
+            _('Enables or disables read-only access mode of volume.'),
+            support_status=support.SupportStatus(version='5.0.0'),
+            update_allowed=True,
+        ),
     }
 
     attributes_schema = {
         AVAILABILITY_ZONE_ATTR: attributes.Schema(
-            _('The availability zone in which the volume is located.')
+            _('The availability zone in which the volume is located.'),
+            type=attributes.Schema.STRING
         ),
         SIZE_ATTR: attributes.Schema(
-            _('The size of the volume in GB.')
+            _('The size of the volume in GB.'),
+            type=attributes.Schema.STRING
         ),
         SNAPSHOT_ID_ATTR: attributes.Schema(
-            _('The snapshot the volume was created from, if any.')
+            _('The snapshot the volume was created from, if any.'),
+            type=attributes.Schema.STRING
         ),
         DISPLAY_NAME_ATTR: attributes.Schema(
-            _('Name of the volume.')
+            _('Name of the volume.'),
+            type=attributes.Schema.STRING
         ),
         DISPLAY_DESCRIPTION_ATTR: attributes.Schema(
-            _('Description of the volume.')
+            _('Description of the volume.'),
+            type=attributes.Schema.STRING
         ),
         VOLUME_TYPE_ATTR: attributes.Schema(
-            _('The type of the volume mapping to a backend, if any.')
+            _('The type of the volume mapping to a backend, if any.'),
+            type=attributes.Schema.STRING
         ),
         METADATA_ATTR: attributes.Schema(
-            _('Key/value pairs associated with the volume.')
+            _('Key/value pairs associated with the volume.'),
+            type=attributes.Schema.STRING
         ),
         SOURCE_VOLID_ATTR: attributes.Schema(
-            _('The volume used as source, if any.')
+            _('The volume used as source, if any.'),
+            type=attributes.Schema.STRING
         ),
         STATUS: attributes.Schema(
-            _('The current status of the volume.')
+            _('The current status of the volume.'),
+            type=attributes.Schema.STRING
         ),
         CREATED_AT: attributes.Schema(
-            _('The timestamp indicating volume creation.')
+            _('The timestamp indicating volume creation.'),
+            type=attributes.Schema.STRING
         ),
         BOOTABLE: attributes.Schema(
-            _('Boolean indicating if the volume can be booted or not.')
+            _('Boolean indicating if the volume can be booted or not.'),
+            type=attributes.Schema.STRING
         ),
         METADATA_VALUES_ATTR: attributes.Schema(
-            _('Key/value pairs associated with the volume in raw dict form.')
+            _('Key/value pairs associated with the volume in raw dict form.'),
+            type=attributes.Schema.MAP
         ),
         ENCRYPTED_ATTR: attributes.Schema(
-            _('Boolean indicating if the volume is encrypted or not.')
+            _('Boolean indicating if the volume is encrypted or not.'),
+            type=attributes.Schema.STRING
         ),
         ATTACHMENTS: attributes.Schema(
-            _('The list of attachments of the volume.')
+            _('The list of attachments of the volume.'),
+            type=attributes.Schema.STRING
         ),
     }
 
     _volume_creating_status = ['creating', 'restoring-backup', 'downloading']
-
-    default_client_name = 'cinder'
 
     def _name(self):
         name = self.properties[self.NAME]
@@ -195,10 +214,10 @@ class CinderVolume(aws_vol.Volume):
             'size': self.properties[self.SIZE],
             'availability_zone': self.properties[self.AVAILABILITY_ZONE]
         }
-        if self.properties.get(self.IMAGE):
+        if self.properties[self.IMAGE]:
             arguments['imageRef'] = self.client_plugin('glance').get_image_id(
                 self.properties[self.IMAGE])
-        elif self.properties.get(self.IMAGE_REF):
+        elif self.properties[self.IMAGE_REF]:
             arguments['imageRef'] = self.properties[self.IMAGE_REF]
 
         optionals = (self.SNAPSHOT_ID, self.VOLUME_TYPE, self.SOURCE_VOLID,
@@ -222,17 +241,57 @@ class CinderVolume(aws_vol.Volume):
                 return vol.description
         return six.text_type(getattr(vol, name))
 
+    def handle_create(self):
+        vol_id = super(CinderVolume, self).handle_create()
+        read_only_flag = self.properties.get(self.READ_ONLY)
+        if read_only_flag is not None:
+            self.client().volumes.update_readonly_flag(vol_id,
+                                                       read_only_flag)
+
+        return vol_id
+
+    def _extend_volume(self, new_size):
+        try:
+            self.client().volumes.extend(self.resource_id, new_size)
+        except Exception as ex:
+            if self.client_plugin().is_client_exception(ex):
+                raise exception.Error(_(
+                    "Failed to extend volume %(vol)s - %(err)s") % {
+                        'vol': self.resource_id, 'err': str(ex)})
+            else:
+                raise
+        return True
+
+    def _check_extend_volume_complete(self):
+        vol = self.client().volumes.get(self.resource_id)
+        if vol.status == 'extending':
+            LOG.debug("Volume %s is being extended" % vol.id)
+            return False
+
+        if vol.status != 'available':
+            LOG.info(_LI("Resize failed: Volume %(vol)s "
+                         "is in %(status)s state."),
+                     {'vol': vol.id, 'status': vol.status})
+            raise resource.ResourceUnknownStatus(
+                resource_status=vol.status,
+                result=_('Volume resize failed'))
+
+        LOG.info(_LI('Volume %(id)s resize complete'), {'id': vol.id})
+        return True
+
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         vol = None
-        checkers = []
         cinder = self.client()
+        prg_resize = None
+        prg_attach = None
+        prg_detach = None
         # update the name and description for cinder volume
         if self.NAME in prop_diff or self.DESCRIPTION in prop_diff:
             vol = cinder.volumes.get(self.resource_id)
             update_name = (prop_diff.get(self.NAME) or
-                           self.properties.get(self.NAME))
+                           self.properties[self.NAME])
             update_description = (prop_diff.get(self.DESCRIPTION) or
-                                  self.properties.get(self.DESCRIPTION))
+                                  self.properties[self.DESCRIPTION])
             kwargs = self._fetch_name_and_description(
                 cinder.volume_api_version, update_name, update_description)
             cinder.volumes.update(vol, **kwargs)
@@ -254,6 +313,10 @@ class CinderVolume(aws_vol.Volume):
                     vol = cinder.volumes.get(self.resource_id)
                 new_vol_type = prop_diff.get(self.VOLUME_TYPE)
                 cinder.volumes.retype(vol, new_vol_type, 'never')
+        # update read_only access mode
+        if self.READ_ONLY in prop_diff:
+            flag = prop_diff.get(self.READ_ONLY)
+            cinder.volumes.update_readonly_flag(self.resource_id, flag)
         # extend volume size
         if self.SIZE in prop_diff:
             if not vol:
@@ -264,6 +327,7 @@ class CinderVolume(aws_vol.Volume):
                 raise exception.NotSupported(feature=_("Shrinking volume"))
 
             elif new_size > vol.size:
+                prg_resize = heat_cinder.VolumeResizeProgress(size=new_size)
                 if vol.attachments:
                     # NOTE(pshchelo):
                     # this relies on current behavior of cinder attachments,
@@ -275,35 +339,64 @@ class CinderVolume(aws_vol.Volume):
                     server_id = vol.attachments[0]['server_id']
                     device = vol.attachments[0]['device']
                     attachment_id = vol.attachments[0]['id']
-                    detach_task = vol_task.VolumeDetachTask(
-                        self.stack, server_id, attachment_id)
-                    checkers.append(scheduler.TaskRunner(detach_task))
-                    extend_task = vol_task.VolumeExtendTask(
-                        self.stack, vol.id, new_size)
-                    checkers.append(scheduler.TaskRunner(extend_task))
-                    attach_task = vol_task.VolumeAttachTask(
-                        self.stack, server_id, vol.id, device)
-                    checkers.append(scheduler.TaskRunner(attach_task))
+                    prg_detach = heat_cinder.VolumeDetachProgress(
+                        server_id, vol.id, attachment_id)
+                    prg_attach = heat_cinder.VolumeAttachProgress(
+                        server_id, vol.id, device)
 
-                else:
-                    extend_task = vol_task.VolumeExtendTask(
-                        self.stack, vol.id, new_size)
-                    checkers.append(scheduler.TaskRunner(extend_task))
+        return prg_detach, prg_resize, prg_attach
 
-        if checkers:
-            checkers[0].start()
-        return checkers
+    def _detach_volume_to_complete(self, prg_detach):
+        if not prg_detach.called:
+            self.client_plugin('nova').detach_volume(prg_detach.srv_id,
+                                                     prg_detach.attach_id)
+            prg_detach.called = True
+            return False
+        if not prg_detach.cinder_complete:
+            cinder_complete_res = self.client_plugin(
+            ).check_detach_volume_complete(prg_detach.vol_id)
+            prg_detach.cinder_complete = cinder_complete_res
+            return False
+        if not prg_detach.nova_complete:
+            prg_detach.nova_complete = self.client_plugin(
+                'nova').check_detach_volume_complete(prg_detach.srv_id,
+                                                     prg_detach.attach_id)
+            return False
+
+    def _attach_volume_to_complete(self, prg_attach):
+        if not prg_attach.called:
+            prg_attach.called = self.client_plugin('nova').attach_volume(
+                prg_attach.srv_id, prg_attach.vol_id, prg_attach.device)
+            return False
+        if not prg_attach.complete:
+            prg_attach.complete = self.client_plugin(
+            ).check_attach_volume_complete(prg_attach.vol_id)
+            return prg_attach.complete
 
     def check_update_complete(self, checkers):
-        for checker in checkers:
-            if not checker.started():
-                checker.start()
-            if not checker.step():
+        prg_detach, prg_resize, prg_attach = checkers
+        if not prg_resize:
+            return True
+        # detach volume
+        if prg_detach:
+            if not prg_detach.nova_complete:
+                self._detach_volume_to_complete(prg_detach)
                 return False
+        # resize volume
+        if not prg_resize.called:
+            prg_resize.called = self._extend_volume(prg_resize.size)
+            return False
+        if not prg_resize.complete:
+            prg_resize.complete = self._check_extend_volume_complete()
+            return prg_resize.complete and not prg_attach
+        # reattach volume back
+        if prg_attach:
+            return self._attach_volume_to_complete(prg_attach)
         return True
 
     def handle_snapshot(self):
         backup = self.client().backups.create(self.resource_id)
+        self.data_set('backup_id', backup.id)
         return backup.id
 
     def check_snapshot_complete(self, backup_id):
@@ -311,29 +404,73 @@ class CinderVolume(aws_vol.Volume):
         if backup.status == 'creating':
             return False
         if backup.status == 'available':
-            self.data_set('backup_id', backup_id)
             return True
-        raise exception.Error(backup.status)
+        raise exception.Error(backup.fail_reason)
 
     def handle_delete_snapshot(self, snapshot):
-        backup_id = snapshot['resource_data']['backup_id']
+        backup_id = snapshot['resource_data'].get('backup_id')
+        if not backup_id:
+            return
+        try:
+            self.client().backups.delete(backup_id)
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
+            return
+        else:
+            return backup_id
 
-        def delete():
-            cinder = self.client()
-            try:
-                cinder.backups.delete(backup_id)
-                while True:
-                    yield
-                    cinder.backups.get(backup_id)
-            except Exception as ex:
-                self.client_plugin().ignore_not_found(ex)
+    def check_delete_snapshot_complete(self, backup_id):
+        if not backup_id:
+            return True
+        try:
+            self.client().backups.get(backup_id)
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
+            return True
+        else:
+            return False
 
-        delete_task = scheduler.TaskRunner(delete)
-        delete_task.start()
-        return delete_task
+    def _build_exclusive_options(self):
+        exclusive_options = []
+        if self.properties.get(self.SNAPSHOT_ID):
+            exclusive_options.append(self.SNAPSHOT_ID)
+        if self.properties.get(self.SOURCE_VOLID):
+            exclusive_options.append(self.SOURCE_VOLID)
+        if self.properties.get(self.IMAGE):
+            exclusive_options.append(self.IMAGE)
+        if self.properties.get(self.IMAGE_REF):
+            exclusive_options.append(self.IMAGE_REF)
+        return exclusive_options
 
-    def check_delete_snapshot_complete(self, delete_task):
-        return delete_task.step()
+    def _validate_create_sources(self):
+        exclusive_options = self._build_exclusive_options()
+        size = self.properties.get(self.SIZE)
+        if size is None and len(exclusive_options) != 1:
+            msg = (_('If neither "%(backup_id)s" nor "%(size)s" is '
+                     'provided, one and only one of '
+                     '"%(image)s", "%(image_ref)s", "%(source_vol)s", '
+                     '"%(snapshot_id)s" must be specified, but currently '
+                     'specified options: %(exclusive_options)s.')
+                   % {'backup_id': self.BACKUP_ID,
+                      'size': self.SIZE,
+                      'image': self.IMAGE,
+                      'image_ref': self.IMAGE_REF,
+                      'source_vol': self.SOURCE_VOLID,
+                      'snapshot_id': self.SNAPSHOT_ID,
+                      'exclusive_options': exclusive_options})
+            raise exception.StackValidationFailed(message=msg)
+        elif size and len(exclusive_options) > 1:
+            msg = (_('If "%(size)s" is provided, only one of '
+                     '"%(image)s", "%(image_ref)s", "%(source_vol)s", '
+                     '"%(snapshot_id)s" can be specified, but currently '
+                     'specified options: %(exclusive_options)s.')
+                   % {'size': self.SIZE,
+                      'image': self.IMAGE,
+                      'image_ref': self.IMAGE_REF,
+                      'source_vol': self.SOURCE_VOLID,
+                      'snapshot_id': self.SNAPSHOT_ID,
+                      'exclusive_options': exclusive_options})
+            raise exception.StackValidationFailed(message=msg)
 
     def validate(self):
         """Validate provided params."""
@@ -342,11 +479,20 @@ class CinderVolume(aws_vol.Volume):
             return res
 
         # Scheduler hints are only supported from Cinder API v2
-        if (self.properties.get(self.CINDER_SCHEDULER_HINTS)
+        if (self.properties[self.CINDER_SCHEDULER_HINTS]
                 and self.client().volume_api_version == 1):
             raise exception.StackValidationFailed(
                 message=_('Scheduler hints are not supported by the current '
                           'volume API.'))
+        # can not specify both image and imageRef
+        image = self.properties.get(self.IMAGE)
+        imageRef = self.properties.get(self.IMAGE_REF)
+        if image and imageRef:
+            raise exception.ResourcePropertyConflict(self.IMAGE,
+                                                     self.IMAGE_REF)
+        # if not create from backup, need to check other create sources
+        if not self.properties.get(self.BACKUP_ID):
+            self._validate_create_sources()
 
     def handle_restore(self, defn, restore_data):
         backup_id = restore_data['resource_data']['backup_id']
@@ -360,7 +506,7 @@ class CinderVolume(aws_vol.Volume):
         return defn.freeze(properties=props)
 
 
-class CinderVolumeAttachment(aws_vol.VolumeAttachment):
+class CinderVolumeAttachment(vb.BaseVolumeAttachment):
 
     PROPERTIES = (
         INSTANCE_ID, VOLUME_ID, DEVICE,
@@ -394,43 +540,58 @@ class CinderVolumeAttachment(aws_vol.VolumeAttachment):
     }
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        checkers = []
+        prg_attach = None
+        prg_detach = None
         if prop_diff:
             # Even though some combinations of changed properties
             # could be updated in UpdateReplace manner,
             # we still first detach the old resource so that
             # self.resource_id is not replaced prematurely
-            volume_id = self.properties.get(self.VOLUME_ID)
+            volume_id = self.properties[self.VOLUME_ID]
+            server_id = self._stored_properties_data.get(self.INSTANCE_ID)
+            self.client_plugin('nova').detach_volume(server_id,
+                                                     self.resource_id)
+            prg_detach = heat_cinder.VolumeDetachProgress(
+                server_id, volume_id, self.resource_id)
+            prg_detach.called = True
+
             if self.VOLUME_ID in prop_diff:
                 volume_id = prop_diff.get(self.VOLUME_ID)
 
-            device = self.properties.get(self.DEVICE)
+            device = self.properties[self.DEVICE]
             if self.DEVICE in prop_diff:
                 device = prop_diff.get(self.DEVICE)
 
-            server_id = self._stored_properties_data.get(self.INSTANCE_ID)
-            detach_task = vol_task.VolumeDetachTask(
-                self.stack, server_id, self.resource_id)
-            checkers.append(scheduler.TaskRunner(detach_task))
-
             if self.INSTANCE_ID in prop_diff:
                 server_id = prop_diff.get(self.INSTANCE_ID)
-            attach_task = vol_task.VolumeAttachTask(
-                self.stack, server_id, volume_id, device)
+            prg_attach = heat_cinder.VolumeAttachProgress(
+                server_id, volume_id, device)
 
-            checkers.append(scheduler.TaskRunner(attach_task))
-
-        if checkers:
-            checkers[0].start()
-        return checkers
+        return prg_detach, prg_attach
 
     def check_update_complete(self, checkers):
-        for checker in checkers:
-            if not checker.started():
-                checker.start()
-            if not checker.step():
-                return False
-        self.resource_id_set(checkers[-1]._task.attachment_id)
+        prg_detach, prg_attach = checkers
+        if not (prg_detach and prg_attach):
+            return True
+        if not prg_detach.cinder_complete:
+            prg_detach.cinder_complete = self.client_plugin(
+            ).check_detach_volume_complete(prg_detach.vol_id)
+            return False
+        if not prg_detach.nova_complete:
+            prg_detach.nova_complete = self.client_plugin(
+                'nova').check_detach_volume_complete(prg_detach.srv_id,
+                                                     self.resource_id)
+            return False
+        if not prg_attach.called:
+            prg_attach.called = self.client_plugin('nova').attach_volume(
+                prg_attach.srv_id, prg_attach.vol_id, prg_attach.device)
+            return False
+        if not prg_attach.complete:
+            prg_attach.complete = self.client_plugin(
+            ).check_attach_volume_complete(prg_attach.vol_id)
+            if prg_attach.complete:
+                self.resource_id_set(prg_attach.called)
+            return prg_attach.complete
         return True
 
 

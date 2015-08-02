@@ -11,6 +11,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import six
+
 from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import attributes
@@ -37,11 +39,9 @@ class HealthMonitor(neutron.NeutronResource):
     ATTRIBUTES = (
         ADMIN_STATE_UP_ATTR, DELAY_ATTR, EXPECTED_CODES_ATTR, HTTP_METHOD_ATTR,
         MAX_RETRIES_ATTR, TIMEOUT_ATTR, TYPE_ATTR, URL_PATH_ATTR, TENANT_ID,
-        SHOW,
     ) = (
         'admin_state_up', 'delay', 'expected_codes', 'http_method',
         'max_retries', 'timeout', 'type', 'url_path', 'tenant_id',
-        'show',
     )
 
     properties_schema = {
@@ -102,39 +102,46 @@ class HealthMonitor(neutron.NeutronResource):
 
     attributes_schema = {
         ADMIN_STATE_UP_ATTR: attributes.Schema(
-            _('The administrative state of this health monitor.')
+            _('The administrative state of this health monitor.'),
+            type=attributes.Schema.STRING
         ),
         DELAY_ATTR: attributes.Schema(
             _('The minimum time in seconds between regular connections '
-              'of the member.')
+              'of the member.'),
+            type=attributes.Schema.STRING
         ),
         EXPECTED_CODES_ATTR: attributes.Schema(
             _('The list of HTTP status codes expected in response '
-              'from the member to declare it healthy.')
+              'from the member to declare it healthy.'),
+            type=attributes.Schema.LIST
         ),
         HTTP_METHOD_ATTR: attributes.Schema(
-            _('The HTTP method used for requests by the monitor of type HTTP.')
+            _('The HTTP method used for requests by the monitor of '
+              'type HTTP.'),
+            type=attributes.Schema.STRING
         ),
         MAX_RETRIES_ATTR: attributes.Schema(
             _('Number of permissible connection failures before changing '
-              'the member status to INACTIVE.')
+              'the member status to INACTIVE.'),
+            type=attributes.Schema.STRING
         ),
         TIMEOUT_ATTR: attributes.Schema(
             _('Maximum number of seconds for a monitor to wait for a '
-              'connection to be established before it times out.')
+              'connection to be established before it times out.'),
+            type=attributes.Schema.STRING
         ),
         TYPE_ATTR: attributes.Schema(
-            _('One of predefined health monitor types.')
+            _('One of predefined health monitor types.'),
+            type=attributes.Schema.STRING
         ),
         URL_PATH_ATTR: attributes.Schema(
             _('The HTTP path used in the HTTP request used by the monitor '
-              'to test a member health.')
+              'to test a member health.'),
+            type=attributes.Schema.STRING
         ),
         TENANT_ID: attributes.Schema(
-            _('Tenant owning the health monitor.')
-        ),
-        SHOW: attributes.Schema(
-            _('All attributes.')
+            _('Tenant owning the health monitor.'),
+            type=attributes.Schema.STRING
         ),
     }
 
@@ -171,10 +178,10 @@ class Pool(neutron.NeutronResource):
 
     PROPERTIES = (
         PROTOCOL, SUBNET_ID, SUBNET, LB_METHOD, NAME, DESCRIPTION,
-        ADMIN_STATE_UP, VIP, MONITORS,
+        ADMIN_STATE_UP, VIP, MONITORS, PROVIDER,
     ) = (
         'protocol', 'subnet_id', 'subnet', 'lb_method', 'name', 'description',
-        'admin_state_up', 'vip', 'monitors',
+        'admin_state_up', 'vip', 'monitors', 'provider',
     )
 
     _VIP_KEYS = (
@@ -195,10 +202,10 @@ class Pool(neutron.NeutronResource):
 
     ATTRIBUTES = (
         ADMIN_STATE_UP_ATTR, NAME_ATTR, PROTOCOL_ATTR, SUBNET_ID_ATTR,
-        LB_METHOD_ATTR, DESCRIPTION_ATTR, TENANT_ID, VIP_ATTR,
+        LB_METHOD_ATTR, DESCRIPTION_ATTR, TENANT_ID, VIP_ATTR, PROVIDER_ATTR,
     ) = (
         'admin_state_up', 'name', 'protocol', 'subnet_id',
-        'lb_method', 'description', 'tenant_id', 'vip',
+        'lb_method', 'description', 'tenant_id', 'vip', 'provider',
     )
 
     properties_schema = {
@@ -213,9 +220,9 @@ class Pool(neutron.NeutronResource):
         SUBNET_ID: properties.Schema(
             properties.Schema.STRING,
             support_status=support.SupportStatus(
-                support.DEPRECATED,
-                _('Use property %s.') % SUBNET),
-            required=False,
+                status=support.DEPRECATED,
+                message=_('Use property %s.') % SUBNET,
+                version='2014.2'),
             constraints=[
                 constraints.CustomConstraint('neutron.subnet')
             ]
@@ -224,7 +231,6 @@ class Pool(neutron.NeutronResource):
             properties.Schema.STRING,
             _('The subnet for the port on which the members '
               'of the pool will be connected.'),
-            required=False,
             support_status=support.SupportStatus(version='2014.2'),
             constraints=[
                 constraints.CustomConstraint('neutron.subnet')
@@ -256,6 +262,11 @@ class Pool(neutron.NeutronResource):
             default=True,
             update_allowed=True
         ),
+        PROVIDER: properties.Schema(
+            properties.Schema.STRING,
+            _('LBaaS provider to implement this load balancer instance.'),
+            support_status=support.SupportStatus(version='5.0.0'),
+        ),
         VIP: properties.Schema(
             properties.Schema.MAP,
             _('IP address and port of the pool.'),
@@ -277,7 +288,10 @@ class Pool(neutron.NeutronResource):
                 ),
                 VIP_ADDRESS: properties.Schema(
                     properties.Schema.STRING,
-                    _('IP address of the vip.')
+                    _('IP address of the vip.'),
+                    constraints=[
+                        constraints.CustomConstraint('ip_addr')
+                    ]
                 ),
                 VIP_CONNECTION_LIMIT: properties.Schema(
                     properties.Schema.INTEGER,
@@ -328,30 +342,43 @@ class Pool(neutron.NeutronResource):
 
     attributes_schema = {
         ADMIN_STATE_UP_ATTR: attributes.Schema(
-            _('The administrative state of this pool.')
+            _('The administrative state of this pool.'),
+            type=attributes.Schema.STRING
         ),
         NAME_ATTR: attributes.Schema(
-            _('Name of the pool.')
+            _('Name of the pool.'),
+            type=attributes.Schema.STRING
         ),
         PROTOCOL_ATTR: attributes.Schema(
-            _('Protocol to balance.')
+            _('Protocol to balance.'),
+            type=attributes.Schema.STRING
         ),
         SUBNET_ID_ATTR: attributes.Schema(
             _('The subnet for the port on which the members of the pool '
-              'will be connected.')
+              'will be connected.'),
+            type=attributes.Schema.STRING
         ),
         LB_METHOD_ATTR: attributes.Schema(
             _('The algorithm used to distribute load between the members '
-              'of the pool.')
+              'of the pool.'),
+            type=attributes.Schema.STRING
         ),
         DESCRIPTION_ATTR: attributes.Schema(
-            _('Description of the pool.')
+            _('Description of the pool.'),
+            type=attributes.Schema.STRING
         ),
         TENANT_ID: attributes.Schema(
-            _('Tenant owning the pool.')
+            _('Tenant owning the pool.'),
+            type=attributes.Schema.STRING
         ),
         VIP_ATTR: attributes.Schema(
-            _('Vip associated with the pool.')
+            _('Vip associated with the pool.'),
+            type=attributes.Schema.MAP
+        ),
+        PROVIDER_ATTR: attributes.Schema(
+            _('Provider implementing this load balancer instance.'),
+            support_status=support.SupportStatus(version='5.0.0'),
+            type=attributes.Schema.STRING,
         ),
     }
 
@@ -530,10 +557,10 @@ class PoolMember(neutron.NeutronResource):
 
     ATTRIBUTES = (
         ADMIN_STATE_UP_ATTR, TENANT_ID, WEIGHT_ATTR, ADDRESS_ATTR,
-        POOL_ID_ATTR, PROTOCOL_PORT_ATTR, SHOW,
+        POOL_ID_ATTR, PROTOCOL_PORT_ATTR,
     ) = (
         'admin_state_up', 'tenant_id', 'weight', 'address',
-        'pool_id', 'protocol_port', 'show',
+        'pool_id', 'protocol_port',
     )
 
     properties_schema = {
@@ -546,7 +573,10 @@ class PoolMember(neutron.NeutronResource):
         ADDRESS: properties.Schema(
             properties.Schema.STRING,
             _('IP address of the pool member on the pool network.'),
-            required=True
+            required=True,
+            constraints=[
+                constraints.CustomConstraint('ip_addr')
+            ]
         ),
         PROTOCOL_PORT: properties.Schema(
             properties.Schema.INTEGER,
@@ -574,26 +604,29 @@ class PoolMember(neutron.NeutronResource):
 
     attributes_schema = {
         ADMIN_STATE_UP_ATTR: attributes.Schema(
-            _('The administrative state of this pool member.')
+            _('The administrative state of this pool member.'),
+            type=attributes.Schema.STRING
         ),
         TENANT_ID: attributes.Schema(
-            _('Tenant owning the pool member.')
+            _('Tenant owning the pool member.'),
+            type=attributes.Schema.STRING
         ),
         WEIGHT_ATTR: attributes.Schema(
-            _('Weight of the pool member in the pool.')
+            _('Weight of the pool member in the pool.'),
+            type=attributes.Schema.STRING
         ),
         ADDRESS_ATTR: attributes.Schema(
-            _('IP address of the pool member.')
+            _('IP address of the pool member.'),
+            type=attributes.Schema.STRING
         ),
         POOL_ID_ATTR: attributes.Schema(
-            _('The ID of the load balancing pool.')
+            _('The ID of the load balancing pool.'),
+            type=attributes.Schema.STRING
         ),
         PROTOCOL_PORT_ATTR: attributes.Schema(
             _('TCP port on which the pool member listens for requests or '
-              'connections.')
-        ),
-        SHOW: attributes.Schema(
-            _('All attributes.')
+              'connections.'),
+            type=attributes.Schema.STRING
         ),
     }
 
@@ -603,7 +636,7 @@ class PoolMember(neutron.NeutronResource):
         protocol_port = self.properties[self.PROTOCOL_PORT]
         address = self.properties[self.ADDRESS]
         admin_state_up = self.properties[self.ADMIN_STATE_UP]
-        weight = self.properties.get(self.WEIGHT)
+        weight = self.properties[self.WEIGHT]
 
         params = {
             'pool_id': pool,
@@ -657,7 +690,10 @@ class LoadBalancer(resource.Resource):
         PROTOCOL_PORT: properties.Schema(
             properties.Schema.INTEGER,
             _('Port number on which the servers are running on the members.'),
-            required=True
+            required=True,
+            constraints=[
+                constraints.Range(0, 65535),
+            ]
         ),
         MEMBERS: properties.Schema(
             properties.Schema.LIST,
@@ -696,7 +732,7 @@ class LoadBalancer(resource.Resource):
                  new_props[self.MEMBERS] is not None)):
             members = set(new_props[self.MEMBERS] or [])
             rd_members = self.data()
-            old_members = set(rd_members.keys())
+            old_members = set(six.iterkeys(rd_members))
             client = self.neutron()
             for member in old_members - members:
                 member_id = rd_members[member]

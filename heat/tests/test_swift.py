@@ -283,7 +283,7 @@ class swiftTest(common.HeatTestCase):
         rsrc = self.create_resource(t, stack, 'SwiftContainer')
         deleter = scheduler.TaskRunner(rsrc.delete)
         ex = self.assertRaises(exception.ResourceFailure, deleter)
-        self.assertIn('ResourceActionNotSupported: '
+        self.assertIn('ResourceActionNotSupported: resources.test_resource: '
                       'Deleting non-empty container',
                       six.text_type(ex))
 
@@ -363,9 +363,9 @@ class swiftTest(common.HeatTestCase):
 
     def _get_check_resource(self):
         t = template_format.parse(swift_template)
-        stack = utils.parse_stack(t)
-        res = self.create_resource(t, stack, 'SwiftContainer')
-        res.swift = mock.Mock()
+        self.stack = utils.parse_stack(t)
+        res = self.create_resource(t, self.stack, 'SwiftContainer')
+        res.client = mock.Mock()
         return res
 
     def test_check(self):
@@ -375,7 +375,7 @@ class swiftTest(common.HeatTestCase):
 
     def test_check_fail(self):
         res = self._get_check_resource()
-        res.swift().get_container.side_effect = Exception('boom')
+        res.client().get_container.side_effect = Exception('boom')
 
         exc = self.assertRaises(exception.ResourceFailure,
                                 scheduler.TaskRunner(res.check))

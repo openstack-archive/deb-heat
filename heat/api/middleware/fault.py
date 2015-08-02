@@ -54,13 +54,16 @@ class FaultWrapper(wsgi.Middleware):
         'AttributeError': webob.exc.HTTPBadRequest,
         'ActionInProgress': webob.exc.HTTPConflict,
         'ValueError': webob.exc.HTTPBadRequest,
+        'EntityNotFound': webob.exc.HTTPNotFound,
         'StackNotFound': webob.exc.HTTPNotFound,
         'NotFound': webob.exc.HTTPNotFound,
         'ResourceActionNotSupported': webob.exc.HTTPBadRequest,
         'ResourceNotFound': webob.exc.HTTPNotFound,
         'ResourceTypeNotFound': webob.exc.HTTPNotFound,
+        'SnapshotNotFound': webob.exc.HTTPNotFound,
         'ResourceNotAvailable': webob.exc.HTTPNotFound,
         'PhysicalResourceNotFound': webob.exc.HTTPNotFound,
+        'PhysicalResourceNameAmbiguity': webob.exc.HTTPBadRequest,
         'InvalidTenant': webob.exc.HTTPForbidden,
         'Forbidden': webob.exc.HTTPForbidden,
         'StackExists': webob.exc.HTTPConflict,
@@ -88,6 +91,7 @@ class FaultWrapper(wsgi.Middleware):
         'IncompatibleObjectVersion': webob.exc.HTTPBadRequest,
         'OrphanedObjectError': webob.exc.HTTPBadRequest,
         'UnsupportedObjectError': webob.exc.HTTPBadRequest,
+        'ResourceTypeUnavailable': webob.exc.HTTPBadRequest,
     }
 
     def _map_exception_to_error(self, class_exception):

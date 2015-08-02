@@ -13,26 +13,47 @@
 
 from heat.common.i18n import _
 
-SUPPORT_STATUSES = (UNKNOWN, SUPPORTED, PROTOTYPE, DEPRECATED,
-                    UNSUPPORTED) = ('UNKNOWN', 'SUPPORTED', 'PROTOTYPE',
-                                    'DEPRECATED', 'UNSUPPORTED')
+SUPPORT_STATUSES = (UNKNOWN, SUPPORTED, DEPRECATED, UNSUPPORTED, HIDDEN
+                    ) = ('UNKNOWN', 'SUPPORTED', 'DEPRECATED', 'UNSUPPORTED',
+                         'HIDDEN')
 
 
 class SupportStatus(object):
 
-    def __init__(self, status=SUPPORTED, message=None, version=None):
-        if status in SUPPORT_STATUSES:
-            self.status = status
-            self.message = message
-            self.version = version
-        else:
+    def __init__(self, status=SUPPORTED, message=None, version=None,
+                 previous_status=None):
+        """Use SupportStatus for current status of object.
+
+        :param status: current status of object.
+        :param version: version of OpenStack, from which current status is
+                    valid. It may be None, but need to be defined for correct
+                    doc generating.
+        :param message: specific status message for object.
+        """
+        self.status = status
+        self.message = message
+        self.version = version
+        self.previous_status = previous_status
+
+        self.validate()
+
+    def validate(self):
+        if (self.previous_status is not None and
+                not isinstance(self.previous_status, SupportStatus)):
+            raise ValueError(_('previous_status must be SupportStatus '
+                               'instead of %s') % type(self.previous_status))
+
+        if self.status not in SUPPORT_STATUSES:
             self.status = UNKNOWN
             self.message = _("Specified status is invalid, defaulting to"
                              " %s") % UNKNOWN
 
             self.version = None
+            self.previous_status = None
 
     def to_dict(self):
             return {'status': self.status,
                     'message': self.message,
-                    'version': self.version}
+                    'version': self.version,
+                    'previous_status': self.previous_status.to_dict()
+                    if self.previous_status is not None else None}

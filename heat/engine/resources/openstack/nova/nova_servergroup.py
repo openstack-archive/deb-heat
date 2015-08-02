@@ -24,6 +24,8 @@ class ServerGroup(resource.Resource):
 
     support_status = support.SupportStatus(version='2014.2')
 
+    default_client_name = 'nova'
+
     PROPERTIES = (
         NAME, POLICIES
     ) = (
@@ -61,10 +63,10 @@ class ServerGroup(resource.Resource):
             try:
                 self.nova().server_groups.delete(self.resource_id)
             except Exception as e:
-                self.client_plugin('nova').ignore_not_found(e)
+                self.client_plugin().ignore_not_found(e)
 
     def physical_resource_name(self):
-        name = self.properties.get(self.NAME)
+        name = self.properties[self.NAME]
         if name:
             return name
         return super(ServerGroup, self).physical_resource_name()

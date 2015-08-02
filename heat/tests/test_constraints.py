@@ -11,7 +11,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
 import six
 
 from heat.common import exception
@@ -21,6 +20,23 @@ from heat.tests import common
 
 
 class SchemaTest(common.HeatTestCase):
+    def test_warn_required_with_default(self):
+        msg = ("Option 'required=True' should not be used with any 'default' "
+               "value \(wibble\)")
+        with self.assertWarnsRegex(UserWarning, msg):
+            constraints.Schema(constraints.Schema.STRING, 'A string',
+                               default='wibble', required=True)
+
+    def test_without_warn_only_default(self):
+        constraints.Schema(constraints.Schema.STRING, 'A string',
+                           default='wibble')
+        self.assertEqual(0, len(self.warnings.captures))
+
+    def test_without_warn_only_required(self):
+        constraints.Schema(constraints.Schema.STRING, 'A string',
+                           required=True)
+        self.assertEqual(0, len(self.warnings.captures))
+
     def test_range_schema(self):
         d = {'range': {'min': 5, 'max': 10}, 'description': 'a range'}
         r = constraints.Range(5, 10, description='a range')
@@ -92,13 +108,13 @@ class SchemaTest(common.HeatTestCase):
             'type': 'string',
             'description': 'A string',
             'default': 'wibble',
-            'required': True,
+            'required': False,
             'constraints': [
                 {'length': {'min': 4, 'max': 8}},
             ]
         }
         s = constraints.Schema(constraints.Schema.STRING, 'A string',
-                               default='wibble', required=True,
+                               default='wibble',
                                constraints=[constraints.Length(4, 8)])
         self.assertEqual(d, dict(s))
 
@@ -111,7 +127,7 @@ class SchemaTest(common.HeatTestCase):
                     'type': 'string',
                     'description': 'A string',
                     'default': 'wibble',
-                    'required': True,
+                    'required': False,
                     'constraints': [
                         {'length': {'min': 4, 'max': 8}},
                     ]
@@ -120,7 +136,7 @@ class SchemaTest(common.HeatTestCase):
             'required': False,
         }
         s = constraints.Schema(constraints.Schema.STRING, 'A string',
-                               default='wibble', required=True,
+                               default='wibble',
                                constraints=[constraints.Length(4, 8)])
         l = constraints.Schema(constraints.Schema.LIST, 'A list', schema=s)
         self.assertEqual(d, dict(l))
@@ -134,7 +150,7 @@ class SchemaTest(common.HeatTestCase):
                     'type': 'string',
                     'description': 'A string',
                     'default': 'wibble',
-                    'required': True,
+                    'required': False,
                     'constraints': [
                         {'length': {'min': 4, 'max': 8}},
                     ]
@@ -143,7 +159,7 @@ class SchemaTest(common.HeatTestCase):
             'required': False,
         }
         s = constraints.Schema(constraints.Schema.STRING, 'A string',
-                               default='wibble', required=True,
+                               default='wibble',
                                constraints=[constraints.Length(4, 8)])
         m = constraints.Schema(constraints.Schema.MAP, 'A map',
                                schema={'Foo': s})
@@ -162,7 +178,7 @@ class SchemaTest(common.HeatTestCase):
                             'type': 'string',
                             'description': 'A string',
                             'default': 'wibble',
-                            'required': True,
+                            'required': False,
                             'constraints': [
                                 {'length': {'min': 4, 'max': 8}},
                             ]
@@ -174,7 +190,7 @@ class SchemaTest(common.HeatTestCase):
             'required': False,
         }
         s = constraints.Schema(constraints.Schema.STRING, 'A string',
-                               default='wibble', required=True,
+                               default='wibble',
                                constraints=[constraints.Length(4, 8)])
         m = constraints.Schema(constraints.Schema.MAP, 'A map',
                                schema={'Foo': s})
@@ -231,13 +247,13 @@ class SchemaTest(common.HeatTestCase):
 
     def test_schema_validate_good(self):
         s = constraints.Schema(constraints.Schema.STRING, 'A string',
-                               default='wibble', required=True,
+                               default='wibble',
                                constraints=[constraints.Length(4, 8)])
         self.assertIsNone(s.validate())
 
     def test_schema_validate_fail(self):
         s = constraints.Schema(constraints.Schema.STRING, 'A string',
-                               default='wibble', required=True,
+                               default='wibble',
                                constraints=[constraints.Range(max=4)])
         err = self.assertRaises(exception.InvalidSchemaError, s.validate)
         self.assertIn('Range constraint invalid for String',
@@ -245,7 +261,7 @@ class SchemaTest(common.HeatTestCase):
 
     def test_schema_nested_validate_good(self):
         nested = constraints.Schema(constraints.Schema.STRING, 'A string',
-                                    default='wibble', required=True,
+                                    default='wibble',
                                     constraints=[constraints.Length(4, 8)])
         s = constraints.Schema(constraints.Schema.MAP, 'A map',
                                schema={'Foo': nested})
@@ -253,7 +269,7 @@ class SchemaTest(common.HeatTestCase):
 
     def test_schema_nested_validate_fail(self):
         nested = constraints.Schema(constraints.Schema.STRING, 'A string',
-                                    default='wibble', required=True,
+                                    default='wibble',
                                     constraints=[constraints.Range(max=4)])
         s = constraints.Schema(constraints.Schema.MAP, 'A map',
                                schema={'Foo': nested})

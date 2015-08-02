@@ -45,6 +45,8 @@
     "stacks:global_index": "rule:deny_everybody",
     "stacks:index": "rule:deny_stack_user",
     "stacks:list_resource_types": "rule:deny_stack_user",
+    "stacks:list_template_versions": "rule:deny_stack_user",
+    "stacks:list_template_functions": "rule:deny_stack_user",
     "stacks:lookup": "",
     "stacks:preview": "rule:deny_stack_user",
     "stacks:resource_schema": "rule:deny_stack_user",
@@ -59,6 +61,8 @@
     "stacks:list_snapshots": "rule:deny_stack_user",
     "stacks:restore_snapshot": "rule:deny_stack_user",
 
+    "software_configs:global_index": "rule:deny_everybody",
+    "software_configs:index": "rule:deny_stack_user",
     "software_configs:create": "rule:deny_stack_user",
     "software_configs:show": "rule:deny_stack_user",
     "software_configs:delete": "rule:deny_stack_user",

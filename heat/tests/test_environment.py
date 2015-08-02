@@ -20,6 +20,7 @@ from oslo_config import cfg
 import six
 
 from heat.common import environment_format
+from heat.common import exception
 from heat.engine import environment
 from heat.engine import resources
 from heat.engine.resources.aws.ec2 import instance
@@ -38,6 +39,7 @@ class EnvironmentTest(common.HeatTestCase):
     def test_load_old_parameters(self):
         old = {u'a': u'ff', u'b': u'ss'}
         expected = {u'parameters': old,
+                    u'encrypted_param_names': [],
                     u'parameter_defaults': {},
                     u'resource_registry': {u'resources': {}}}
         env = environment.Environment(old)
@@ -45,6 +47,7 @@ class EnvironmentTest(common.HeatTestCase):
 
     def test_load_new_env(self):
         new_env = {u'parameters': {u'a': u'ff', u'b': u'ss'},
+                   u'encrypted_param_names': [],
                    u'parameter_defaults': {u'ff': 'new_def'},
                    u'resource_registry': {u'OS::Food': u'fruity.yaml',
                                           u'resources': {}}}
@@ -56,6 +59,7 @@ class EnvironmentTest(common.HeatTestCase):
         prev_params = {'foo': 'bar', 'tester': 'Yes'}
         params = {}
         expected = {'parameters': prev_params,
+                    'encrypted_param_names': [],
                     'parameter_defaults': {},
                     'resource_registry': {'resources': {}}}
         prev_env = environment.Environment(
@@ -70,6 +74,7 @@ class EnvironmentTest(common.HeatTestCase):
         prev_params = {'foo': 'bar', 'tester': 'Yes'}
         params = {'tester': 'patched'}
         expected = {'parameters': {'foo': 'bar', 'tester': 'patched'},
+                    'encrypted_param_names': [],
                     'parameter_defaults': {},
                     'resource_registry': {'resources': {}}}
         prev_env = environment.Environment(
@@ -85,6 +90,7 @@ class EnvironmentTest(common.HeatTestCase):
                        'another_tester': 'Yes'}
         params = {'tester': 'patched'}
         expected = {'parameters': {'foo': 'bar', 'tester': 'patched'},
+                    'encrypted_param_names': [],
                     'parameter_defaults': {},
                     'resource_registry': {'resources': {}}}
         prev_env = environment.Environment(
@@ -99,6 +105,7 @@ class EnvironmentTest(common.HeatTestCase):
         prev_params = {'foo': 'bar', 'tester': 'Yes'}
         params = {}
         expected = {'parameters': {'foo': 'bar'},
+                    'encrypted_param_names': [],
                     'parameter_defaults': {},
                     'resource_registry': {'resources': {}}}
         prev_env = environment.Environment(
@@ -164,6 +171,30 @@ class EnvironmentTest(common.HeatTestCase):
         self.assertEqual('ip.yaml',
                          env.get_resource_info('OS::Networking::FloatingIP',
                                                'my_fip').value)
+
+    def test_register_with_path(self):
+        yaml_env = '''
+        resource_registry:
+          test::one: a.yaml
+          resources:
+            res_x:
+              test::two: b.yaml
+'''
+
+        env = environment.Environment(environment_format.parse(yaml_env))
+        self.assertEqual('a.yaml', env.get_resource_info('test::one').value)
+        self.assertEqual('b.yaml',
+                         env.get_resource_info('test::two', 'res_x').value)
+
+        env2 = environment.Environment()
+        env2.register_class('test::one',
+                            'a.yaml',
+                            path=['test::one'])
+        env2.register_class('test::two',
+                            'b.yaml',
+                            path=['resources', 'res_x', 'test::two'])
+
+        self.assertEqual(env.user_env_as_dict(), env2.user_env_as_dict())
 
     def test_constraints(self):
         env = environment.Environment({})
@@ -262,6 +293,27 @@ class EnvironmentDuplicateTest(common.HeatTestCase):
             self.assertNotEqual(info,
                                 env.get_resource_info('OS::Test::Dummy',
                                                       'my_fip'))
+
+    def test_env_register_while_get_resource_info(self):
+        env_test = {u'resource_registry': {
+            u'OS::Test::Dummy': self.resource_type}}
+        env = environment.Environment()
+        env.load(env_test)
+        env.get_resource_info('OS::Test::Dummy')
+        self.assertEqual({'OS::Test::Dummy': self.resource_type,
+                          'resources': {}},
+                         env.user_env_as_dict().get(
+                             environment_format.RESOURCE_REGISTRY))
+
+        env_test = {u'resource_registry': {
+            u'resources': {u'test': {u'OS::Test::Dummy': self.resource_type}}}}
+        env.load(env_test)
+        env.get_resource_info('OS::Test::Dummy')
+        self.assertEqual({u'OS::Test::Dummy': self.resource_type,
+                          'resources': {u'test': {u'OS::Test::Dummy':
+                                                  self.resource_type}}},
+                         env.user_env_as_dict().get(
+                             environment_format.RESOURCE_REGISTRY))
 
 
 class GlobalEnvLoadingTest(common.HeatTestCase):
@@ -466,6 +518,7 @@ class ChildEnvTest(common.HeatTestCase):
         new_params = {'foo': 'bar', 'tester': 'Yes'}
         penv = environment.Environment()
         expected = {'parameters': new_params,
+                    'encrypted_param_names': [],
                     'parameter_defaults': {},
                     'resource_registry': {'resources': {}}}
         cenv = environment.get_child_environment(penv, new_params)
@@ -475,6 +528,7 @@ class ChildEnvTest(common.HeatTestCase):
         new_params = {'parameters': {'foo': 'bar', 'tester': 'Yes'}}
         penv = environment.Environment()
         expected = {'parameter_defaults': {},
+                    'encrypted_param_names': [],
                     'resource_registry': {'resources': {}}}
         expected.update(new_params)
         cenv = environment.get_child_environment(penv, new_params)
@@ -485,6 +539,7 @@ class ChildEnvTest(common.HeatTestCase):
         parent_params = {'parameters': {'gone': 'hopefully'}}
         penv = environment.Environment(env=parent_params)
         expected = {'parameter_defaults': {},
+                    'encrypted_param_names': [],
                     'resource_registry': {'resources': {}}}
         expected.update(new_params)
         cenv = environment.get_child_environment(penv, new_params)
@@ -716,6 +771,22 @@ class ResourceRegistryTest(common.HeatTestCase):
                          resources['both']['hooks'])
         self.assertEqual('pre-create',
                          resources['nested']['res']['hooks'])
+
+    def test_load_registry_invalid_hook_type(self):
+        resources = {
+            u'resources': {
+                u'a': {
+                    u'hooks': 'invalid-type',
+                }
+            }
+        }
+
+        registry = environment.ResourceRegistry(None, {})
+        msg = ('Invalid hook type "invalid-type" for resource breakpoint, '
+               'acceptable hook types are: (\'pre-create\', \'pre-update\')')
+        ex = self.assertRaises(exception.InvalidBreakPointHook,
+                               registry.load, {'resources': resources})
+        self.assertEqual(msg, six.text_type(ex))
 
 
 class HookMatchTest(common.HeatTestCase):

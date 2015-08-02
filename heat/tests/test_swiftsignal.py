@@ -11,7 +11,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import copy
 import datetime
 import json
 import uuid
@@ -202,7 +201,9 @@ class SwiftSignalHandleTest(common.HeatTestCase):
         rsrc = st.resources['test_wait_condition_handle']
         exc = self.assertRaises(exception.ResourceFailure,
                                 scheduler.TaskRunner(rsrc.delete))
-        self.assertEqual('ClientException: Overlimit: 413', six.text_type(exc))
+        self.assertEqual('ClientException: '
+                         'resources.test_wait_condition_handle: '
+                         'Overlimit: 413', six.text_type(exc))
 
     @mock.patch.object(swift.SwiftClientPlugin, '_create')
     @mock.patch.object(resource.Resource, 'physical_resource_name')
@@ -231,7 +232,9 @@ class SwiftSignalHandleTest(common.HeatTestCase):
         rsrc = st.resources['test_wait_condition_handle']
         exc = self.assertRaises(exception.ResourceFailure,
                                 scheduler.TaskRunner(rsrc.delete))
-        self.assertEqual('ClientException: Overlimit: 413', six.text_type(exc))
+        self.assertEqual('ClientException: '
+                         'resources.test_wait_condition_handle: '
+                         'Overlimit: 413', six.text_type(exc))
 
     @mock.patch.object(swift.SwiftClientPlugin, '_create')
     @mock.patch.object(resource.Resource, 'physical_resource_name')
@@ -263,23 +266,21 @@ class SwiftSignalHandleTest(common.HeatTestCase):
     @mock.patch.object(swift.SwiftClientPlugin, '_create')
     def test_handle_update(self, mock_swift):
         st = create_stack(swiftsignalhandle_template)
-
+        handle = st['test_wait_condition_handle']
         mock_swift_object = mock.Mock()
         mock_swift.return_value = mock_swift_object
-        mock_swift_object.head_account.return_value = {}
+        mock_swift_object.head_account.return_value = {
+            'x-account-meta-temp-url-key': "1234"
+        }
         mock_swift_object.url = "http://fake-host.com:8080/v1/AUTH_1234"
-
         st.create()
-
-        handle = st['test_wait_condition_handle']
-        uprops = copy.copy(handle.properties.data)
-        uprops['count'] = '5'
+        rsrc = st.resources['test_wait_condition_handle']
+        old_url = rsrc.FnGetRefId()
         update_snippet = rsrc_defn.ResourceDefinition(handle.name,
                                                       handle.type(),
-                                                      uprops)
-
-        updater = scheduler.TaskRunner(handle.update, update_snippet)
-        self.assertRaises(resource.UpdateReplace, updater)
+                                                      handle.properties.data)
+        scheduler.TaskRunner(handle.update, update_snippet)()
+        self.assertEqual(old_url, rsrc.FnGetRefId())
 
 
 class SwiftSignalTest(common.HeatTestCase):
@@ -381,16 +382,18 @@ class SwiftSignalTest(common.HeatTestCase):
 
         time_now = timeutils.utcnow()
         time_series = [datetime.timedelta(0, t) + time_now
-                       for t in xrange(1, 100)]
+                       for t in six.moves.xrange(1, 100)]
         timeutils.set_time_override(time_series)
         self.addCleanup(timeutils.clear_time_override)
 
         st.create()
-        self.assertIn("Resource CREATE failed: SwiftSignalTimeout",
+        self.assertIn("SwiftSignalTimeout: resources.test_wait_condition: "
+                      "1 of 2 received - Signal 1 received",
                       st.status_reason)
         wc = st['test_wait_condition']
-        self.assertEqual("SwiftSignalTimeout: 1 of 2 received - Signal 1 "
-                         "received", wc.status_reason)
+        self.assertEqual("SwiftSignalTimeout: resources.test_wait_condition: "
+                         "1 of 2 received - Signal 1 received",
+                         wc.status_reason)
 
     @mock.patch.object(swift.SwiftClientPlugin, '_create')
     @mock.patch.object(resource.Resource, 'physical_resource_name')
@@ -448,7 +451,8 @@ class SwiftSignalTest(common.HeatTestCase):
         st.create()
         self.assertEqual(('CREATE', 'FAILED'), st.state)
         wc = st['test_wait_condition']
-        self.assertEqual("SwiftSignalFailure: foo;bar", wc.status_reason)
+        self.assertEqual("SwiftSignalFailure: resources.test_wait_condition: "
+                         "foo;bar", wc.status_reason)
 
     @mock.patch.object(swift.SwiftClientPlugin, '_create')
     @mock.patch.object(resource.Resource, 'physical_resource_name')
@@ -766,7 +770,8 @@ class SwiftSignalTest(common.HeatTestCase):
         st.create()
         self.assertEqual(('CREATE', 'FAILED'), st.state)
         wc = st['test_wait_condition']
-        self.assertEqual('Error: Failed to parse JSON data: {"status": '
+        self.assertEqual('Error: resources.test_wait_condition: '
+                         'Failed to parse JSON data: {"status": '
                          '"SUCCESS"', wc.status_reason)
 
     @mock.patch.object(swift.SwiftClientPlugin, '_create')
@@ -791,7 +796,8 @@ class SwiftSignalTest(common.HeatTestCase):
         st.create()
         self.assertEqual(('CREATE', 'FAILED'), st.state)
         wc = st['test_wait_condition']
-        self.assertEqual('Error: Unknown status: BOO', wc.status_reason)
+        self.assertEqual('Error: resources.test_wait_condition: '
+                         'Unknown status: BOO', wc.status_reason)
 
     @mock.patch.object(swift.SwiftClientPlugin, '_create')
     @mock.patch.object(resource.Resource, 'physical_resource_name')
@@ -851,3 +857,27 @@ class SwiftSignalTest(common.HeatTestCase):
         self.assertEqual(('CREATE', 'COMPLETE'), st.state)
         wc = st['test_wait_condition']
         self.assertEqual("null", wc.FnGetAtt('data'))
+
+    @mock.patch.object(swift.SwiftClientPlugin, '_create')
+    @mock.patch.object(resource.Resource, 'physical_resource_name')
+    def test_swift_get_object_404(self, mock_name, mock_swift):
+        st = create_stack(swiftsignal_template)
+        handle = st['test_wait_condition_handle']
+
+        mock_swift_object = mock.Mock()
+        mock_swift.return_value = mock_swift_object
+        mock_swift_object.url = "http://fake-host.com:8080/v1/AUTH_1234"
+        mock_swift_object.head_account.return_value = {
+            'x-account-meta-temp-url-key': '123456'
+        }
+        obj_name = "%s-%s-abcdefghijkl" % (st.name, handle.name)
+        mock_name.return_value = obj_name
+        mock_swift_object.get_container.return_value = cont_index(obj_name, 2)
+        mock_swift_object.get_object.side_effect = (
+            (obj_header, ''),
+            swiftclient_client.ClientException(
+                "Object %s not found" % obj_name, http_status=404)
+        )
+
+        st.create()
+        self.assertEqual(('CREATE', 'COMPLETE'), st.state)

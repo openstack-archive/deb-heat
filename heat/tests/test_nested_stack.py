@@ -22,10 +22,11 @@ from heat.common import exception
 from heat.common import identifier
 from heat.common import template_format
 from heat.common import urlfetch
-from heat.engine import parser
 from heat.engine import resource
 from heat.engine.resources.aws.cfn import stack as stack_res
 from heat.engine import rsrc_defn
+from heat.engine import stack as parser
+from heat.engine import template
 from heat.objects import resource_data as resource_data_object
 from heat.tests import common
 from heat.tests import generic_resource as generic_rsrc
@@ -78,12 +79,14 @@ Outputs:
     def parse_stack(self, t, data=None):
         ctx = utils.dummy_context('test_username', 'aaaa', 'password')
         stack_name = 'test_stack'
-        tmpl = parser.Template(t)
+        tmpl = template.Template(t)
         stack = parser.Stack(ctx, stack_name, tmpl, adopt_stack_data=data)
         stack.store()
         return stack
 
-    def test_nested_stack_three_deep(self):
+    @mock.patch.object(parser.Stack, 'root_stack_id')
+    @mock.patch.object(parser.Stack, 'total_resources')
+    def test_nested_stack_three_deep(self, tr, rsi):
         root_template = '''
 HeatTemplateFormatVersion: 2012-12-12
 Resources:
@@ -115,14 +118,20 @@ Resources:
             depth2_template,
             self.nested_template]
 
+        rsi.return_value = '1234'
+        tr.return_value = 2
+
         self.validate_stack(root_template)
         calls = [mock.call('https://server.test/depth1.template'),
                  mock.call('https://server.test/depth2.template'),
                  mock.call('https://server.test/depth3.template')]
         urlfetch.get.assert_has_calls(calls)
+        tr.assert_called_with('1234')
 
-    def test_nested_stack_six_deep(self):
-        template = '''
+    @mock.patch.object(parser.Stack, 'root_stack_id')
+    @mock.patch.object(parser.Stack, 'total_resources')
+    def test_nested_stack_six_deep(self, tr, rsi):
+        tmpl = '''
 HeatTemplateFormatVersion: 2012-12-12
 Resources:
     Nested:
@@ -130,12 +139,12 @@ Resources:
         Properties:
             TemplateURL: 'https://server.test/depth%i.template'
 '''
-        root_template = template % 1
-        depth1_template = template % 2
-        depth2_template = template % 3
-        depth3_template = template % 4
-        depth4_template = template % 5
-        depth5_template = template % 6
+        root_template = tmpl % 1
+        depth1_template = tmpl % 2
+        depth2_template = tmpl % 3
+        depth3_template = tmpl % 4
+        depth4_template = tmpl % 5
+        depth5_template = tmpl % 6
         depth5_template += '''
             Parameters:
                 KeyName: foo
@@ -148,6 +157,9 @@ Resources:
             depth4_template,
             depth5_template,
             self.nested_template]
+
+        rsi.return_value = '1234'
+        tr.return_value = 5
 
         t = template_format.parse(root_template)
         stack = self.parse_stack(t)
@@ -201,8 +213,10 @@ Resources:
                  mock.call('https://server.test/depth4.template')]
         urlfetch.get.assert_has_calls(calls, any_order=True)
 
-    def test_nested_stack_infinite_recursion(self):
-        template = '''
+    @mock.patch.object(parser.Stack, 'root_stack_id')
+    @mock.patch.object(parser.Stack, 'total_resources')
+    def test_nested_stack_infinite_recursion(self, tr, rsi):
+        tmpl = '''
 HeatTemplateFormatVersion: 2012-12-12
 Resources:
     Nested:
@@ -210,9 +224,11 @@ Resources:
         Properties:
             TemplateURL: 'https://server.test/the.template'
 '''
-        urlfetch.get.return_value = template
-        t = template_format.parse(template)
+        urlfetch.get.return_value = tmpl
+        t = template_format.parse(tmpl)
         stack = self.parse_stack(t)
+        rsi.return_value = '1234'
+        tr.return_value = 2
         res = self.assertRaises(exception.StackValidationFailed,
                                 stack.validate)
         self.assertIn('Recursion depth exceeds', six.text_type(res))
@@ -260,7 +276,7 @@ class ResDataResource(generic_rsrc.GenericResource):
 
 
 class ResDataStackTest(common.HeatTestCase):
-    template = '''
+    tmpl = '''
 HeatTemplateFormatVersion: "2012-12-12"
 Parameters:
   KeyName:
@@ -285,7 +301,7 @@ Outputs:
         return stack
 
     def test_res_data_delete(self):
-        stack = self.create_stack(self.template)
+        stack = self.create_stack(self.tmpl)
         res = stack['res']
         stack.delete()
         self.assertEqual((stack.DELETE, stack.COMPLETE), stack.state)
@@ -310,8 +326,9 @@ Outputs:
 
         self.ctx = utils.dummy_context('test_username', 'aaaa', 'password')
         empty_template = {"HeatTemplateFormatVersion": "2012-12-12"}
-        stack = parser.Stack(self.ctx, 'test', parser.Template(empty_template))
-        stack.store()
+        self.stack = parser.Stack(self.ctx, 'test',
+                                  template.Template(empty_template))
+        self.stack.store()
 
         self.patchobject(urlfetch, 'get', return_value=self.nested_template)
         self.nested_parsed = yaml.load(self.nested_template)
@@ -322,7 +339,7 @@ Outputs:
             {"TemplateURL": "https://server.test/the.template",
              "Parameters": self.nested_params})
         self.res = stack_res.NestedStack('test_t_res',
-                                         self.defn, stack)
+                                         self.defn, self.stack)
         self.assertIsNone(self.res.validate())
         self.res._store()
 
@@ -354,11 +371,12 @@ Outputs:
     def test_handle_delete(self):
         self.res.rpc_client = mock.MagicMock()
         self.res.action = self.res.CREATE
+        self.res.nested = mock.MagicMock()
         stack_identity = identifier.HeatIdentifier(
             self.ctx.tenant_id,
             self.res.physical_resource_name(),
             self.res.resource_id)
-
+        self.res.nested().identifier.return_value = stack_identity
         self.res.handle_delete()
         self.res.rpc_client.return_value.delete_stack.assert_called_once_with(
-            self.ctx, stack_identity)
+            self.ctx, self.res.nested().identifier())

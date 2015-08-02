@@ -27,8 +27,8 @@ from heat.engine.resources.aws.ec2 import instance
 from heat.engine.resources.aws.ec2 import volume as aws_vol
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
+from heat.tests.cinder import test_volume_utils as vt_base
 from heat.tests.nova import fakes as fakes_nova
-from heat.tests import test_volume_utils as vt_base
 from heat.tests import utils
 
 
@@ -203,7 +203,9 @@ class VolumeTest(vt_base.BaseVolumeTest):
 
         ex = self.assertRaises(exception.StackValidationFailed,
                                self.create_volume, self.t, stack, 'DataVolume')
-        self.assertIn('Tags Property error', six.text_type(ex))
+        self.assertEqual("Property error: "
+                         "Resources.DataVolume.Properties.Tags[0]: "
+                         "Unknown Property Foo", six.text_type(ex))
 
         self.m.VerifyAll()
 
@@ -306,10 +308,13 @@ class VolumeTest(vt_base.BaseVolumeTest):
         self._mock_create_server_volume_script(fva)
         self.stub_VolumeConstraint_validate()
         # delete script
-        self.fc.volumes.get_server_volume(u'WikiDatabase',
-                                          'vol-123').AndReturn(fva)
+        self.fc.volumes.delete_server_volume(u'WikiDatabase',
+                                             'vol-123').AndReturn(None)
         self.cinder_fc.volumes.get(fva.id).AndRaise(
             cinder_exp.NotFound('Not found'))
+        self.fc.volumes.get_server_volume(u'WikiDatabase', 'vol-123'
+                                          ).AndRaise(
+                                              fakes_nova.fake_exception())
 
         self.m.ReplayAll()
 
@@ -331,9 +336,12 @@ class VolumeTest(vt_base.BaseVolumeTest):
         self._mock_create_server_volume_script(fva)
         self.stub_VolumeConstraint_validate()
         # delete script
-        self.fc.volumes.get_server_volume(u'WikiDatabase',
-                                          'vol-123').AndReturn(fva)
+        self.fc.volumes.delete_server_volume(u'WikiDatabase',
+                                             'vol-123').AndReturn(None)
         self.cinder_fc.volumes.get(fva.id).AndReturn(fva)
+        self.fc.volumes.get_server_volume(u'WikiDatabase', 'vol-123'
+                                          ).AndRaise(
+                                              fakes_nova.fake_exception())
 
         self.m.ReplayAll()
 
@@ -393,11 +401,8 @@ class VolumeTest(vt_base.BaseVolumeTest):
         self.stub_VolumeConstraint_validate()
         # delete script
         fva = vt_base.FakeVolume('in-use')
-        self.fc.volumes.get_server_volume(u'WikiDatabase',
-                                          'vol-123').AndReturn(fva)
-        self.cinder_fc.volumes.get(fva.id).AndReturn(fva)
         self.fc.volumes.delete_server_volume(
-            'WikiDatabase', 'vol-123').MultipleTimes().AndReturn(None)
+            'WikiDatabase', 'vol-123').AndReturn(None)
         self.cinder_fc.volumes.get(fva.id).AndReturn(
             vt_base.FakeVolume('error', id=fva.id))
         self.m.ReplayAll()
@@ -443,12 +448,8 @@ class VolumeTest(vt_base.BaseVolumeTest):
                                       stack_name)
 
         self.cinder_fc.volumes.get(fv.id).AndReturn(
-            vt_base.FakeVolume('available'))
-        self.cinder_fc.volumes.delete(fv.id).AndReturn(True)
-        self.cinder_fc.volumes.get(fv.id).AndReturn(
             vt_base.FakeVolume('deleting'))
-        self.cinder_fc.volumes.get(fv.id).AndRaise(
-            cinder_exp.NotFound('Not found'))
+
         self.m.ReplayAll()
 
         stack = utils.parse_stack(self.t, stack_name=stack_name)
@@ -477,7 +478,8 @@ class VolumeTest(vt_base.BaseVolumeTest):
 
         updater = scheduler.TaskRunner(rsrc.update, after)
         ex = self.assertRaises(exception.ResourceFailure, updater)
-        self.assertIn("NotSupported: Update to properties "
+        self.assertIn("NotSupported: resources.DataVolume: "
+                      "Update to properties "
                       "AvailabilityZone, Size, Tags of DataVolume "
                       "(AWS::EC2::Volume) is not supported",
                       six.text_type(ex))
@@ -495,7 +497,7 @@ class VolumeTest(vt_base.BaseVolumeTest):
         self.assertEqual((res.CHECK, res.COMPLETE), res.state)
 
         fake_volume = vt_base.FakeVolume('in-use')
-        res.cinder().volumes.get.return_value = fake_volume
+        res.client().volumes.get.return_value = fake_volume
         scheduler.TaskRunner(res.check)()
         self.assertEqual((res.CHECK, res.COMPLETE), res.state)
 
@@ -531,8 +533,10 @@ class VolumeTest(vt_base.BaseVolumeTest):
 
         # snapshot script
         self.m.StubOutWithMock(self.cinder_fc.backups, 'create')
-        self.cinder_fc.backups.create(fv.id).AndReturn(
-            vt_base.FakeBackup('available'))
+        self.m.StubOutWithMock(self.cinder_fc.backups, 'get')
+        fb = vt_base.FakeBackup('available')
+        self.cinder_fc.backups.create(fv.id).AndReturn(fb)
+        self.cinder_fc.backups.get(fb.id).AndReturn(fb)
         self.cinder_fc.volumes.get(fv.id).AndReturn(fv)
         self._mock_delete_volume(fv)
 
@@ -553,10 +557,11 @@ class VolumeTest(vt_base.BaseVolumeTest):
                                       stack_name)
 
         # snapshot script
-        self.cinder_fc.volumes.get(fv.id).AndReturn(fv)
         self.m.StubOutWithMock(self.cinder_fc.backups, 'create')
+        self.m.StubOutWithMock(self.cinder_fc.backups, 'get')
         fb = vt_base.FakeBackup('error')
         self.cinder_fc.backups.create(fv.id).AndReturn(fb)
+        self.cinder_fc.backups.get(fb.id).AndReturn(fb)
         self.m.ReplayAll()
 
         self.t['Resources']['DataVolume']['DeletionPolicy'] = 'Snapshot'
@@ -664,8 +669,8 @@ class VolumeTest(vt_base.BaseVolumeTest):
                                   self.create_volume,
                                   self.t, stack, 'DataVolume')
         self.assertEqual(
-            "Property error : DataVolume: Size 0 is out of "
-            "range (min: 1, max: None)", six.text_type(error))
+            "Property error: Resources.DataVolume.Properties.Size: "
+            "0 is out of range (min: 1, max: None)", six.text_type(error))
 
     def test_volume_attachment_updates_not_supported(self):
         self.m.StubOutWithMock(nova.NovaClientPlugin, 'get_server')
@@ -694,7 +699,8 @@ class VolumeTest(vt_base.BaseVolumeTest):
 
         update_task = scheduler.TaskRunner(rsrc.update, after)
         ex = self.assertRaises(exception.ResourceFailure, update_task)
-        self.assertIn('NotSupported: Update to properties Device, InstanceId, '
+        self.assertIn('NotSupported: resources.MountPoint: '
+                      'Update to properties Device, InstanceId, '
                       'VolumeId of MountPoint (AWS::EC2::VolumeAttachment)',
                       six.text_type(ex))
         self.assertEqual((rsrc.UPDATE, rsrc.FAILED), rsrc.state)

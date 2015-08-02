@@ -98,7 +98,7 @@ resources:
 
         # Prove validation works for non-zero create/update
         template_two_nested = self.template.replace("count: 0", "count: 2")
-        expected_err = "length Value 'BAD' is not an integer"
+        expected_err = "Value 'BAD' is not an integer"
         ex = self.assertRaises(exc.HTTPBadRequest, self.update_stack,
                                stack_identifier, template_two_nested,
                                environment=env, files=files)
@@ -244,14 +244,14 @@ resources:
 
         env = {'resource_registry':
                {'My::RandomString': 'OS::Heat::RandomString'}}
-        template_one = self.template.replace("count: 0", "count: 1")
+        template_one = self.template.replace("count: 0", "count: 2")
         stack_identifier = self.stack_create(template=template_one,
                                              environment=env)
         self.assertEqual({u'random_group': u'OS::Heat::ResourceGroup'},
                          self.list_resources(stack_identifier))
 
         initial_nested_ident = self._group_nested_identifier(stack_identifier)
-        self.assertEqual({'0': 'My::RandomString'},
+        self.assertEqual({'0': 'My::RandomString', '1': 'My::RandomString'},
                          self.list_resources(initial_nested_ident))
         # get the output
         stack0 = self.client.stacks.get(stack_identifier)
@@ -301,7 +301,7 @@ outputs:
         env = {'resource_registry':
                {'My::RandomString': 'my_random.yaml'}}
 
-        template_one = self.template.replace("count: 0", "count: 1")
+        template_one = self.template.replace("count: 0", "count: 2")
         stack_identifier = self.stack_create(template=template_one,
                                              environment=env,
                                              files=files1)
@@ -309,7 +309,7 @@ outputs:
                          self.list_resources(stack_identifier))
 
         initial_nested_ident = self._group_nested_identifier(stack_identifier)
-        self.assertEqual({'0': 'My::RandomString'},
+        self.assertEqual({'0': 'My::RandomString', '1': 'My::RandomString'},
                          self.list_resources(initial_nested_ident))
         # get the output
         stack0 = self.client.stacks.get(stack_identifier)
@@ -472,3 +472,43 @@ outputs:
         stack = self.client.stacks.get(stack_identifier)
         self.assertEqual('goopie', self._stack_output(stack, 'test0'))
         self.assertEqual('different', self._stack_output(stack, 'test1'))
+
+
+class ResourceGroupErrorResourceTest(test.HeatIntegrationTest):
+    template = '''
+heat_template_version: "2013-05-23"
+resources:
+  group1:
+    type: OS::Heat::ResourceGroup
+    properties:
+      count: 2
+      resource_def:
+        type: fail.yaml
+'''
+    nested_templ = '''
+heat_template_version: "2013-05-23"
+resources:
+  oops:
+    type: OS::Heat::TestResource
+    properties:
+      fail: true
+      wait_secs: 2
+'''
+
+    def setUp(self):
+        super(ResourceGroupErrorResourceTest, self).setUp()
+        self.client = self.orchestration_client
+
+    def test_fail(self):
+        stack_identifier = self.stack_create(
+            template=self.template,
+            files={'fail.yaml': self.nested_templ},
+            expected_status='CREATE_FAILED',
+            enable_cleanup=False)
+        stack = self.client.stacks.get(stack_identifier)
+
+        self.assertEqual('CREATE_FAILED', stack.stack_status)
+        self.client.stacks.delete(stack_identifier)
+        self._wait_for_stack_status(
+            stack_identifier, 'DELETE_COMPLETE',
+            success_on_not_found=True)

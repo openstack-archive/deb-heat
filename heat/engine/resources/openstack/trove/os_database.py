@@ -52,9 +52,11 @@ class OSDBInstance(resource.Resource):
     PROPERTIES = (
         NAME, FLAVOR, SIZE, DATABASES, USERS, AVAILABILITY_ZONE,
         RESTORE_POINT, DATASTORE_TYPE, DATASTORE_VERSION, NICS,
+        REPLICA_OF, REPLICA_COUNT,
     ) = (
         'name', 'flavor', 'size', 'databases', 'users', 'availability_zone',
         'restore_point', 'datastore_type', 'datastore_version', 'networks',
+        'replica_of', 'replica_count'
     )
 
     _DATABASE_KEYS = (
@@ -149,7 +151,10 @@ class OSDBInstance(resource.Resource):
                     ),
                     V4_FIXED_IP: properties.Schema(
                         properties.Schema.STRING,
-                        _('Fixed IPv4 address for this NIC.')
+                        _('Fixed IPv4 address for this NIC.'),
+                        constraints=[
+                            constraints.CustomConstraint('ip_addr')
+                        ]
                     ),
                 },
             ),
@@ -246,14 +251,26 @@ class OSDBInstance(resource.Resource):
             properties.Schema.STRING,
             _('DB instance restore point.')
         ),
+        REPLICA_OF: properties.Schema(
+            properties.Schema.STRING,
+            _('Identifier of the source instance to replicate.'),
+            support_status=support.SupportStatus(version='5.0.0')
+        ),
+        REPLICA_COUNT: properties.Schema(
+            properties.Schema.INTEGER,
+            _('The number of replicas to be created.'),
+            support_status=support.SupportStatus(version='5.0.0')
+        ),
     }
 
     attributes_schema = {
         HOSTNAME: attributes.Schema(
-            _("Hostname of the instance.")
+            _("Hostname of the instance."),
+            type=attributes.Schema.STRING
         ),
         HREF: attributes.Schema(
-            _("Api endpoint reference of the instance.")
+            _("Api endpoint reference of the instance."),
+            type=attributes.Schema.STRING
         ),
     }
 
@@ -268,12 +285,12 @@ class OSDBInstance(resource.Resource):
     def dbinstance(self):
         """Get the trove dbinstance."""
         if not self._dbinstance and self.resource_id:
-            self._dbinstance = self.trove().instances.get(self.resource_id)
+            self._dbinstance = self.client().instances.get(self.resource_id)
 
         return self._dbinstance
 
     def _dbinstance_name(self):
-        name = self.properties.get(self.NAME)
+        name = self.properties[self.NAME]
         if name:
             return name
 
@@ -286,14 +303,16 @@ class OSDBInstance(resource.Resource):
         self.flavor = self.client_plugin().get_flavor_id(
             self.properties[self.FLAVOR])
         self.volume = {'size': self.properties[self.SIZE]}
-        self.databases = self.properties.get(self.DATABASES)
-        self.users = self.properties.get(self.USERS)
-        restore_point = self.properties.get(self.RESTORE_POINT)
+        self.databases = self.properties[self.DATABASES]
+        self.users = self.properties[self.USERS]
+        restore_point = self.properties[self.RESTORE_POINT]
         if restore_point:
             restore_point = {"backupRef": restore_point}
-        zone = self.properties.get(self.AVAILABILITY_ZONE)
-        self.datastore_type = self.properties.get(self.DATASTORE_TYPE)
-        self.datastore_version = self.properties.get(self.DATASTORE_VERSION)
+        zone = self.properties[self.AVAILABILITY_ZONE]
+        self.datastore_type = self.properties[self.DATASTORE_TYPE]
+        self.datastore_version = self.properties[self.DATASTORE_VERSION]
+        replica_of = self.properties[self.REPLICA_OF]
+        replica_count = self.properties[self.REPLICA_COUNT]
 
         # convert user databases to format required for troveclient.
         # that is, list of database dictionaries
@@ -303,7 +322,7 @@ class OSDBInstance(resource.Resource):
 
         # convert networks to format required by troveclient
         nics = []
-        for nic in self.properties.get(self.NICS):
+        for nic in self.properties[self.NICS]:
             nic_dict = {}
             net = nic.get(self.NET)
             if net:
@@ -326,7 +345,7 @@ class OSDBInstance(resource.Resource):
             nics.append(nic_dict)
 
         # create db instance
-        instance = self.trove().instances.create(
+        instance = self.client().instances.create(
             self._dbinstance_name(),
             self.flavor,
             volume=self.volume,
@@ -336,14 +355,16 @@ class OSDBInstance(resource.Resource):
             availability_zone=zone,
             datastore=self.datastore_type,
             datastore_version=self.datastore_version,
-            nics=nics)
+            nics=nics,
+            replica_of=replica_of,
+            replica_count=replica_count)
         self.resource_id_set(instance.id)
 
-        return instance
+        return instance.id
 
-    def _refresh_instance(self, instance):
+    def _refresh_instance(self, instance_id):
         try:
-            instance = self.trove().instances.get(instance.id)
+            instance = self.client().instances.get(instance_id)
             return instance
         except Exception as exc:
             if self.client_plugin().is_over_limit(exc):
@@ -353,15 +374,17 @@ class OSDBInstance(resource.Resource):
                          {'name': self.stack.name,
                           'id': self.stack.id,
                           'exception': exc})
-                return instance
+                return None
             else:
                 raise
 
-    def check_create_complete(self, instance):
+    def check_create_complete(self, instance_id):
         '''
         Check if cloud DB instance creation is complete.
         '''
-        instance = self._refresh_instance(instance)  # get updated attributes
+        instance = self._refresh_instance(instance_id)  # refresh attributes
+        if instance is None:
+            return False
         if instance.status in self.BAD_STATUSES:
             raise resource.ResourceInError(
                 resource_status=instance.status,
@@ -382,7 +405,7 @@ class OSDBInstance(resource.Resource):
         return True
 
     def handle_check(self):
-        instance = self.trove().instances.get(self.resource_id)
+        instance = self.client().instances.get(self.resource_id)
         status = instance.status
         checks = [
             {'attr': 'status', 'expected': self.ACTIVE, 'current': status},
@@ -397,23 +420,23 @@ class OSDBInstance(resource.Resource):
             return
 
         try:
-            instance = self.trove().instances.get(self.resource_id)
+            instance = self.client().instances.get(self.resource_id)
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
             instance.delete()
-            return instance
+            return instance.id
 
-    def check_delete_complete(self, instance):
+    def check_delete_complete(self, instance_id):
         '''
         Check for completion of cloud DB instance deletion
         '''
-        if not instance:
+        if not instance_id:
             return True
 
         try:
             # For some time trove instance may continue to live
-            self._refresh_instance(instance)
+            self._refresh_instance(instance_id)
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
             return True
@@ -428,17 +451,17 @@ class OSDBInstance(resource.Resource):
         if res:
             return res
 
-        datastore_type = self.properties.get(self.DATASTORE_TYPE)
-        datastore_version = self.properties.get(self.DATASTORE_VERSION)
+        datastore_type = self.properties[self.DATASTORE_TYPE]
+        datastore_version = self.properties[self.DATASTORE_VERSION]
 
         self.client_plugin().validate_datastore(
             datastore_type, datastore_version,
             self.DATASTORE_TYPE, self.DATASTORE_VERSION)
 
         # check validity of user and databases
-        users = self.properties.get(self.USERS)
+        users = self.properties[self.USERS]
         if users:
-            databases = self.properties.get(self.DATABASES)
+            databases = self.properties[self.DATABASES]
             if not databases:
                 msg = _('Databases property is required if users property '
                         'is provided for resource %s.') % self.name
@@ -457,7 +480,7 @@ class OSDBInstance(resource.Resource):
 
         # check validity of NICS
         is_neutron = self.is_using_neutron()
-        nics = self.properties.get(self.NICS)
+        nics = self.properties[self.NICS]
         for nic in nics:
             if not is_neutron and nic.get(self.PORT):
                 msg = _("Can not use %s property on Nova-network.") % self.PORT

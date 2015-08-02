@@ -21,6 +21,7 @@ import sys
 from oslo_log import log as logging
 import six
 from six.moves.urllib import parse as urlparse
+from six import reraise as raise_
 
 from heat.common.i18n import _
 from heat.common.i18n import _LE
@@ -86,12 +87,13 @@ def wrap_exception(notifier=None, publisher_id=None, event_type=None,
                                     payload)
 
                 # re-raise original exception since it may have been clobbered
-                raise exc_info[0], exc_info[1], exc_info[2]
+                raise_(exc_info[0], exc_info[1], exc_info[2])
 
         return six.wraps(f)(wrapped)
     return inner
 
 
+@six.python_2_unicode_compatible
 class HeatException(Exception):
     """Base Heat Exception
 
@@ -113,16 +115,14 @@ class HeatException(Exception):
             # log the issue and the kwargs
             LOG.exception(_LE('Exception in string format operation'))
             for name, value in six.iteritems(kwargs):
-                LOG.error("%s: %s" % (name, value))  # noqa
+                LOG.error(_LE("%(name)s: %(value)s"),
+                          {'name': name, 'value': value})  # noqa
 
             if _FATAL_EXCEPTION_FORMAT_ERRORS:
-                raise exc_info[0], exc_info[1], exc_info[2]
+                raise_(exc_info[0], exc_info[1], exc_info[2])
 
     def __str__(self):
-        return unicode(self.message).encode('UTF-8')
-
-    def __unicode__(self):
-        return unicode(self.message)
+        return six.text_type(self.message)
 
     def __deepcopy__(self, memo):
         return self.__class__(**self.kwargs)
@@ -226,24 +226,8 @@ class FlavorMissing(HeatException):
     msg_fmt = _("The Flavor ID (%(flavor_id)s) could not be found.")
 
 
-class ImageNotFound(HeatException):
-    msg_fmt = _("The Image (%(image_name)s) could not be found.")
-
-
-class ServerNotFound(HeatException):
-    msg_fmt = _("The server (%(server)s) could not be found.")
-
-
-class VolumeNotFound(HeatException):
-    msg_fmt = _("The Volume (%(volume)s) could not be found.")
-
-
-class VolumeSnapshotNotFound(HeatException):
-    msg_fmt = _("The VolumeSnapshot (%(snapshot)s) could not be found.")
-
-
-class VolumeTypeNotFound(HeatException):
-    msg_fmt = _("The VolumeType (%(volume_type)s) could not be found.")
+class EntityNotFound(HeatException):
+    msg_fmt = _("The %(entity)s (%(name)s) could not be found.")
 
 
 class NovaNetworkNotFound(HeatException):
@@ -268,7 +252,7 @@ class StackExists(HeatException):
     msg_fmt = _("The Stack (%(stack_name)s) already exists.")
 
 
-class StackValidationFailed(HeatException):
+class HeatExceptionWithPath(HeatException):
     msg_fmt = _("%(error)s%(path)s%(message)s")
 
     def __init__(self, error=None, path=None, message=None):
@@ -290,8 +274,8 @@ class StackValidationFailed(HeatException):
                 result_path = path_item
 
         self.error_message = message or ''
-        super(StackValidationFailed, self).__init__(
-            error=('%s : ' % self.error if self.error != '' else ''),
+        super(HeatExceptionWithPath, self).__init__(
+            error=('%s: ' % self.error if self.error != '' else ''),
             path=('%s: ' % result_path if len(result_path) > 0 else ''),
             message=self.error_message
         )
@@ -306,6 +290,10 @@ class StackValidationFailed(HeatException):
         return self.error_message
 
 
+class StackValidationFailed(HeatExceptionWithPath):
+    pass
+
+
 class InvalidSchemaError(HeatException):
     msg_fmt = _("%(message)s")
 
@@ -315,8 +303,25 @@ class ResourceNotFound(HeatException):
                 "in Stack %(stack_name)s.")
 
 
+class SnapshotNotFound(HeatException):
+    msg_fmt = _("The Snapshot (%(snapshot)s) for Stack (%(stack)s) "
+                "could not be found.")
+
+
+class TemplateNotFound(HeatException):
+    msg_fmt = _("%(message)s")
+
+
 class ResourceTypeNotFound(HeatException):
     msg_fmt = _("The Resource Type (%(type_name)s) could not be found.")
+
+
+class InvalidResourceType(HeatException):
+    msg_fmt = _("%(message)s")
+
+
+class InvalidBreakPointHook(HeatException):
+    msg_fmt = _("%(message)s")
 
 
 class ResourceNotAvailable(HeatException):
@@ -331,18 +336,63 @@ class WatchRuleNotFound(HeatException):
     msg_fmt = _("The Watch Rule (%(watch_name)s) could not be found.")
 
 
-class ResourceFailure(HeatException):
-    msg_fmt = _("%(exc_type)s: %(message)s")
-
-    def __init__(self, exception, resource, action=None):
-        if isinstance(exception, ResourceFailure):
-            exception = getattr(exception, 'exc', exception)
-        self.exc = exception
+class ResourceFailure(HeatExceptionWithPath):
+    def __init__(self, exception_or_error, resource, action=None):
         self.resource = resource
         self.action = action
-        exc_type = type(exception).__name__
-        super(ResourceFailure, self).__init__(exc_type=exc_type,
-                                              message=six.text_type(exception))
+        if action is None and resource is not None:
+            self.action = resource.action
+        path = []
+        res_path = []
+        if resource is not None:
+            res_path = [resource.stack.t.get_section_name('resources'),
+                        resource.name]
+
+        if isinstance(exception_or_error, Exception):
+            if isinstance(exception_or_error, ResourceFailure):
+                self.exc = exception_or_error.exc
+                error = exception_or_error.error
+                message = exception_or_error.error_message
+                path = exception_or_error.path
+            else:
+                self.exc = exception_or_error
+                error = six.text_type(type(self.exc).__name__)
+                message = six.text_type(self.exc)
+                path = res_path
+        else:
+            self.exc = None
+            res_failed = 'Resource %s failed: ' % action.upper()
+            if res_failed in exception_or_error:
+                (error, message, new_path) = self._from_status_reason(
+                    exception_or_error)
+                path = res_path + new_path
+            else:
+                path = res_path
+                error = None
+                message = exception_or_error
+
+        super(ResourceFailure, self).__init__(error=error, path=path,
+                                              message=message)
+
+    def _from_status_reason(self, status_reason):
+        """Split the status_reason up into parts.
+
+        Given the following status_reason:
+        "Resource DELETE failed: Exception : resources.AResource: foo"
+
+        we are going to return:
+        ("Exception", "resources.AResource", "foo")
+        """
+        parsed = [sp.strip() for sp in status_reason.split(':')]
+        if len(parsed) >= 4:
+            error = parsed[1]
+            message = ': '.join(parsed[3:])
+            path = parsed[2].split('.')
+        else:
+            error = ''
+            message = status_reason
+            path = []
+        return (error, message, path)
 
 
 class NotSupported(HeatException):
@@ -361,6 +411,15 @@ class ResourcePropertyConflict(HeatException):
         if args:
             kwargs.update({'props': ", ".join(args)})
         super(ResourcePropertyConflict, self).__init__(**kwargs)
+
+
+class ResourcePropertyDependency(HeatException):
+    msg_fmt = _('%(prop1)s cannot be specified without %(prop2)s.')
+
+
+class ResourcePropertyValueDependency(HeatException):
+    msg_fmt = _('%(prop1)s property should only be specified '
+                'for %(prop2)s with value %(value)s.')
 
 
 class PropertyUnspecifiedError(HeatException):
@@ -429,7 +488,7 @@ class EventSendFailed(HeatException):
 
 
 class ServiceNotFound(HeatException):
-    msg_fmt = _("Service %(service_id)s does not found")
+    msg_fmt = _("Service %(service_id)s not found")
 
 
 class UnsupportedObjectError(HeatException):
@@ -454,3 +513,17 @@ class ReadOnlyFieldError(HeatException):
 
 class ObjectFieldInvalid(HeatException):
     msg_fmt = _('Field %(field)s of %(objname)s is not an instance of Field')
+
+
+class KeystoneServiceNameConflict(HeatException):
+    msg_fmt = _("Keystone has more than one service with same name "
+                "%(service)s. Please use service id instead of name")
+
+
+class SIGHUPInterrupt(HeatException):
+    msg_fmt = _("System SIGHUP signal received.")
+
+
+class ResourceTypeUnavailable(HeatException):
+    msg_fmt = _("Service %(service_name)s does not have required endpoint in "
+                "service catalog for the resource type %(resource_type)s")

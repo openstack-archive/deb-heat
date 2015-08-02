@@ -12,6 +12,7 @@
 #    under the License.
 
 from oslo_log import log as logging
+import six
 
 from heat.common.i18n import _
 from heat.common.i18n import _LW
@@ -33,11 +34,13 @@ class Port(neutron.NeutronResource):
         ADMIN_STATE_UP, FIXED_IPS, MAC_ADDRESS,
         DEVICE_ID, SECURITY_GROUPS, ALLOWED_ADDRESS_PAIRS,
         DEVICE_OWNER, REPLACEMENT_POLICY, VNIC_TYPE,
+        PORT_SECURITY_ENABLED,
     ) = (
         'network_id', 'network', 'name', 'value_specs',
         'admin_state_up', 'fixed_ips', 'mac_address',
         'device_id', 'security_groups', 'allowed_address_pairs',
         'device_owner', 'replacement_policy', 'binding:vnic_type',
+        'port_security_enabled',
     )
 
     _FIXED_IP_KEYS = (
@@ -55,19 +58,22 @@ class Port(neutron.NeutronResource):
     ATTRIBUTES = (
         ADMIN_STATE_UP_ATTR, DEVICE_ID_ATTR, DEVICE_OWNER_ATTR, FIXED_IPS_ATTR,
         MAC_ADDRESS_ATTR, NAME_ATTR, NETWORK_ID_ATTR, SECURITY_GROUPS_ATTR,
-        STATUS, TENANT_ID, ALLOWED_ADDRESS_PAIRS_ATTR, SHOW, SUBNETS_ATTR,
+        STATUS, TENANT_ID, ALLOWED_ADDRESS_PAIRS_ATTR, SUBNETS_ATTR,
+        PORT_SECURITY_ENABLED_ATTR,
     ) = (
         'admin_state_up', 'device_id', 'device_owner', 'fixed_ips',
         'mac_address', 'name', 'network_id', 'security_groups',
-        'status', 'tenant_id', 'allowed_address_pairs', 'show', 'subnets',
+        'status', 'tenant_id', 'allowed_address_pairs', 'subnets',
+        'port_security_enabled',
     )
 
     properties_schema = {
         NETWORK_ID: properties.Schema(
             properties.Schema.STRING,
             support_status=support.SupportStatus(
-                support.DEPRECATED,
-                _('Use property %s.') % NETWORK),
+                status=support.DEPRECATED,
+                message=_('Use property %s.') % NETWORK,
+                version='2014.2'),
             constraints=[
                 constraints.CustomConstraint('neutron.network')
             ],
@@ -112,8 +118,9 @@ class Port(neutron.NeutronResource):
                     FIXED_IP_SUBNET_ID: properties.Schema(
                         properties.Schema.STRING,
                         support_status=support.SupportStatus(
-                            support.DEPRECATED,
-                            _('Use property %s.') % FIXED_IP_SUBNET),
+                            status=support.DEPRECATED,
+                            message=_('Use property %s.') % FIXED_IP_SUBNET,
+                            version='2014.2 '),
                         constraints=[
                             constraints.CustomConstraint('neutron.subnet')
                         ]
@@ -129,7 +136,10 @@ class Port(neutron.NeutronResource):
                     ),
                     FIXED_IP_IP_ADDRESS: properties.Schema(
                         properties.Schema.STRING,
-                        _('IP address desired in the subnet for this port.')
+                        _('IP address desired in the subnet for this port.'),
+                        constraints=[
+                            constraints.CustomConstraint('ip_addr')
+                        ]
                     ),
                 },
             ),
@@ -137,7 +147,10 @@ class Port(neutron.NeutronResource):
         ),
         MAC_ADDRESS: properties.Schema(
             properties.Schema.STRING,
-            _('MAC address to give to this port.')
+            _('MAC address to give to this port.'),
+            constraints=[
+                constraints.CustomConstraint('mac_addr')
+            ]
         ),
         DEVICE_ID: properties.Schema(
             properties.Schema.STRING,
@@ -158,12 +171,18 @@ class Port(neutron.NeutronResource):
                 schema={
                     ALLOWED_ADDRESS_PAIR_MAC_ADDRESS: properties.Schema(
                         properties.Schema.STRING,
-                        _('MAC address to allow through this port.')
+                        _('MAC address to allow through this port.'),
+                        constraints=[
+                            constraints.CustomConstraint('mac_addr')
+                        ]
                     ),
                     ALLOWED_ADDRESS_PAIR_IP_ADDRESS: properties.Schema(
                         properties.Schema.STRING,
                         _('IP address to allow through this port.'),
-                        required=True
+                        required=True,
+                        constraints=[
+                            constraints.CustomConstraint('ip_addr')
+                        ]
                     ),
                 },
             )
@@ -202,48 +221,70 @@ class Port(neutron.NeutronResource):
             support_status=support.SupportStatus(version='2015.1'),
             update_allowed=True
         ),
+        PORT_SECURITY_ENABLED: properties.Schema(
+            properties.Schema.BOOLEAN,
+            _('Flag to enable/disable port security on the port. '
+              'When disable this feature(set it to False), there will be no '
+              'packages filtering, like security-group and address-pairs.'),
+            update_allowed=True,
+            support_status=support.SupportStatus(version='5.0.0')
+        ),
     }
 
     attributes_schema = {
         ADMIN_STATE_UP_ATTR: attributes.Schema(
-            _("The administrative state of this port.")
+            _("The administrative state of this port."),
+            type=attributes.Schema.STRING
         ),
         DEVICE_ID_ATTR: attributes.Schema(
-            _("Unique identifier for the device.")
+            _("Unique identifier for the device."),
+            type=attributes.Schema.STRING
         ),
         DEVICE_OWNER: attributes.Schema(
-            _("Name of the network owning the port.")
+            _("Name of the network owning the port."),
+            type=attributes.Schema.STRING
         ),
         FIXED_IPS_ATTR: attributes.Schema(
-            _("Fixed IP addresses.")
+            _("Fixed IP addresses."),
+            type=attributes.Schema.LIST
         ),
         MAC_ADDRESS_ATTR: attributes.Schema(
-            _("MAC address of the port.")
+            _("MAC address of the port."),
+            type=attributes.Schema.STRING
         ),
         NAME_ATTR: attributes.Schema(
-            _("Friendly name of the port.")
+            _("Friendly name of the port."),
+            type=attributes.Schema.STRING
         ),
         NETWORK_ID_ATTR: attributes.Schema(
-            _("Unique identifier for the network owning the port.")
+            _("Unique identifier for the network owning the port."),
+            type=attributes.Schema.STRING
         ),
         SECURITY_GROUPS_ATTR: attributes.Schema(
-            _("A list of security groups for the port.")
+            _("A list of security groups for the port."),
+            type=attributes.Schema.LIST
         ),
         STATUS: attributes.Schema(
-            _("The status of the port.")
+            _("The status of the port."),
+            type=attributes.Schema.STRING
         ),
         TENANT_ID: attributes.Schema(
-            _("Tenant owning the port.")
+            _("Tenant owning the port."),
+            type=attributes.Schema.STRING
         ),
         ALLOWED_ADDRESS_PAIRS_ATTR: attributes.Schema(
             _("Additional MAC/IP address pairs allowed to pass through "
-              "a port.")
-        ),
-        SHOW: attributes.Schema(
-            _("All attributes.")
+              "a port."),
+            type=attributes.Schema.LIST
         ),
         SUBNETS_ATTR: attributes.Schema(
-            _("A list of all subnet attributes for the port.")
+            _("A list of all subnet attributes for the port."),
+            type=attributes.Schema.LIST
+        ),
+        PORT_SECURITY_ENABLED_ATTR: attributes.Schema(
+            _("Port security enabled of the port."),
+            support_status=support.SupportStatus(version='5.0.0'),
+            type=attributes.Schema.BOOLEAN
         ),
     }
 
@@ -259,13 +300,13 @@ class Port(neutron.NeutronResource):
         # It is not known which subnet a port might be assigned
         # to so all subnets in a network should be created before
         # the ports in that network.
-        for res in self.stack.itervalues():
+        for res in six.itervalues(self.stack):
             if res.has_interface('OS::Neutron::Subnet'):
                 dep_network = res.properties.get(
                     subnet.Subnet.NETWORK) or res.properties.get(
                         subnet.Subnet.NETWORK_ID)
-                network = self.properties.get(
-                    self.NETWORK) or self.properties.get(self.NETWORK_ID)
+                network = self.properties[
+                    self.NETWORK] or self.properties[self.NETWORK_ID]
                 if dep_network == network:
                     deps += (self, res)
 

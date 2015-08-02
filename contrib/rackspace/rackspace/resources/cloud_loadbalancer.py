@@ -26,6 +26,7 @@ from heat.engine import function
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine import scheduler
+from heat.engine import support
 
 try:
     from pyrax.exceptions import NotFound  # noqa
@@ -73,19 +74,26 @@ class CloudLoadBalancer(resource.Resource):
 
     """Represents a Rackspace Cloud Loadbalancer."""
 
+    support_status = support.SupportStatus(
+        status=support.UNSUPPORTED,
+        message=_('This resource is not supported, use at your own risk.'))
+
     PROPERTIES = (
         NAME, NODES, PROTOCOL, ACCESS_LIST, HALF_CLOSED, ALGORITHM,
         CONNECTION_LOGGING, METADATA, PORT, TIMEOUT,
         CONNECTION_THROTTLE, SESSION_PERSISTENCE, VIRTUAL_IPS,
         CONTENT_CACHING, HEALTH_MONITOR, SSL_TERMINATION, ERROR_PAGE,
+        HTTPS_REDIRECT,
     ) = (
         'name', 'nodes', 'protocol', 'accessList', 'halfClosed', 'algorithm',
         'connectionLogging', 'metadata', 'port', 'timeout',
         'connectionThrottle', 'sessionPersistence', 'virtualIps',
         'contentCaching', 'healthMonitor', 'sslTermination', 'errorPage',
+        'httpsRedirect',
     )
 
-    LB_UPDATE_PROPS = (NAME, ALGORITHM, PROTOCOL, HALF_CLOSED, PORT, TIMEOUT)
+    LB_UPDATE_PROPS = (NAME, ALGORITHM, PROTOCOL, HALF_CLOSED, PORT, TIMEOUT,
+                       HTTPS_REDIRECT)
 
     _NODE_KEYS = (
         NODE_ADDRESSES, NODE_PORT, NODE_CONDITION, NODE_TYPE,
@@ -218,7 +226,7 @@ class CloudLoadBalancer(resource.Resource):
                         )
                     ),
                     NODE_PORT: properties.Schema(
-                        properties.Schema.NUMBER,
+                        properties.Schema.INTEGER,
                         required=True
                     ),
                     NODE_CONDITION: properties.Schema(
@@ -226,7 +234,8 @@ class CloudLoadBalancer(resource.Resource):
                         default='ENABLED',
                         constraints=[
                             constraints.AllowedValues(['ENABLED',
-                                                       'DISABLED']),
+                                                       'DISABLED',
+                                                       'DRAINING']),
                         ]
                     ),
                     NODE_TYPE: properties.Schema(
@@ -299,7 +308,7 @@ class CloudLoadBalancer(resource.Resource):
             update_allowed=True
         ),
         PORT: properties.Schema(
-            properties.Schema.NUMBER,
+            properties.Schema.INTEGER,
             required=True,
             update_allowed=True
         ),
@@ -320,13 +329,13 @@ class CloudLoadBalancer(resource.Resource):
                     ]
                 ),
                 CONNECTION_THROTTLE_MIN_CONNECTIONS: properties.Schema(
-                    properties.Schema.NUMBER,
+                    properties.Schema.INTEGER,
                     constraints=[
                         constraints.Range(1, 1000),
                     ]
                 ),
                 CONNECTION_THROTTLE_MAX_CONNECTIONS: properties.Schema(
-                    properties.Schema.NUMBER,
+                    properties.Schema.INTEGER,
                     constraints=[
                         constraints.Range(1, 100000),
                     ]
@@ -400,7 +409,7 @@ class CloudLoadBalancer(resource.Resource):
             properties.Schema.MAP,
             schema={
                 SSL_TERMINATION_SECURE_PORT: properties.Schema(
-                    properties.Schema.NUMBER,
+                    properties.Schema.INTEGER,
                     default=443
                 ),
                 SSL_TERMINATION_PRIVATEKEY: properties.Schema(
@@ -428,6 +437,19 @@ class CloudLoadBalancer(resource.Resource):
             properties.Schema.STRING,
             update_allowed=True
         ),
+        HTTPS_REDIRECT: properties.Schema(
+            properties.Schema.BOOLEAN,
+            _("Enables or disables HTTP to HTTPS redirection for the load "
+              "balancer. When enabled, any HTTP request returns status code "
+              "301 (Moved Permanently), and the requester is redirected to "
+              "the requested URL via the HTTPS protocol on port 443. Only "
+              "available for HTTPS protocol (port=443), or HTTP protocol with "
+              "a properly configured SSL termination (secureTrafficOnly=true, "
+              "securePort=443)."),
+            update_allowed=True,
+            default=False,
+            support_status=support.SupportStatus(version="2015.1")
+        )
     }
 
     attributes_schema = {
@@ -484,6 +506,17 @@ class CloudLoadBalancer(resource.Resource):
         else:
             return False
 
+    def _valid_HTTPS_redirect_with_HTTP_prot(self):
+        """Determine if HTTPS redirect is valid when protocol is HTTP"""
+        proto = self.properties[self.PROTOCOL]
+        redir = self.properties[self.HTTPS_REDIRECT]
+        termcfg = self.properties.get(self.SSL_TERMINATION) or {}
+        seconly = termcfg.get(self.SSL_TERMINATION_SECURE_TRAFFIC_ONLY, False)
+        secport = termcfg.get(self.SSL_TERMINATION_SECURE_PORT, 0)
+        if (redir and (proto == "HTTP") and seconly and (secport == 443)):
+            return True
+        return False
+
     def _configure_post_creation(self, loadbalancer):
         """Configure all load balancer properties post creation.
 
@@ -513,6 +546,11 @@ class CloudLoadBalancer(resource.Resource):
                 secureTrafficOnly=ssl_term[
                     self.SSL_TERMINATION_SECURE_TRAFFIC_ONLY])
 
+        if self._valid_HTTPS_redirect_with_HTTP_prot():
+            while not self._check_status(loadbalancer, ['ACTIVE']):
+                yield
+            loadbalancer.update(httpsRedirect=True)
+
         if self.CONTENT_CACHING in self.properties:
             enabled = self.properties[self.CONTENT_CACHING] == 'ENABLED'
             while not self._check_status(loadbalancer, ['ACTIVE']):
@@ -530,8 +568,20 @@ class CloudLoadBalancer(resource.Resource):
                 yield norm_node
 
     def _process_nodes(self, node_list):
-        node_itr = itertools.imap(self._process_node, node_list)
+        node_itr = six.moves.map(self._process_node, node_list)
         return itertools.chain.from_iterable(node_itr)
+
+    def _validate_https_redirect(self):
+        redir = self.properties[self.HTTPS_REDIRECT]
+        proto = self.properties[self.PROTOCOL]
+
+        if (redir and (proto != "HTTPS") and
+                not self._valid_HTTPS_redirect_with_HTTP_prot()):
+            message = _("HTTPS redirect is only available for the HTTPS "
+                        "protocol (port=443), or the HTTP protocol with "
+                        "a properly configured SSL termination "
+                        "(secureTrafficOnly=true, securePort=443).")
+            raise exception.StackValidationFailed(message=message)
 
     def handle_create(self):
         node_list = self._process_nodes(self.properties.get(self.NODES))
@@ -557,7 +607,11 @@ class CloudLoadBalancer(resource.Resource):
             'sessionPersistence': session_persistence,
             'timeout': self.properties.get(self.TIMEOUT),
             'connectionLogging': connection_logging,
+            self.HTTPS_REDIRECT: self.properties[self.HTTPS_REDIRECT]
         }
+        if self._valid_HTTPS_redirect_with_HTTP_prot():
+            lb_body[self.HTTPS_REDIRECT] = False
+        self._validate_https_redirect()
 
         lb_name = (self.properties.get(self.NAME) or
                    self.physical_resource_name())
@@ -589,7 +643,7 @@ class CloudLoadBalancer(resource.Resource):
             checkers.extend(self._update_nodes(lb, updated_nodes))
 
         updated_props = {}
-        for prop in prop_diff.keys():
+        for prop in six.iterkeys(prop_diff):
             if prop in self.LB_UPDATE_PROPS:
                 updated_props[prop] = prop_diff[prop]
         if updated_props:
@@ -656,8 +710,8 @@ class CloudLoadBalancer(resource.Resource):
                               node[self.NODE_PORT]), node)
                    for node in diff_nodes)
 
-        old_set = set(old.keys())
-        new_set = set(new.keys())
+        old_set = set(six.iterkeys(old))
+        new_set = set(six.iterkeys(new))
 
         deleted = old_set.difference(new_set)
         added = new_set.difference(old_set)
@@ -683,7 +737,7 @@ class CloudLoadBalancer(resource.Resource):
         # Update nodes that have been changed
         for node in updated:
             node_changed = False
-            for attribute in new[node].keys():
+            for attribute in six.iterkeys(new[node]):
                 new_value = new[node][attribute]
                 if new_value and new_value != getattr(old[node], attribute):
                     node_changed = True
@@ -886,6 +940,8 @@ class CloudLoadBalancer(resource.Resource):
                                   function.resolve,
                                   self.name).validate()
 
+        # validate if HTTPS_REDIRECT is true
+        self._validate_https_redirect()
         # if a vip specifies and id, it can't specify version or type;
         # otherwise version and type are required
         for vip in self.properties.get(self.VIRTUAL_IPS, []):
@@ -905,7 +961,7 @@ class CloudLoadBalancer(resource.Resource):
     def _public_ip(self, lb):
         for ip in lb.virtual_ips:
             if ip.type == 'PUBLIC':
-                return unicode(ip.address)
+                return six.text_type(ip.address)
 
     def _resolve_attribute(self, key):
         if self.resource_id:

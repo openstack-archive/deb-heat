@@ -12,6 +12,7 @@
 #    under the License.
 
 from oslo_log import log as logging
+import six
 
 from heat.common import exception
 from heat.common.i18n import _
@@ -48,7 +49,7 @@ class BaseWaitConditionHandle(signal_responder.SignalResponder):
         return status in self.WAIT_STATUSES
 
     def _metadata_format_ok(self, metadata):
-        if sorted(tuple(metadata.keys())) == sorted(self.METADATA_KEYS):
+        if sorted(tuple(six.iterkeys(metadata))) == sorted(self.METADATA_KEYS):
             return self._status_ok(metadata[self.STATUS])
 
     def handle_signal(self, metadata=None):
@@ -78,14 +79,14 @@ class BaseWaitConditionHandle(signal_responder.SignalResponder):
         Return a list of the Status values for the handle signals
         '''
         return [v[self.STATUS]
-                for v in self.metadata_get(refresh=True).values()]
+                for v in six.itervalues(self.metadata_get(refresh=True))]
 
     def get_status_reason(self, status):
         '''
         Return a list of reasons associated with a particular status
         '''
         return [v[self.REASON]
-                for v in self.metadata_get(refresh=True).values()
+                for v in six.itervalues(self.metadata_get(refresh=True))
                 if v[self.STATUS] == status]
 
 

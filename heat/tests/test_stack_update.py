@@ -37,13 +37,6 @@ class StackUpdateTest(common.HeatTestCase):
         self.tmpl = template.Template(copy.deepcopy(empty_template))
         self.ctx = utils.dummy_context()
 
-        resource._register_class('GenericResourceType',
-                                 generic_rsrc.GenericResource)
-        resource._register_class('ResourceWithPropsType',
-                                 generic_rsrc.ResourceWithProps)
-        resource._register_class('ResWithComplexPropsAndAttrs',
-                                 generic_rsrc.ResWithComplexPropsAndAttrs)
-
     def test_update_add(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {'AResource': {'Type': 'GenericResourceType'}}}
@@ -186,6 +179,49 @@ class StackUpdateTest(common.HeatTestCase):
         self.assertEqual((stack.Stack.UPDATE, stack.Stack.COMPLETE),
                          self.stack.state)
         self.assertEqual(True, self.stack.disable_rollback)
+
+    def test_update_tags(self):
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Description': 'ATemplate',
+                'Resources': {'AResource': {'Type': 'GenericResourceType'}}}
+
+        self.stack = stack.Stack(self.ctx, 'update_test_stack',
+                                 template.Template(tmpl),
+                                 tags=['tag1', 'tag2'])
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((stack.Stack.CREATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+        self.assertEqual(['tag1', 'tag2'], self.stack.tags)
+
+        updated_stack = stack.Stack(self.ctx, 'updated_stack',
+                                    template.Template(tmpl),
+                                    tags=['tag3', 'tag4'])
+        self.stack.update(updated_stack)
+        self.assertEqual((stack.Stack.UPDATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+        self.assertEqual(['tag3', 'tag4'], self.stack.tags)
+
+    def test_update_tags_remove_all(self):
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Description': 'ATemplate',
+                'Resources': {'AResource': {'Type': 'GenericResourceType'}}}
+
+        self.stack = stack.Stack(self.ctx, 'update_test_stack',
+                                 template.Template(tmpl),
+                                 tags=['tag1', 'tag2'])
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((stack.Stack.CREATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+        self.assertEqual(['tag1', 'tag2'], self.stack.tags)
+
+        updated_stack = stack.Stack(self.ctx, 'updated_stack',
+                                    template.Template(tmpl))
+        self.stack.update(updated_stack)
+        self.assertEqual((stack.Stack.UPDATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+        self.assertEqual(None, self.stack.tags)
 
     def test_update_modify_ok_replace(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
@@ -416,8 +452,6 @@ class StackUpdateTest(common.HeatTestCase):
         mock_create.assert_called_once_with()
 
     def test_update_modify_replace_failed_create_and_delete_1(self):
-        resource._register_class('ResourceWithResourceIDType',
-                                 generic_rsrc.ResourceWithResourceID)
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {'AResource': {'Type':
                                             'ResourceWithResourceIDType',
@@ -471,8 +505,6 @@ class StackUpdateTest(common.HeatTestCase):
             [mock.call(None), mock.call('b_res'), mock.call('a_res')])
 
     def test_update_modify_replace_failed_create_and_delete_2(self):
-        resource._register_class('ResourceWithResourceIDType',
-                                 generic_rsrc.ResourceWithResourceID)
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {'AResource': {'Type':
                                             'ResourceWithResourceIDType',
@@ -528,8 +560,6 @@ class StackUpdateTest(common.HeatTestCase):
              mock.call('a_res')])
 
     def test_update_modify_replace_create_in_progress_and_delete_1(self):
-        resource._register_class('ResourceWithResourceIDType',
-                                 generic_rsrc.ResourceWithResourceID)
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {'AResource': {'Type':
                                             'ResourceWithResourceIDType',
@@ -584,8 +614,6 @@ class StackUpdateTest(common.HeatTestCase):
             [mock.call(None), mock.call('b_res'), mock.call('a_res')])
 
     def test_update_modify_replace_create_in_progress_and_delete_2(self):
-        resource._register_class('ResourceWithResourceIDType',
-                                 generic_rsrc.ResourceWithResourceID)
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {'AResource': {'Type':
                                             'ResourceWithResourceIDType',
@@ -1418,15 +1446,9 @@ class StackUpdateTest(common.HeatTestCase):
 
     def test_update_deletion_policy_no_handle_update(self):
 
-        class ResourceWithNoUpdate(resource.Resource):
-            properties_schema = {'Foo': {'Type': 'String'}}
-
-        resource._register_class('ResourceWithNoUpdate',
-                                 ResourceWithNoUpdate)
-
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                    'AResource': {'Type': 'ResourceWithNoUpdate',
+                    'AResource': {'Type': 'ResourceWithRequiredProps',
                                   'Properties': {'Foo': 'Bar'}}}}
 
         self.stack = stack.Stack(self.ctx, 'update_test_stack',
@@ -1440,7 +1462,7 @@ class StackUpdateTest(common.HeatTestCase):
 
         new_tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                     'Resources': {
-                        'AResource': {'Type': 'ResourceWithNoUpdate',
+                        'AResource': {'Type': 'ResourceWithRequiredProps',
                                       'DeletionPolicy': 'Retain',
                                       'Properties': {'Foo': 'Bar'}}}}
 
@@ -1492,3 +1514,141 @@ class StackUpdateTest(common.HeatTestCase):
         self.assertEqual((stack.Stack.UPDATE, stack.Stack.COMPLETE),
                          self.stack.state)
         self.assertEqual('foo', self.stack['AResource'].properties['Foo'])
+
+    def test_delete_stack_when_update_failed_twice(self):
+        """Test when stack update failed twice and delete the stack.
+
+        Test checks the following scenario:
+        1. Create stack
+        2. Update stack (failed)
+        3. Update stack (failed)
+        4. Delete stack
+        The test checks the behavior of backup stack when update is failed.
+        If some resources were not backed up correctly then test will fail.
+        """
+        tmpl_create = {
+            'heat_template_version': '2013-05-23',
+            'resources': {
+                'Ares': {'type': 'GenericResourceType'}
+            }
+        }
+        # create a stack
+        self.stack = stack.Stack(self.ctx, 'update_fail_test_stack',
+                                 template.Template(tmpl_create),
+                                 disable_rollback=True)
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((stack.Stack.CREATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+
+        tmpl_update = {
+            'heat_template_version': '2013-05-23',
+            'resources': {
+                'Ares': {'type': 'GenericResourceType'},
+                'Bres': {'type': 'GenericResourceType'},
+                'Cres': {
+                    'type': 'ResourceWithPropsType',
+                    'properties': {
+                        'Foo': {'get_resource': 'Bres'},
+                    }
+                }
+            }
+        }
+
+        mock_create = self.patchobject(
+            generic_rsrc.ResourceWithProps,
+            'handle_create',
+            side_effect=[Exception, Exception])
+
+        updated_stack_first = stack.Stack(self.ctx,
+                                          'update_fail_test_stack',
+                                          template.Template(tmpl_update))
+        self.stack.update(updated_stack_first)
+        self.stack.resources['Cres'].resource_id_set('c_res')
+        self.assertEqual((stack.Stack.UPDATE, stack.Stack.FAILED),
+                         self.stack.state)
+
+        # try to update the stack again
+        updated_stack_second = stack.Stack(self.ctx,
+                                           'update_fail_test_stack',
+                                           template.Template(tmpl_update))
+        self.stack.update(updated_stack_second)
+        self.assertEqual((stack.Stack.UPDATE, stack.Stack.FAILED),
+                         self.stack.state)
+
+        self.assertEqual(mock_create.call_count, 2)
+
+        # delete the failed stack
+        self.stack.delete()
+        self.assertEqual((stack.Stack.DELETE, stack.Stack.COMPLETE),
+                         self.stack.state)
+
+    def test_backup_stack_synchronized_after_update(self):
+        """Test when backup stack updated correctly during stack update.
+
+        Test checks the following scenario:
+        1. Create stack
+        2. Update stack (failed - so the backup should not be deleted)
+        3. Update stack (failed - so the backup from step 2 should be updated)
+        The test checks that backup stack is synchronized with the main stack.
+        """
+        # create a stack
+        tmpl_create = {
+            'heat_template_version': '2013-05-23',
+            'resources': {
+                'Ares': {'type': 'GenericResourceType'}
+            }
+        }
+        self.stack = stack.Stack(self.ctx, 'test_update_stack_backup',
+                                 template.Template(tmpl_create),
+                                 disable_rollback=True)
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((stack.Stack.CREATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+
+        # try to update a stack with a new resource that should be backed up
+        tmpl_update = {
+            'heat_template_version': '2013-05-23',
+            'resources': {
+                'Ares': {'type': 'GenericResourceType'},
+                'Bres': {
+                    'type': 'ResWithComplexPropsAndAttrs',
+                    'properties': {
+                        'an_int': 0,
+                    }
+                },
+                'Cres': {
+                    'type': 'ResourceWithPropsType',
+                    'properties': {
+                        'Foo': {'get_resource': 'Bres'},
+                    }
+                }
+            }
+        }
+
+        self.patchobject(generic_rsrc.ResourceWithProps,
+                         'handle_create',
+                         side_effect=[Exception, Exception])
+
+        stack_with_new_resource = stack.Stack(
+            self.ctx,
+            'test_update_stack_backup',
+            template.Template(tmpl_update))
+        self.stack.update(stack_with_new_resource)
+        self.assertEqual((stack.Stack.UPDATE, stack.Stack.FAILED),
+                         self.stack.state)
+        # assert that backup stack has been updated correctly
+        self.assertIn('Bres', self.stack._backup_stack())
+
+        # update the stack with resource that updated in-place
+        tmpl_update['resources']['Bres']['properties']['an_int'] = 1
+        updated_stack_second = stack.Stack(self.ctx,
+                                           'test_update_stack_backup',
+                                           template.Template(tmpl_update))
+        self.stack.update(updated_stack_second)
+        self.assertEqual((stack.Stack.UPDATE, stack.Stack.FAILED),
+                         self.stack.state)
+        # assert that resource in backup stack also has been updated
+        backup = self.stack._backup_stack()
+        self.assertEqual(1, backup['Bres'].properties['an_int'])

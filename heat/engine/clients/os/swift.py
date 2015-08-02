@@ -16,8 +16,8 @@ import email.utils
 import hashlib
 import random
 import time
-import urlparse
 
+from six.moves.urllib import parse
 from swiftclient import client as sc
 from swiftclient import exceptions
 from swiftclient import utils as swiftclient_utils
@@ -33,6 +33,8 @@ class SwiftClientPlugin(client_plugin.ClientPlugin):
 
     exceptions_module = exceptions
 
+    service_types = [OBJECT_STORE] = ['object-store']
+
     def _create(self):
 
         con = self.context
@@ -44,7 +46,7 @@ class SwiftClientPlugin(client_plugin.ClientPlugin):
             'key': None,
             'authurl': None,
             'preauthtoken': self.auth_token,
-            'preauthurl': self.url_for(service_type='object-store',
+            'preauthurl': self.url_for(service_type=self.OBJECT_STORE,
                                        endpoint_type=endpoint_type),
             'os_options': {'endpoint_type': endpoint_type},
             'cacert': self._get_client_option('swift', 'ca_file'),
@@ -106,7 +108,7 @@ class SwiftClientPlugin(client_plugin.ClientPlugin):
             timeout = MAX_EPOCH - 60 - time.time()
         tempurl = swiftclient_utils.generate_temp_url(path, timeout, key,
                                                       method)
-        sw_url = urlparse.urlparse(self.client().url)
+        sw_url = parse.urlparse(self.client().url)
         return '%s://%s%s' % (sw_url.scheme, sw_url.netloc, tempurl)
 
     def get_signal_url(self, container_name, obj_name, timeout=None):

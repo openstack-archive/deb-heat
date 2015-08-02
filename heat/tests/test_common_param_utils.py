@@ -18,11 +18,12 @@ from heat.tests import common
 class TestExtractBool(common.HeatTestCase):
     def test_extract_bool(self):
         for value in ('True', 'true', 'TRUE', True):
-            self.assertTrue(param_utils.extract_bool(value))
+            self.assertTrue(param_utils.extract_bool('bool', value))
         for value in ('False', 'false', 'FALSE', False):
-            self.assertFalse(param_utils.extract_bool(value))
+            self.assertFalse(param_utils.extract_bool('bool', value))
         for value in ('foo', 't', 'f', 'yes', 'no', 'y', 'n', '1', '0', None):
-            self.assertRaises(ValueError, param_utils.extract_bool, value)
+            self.assertRaises(ValueError, param_utils.extract_bool,
+                              'bool', value)
 
 
 class TestExtractInt(common.HeatTestCase):
@@ -88,3 +89,11 @@ class TestExtractInt(common.HeatTestCase):
                           param_utils.extract_int, 'num', 'true')
         self.assertRaises(ValueError,
                           param_utils.extract_int, 'num', True)
+
+
+class TestExtractTags(common.HeatTestCase):
+    def test_extract_tags(self):
+        self.assertRaises(ValueError, param_utils.extract_tags, "aaaaaaaaaaaaa"
+                          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                          "aaaaaaaaaaaaaaaaa,a")
+        self.assertEqual(["foo", "bar"], param_utils.extract_tags('foo,bar'))

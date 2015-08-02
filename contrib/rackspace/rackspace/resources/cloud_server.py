@@ -11,12 +11,17 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
+
 from oslo_log import log as logging
 
 from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LW
+from heat.engine import constraints
+from heat.engine import properties
 from heat.engine.resources.openstack.nova import server
+from heat.engine import support
 
 
 try:
@@ -29,7 +34,15 @@ LOG = logging.getLogger(__name__)
 
 
 class CloudServer(server.Server):
-    """Resource for Rackspace Cloud Servers."""
+    """Resource for Rackspace Cloud Servers.
+
+    This resource overloads existent integrated OS::Nova::Server resource and
+    is used for Rackspace Cloud Servers.
+    """
+
+    support_status = support.SupportStatus(
+        status=support.UNSUPPORTED,
+        message=_('This resource is not supported, use at your own risk.'))
 
     # Managed Cloud automation statuses
     MC_STATUS_IN_PROGRESS = 'In Progress'
@@ -41,6 +54,27 @@ class CloudServer(server.Server):
     RC_STATUS_DEPLOYED = 'DEPLOYED'
     RC_STATUS_FAILED = 'FAILED'
     RC_STATUS_UNPROCESSABLE = 'UNPROCESSABLE'
+
+    properties_schema = copy.deepcopy(server.Server.properties_schema)
+    properties_schema.update(
+        {
+            server.Server.USER_DATA_FORMAT: properties.Schema(
+                properties.Schema.STRING,
+                _('How the user_data should be formatted for the server. For '
+                  'HEAT_CFNTOOLS, the user_data is bundled as part of the '
+                  'heat-cfntools cloud-init boot configuration data. For RAW '
+                  'the user_data is passed to Nova unmodified. '
+                  'For SOFTWARE_CONFIG user_data is bundled as part of the '
+                  'software config data, and metadata is derived from any '
+                  'associated SoftwareDeployment resources.'),
+                default=server.Server.RAW,
+                constraints=[
+                    constraints.AllowedValues(
+                        server.Server._SOFTWARE_CONFIG_FORMATS),
+                ]
+            ),
+        }
+    )
 
     def __init__(self, name, json_snippet, stack):
         super(CloudServer, self).__init__(name, json_snippet, stack)
@@ -126,12 +160,14 @@ class CloudServer(server.Server):
             msg = _("Unknown RackConnect automation status: %s") % rc_status
             raise exception.Error(msg)
 
-    def check_create_complete(self, server):
+    def check_create_complete(self, server_id):
         """Check if server creation is complete and handle server configs."""
-        if not super(CloudServer, self).check_create_complete(server):
+        if not super(CloudServer, self).check_create_complete(server_id):
             return False
 
-        self.client_plugin().refresh_server(server)
+        server = self.client_plugin().fetch_server(server_id)
+        if not server:
+            return False
 
         if ('rack_connect' in self.context.roles and not
                 self._check_rack_connect_complete(server)):

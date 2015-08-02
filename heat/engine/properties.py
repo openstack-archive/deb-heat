@@ -20,6 +20,7 @@ from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import constraints as constr
 from heat.engine import function
+from heat.engine.hot import parameters as hot_param
 from heat.engine import parameters
 from heat.engine import support
 
@@ -164,7 +165,8 @@ class Schema(constr.Schema):
                    constraints=param.constraints,
                    update_allowed=True,
                    immutable=False,
-                   allow_conversion=allow_conversion)
+                   allow_conversion=allow_conversion,
+                   default=param.default)
 
     def allowed_param_prop_type(self):
         """
@@ -191,8 +193,6 @@ class Schema(constr.Schema):
             return self.immutable
         else:
             return super(Schema, self).__getitem__(key)
-
-        raise KeyError(key)
 
 
 def schemata(schema_dicts):
@@ -267,7 +267,6 @@ class Property(object):
                 keys = list(self.schema.schema)
             schemata = dict((k, self.schema.schema[k]) for k in keys)
             properties = Properties(schemata, dict(child_values),
-                                    parent_name=self.name,
                                     context=self.context)
             if validate:
                 properties.validate()
@@ -332,9 +331,7 @@ class Property(object):
         elif t == Schema.BOOLEAN:
             _value = self._get_bool(value)
 
-        # property value resolves to None if resource it depends on is not
-        # created. So, if value is None skip constraint validation.
-        if value is not None and validate:
+        if validate:
             self.schema.validate_constraints(_value, self.context)
 
         return _value
@@ -343,15 +340,16 @@ class Property(object):
 class Properties(collections.Mapping):
 
     def __init__(self, schema, data, resolver=lambda d: d, parent_name=None,
-                 context=None):
+                 context=None, section=None):
         self.props = dict((k, Property(s, k, context))
                           for k, s in schema.items())
         self.resolve = resolver
         self.data = data
-        if parent_name is None:
-            self.error_prefix = ''
-        else:
-            self.error_prefix = '%s: ' % parent_name
+        self.error_prefix = []
+        if parent_name is not None:
+            self.error_prefix.append(parent_name)
+        if section is not None:
+            self.error_prefix.append(section)
         self.context = context
 
     @staticmethod
@@ -369,38 +367,63 @@ class Properties(collections.Mapping):
         return {}
 
     def validate(self, with_value=True):
-        for (key, prop) in self.props.items():
-            # check that update_allowed and immutable
-            # do not contradict each other
-            if prop.update_allowed() and prop.immutable():
-                msg = _("Property %(prop)s: %(ua)s and %(im)s "
-                        "cannot both be True") % {
-                            'prop': key,
-                            'ua': prop.schema.UPDATE_ALLOWED,
-                            'im': prop.schema.IMMUTABLE}
-                raise exception.InvalidSchemaError(message=msg)
-
-            if with_value:
-                try:
-                    self._get_property_value(key, validate=True)
-                except ValueError as e:
-                    msg = _("Property error : %s") % e
+        try:
+            for key in self.data:
+                if key not in self.props:
+                    msg = _("Unknown Property %s") % key
                     raise exception.StackValidationFailed(message=msg)
 
-            # are there unimplemented Properties
-            if not prop.implemented() and key in self.data:
-                msg = _("Property %s not implemented yet") % key
-                raise exception.StackValidationFailed(message=msg)
+            for (key, prop) in self.props.items():
+                # check that update_allowed and immutable
+                # do not contradict each other
+                if prop.update_allowed() and prop.immutable():
+                    msg = _("Property %(prop)s: %(ua)s and %(im)s "
+                            "cannot both be True") % {
+                                'prop': key,
+                                'ua': prop.schema.UPDATE_ALLOWED,
+                                'im': prop.schema.IMMUTABLE}
+                    raise exception.InvalidSchemaError(message=msg)
 
-        for key in self.data:
-            if key not in self.props:
-                msg = _("Unknown Property %s") % key
-                raise exception.StackValidationFailed(message=msg)
+                if with_value:
+                    try:
+                        self._get_property_value(key, validate=True)
+                    except exception.StackValidationFailed as ex:
+                        path = [key]
+                        path.extend(ex.path)
+                        raise exception.StackValidationFailed(
+                            path=path, message=ex.error_message)
+                    except ValueError as e:
+                        if prop.required() and key not in self.data:
+                            path = []
+                        else:
+                            path = [key]
+                        raise exception.StackValidationFailed(
+                            path=path, message=six.text_type(e))
+
+                # are there unimplemented Properties
+                if not prop.implemented() and key in self.data:
+                    msg = _("Property %s not implemented yet") % key
+                    raise exception.StackValidationFailed(message=msg)
+        except exception.StackValidationFailed as ex:
+            # NOTE(prazumovsky): should reraise exception for adding specific
+            # error name and error_prefix to path for correct error message
+            # building.
+            path = self.error_prefix
+            path.extend(ex.path)
+            raise exception.StackValidationFailed(
+                error=ex.error or 'Property error',
+                path=path,
+                message=ex.error_message
+            )
+
+    def _find_deps_any_in_init(self, unresolved_value):
+        deps = function.dependencies(unresolved_value)
+        if any(res.action == res.INIT for res in deps):
+            return True
 
     def _get_property_value(self, key, validate=False):
         if key not in self:
-            raise KeyError(_('%(prefix)sInvalid Property %(key)s') %
-                           {'prefix': self.error_prefix, 'key': key})
+            raise KeyError(_('Invalid Property %s') % key)
 
         prop = self.props[key]
 
@@ -408,22 +431,27 @@ class Properties(collections.Mapping):
             try:
                 unresolved_value = self.data[key]
                 if validate:
-                    deps = function.dependencies(unresolved_value)
-                    if any(res.action == res.INIT for res in deps):
+                    if self._find_deps_any_in_init(unresolved_value):
                         validate = False
 
                 value = self.resolve(unresolved_value)
                 return prop.get_value(value, validate)
+            # Children can raise StackValidationFailed with unique path which
+            # is necessary for further use in StackValidationFailed exception.
+            # So we need to handle this exception in this method.
+            except exception.StackValidationFailed as e:
+                raise exception.StackValidationFailed(path=e.path,
+                                                      message=e.error_message)
             # the resolver function could raise any number of exceptions,
             # so handle this generically
             except Exception as e:
-                raise ValueError('%s%s %s' % (self.error_prefix, key,
-                                              six.text_type(e)))
+                raise ValueError(six.text_type(e))
         elif prop.has_default():
             return prop.get_value(None, validate)
         elif prop.required():
-            raise ValueError(_('%(prefix)sProperty %(key)s not assigned') %
-                             {'prefix': self.error_prefix, 'key': key})
+            raise ValueError(_('Property %s not assigned') % key)
+        else:
+            return None
 
     def __getitem__(self, key):
         return self._get_property_value(key)
@@ -492,8 +520,57 @@ class Properties(collections.Mapping):
         else:
             return {'Ref': name}
 
+    @staticmethod
+    def _hot_param_def_from_prop(schema):
+        """
+        Return parameter definition corresponding to a property for
+        hot template.
+        """
+        param_type_map = {
+            schema.INTEGER: hot_param.HOTParamSchema.NUMBER,
+            schema.STRING: hot_param.HOTParamSchema.STRING,
+            schema.NUMBER: hot_param.HOTParamSchema.NUMBER,
+            schema.BOOLEAN: hot_param.HOTParamSchema.BOOLEAN,
+            schema.MAP: hot_param.HOTParamSchema.MAP,
+            schema.LIST: hot_param.HOTParamSchema.LIST,
+        }
+
+        def param_items():
+            yield hot_param.HOTParamSchema.TYPE, param_type_map[schema.type]
+
+            if schema.description is not None:
+                yield hot_param.HOTParamSchema.DESCRIPTION, schema.description
+
+            if schema.default is not None:
+                yield hot_param.HOTParamSchema.DEFAULT, schema.default
+
+            for constraint in schema.constraints:
+                if (isinstance(constraint, constr.Length) or
+                        isinstance(constraint, constr.Range)):
+                    if constraint.min is not None:
+                        yield hot_param.MIN, constraint.min
+                    if constraint.max is not None:
+                        yield hot_param.MAX, constraint.max
+                elif isinstance(constraint, constr.AllowedValues):
+                    yield hot_param.ALLOWED_VALUES, list(constraint.allowed)
+                elif isinstance(constraint, constr.AllowedPattern):
+                    yield hot_param.ALLOWED_PATTERN, constraint.pattern
+
+            if schema.type == schema.BOOLEAN:
+                yield hot_param.ALLOWED_VALUES, ['True', 'true',
+                                                 'False', 'false']
+
+        return dict(param_items())
+
+    @staticmethod
+    def _hot_prop_def_from_prop(name, schema):
+        """
+        Return a provider template property definition for a property.
+        """
+        return {'get_param': name}
+
     @classmethod
-    def schema_to_parameters_and_properties(cls, schema):
+    def schema_to_parameters_and_properties(cls, schema, template_type='cfn'):
         """Generates properties with params resolved for a resource's
         properties_schema.
 
@@ -508,17 +585,182 @@ class Properties(collections.Mapping):
             output: {'foo': {'Type': 'String'}, 'bar': {'Type': 'Json'}},
                     {'foo': {'Ref': 'foo'}, 'bar': {'Ref': 'bar'}}
         """
-        def param_prop_def_items(name, schema):
-            param_def = cls._param_def_from_prop(schema)
-            prop_def = cls._prop_def_from_prop(name, schema)
-
+        def param_prop_def_items(name, schema, template_type):
+            if template_type == 'hot':
+                param_def = cls._hot_param_def_from_prop(schema)
+                prop_def = cls._hot_prop_def_from_prop(name, schema)
+            else:
+                param_def = cls._param_def_from_prop(schema)
+                prop_def = cls._prop_def_from_prop(name, schema)
             return (name, param_def), (name, prop_def)
 
         if not schema:
             return {}, {}
 
-        param_prop_defs = [param_prop_def_items(n, s)
+        param_prop_defs = [param_prop_def_items(n, s, template_type)
                            for n, s in six.iteritems(schemata(schema))
                            if s.implemented]
         param_items, prop_items = zip(*param_prop_defs)
         return dict(param_items), dict(prop_items)
+
+
+class TranslationRule(object):
+    """Translating mechanism one properties to another.
+
+    Mechanism uses list of rules, each defines by this class, and can be
+    executed. Working principe: during resource creating after properties
+    defining resource take list of rules, specified by method
+    translation_rules, which should be overloaded for each resource, if it's
+    needed, and execute each rule using translate_properties method. Next
+    operations are allowed:
+
+    - ADD. This rule allows to add some value to list-type properties. Only
+           list-type values can be added to such properties. Using for other
+           cases is prohibited and will be returned with error.
+    - REPLACE. This rule allows to replace some property value to another. Used
+      for all types of properties. Note, that if property has list type, then
+      value will be replaced for all elements of list, where it needed. If
+      element in such property must be replaced by value of another element of
+      this property, value_name must be defined.
+    - DELETE. This rule allows to delete some property. If property has list
+      type, then deleting affects value in all list elements.
+    """
+
+    RULE_KEYS = (ADD, REPLACE, DELETE) = ('Add', 'Replace', 'Delete')
+
+    def __init__(self, properties, rule, source_path, value=None,
+                 value_name=None, value_path=None):
+        """Add new rule for translating mechanism.
+
+        :param properties: properties of resource
+        :param rule: rule from RULE_KEYS
+        :param source_path: list with path to property, which value will be
+               affected in rule.
+        :param value: value which will be involved in rule
+        :param value_name: value_name which used for replacing properties
+               inside list-type properties.
+        :param value_path: path to value, which should be used for translation.
+        """
+        self.properties = properties
+        self.rule = rule
+        self.source_path = source_path
+        self.value = value or None
+        self.value_name = value_name
+        self.value_path = value_path
+
+        self.validate()
+
+    def validate(self):
+        if self.rule not in self.RULE_KEYS:
+            raise ValueError(_('There is no rule %(rule)s. List of allowed '
+                               'rules is: %(rules)s.') % {
+                'rule': self.rule,
+                'rules': ', '.join(self.RULE_KEYS)})
+        elif not isinstance(self.properties, Properties):
+            raise ValueError(_('Properties must be Properties type. '
+                               'Found %s.') % type(self.properties))
+        elif not isinstance(self.source_path, list):
+            raise ValueError(_('source_path should be a list with path '
+                               'instead of %s.') % type(self.source_path))
+        elif len(self.source_path) == 0:
+            raise ValueError(_('source_path must be non-empty list with '
+                               'path.'))
+        elif self.value_name and self.rule != self.REPLACE:
+            raise ValueError(_('Use value_name only for replacing list '
+                               'elements.'))
+        elif self.rule == self.ADD and not isinstance(self.value, list):
+            raise ValueError(_('value must be list type when rule is ADD.'))
+
+    def execute_rule(self):
+        (source_key, source_data) = self.get_data_from_source_path(
+            self.source_path)
+        if self.value_path:
+            (value_key, value_data) = self.get_data_from_source_path(
+                self.value_path)
+            value = (value_data[value_key]
+                     if value_data and value_data.get(value_key)
+                     else self.value)
+        else:
+            (value_key, value_data) = None, None
+            value = self.value
+
+        if (source_data is None or (self.rule != self.DELETE and
+                                    (value is None and
+                                     self.value_name is None and
+                                     (value_data is None or
+                                      value_data.get(value_key) is None)))):
+            return
+
+        if self.rule == TranslationRule.ADD:
+            if isinstance(source_data, list):
+                source_data.extend(value)
+            else:
+                raise ValueError(_('ADD rule must be used only for '
+                                   'lists.'))
+        elif self.rule == TranslationRule.REPLACE:
+            if isinstance(source_data, list):
+                for item in source_data:
+                    if item.get(self.value_name) and item.get(source_key):
+                        raise ValueError(_('Cannot use %(key)s and '
+                                           '%(name)s at the same time.')
+                                         % dict(key=source_key,
+                                                name=self.value_name))
+                    elif item.get(self.value_name) is not None:
+                        item[source_key] = item[self.value_name]
+                        del item[self.value_name]
+                    elif value is not None:
+                        item[source_key] = value
+            else:
+                if (source_data and source_data.get(source_key) and
+                        value_data and value_data.get(value_key)):
+                    raise ValueError(_('Cannot use %(key)s and '
+                                       '%(name)s at the same time.')
+                                     % dict(key=source_key,
+                                            name=value_key))
+                source_data[source_key] = value
+        elif self.rule == TranslationRule.DELETE:
+            if isinstance(source_data, list):
+                for item in source_data:
+                    if item.get(source_key) is not None:
+                        del item[source_key]
+            else:
+                del source_data[source_key]
+
+    def get_data_from_source_path(self, path):
+        def get_props(props, key):
+            props = props.get(key)
+            if props.schema.schema is not None:
+                keys = list(props.schema.schema)
+                schemata = dict((k, props.schema.schema[k])
+                                for k in keys)
+                props = dict((k, Property(s, k))
+                             for k, s in schemata.items())
+            return props
+
+        source_key = path[0]
+        data = self.properties.data
+        props = self.properties.props
+        for key in path:
+            if isinstance(data, list):
+                source_key = key
+            elif data.get(key) is not None and isinstance(data.get(key),
+                                                          (list, dict)):
+                data = data.get(key)
+                props = get_props(props, key)
+            elif data.get(key) is None:
+                if (self.rule == TranslationRule.DELETE or
+                        (self.rule == TranslationRule.REPLACE and
+                         self.value_name)):
+                    return None, None
+                elif props.get(key).type() == Schema.LIST:
+                    data[key] = []
+                elif props.get(key).type() == Schema.MAP:
+                    data[key] = {}
+                else:
+                    source_key = key
+                    continue
+                data = data.get(key)
+                props = get_props(props, key)
+            else:
+                source_key = key
+        return source_key, data

@@ -18,12 +18,14 @@ PARAM_KEYS = (
     PARAM_TIMEOUT, PARAM_DISABLE_ROLLBACK, PARAM_ADOPT_STACK_DATA,
     PARAM_SHOW_DELETED, PARAM_SHOW_NESTED, PARAM_EXISTING,
     PARAM_CLEAR_PARAMETERS, PARAM_GLOBAL_TENANT, PARAM_LIMIT,
-    PARAM_NESTED_DEPTH,
+    PARAM_NESTED_DEPTH, PARAM_TAGS, PARAM_SHOW_HIDDEN, PARAM_TAGS_ANY,
+    PARAM_NOT_TAGS, PARAM_NOT_TAGS_ANY, TEMPLATE_TYPE, PARAM_WITH_DETAIL
 ) = (
     'timeout_mins', 'disable_rollback', 'adopt_stack_data',
     'show_deleted', 'show_nested', 'existing',
     'clear_parameters', 'global_tenant', 'limit',
-    'nested_depth',
+    'nested_depth', 'tags', 'show_hidden', 'tags_any',
+    'not_tags', 'not_tags_any', 'template_type', 'with_detail',
 )
 
 STACK_KEYS = (
@@ -34,7 +36,7 @@ STACK_KEYS = (
     STACK_PARAMETERS, STACK_OUTPUTS, STACK_ACTION,
     STACK_STATUS, STACK_STATUS_DATA, STACK_CAPABILITIES,
     STACK_DISABLE_ROLLBACK, STACK_TIMEOUT, STACK_OWNER,
-    STACK_PARENT, STACK_USER_PROJECT_ID
+    STACK_PARENT, STACK_USER_PROJECT_ID, STACK_TAGS
 ) = (
     'stack_name', 'stack_identity',
     'creation_time', 'updated_time', 'deletion_time',
@@ -43,7 +45,7 @@ STACK_KEYS = (
     'parameters', 'outputs', 'stack_action',
     'stack_status', 'stack_status_reason', 'capabilities',
     'disable_rollback', 'timeout_mins', 'stack_owner',
-    'parent', 'stack_user_project_id'
+    'parent', 'stack_user_project_id', 'tags'
 )
 
 STACK_OUTPUT_KEYS = (
@@ -57,14 +59,14 @@ STACK_OUTPUT_KEYS = (
 )
 
 RES_KEYS = (
-    RES_DESCRIPTION, RES_UPDATED_TIME,
+    RES_DESCRIPTION, RES_CREATION_TIME, RES_UPDATED_TIME,
     RES_NAME, RES_PHYSICAL_ID, RES_METADATA,
     RES_ACTION, RES_STATUS, RES_STATUS_DATA,
     RES_TYPE, RES_ID, RES_STACK_ID, RES_STACK_NAME,
     RES_REQUIRED_BY, RES_NESTED_STACK_ID, RES_NESTED_RESOURCES,
     RES_PARENT_RESOURCE,
 ) = (
-    'description', 'updated_time',
+    'description', 'creation_time', 'updated_time',
     'resource_name', 'physical_resource_id', 'metadata',
     'resource_action', 'resource_status', 'resource_status_reason',
     'resource_type', 'resource_identity', STACK_ID, STACK_NAME,
@@ -74,8 +76,9 @@ RES_KEYS = (
 
 RES_SCHEMA_KEYS = (
     RES_SCHEMA_RES_TYPE, RES_SCHEMA_PROPERTIES, RES_SCHEMA_ATTRIBUTES,
+    RES_SCHEMA_SUPPORT_STATUS,
 ) = (
-    RES_TYPE, 'properties', 'attributes',
+    RES_TYPE, 'properties', 'attributes', 'support_status'
 )
 
 EVENT_KEYS = (

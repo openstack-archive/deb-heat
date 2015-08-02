@@ -66,14 +66,20 @@ class SecurityGroup(neutron.NeutronResource):
               'security group rule. If the protocol is TCP or UDP, this '
               'value must be less than or equal to the value of the '
               'port_range_max attribute. If the protocol is ICMP, this '
-              'value must be an ICMP type.')
+              'value must be an ICMP type.'),
+            constraints=[
+                constraints.Range(0, 65535)
+            ]
         ),
         RULE_PORT_RANGE_MAX: properties.Schema(
             properties.Schema.INTEGER,
             _('The maximum port number in the range that is matched by the '
               'security group rule. The port_range_min attribute constrains '
               'the port_range_max attribute. If the protocol is ICMP, this '
-              'value must be an ICMP type.')
+              'value must be an ICMP type.'),
+            constraints=[
+                constraints.Range(0, 65535)
+            ]
         ),
         RULE_PROTOCOL: properties.Schema(
             properties.Schema.STRING,
@@ -99,7 +105,10 @@ class SecurityGroup(neutron.NeutronResource):
         RULE_REMOTE_IP_PREFIX: properties.Schema(
             properties.Schema.STRING,
             _('The remote IP prefix (CIDR) to be associated with this '
-              'security group rule.')
+              'security group rule.'),
+            constraints=[
+                constraints.CustomConstraint('net_cidr')
+            ]
         ),
     }
 
@@ -134,7 +143,7 @@ class SecurityGroup(neutron.NeutronResource):
 
     def validate(self):
         super(SecurityGroup, self).validate()
-        if self.properties.get(self.NAME) == 'default':
+        if self.properties[self.NAME] == 'default':
             msg = _('Security groups cannot be assigned the name "default".')
             raise exception.StackValidationFailed(message=msg)
 

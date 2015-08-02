@@ -12,7 +12,8 @@
 #    under the License.
 
 import time
-import urllib
+
+from six.moves import urllib
 
 from heat_integrationtests.scenario import scenario_base
 
@@ -31,7 +32,7 @@ class NeutronLoadBalancerTest(scenario_base.ScenarioTestsBase):
         resp = set()
         for count in range(10):
             time.sleep(1)
-            resp.add(urllib.urlopen('http://%s/' % ip).read())
+            resp.add(urllib.request.urlopen('http://%s/' % ip).read())
 
         self.assertEqual(expected_resp, resp)
 
@@ -54,8 +55,10 @@ class NeutronLoadBalancerTest(scenario_base.ScenarioTestsBase):
             'key_name': self.keypair_name,
             'flavor': self.conf.minimal_instance_type,
             'image': self.conf.image_ref,
+            'network': self.net['name'],
             'private_subnet_id': self.net['subnets'][0],
-            'external_network_id': self.public_net['id']
+            'external_network_id': self.public_net['id'],
+            'timeout': self.conf.build_timeout
         }
 
         # Launch stack
@@ -69,8 +72,7 @@ class NeutronLoadBalancerTest(scenario_base.ScenarioTestsBase):
         vip = self._stack_output(stack, 'vip')
         server1_ip = self._stack_output(stack, 'serv1_ip')
         server2_ip = self._stack_output(stack, 'serv2_ip')
-
-        # Check connection and info about received responces
+        # Check connection and info about received responses
         self.check_connectivity(server1_ip)
         self.collect_responses(server1_ip, {'server1\n'})
 

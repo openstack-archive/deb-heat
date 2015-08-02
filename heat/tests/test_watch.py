@@ -18,7 +18,7 @@ import mox
 from oslo_utils import timeutils
 
 from heat.common import exception
-from heat.engine import parser
+from heat.engine import stack
 from heat.engine import template
 from heat.engine import watchrule
 from heat.objects import watch_rule
@@ -50,7 +50,7 @@ class WatchRuleTest(common.HeatTestCase):
         empty_tmpl = {'HeatTemplateFormatVersion': '2012-12-12'}
         tmpl = template.Template(empty_tmpl)
         stack_name = 'dummystack'
-        dummy_stack = parser.Stack(ctx, stack_name, tmpl)
+        dummy_stack = stack.Stack(ctx, stack_name, tmpl)
         dummy_stack.state_set(dummy_stack.CREATE, dummy_stack.COMPLETE,
                               'Testing')
         dummy_stack.store()
@@ -74,8 +74,8 @@ class WatchRuleTest(common.HeatTestCase):
 
         if action_expected:
             dummy_action = DummyAction()
-            self.m.StubOutWithMock(parser.Stack, 'resource_by_refid')
-            parser.Stack.resource_by_refid(
+            self.m.StubOutWithMock(stack.Stack, 'resource_by_refid')
+            stack.Stack.resource_by_refid(
                 mox.IgnoreArg()).MultipleTimes().AndReturn(dummy_action)
 
         self.m.ReplayAll()
@@ -604,6 +604,52 @@ class WatchRuleTest(common.HeatTestCase):
         self.assertEqual('NODATA', self.wr.state)
         self.assertEqual(['DummyAction'], actions)
         self.m.VerifyAll()
+
+    def test_to_ceilometer(self):
+
+        rule = {u'EvaluationPeriods': u'1',
+                u'AlarmDescription': u'test alarm',
+                u'Period': u'300',
+                u'ComparisonOperator': u'GreaterThanThreshold',
+                u'Statistic': u'SampleCount',
+                u'Threshold': u'2',
+                u'MetricName': u'CreateDataMetric'}
+        testdata = {u'CreateDataMetric': {"Unit": "Counter", "Value": "1"}}
+        sample = dict()
+        sample['counter_type'] = 'gauge'
+
+        for k, d in iter(testdata.items()):
+            if k == 'Namespace':
+                continue
+            sample['counter_name'] = k
+            sample['counter_volume'] = d['Value']
+            sample['counter_unit'] = d['Unit']
+            dims = d.get('Dimensions', {})
+            if isinstance(dims, list):
+                dims = dims[0]
+            sample['resource_metadata'] = dims
+            sample['resource_id'] = dims.get('InstanceId')
+
+        self.wr = watchrule.WatchRule(context=self.ctx,
+                                      watch_name='create_data_test',
+                                      stack_id=self.stack_id, rule=rule)
+        self.wr.store()
+
+        self.m.StubOutWithMock(self.wr.context.clients.client('ceilometer').
+                               samples, 'create', True)
+
+        # fake samples.create callback
+        def fake_create(counter_type, counter_name, counter_volume,
+                        counter_unit, resource_metadata, resource_id):
+            pass
+
+        self.wr.context.clients.client('ceilometer').samples.\
+            create(**sample).MultipleTimes().WithSideEffects(fake_create)
+        self.m.ReplayAll()
+        try:
+            self.wr._to_ceilometer(testdata)
+        except mox.UnexpectedMethodCallError:
+            raise KeyError("Error input parameter")
 
     def test_create_watch_data(self):
         rule = {u'EvaluationPeriods': u'1',

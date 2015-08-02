@@ -13,6 +13,7 @@
 
 import collections
 import copy
+import itertools
 
 import six
 
@@ -98,7 +99,7 @@ class ResourceGroup(stack_resource.StackResource):
     properties_schema = {
         COUNT: properties.Schema(
             properties.Schema.INTEGER,
-            _('The number of instances to create.'),
+            _('The number of resources to create.'),
             default=1,
             constraints=[
                 constraints.Range(min=0),
@@ -172,13 +173,15 @@ class ResourceGroup(stack_resource.StackResource):
 
     attributes_schema = {
         REFS: attributes.Schema(
-            _("A list of resource IDs for the resources in the group")
+            _("A list of resource IDs for the resources in the group"),
+            type=attributes.Schema.LIST
         ),
         ATTR_ATTRIBUTES: attributes.Schema(
             _("A map of resource names to the specified attribute of each "
               "individual resource.  "
               "Requires heat_template_version: 2014-10-16."),
-            support_status=support.SupportStatus(version='2014.2')
+            support_status=support.SupportStatus(version='2014.2'),
+            type=attributes.Schema.MAP
         ),
     }
 
@@ -195,7 +198,7 @@ class ResourceGroup(stack_resource.StackResource):
         # make sure we can resolve the nested resource type
         try:
             self.stack.env.get_class(res_def.resource_type)
-        except exception.NotFound:
+        except exception.TemplateNotFound:
             # its a template resource
             pass
 
@@ -214,6 +217,8 @@ class ResourceGroup(stack_resource.StackResource):
     def _name_blacklist(self):
         """Resolve the remove_policies to names for removal."""
 
+        nested = self.nested()
+
         # To avoid reusing names after removal, we store a comma-separated
         # blacklist in the resource data
         db_rsrc_names = self.data().get('name_blacklist')
@@ -224,21 +229,21 @@ class ResourceGroup(stack_resource.StackResource):
 
         # Now we iterate over the removal policies, and update the blacklist
         # with any additional names
-        rsrc_names = list(current_blacklist)
+        rsrc_names = set(current_blacklist)
         for r in self.properties[self.REMOVAL_POLICIES]:
             if self.REMOVAL_RSRC_LIST in r:
                 # Tolerate string or int list values
                 for n in r[self.REMOVAL_RSRC_LIST]:
                     str_n = six.text_type(n)
-                    if str_n in self.nested() and str_n not in rsrc_names:
-                        rsrc_names.append(str_n)
+                    if str_n in nested:
+                        rsrc_names.add(str_n)
                         continue
-                    rsrc = self.nested().resource_by_refid(str_n)
-                    if rsrc and str_n not in rsrc_names:
-                        rsrc_names.append(rsrc.name)
+                    rsrc = nested.resource_by_refid(str_n)
+                    if rsrc:
+                        rsrc_names.add(rsrc.name)
 
         # If the blacklist has changed, update the resource data
-        if rsrc_names != current_blacklist:
+        if rsrc_names != set(current_blacklist):
             self.data_set('name_blacklist', ','.join(rsrc_names))
         return rsrc_names
 
@@ -246,16 +251,14 @@ class ResourceGroup(stack_resource.StackResource):
         name_blacklist = self._name_blacklist()
         req_count = self.properties.get(self.COUNT)
 
-        def gen_names():
-            count = 0
-            index = 0
-            while count < req_count:
-                if str(index) not in name_blacklist:
-                    yield str(index)
-                    count += 1
-                index += 1
+        def is_blacklisted(name):
+            return name in name_blacklist
 
-        return list(gen_names())
+        candidates = itertools.imap(six.text_type, itertools.count())
+
+        return itertools.islice(itertools.ifilterfalse(is_blacklisted,
+                                                       candidates),
+                                req_count)
 
     def handle_create(self):
         names = self._resource_names()
@@ -269,9 +272,6 @@ class ResourceGroup(stack_resource.StackResource):
         return self.update_with_template(self._assemble_nested(new_names),
                                          {},
                                          self.stack.timeout_mins)
-
-    def handle_delete(self):
-        return self.delete_nested()
 
     def FnGetAtt(self, key, *path):
         if key.startswith("resource."):
@@ -309,7 +309,7 @@ class ResourceGroup(stack_resource.StackResource):
         if isinstance(val, six.string_types):
             return val.replace(repl_var, res_name)
         elif isinstance(val, collections.Mapping):
-            return dict(zip(val, map(recurse, val.values())))
+            return dict(zip(val, map(recurse, six.itervalues(val))))
         elif isinstance(val, collections.Sequence):
             return map(recurse, val)
         return val

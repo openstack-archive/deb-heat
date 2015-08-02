@@ -26,62 +26,46 @@ from heat.tests import utils
 
 
 firewall_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test neutron firewall resource",
-  "Parameters" : {},
-  "Resources" : {
-    "firewall": {
-      "Type": "OS::Neutron::Firewall",
-      "Properties": {
-        "name": "test-firewall",
-        "firewall_policy_id": "policy-id",
-        "admin_state_up": True,
-        "shared": True,
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test neutron firewall resource
+resources:
+  firewall:
+    type: OS::Neutron::Firewall
+    properties:
+      name: test-firewall
+      firewall_policy_id: policy-id
+      admin_state_up: True
+      shared: True
 '''
 
 firewall_policy_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test neutron firewall policy resource",
-  "Parameters" : {},
-  "Resources" : {
-    "firewall_policy": {
-      "Type": "OS::Neutron::FirewallPolicy",
-      "Properties": {
-        "name": "test-firewall-policy",
-        "shared": True,
-        "audited": True,
-        "firewall_rules": ['rule-id-1', 'rule-id-2'],
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test neutron firewall policy resource
+resources:
+  firewall_policy:
+    type: OS::Neutron::FirewallPolicy
+    properties:
+      name: test-firewall-policy
+      shared: True
+      audited: True
+      firewall_rules:
+        - rule-id-1
+        - rule-id-2
 '''
 
 firewall_rule_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test neutron firewall rule resource",
-  "Parameters" : {},
-  "Resources" : {
-    "firewall_rule": {
-      "Type": "OS::Neutron::FirewallRule",
-      "Properties": {
-        "name": "test-firewall-rule",
-        "shared": True,
-        "protocol": "tcp",
-        "action": "allow",
-        "enabled": True,
-        "ip_version": "4",
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test neutron firewall rule resource
+resources:
+  firewall_rule:
+    type: OS::Neutron::FirewallRule
+    properties:
+      name: test-firewall-rule
+      shared: True
+      protocol: tcp
+      action: allow
+      enabled: True
+      ip_version: 4
 '''
 
 
@@ -102,10 +86,10 @@ class FirewallTest(common.HeatTestCase):
         ).AndReturn({'firewall': {'id': '5678'}})
 
         snippet = template_format.parse(firewall_template)
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         return firewall.Firewall(
-            'firewall', resource_defns['firewall'], stack)
+            'firewall', resource_defns['firewall'], self.stack)
 
     def test_create(self):
         rsrc = self.create_firewall()
@@ -131,7 +115,8 @@ class FirewallTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.firewall: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -169,7 +154,8 @@ class FirewallTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.firewall: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -230,10 +216,10 @@ class FirewallPolicyTest(common.HeatTestCase):
         ).AndReturn({'firewall_policy': {'id': '5678'}})
 
         snippet = template_format.parse(firewall_policy_template)
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         return firewall.FirewallPolicy(
-            'firewall_policy', resource_defns['firewall_policy'], stack)
+            'firewall_policy', resource_defns['firewall_policy'], self.stack)
 
     def test_create(self):
         rsrc = self.create_firewall_policy()
@@ -259,7 +245,8 @@ class FirewallPolicyTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.firewall_policy: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -297,7 +284,8 @@ class FirewallPolicyTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.firewall_policy: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -356,10 +344,10 @@ class FirewallRuleTest(common.HeatTestCase):
         ).AndReturn({'firewall_rule': {'id': '5678'}})
 
         snippet = template_format.parse(firewall_rule_template)
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         return firewall.FirewallRule(
-            'firewall_rule', resource_defns['firewall_rule'], stack)
+            'firewall_rule', resource_defns['firewall_rule'], self.stack)
 
     def test_create(self):
         rsrc = self.create_firewall_rule()
@@ -411,7 +399,8 @@ class FirewallRuleTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.firewall_rule: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -449,7 +438,8 @@ class FirewallRuleTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.firewall_rule: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()

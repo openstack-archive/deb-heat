@@ -54,6 +54,18 @@ resources:
 '''
 
 
+neutron_port_security_template = '''
+heat_template_version: 2015-04-30
+description: Template to test port Neutron resource
+resources:
+  port:
+    type: OS::Neutron::Port
+    properties:
+      network: abcd1234
+      port_security_enabled: False
+'''
+
+
 class NeutronPortTest(common.HeatTestCase):
 
     def setUp(self):
@@ -205,6 +217,39 @@ class NeutronPortTest(common.HeatTestCase):
         self.m.ReplayAll()
 
         t = template_format.parse(neutron_port_with_address_pair_template)
+        stack = utils.parse_stack(t)
+
+        port = stack['port']
+        scheduler.TaskRunner(port.create)()
+        self.m.VerifyAll()
+
+    def test_port_security_enabled(self):
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'abcd1234'
+        ).MultipleTimes().AndReturn('abcd1234')
+
+        neutronclient.Client.create_port({'port': {
+            'network_id': u'abcd1234',
+            'port_security_enabled': False,
+            'name': utils.PhysName('test_stack', 'port'),
+            'admin_state_up': True}}
+        ).AndReturn({'port': {
+            "status": "BUILD",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+        }})
+
+        neutronclient.Client.show_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn({'port': {
+            "status": "ACTIVE",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766",
+        }})
+
+        self.m.ReplayAll()
+
+        t = template_format.parse(neutron_port_security_template)
         stack = utils.parse_stack(t)
 
         port = stack['port']

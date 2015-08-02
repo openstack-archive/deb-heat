@@ -16,7 +16,6 @@ import datetime
 import json
 import uuid
 
-from oslo_config import cfg
 from oslo_utils import timeutils
 import six
 
@@ -24,10 +23,11 @@ from heat.common import exception
 from heat.common import identifier
 from heat.common import template_format
 from heat.engine import environment
-from heat.engine import parser
 from heat.engine.resources.aws.cfn import wait_condition_handle as aws_wch
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
+from heat.engine import stack as parser
+from heat.engine import template as tmpl
 from heat.objects import resource as resource_objects
 from heat.tests import common
 from heat.tests import utils
@@ -78,16 +78,14 @@ class WaitConditionTest(common.HeatTestCase):
 
     def setUp(self):
         super(WaitConditionTest, self).setUp()
-        cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://server.test:8000/v1/waitcondition')
 
     def create_stack(self, stack_id=None,
                      template=test_template_waitcondition, params=None,
                      stub=True, stub_status=True):
         params = params or {}
         temp = template_format.parse(template)
-        template = parser.Template(temp,
-                                   env=environment.Environment(params))
+        template = tmpl.Template(temp,
+                                 env=environment.Environment(params))
         ctx = utils.dummy_context(tenant_id='test_tenant')
         stack = parser.Stack(ctx, 'test_stack', template,
                              disable_rollback=True)
@@ -350,12 +348,10 @@ class WaitConditionTest(common.HeatTestCase):
 class WaitConditionHandleTest(common.HeatTestCase):
     def setUp(self):
         super(WaitConditionHandleTest, self).setUp()
-        cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://server.test:8000/v1/waitcondition')
 
     def create_stack(self, stack_name=None, stack_id=None):
         temp = template_format.parse(test_template_waitcondition)
-        template = parser.Template(temp)
+        template = tmpl.Template(temp)
         ctx = utils.dummy_context(tenant_id='test_tenant')
         if stack_name is None:
             stack_name = utils.random_name()
@@ -377,10 +373,8 @@ class WaitConditionHandleTest(common.HeatTestCase):
                                            stack.id, '', 'WaitHandle')
         self.m.StubOutWithMock(aws_wch.WaitConditionHandle, 'identifier')
         aws_wch.WaitConditionHandle.identifier().MultipleTimes().AndReturn(id)
-
         self.m.ReplayAll()
         stack.create()
-
         return stack
 
     def test_handle(self):
@@ -390,6 +384,11 @@ class WaitConditionHandleTest(common.HeatTestCase):
         self.stack = self.create_stack(stack_id=stack_id,
                                        stack_name=stack_name)
 
+        self.m.StubOutWithMock(self.stack.clients.client_plugin('heat'),
+                               'get_heat_cfn_url')
+        self.stack.clients.client_plugin('heat').get_heat_cfn_url().AndReturn(
+            'http://server.test:8000/v1')
+        self.m.ReplayAll()
         rsrc = self.stack['WaitHandle']
         # clear the url
         rsrc.data_set('ec2_signed_url', None, False)
@@ -520,14 +519,12 @@ class WaitConditionHandleTest(common.HeatTestCase):
 class WaitConditionUpdateTest(common.HeatTestCase):
     def setUp(self):
         super(WaitConditionUpdateTest, self).setUp()
-        cfg.CONF.set_default('heat_waitcondition_server_url',
-                             'http://server.test:8000/v1/waitcondition')
 
-    def create_stack(self, tmpl=None):
-        if tmpl is None:
-            tmpl = test_template_wc_count
-        temp = template_format.parse(tmpl)
-        template = parser.Template(temp)
+    def create_stack(self, temp=None):
+        if temp is None:
+            temp = test_template_wc_count
+        temp_fmt = template_format.parse(temp)
+        template = tmpl.Template(temp_fmt)
         ctx = utils.dummy_context(tenant_id='test_tenant')
         stack = parser.Stack(ctx, 'test_stack', template,
                              disable_rollback=True)
@@ -592,7 +589,8 @@ class WaitConditionUpdateTest(common.HeatTestCase):
         self.m.VerifyAll()
         self.m.UnsetStubs()
 
-        wait_condition_handle = self.stack['WaitHandle']
+        handle_stack = self.stack
+        wait_condition_handle = handle_stack['WaitHandle']
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '1'}
         self._handle_signal(wait_condition_handle, test_metadata, 2)
@@ -653,7 +651,7 @@ class WaitConditionUpdateTest(common.HeatTestCase):
         updater = scheduler.TaskRunner(rsrc.update, update_snippet)
         ex = self.assertRaises(exception.ResourceFailure,
                                updater)
-        self.assertEqual("WaitConditionTimeout: 0 of 5 received",
-                         six.text_type(ex))
+        self.assertEqual("WaitConditionTimeout: resources.WaitForTheHandle: "
+                         "0 of 5 received", six.text_type(ex))
         self.assertEqual(5, rsrc.properties['Count'])
         self.m.VerifyAll()

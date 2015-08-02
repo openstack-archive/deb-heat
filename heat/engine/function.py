@@ -14,6 +14,7 @@
 import abc
 import collections
 import itertools
+import weakref
 
 import six
 
@@ -33,9 +34,19 @@ class Function(object):
             { <fn_name> : <args> }
         """
         super(Function, self).__init__()
-        self.stack = stack
+        self._stackref = weakref.ref(stack) if stack is not None else None
         self.fn_name = fn_name
         self.args = args
+
+    @property
+    def stack(self):
+        ref = self._stackref
+        if ref is None:
+            return None
+
+        stack = ref()
+        assert stack is not None, "Need a reference to the Stack object"
+        return stack
 
     def validate(self):
         """
@@ -114,6 +125,9 @@ class Function(object):
             return NotImplemented
         return not eq
 
+    def __hash__(self):
+        return id(self)
+
 
 def resolve(snippet):
     while isinstance(snippet, Function):
@@ -132,7 +146,7 @@ def validate(snippet):
     if isinstance(snippet, Function):
         snippet.validate()
     elif isinstance(snippet, collections.Mapping):
-        for v in snippet.values():
+        for v in six.itervalues(snippet):
             validate(v)
     elif (not isinstance(snippet, six.string_types) and
           isinstance(snippet, collections.Iterable)):
@@ -153,7 +167,7 @@ def dependencies(snippet, path=''):
 
     elif isinstance(snippet, collections.Mapping):
         def mkpath(key):
-            return '.'.join([path, unicode(key)])
+            return '.'.join([path, six.text_type(key)])
 
         deps = (dependencies(value,
                              mkpath(key)) for key, value in snippet.items())

@@ -11,9 +11,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import netaddr
+import six
+
 from neutronclient.common import exceptions
 from neutronclient.neutron import v2_0 as neutronV20
 from neutronclient.v2_0 import client as nc
+from oslo_utils import netutils
 from oslo_utils import uuidutils
 
 from heat.common import exception
@@ -25,17 +29,19 @@ class NeutronClientPlugin(client_plugin.ClientPlugin):
 
     exceptions_module = exceptions
 
+    service_types = [NETWORK] = ['network']
+
     def _create(self):
 
         con = self.context
 
         endpoint_type = self._get_client_option('neutron', 'endpoint_type')
-        endpoint = self.url_for(service_type='network',
+        endpoint = self.url_for(service_type=self.NETWORK,
                                 endpoint_type=endpoint_type)
 
         args = {
             'auth_url': con.auth_url,
-            'service_type': 'network',
+            'service_type': self.NETWORK,
             'token': self.auth_token,
             'endpoint_url': endpoint,
             'endpoint_type': endpoint_type,
@@ -172,3 +178,35 @@ class SubnetConstraint(constraints.BaseCustomConstraint):
         neutron_client = client.client('neutron')
         neutronV20.find_resourceid_by_name_or_id(
             neutron_client, 'subnet', value)
+
+
+class IPConstraint(constraints.BaseCustomConstraint):
+
+    def validate(self, value, context):
+        self._error_message = 'Invalid IP address'
+        return netutils.is_valid_ip(value)
+
+
+class MACConstraint(constraints.BaseCustomConstraint):
+
+    def validate(self, value, context):
+        self._error_message = 'Invalid MAC address.'
+        return netaddr.valid_mac(value)
+
+
+class CIDRConstraint(constraints.BaseCustomConstraint):
+
+    def _validate_whitespace(self, data):
+        self._error_message = ("Invalid net cidr '%s' contains "
+                               "whitespace" % data)
+        if len(data.split()) > 1:
+            return False
+        return True
+
+    def validate(self, value, context):
+        try:
+            netaddr.IPNetwork(value)
+            return self._validate_whitespace(value)
+        except Exception as ex:
+            self._error_message = 'Invalid net cidr %s ' % six.text_type(ex)
+            return False

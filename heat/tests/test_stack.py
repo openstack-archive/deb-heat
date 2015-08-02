@@ -20,10 +20,13 @@ import mock
 import mox
 from oslo_config import cfg
 import six
+import testtools
 
 from heat.common import context
 from heat.common import exception
 from heat.common import template_format
+from heat.common import timeutils
+from heat.db import api as db_api
 from heat.engine.clients.os import keystone
 from heat.engine.clients.os import nova
 from heat.engine import environment
@@ -31,9 +34,12 @@ from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import stack
 from heat.engine import template
+from heat.objects import raw_template as raw_template_object
 from heat.objects import stack as stack_object
+from heat.objects import stack_tag as stack_tag_object
 from heat.objects import user_creds as ucreds_object
 from heat.tests import common
+from heat.tests.engine import tools
 from heat.tests import fakes
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
@@ -49,13 +55,6 @@ class StackTest(common.HeatTestCase):
 
         self.tmpl = template.Template(copy.deepcopy(empty_template))
         self.ctx = utils.dummy_context()
-
-        resource._register_class('GenericResourceType',
-                                 generic_rsrc.GenericResource)
-        resource._register_class('ResourceWithPropsType',
-                                 generic_rsrc.ResourceWithProps)
-        resource._register_class('ResWithComplexPropsAndAttrs',
-                                 generic_rsrc.ResWithComplexPropsAndAttrs)
 
     def test_stack_reads_tenant(self):
         self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl,
@@ -170,39 +169,27 @@ class StackTest(common.HeatTestCase):
     def test_total_resources_empty(self):
         self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl,
                                  status_reason='flimflam')
+        self.stack.store()
+        self.assertEqual(0, self.stack.total_resources(self.stack.id))
         self.assertEqual(0, self.stack.total_resources())
 
-    def test_total_resources_generic(self):
+    def test_total_resources_not_found(self):
+        self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl,
+                                 status_reason='flimflam')
+
+        self.assertEqual(0, self.stack.total_resources('1234'))
+
+    @mock.patch.object(db_api, 'stack_count_total_resources')
+    def test_total_resources_generic(self, sctr):
         tpl = {'HeatTemplateFormatVersion': '2012-12-12',
                'Resources':
                {'A': {'Type': 'GenericResourceType'}}}
         self.stack = stack.Stack(self.ctx, 'test_stack',
                                  template.Template(tpl),
                                  status_reason='blarg')
-        self.assertEqual(1, self.stack.total_resources())
-
-    def test_total_resources_nested_ok(self):
-        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
-               'Resources':
-               {'A': {'Type': 'GenericResourceType'}}}
-        self.stack = stack.Stack(self.ctx, 'test_stack',
-                                 template.Template(tpl),
-                                 status_reason='blarg')
-
-        self.stack['A'].nested = mock.Mock()
-        self.stack['A'].nested.return_value.total_resources.return_value = 3
-        self.assertEqual(4, self.stack.total_resources())
-
-    def test_total_resources_nested_not_found(self):
-        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
-               'Resources':
-               {'A': {'Type': 'GenericResourceType'}}}
-        self.stack = stack.Stack(self.ctx, 'test_stack',
-                                 template.Template(tpl),
-                                 status_reason='blarg')
-
-        self.stack['A'].nested = mock.Mock(
-            side_effect=exception.NotFound('gone'))
+        self.stack.store()
+        sctr.return_value = 1
+        self.assertEqual(1, self.stack.total_resources(self.stack.id))
         self.assertEqual(1, self.stack.total_resources())
 
     def test_iter_resources(self):
@@ -231,38 +218,36 @@ class StackTest(common.HeatTestCase):
         all_resources = list(self.stack.iter_resources(1))
         self.assertEqual(5, len(all_resources))
 
-    def test_root_stack_no_parent(self):
+    @mock.patch.object(stack.Stack, 'db_resource_get')
+    def test_iter_resources_cached(self, mock_drg):
         tpl = {'HeatTemplateFormatVersion': '2012-12-12',
                'Resources':
-               {'A': {'Type': 'GenericResourceType'}}}
+               {'A': {'Type': 'GenericResourceType'},
+                'B': {'Type': 'GenericResourceType'}}}
         self.stack = stack.Stack(self.ctx, 'test_stack',
                                  template.Template(tpl),
-                                 status_reason='blarg')
+                                 status_reason='blarg',
+                                 cache_data={})
 
-        self.assertEqual(self.stack, self.stack.root_stack)
+        def get_more(nested_depth=0):
+            yield 'X'
+            yield 'Y'
+            yield 'Z'
 
-    def test_root_stack_parent_no_stack(self):
-        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
-               'Resources':
-               {'A': {'Type': 'GenericResourceType'}}}
-        self.stack = stack.Stack(self.ctx, 'test_stack',
-                                 template.Template(tpl),
-                                 status_reason='blarg')
+        self.stack['A'].nested = mock.MagicMock()
+        self.stack['A'].nested.return_value.iter_resources = mock.MagicMock(
+            side_effect=get_more)
 
-        self.stack._parent_resource = mock.Mock()
-        self.stack._parent_resource.stack = None
-        self.assertEqual(self.stack, self.stack.root_stack)
+        resource_generator = self.stack.iter_resources()
+        self.assertIsNot(resource_generator, list)
 
-    def test_root_stack_with_parent(self):
-        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
-               'Resources':
-               {'A': {'Type': 'GenericResourceType'}}}
-        stk = stack.Stack(self.ctx, 'test_stack', template.Template(tpl),
-                          status_reason='blarg')
+        first_level_resources = list(resource_generator)
+        self.assertEqual(2, len(first_level_resources))
+        all_resources = list(self.stack.iter_resources(1))
+        self.assertEqual(5, len(all_resources))
 
-        stk._parent_resource = mock.Mock()
-        stk._parent_resource.stack.root_stack = 'test value'
-        self.assertEqual('test value', stk.root_stack)
+        # A cache supplied means we should never query the database.
+        self.assertFalse(mock_drg.called)
 
     def test_load_parent_resource(self):
         self.stack = stack.Stack(self.ctx, 'load_parent_resource', self.tmpl,
@@ -291,7 +276,10 @@ class StackTest(common.HeatTestCase):
                              use_stored_context=False,
                              username=mox.IgnoreArg(),
                              convergence=False,
-                             current_traversal=None)
+                             current_traversal=None,
+                             tags=mox.IgnoreArg(),
+                             prev_raw_template_id=None,
+                             current_deps=None, cache_data=None)
 
         self.m.ReplayAll()
         stack.Stack.load(self.ctx, stack_id=self.stack.id)
@@ -613,7 +601,8 @@ class StackTest(common.HeatTestCase):
 
         self.assertEqual((self.stack.SUSPEND, self.stack.FAILED),
                          self.stack.state)
-        self.assertEqual('Resource SUSPEND failed: Exception: foo',
+        self.assertEqual('Resource SUSPEND failed: Exception: '
+                         'resources.AResource: foo',
                          self.stack.status_reason)
         self.m.VerifyAll()
 
@@ -641,7 +630,8 @@ class StackTest(common.HeatTestCase):
 
         self.assertEqual((self.stack.RESUME, self.stack.FAILED),
                          self.stack.state)
-        self.assertEqual('Resource RESUME failed: Exception: foo',
+        self.assertEqual('Resource RESUME failed: Exception: '
+                         'resources.AResource: foo',
                          self.stack.status_reason)
         self.m.VerifyAll()
 
@@ -709,7 +699,7 @@ class StackTest(common.HeatTestCase):
         def _mock_check(res):
             res.handle_check = mock.Mock()
 
-        [_mock_check(res) for res in self.stack.resources.values()]
+        [_mock_check(res) for res in six.itervalues(self.stack.resources)]
         return self.stack
 
     def test_check_supported(self):
@@ -719,7 +709,7 @@ class StackTest(common.HeatTestCase):
         self.assertEqual(stack1.COMPLETE, stack1.status)
         self.assertEqual(stack1.CHECK, stack1.action)
         [self.assertTrue(res.handle_check.called)
-         for res in stack1.resources.values()]
+         for res in six.itervalues(stack1.resources)]
         self.assertNotIn('not fully supported', stack1.status_reason)
 
     def test_check_not_supported(self):
@@ -810,8 +800,8 @@ class StackTest(common.HeatTestCase):
         self.stack.adopt()
         self.assertEqual((self.stack.ADOPT, self.stack.FAILED),
                          self.stack.state)
-        expected = ('Resource ADOPT failed: Exception: Resource ID was not'
-                    ' provided.')
+        expected = ('Resource ADOPT failed: Exception: resources.foo: '
+                    'Resource ID was not provided.')
         self.assertEqual(expected, self.stack.status_reason)
 
     def test_adopt_stack_rollback(self):
@@ -881,21 +871,9 @@ class StackTest(common.HeatTestCase):
         this test fails the second instance
         '''
 
-        class ResourceTypeA(generic_rsrc.ResourceWithProps):
-            count = 0
-
-            def handle_create(self):
-                ResourceTypeA.count += 1
-                self.resource_id_set('%s%d' % (self.name, self.count))
-
-            def handle_delete(self):
-                return super(ResourceTypeA, self).handle_delete()
-
-        resource._register_class('ResourceTypeA', ResourceTypeA)
-
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
-                    'AResource': {'Type': 'ResourceTypeA',
+                    'AResource': {'Type': 'OverwrittenFnGetRefIdType',
                                   'Properties': {'Foo': 'abc'}},
                     'BResource': {'Type': 'ResourceWithPropsType',
                                   'Properties': {
@@ -904,16 +882,18 @@ class StackTest(common.HeatTestCase):
                                  template.Template(tmpl),
                                  disable_rollback=True)
 
-        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_create')
-        self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_delete')
-        self.m.StubOutWithMock(ResourceTypeA, 'handle_delete')
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithFnGetRefIdType,
+                               'handle_create')
+        self.m.StubOutWithMock(generic_rsrc.ResourceWithFnGetRefIdType,
+                               'handle_delete')
 
         # create
-        generic_rsrc.ResourceWithProps.handle_create().AndRaise(Exception)
+        generic_rsrc.ResourceWithFnGetRefIdType.handle_create().AndRaise(
+            Exception)
 
         # update
-        generic_rsrc.ResourceWithProps.handle_delete()
-        generic_rsrc.ResourceWithProps.handle_create()
+        generic_rsrc.ResourceWithFnGetRefIdType.handle_delete()
+        generic_rsrc.ResourceWithFnGetRefIdType.handle_create()
 
         self.m.ReplayAll()
 
@@ -931,7 +911,7 @@ class StackTest(common.HeatTestCase):
         self.assertEqual((stack.Stack.UPDATE, stack.Stack.COMPLETE),
                          self.stack.state)
         self.assertEqual('abc', self.stack['AResource'].properties['Foo'])
-        self.assertEqual('AResource1',
+        self.assertEqual('ID-AResource',
                          self.stack['BResource'].properties['Foo'])
 
         self.m.VerifyAll()
@@ -965,9 +945,10 @@ class StackTest(common.HeatTestCase):
                          '(a foo) is incorrect.', self.stack.status_reason)
         self.m.VerifyAll()
 
+    @testtools.skipIf(six.PY3, "skipped until review 193726 is merged")
     def test_stack_create_timeout(self):
         self.m.StubOutWithMock(scheduler.DependencyTaskGroup, '__call__')
-        self.m.StubOutWithMock(scheduler, 'wallclock')
+        self.m.StubOutWithMock(timeutils, 'wallclock')
 
         stk = stack.Stack(self.ctx, 's', self.tmpl)
 
@@ -976,10 +957,10 @@ class StackTest(common.HeatTestCase):
                 yield
 
         start_time = time.time()
-        scheduler.wallclock().AndReturn(start_time)
-        scheduler.wallclock().AndReturn(start_time + 1)
+        timeutils.wallclock().AndReturn(start_time)
+        timeutils.wallclock().AndReturn(start_time + 1)
         scheduler.DependencyTaskGroup.__call__().AndReturn(dummy_task())
-        scheduler.wallclock().AndReturn(start_time + stk.timeout_secs() + 1)
+        timeutils.wallclock().AndReturn(start_time + stk.timeout_secs() + 1)
 
         self.m.ReplayAll()
 
@@ -1123,6 +1104,35 @@ class StackTest(common.HeatTestCase):
         ctx_expected = ctx_init.to_dict()
         ctx_expected['auth_token'] = None
         self.assertEqual(ctx_expected, self.stack.stored_context().to_dict())
+
+    def test_load_reads_tags(self):
+        self.stack = stack.Stack(self.ctx, 'stack_tags', self.tmpl)
+        self.stack.store()
+        stack_id = self.stack.id
+        test_stack = stack.Stack.load(self.ctx, stack_id=stack_id)
+        self.assertIsNone(test_stack.tags)
+
+        self.stack = stack.Stack(self.ctx, 'stack_name', self.tmpl,
+                                 tags=['tag1', 'tag2'])
+        self.stack.store()
+        stack_id = self.stack.id
+        test_stack = stack.Stack.load(self.ctx, stack_id=stack_id)
+        self.assertEqual(['tag1', 'tag2'], test_stack.tags)
+
+    def test_store_saves_tags(self):
+        self.stack = stack.Stack(self.ctx, 'tags_stack', self.tmpl)
+        self.stack.store()
+        db_tags = stack_tag_object.StackTagList.get(self.stack.context,
+                                                    self.stack.id)
+        self.assertIsNone(db_tags)
+
+        self.stack = stack.Stack(self.ctx, 'tags_stack', self.tmpl,
+                                 tags=['tag1', 'tag2'])
+        self.stack.store()
+        db_tags = stack_tag_object.StackTagList.get(self.stack.context,
+                                                    self.stack.id)
+        self.assertEqual('tag1', db_tags[0].tag)
+        self.assertEqual('tag2', db_tags[1].tag)
 
     def test_store_saves_creds(self):
         """
@@ -1548,7 +1558,9 @@ class StackTest(common.HeatTestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                self.stack.validate)
 
-        self.assertEqual('Output validation error: The Referenced Attribute '
+        self.assertEqual('Output validation error: '
+                         'Outputs.Resource_attr.Value: '
+                         'The Referenced Attribute '
                          '(AResource Bar) is incorrect.',
                          six.text_type(ex))
 
@@ -1650,6 +1662,18 @@ class StackTest(common.HeatTestCase):
         self.stack.strict_validate = False
         self.assertIsNone(self.stack.validate())
 
+    def test_validate_property_getatt(self):
+        tmpl = {
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Resources': {
+                'R1': {'Type': 'ResourceWithPropsType'},
+                'R2': {'Type': 'ResourceWithPropsType',
+                       'Properties': {'Foo': {'Fn::GetAtt': ['R1', 'Foo']}}}}
+        }
+        self.stack = stack.Stack(self.ctx, 'test_stack',
+                                 template.Template(tmpl))
+        self.assertIsNone(self.stack.validate())
+
     def test_param_validate_value(self):
         tmpl = template_format.parse("""
         HeatTemplateFormatVersion: '2012-12-12'
@@ -1665,8 +1689,9 @@ class StackTest(common.HeatTestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                self.stack.validate)
 
-        self.assertEqual("Parameter 'foo' is invalid: could not convert "
-                         "string to float: abc", six.text_type(ex))
+        self.assertIn("Parameter 'foo' is invalid: could not convert "
+                      "string to float:", six.text_type(ex))
+        self.assertIn("abc", six.text_type(ex))
 
         self.stack.strict_validate = False
         self.assertIsNone(self.stack.validate())
@@ -1708,9 +1733,26 @@ class StackTest(common.HeatTestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                self.stack.validate)
 
-        self.assertEqual('Output validation error: The Referenced Attribute '
+        self.assertEqual('Output validation error: '
+                         'outputs.resource_attr.value: '
+                         'The Referenced Attribute '
                          '(AResource Bar) is incorrect.',
                          six.text_type(ex))
+
+    def test_snapshot_save_called_first(self):
+        def snapshotting_called_first(stack, action, status, reason):
+            self.assertEqual(stack.status, stack.IN_PROGRESS)
+            self.assertEqual(stack.action, stack.SNAPSHOT)
+
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Resources': {
+                    'A': {'Type': 'GenericResourceType'},
+                    'B': {'Type': 'GenericResourceType'}}}
+        self.stack = stack.Stack(self.ctx, 'stack_details_test',
+                                 template.Template(tmpl))
+        self.stack.store()
+        self.stack.create()
+        self.stack.snapshot(save_snapshot_func=snapshotting_called_first)
 
     def test_restore(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
@@ -1739,23 +1781,53 @@ class StackTest(common.HeatTestCase):
                          self.stack.state)
         self.assertEqual(2, len(self.stack.resources))
 
+    def test_restore_with_original_env(self):
+        tmpl = {
+            'heat_template_version': '2013-05-23',
+            'parameters': {
+                'foo': {'type': 'string'}
+            },
+            'resources': {
+                'A': {
+                    'type': 'ResourceWithPropsType',
+                    'properties': {'Foo': {'get_param': 'foo'}}
+                }
+            }
+        }
+        self.stack = stack.Stack(self.ctx, 'stack_restore_test',
+                                 template.Template(
+                                     tmpl,
+                                     env=environment.Environment(
+                                         {'foo': 'abc'})))
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual('abc',
+                         self.stack.resources['A'].properties['Foo'])
+
+        data = copy.deepcopy(self.stack.prepare_abandon())
+        fake_snapshot = collections.namedtuple(
+            'Snapshot', ('data', 'stack_id'))(data, self.stack.id)
+
+        updated_stack = stack.Stack(self.ctx, 'updated_stack',
+                                    template.Template(
+                                        tmpl,
+                                        env=environment.Environment(
+                                            {'foo': 'xyz'})))
+        self.stack.update(updated_stack)
+        self.assertEqual('xyz',
+                         self.stack.resources['A'].properties['Foo'])
+
+        self.stack.restore(fake_snapshot)
+        self.assertEqual((stack.Stack.RESTORE, stack.Stack.COMPLETE),
+                         self.stack.state)
+        self.assertEqual('abc',
+                         self.stack.resources['A'].properties['Foo'])
+
     def test_hot_restore(self):
 
-        class ResourceWithRestore(generic_rsrc.ResWithComplexPropsAndAttrs):
-
-            def handle_restore(self, defn, data):
-                props = dict(
-                    (key, value) for (key, value) in
-                    six.iteritems(defn.properties(self.properties_schema))
-                    if value is not None)
-                value = data['resource_data']['a_string']
-                props['a_string'] = value
-                return defn.freeze(properties=props)
-
-        resource._register_class('ResourceWithRestore', ResourceWithRestore)
         tpl = {'heat_template_version': '2013-05-23',
                'resources':
-               {'A': {'type': 'ResourceWithRestore'}}}
+               {'A': {'type': 'ResourceWithRestoreType'}}}
         self.stack = stack.Stack(self.ctx, 'stack_details_test',
                                  template.Template(tpl))
         self.stack.store()
@@ -1773,6 +1845,301 @@ class StackTest(common.HeatTestCase):
 
         self.assertEqual(
             'foo', self.stack.resources['A'].properties['a_string'])
+
+    @mock.patch.object(stack.Stack, 'db_resource_get')
+    def test_lightweight_stack_getatt(self, mock_drg):
+        tmpl = template.Template({
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+                'bar': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {
+                        'Foo': {'Fn::GetAtt': ['foo', 'bar']},
+                    }
+                }
+            }
+        })
+
+        cache_data = {'foo': {'attributes': {'bar': 'baz'}}}
+        tmpl_stack = stack.Stack(self.ctx, 'test', tmpl)
+        tmpl_stack.store()
+        lightweight_stack = stack.Stack.load(self.ctx, stack_id=tmpl_stack.id,
+                                             cache_data=cache_data)
+
+        # Check if the property has the appropriate resolved value.
+        cached_property = lightweight_stack['bar'].properties['Foo']
+        self.assertEqual(cached_property, 'baz')
+
+        # Make sure FnGetAtt returns the cached value.
+        attr_value = lightweight_stack['foo'].FnGetAtt('bar')
+        self.assertEqual('baz', attr_value)
+
+        # Make sure calls are not made to the database to retrieve the
+        # resource state.
+        self.assertFalse(mock_drg.called)
+
+    @mock.patch.object(stack.Stack, 'db_resource_get')
+    def test_lightweight_stack_getrefid(self, mock_drg):
+        tmpl = template.Template({
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+                'bar': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {
+                        'Foo': {'Ref': 'foo'},
+                    }
+                }
+            }
+        })
+
+        cache_data = {'foo': {'physical_resource_id': 'physical-resource-id'}}
+        tmpl_stack = stack.Stack(self.ctx, 'test', tmpl)
+        tmpl_stack.store()
+        lightweight_stack = stack.Stack.load(self.ctx, stack_id=tmpl_stack.id,
+                                             cache_data=cache_data)
+
+        # Check if the property has the appropriate resolved value.
+        cached_property = lightweight_stack['bar'].properties['Foo']
+        self.assertEqual(cached_property, 'physical-resource-id')
+
+        # Make sure FnGetRefId returns the cached value.
+        resource_id = lightweight_stack['foo'].FnGetRefId()
+        self.assertEqual('physical-resource-id', resource_id)
+
+        # Make sure calls are not made to the database to retrieve the
+        # resource state.
+        self.assertFalse(mock_drg.called)
+
+    def test_encrypt_parameters_false_parameters_stored_plaintext(self):
+        '''
+        Test stack loading with disabled parameter value validation.
+        '''
+        tmpl = template_format.parse('''
+        heat_template_version: 2013-05-23
+        parameters:
+            param1:
+                type: string
+                description: value1.
+            param2:
+                type: string
+                description: value2.
+                hidden: true
+        resources:
+            a_resource:
+                type: GenericResourceType
+        ''')
+        env1 = environment.Environment({'param1': 'foo', 'param2': 'bar'})
+        self.stack = stack.Stack(self.ctx, 'test',
+                                 template.Template(tmpl, env=env1))
+        cfg.CONF.set_override('encrypt_parameters_and_properties', False)
+
+        # Verify that hidden parameters stored in plain text
+        self.stack.store()
+        db_stack = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
+        params = db_stack.raw_template.environment['parameters']
+        self.assertEqual('foo', params['param1'])
+        self.assertEqual('bar', params['param2'])
+
+    @testtools.skipIf(six.PY3, "needs a separate change")
+    def test_parameters_stored_encrypted_decrypted_on_load(self):
+        '''
+        Test stack loading with disabled parameter value validation.
+        '''
+        tmpl = template_format.parse('''
+        heat_template_version: 2013-05-23
+        parameters:
+            param1:
+                type: string
+                description: value1.
+            param2:
+                type: string
+                description: value2.
+                hidden: true
+        resources:
+            a_resource:
+                type: GenericResourceType
+        ''')
+        env1 = environment.Environment({'param1': 'foo', 'param2': 'bar'})
+        self.stack = stack.Stack(self.ctx, 'test',
+                                 template.Template(tmpl, env=env1))
+        cfg.CONF.set_override('encrypt_parameters_and_properties', True)
+
+        # Verify that hidden parameters are stored encrypted
+        self.stack.store()
+        db_tpl = db_api.raw_template_get(self.ctx, self.stack.t.id)
+        db_params = db_tpl.environment['parameters']
+        self.assertEqual('foo', db_params['param1'])
+        self.assertEqual('cryptography_decrypt_v1', db_params['param2'][0])
+        self.assertIsNotNone(db_params['param2'][1])
+
+        # Verify that loaded stack has decrypted paramters
+        loaded_stack = stack.Stack.load(self.ctx, stack_id=self.stack.id)
+        params = loaded_stack.t.env.params
+        self.assertEqual('foo', params.get('param1'))
+        self.assertEqual('bar', params.get('param2'))
+
+    def test_parameters_stored_decrypted_successful_load(self):
+        '''
+        Test stack loading with disabled parameter value validation.
+        '''
+        tmpl = template_format.parse('''
+        heat_template_version: 2013-05-23
+        parameters:
+            param1:
+                type: string
+                description: value1.
+            param2:
+                type: string
+                description: value2.
+                hidden: true
+        resources:
+            a_resource:
+                type: GenericResourceType
+        ''')
+        env1 = environment.Environment({'param1': 'foo', 'param2': 'bar'})
+        self.stack = stack.Stack(self.ctx, 'test',
+                                 template.Template(tmpl, env=env1))
+        cfg.CONF.set_override('encrypt_parameters_and_properties', False)
+
+        # Verify that hidden parameters are stored decrypted
+        self.stack.store()
+        db_tpl = db_api.raw_template_get(self.ctx, self.stack.t.id)
+        db_params = db_tpl.environment['parameters']
+        self.assertEqual('foo', db_params['param1'])
+        self.assertEqual('bar', db_params['param2'])
+
+        # Verify that stack loads without error
+        loaded_stack = stack.Stack.load(self.ctx, stack_id=self.stack.id)
+        params = loaded_stack.t.env.params
+        self.assertEqual('foo', params.get('param1'))
+        self.assertEqual('bar', params.get('param2'))
+
+    @mock.patch.object(stack_object.Stack, 'delete')
+    @mock.patch.object(raw_template_object.RawTemplate, 'delete')
+    def test_mark_complete_create(self, mock_tmpl_delete, mock_stack_delete):
+        tmpl = template.Template({
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'}
+            }
+        })
+
+        tmpl_stack = stack.Stack(self.ctx, 'test', tmpl)
+        tmpl_stack.store()
+        tmpl_stack.action = tmpl_stack.CREATE
+        tmpl_stack.status = tmpl_stack.IN_PROGRESS
+        tmpl_stack.current_traversal = 'some-traversal'
+        tmpl_stack.mark_complete('some-traversal')
+        self.assertEqual(tmpl_stack.prev_raw_template_id,
+                         None)
+        self.assertFalse(mock_tmpl_delete.called)
+        self.assertFalse(mock_stack_delete.called)
+        self.assertEqual(tmpl_stack.status, tmpl_stack.COMPLETE)
+
+    @mock.patch.object(stack_object.Stack, 'delete')
+    @mock.patch.object(raw_template_object.RawTemplate, 'delete')
+    @mock.patch.object(stack.Stack, 'store')
+    def test_mark_complete_update(self, mock_store, mock_tmpl_delete,
+                                  mock_stack_delete):
+        tmpl = template.Template({
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'}
+            }
+        })
+
+        tmpl_stack = stack.Stack(self.ctx, 'test', tmpl)
+        tmpl_stack.id = 2
+        tmpl_stack.t.id = 2
+        tmpl_stack.prev_raw_template_id = 1
+        tmpl_stack.action = tmpl_stack.UPDATE
+        tmpl_stack.status = tmpl_stack.IN_PROGRESS
+        tmpl_stack.current_traversal = 'some-traversal'
+        tmpl_stack.mark_complete('some-traversal')
+        self.assertEqual(tmpl_stack.prev_raw_template_id,
+                         None)
+        self.assertFalse(mock_stack_delete.called)
+        mock_tmpl_delete.assert_called_once_with(self.ctx, 1)
+        self.assertEqual(tmpl_stack.status, tmpl_stack.COMPLETE)
+
+    @mock.patch.object(stack_object.Stack, 'delete')
+    @mock.patch.object(raw_template_object.RawTemplate, 'delete')
+    @mock.patch.object(stack.Stack, 'store')
+    def test_mark_complete_update_delete(self, mock_store, mock_tmpl_delete,
+                                         mock_stack_delete):
+        tmpl = template.Template({
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Description': 'Empty Template'
+        })
+
+        tmpl_stack = stack.Stack(self.ctx, 'test', tmpl)
+        tmpl_stack.id = 2
+        tmpl_stack.t.id = 2
+        tmpl_stack.prev_raw_template_id = 1
+        tmpl_stack.action = tmpl_stack.DELETE
+        tmpl_stack.status = tmpl_stack.IN_PROGRESS
+        tmpl_stack.current_traversal = 'some-traversal'
+        tmpl_stack.mark_complete('some-traversal')
+        self.assertEqual(tmpl_stack.prev_raw_template_id,
+                         None)
+        mock_tmpl_delete.assert_called_once_with(self.ctx, 1)
+        mock_stack_delete.assert_called_once_with(self.ctx, 2)
+        self.assertEqual(tmpl_stack.status, tmpl_stack.COMPLETE)
+
+    @mock.patch.object(stack_object.Stack, 'delete')
+    @mock.patch.object(raw_template_object.RawTemplate, 'delete')
+    @mock.patch.object(stack.Stack, 'store')
+    def test_mark_complete_stale_traversal(self, mock_store, mock_tmpl_delete,
+                                           mock_stack_delete):
+        tmpl = template.Template({
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'}
+            }
+        })
+
+        tmpl_stack = stack.Stack(self.ctx, 'test', tmpl)
+        tmpl_stack.current_traversal = 'new-traversal'
+        tmpl_stack.mark_complete('old-traversal')
+        self.assertFalse(mock_tmpl_delete.called)
+        self.assertFalse(mock_stack_delete.called)
+        self.assertIsNone(tmpl_stack.prev_raw_template_id)
+        self.assertFalse(mock_store.called)
+
+    def test_validate_assertion_exception_rethrow(self):
+        expected_msg = 'Expected Assertion Error'
+        with mock.patch('heat.engine.stack.dependencies',
+                        new_callable=mock.PropertyMock) as mock_dependencies:
+            mock_dependency = mock.MagicMock()
+            mock_dependency.validate.side_effect = AssertionError(expected_msg)
+            mock_dependencies.Dependencies.return_value = [mock_dependency]
+            stc = stack.Stack(self.ctx, utils.random_name(), self.tmpl)
+            expected_exception = self.assertRaises(AssertionError,
+                                                   stc.validate)
+            self.assertEqual(expected_msg, six.text_type(expected_exception))
+            mock_dependency.validate.assert_called_once_with()
+
+        stc = stack.Stack(self.ctx, utils.random_name(), self.tmpl)
+        output_value = mock.MagicMock()
+        output_value.get.side_effect = AssertionError(expected_msg)
+        stc.outputs = {'foo': output_value}
+        expected_exception = self.assertRaises(AssertionError, stc.validate)
+        self.assertEqual(expected_msg, six.text_type(expected_exception))
+        output_value.get.assert_called_once_with('Value')
+
+    def test_resolve_static_data_assertion_exception_rethrow(self):
+        tmpl = mock.MagicMock()
+        expected_message = 'Expected Assertion Error'
+        tmpl.parse.side_effect = AssertionError(expected_message)
+
+        stc = stack.Stack(self.ctx, utils.random_name(),
+                          tmpl, resolve_data=False)
+        expected_exception = self.assertRaises(AssertionError,
+                                               stc.resolve_static_data,
+                                               None)
+        self.assertEqual(expected_message, six.text_type(expected_exception))
 
 
 class StackKwargsForCloningTest(common.HeatTestCase):
@@ -1825,3 +2192,53 @@ class StackKwargsForCloningTest(common.HeatTestCase):
             # just make sure that the kwargs are valid
             # (no exception should be raised)
             stack.Stack(ctx, utils.random_name(), tmpl, **res)
+
+
+class TestStackRollback(common.HeatTestCase):
+
+    def setUp(self):
+        super(TestStackRollback, self).setUp()
+        self.ctx = utils.dummy_context()
+        self.stack = tools.get_stack('test_stack_rollback', self.ctx,
+                                     template=tools.string_template_five,
+                                     convergence=True)
+
+    def test_trigger_rollback_uses_old_template_if_available(self):
+        # create a template and assign to stack as previous template
+        t = template_format.parse(tools.wp_template)
+        prev_tmpl = template.Template(t)
+        prev_tmpl.store(context=self.ctx)
+        self.stack.prev_raw_template_id = prev_tmpl.id
+        # mock failure
+        self.stack.action = self.stack.UPDATE
+        self.stack.status = self.stack.FAILED
+        self.stack.store()
+        # mock converge_stack()
+        self.stack.converge_stack = mock.Mock()
+        # call trigger_rollbac
+        self.stack.rollback()
+
+        # Make sure stack converge is called with previous template
+        self.assertTrue(self.stack.converge_stack.called)
+        self.assertIsNone(self.stack.prev_raw_template_id)
+        call_args, call_kwargs = self.stack.converge_stack.call_args
+        template_used_for_rollback = call_args[0]
+        self.assertEqual(prev_tmpl.id, template_used_for_rollback.id)
+
+    def test_trigger_rollback_uses_empty_template_if_prev_tmpl_not_available(
+            self):
+        # mock create failure with no previous template
+        self.stack.prev_raw_template_id = None
+        self.stack.action = self.stack.CREATE
+        self.stack.status = self.stack.FAILED
+        self.stack.store()
+        # mock converge_stack()
+        self.stack.converge_stack = mock.Mock()
+        # call trigger_rollback
+        self.stack.rollback()
+
+        # Make sure stack converge is called with empty template
+        self.assertTrue(self.stack.converge_stack.called)
+        call_args, call_kwargs = self.stack.converge_stack.call_args
+        template_used_for_rollback = call_args[0]
+        self.assertEqual({}, template_used_for_rollback['resources'])

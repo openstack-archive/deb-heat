@@ -20,9 +20,8 @@ import os
 import pkgutil
 import string
 
+from novaclient import client as nc
 from novaclient import exceptions
-from novaclient import shell as novashell
-from novaclient.v2 import client as nc
 from oslo_config import cfg
 from oslo_serialization import jsonutils
 from oslo_utils import uuidutils
@@ -31,9 +30,11 @@ from six.moves.urllib import parse as urlparse
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LI
 from heat.common.i18n import _LW
 from heat.engine.clients import client_plugin
 from heat.engine import constraints
+from heat.engine import resource
 from heat.engine import scheduler
 
 LOG = logging.getLogger(__name__)
@@ -57,18 +58,28 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
 
     exceptions_module = exceptions
 
+    service_types = [COMPUTE] = ['compute']
+
     def _create(self):
         endpoint_type = self._get_client_option('nova', 'endpoint_type')
-        management_url = self.url_for(service_type='compute',
+        management_url = self.url_for(service_type=self.COMPUTE,
                                       endpoint_type=endpoint_type)
 
-        computeshell = novashell.OpenStackComputeShell()
-        extensions = computeshell._discover_extensions(NOVACLIENT_VERSION)
+        if hasattr(nc, 'discover_extensions'):
+            extensions = nc.discover_extensions(NOVACLIENT_VERSION)
+        else:
+            # TODO(lyj): The else condition is for backward compatibility,
+            #            once novaclient bump to a newer version with
+            #            discover_extensions exists, this should be safely
+            #            removed.
+            from novaclient import shell as novashell
+            computeshell = novashell.OpenStackComputeShell()
+            extensions = computeshell._discover_extensions(NOVACLIENT_VERSION)
 
         args = {
             'project_id': self.context.tenant,
             'auth_url': self.context.auth_url,
-            'service_type': 'compute',
+            'service_type': self.COMPUTE,
             'username': None,
             'api_key': None,
             'extensions': extensions,
@@ -79,7 +90,7 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
             'insecure': self._get_client_option('nova', 'insecure')
         }
 
-        client = nc.Client(**args)
+        client = nc.Client(NOVACLIENT_VERSION, **args)
         client.client.auth_token = self.auth_token
         client.client.management_url = management_url
 
@@ -102,6 +113,46 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
                        getattr(ex, 'code', None))
         return (isinstance(ex, exceptions.ClientException) and
                 http_status == 422)
+
+    def get_server(self, server):
+        """Return fresh server object.
+
+        Substitutes Nova's NotFound for Heat's EntityNotFound,
+        to be returned to user as HTTP error.
+        """
+        try:
+            return self.client().servers.get(server)
+        except exceptions.NotFound as ex:
+            LOG.warn(_LW('Server (%(server)s) not found: %(ex)s'),
+                     {'server': server, 'ex': ex})
+            raise exception.EntityNotFound(entity='Server', name=server)
+
+    def fetch_server(self, server_id):
+        """
+        Fetch fresh server object from Nova.
+
+        Log warnings and return None for non-critical API errors.
+        Use this method in various ``check_*_complete`` resource methods,
+        where intermittent errors can be tolerated.
+        """
+        server = None
+        try:
+            server = self.client().servers.get(server_id)
+        except exceptions.OverLimit as exc:
+            LOG.warn(_LW("Received an OverLimit response when "
+                         "fetching server (%(id)s) : %(exception)s"),
+                     {'id': server_id,
+                      'exception': exc})
+        except exceptions.ClientException as exc:
+            if ((getattr(exc, 'http_status', getattr(exc, 'code', None)) in
+                 (500, 503))):
+                LOG.warn(_LW("Received the following exception when "
+                         "fetching server (%(id)s) : %(exception)s"),
+                         {'id': server_id,
+                          'exception': exc})
+            else:
+                raise
+        return server
 
     def refresh_server(self, server):
         '''
@@ -143,6 +194,47 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
         '''
         # Some clouds append extra (STATUS) strings to the status, strip it
         return server.status.split('(')[0]
+
+    def _check_active(self, server, res_name='Server'):
+        """Check server status.
+
+        Accepts both server IDs and server objects.
+        Returns True if server is ACTIVE,
+        raises errors when server has an ERROR or unknown to Heat status,
+        returns False otherwise.
+
+        :param res_name: name of the resource to use in the exception message
+
+        """
+        # not checking with is_uuid_like as most tests use strings e.g. '1234'
+        if isinstance(server, six.string_types):
+            server = self.fetch_server(server)
+            if server is None:
+                return False
+            else:
+                status = self.get_status(server)
+        else:
+            status = self.get_status(server)
+            if status != 'ACTIVE':
+                self.refresh_server(server)
+                status = self.get_status(server)
+
+        if status in self.deferred_server_statuses:
+            return False
+        elif status == 'ACTIVE':
+            return True
+        elif status == 'ERROR':
+            fault = getattr(server, 'fault', {})
+            raise resource.ResourceInError(
+                resource_status=status,
+                status_reason=_("Message: %(message)s, Code: %(code)s") % {
+                    'message': fault.get('message', _('Unknown')),
+                    'code': fault.get('code', _('Unknown'))
+                })
+        else:
+            raise resource.ResourceUnknownStatus(
+                resource_status=server.status,
+                result=_('%s is not active') % res_name)
 
     def get_flavor_id(self, flavor):
         '''
@@ -296,40 +388,34 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
 
         return mime_blob.as_string()
 
-    def delete_server(self, server):
-        '''
-        Deletes a server and waits for it to disappear from Nova.
-        '''
-        if not server:
-            return
+    def check_delete_server_complete(self, server_id):
+        """Wait for server to disappear from Nova."""
         try:
-            server.delete()
+            server = self.fetch_server(server_id)
         except Exception as exc:
             self.ignore_not_found(exc)
-            return
+            return True
+        if not server:
+            return False
+        task_state_in_nova = getattr(server, 'OS-EXT-STS:task_state', None)
+        # the status of server won't change until the delete task has done
+        if task_state_in_nova == 'deleting':
+            return False
 
-        while True:
-            yield
-
-            try:
-                self.refresh_server(server)
-            except Exception as exc:
-                self.ignore_not_found(exc)
-                break
-            else:
-                # Some clouds append extra (STATUS) strings to the status
-                short_server_status = server.status.split('(')[0]
-                if short_server_status in ("DELETED", "SOFT_DELETED"):
-                    break
-                if short_server_status == "ERROR":
-                    fault = getattr(server, 'fault', {})
-                    message = fault.get('message', 'Unknown')
-                    code = fault.get('code')
-                    errmsg = (_("Server %(name)s delete failed: (%(code)s) "
-                                "%(message)s"))
-                    raise exception.Error(errmsg % {"name": server.name,
-                                                    "code": code,
-                                                    "message": message})
+        status = self.get_status(server)
+        if status in ("DELETED", "SOFT_DELETED"):
+            return True
+        if status == 'ERROR':
+            fault = getattr(server, 'fault', {})
+            message = fault.get('message', 'Unknown')
+            code = fault.get('code')
+            errmsg = _("Server %(name)s delete failed: (%(code)s) "
+                       "%(message)s") % dict(name=server.name,
+                                             code=code,
+                                             message=message)
+            raise resource.ResourceInError(resource_status=status,
+                                           status_reason=errmsg)
+        return False
 
     @scheduler.wrappertask
     def resize(self, server, flavor, flavor_id):
@@ -347,7 +433,10 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
         If that's the case, confirm the resize, if not raise an error.
         """
         self.refresh_server(server)
-        while server.status == 'RESIZE':
+        # resize operation is asynchronous so the server resize may not start
+        # when checking server status (the server may stay ACTIVE instead
+        # of RESIZE).
+        while server.status in ('RESIZE', 'ACTIVE'):
             yield
             self.refresh_server(server)
         if server.status == 'VERIFY_RESIZE':
@@ -363,17 +452,17 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
         """Rebuild the server and call check_rebuild to verify."""
         server.rebuild(image_id, password=password,
                        preserve_ephemeral=preserve_ephemeral)
-        yield self.check_rebuild(server, image_id)
+        yield self.check_rebuild(server.id, image_id)
 
-    def check_rebuild(self, server, image_id):
+    def check_rebuild(self, server_id, image_id):
         """
         Verify that a rebuilding server is rebuilt.
         Raise error if it ends up in an ERROR state.
         """
-        self.refresh_server(server)
-        while server.status == 'REBUILD':
+        server = self.fetch_server(server_id)
+        while (server is None or server.status == 'REBUILD'):
             yield
-            self.refresh_server(server)
+            server = self.fetch_server(server_id)
         if server.status == 'ERROR':
             raise exception.Error(
                 _("Rebuilding server failed, status '%s'") % server.status)
@@ -396,7 +485,8 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
         """Delete/Add the metadata in nova as needed."""
         metadata = self.meta_serialize(metadata)
         current_md = server.metadata
-        to_del = [key for key in current_md.keys() if key not in metadata]
+        to_del = [key for key in six.iterkeys(current_md)
+                  if key not in metadata]
         client = self.client()
         if len(to_del) > 0:
             client.servers.delete_meta(server, to_del)
@@ -416,14 +506,6 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
             for n in server.networks:
                 if len(server.networks[n]) > 0:
                     return server.networks[n][0]
-
-    def get_server(self, server):
-        try:
-            return self.client().servers.get(server)
-        except exceptions.NotFound as ex:
-            LOG.warn(_LW('Server (%(server)s) not found: %(ex)s'),
-                     {'server': server, 'ex': ex})
-            raise exception.ServerNotFound(server=server)
 
     def absolute_limits(self):
         """Return the absolute limits as a dictionary."""
@@ -491,10 +573,59 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
 
         return net_id
 
+    def attach_volume(self, server_id, volume_id, device):
+        try:
+            va = self.client().volumes.create_server_volume(
+                server_id=server_id,
+                volume_id=volume_id,
+                device=device)
+        except Exception as ex:
+            if self.is_client_exception(ex):
+                raise exception.Error(_(
+                    "Failed to attach volume %(vol)s to server %(srv)s "
+                    "- %(err)s") % {'vol': volume_id,
+                                    'srv': server_id,
+                                    'err': ex})
+            else:
+                raise
+        return va.id
+
+    def detach_volume(self, server_id, attach_id):
+        # detach the volume using volume_attachment
+        try:
+            self.client().volumes.delete_server_volume(server_id, attach_id)
+        except Exception as ex:
+            if not (self.is_not_found(ex)
+                    or self.is_bad_request(ex)):
+                raise exception.Error(
+                    _("Could not detach attachment %(att)s "
+                      "from server %(srv)s.") % {'srv': server_id,
+                                                 'att': attach_id})
+
+    def check_detach_volume_complete(self, server_id, attach_id):
+        """Check that nova server lost attachment.
+
+        This check is needed for immediate reattachment when updating:
+        there might be some time between cinder marking volume as 'available'
+        and nova removing attachment from its own objects, so we
+        check that nova already knows that the volume is detached.
+        """
+        try:
+            self.client().volumes.get_server_volume(server_id, attach_id)
+        except Exception as ex:
+            self.ignore_not_found(ex)
+            LOG.info(_LI("Volume %(vol)s is detached from server %(srv)s"),
+                     {'vol': attach_id, 'srv': server_id})
+            return True
+        else:
+            LOG.debug("Server %(srv)s still has attachment %(att)s." % {
+                'att': attach_id, 'srv': server_id})
+            return False
+
 
 class ServerConstraint(constraints.BaseCustomConstraint):
 
-    expected_exceptions = (exception.ServerNotFound,)
+    expected_exceptions = (exception.EntityNotFound,)
 
     def validate_with_client(self, client, server):
         client.client_plugin('nova').get_server(server)
@@ -518,3 +649,29 @@ class FlavorConstraint(constraints.BaseCustomConstraint):
 
     def validate_with_client(self, client, flavor):
         client.client_plugin('nova').get_flavor_id(flavor)
+
+
+class NetworkConstraint(constraints.BaseCustomConstraint):
+
+    expected_exceptions = (exception.NovaNetworkNotFound,
+                           exception.PhysicalResourceNameAmbiguity)
+
+    def validate_with_client(self, client, network):
+        client.client_plugin('nova').get_nova_network_id(network)
+
+
+# NOTE(pas-ha): these Server*Progress classes are simple key-value storages
+# meant to be passed between handle_* and check_*_complete,
+# being mutated during subsequent check_*_complete calls.
+class ServerCreateProgress(object):
+    def __init__(self, server_id, complete=False):
+        self.complete = complete
+        self.server_id = server_id
+
+
+class ServerDeleteProgress(object):
+
+    def __init__(self, server_id, image_id=None, image_complete=True):
+        self.server_id = server_id
+        self.image_id = image_id
+        self.image_complete = image_complete

@@ -325,7 +325,9 @@ class LoadBalancerTest(common.HeatTestCase):
             "healthMonitor": None,
             "metadata": None,
             "sessionPersistence": None,
-            "timeout": 110
+            "timeout": 110,
+            "httpsRedirect": False
+
         }
 
         lb.resource_mapping = override_resource
@@ -356,9 +358,9 @@ class LoadBalancerTest(common.HeatTestCase):
 
     def _mock_loadbalancer(self, lb_template, expected_name, expected_body):
         t = template_format.parse(json.dumps(lb_template))
-        s = utils.parse_stack(t, stack_name=utils.random_name())
+        self.stack = utils.parse_stack(t, stack_name=utils.random_name())
 
-        rsrc, fake_loadbalancer = self._mock_create(s.t, s,
+        rsrc, fake_loadbalancer = self._mock_create(self.stack.t, self.stack,
                                                     self.
                                                     _get_first_resource_name(
                                                         lb_template),
@@ -910,6 +912,71 @@ class LoadBalancerTest(common.HeatTestCase):
         self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
 
+    def test_update_lb_redirect(self):
+        template = self._set_template(
+            self.lb_template, protocol="HTTPS")
+
+        expected = self._set_expected(
+            self.expected_body, protocol="HTTPS")
+
+        rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
+                                                          self.lb_name,
+                                                          expected)
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+
+        update_template = copy.deepcopy(rsrc.t)
+        update_template['Properties']['httpsRedirect'] = True
+
+        self.m.StubOutWithMock(rsrc.clb, 'get')
+        rsrc.clb.get(rsrc.resource_id).AndReturn(fake_loadbalancer)
+
+        self.m.StubOutWithMock(fake_loadbalancer, 'update')
+        fake_loadbalancer.update(httpsRedirect=True)
+
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.update, update_template)()
+        self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
+        self.m.VerifyAll()
+
+    def test_lb_redirect_https(self):
+        template = self._set_template(
+            self.lb_template, protocol="HTTPS", httpsRedirect=True)
+
+        expected = self._set_expected(
+            self.expected_body, protocol="HTTPS", httpsRedirect=True)
+
+        rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
+                                                          self.lb_name,
+                                                          expected)
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        self.m.VerifyAll()
+
+    def test_lb_redirect_HTTP_with_SSL_term(self):
+        ssl_termination = {
+            'privatekey': private_key,
+            'intermediateCertificate': 'fwaefawe',
+            'secureTrafficOnly': True,
+            'securePort': 443,
+            'certificate': cert
+        }
+        template = self._set_template(
+            self.lb_template, sslTermination=ssl_termination, protocol="HTTP",
+            httpsRedirect=True)
+
+        expected = self._set_expected(
+            self.expected_body, protocol="HTTP", httpsRedirect=False)
+
+        rsrc, fake_loadbalancer = self._mock_loadbalancer(template,
+                                                          self.lb_name,
+                                                          expected)
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        self.m.VerifyAll()
+
     def test_update_lb_half_closed(self):
         rsrc, fake_loadbalancer = self._mock_loadbalancer(self.lb_template,
                                                           self.lb_name,
@@ -1003,7 +1070,7 @@ class LoadBalancerTest(common.HeatTestCase):
 
     def test_update_health_monitor_delete(self):
         template = copy.deepcopy(self.lb_template)
-        lb_name = template['Resources'].keys()[0]
+        lb_name = list(six.iterkeys(template['Resources']))[0]
         hm = {'type': "HTTP", 'delay': 10, 'timeout': 10,
               'attemptsBeforeDeactivation': 4, 'path': "/",
               'statusRegex': "^[234][0-9][0-9]$", 'bodyRegex': ".* testing .*",
@@ -1055,7 +1122,7 @@ class LoadBalancerTest(common.HeatTestCase):
 
     def test_update_session_persistence_delete(self):
         template = copy.deepcopy(self.lb_template)
-        lb_name = template['Resources'].keys()[0]
+        lb_name = list(six.iterkeys(template['Resources']))[0]
         template['Resources'][lb_name]['Properties'][
             'sessionPersistence'] = "SOURCE_IP"
         expected_body = copy.deepcopy(self.expected_body)
@@ -1107,7 +1174,7 @@ class LoadBalancerTest(common.HeatTestCase):
 
     def test_update_ssl_termination_delete(self):
         template = copy.deepcopy(self.lb_template)
-        lb_name = template['Resources'].keys()[0]
+        lb_name = list(six.iterkeys(template['Resources']))[0]
         template['Resources'][lb_name]['Properties']['sslTermination'] = {
             'securePort': 443, 'privatekey': private_key, 'certificate': cert,
             'secureTrafficOnly': False}
@@ -1158,7 +1225,7 @@ class LoadBalancerTest(common.HeatTestCase):
 
     def test_update_metadata_delete(self):
         template = copy.deepcopy(self.lb_template)
-        lb_name = template['Resources'].keys()[0]
+        lb_name = list(six.iterkeys(template['Resources']))[0]
         template['Resources'][lb_name]['Properties']['metadata'] = {
             'a': 1, 'b': 2}
         expected_body = copy.deepcopy(self.expected_body)
@@ -1213,7 +1280,7 @@ class LoadBalancerTest(common.HeatTestCase):
 
     def test_update_errorpage_delete(self):
         template = copy.deepcopy(self.lb_template)
-        lb_name = template['Resources'].keys()[0]
+        lb_name = list(six.iterkeys(template['Resources']))[0]
         error_page = (
             '<html><head><title>Service Unavailable</title></head><body><h2>'
             'Service Unavailable</h2>The service is unavailable</body></html>')
@@ -1263,7 +1330,7 @@ class LoadBalancerTest(common.HeatTestCase):
 
     def test_update_connection_logging_delete(self):
         template = copy.deepcopy(self.lb_template)
-        lb_name = template['Resources'].keys()[0]
+        lb_name = list(six.iterkeys(template['Resources']))[0]
         template['Resources'][lb_name]['Properties'][
             'connectionLogging'] = True
         expected_body = copy.deepcopy(self.expected_body)
@@ -1290,7 +1357,7 @@ class LoadBalancerTest(common.HeatTestCase):
 
     def test_update_connection_logging_disable(self):
         template = copy.deepcopy(self.lb_template)
-        lb_name = template['Resources'].keys()[0]
+        lb_name = list(six.iterkeys(template['Resources']))[0]
         template['Resources'][lb_name]['Properties'][
             'connectionLogging'] = True
         expected_body = copy.deepcopy(self.expected_body)
@@ -1340,7 +1407,7 @@ class LoadBalancerTest(common.HeatTestCase):
 
     def test_update_connection_throttle_delete(self):
         template = copy.deepcopy(self.lb_template)
-        lb_name = template['Resources'].keys()[0]
+        lb_name = list(six.iterkeys(template['Resources']))[0]
         template['Resources'][lb_name]['Properties'][
             'connectionThrottle'] = {'maxConnections': 1000}
         expected_body = copy.deepcopy(self.expected_body)
@@ -1391,7 +1458,7 @@ class LoadBalancerTest(common.HeatTestCase):
 
     def test_update_content_caching_deleted(self):
         template = copy.deepcopy(self.lb_template)
-        lb_name = template['Resources'].keys()[0]
+        lb_name = list(six.iterkeys(template['Resources']))[0]
         template['Resources'][lb_name]['Properties'][
             'contentCaching'] = 'ENABLED'
         # Enabling the content cache is done post-creation, so no need
@@ -1419,7 +1486,7 @@ class LoadBalancerTest(common.HeatTestCase):
 
     def test_update_content_caching_disable(self):
         template = copy.deepcopy(self.lb_template)
-        lb_name = template['Resources'].keys()[0]
+        lb_name = list(six.iterkeys(template['Resources']))[0]
         template['Resources'][lb_name]['Properties'][
             'contentCaching'] = 'ENABLED'
         # Enabling the content cache is done post-creation, so no need
@@ -1497,3 +1564,113 @@ class LoadBalancerTest(common.HeatTestCase):
 
         res = mock_loadbalancer.check_delete_complete(mock_task)
         self.assertTrue(res)
+
+    def test_redir(self):
+        mock_stack = mock.Mock()
+        mock_stack.db_resource_get.return_value = None
+        props = {'httpsRedirect': True,
+                 'protocol': 'HTTPS',
+                 'port': 443,
+                 'nodes': [],
+                 'virtualIps': [{'id': '1234'}]}
+        mock_resdef = rsrc_defn.ResourceDefinition("test_lb",
+                                                   LoadBalancerWithFakeClient,
+                                                   properties=props)
+        mock_lb = lb.CloudLoadBalancer("test", mock_resdef, mock_stack)
+        self.assertIsNone(mock_lb.validate())
+        props['protocol'] = 'HTTP'
+        props['sslTermination'] = {
+            'secureTrafficOnly': True,
+            'securePort': 443,
+            'privatekey': "bobloblaw",
+            'certificate': 'mycert'
+        }
+        mock_resdef = rsrc_defn.ResourceDefinition("test_lb_2",
+                                                   LoadBalancerWithFakeClient,
+                                                   properties=props)
+        mock_lb = lb.CloudLoadBalancer("test_2", mock_resdef, mock_stack)
+        self.assertIsNone(mock_lb.validate())
+
+    def test_invalid_redir_proto(self):
+        mock_stack = mock.Mock()
+        mock_stack.db_resource_get.return_value = None
+        props = {'httpsRedirect': True,
+                 'protocol': 'TCP',
+                 'port': 1234,
+                 'nodes': [],
+                 'virtualIps': [{'id': '1234'}]}
+        mock_resdef = rsrc_defn.ResourceDefinition("test_lb",
+                                                   LoadBalancerWithFakeClient,
+                                                   properties=props)
+        mock_lb = lb.CloudLoadBalancer("test", mock_resdef, mock_stack)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               mock_lb.validate)
+        self.assertIn("HTTPS redirect is only available", six.text_type(ex))
+
+    def test_invalid_redir_ssl(self):
+        mock_stack = mock.Mock()
+        mock_stack.db_resource_get.return_value = None
+        props = {'httpsRedirect': True,
+                 'protocol': 'HTTP',
+                 'port': 1234,
+                 'nodes': [],
+                 'virtualIps': [{'id': '1234'}]}
+        mock_resdef = rsrc_defn.ResourceDefinition("test_lb",
+                                                   LoadBalancerWithFakeClient,
+                                                   properties=props)
+        mock_lb = lb.CloudLoadBalancer("test", mock_resdef, mock_stack)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               mock_lb.validate)
+        self.assertIn("HTTPS redirect is only available", six.text_type(ex))
+        props['sslTermination'] = {
+            'secureTrafficOnly': False,
+            'securePort': 443,
+            'privatekey': "bobloblaw",
+            'certificate': 'mycert'
+        }
+        mock_lb = lb.CloudLoadBalancer("test", mock_resdef, mock_stack)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               mock_lb.validate)
+        self.assertIn("HTTPS redirect is only available", six.text_type(ex))
+        props['sslTermination'] = {
+            'secureTrafficOnly': True,
+            'securePort': 1234,
+            'privatekey': "bobloblaw",
+            'certificate': 'mycert'
+        }
+        mock_lb = lb.CloudLoadBalancer("test", mock_resdef, mock_stack)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               mock_lb.validate)
+        self.assertIn("HTTPS redirect is only available", six.text_type(ex))
+
+    def test_update_nodes_condition_draining(self):
+        rsrc, fake_loadbalancer = self._mock_loadbalancer(self.lb_template,
+                                                          self.lb_name,
+                                                          self.expected_body)
+        fake_loadbalancer.nodes = self.expected_body['nodes']
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+
+        update_template = copy.deepcopy(rsrc.t)
+        expected_ip = '172.168.1.4'
+        update_template['Properties']['nodes'] = [
+            {"addresses": ["166.78.103.141"],
+             "port": 80,
+             "condition": "DRAINING"},
+            {"addresses": [expected_ip],
+             "port": 80,
+             "condition": "DRAINING"}]
+
+        self.m.StubOutWithMock(rsrc.clb, 'get')
+        rsrc.clb.get(rsrc.resource_id).AndReturn(fake_loadbalancer)
+
+        self.m.StubOutWithMock(fake_loadbalancer, 'add_nodes')
+        fake_loadbalancer.add_nodes([
+            fake_loadbalancer.Node(address=expected_ip,
+                                   port=80,
+                                   condition='DRAINING')])
+
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.update, update_template)()
+        self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
+        self.m.VerifyAll()

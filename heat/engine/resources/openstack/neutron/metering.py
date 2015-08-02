@@ -58,13 +58,16 @@ class MeteringLabel(neutron.NeutronResource):
 
     attributes_schema = {
         NAME_ATTR: attributes.Schema(
-            _('Name of the metering label.')
+            _('Name of the metering label.'),
+            type=attributes.Schema.STRING
         ),
         DESCRIPTION_ATTR: attributes.Schema(
-            _('Description of the metering label.')
+            _('Description of the metering label.'),
+            type=attributes.Schema.STRING
         ),
         SHARED_ATTR: attributes.Schema(
-            _('Shared status of the metering label.')
+            _('Shared status of the metering label.'),
+            type=attributes.Schema.STRING
         ),
     }
 
@@ -143,16 +146,20 @@ class MeteringRule(neutron.NeutronResource):
 
     attributes_schema = {
         DIRECTION_ATTR: attributes.Schema(
-            _('The direction in which metering rule is applied.')
+            _('The direction in which metering rule is applied.'),
+            type=attributes.Schema.STRING
         ),
         EXCLUDED_ATTR: attributes.Schema(
-            _('Exclude state for cidr.')
+            _('Exclude state for cidr.'),
+            type=attributes.Schema.STRING
         ),
         METERING_LABEL_ID_ATTR: attributes.Schema(
-            _('The metering label ID to associate with this metering rule.')
+            _('The metering label ID to associate with this metering rule.'),
+            type=attributes.Schema.STRING
         ),
         REMOTE_IP_PREFIX_ATTR: attributes.Schema(
-            _('CIDR to be associated with this metering rule.')
+            _('CIDR to be associated with this metering rule.'),
+            type=attributes.Schema.STRING
         ),
     }
 

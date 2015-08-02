@@ -87,29 +87,35 @@ class SwiftContainer(resource.Resource):
 
     attributes_schema = {
         DOMAIN_NAME: attributes.Schema(
-            _('The host from the container URL.')
+            _('The host from the container URL.'),
+            type=attributes.Schema.STRING
         ),
         WEBSITE_URL: attributes.Schema(
-            _('The URL of the container.')
+            _('The URL of the container.'),
+            type=attributes.Schema.STRING
         ),
         ROOT_URL: attributes.Schema(
-            _('The parent URL of the container.')
+            _('The parent URL of the container.'),
+            type=attributes.Schema.STRING
         ),
         OBJECT_COUNT: attributes.Schema(
-            _('The number of objects stored in the container.')
+            _('The number of objects stored in the container.'),
+            type=attributes.Schema.INTEGER
         ),
         BYTES_USED: attributes.Schema(
-            _('The number of bytes stored in the container.')
+            _('The number of bytes stored in the container.'),
+            type=attributes.Schema.INTEGER
         ),
         HEAD_CONTAINER: attributes.Schema(
-            _('A map containing all headers for the container.')
+            _('A map containing all headers for the container.'),
+            type=attributes.Schema.MAP
         ),
     }
 
     default_client_name = 'swift'
 
     def physical_resource_name(self):
-        name = self.properties.get(self.NAME)
+        name = self.properties[self.NAME]
         if name:
             return name
 
@@ -138,7 +144,7 @@ class SwiftContainer(resource.Resource):
             "account", self.properties[self.X_ACCOUNT_META])
 
         for key in (self.X_CONTAINER_READ, self.X_CONTAINER_WRITE):
-            if self.properties.get(key) is not None:
+            if self.properties[key] is not None:
                 container_headers[key] = self.properties[key]
 
         LOG.debug('SwiftContainer create container %(container)s with '
@@ -148,16 +154,16 @@ class SwiftContainer(resource.Resource):
                      'account_headers': account_headers,
                      'container_headers': container_headers})
 
-        self.swift().put_container(container, container_headers)
+        self.client().put_container(container, container_headers)
 
         if account_headers:
-            self.swift().post_account(account_headers)
+            self.client().post_account(account_headers)
 
         self.resource_id_set(container)
 
     def _get_objects(self):
         try:
-            container, objects = self.swift().get_container(self.resource_id)
+            container, objects = self.client().get_container(self.resource_id)
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
             return None
@@ -167,10 +173,10 @@ class SwiftContainer(resource.Resource):
         """Delete the underlying container or an object inside it."""
         args = [self.resource_id]
         if obj:
-            deleter = self.swift().delete_object
+            deleter = self.client().delete_object
             args.append(obj['name'])
         else:
-            deleter = self.swift().delete_container
+            deleter = self.client().delete_container
         try:
             deleter(*args)
         except Exception as ex:
@@ -191,12 +197,15 @@ class SwiftContainer(resource.Resource):
                             'id': self.resource_id,
                             'prop': self.PURGE_ON_DELETE}
                 raise exception.ResourceActionNotSupported(action=msg)
+        # objects is either None (container is gone already) or (empty) list
+        if objects is not None:
+            objects = len(objects)
         return objects
 
     def check_delete_complete(self, objects):
         if objects is None:  # resource was not created or is gone already
             return True
-        if objects:  # an (empty) list from the first invocation
+        if objects:  # integer >=0 from the first invocation
             objs = self._get_objects()
             if objs is None:
                 return True  # container is gone already
@@ -209,13 +218,13 @@ class SwiftContainer(resource.Resource):
         return True
 
     def handle_check(self):
-        self.swift().get_container(self.resource_id)
+        self.client().get_container(self.resource_id)
 
     def FnGetRefId(self):
         return six.text_type(self.resource_id)
 
     def _resolve_attribute(self, key):
-        parsed = list(urlparse.urlparse(self.swift().url))
+        parsed = list(urlparse.urlparse(self.client().url))
         if key == self.DOMAIN_NAME:
             return parsed[1].split(':')[0]
         elif key == self.WEBSITE_URL:
@@ -226,7 +235,7 @@ class SwiftContainer(resource.Resource):
         elif self.resource_id and key in (
                 self.OBJECT_COUNT, self.BYTES_USED, self.HEAD_CONTAINER):
             try:
-                headers = self.swift().head_container(self.resource_id)
+                headers = self.client().head_container(self.resource_id)
             except Exception as ex:
                 if self.client_plugin().is_client_exception(ex):
                     LOG.warn(_LW("Head container failed: %s"), ex)

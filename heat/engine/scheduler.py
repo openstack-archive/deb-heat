@@ -11,27 +11,24 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import functools
-import itertools
 import sys
-import time
 import types
 
 import eventlet
 from oslo_log import log as logging
-from oslo_utils import encodeutils
 from oslo_utils import excutils
 import six
+from six import reraise as raise_
 
 from heat.common.i18n import _
 from heat.common.i18n import _LI
+from heat.common import timeutils
 
 LOG = logging.getLogger(__name__)
 
 
 # Whether TaskRunner._sleep actually does an eventlet sleep when called.
 ENABLE_SLEEP = True
-wallclock = time.time
 
 
 def task_description(task):
@@ -67,15 +64,10 @@ class Timeout(BaseException):
         message = _('%s Timed out') % six.text_type(task_runner)
         super(Timeout, self).__init__(message)
 
-        # Note that we don't attempt to handle leap seconds or large clock
-        # jumps here. The latter are assumed to be rare and the former
-        # negligible in the context of the timeout. Time zone adjustments,
-        # Daylight Savings and the like *are* handled. PEP 418 adds a proper
-        # monotonic clock, but only in Python 3.3.
-        self._endtime = wallclock() + timeout
+        self._duration = timeutils.Duration(timeout)
 
     def expired(self):
-        return wallclock() > self._endtime
+        return self._duration.expired()
 
     def trigger(self, generator):
         """Trigger the timeout on a given generator."""
@@ -88,10 +80,28 @@ class Timeout(BaseException):
             generator.close()
             return False
 
-    def __cmp__(self, other):
+    def __eq__(self, other):
+        return not self < other and not other < self
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __gt__(self, other):
+        return other < self
+
+    def __ge__(self, other):
+        return not self < other
+
+    def __le__(self, other):
+        return not other < self
+
+    def __lt__(self, other):
         if not isinstance(other, Timeout):
             return NotImplemented
-        return cmp(self._endtime, other._endtime)
+        return self._duration.endtime() < other._duration.endtime()
+
+    def __cmp__(self, other):
+        return self < other
 
 
 class TimedCancel(Timeout):
@@ -101,6 +111,7 @@ class TimedCancel(Timeout):
         return False
 
 
+@six.python_2_unicode_compatible
 class ExceptionGroup(Exception):
     '''
     Container for multiple exceptions.
@@ -118,13 +129,10 @@ class ExceptionGroup(Exception):
         self.exceptions = list(exceptions)
 
     def __str__(self):
-        return unicode([unicode(ex).encode('utf-8')
-                        for ex in self.exceptions]).encode('utf-8')
-
-    def __unicode__(self):
-        return six.text_type(map(six.text_type, self.exceptions))
+        return six.text_type([six.text_type(ex) for ex in self.exceptions])
 
 
+@six.python_2_unicode_compatible
 class TaskRunner(object):
     """
     Wrapper for a resumable task (co-routine).
@@ -151,12 +159,7 @@ class TaskRunner(object):
     def __str__(self):
         """Return a human-readable string representation of the task."""
         text = 'Task %s' % self.name
-        return encodeutils.safe_encode(text)
-
-    def __unicode__(self):
-        """Return a human-readable string representation of the task."""
-        text = 'Task %s' % self.name
-        return encodeutils.safe_decode(text)
+        return six.text_type(text)
 
     def _sleep(self, wait_time):
         """Sleep for the specified number of seconds."""
@@ -264,6 +267,10 @@ class TaskRunner(object):
         """Return True if there are steps remaining."""
         return not self.done()
 
+    def __bool__(self):
+        """Return True if there are steps remaining."""
+        return self.__nonzero__()
+
 
 def wrappertask(task):
     """
@@ -366,12 +373,12 @@ class DependencyTaskGroup(object):
     def __repr__(self):
         """Return a string representation of the task."""
         text = '%s(%s)' % (type(self).__name__, self.name)
-        return encodeutils.safe_encode(text)
+        return six.text_type(text)
 
     def __call__(self):
         """Return a co-routine which runs the task group."""
         raised_exceptions = []
-        while any(self._runners.itervalues()):
+        while any(six.itervalues(self._runners)):
             try:
                 for k, r in self._ready():
                     r.start()
@@ -397,10 +404,10 @@ class DependencyTaskGroup(object):
                 raise ExceptionGroup(v for t, v, tb in raised_exceptions)
             else:
                 exc_type, exc_val, traceback = raised_exceptions[0]
-                raise exc_type, exc_val, traceback
+                raise_(exc_type, exc_val, traceback)
 
     def cancel_all(self, grace_period=None):
-        for r in self._runners.itervalues():
+        for r in six.itervalues(self._runners):
             r.cancel(grace_period=grace_period)
 
     def _cancel_recursively(self, key, runner):
@@ -428,102 +435,5 @@ class DependencyTaskGroup(object):
         Iterate over all subtasks that are currently running - i.e. they have
         been started but have not yet completed.
         """
-        running = lambda (k, r): k in self._graph and r.started()
-        return itertools.ifilter(running, six.iteritems(self._runners))
-
-
-class PollingTaskGroup(object):
-    """
-    A task which manages a group of subtasks.
-
-    When the task is started, all of its subtasks are also started. The task
-    completes when all subtasks are complete.
-
-    Once started, the subtasks are assumed to be only polling for completion
-    of an asynchronous operation, so no attempt is made to give them equal
-    scheduling slots.
-    """
-
-    def __init__(self, tasks, name=None):
-        """Initialise with a list of tasks."""
-        self._tasks = list(tasks)
-        if name is None:
-            name = ', '.join(task_description(t) for t in self._tasks)
-        self.name = name
-
-    @staticmethod
-    def _args(arg_lists):
-        """Return a list containing the positional args for each subtask."""
-        return zip(*arg_lists)
-
-    @staticmethod
-    def _kwargs(kwarg_lists):
-        """Return a list containing the keyword args for each subtask."""
-        keygroups = (itertools.izip(itertools.repeat(name),
-                                    arglist)
-                     for name, arglist in six.iteritems(kwarg_lists))
-        return [dict(kwargs) for kwargs in itertools.izip(*keygroups)]
-
-    @classmethod
-    def from_task_with_args(cls, task, *arg_lists, **kwarg_lists):
-        """
-        Return a new PollingTaskGroup where each subtask is identical except
-        for the arguments passed to it.
-
-        Each argument to use should be passed as a list (or iterable) of values
-        such that one is passed in the corresponding position for each subtask.
-        The number of subtasks spawned depends on the length of the argument
-        lists.
-        For example::
-
-            PollingTaskGroup.from_task_with_args(my_task,
-                                                 [1, 2, 3],
-                                                 alpha=['a', 'b', 'c'])
-
-        will start three TaskRunners that will run::
-
-            my_task(1, alpha='a')
-            my_task(2, alpha='b')
-            my_task(3, alpha='c')
-
-        respectively.
-
-        If multiple arguments are supplied, each list should be of the same
-        length. In the case of any discrepancy, the length of the shortest
-        argument list will be used, and any extra arguments discarded.
-        """
-
-        args_list = cls._args(arg_lists)
-        kwargs_list = cls._kwargs(kwarg_lists)
-
-        if kwarg_lists and not arg_lists:
-            args_list = [[]] * len(kwargs_list)
-        elif arg_lists and not kwarg_lists:
-            kwargs_list = [{}] * len(args_list)
-
-        task_args = itertools.izip(args_list, kwargs_list)
-        tasks = (functools.partial(task, *a, **kwa) for a, kwa in task_args)
-
-        return cls(tasks, name=task_description(task))
-
-    def __repr__(self):
-        """Return a string representation of the task group."""
-        text = '%s(%s)' % (type(self).__name__, self.name)
-        return encodeutils.safe_encode(text)
-
-    def __call__(self):
-        """Return a co-routine which runs the task group."""
-        runners = [TaskRunner(t) for t in self._tasks]
-
-        try:
-            for r in runners:
-                r.start()
-
-            while runners:
-                yield
-                runners = list(itertools.dropwhile(lambda r: r.step(),
-                                                   runners))
-        except:  # noqa
-            with excutils.save_and_reraise_exception():
-                for r in runners:
-                    r.cancel()
+        running = lambda k_r: k_r[0] in self._graph and k_r[1].started()
+        return six.moves.filter(running, six.iteritems(self._runners))

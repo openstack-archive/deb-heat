@@ -35,9 +35,21 @@ lb_template_default = r'''
     "KeyName" : {
       "Type" : "String"
     },
+    "LbImageId" : {
+      "Type" : "String",
+      "Default" : "Fedora-Cloud-Base-20141203-21.x86_64"
+    },
     "LbFlavor" : {
       "Type" : "String",
       "Default" : "m1.small"
+    },
+    "LBTimeout" : {
+      "Type" : "String",
+      "Default" : "600"
+    },
+    "SecurityGroups" : {
+      "Type" : "CommaDelimitedList",
+      "Default" : []
     }
   },
   "Resources": {
@@ -161,9 +173,10 @@ lb_template_default = r'''
         }
       },
       "Properties": {
-        "ImageId": "Fedora-Cloud-Base-20141203-21.x86_64",
+        "ImageId": { "Ref": "LbImageId" },
         "InstanceType": { "Ref": "LbFlavor" },
         "KeyName": { "Ref": "KeyName" },
+        "SecurityGroups": { "Ref": "SecurityGroups" },
         "UserData": { "Fn::Base64": { "Fn::Join": ["", [
           "#!/bin/bash -v\n",
           "# Helper function\n",
@@ -177,7 +190,8 @@ lb_template_default = r'''
           "/opt/aws/bin/cfn-init -s ",
           { "Ref": "AWS::StackId" },
           "    -r LB_instance ",
-          "    --region ", { "Ref": "AWS::Region" }, "\n",
+          "    --region ", { "Ref": "AWS::Region" },
+          " || error_exit 'Failed to run cfn-init'\n",
 
           "# HAProxy+SELinux, https://www.mankier.com/8/haproxy_selinux \n",
 
@@ -219,7 +233,7 @@ lb_template_default = r'''
       "DependsOn" : "LB_instance",
       "Properties" : {
         "Handle" : {"Ref" : "WaitHandle"},
-        "Timeout" : "600"
+        "Timeout" : {"Ref" : "LBTimeout"}
       }
     }
   },
@@ -310,14 +324,14 @@ class LoadBalancer(stack_resource.StackResource):
             _('An application health check for the instances.'),
             schema={
                 HEALTH_CHECK_HEALTHY_THRESHOLD: properties.Schema(
-                    properties.Schema.NUMBER,
+                    properties.Schema.INTEGER,
                     _('The number of consecutive health probe successes '
                       'required before moving the instance to the '
                       'healthy state.'),
                     required=True
                 ),
                 HEALTH_CHECK_INTERVAL: properties.Schema(
-                    properties.Schema.NUMBER,
+                    properties.Schema.INTEGER,
                     _('The approximate interval, in seconds, between '
                       'health checks of an individual instance.'),
                     required=True
@@ -328,12 +342,12 @@ class LoadBalancer(stack_resource.StackResource):
                     required=True
                 ),
                 HEALTH_CHECK_TIMEOUT: properties.Schema(
-                    properties.Schema.NUMBER,
+                    properties.Schema.INTEGER,
                     _('Health probe timeout, in seconds.'),
                     required=True
                 ),
                 HEALTH_CHECK_UNHEALTHY_THRESHOLD: properties.Schema(
-                    properties.Schema.NUMBER,
+                    properties.Schema.INTEGER,
                     _('The number of consecutive health probe failures '
                       'required before moving the instance to the '
                       'unhealthy state'),
@@ -353,13 +367,13 @@ class LoadBalancer(stack_resource.StackResource):
                 properties.Schema.MAP,
                 schema={
                     LISTENER_INSTANCE_PORT: properties.Schema(
-                        properties.Schema.NUMBER,
+                        properties.Schema.INTEGER,
                         _('TCP port on which the instance server is '
                           'listening.'),
                         required=True
                     ),
                     LISTENER_LOAD_BALANCER_PORT: properties.Schema(
-                        properties.Schema.NUMBER,
+                        properties.Schema.INTEGER,
                         _('The external load balancer port number.'),
                         required=True
                     ),
@@ -396,9 +410,9 @@ class LoadBalancer(stack_resource.StackResource):
             implemented=False
         ),
         SECURITY_GROUPS: properties.Schema(
-            properties.Schema.STRING,
-            _('Not Implemented.'),
-            implemented=False
+            properties.Schema.LIST,
+            _('List of Security Groups assigned on current LB.'),
+            update_allowed=True
         ),
         SUBNETS: properties.Schema(
             properties.Schema.LIST,
@@ -410,21 +424,26 @@ class LoadBalancer(stack_resource.StackResource):
     attributes_schema = {
         CANONICAL_HOSTED_ZONE_NAME: attributes.Schema(
             _("The name of the hosted zone that is associated with the "
-              "LoadBalancer.")
+              "LoadBalancer."),
+            type=attributes.Schema.STRING
         ),
         CANONICAL_HOSTED_ZONE_NAME_ID: attributes.Schema(
             _("The ID of the hosted zone name that is associated with the "
-              "LoadBalancer.")
+              "LoadBalancer."),
+            type=attributes.Schema.STRING
         ),
         DNS_NAME: attributes.Schema(
-            _("The DNS name for the LoadBalancer.")
+            _("The DNS name for the LoadBalancer."),
+            type=attributes.Schema.STRING
         ),
         SOURCE_SECURITY_GROUP_GROUP_NAME: attributes.Schema(
             _("The security group that you can use as part of your inbound "
-              "rules for your LoadBalancer's back-end instances.")
+              "rules for your LoadBalancer's back-end instances."),
+            type=attributes.Schema.STRING
         ),
         SOURCE_SECURITY_GROUP_OWNER_ALIAS: attributes.Schema(
-            _("Owner of the source security group.")
+            _("Owner of the source security group."),
+            type=attributes.Schema.STRING
         ),
     }
 
@@ -518,13 +537,12 @@ backend servers
     def child_params(self):
         params = {}
 
+        params['SecurityGroups'] = self.properties[self.SECURITY_GROUPS]
         # If the owning stack defines KeyName, we use that key for the nested
         # template, otherwise use no key
-        if 'KeyName' in self.stack.parameters:
-            params['KeyName'] = self.stack.parameters['KeyName']
-
-        if 'LbFlavor' in self.stack.parameters:
-            params['LbFlavor'] = self.stack.parameters['LbFlavor']
+        for magic_param in ('KeyName', 'LbFlavor', 'LBTimeout', 'LbImageId'):
+            if magic_param in self.stack.parameters:
+                params[magic_param] = self.stack.parameters[magic_param]
 
         return params
 
@@ -557,6 +575,7 @@ backend servers
         save it to the db.
         rely on the cfn-hup to reconfigure HAProxy
         '''
+
         new_props = json_snippet.properties(self.properties_schema,
                                             self.context)
 
@@ -576,12 +595,15 @@ backend servers
 
             self.nested()['LB_instance'].metadata_set(md)
 
+        if self.SECURITY_GROUPS in prop_diff:
+            templ = self.child_template()
+            params = self.child_params()
+            params['SecurityGroups'] = new_props[self.SECURITY_GROUPS]
+            self.update_with_template(templ, params)
+
     def check_update_complete(self, updater):
         """Because we are not calling update_with_template, return True."""
         return True
-
-    def handle_delete(self):
-        return self.delete_nested()
 
     def validate(self):
         '''

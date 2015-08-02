@@ -36,7 +36,7 @@ class ResourceData(
         'key': fields.StringField(nullable=True),
         'value': fields.StringField(nullable=True),
         'redact': fields.BooleanField(nullable=True),
-        'resource_id': fields.IntegerField(nullable=False),
+        'resource_id': fields.IntegerField(),
         'decrypt_method': fields.StringField(nullable=True),
     }
 
@@ -80,4 +80,4 @@ class ResourceData(
 
     @classmethod
     def delete(cls, resource, key):
-        return db_api.resource_data_delete(resource, key)
+        db_api.resource_data_delete(resource, key)

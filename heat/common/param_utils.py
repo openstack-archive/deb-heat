@@ -16,15 +16,16 @@ from oslo_utils import strutils
 from heat.common.i18n import _
 
 
-def extract_bool(subject):
+def extract_bool(name, value):
     '''
     Convert any true/false string to its corresponding boolean value,
     regardless of case.
     '''
-    if str(subject).lower() not in ('true', 'false'):
-        raise ValueError(_('Unrecognized value "%(value)s", acceptable '
-                           'values are: true, false.') % {'value': subject})
-    return strutils.bool_from_string(subject, strict=True)
+    if str(value).lower() not in ('true', 'false'):
+        raise ValueError(_('Unrecognized value "%(value)s" for "%(name)s", '
+                           'acceptable values are: true, false.')
+                         % {'value': value, 'name': name})
+    return strutils.bool_from_string(value, strict=True)
 
 
 def extract_int(name, value, allow_zero=True, allow_negative=False):
@@ -53,3 +54,21 @@ def extract_int(name, value, allow_zero=True, allow_negative=False):
                          {'name': name, 'value': value})
 
     return result
+
+
+def extract_tags(subject):
+    tags = subject.split(',')
+    for tag in tags:
+        if len(tag) > 80:
+            raise ValueError(_('Invalid tag, "%s" is longer than 80 '
+                               'characters') % tag)
+    return tags
+
+
+def extract_template_type(subject):
+    template_type = subject.lower()
+    if template_type not in ('cfn', 'hot'):
+        raise ValueError(_('Invalid template type "%(value)s", valid '
+                           'types are: cfn, hot.') %
+                         {'value': subject})
+    return template_type

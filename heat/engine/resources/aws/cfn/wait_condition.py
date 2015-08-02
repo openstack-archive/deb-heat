@@ -45,7 +45,7 @@ class WaitCondition(heat_wc.HeatWaitCondition):
             required=True
         ),
         TIMEOUT: properties.Schema(
-            properties.Schema.NUMBER,
+            properties.Schema.INTEGER,
             _('The number of seconds to wait for the correct number of '
               'signals to arrive.'),
             required=True,
@@ -54,7 +54,7 @@ class WaitCondition(heat_wc.HeatWaitCondition):
             ]
         ),
         COUNT: properties.Schema(
-            properties.Schema.NUMBER,
+            properties.Schema.INTEGER,
             _('The number of success signals that must be received before '
               'the stack creation process continues.'),
             constraints=[
@@ -67,9 +67,10 @@ class WaitCondition(heat_wc.HeatWaitCondition):
 
     attributes_schema = {
         DATA: attributes.Schema(
-            _('JSON serialized dict containing data associated with wait '
+            _('JSON string containing data associated with wait '
               'condition signals sent to the handle.'),
-            cache_mode=attributes.Schema.CACHE_NONE
+            cache_mode=attributes.Schema.CACHE_NONE,
+            type=attributes.Schema.STRING
         ),
     }
 

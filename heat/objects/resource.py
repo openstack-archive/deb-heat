@@ -18,13 +18,19 @@ Resource object
 """
 
 
+from oslo_config import cfg
+from oslo_serialization import jsonutils
 from oslo_versionedobjects import base
 from oslo_versionedobjects import fields
+import six
 
+from heat.common import crypt
 from heat.db import api as db_api
 from heat.objects import fields as heat_fields
 from heat.objects import resource_data
 from heat.objects import stack
+
+cfg.CONF.import_opt('encrypt_parameters_and_properties', 'heat.common.config')
 
 
 class Resource(
@@ -35,7 +41,7 @@ class Resource(
     fields = {
         'id': fields.IntegerField(),
         'uuid': fields.StringField(),
-        'stack_id': fields.StringField(nullable=False),
+        'stack_id': fields.StringField(),
         'created_at': fields.DateTimeField(read_only=True),
         'updated_at': fields.DateTimeField(nullable=True),
         'nova_instance': fields.StringField(nullable=True),
@@ -45,11 +51,12 @@ class Resource(
         'action': fields.StringField(nullable=True),
         'rsrc_metadata': heat_fields.JsonField(nullable=True),
         'properties_data': heat_fields.JsonField(nullable=True),
+        'properties_data_encrypted': fields.BooleanField(default=False),
         'data': fields.ListOfObjectsField(
             resource_data.ResourceData,
             nullable=True
         ),
-        'stack': fields.ObjectField(stack.Stack, nullable=False),
+        'stack': fields.ObjectField(stack.Stack),
         'engine_id': fields.StringField(nullable=True),
         'atomic_key': fields.IntegerField(nullable=True),
         'current_template_id': fields.IntegerField(),
@@ -73,6 +80,16 @@ class Resource(
                 )
             else:
                 resource[field] = db_resource[field]
+
+        if resource.properties_data_encrypted and resource.properties_data:
+            properties_data = {}
+            for prop_name, prop_value in resource.properties_data.items():
+                method, value = prop_value
+                decrypted_value = crypt.decrypt(method, value)
+                prop_string = jsonutils.loads(decrypted_value)
+                properties_data[prop_name] = prop_string
+            resource.properties_data = properties_data
+
         resource._context = context
         resource.obj_reset_changes()
         return resource
@@ -80,8 +97,7 @@ class Resource(
     @classmethod
     def get_obj(cls, context, resource_id):
         resource_db = db_api.resource_get(context, resource_id)
-        resource = cls._from_db_object(cls(context), context, resource_db)
-        return resource
+        return cls._from_db_object(cls(context), context, resource_db)
 
     @classmethod
     def get_all(cls, context):
@@ -91,13 +107,14 @@ class Resource(
                 resource_name,
                 cls._from_db_object(cls(context), context, resource_db)
             )
-            for resource_name, resource_db in resources_db.iteritems()
+            for resource_name, resource_db in six.iteritems(resources_db)
         ]
         return dict(resources)
 
     @classmethod
     def create(cls, context, values):
-        return db_api.resource_create(context, values)
+        return cls._from_db_object(cls(context), context,
+                                   db_api.resource_create(context, values))
 
     @classmethod
     def delete(cls, context, resource_id):
@@ -119,7 +136,7 @@ class Resource(
                 resource_name,
                 cls._from_db_object(cls(context), context, resource_db)
             )
-            for resource_name, resource_db in resources_db.iteritems()
+            for resource_name, resource_db in six.iteritems(resources_db)
         ]
         return dict(resources)
 
@@ -129,22 +146,25 @@ class Resource(
             context,
             resource_name,
             stack_id)
-        resource = cls._from_db_object(cls(context), context, resource_db)
-        return resource
+        return cls._from_db_object(cls(context), context, resource_db)
 
     @classmethod
     def get_by_physical_resource_id(cls, context, physical_resource_id):
         resource_db = db_api.resource_get_by_physical_resource_id(
             context,
             physical_resource_id)
-        resource = cls._from_db_object(cls(context), context, resource_db)
-        return resource
+        return cls._from_db_object(cls(context), context, resource_db)
 
     def update_and_save(self, values):
         resource_db = db_api.resource_get(self._context, self.id)
         resource_db.update_and_save(values)
-        self._refresh()
-        return resource_db
+        return self._refresh()
+
+    def select_and_update(self, values, expected_engine_id=None,
+                          atomic_key=0):
+        return db_api.resource_update(self._context, self.id, values,
+                                      atomic_key=atomic_key,
+                                      expected_engine_id=expected_engine_id)
 
     def _refresh(self):
         return self.__class__._from_db_object(
@@ -156,3 +176,14 @@ class Resource(
         resource_db = db_api.resource_get(self._context, self.id)
         resource_db.refresh(attrs=attrs)
         return self._refresh()
+
+    @staticmethod
+    def encrypt_properties_data(data):
+        if cfg.CONF.encrypt_parameters_and_properties and data:
+            result = {}
+            for prop_name, prop_value in data.items():
+                prop_string = jsonutils.dumps(prop_value)
+                encrypted_value = crypt.encrypt(prop_string)
+                result[prop_name] = encrypted_value
+            return (True, result)
+        return (False, data)

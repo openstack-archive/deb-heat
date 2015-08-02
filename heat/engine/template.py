@@ -15,6 +15,7 @@ import abc
 import collections
 import copy
 import functools
+import hashlib
 
 from oslo_log import log as logging
 import six
@@ -55,7 +56,6 @@ def _get_template_extension_manager():
     return extension.ExtensionManager(
         namespace='heat.templates',
         invoke_on_load=False,
-        verify_requirements=True,
         on_load_failure_callback=raise_extension_exception)
 
 
@@ -68,7 +68,7 @@ class TemplatePluginNotRegistered(exception.HeatException):
 
 
 def get_template_class(template_data):
-    available_versions = _template_classes.keys()
+    available_versions = list(six.iterkeys(_template_classes))
     version = get_version(template_data, available_versions)
     version_type = version[0]
     try:
@@ -116,7 +116,10 @@ class Template(collections.Mapping):
         self.files = files or {}
         self.maps = self[self.MAPPINGS]
         self.env = env or environment.Environment({})
-        self.version = get_version(self.t, _template_classes.keys())
+
+        self.version = get_version(self.t,
+                                   list(six.iterkeys(_template_classes)))
+        self.t_digest = None
 
     def __deepcopy__(self, memo):
         return Template(copy.deepcopy(self.t, memo), files=self.files,
@@ -156,6 +159,11 @@ class Template(collections.Mapping):
     @abc.abstractmethod
     def param_schemata(self, param_defaults=None):
         '''Return a dict of parameters.Schema objects for the parameters.'''
+        pass
+
+    @abc.abstractmethod
+    def get_section_name(self, section):
+        """Return a correct section name."""
         pass
 
     @abc.abstractmethod
@@ -221,14 +229,27 @@ class Template(collections.Mapping):
         sections (e.g. parameters are check by parameters schema class).
 
         '''
+        t_digest = hashlib.sha256(
+            six.text_type(self.t).encode('utf-8')).hexdigest()
+
+        # TODO(kanagaraj-manickam) currently t_digest is stored in self. which
+        # is used to check whether already template is validated or not.
+        # But it needs to be loaded from dogpile cache backend once its
+        # available in heat (http://specs.openstack.org/openstack/heat-specs/
+        # specs/liberty/constraint-validation-cache.html). This is required
+        # as multiple heat-engines may process the same template at least
+        # in case of instance_group. And it fixes partially bug 1444316
+
+        if t_digest == self.t_digest:
+            return
 
         # check top-level sections
-        for k in self.t.keys():
+        for k in six.iterkeys(self.t):
             if k not in self.SECTIONS:
                 raise exception.InvalidTemplateSection(section=k)
 
         # check resources
-        for res in self[self.RESOURCES].values():
+        for res in six.itervalues(self[self.RESOURCES]):
             try:
                 if not res or not res.get('Type'):
                     message = _('Each Resource must contain '
@@ -238,6 +259,24 @@ class Template(collections.Mapping):
                 message = _('Resources must contain Resource. '
                             'Found a [%s] instead') % type(res)
                 raise exception.StackValidationFailed(message=message)
+        self.t_digest = t_digest
+
+    @classmethod
+    def create_empty_template(cls,
+                              version=('heat_template_version', '2015-04-30')):
+        '''Creates an empty template.
+
+        Creates a new empty template with given version. If version is
+        not provided, a new empty HOT template of version "2015-04-30"
+        is returned.
+
+        :param version: A tuple containing version header of the
+        template: version key and value. E.g. ("heat_template_version",
+        "2015-04-30")
+        :returns: A new empty template.
+        '''
+        tmpl = {version[0]: version[1]}
+        return cls(tmpl)
 
 
 def parse(functions, stack, snippet):

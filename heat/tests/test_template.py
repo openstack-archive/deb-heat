@@ -12,8 +12,8 @@
 #    under the License.
 
 import copy
+import hashlib
 import json
-import warnings
 
 import fixtures
 from oslotest import mockpatch
@@ -29,12 +29,10 @@ from heat.engine import environment
 from heat.engine import function
 from heat.engine.hot import template as hot_t
 from heat.engine import parameters
-from heat.engine import resource
 from heat.engine import rsrc_defn
 from heat.engine import stack
 from heat.engine import template
 from heat.tests import common
-from heat.tests import generic_resource as generic_rsrc
 from heat.tests.nova import fakes as fakes_nova
 from heat.tests import utils
 
@@ -122,6 +120,9 @@ class TestTemplatePluginManager(common.HeatTestCase):
             RESOURCES = 'thingies'
 
             def param_schemata(self):
+                pass
+
+            def get_section_name(self, section):
                 pass
 
             def parameters(self, stack_identifier, user_params):
@@ -271,6 +272,27 @@ class ParserTest(common.HeatTestCase):
 
 class TestTemplateValidate(common.HeatTestCase):
 
+    def test_template_validate_cfn_check_t_digest(self):
+        t = {
+            'AWSTemplateFormatVersion': '2010-09-09',
+            'Description': 'foo',
+            'Parameters': {},
+            'Mappings': {},
+            'Resources': {
+                'server': {
+                    'Type': 'OS::Nova::Server'
+                }
+            },
+            'Outputs': {},
+        }
+
+        tmpl = template.Template(t)
+        self.assertIsNone(tmpl.t_digest)
+        tmpl.validate()
+        self.assertEqual(hashlib.sha256(six.text_type(t)).hexdigest(),
+                         tmpl.t_digest,
+                         'invalid template digest')
+
     def test_template_validate_cfn_good(self):
         t = {
             'AWSTemplateFormatVersion': '2010-09-09',
@@ -328,14 +350,34 @@ class TestTemplateValidate(common.HeatTestCase):
 
     def test_template_validate_cfn_empty(self):
         t = template_format.parse('''
-AWSTemplateFormatVersion: 2010-09-09
-Parameters:
-Resources:
-Outputs:
-''')
+            AWSTemplateFormatVersion: 2010-09-09
+            Parameters:
+            Resources:
+            Outputs:
+            ''')
         tmpl = template.Template(t)
         err = tmpl.validate()
         self.assertIsNone(err)
+
+    def test_template_validate_hot_check_t_digest(self):
+        t = {
+            'heat_template_version': '2015-04-30',
+            'description': 'foo',
+            'parameters': {},
+            'resources': {
+                'server': {
+                    'type': 'OS::Nova::Server'
+                }
+            },
+            'outputs': {},
+        }
+
+        tmpl = template.Template(t)
+        self.assertIsNone(tmpl.t_digest)
+        tmpl.validate()
+        self.assertEqual(hashlib.sha256(six.text_type(t)).hexdigest(),
+                         tmpl.t_digest,
+                         'invalid template digest')
 
     def test_template_validate_hot_good(self):
         t = {
@@ -379,9 +421,6 @@ class TemplateTest(common.HeatTestCase):
         super(TemplateTest, self).setUp()
         self.ctx = utils.dummy_context()
 
-        resource._register_class('GenericResourceType',
-                                 generic_rsrc.GenericResource)
-
     @staticmethod
     def resolve(snippet, template, stack=None):
         return function.resolve(template.parse(stack, snippet))
@@ -411,7 +450,8 @@ class TemplateTest(common.HeatTestCase):
             }''')
         init_ex = self.assertRaises(exception.InvalidTemplateVersion,
                                     template.Template, invalid_hot_version_tmp)
-        valid_versions = ['2014-10-16', '2013-05-23', '2015-04-30']
+        valid_versions = ['2015-10-15', '2013-05-23', '2014-10-16',
+                          '2015-04-30']
         ex_error_msg = ('The template version is invalid: '
                         '"heat_template_version: 2012-12-12". '
                         '"heat_template_version" should be one of: %s'
@@ -510,16 +550,16 @@ class TemplateTest(common.HeatTestCase):
 
     def test_invalid_template(self):
         scanner_error = '''
-1
-Mappings:
-  ValidMapping:
-    TestKey: TestValue
-'''
+            1
+            Mappings:
+              ValidMapping:
+                TestKey: TestValue
+            '''
         parser_error = '''
-Mappings:
-  ValidMapping:
-    TestKey: {TestKey1: "Value1" TestKey2: "Value2"}
-'''
+            Mappings:
+              ValidMapping:
+                TestKey: {TestKey1: "Value1" TestKey2: "Value2"}
+            '''
 
         self.assertRaises(ValueError, template_format.parse, scanner_error)
         self.assertRaises(ValueError, template_format.parse, parser_error)
@@ -775,7 +815,7 @@ Mappings:
         stk = stack.Stack(self.ctx, 'test_stack',
                           template.Template(empty_template),
                           parent_resource='parent', owner_id=45)
-        stk._parent_resource = parent_resource
+        stk._parent_stack = dict(parent=parent_resource)
         self.assertEqual({"foo": "bar"},
                          self.resolve(metadata_snippet, stk.t, stk))
         self.assertEqual('Retain',
@@ -799,7 +839,7 @@ Mappings:
         stk = stack.Stack(self.ctx, 'test_stack',
                           template.Template(empty_template),
                           parent_resource='parent')
-        stk._parent_resource = parent_resource
+        stk._parent_stack = dict(parent=parent_resource)
         self.assertEqual('Retain',
                          self.resolve(deletion_policy_snippet, stk.t, stk))
 
@@ -809,7 +849,7 @@ Mappings:
                           template.Template(empty_template))
         error = self.assertRaises(ValueError,
                                   self.resolve, snippet, stk.t, stk)
-        self.assertIn(snippet.keys()[0], six.text_type(error))
+        self.assertIn(list(six.iterkeys(snippet))[0], six.text_type(error))
 
     def test_resource_facade_missing_deletion_policy(self):
         snippet = {'Fn::ResourceFacade': 'DeletionPolicy'}
@@ -823,7 +863,7 @@ Mappings:
         stk = stack.Stack(self.ctx, 'test_stack',
                           template.Template(empty_template),
                           parent_resource='parent', owner_id=78)
-        stk._parent_resource = parent_resource
+        stk._parent_stack = dict(parent=parent_resource)
         self.assertEqual('Delete', self.resolve(snippet, stk.t, stk))
 
     def test_prevent_parameters_access(self):
@@ -849,7 +889,7 @@ Mappings:
             }
         })
         self.assertEqual(expected_description, tmpl['Description'])
-        self.assertNotIn('Parameters', tmpl.keys())
+        self.assertNotIn('Parameters', six.iterkeys(tmpl))
 
     def test_add_resource(self):
         cfn_tpl = template_format.parse('''
@@ -870,10 +910,60 @@ Mappings:
         empty = template.Template(copy.deepcopy(empty_template))
         stk = stack.Stack(self.ctx, 'test_stack', source)
 
-        for defn in source.resource_definitions(stk).values():
+        for defn in six.itervalues(source.resource_definitions(stk)):
             empty.add_resource(defn)
 
         self.assertEqual(cfn_tpl['Resources'], empty.t['Resources'])
+
+    def test_create_empty_template_default_version(self):
+        empty_template = template.Template.create_empty_template()
+        self.assertEqual(hot_t.HOTemplate20150430, empty_template.__class__)
+        self.assertEqual({}, empty_template['parameter_groups'])
+        self.assertEqual({}, empty_template['resources'])
+        self.assertEqual({}, empty_template['outputs'])
+
+    def test_create_empty_template_returns_correct_version(self):
+        t = template_format.parse('''
+            AWSTemplateFormatVersion: 2010-09-09
+            Parameters:
+            Resources:
+            Outputs:
+            ''')
+        aws_tmpl = template.Template(t)
+        empty_template = template.Template.create_empty_template(
+            version=aws_tmpl.version)
+        self.assertEqual(aws_tmpl.__class__, empty_template.__class__)
+        self.assertEqual({}, empty_template['Mappings'])
+        self.assertEqual({}, empty_template['Resources'])
+        self.assertEqual({}, empty_template['Outputs'])
+
+        t = template_format.parse('''
+            HeatTemplateFormatVersion: 2012-12-12
+            Parameters:
+            Resources:
+            Outputs:
+            ''')
+        heat_tmpl = template.Template(t)
+        empty_template = template.Template.create_empty_template(
+            version=heat_tmpl.version)
+        self.assertEqual(heat_tmpl.__class__, empty_template.__class__)
+        self.assertEqual({}, empty_template['Mappings'])
+        self.assertEqual({}, empty_template['Resources'])
+        self.assertEqual({}, empty_template['Outputs'])
+
+        t = template_format.parse('''
+            heat_template_version: 2015-04-30
+            parameter_groups:
+            resources:
+            outputs:
+            ''')
+        hot_tmpl = template.Template(t)
+        empty_template = template.Template.create_empty_template(
+            version=hot_tmpl.version)
+        self.assertEqual(hot_tmpl.__class__, empty_template.__class__)
+        self.assertEqual({}, empty_template['parameter_groups'])
+        self.assertEqual({}, empty_template['resources'])
+        self.assertEqual({}, empty_template['outputs'])
 
 
 class TemplateFnErrorTest(common.HeatTestCase):
@@ -995,7 +1085,8 @@ class TemplateFnErrorTest(common.HeatTestCase):
         error = self.assertRaises(self.expect,
                                   resolve,
                                   self.snippet)
-        self.assertIn(self.snippet.keys()[0], six.text_type(error))
+        self.assertIn(list(six.iterkeys(self.snippet))[0],
+                      six.text_type(error))
 
 
 class ResolveDataTest(common.HeatTestCase):
@@ -1011,25 +1102,6 @@ class ResolveDataTest(common.HeatTestCase):
 
     def resolve(self, snippet):
         return function.resolve(self.stack.t.parse(self.stack, snippet))
-
-    def test_stack_resolve_runtime_data_deprecated(self):
-        stk = stack.Stack(self.ctx, 'test_stack',
-                          template.Template(empty_template),
-                          tenant_id='bar')
-
-        with warnings.catch_warnings(record=True) as ws:
-            warnings.filterwarnings('always')
-
-            # Work around http://bugs.python.org/issue4180
-            getattr(stack, '__warningregistry__', {}).clear()
-
-            test_data = {'foo': 'bar'}
-            resolved = stk.resolve_runtime_data(test_data)
-
-            self.assertTrue(ws)
-            self.assertTrue(issubclass(ws[0].category, DeprecationWarning))
-
-            self.assertEqual(test_data, resolved)
 
     def test_join_split(self):
         # join

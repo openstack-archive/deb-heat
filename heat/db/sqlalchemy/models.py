@@ -99,8 +99,6 @@ class RawTemplate(BASE, HeatBase):
     template = sqlalchemy.Column(types.Json)
     files = sqlalchemy.Column(types.Json)
     environment = sqlalchemy.Column('environment', types.Json)
-    predecessor = sqlalchemy.Column('predecessor', sqlalchemy.Integer,
-                                    sqlalchemy.ForeignKey('raw_template.id'))
 
 
 class StackTag(BASE, HeatBase):
@@ -298,6 +296,8 @@ class Resource(BASE, HeatBase, StateAware):
     # created/modified. (bug #1193269)
     updated_at = sqlalchemy.Column(sqlalchemy.DateTime)
     properties_data = sqlalchemy.Column('properties_data', types.Json)
+    properties_data_encrypted = sqlalchemy.Column('properties_data_encrypted',
+                                                  sqlalchemy.Boolean)
     engine_id = sqlalchemy.Column(sqlalchemy.String(36))
     atomic_key = sqlalchemy.Column(sqlalchemy.Integer)
 

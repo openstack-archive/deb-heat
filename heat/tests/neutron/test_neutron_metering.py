@@ -24,30 +24,23 @@ from heat.tests import utils
 
 
 metering_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test metering resources",
-  "Parameters" : {},
-  "Resources" : {
-    "label": {
-      "Type": "OS::Neutron::MeteringLabel",
-      "Properties": {
-        "name": "TestLabel",
-        "description": "Description of TestLabel",
-        "shared": True,
-       }
-    },
-    "rule": {
-      "Type": "OS::Neutron::MeteringRule",
-      "Properties": {
-        "metering_label_id": { "Ref" : "label" },
-        "remote_ip_prefix": "10.0.3.0/24",
-        "direction": "ingress",
-        "excluded": false
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test metering resources
+resources:
+  label:
+    type: OS::Neutron::MeteringLabel
+    properties:
+      name: TestLabel
+      description: Description of TestLabel
+      shared: True
+
+  rule:
+    type: OS::Neutron::MeteringRule
+    properties:
+      metering_label_id: { get_resource: label }
+      remote_ip_prefix: 10.0.3.0/24
+      direction: ingress
+      excluded: false
 '''
 
 
@@ -74,10 +67,10 @@ class MeteringLabelTest(common.HeatTestCase):
         }).AndReturn({'metering_label': {'id': '1234'}})
 
         snippet = template_format.parse(metering_template)
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         return metering.MeteringLabel(
-            'label', resource_defns['label'], stack)
+            'label', resource_defns['label'], self.stack)
 
     def test_create(self):
         rsrc = self.create_metering_label()
@@ -103,7 +96,8 @@ class MeteringLabelTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.label: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -141,7 +135,8 @@ class MeteringLabelTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.label: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -187,10 +182,10 @@ class MeteringRuleTest(common.HeatTestCase):
         }).AndReturn({'metering_label_rule': {'id': '5678'}})
 
         snippet = template_format.parse(metering_template)
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         return metering.MeteringRule(
-            'rule', resource_defns['rule'], stack)
+            'rule', resource_defns['rule'], self.stack)
 
     def test_create(self):
         rsrc = self.create_metering_label_rule()
@@ -217,7 +212,8 @@ class MeteringRuleTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.rule: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -255,7 +251,8 @@ class MeteringRuleTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.rule: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()

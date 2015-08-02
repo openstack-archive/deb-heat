@@ -32,192 +32,140 @@ from heat.tests import utils
 
 
 health_monitor_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test load balancer resources",
-  "Parameters" : {},
-  "Resources" : {
-    "monitor": {
-      "Type": "OS::Neutron::HealthMonitor",
-      "Properties": {
-        "type": "HTTP",
-        "delay": 3,
-        "max_retries": 5,
-        "timeout": 10
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test load balancer resources
+resources:
+  monitor:
+    type: OS::Neutron::HealthMonitor
+    properties:
+      type: HTTP
+      delay: 3
+      max_retries: 5
+      timeout: 10
 '''
 
 pool_template_with_vip_subnet = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test load balancer resources",
-  "Parameters" : {},
-  "Resources" : {
-    "pool": {
-      "Type": "OS::Neutron::Pool",
-      "Properties": {
-        "protocol": "HTTP",
-        "subnet": "sub123",
-        "lb_method": "ROUND_ROBIN",
-        "vip": {
-          "protocol_port": 80,
-          "subnet": "sub9999"
-        }
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test load balancer resources
+resources:
+  pool:
+    type: OS::Neutron::Pool
+    properties:
+      protocol: HTTP
+      subnet: sub123
+      lb_method: ROUND_ROBIN
+      vip:
+        protocol_port: 80
+        subnet: sub9999
 '''
 
-pool_template_deprecated = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test load balancer resources",
-  "Parameters" : {},
-  "Resources" : {
-    "pool": {
-      "Type": "OS::Neutron::Pool",
-      "Properties": {
-        "protocol": "HTTP",
-        "subnet_id": "sub123",
-        "lb_method": "ROUND_ROBIN",
-        "vip": {
-          "protocol_port": 80
-        }
-      }
-    }
-  }
-}
+pool_template_with_provider = '''
+heat_template_version: 2015-04-30
+description: Template to test load balancer resources
+resources:
+  pool:
+    type: OS::Neutron::Pool
+    properties:
+      protocol: HTTP
+      subnet: sub123
+      lb_method: ROUND_ROBIN
+      provider: test_prov
+      vip:
+        protocol_port: 80
+
 '''
 
 pool_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test load balancer resources",
-  "Parameters" : {},
-  "Resources" : {
-    "pool": {
-      "Type": "OS::Neutron::Pool",
-      "Properties": {
-        "protocol": "HTTP",
-        "subnet": "sub123",
-        "lb_method": "ROUND_ROBIN",
-        "vip": {
-          "protocol_port": 80
-        }
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test load balancer resources
+resources:
+  pool:
+    type: OS::Neutron::Pool
+    properties:
+      protocol: HTTP
+      subnet: sub123
+      lb_method: ROUND_ROBIN
+      vip:
+        protocol_port: 80
+
 '''
 
+pool_template_deprecated = pool_template.replace('subnet', 'subnet_id')
 
 member_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test load balancer member",
-  "Resources" : {
-    "member": {
-      "Type": "OS::Neutron::PoolMember",
-      "Properties": {
-        "protocol_port": 8080,
-        "pool_id": "pool123",
-        "address": "1.2.3.4"
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test load balancer member
+resources:
+  member:
+    type: OS::Neutron::PoolMember
+    properties:
+      protocol_port: 8080
+      pool_id: pool123
+      address: 1.2.3.4
 '''
 
 lb_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test load balancer resources",
-  "Parameters" : {},
-  "Resources" : {
-    "lb": {
-      "Type": "OS::Neutron::LoadBalancer",
-      "Properties": {
-        "protocol_port": 8080,
-        "pool_id": "pool123",
-        "members": ["1234"]
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test load balancer resources
+resources:
+  lb:
+    type: OS::Neutron::LoadBalancer
+    properties:
+      protocol_port: 8080
+      pool_id: pool123
+      members: [1234]
 '''
 
 
 pool_with_session_persistence_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test load balancer resources wit",
-  "Parameters" : {},
-  "Resources" : {
-    "pool": {
-      "Type": "OS::Neutron::Pool",
-      "Properties": {
-        "protocol": "HTTP",
-        "subnet": "sub123",
-        "lb_method": "ROUND_ROBIN",
-        "vip": {
-          "protocol_port": 80,
-          "session_persistence": {
-            "type": "APP_COOKIE",
-            "cookie_name": "cookie"
-          }
-        }
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test load balancer resources
+resources:
+  pool:
+    type: OS::Neutron::Pool
+    properties:
+      protocol: HTTP
+      subnet: sub123
+      lb_method: ROUND_ROBIN
+      vip:
+        protocol_port: 80
+        session_persistence:
+          type: APP_COOKIE
+          cookie_name: cookie
 '''
 
 
 pool_with_health_monitors_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "Template to test load balancer resources",
-  "Parameters" : {},
-  "Resources" : {
-    "monitor1": {
-      "Type": "OS::Neutron::HealthMonitor",
-      "Properties": {
-        "type": "HTTP",
-        "delay": 3,
-        "max_retries": 5,
-        "timeout": 10
-        }
-    },
-    "monitor2": {
-      "Type": "OS::Neutron::HealthMonitor",
-      "Properties": {
-        "type": "HTTP",
-        "delay": 3,
-        "max_retries": 5,
-        "timeout": 10
-        }
-    },
-    "pool": {
-      "Type": "OS::Neutron::Pool",
-      "Properties": {
-        "protocol": "HTTP",
-        "subnet_id": "sub123",
-        "lb_method": "ROUND_ROBIN",
-        "vip": {
-          "protocol_port": 80
-        },
-        "monitors": [
-          {"Ref": "monitor1"},
-          {"Ref": "monitor2"}
-        ]
-      }
-    }
-  }
-}
+heat_template_version: 2015-04-30
+description: Template to test load balancer resources
+resources:
+  monitor1:
+    type: OS::Neutron::HealthMonitor
+    properties:
+      type: HTTP
+      delay: 3
+      max_retries: 5
+      timeout: 10
+
+  monitor2:
+    type: OS::Neutron::HealthMonitor
+    properties:
+      type: HTTP
+      delay: 3
+      max_retries: 5
+      timeout: 10
+
+  pool:
+    type: OS::Neutron::Pool
+    properties:
+      protocol: HTTP
+      subnet_id: sub123
+      lb_method: ROUND_ROBIN
+      vip:
+        protocol_port: 80
+      monitors:
+        - {get_resource: monitor1}
+        - {get_resource: monitor2}
 '''
 
 
@@ -238,10 +186,10 @@ class HealthMonitorTest(common.HeatTestCase):
         ).AndReturn({'health_monitor': {'id': '5678'}})
 
         snippet = template_format.parse(health_monitor_template)
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         return loadbalancer.HealthMonitor(
-            'monitor', resource_defns['monitor'], stack)
+            'monitor', resource_defns['monitor'], self.stack)
 
     def test_create(self):
         rsrc = self.create_health_monitor()
@@ -259,14 +207,15 @@ class HealthMonitorTest(common.HeatTestCase):
         self.m.ReplayAll()
 
         snippet = template_format.parse(health_monitor_template)
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         rsrc = loadbalancer.HealthMonitor(
-            'monitor', resource_defns['monitor'], stack)
+            'monitor', resource_defns['monitor'], self.stack)
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.monitor: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -304,7 +253,8 @@ class HealthMonitorTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.monitor: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -412,10 +362,10 @@ class PoolTest(common.HeatTestCase):
             snippet = template_format.parse(pool_template_deprecated)
             neutronclient.Client.create_vip(stvippsn
                                             ).AndReturn({'vip': {'id': 'xyz'}})
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         return loadbalancer.Pool(
-            'pool', resource_defns['pool'], stack)
+            'pool', resource_defns['pool'], self.stack)
 
     def test_create(self):
         self._test_create()
@@ -466,10 +416,10 @@ class PoolTest(common.HeatTestCase):
             {'vip': {'status': 'ACTIVE'}})
 
         snippet = template_format.parse(pool_template)
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         rsrc = loadbalancer.Pool(
-            'pool', resource_defns['pool'], stack)
+            'pool', resource_defns['pool'], self.stack)
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
@@ -500,15 +450,16 @@ class PoolTest(common.HeatTestCase):
             {'pool': {'status': 'ERROR', 'name': '5678'}})
 
         snippet = template_format.parse(pool_template)
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         rsrc = loadbalancer.Pool(
-            'pool', resource_defns['pool'], stack)
+            'pool', resource_defns['pool'], self.stack)
         self.m.ReplayAll()
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'ResourceInError: Went to status ERROR due to "error in pool"',
+            'ResourceInError: resources.pool: '
+            'Went to status ERROR due to "error in pool"',
             six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -538,14 +489,15 @@ class PoolTest(common.HeatTestCase):
             {'vip': {'status': 'SOMETHING', 'name': 'xyz'}})
 
         snippet = template_format.parse(pool_template)
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         rsrc = loadbalancer.Pool(
-            'pool', resource_defns['pool'], stack)
+            'pool', resource_defns['pool'], self.stack)
         self.m.ReplayAll()
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
-        self.assertEqual('ResourceUnknownStatus: Pool creation failed due to '
+        self.assertEqual('ResourceUnknownStatus: resources.pool: '
+                         'Pool creation failed due to '
                          'vip - Unknown status SOMETHING due to "Unknown"',
                          six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
@@ -567,14 +519,15 @@ class PoolTest(common.HeatTestCase):
         self.m.ReplayAll()
 
         snippet = template_format.parse(pool_template)
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         rsrc = loadbalancer.Pool(
-            'pool', resource_defns['pool'], stack)
+            'pool', resource_defns['pool'], self.stack)
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.create))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.pool: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -606,29 +559,64 @@ class PoolTest(common.HeatTestCase):
             {'vip': {'status': 'ACTIVE'}})
 
         snippet = template_format.parse(pool_with_session_persistence_template)
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         rsrc = loadbalancer.Pool(
-            'pool', resource_defns['pool'], stack)
+            'pool', resource_defns['pool'], self.stack)
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        self.m.VerifyAll()
+
+    def test_create_pool_with_provider(self):
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnet',
+            'sub123'
+        ).MultipleTimes().AndReturn('sub123')
+        neutronclient.Client.create_pool({
+            'pool': {
+                'subnet_id': 'sub123', 'protocol': u'HTTP',
+                'name': utils.PhysName('test_stack', 'pool'),
+                'lb_method': 'ROUND_ROBIN', 'admin_state_up': True,
+                'provider': 'test_prov'}}
+        ).AndReturn({'pool': {'id': '5678'}})
+        neutronclient.Client.create_vip({
+            'vip': {
+                'protocol': u'HTTP', 'name': 'pool.vip',
+                'admin_state_up': True, 'subnet_id': u'sub123',
+                'pool_id': '5678', 'protocol_port': 80}}
+        ).AndReturn({'vip': {'id': 'xyz'}})
+        neutronclient.Client.show_pool('5678').MultipleTimes().AndReturn(
+            {'pool': {'status': 'ACTIVE', 'provider': 'test_prov'}})
+        neutronclient.Client.show_vip('xyz').AndReturn(
+            {'vip': {'status': 'ACTIVE'}})
+        snippet = template_format.parse(pool_template_with_provider)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
+        rsrc = loadbalancer.Pool(
+            'pool', resource_defns['pool'], self.stack)
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        self.assertEqual("test_prov", rsrc.FnGetAtt("provider"))
         self.m.VerifyAll()
 
     def test_failing_validation_with_session_persistence(self):
         msg = _('Property cookie_name is required, when '
                 'session_persistence type is set to APP_COOKIE.')
         snippet = template_format.parse(pool_with_session_persistence_template)
-        pool = snippet['Resources']['pool']
-        persistence = pool['Properties']['vip']['session_persistence']
+        pool = snippet['resources']['pool']
+        persistence = pool['properties']['vip']['session_persistence']
 
         # When persistence type is set to APP_COOKIE, cookie_name is required
         persistence['type'] = 'APP_COOKIE'
         persistence['cookie_name'] = None
 
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
-        resource = loadbalancer.Pool('pool', resource_defns['pool'], stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
+        resource = loadbalancer.Pool('pool', resource_defns['pool'],
+                                     self.stack)
 
         error = self.assertRaises(exception.StackValidationFailed,
                                   resource.validate)
@@ -637,9 +625,10 @@ class PoolTest(common.HeatTestCase):
     def test_validation_not_failing_without_session_persistence(self):
         snippet = template_format.parse(pool_template)
 
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
-        resource = loadbalancer.Pool('pool', resource_defns['pool'], stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
+        resource = loadbalancer.Pool('pool', resource_defns['pool'],
+                                     self.stack)
         self.stub_SubnetConstraint_validate()
         self.m.ReplayAll()
         self.assertIsNone(resource.validate())
@@ -671,16 +660,17 @@ class PoolTest(common.HeatTestCase):
             {'vip': {'status': 'ACTIVE'}})
 
         snippet = template_format.parse(pool_with_session_persistence_template)
-        pool = snippet['Resources']['pool']
-        persistence = pool['Properties']['vip']['session_persistence']
+        pool = snippet['resources']['pool']
+        persistence = pool['properties']['vip']['session_persistence']
 
         # change persistence type to HTTP_COOKIE that not require cookie_name
         persistence['type'] = 'HTTP_COOKIE'
         del persistence['cookie_name']
 
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
-        resource = loadbalancer.Pool('pool', resource_defns['pool'], stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
+        resource = loadbalancer.Pool('pool', resource_defns['pool'],
+                                     self.stack)
 
         # assert that properties contain cookie_name property with None value
         persistence = resource.properties['vip']['session_persistence']
@@ -729,7 +719,8 @@ class PoolTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.pool: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -746,7 +737,8 @@ class PoolTest(common.HeatTestCase):
         error = self.assertRaises(exception.ResourceFailure,
                                   scheduler.TaskRunner(rsrc.delete))
         self.assertEqual(
-            'NeutronClientException: An unknown exception occurred.',
+            'NeutronClientException: resources.pool: '
+            'An unknown exception occurred.',
             six.text_type(error))
         self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
         self.m.VerifyAll()
@@ -828,11 +820,11 @@ class PoolTest(common.HeatTestCase):
             '5678', {'health_monitor': {'id': 'mon789'}})
 
         snippet = template_format.parse(pool_template)
-        stack = utils.parse_stack(snippet)
-        snippet['Resources']['pool']['Properties']['monitors'] = [
+        self.stack = utils.parse_stack(snippet)
+        snippet['resources']['pool']['properties']['monitors'] = [
             'mon123', 'mon456']
-        resource_defns = stack.t.resource_definitions(stack)
-        rsrc = loadbalancer.Pool('pool', resource_defns['pool'], stack)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
+        rsrc = loadbalancer.Pool('pool', resource_defns['pool'], self.stack)
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
 
@@ -860,10 +852,10 @@ class PoolMemberTest(common.HeatTestCase):
                 'address': '1.2.3.4', 'admin_state_up': True}}
         ).AndReturn({'member': {'id': 'member5678'}})
         snippet = template_format.parse(member_template)
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         return loadbalancer.PoolMember(
-            'member', resource_defns['member'], stack)
+            'member', resource_defns['member'], self.stack)
 
     def test_create(self):
         rsrc = self.create_member()
@@ -882,12 +874,12 @@ class PoolMemberTest(common.HeatTestCase):
                 'address': '1.2.3.4'}}
         ).AndReturn({'member': {'id': 'member5678'}})
         snippet = template_format.parse(member_template)
-        snippet['Resources']['member']['Properties']['admin_state_up'] = False
-        snippet['Resources']['member']['Properties']['weight'] = 100
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        snippet['resources']['member']['properties']['admin_state_up'] = False
+        snippet['resources']['member']['properties']['weight'] = 100
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         rsrc = loadbalancer.PoolMember(
-            'member', resource_defns['member'], stack)
+            'member', resource_defns['member'], self.stack)
 
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -961,10 +953,10 @@ class LoadBalancerTest(common.HeatTestCase):
                 'address': '1.2.3.4'}}
         ).AndReturn({'member': {'id': 'member5678'}})
         snippet = template_format.parse(lb_template)
-        stack = utils.parse_stack(snippet)
-        resource_defns = stack.t.resource_definitions(stack)
+        self.stack = utils.parse_stack(snippet)
+        resource_defns = self.stack.t.resource_definitions(self.stack)
         return loadbalancer.LoadBalancer(
-            'lb', resource_defns['lb'], stack)
+            'lb', resource_defns['lb'], self.stack)
 
     def test_create(self):
         rsrc = self.create_load_balancer()
@@ -1096,8 +1088,8 @@ class PoolUpdateHealthMonitorsTest(common.HeatTestCase):
         self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
                          self.stack.state)
 
-        snippet['Resources']['pool']['Properties']['monitors'] = [
-            {u'Ref': u'monitor1'}]
+        snippet['resources']['pool']['properties']['monitors'] = [
+            {u'get_resource': u'monitor1'}]
         updated_stack = utils.parse_stack(snippet)
         self.stack.update(updated_stack)
         self.assertEqual((self.stack.UPDATE, self.stack.COMPLETE),
@@ -1119,7 +1111,7 @@ class PoolUpdateHealthMonitorsTest(common.HeatTestCase):
         self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
                          self.stack.state)
 
-        snippet['Resources']['pool']['Properties']['monitors'] = []
+        snippet['resources']['pool']['properties']['monitors'] = []
         updated_stack = utils.parse_stack(snippet)
         self.stack.update(updated_stack)
         self.assertEqual((self.stack.UPDATE, self.stack.COMPLETE),
@@ -1141,7 +1133,7 @@ class PoolUpdateHealthMonitorsTest(common.HeatTestCase):
         self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
                          self.stack.state)
 
-        snippet['Resources']['pool']['Properties'].pop('monitors')
+        snippet['resources']['pool']['properties'].pop('monitors')
         updated_stack = utils.parse_stack(snippet)
         self.stack.update(updated_stack)
         self.assertEqual((self.stack.UPDATE, self.stack.COMPLETE),

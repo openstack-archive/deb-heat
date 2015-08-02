@@ -18,8 +18,8 @@ from testtools import matchers
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import parser
 from heat.engine.resources.openstack.heat import random_string as rs
+from heat.engine import stack as parser
 from heat.engine import template
 from heat.tests import common
 from heat.tests import utils
@@ -154,28 +154,6 @@ Resources:
         secret6.resource_id = None
         self.assertEqual('secret6', secret6.FnGetRefId())
 
-    def test_invalid_property_combination(self):
-        template_random_string = '''
-HeatTemplateFormatVersion: '2012-12-12'
-Resources:
-  secret:
-    Type: OS::Heat::RandomString
-    Properties:
-      length: 32
-      sequence: octdigits
-      character_classes:
-        - class: digits
-          min: 1
-      character_sequences:
-        - sequence: (),[]{}
-          min: 1
-'''
-        exc = self.assertRaises(exception.StackValidationFailed,
-                                self.create_stack, template_random_string)
-        self.assertEqual("Cannot use deprecated 'sequence' property along "
-                         "with 'character_sequences' or 'character_classes' "
-                         "properties", six.text_type(exc))
-
     def test_invalid_length(self):
         template_random_string = '''
 HeatTemplateFormatVersion: '2012-12-12'
@@ -223,7 +201,7 @@ Resources:
 '''
         exc = self.assertRaises(exception.StackValidationFailed,
                                 self.create_stack, template_random_string)
-        self.assertIn('length 513 is out of range (min: 1, max: 512)',
+        self.assertIn('513 is out of range (min: 1, max: 512)',
                       six.text_type(exc))
 
 

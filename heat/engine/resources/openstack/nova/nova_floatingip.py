@@ -10,7 +10,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-from heat.common import exception
 
 from oslo_log import log as logging
 from oslo_utils import excutils
@@ -48,10 +47,12 @@ class NovaFloatingIp(resource.Resource):
 
     attributes_schema = {
         POOL_ATTR: attributes.Schema(
-            _('Pool from which floating IP is allocated.')
+            _('Pool from which floating IP is allocated.'),
+            type=attributes.Schema.STRING
         ),
         IP: attributes.Schema(
-            _('Allocated floating IP address.')
+            _('Allocated floating IP address.'),
+            type=attributes.Schema.STRING
         ),
     }
 
@@ -69,7 +70,7 @@ class NovaFloatingIp(resource.Resource):
 
     def handle_create(self):
         try:
-            pool = self.properties.get(self.POOL)
+            pool = self.properties[self.POOL]
             floating_ip = self.nova().floating_ips.create(pool=pool)
         except Exception as e:
             with excutils.save_and_reraise_exception():
@@ -135,10 +136,7 @@ class NovaFloatingIpAssociation(resource.Resource):
         fl_ip = self.nova().floating_ips.get(self.properties[self.FLOATING_IP])
 
         self.nova().servers.add_floating_ip(server, fl_ip.ip)
-        if self.id is not None:
-            self.resource_id_set(self.id)
-        else:
-            raise exception.ResourceNotAvailable(resource_name=self.name)
+        self.resource_id_set(self.id)
 
     def handle_delete(self):
         if self.resource_id is None:
@@ -171,10 +169,7 @@ class NovaFloatingIpAssociation(resource.Resource):
             fl_ip = self.nova().floating_ips.get(fl_ip_id)
 
             self.nova().servers.add_floating_ip(server, fl_ip.ip)
-            if self.id is not None:
-                self.resource_id_set(self.id)
-            else:
-                raise exception.ResourceNotAvailable(resource_name=self.name)
+            self.resource_id_set(self.id)
 
 
 def resource_mapping():

@@ -80,6 +80,9 @@ class Schema(constr.Schema):
                     raise exception.InvalidSchemaError(
                         message=_('Default must be a comma-delimited list '
                                   'string: %s') % err)
+            elif self.type == self.LIST and isinstance(self.default, list):
+                default_value = [encodeutils.safe_encode(six.text_type(x))
+                                 for x in self.default]
             try:
                 self.validate_constraints(default_value, context,
                                           [constr.CustomConstraint])
@@ -170,9 +173,8 @@ class Schema(constr.Schema):
         else:
             return super(Schema, self).__getitem__(key)
 
-        raise KeyError(key)
 
-
+@six.python_2_unicode_compatible
 class Parameter(object):
     '''A template parameter.'''
 
@@ -285,9 +287,9 @@ class Parameter(object):
         '''Return a string representation of the parameter.'''
         value = self.value()
         if self.hidden():
-            return '******'
+            return six.text_type('******')
         else:
-            return encodeutils.safe_encode(six.text_type(value))
+            return six.text_type(value)
 
 
 class NumberParam(Parameter):
@@ -353,7 +355,8 @@ class CommaDelimitedListParam(Parameter, collections.Sequence):
     def parse(self, value):
         # only parse when value is not already a list
         if isinstance(value, list):
-            return value
+            return [encodeutils.safe_encode(six.text_type(x))
+                    for x in value]
         try:
             if value is not None:
                 if value == '':
@@ -491,7 +494,7 @@ class Parameters(collections.Mapping):
         self._validate_tmpl_parameters()
         self._validate_user_parameters()
 
-        for param in self.params.values():
+        for param in six.itervalues(self.params):
             param.validate(validate_value, context)
 
     def __contains__(self, key):
@@ -536,7 +539,7 @@ class Parameters(collections.Mapping):
 
     def _validate_tmpl_parameters(self):
         param = None
-        for key in self.tmpl.t.keys():
+        for key in six.iterkeys(self.tmpl.t):
             if key == 'Parameters' or key == 'parameters':
                 param = key
                 break
