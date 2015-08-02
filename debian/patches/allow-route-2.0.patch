@@ -1,21 +1,19 @@
-Description: Allow routes 2.0
- Upstream is rejecting Routes 2.0 because the archive on PyPi is broken,
- however, the Debian package for Routes 2.0 is perfectly fine. So we remove
- the restriction.
+Description: Allow Routes == 2.0
+ The Debian package for Routes 2.0 is perfectly valid, as it contains patches.
+ This patch makes it possible to use it.
 Author: Thomas Goirand <zigo@debian.org>
 Forwarded: not-needed
-Last-Update: 2015-03-19
+Last-Update: 2015-08-02
 
-Index: heat/requirements.txt
-===================================================================
---- heat.orig/requirements.txt
-+++ heat/requirements.txt
-@@ -40,7 +40,7 @@ python-troveclient>=1.0.7
+--- heat-5.0.0~b2.orig/requirements.txt
++++ heat-5.0.0~b2/requirements.txt
+@@ -49,8 +49,7 @@ python-troveclient>=1.0.9
+ python-zaqarclient>=0.1.1
  PyYAML>=3.1.0
- qpid-python
- requests>=2.2.0,!=2.4.0
--Routes>=1.12.3,!=2.0
+ requests>=2.5.2
+-Routes!=2.0,!=2.1,>=1.12.3;python_version=='2.7'
+-Routes!=2.0,>=1.12.3;python_version!='2.7'
 +Routes>=1.12.3
  six>=1.9.0
- SQLAlchemy>=0.9.7,<=0.9.99
- sqlalchemy-migrate>=0.9.5
+ SQLAlchemy<1.1.0,>=0.9.7
+ sqlalchemy-migrate>=0.9.6

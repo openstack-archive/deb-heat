@@ -1,4 +1,3 @@
-allow-route-2.0.patch
 only-run-tests-in-heat.tests.patch
 using-assertRegexp-instead-of-Regex.patch
-fix-sqlalchemy-requirements.txt
+allow-route-2.0.patch
