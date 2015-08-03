@@ -58,10 +58,6 @@ override_dh_install:
 
 
 	dh_install --fail-missing -Xbin/cinder-keystone-setup
-	set -e ; for pyvers in $(PYTHONS); do \
-		mkdir -p $(CURDIR)/debian/python-heat/usr/lib/python$$pyvers/dist-packages/heat/plugins ; \
-		cp -rf contrib/heat_keystoneclient_v2/heat_keystoneclient_v2 $(CURDIR)/debian/python-heat/usr/lib/python$$pyvers/dist-packages/heat/plugins ; \
-        done
 
 override_dh_auto_build:
 	dh_auto_build
