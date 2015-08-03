@@ -1,3 +1,2 @@
 only-run-tests-in-heat.tests.patch
-using-assertRegexp-instead-of-Regex.patch
 allow-route-2.0.patch
