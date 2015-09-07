@@ -23,6 +23,7 @@ from heat.common import template_format
 from heat.engine.clients.os import cinder
 from heat.engine.clients.os import glance
 from heat.engine.resources.openstack.cinder import volume as c_vol
+from heat.engine.resources import scheduler_hints as sh
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.objects import resource_data as resource_data_object
@@ -261,6 +262,7 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
         self.assertEqual(u'False', rsrc.FnGetAtt('bootable'))
         self.assertEqual(u'False', rsrc.FnGetAtt('encrypted'))
         self.assertEqual(u'[]', rsrc.FnGetAtt('attachments'))
+        self.assertEqual({'volume': 'info'}, rsrc.FnGetAtt('show'))
         error = self.assertRaises(exception.InvalidTemplateAttribute,
                                   rsrc.FnGetAtt, 'unknown')
         self.assertEqual(
@@ -488,6 +490,7 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
         stack_name = 'test_cvolume_extend_snapsht_stack'
 
         # create script
+        self.stub_VolumeBackupConstraint_validate()
         fvbr = vt_base.FakeBackupRestore('vol-123')
         cinder.CinderClientPlugin._create().MultipleTimes().AndReturn(
             self.cinder_fc)
@@ -885,6 +888,42 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
                       'volume API.', six.text_type(ex))
         self.m.VerifyAll()
 
+    def test_cinder_create_with_stack_scheduler_hints(self):
+        fv = vt_base.FakeVolume('creating')
+        sh.cfg.CONF.set_override('stack_scheduler_hints', True)
+
+        stack_name = 'test_cvolume_stack_scheduler_hints_stack'
+        t = template_format.parse(single_cinder_volume_template)
+        stack = utils.parse_stack(t, stack_name=stack_name)
+
+        rsrc = stack['volume']
+
+        # rsrc.uuid is only available once the resource has been added.
+        stack.add_resource(rsrc)
+        self.assertIsNotNone(rsrc.uuid)
+
+        cinder.CinderClientPlugin._create().AndReturn(self.cinder_fc)
+        shm = sh.SchedulerHintsMixin
+        self.cinder_fc.volumes.create(
+            size=1, name='test_name', description='test_description',
+            availability_zone=None,
+            scheduler_hints={shm.HEAT_ROOT_STACK_ID: stack.root_stack_id(),
+                             shm.HEAT_STACK_ID: stack.id,
+                             shm.HEAT_STACK_NAME: stack.name,
+                             shm.HEAT_PATH_IN_STACK: [(None, stack.name)],
+                             shm.HEAT_RESOURCE_NAME: rsrc.name,
+                             shm.HEAT_RESOURCE_UUID: rsrc.uuid}).AndReturn(fv)
+        self.cinder_fc.volumes.get(fv.id).AndReturn(fv)
+        fv_ready = vt_base.FakeVolume('available', id=fv.id)
+        self.cinder_fc.volumes.get(fv.id).AndReturn(fv_ready)
+
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+        # this makes sure the auto increment worked on volume creation
+        self.assertTrue(rsrc.id > 0)
+
+        self.m.VerifyAll()
+
     def _test_cinder_create_invalid_property_combinations(
             self, stack_name, combinations, err_msg, exc):
         stack = utils.parse_stack(self.t, stack_name=stack_name)
@@ -898,12 +937,14 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
     def test_cinder_create_with_image_and_imageRef(self):
         stack_name = 'test_create_with_image_and_imageRef'
         combinations = {'imageRef': 'image-456', 'image': 'image-123'}
-        err_msg = ("Cannot define the following properties at the same "
-                   "time: image, imageRef.")
+        err_msg = "Cannot use image and imageRef at the same time."
         self.stub_ImageConstraint_validate()
-        self._test_cinder_create_invalid_property_combinations(
-            stack_name, combinations,
-            err_msg, exception.ResourcePropertyConflict)
+        stack = utils.parse_stack(self.t, stack_name=stack_name)
+        vp = stack.t['Resources']['volume2']['Properties']
+        vp.pop('size')
+        vp.update(combinations)
+        ex = self.assertRaises(ValueError, stack.get, 'volume2')
+        self.assertEqual(err_msg, six.text_type(ex))
 
     def test_cinder_create_with_size_snapshot_and_image(self):
         stack_name = 'test_create_with_size_snapshot_and_image'
@@ -929,10 +970,11 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
             'snapshot_id': 'snapshot-123'}
         self.stub_ImageConstraint_validate()
         self.stub_SnapshotConstraint_validate()
+        # image appears there because of translation rule
         err_msg = ('If "size" is provided, only one of "image", "imageRef", '
                    '"source_volid", "snapshot_id" can be specified, but '
                    'currently specified options: '
-                   '[\'snapshot_id\', \'imageRef\'].')
+                   '[\'snapshot_id\', \'image\'].')
         self._test_cinder_create_invalid_property_combinations(
             stack_name, combinations,
             err_msg, exception.StackValidationFailed)
@@ -994,9 +1036,8 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
             stack_name, combinations,
             err_msg, exception.StackValidationFailed)
 
-    def test_volume_restore(self):
-        stack_name = 'test_cvolume_restore_stack'
-
+    def _test_volume_restore(self, stack_name, final_status='available',
+                             stack_final_status=('RESTORE', 'COMPLETE')):
         # create script
         cinder.CinderClientPlugin._create().MultipleTimes().AndReturn(
             self.cinder_fc)
@@ -1007,6 +1048,7 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
         ).AndReturn(vt_base.FakeVolume('creating'))
         fv = vt_base.FakeVolume('available')
         self.cinder_fc.volumes.get(fv.id).AndReturn(fv)
+        self.stub_VolumeBackupConstraint_validate()
 
         # snapshot script
         fb = vt_base.FakeBackup('creating')
@@ -1019,12 +1061,12 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
         # restore script
         fvbr = vt_base.FakeBackupRestore('vol-123')
         self.m.StubOutWithMock(self.cinder_fc.restores, 'restore')
-        self.cinder_fc.restores.restore('backup-123').AndReturn(fvbr)
-        self.cinder_fc.volumes.get('vol-123').AndReturn(fv)
-        self.cinder_fc.volumes.update('vol-123',
-                                      description='test_description',
-                                      name='test_name')
-        self.cinder_fc.volumes.get('vol-123').AndReturn(fv)
+        self.cinder_fc.restores.restore('backup-123',
+                                        'vol-123').AndReturn(fvbr)
+        fv_restoring = vt_base.FakeVolume('restoring-backup', id=fv.id)
+        self.cinder_fc.volumes.get('vol-123').AndReturn(fv_restoring)
+        fv_final = vt_base.FakeVolume(final_status, id=fv.id)
+        self.cinder_fc.volumes.get('vol-123').AndReturn(fv_final)
 
         self.m.ReplayAll()
 
@@ -1044,9 +1086,17 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
 
         stack.restore(fake_snapshot)
 
-        self.assertEqual((stack.RESTORE, stack.COMPLETE), stack.state)
+        self.assertEqual(stack_final_status, stack.state)
 
         self.m.VerifyAll()
+
+    def test_volume_restore_success(self):
+        self._test_volume_restore(stack_name='test_volume_restore_success')
+
+    def test_volume_restore_failed(self):
+        self._test_volume_restore(stack_name='test_volume_restore_failed',
+                                  final_status='error',
+                                  stack_final_status=('RESTORE', 'FAILED'))
 
     def test_handle_delete_snapshot_no_backup(self):
         stack_name = 'test_handle_delete_snapshot_no_backup'

@@ -34,6 +34,8 @@ class EngineClient(object):
         1.11 - Add support for template versions list
         1.12 - Add with_detail option for stack resources list
         1.13 - Add support for template functions list
+        1.14 - Add cancel_with_rollback option to stack_cancel_update
+        1.15 - Add preview_update_stack() call
     '''
 
     BASE_RPC_API_VERSION = '1.0'
@@ -263,6 +265,32 @@ class EngineClient(object):
                                              files=files,
                                              args=args))
 
+    def preview_update_stack(self, ctxt, stack_identity, template, params,
+                             files, args):
+        """
+        The preview_update_stack method returns the resources that would be
+        changed in an update of an existing stack based on the provided
+        template and parameters.
+
+        Requires RPC version 1.15 or above.
+
+        :param ctxt: RPC context.
+        :param stack_identity: Name of the stack you wish to update.
+        :param template: New template for the stack.
+        :param params: Stack Input Params/Environment
+        :param files: files referenced from the environment.
+        :param args: Request parameters/args passed from API
+        """
+        return self.call(ctxt,
+                         self.make_msg('preview_update_stack',
+                                       stack_identity=stack_identity,
+                                       template=template,
+                                       params=params,
+                                       files=files,
+                                       args=args,
+                                       ),
+                         version='1.15')
+
     def validate_template(self, ctxt, template, params=None):
         """
         The validate_template method uses the stack parser to check
@@ -463,9 +491,14 @@ class EngineClient(object):
         return self.call(ctxt, self.make_msg('stack_check',
                                              stack_identity=stack_identity))
 
-    def stack_cancel_update(self, ctxt, stack_identity):
-        return self.call(ctxt, self.make_msg('stack_cancel_update',
-                                             stack_identity=stack_identity))
+    def stack_cancel_update(self, ctxt, stack_identity,
+                            cancel_with_rollback=True):
+        return self.call(ctxt,
+                         self.make_msg(
+                             'stack_cancel_update',
+                             stack_identity=stack_identity,
+                             cancel_with_rollback=cancel_with_rollback),
+                         version='1.14')
 
     def resource_signal(self, ctxt, stack_identity, resource_name, details,
                         sync_call=False):

@@ -88,13 +88,6 @@ service_opts = [
                help=_('Number of heat-engine processes to fork and run.'))]
 
 engine_opts = [
-    cfg.StrOpt('instance_user',
-               default='',
-               help=_("The default user for new instances. This option "
-                      "is deprecated and will be removed in the Juno release. "
-                      "If it's empty, Heat will use the default user set up "
-                      "with your cloud image (for OS::Nova::Server) or "
-                      "'ec2-user' (for AWS::EC2::Instance).")),
     cfg.ListOpt('plugin_dirs',
                 default=['/usr/lib64/heat', '/usr/lib/heat',
                          '/usr/local/lib/heat', '/usr/local/lib64/heat'],
@@ -205,18 +198,20 @@ engine_opts = [
                 default=False,
                 help=_('When this feature is enabled, scheduler hints'
                        ' identifying the heat stack context of a server'
-                       ' resource are passed to the configured schedulers in'
-                       ' nova, for server creates done using heat resource'
-                       ' types OS::Nova::Server and AWS::EC2::Instance.'
-                       ' heat_root_stack_id will be set to the id of the root'
-                       ' stack of the resource, heat_stack_id will be set to'
-                       ' the id of the resource\'s parent stack,'
+                       ' or volume resource are passed to the configured'
+                       ' schedulers in nova and cinder, for creates done'
+                       ' using heat resource types OS::Cinder::Volume,'
+                       ' OS::Nova::Server, and AWS::EC2::Instance.'
+                       ' heat_root_stack_id will be set to the id of the'
+                       ' root stack of the resource, heat_stack_id will be'
+                       ' set to the id of the resource\'s parent stack,'
                        ' heat_stack_name will be set to the name of the'
-                       ' resource\'s parent stack, heat_path_in_stack will be'
-                       ' set to a list of tuples,'
-                       ' (stackresourcename, stackname) with list[0] being'
-                       ' (None, rootstackname), and heat_resource_name will'
-                       ' be set to the resource\'s name.')),
+                       ' resource\'s parent stack, heat_path_in_stack will'
+                       ' be set to a list of tuples, (stackresourcename,'
+                       ' stackname) with list[0] being (None, rootstackname),'
+                       ' heat_resource_name will be set to the resource\'s'
+                       ' name, and heat_resource_uuid will be set to the'
+                       ' resource\'s orchestration id.')),
     cfg.BoolOpt('encrypt_parameters_and_properties',
                 default=False,
                 help=_('Encrypt template parameters that were marked as'
@@ -294,6 +289,12 @@ heat_client_opts = [
                help=_('Optional heat url in format like'
                       ' http://0.0.0.0:8004/v1/%(tenant_id)s.'))]
 
+keystone_client_opts = [
+    cfg.StrOpt('auth_uri',
+               default='',
+               help=_('Unversioned keystone url in format like'
+                      ' http://0.0.0.0:5000.'))]
+
 client_http_log_debug_opts = [
     cfg.BoolOpt('http_log_debug',
                 default=False,
@@ -351,6 +352,7 @@ def list_opts():
         yield client_specific_group, clients_opts
 
     yield 'clients_heat', heat_client_opts
+    yield 'clients_keystone', keystone_client_opts
     yield 'clients_nova', client_http_log_debug_opts
     yield 'clients_cinder', client_http_log_debug_opts
 

@@ -13,28 +13,24 @@
 
 import copy
 
-from oslo_config import cfg
 from oslo_log import log as logging
 import six
 
 from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LI
+from heat.common.i18n import _LW
 from heat.engine import attributes
-from heat.engine.clients.os import cinder as cinder_cp
-from heat.engine.clients.os import nova as nova_cp
+from heat.engine.clients import progress
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
-from heat.engine import scheduler
-
-cfg.CONF.import_opt('instance_user', 'heat.common.config')
-cfg.CONF.import_opt('stack_scheduler_hints', 'heat.common.config')
+from heat.engine.resources import scheduler_hints as sh
 
 LOG = logging.getLogger(__name__)
 
 
-class Instance(resource.Resource):
+class Instance(resource.Resource, sh.SchedulerHintsMixin):
 
     PROPERTIES = (
         IMAGE_ID, INSTANCE_TYPE, KEY_NAME, AVAILABILITY_ZONE,
@@ -359,7 +355,7 @@ class Instance(resource.Resource):
         Read the server's IP address from a list of networks provided by Nova
         '''
         # Just record the first ipaddress
-        for n in networks:
+        for n in sorted(networks, reverse=True):
             if len(networks[n]) > 0:
                 self.ipaddress = networks[n][0]
                 break
@@ -381,7 +377,7 @@ class Instance(resource.Resource):
         availability_zone = self.properties[self.AVAILABILITY_ZONE]
         if availability_zone is None:
             try:
-                server = self.nova().servers.get(self.resource_id)
+                server = self.client().servers.get(self.resource_id)
                 availability_zone = getattr(server,
                                             'OS-EXT-AZ:availability_zone')
             except Exception as e:
@@ -531,14 +527,7 @@ class Instance(resource.Resource):
                     scheduler_hints[hint] = hint_value
         else:
             scheduler_hints = None
-        if cfg.CONF.stack_scheduler_hints:
-            if scheduler_hints is None:
-                scheduler_hints = {}
-            scheduler_hints['heat_root_stack_id'] = self.stack.root_stack_id()
-            scheduler_hints['heat_stack_id'] = self.stack.id
-            scheduler_hints['heat_stack_name'] = self.stack.name
-            scheduler_hints['heat_path_in_stack'] = self.stack.path_in_stack()
-            scheduler_hints['heat_resource_name'] = self.name
+        scheduler_hints = self._scheduler_hints(scheduler_hints)
 
         nics = self._build_nics(self.properties[self.NETWORK_INTERFACES],
                                 security_groups=security_groups,
@@ -549,23 +538,15 @@ class Instance(resource.Resource):
 
         server = None
 
-        # FIXME(shadower): the instance_user config option is deprecated. Once
-        # it's gone, we should always use ec2-user for compatibility with
-        # CloudFormation.
-        if cfg.CONF.instance_user:
-            instance_user = cfg.CONF.instance_user
-        else:
-            instance_user = 'ec2-user'
-
         try:
-            server = self.nova().servers.create(
+            server = self.client().servers.create(
                 name=self.physical_resource_name(),
                 image=image_id,
                 flavor=flavor_id,
                 key_name=self.properties[self.KEY_NAME],
                 security_groups=security_groups,
                 userdata=self.client_plugin().build_userdata(
-                    self.metadata_get(), userdata, instance_user),
+                    self.metadata_get(), userdata, 'ec2-user'),
                 meta=self._get_nova_metadata(self.properties),
                 scheduler_hints=scheduler_hints,
                 nics=nics,
@@ -577,11 +558,11 @@ class Instance(resource.Resource):
             if server is not None:
                 self.resource_id_set(server.id)
 
-        creator = nova_cp.ServerCreateProgress(server.id)
+        creator = progress.ServerCreateProgress(server.id)
         attachers = []
         for vol_id, device in self.volumes():
-            attachers.append(cinder_cp.VolumeAttachProgress(self.resource_id,
-                                                            vol_id, device))
+            attachers.append(progress.VolumeAttachProgress(self.resource_id,
+                                                           vol_id, device))
         return creator, tuple(attachers)
 
     def check_create_complete(self, cookie):
@@ -637,106 +618,150 @@ class Instance(resource.Resource):
                 old_network_ifaces.remove(iface)
 
     def handle_check(self):
-        server = self.nova().servers.get(self.resource_id)
+        server = self.client().servers.get(self.resource_id)
         if not self.client_plugin()._check_active(server, 'Instance'):
             raise exception.Error(_("Instance is not ACTIVE (was: %s)") %
                                   server.status.strip())
 
+    def _update_instance_type(self, prop_diff):
+        flavor = prop_diff[self.INSTANCE_TYPE]
+        flavor_id = self.client_plugin().get_flavor_id(flavor)
+        handler_args = {'args': (flavor_id,)}
+        checker_args = {'args': (flavor_id, flavor)}
+
+        prg_resize = progress.ServerUpdateProgress(self.resource_id,
+                                                   'resize',
+                                                   handler_extra=handler_args,
+                                                   checker_extra=checker_args)
+        prg_verify = progress.ServerUpdateProgress(self.resource_id,
+                                                   'verify_resize')
+        return prg_resize, prg_verify
+
+    def _update_network_interfaces(self, server, prop_diff):
+        updaters = []
+        new_network_ifaces = prop_diff.get(self.NETWORK_INTERFACES)
+        old_network_ifaces = self.properties.get(self.NETWORK_INTERFACES)
+
+        # if there is entrys in old_network_ifaces and new_network_ifaces,
+        # remove the same entrys from old and new ifaces
+        if old_network_ifaces and new_network_ifaces:
+            # there are four situations:
+            # 1.old includes new, such as: old = 2,3, new = 2
+            # 2.new includes old, such as: old = 2,3, new = 1,2,3
+            # 3.has overlaps, such as: old = 2,3, new = 1,2
+            # 4.different, such as: old = 2,3, new = 1,4
+            # detach unmatched ones in old, attach unmatched ones in new
+            self._remove_matched_ifaces(old_network_ifaces,
+                                        new_network_ifaces)
+            if old_network_ifaces:
+                old_nics = self._build_nics(old_network_ifaces)
+                for nic in old_nics:
+                    updaters.append(
+                        progress.ServerUpdateProgress(
+                            self.resource_id, 'interface_detach',
+                            complete=True,
+                            handler_extra={'args': (nic['port-id'],)})
+                    )
+            if new_network_ifaces:
+                new_nics = self._build_nics(new_network_ifaces)
+                for nic in new_nics:
+                    handler_kwargs = {'port_id': nic['port-id']}
+                    updaters.append(
+                        progress.ServerUpdateProgress(
+                            self.resource_id, 'interface_attach',
+                            complete=True,
+                            handler_extra={'kwargs': handler_kwargs})
+                    )
+        # if there is no change of 'NetworkInterfaces', do nothing,
+        # keep the behavior as creation
+        elif (old_network_ifaces and
+                (self.NETWORK_INTERFACES not in prop_diff)):
+            LOG.warn(_LW('There is no change of "%(net_interfaces)s" '
+                         'for instance %(server)s, do nothing '
+                         'when updating.'),
+                     {'net_interfaces': self.NETWORK_INTERFACES,
+                      'server': self.resource_id})
+        # if the interfaces not come from property 'NetworkInterfaces',
+        # the situation is somewhat complex, so to detach the old ifaces,
+        # and then attach the new ones.
+        else:
+            subnet_id = (prop_diff.get(self.SUBNET_ID) or
+                         self.properties.get(self.SUBNET_ID))
+            security_groups = self._get_security_groups()
+            if not server:
+                server = self.client().servers.get(self.resource_id)
+
+            interfaces = server.interface_list()
+            for iface in interfaces:
+                updaters.append(
+                    progress.ServerUpdateProgress(
+                        self.resource_id, 'interface_detach',
+                        complete=True,
+                        handler_extra={'args': (iface.port_id,)})
+                )
+            # first to delete the port which implicit-created by heat
+            self._port_data_delete()
+            nics = self._build_nics(new_network_ifaces,
+                                    security_groups=security_groups,
+                                    subnet_id=subnet_id)
+            # 'SubnetId' property is empty(or None) and
+            # 'NetworkInterfaces' property is empty(or None),
+            # _build_nics() will return nics = None,we should attach
+            # first free port, according to similar behavior during
+            # instance creation
+            if not nics:
+                updaters.append(
+                    progress.ServerUpdateProgress(
+                        self.resource_id, 'interface_attach', complete=True)
+                )
+            else:
+                for nic in nics:
+                    updaters.append(
+                        progress.ServerUpdateProgress(
+                            self.resource_id, 'interface_attach',
+                            complete=True,
+                            handler_extra={'kwargs':
+                                           {'port_id': nic['port-id']}})
+                    )
+
+        return updaters
+
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if 'Metadata' in tmpl_diff:
             self.metadata_set(tmpl_diff['Metadata'])
-        checkers = []
+        updaters = []
         server = None
         if self.TAGS in prop_diff:
-            server = self.nova().servers.get(self.resource_id)
+            server = self.client().servers.get(self.resource_id)
             self.client_plugin().meta_update(
                 server, self._get_nova_metadata(prop_diff))
 
         if self.INSTANCE_TYPE in prop_diff:
-            flavor = prop_diff[self.INSTANCE_TYPE]
-            flavor_id = self.client_plugin().get_flavor_id(flavor)
-            if not server:
-                server = self.nova().servers.get(self.resource_id)
-            checker = scheduler.TaskRunner(self.client_plugin().resize,
-                                           server, flavor, flavor_id)
-            checkers.append(checker)
-        if self.NETWORK_INTERFACES in prop_diff:
-            new_network_ifaces = prop_diff.get(self.NETWORK_INTERFACES)
-            old_network_ifaces = self.properties.get(self.NETWORK_INTERFACES)
-            subnet_id = (
-                prop_diff.get(self.SUBNET_ID) or
-                self.properties.get(self.SUBNET_ID))
-            security_groups = self._get_security_groups()
-            if not server:
-                server = self.nova().servers.get(self.resource_id)
-            # if there is entrys in old_network_ifaces and new_network_ifaces,
-            # remove the same entrys from old and new ifaces
-            if old_network_ifaces and new_network_ifaces:
-                # there are four situations:
-                # 1.old includes new, such as: old = 2,3, new = 2
-                # 2.new includes old, such as: old = 2,3, new = 1,2,3
-                # 3.has overlaps, such as: old = 2,3, new = 1,2
-                # 4.different, such as: old = 2,3, new = 1,4
-                # detach unmatched ones in old, attach unmatched ones in new
-                self._remove_matched_ifaces(old_network_ifaces,
-                                            new_network_ifaces)
-                if old_network_ifaces:
-                    old_nics = self._build_nics(old_network_ifaces)
-                    for nic in old_nics:
-                        checker = scheduler.TaskRunner(
-                            server.interface_detach,
-                            nic['port-id'])
-                        checkers.append(checker)
-                if new_network_ifaces:
-                    new_nics = self._build_nics(new_network_ifaces)
-                    for nic in new_nics:
-                        checker = scheduler.TaskRunner(
-                            server.interface_attach,
-                            nic['port-id'],
-                            None, None)
-                        checkers.append(checker)
-            # if the interfaces not come from property 'NetworkInterfaces',
-            # the situation is somewhat complex, so to detach the old ifaces,
-            # and then attach the new ones.
-            else:
-                interfaces = server.interface_list()
-                for iface in interfaces:
-                    checker = scheduler.TaskRunner(server.interface_detach,
-                                                   iface.port_id)
-                    checkers.append(checker)
-                # first to delete the port which implicit-created by heat
-                self._port_data_delete()
-                nics = self._build_nics(new_network_ifaces,
-                                        security_groups=security_groups,
-                                        subnet_id=subnet_id)
-                # 'SubnetId' property is empty(or None) and
-                # 'NetworkInterfaces' property is empty(or None),
-                # _build_nics() will return nics = None,we should attach
-                # first free port, according to similar behavior during
-                # instance creation
-                if not nics:
-                    checker = scheduler.TaskRunner(server.interface_attach,
-                                                   None, None, None)
-                    checkers.append(checker)
-                else:
-                    for nic in nics:
-                        checker = scheduler.TaskRunner(
-                            server.interface_attach,
-                            nic['port-id'], None, None)
-                        checkers.append(checker)
+            updaters.extend(self._update_instance_type(prop_diff))
 
-        if checkers:
-            checkers[0].start()
-        return checkers
+        if (self.NETWORK_INTERFACES in prop_diff or
+                self.SUBNET_ID in prop_diff):
+            updaters.extend(self._update_network_interfaces(server, prop_diff))
 
-    def check_update_complete(self, checkers):
-        '''Push all checkers to completion in list order.'''
-        for checker in checkers:
-            if not checker.started():
-                checker.start()
-            if not checker.step():
+        # NOTE(pas-ha) optimization is possible (starting first task
+        # right away), but we'd rather not, as this method already might
+        # have called several APIs
+        return updaters
+
+    def check_update_complete(self, updaters):
+        '''Push all updaters to completion in list order.'''
+        for prg in updaters:
+            if not prg.called:
+                handler = getattr(self.client_plugin(), prg.handler)
+                prg.called = handler(*prg.handler_args,
+                                     **prg.handler_kwargs)
                 return False
-        return True
+            if not prg.complete:
+                check_complete = getattr(self.client_plugin(), prg.checker)
+                prg.complete = check_complete(*prg.checker_args,
+                                              **prg.checker_kwargs)
+                break
+        return all(prg.complete for prg in updaters)
 
     def metadata_update(self, new_metadata=None):
         '''
@@ -755,7 +780,8 @@ class Instance(resource.Resource):
 
         # check validity of security groups vs. network interfaces
         security_groups = self._get_security_groups()
-        if security_groups and self.properties.get(self.NETWORK_INTERFACES):
+        network_interfaces = self.properties.get(self.NETWORK_INTERFACES)
+        if security_groups and network_interfaces:
             raise exception.ResourcePropertyConflict(
                 '/'.join([self.SECURITY_GROUPS, self.SECURITY_GROUP_IDS]),
                 self.NETWORK_INTERFACES)
@@ -776,6 +802,17 @@ class Instance(resource.Resource):
                     msg = _("Ebs is missing, this is required "
                             "when specifying BlockDeviceMappings.")
                     raise exception.StackValidationFailed(message=msg)
+
+        subnet_id = self.properties.get(self.SUBNET_ID)
+        if network_interfaces and subnet_id:
+            # consider the old templates, we only to log to warn user
+            # NetworkInterfaces has higher priority than SubnetId
+            LOG.warn(_LW('"%(subnet)s" will be ignored if specified '
+                         '"%(net_interfaces)s". So if you specified the '
+                         '"%(net_interfaces)s" property, '
+                         'do not specify "%(subnet)s" property.'),
+                     {'subnet': self.SUBNET_ID,
+                      'net_interfaces': self.NETWORK_INTERFACES})
 
     def handle_delete(self):
         # make sure to delete the port which implicit-created by heat
@@ -806,7 +843,7 @@ class Instance(resource.Resource):
                                   self.name)
 
         try:
-            server = self.nova().servers.get(self.resource_id)
+            server = self.client().servers.get(self.resource_id)
         except Exception as e:
             if self.client_plugin().is_not_found(e):
                 raise exception.NotFound(_('Failed to find instance %s') %
@@ -848,7 +885,7 @@ class Instance(resource.Resource):
                                   self.name)
 
         try:
-            server = self.nova().servers.get(self.resource_id)
+            server = self.client().servers.get(self.resource_id)
         except Exception as e:
             if self.client_plugin().is_not_found(e):
                 raise exception.NotFound(_('Failed to find instance %s') %

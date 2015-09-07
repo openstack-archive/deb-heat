@@ -42,6 +42,7 @@ resources:
         node_processes:
           - namenode
           - jobtracker
+        is_proxy_gateway: True
 """
 
 cluster_template = """
@@ -88,12 +89,14 @@ class FakeNodeGroupTemplate(object):
     def __init__(self):
         self.id = "some_ng_id"
         self.name = "test-cluster-template"
+        self.to_dict = lambda: {"ng-template": "info"}
 
 
 class FakeClusterTemplate(object):
     def __init__(self):
         self.id = "some_ct_id"
         self.name = "node-group-template"
+        self.to_dict = lambda: {"cluster-template": "info"}
 
 
 class SaharaNodeGroupTemplateTest(common.HeatTestCase):
@@ -150,6 +153,7 @@ class SaharaNodeGroupTemplateTest(common.HeatTestCase):
                            'floating_ip_pool': 'some_pool_id',
                            'node_configs': None,
                            'image_id': None,
+                           'is_proxy_gateway': True,
                            }
         self.ngt_mgr.create.assert_called_once_with(*expected_args,
                                                     **expected_kwargs)
@@ -216,7 +220,7 @@ class SaharaNodeGroupTemplateTest(common.HeatTestCase):
         ex = self.assertRaises(exception.StackValidationFailed, ngt.validate)
         self.assertEqual(u"Property error: "
                          u"resources.node-group.properties.flavor: "
-                         u"Error validating value u'm1.large'",
+                         u"Error validating value 'm1.large'",
                          six.text_type(ex))
 
     def test_template_invalid_name(self):
@@ -229,6 +233,12 @@ class SaharaNodeGroupTemplateTest(common.HeatTestCase):
         self.assertEqual(self.fake_ngt.id, ngt.resource_id)
         name = self.ngt_mgr.create.call_args[0][0]
         self.assertIn('-nodegroup-', name)
+
+    def test_ngt_show_resource(self):
+        ngt = self._create_ngt(self.t)
+        self.ngt_mgr.get.return_value = self.fake_ngt
+        self.assertEqual({"ng-template": "info"}, ngt.FnGetAtt('show'))
+        self.ngt_mgr.get.assert_called_once_with('some_ng_id')
 
 
 class SaharaClusterTemplateTest(common.HeatTestCase):
@@ -323,3 +333,9 @@ class SaharaClusterTemplateTest(common.HeatTestCase):
         self.assertEqual(self.fake_ct.id, ct.resource_id)
         name = self.ct_mgr.create.call_args[0][0]
         self.assertIn('-clustertemplate-', name)
+
+    def test_ct_show_resource(self):
+        ct = self._create_ct(self.t)
+        self.ct_mgr.get.return_value = self.fake_ct
+        self.assertEqual({"cluster-template": "info"}, ct.FnGetAtt('show'))
+        self.ct_mgr.get.assert_called_once_with('some_ct_id')

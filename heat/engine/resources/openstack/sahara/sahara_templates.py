@@ -43,6 +43,7 @@ class SaharaNodeGroupTemplate(resource.Resource):
         SECURITY_GROUPS, AUTO_SECURITY_GROUP,
         AVAILABILITY_ZONE, VOLUMES_AVAILABILITY_ZONE,
         NODE_PROCESSES, FLOATING_IP_POOL, NODE_CONFIGS, IMAGE_ID,
+        IS_PROXY_GATEWAY
 
     ) = (
         'name', 'plugin_name', 'hadoop_version', 'flavor', 'description',
@@ -50,6 +51,7 @@ class SaharaNodeGroupTemplate(resource.Resource):
         'security_groups', 'auto_security_group',
         'availability_zone', 'volumes_availability_zone',
         'node_processes', 'floating_ip_pool', 'node_configs', 'image_id',
+        'is_proxy_gateway'
     )
 
     properties_schema = {
@@ -155,11 +157,19 @@ class SaharaNodeGroupTemplate(resource.Resource):
                 constraints.CustomConstraint('sahara.image'),
             ],
         ),
+        IS_PROXY_GATEWAY: properties.Schema(
+            properties.Schema.BOOLEAN,
+            _("Provide access to nodes using other nodes of the cluster "
+              "as proxy gateways."),
+            support_status=support.SupportStatus(version='5.0.0')
+        )
     }
 
     default_client_name = 'sahara'
 
     physical_resource_name_limit = 50
+
+    entity = 'node_group_templates'
 
     def _ngt_name(self):
         name = self.properties[self.NAME]
@@ -188,6 +198,7 @@ class SaharaNodeGroupTemplate(resource.Resource):
                 'neutron').find_neutron_resource(
                     self.properties, self.FLOATING_IP_POOL, 'network')
         node_configs = self.properties[self.NODE_CONFIGS]
+        is_proxy_gateway = self.properties[self.IS_PROXY_GATEWAY]
 
         node_group_template = self.client().node_group_templates.create(
             self._ngt_name(),
@@ -203,23 +214,13 @@ class SaharaNodeGroupTemplate(resource.Resource):
             auto_security_group=auto_security_group,
             availability_zone=availability_zone,
             volumes_availability_zone=vol_availability_zone,
-            image_id=image_id
+            image_id=image_id,
+            is_proxy_gateway=is_proxy_gateway
         )
         LOG.info(_LI("Node Group Template '%s' has been created"),
                  node_group_template.name)
         self.resource_id_set(node_group_template.id)
         return self.resource_id
-
-    def handle_delete(self):
-        if not self.resource_id:
-            return
-        try:
-            self.client().node_group_templates.delete(
-                self.resource_id)
-        except Exception as ex:
-            self.client_plugin().ignore_not_found(ex)
-        LOG.info(_LI("Node Group Template '%s' has been deleted."),
-                 self._ngt_name())
 
     def validate(self):
         res = super(SaharaNodeGroupTemplate, self).validate()
@@ -350,6 +351,8 @@ class SaharaClusterTemplate(resource.Resource):
 
     physical_resource_name_limit = 50
 
+    entity = 'cluster_templates'
+
     def _cluster_template_name(self):
         name = self.properties[self.NAME]
         if name:
@@ -386,17 +389,6 @@ class SaharaClusterTemplate(resource.Resource):
                  cluster_template.name)
         self.resource_id_set(cluster_template.id)
         return self.resource_id
-
-    def handle_delete(self):
-        if not self.resource_id:
-            return
-        try:
-            self.client().cluster_templates.delete(
-                self.resource_id)
-        except Exception as ex:
-            self.client_plugin().ignore_not_found(ex)
-        LOG.info(_LI("Cluster Template '%s' has been deleted."),
-                 self._cluster_template_name())
 
     def validate(self):
         res = super(SaharaClusterTemplate, self).validate()

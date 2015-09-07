@@ -19,8 +19,10 @@ from heat.common import template_format
 from heat.engine import environment
 from heat.engine import resource
 from heat.engine import scheduler
+from heat.engine import service
 from heat.engine import stack
 from heat.engine import template
+from heat.rpc import api as rpc_api
 from heat.tests import common
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
@@ -670,6 +672,54 @@ class StackUpdateTest(common.HeatTestCase):
         mock_id.assert_has_calls(
             [mock.call(None), mock.call('c_res'), mock.call('b_res'),
              mock.call('a_res')])
+
+    def _update_force_cancel(self, state, disable_rollback=False,
+                             cancel_message=rpc_api.THREAD_CANCEL):
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Resources': {'AResource': {'Type': 'GenericResourceType'}}}
+
+        self.stack = stack.Stack(self.ctx, 'update_test_stack',
+                                 template.Template(tmpl))
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((stack.Stack.CREATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+
+        tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
+                 'Resources': {
+                     'AResource': {'Type': 'GenericResourceType'},
+                     'BResource': {'Type': 'GenericResourceType'}}}
+        updated_stack = stack.Stack(self.ctx, 'updated_stack',
+                                    template.Template(tmpl2),
+                                    disable_rollback=disable_rollback)
+
+        evt_mock = mock.MagicMock()
+        evt_mock.ready.return_value = True
+        evt_mock.wait.return_value = cancel_message
+
+        self.stack.update(updated_stack, event=evt_mock)
+
+        self.assertEqual(state, self.stack.state)
+        evt_mock.ready.assert_called_once_with()
+        evt_mock.wait.assert_called_once_with()
+
+    def test_update_force_cancel_no_rollback(self):
+        self._update_force_cancel(
+            state=(stack.Stack.UPDATE, stack.Stack.FAILED),
+            disable_rollback=True,
+            cancel_message=rpc_api.THREAD_CANCEL)
+
+    def test_update_force_cancel_rollback(self):
+        self._update_force_cancel(
+            state=(stack.Stack.ROLLBACK, stack.Stack.COMPLETE),
+            disable_rollback=False,
+            cancel_message=rpc_api.THREAD_CANCEL)
+
+    def test_update_force_cancel_force_rollback(self):
+        self._update_force_cancel(
+            state=(stack.Stack.ROLLBACK, stack.Stack.COMPLETE),
+            disable_rollback=False,
+            cancel_message=rpc_api.THREAD_CANCEL_WITH_ROLLBACK)
 
     def test_update_add_signal(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
@@ -1367,6 +1417,107 @@ class StackUpdateTest(common.HeatTestCase):
                          self.stack.state)
         self.assertEqual('smelly', self.stack['AResource'].properties['Foo'])
 
+        self.stack = stack.Stack.load(self.ctx, self.stack.id)
+        updated_stack2 = stack.Stack(self.ctx, 'updated_stack',
+                                     template.Template(tmpl2, env=env2),
+                                     disable_rollback=True)
+
+        self.stack.update(updated_stack2)
+        self.assertEqual((stack.Stack.UPDATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+
+        self.stack = stack.Stack.load(self.ctx, self.stack.id)
+        self.assertEqual('smelly', self.stack['AResource'].properties['Foo'])
+        self.assertEqual('AResource2',
+                         self.stack['BResource'].properties['Foo'])
+
+        self.assertEqual(2, mock_delete.call_count)
+        mock_delete_A.assert_called_once_with()
+        self.assertEqual(2, mock_create.call_count)
+
+    def test_update_failure_recovery_new_param_stack_list(self):
+        '''
+        assertion:
+        check that stack-list is not broken if update fails in between.
+        Also ensure that next update passes
+        '''
+
+        class ResourceTypeA(generic_rsrc.ResourceWithProps):
+            count = 0
+
+            def handle_create(self):
+                ResourceTypeA.count += 1
+                self.resource_id_set('%s%d' % (self.name, self.count))
+
+            def handle_delete(self):
+                return super(ResourceTypeA, self).handle_delete()
+
+        resource._register_class('ResourceTypeA', ResourceTypeA)
+
+        tmpl = {
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Parameters': {
+                'abc-param': {'Type': 'String'}
+            },
+            'Resources': {
+                'AResource': {'Type': 'ResourceTypeA',
+                              'Properties': {'Foo': {'Ref': 'abc-param'}}},
+                'BResource': {'Type': 'ResourceWithPropsType',
+                              'Properties': {'Foo': {'Ref': 'AResource'}}}
+            }
+        }
+        env1 = environment.Environment({'abc-param': 'abc'})
+        tmpl2 = {
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Parameters': {
+                'smelly-param': {'Type': 'String'}
+            },
+            'Resources': {
+                'AResource': {'Type': 'ResourceTypeA',
+                              'Properties': {'Foo': {'Ref': 'smelly-param'}}},
+                'BResource': {'Type': 'ResourceWithPropsType',
+                              'Properties': {'Foo': {'Ref': 'AResource'}}}
+            }
+        }
+        env2 = environment.Environment({'smelly-param': 'smelly'})
+
+        self.stack = stack.Stack(self.ctx, 'update_test_stack',
+                                 template.Template(tmpl, env=env1),
+                                 disable_rollback=True)
+
+        self.stack.store()
+        self.stack.create()
+
+        self.assertEqual((stack.Stack.CREATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+        self.assertEqual('abc', self.stack['AResource'].properties['Foo'])
+        self.assertEqual('AResource1',
+                         self.stack['BResource'].properties['Foo'])
+
+        mock_create = self.patchobject(generic_rsrc.ResourceWithProps,
+                                       'handle_create',
+                                       side_effect=[Exception, None])
+        mock_delete = self.patchobject(generic_rsrc.ResourceWithProps,
+                                       'handle_delete')
+        mock_delete_A = self.patchobject(ResourceTypeA, 'handle_delete')
+
+        updated_stack = stack.Stack(self.ctx, 'updated_stack',
+                                    template.Template(tmpl2, env=env2),
+                                    disable_rollback=True)
+        self.stack.update(updated_stack)
+
+        # Ensure UPDATE FAILED
+        mock_create.assert_called_once_with()
+        self.assertEqual((stack.Stack.UPDATE, stack.Stack.FAILED),
+                         self.stack.state)
+        self.assertEqual('smelly', self.stack['AResource'].properties['Foo'])
+
+        # check if heat stack-list works, wherein it tries to fetch template
+        # parameters value from env
+        self.eng = service.EngineService('a-host', 'a-topic')
+        self.eng.list_stacks(self.ctx)
+
+        # Check if next update works fine
         self.stack = stack.Stack.load(self.ctx, self.stack.id)
         updated_stack2 = stack.Stack(self.ctx, 'updated_stack',
                                      template.Template(tmpl2, env=env2),

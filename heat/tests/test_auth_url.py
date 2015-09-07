@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import mock
+import six
 import webob
 from webob import exc
 
@@ -28,7 +29,7 @@ class FakeApp(object):
     def __call__(self, environ, start_response):
         """Assert that headers are correctly set up when finally called."""
         resp = webob.Response()
-        resp.body = 'SUCCESS'
+        resp.body = six.b('SUCCESS')
         return resp(environ, start_response)
 
 
@@ -41,8 +42,26 @@ class AuthUrlFilterTest(common.HeatTestCase):
         self.middleware = auth_url.AuthUrlFilter(self.app, self.config)
 
     @mock.patch.object(auth_url.cfg, 'CONF')
+    def test_adds_default_auth_url_from_clients_keystone(self, mock_cfg):
+        self.config = {}
+        mock_cfg.clients_keystone.auth_uri = 'foobar'
+        mock_cfg.keystone_authtoken.auth_uri = 'this-should-be-ignored'
+        mock_cfg.auth_password.multi_cloud = False
+        with mock.patch('keystoneclient.discover.Discover') as discover:
+            class MockDiscover(object):
+                def url_for(self, endpoint):
+                    return 'foobar/v3'
+            discover.return_value = MockDiscover()
+            self.middleware = auth_url.AuthUrlFilter(self.app, self.config)
+            req = webob.Request.blank('/tenant_id/')
+            self.middleware(req)
+            self.assertIn('X-Auth-Url', req.headers)
+            self.assertEqual('foobar/v3', req.headers['X-Auth-Url'])
+
+    @mock.patch.object(auth_url.cfg, 'CONF')
     def test_adds_default_auth_url_from_keystone_authtoken(self, mock_cfg):
         self.config = {}
+        mock_cfg.clients_keystone.auth_uri = ''
         mock_cfg.keystone_authtoken.auth_uri = 'foobar'
         mock_cfg.auth_password.multi_cloud = False
         self.middleware = auth_url.AuthUrlFilter(self.app, self.config)

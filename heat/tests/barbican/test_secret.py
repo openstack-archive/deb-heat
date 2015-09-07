@@ -30,6 +30,7 @@ resources:
     type: OS::Barbican::Secret
     properties:
       name: foobar-secret
+      secret_type: opaque
 '''
 
 
@@ -74,15 +75,18 @@ class TestSecret(common.HeatTestCase):
         self.assertEqual(expected_state, self.res.state)
         args = self.barbican.secrets.create.call_args[1]
         self.assertEqual('foobar-secret', args['name'])
+        self.assertEqual('opaque', args['secret_type'])
 
     def test_attributes(self):
         mock_secret = mock.Mock()
         mock_secret.status = 'test-status'
         self.barbican.secrets.get.return_value = mock_secret
         mock_secret.payload = 'foo'
+        mock_secret._get_formatted_entity.return_value = (('attr', ), ('v',))
 
         self.assertEqual('test-status', self.res.FnGetAtt('status'))
         self.assertEqual('foo', self.res.FnGetAtt('decrypted_payload'))
+        self.assertEqual({'attr': 'v'}, self.res.FnGetAtt('show'))
 
     def test_attributes_handles_exceptions(self):
         self.barbican.barbican_client.HTTPClientError = Exception

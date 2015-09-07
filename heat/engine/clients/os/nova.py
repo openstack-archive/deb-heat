@@ -35,7 +35,6 @@ from heat.common.i18n import _LW
 from heat.engine.clients import client_plugin
 from heat.engine import constraints
 from heat.engine import resource
-from heat.engine import scheduler
 
 LOG = logging.getLogger(__name__)
 
@@ -64,21 +63,12 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
         endpoint_type = self._get_client_option('nova', 'endpoint_type')
         management_url = self.url_for(service_type=self.COMPUTE,
                                       endpoint_type=endpoint_type)
-
-        if hasattr(nc, 'discover_extensions'):
-            extensions = nc.discover_extensions(NOVACLIENT_VERSION)
-        else:
-            # TODO(lyj): The else condition is for backward compatibility,
-            #            once novaclient bump to a newer version with
-            #            discover_extensions exists, this should be safely
-            #            removed.
-            from novaclient import shell as novashell
-            computeshell = novashell.OpenStackComputeShell()
-            extensions = computeshell._discover_extensions(NOVACLIENT_VERSION)
+        extensions = nc.discover_extensions(NOVACLIENT_VERSION)
 
         args = {
-            'project_id': self.context.tenant,
+            'project_id': self.context.tenant_id,
             'auth_url': self.context.auth_url,
+            'auth_token': self.auth_token,
             'service_type': self.COMPUTE,
             'username': None,
             'api_key': None,
@@ -91,8 +81,8 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
         }
 
         client = nc.Client(NOVACLIENT_VERSION, **args)
-        client.client.auth_token = self.auth_token
-        client.client.management_url = management_url
+
+        client.client.set_management_url(management_url)
 
         return client
 
@@ -297,13 +287,16 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
         def make_subpart(content, filename, subtype=None):
             if subtype is None:
                 subtype = os.path.splitext(filename)[0]
+            if content is None:
+                content = ''
             msg = text.MIMEText(content, _subtype=subtype)
             msg.add_header('Content-Disposition', 'attachment',
                            filename=filename)
             return msg
 
         def read_cloudinit_file(fn):
-            return pkgutil.get_data('heat', 'cloudinit/%s' % fn)
+            return pkgutil.get_data(
+                'heat', 'cloudinit/%s' % fn).decode('utf-8')
 
         if instance_user:
             config_custom_user = 'user: %s' % instance_user
@@ -417,55 +410,88 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
                                            status_reason=errmsg)
         return False
 
-    @scheduler.wrappertask
-    def resize(self, server, flavor, flavor_id):
-        """Resize the server and then call check_resize task to verify."""
-        server.resize(flavor_id)
-        yield self.check_resize(server, flavor, flavor_id)
-
     def rename(self, server, name):
         """Update the name for a server."""
         server.update(name)
 
-    def check_resize(self, server, flavor, flavor_id):
+    def resize(self, server_id, flavor_id):
+        """Resize the server."""
+        server = self.fetch_server(server_id)
+        if server:
+            server.resize(flavor_id)
+            return True
+        else:
+            return False
+
+    def check_resize(self, server_id, flavor_id, flavor):
         """
         Verify that a resizing server is properly resized.
         If that's the case, confirm the resize, if not raise an error.
         """
-        self.refresh_server(server)
+        server = self.fetch_server(server_id)
         # resize operation is asynchronous so the server resize may not start
         # when checking server status (the server may stay ACTIVE instead
         # of RESIZE).
-        while server.status in ('RESIZE', 'ACTIVE'):
-            yield
-            self.refresh_server(server)
+        if not server or server.status in ('RESIZE', 'ACTIVE'):
+            return False
         if server.status == 'VERIFY_RESIZE':
-            server.confirm_resize()
+            return True
         else:
             raise exception.Error(
                 _("Resizing to '%(flavor)s' failed, status '%(status)s'") %
                 dict(flavor=flavor, status=server.status))
 
-    @scheduler.wrappertask
-    def rebuild(self, server, image_id, password=None,
+    def verify_resize(self, server_id):
+        server = self.fetch_server(server_id)
+        if not server:
+            return False
+        status = self.get_status(server)
+        if status == 'VERIFY_RESIZE':
+            server.confirm_resize()
+            return True
+        else:
+            msg = _("Could not confirm resize of server %s") % server_id
+            raise resource.ResourceUnknownStatus(result=msg,
+                                                 resource_status=status)
+
+    def check_verify_resize(self, server_id):
+        server = self.fetch_server(server_id)
+        if not server:
+            return False
+        status = self.get_status(server)
+        if status == 'ACTIVE':
+            return True
+        if status == 'VERIFY_RESIZE':
+            return False
+        else:
+            msg = _("Confirm resize for server %s failed") % server_id
+            raise resource.ResourceUnknownStatus(result=msg,
+                                                 resource_status=status)
+
+    def rebuild(self, server_id, image_id, password=None,
                 preserve_ephemeral=False):
         """Rebuild the server and call check_rebuild to verify."""
-        server.rebuild(image_id, password=password,
-                       preserve_ephemeral=preserve_ephemeral)
-        yield self.check_rebuild(server.id, image_id)
+        server = self.fetch_server(server_id)
+        if server:
+            server.rebuild(image_id, password=password,
+                           preserve_ephemeral=preserve_ephemeral)
+            return True
+        else:
+            return False
 
-    def check_rebuild(self, server_id, image_id):
+    def check_rebuild(self, server_id):
         """
         Verify that a rebuilding server is rebuilt.
         Raise error if it ends up in an ERROR state.
         """
         server = self.fetch_server(server_id)
-        while (server is None or server.status == 'REBUILD'):
-            yield
-            server = self.fetch_server(server_id)
+        if server is None or server.status == 'REBUILD':
+            return False
         if server.status == 'ERROR':
             raise exception.Error(
                 _("Rebuilding server failed, status '%s'") % server.status)
+        else:
+            return True
 
     def meta_serialize(self, metadata):
         """
@@ -485,8 +511,8 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
         """Delete/Add the metadata in nova as needed."""
         metadata = self.meta_serialize(metadata)
         current_md = server.metadata
-        to_del = [key for key in six.iterkeys(current_md)
-                  if key not in metadata]
+        to_del = sorted([key for key in six.iterkeys(current_md)
+                         if key not in metadata])
         client = self.client()
         if len(to_del) > 0:
             client.servers.delete_meta(server, to_del)
@@ -503,7 +529,7 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
             LOG.warn(_LW('Instance (%(server)s) not found: %(ex)s'),
                      {'server': server, 'ex': ex})
         else:
-            for n in server.networks:
+            for n in sorted(server.networks, reverse=True):
                 if len(server.networks[n]) > 0:
                     return server.networks[n][0]
 
@@ -622,6 +648,22 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
                 'att': attach_id, 'srv': server_id})
             return False
 
+    def interface_detach(self, server_id, port_id):
+        server = self.fetch_server(server_id)
+        if server:
+            server.interface_detach(port_id)
+            return True
+        else:
+            return False
+
+    def interface_attach(self, server_id, port_id=None, net_id=None, fip=None):
+        server = self.fetch_server(server_id)
+        if server:
+            server.interface_attach(port_id, net_id, fip)
+            return True
+        else:
+            return False
+
 
 class ServerConstraint(constraints.BaseCustomConstraint):
 
@@ -658,20 +700,3 @@ class NetworkConstraint(constraints.BaseCustomConstraint):
 
     def validate_with_client(self, client, network):
         client.client_plugin('nova').get_nova_network_id(network)
-
-
-# NOTE(pas-ha): these Server*Progress classes are simple key-value storages
-# meant to be passed between handle_* and check_*_complete,
-# being mutated during subsequent check_*_complete calls.
-class ServerCreateProgress(object):
-    def __init__(self, server_id, complete=False):
-        self.complete = complete
-        self.server_id = server_id
-
-
-class ServerDeleteProgress(object):
-
-    def __init__(self, server_id, image_id=None, image_complete=True):
-        self.server_id = server_id
-        self.image_id = image_id
-        self.image_complete = image_complete

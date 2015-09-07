@@ -129,14 +129,15 @@ class Resource(
             resource_id2)
 
     @classmethod
-    def get_all_by_stack(cls, context, stack_id):
-        resources_db = db_api.resource_get_all_by_stack(context, stack_id)
+    def get_all_by_stack(cls, context, stack_id, key_id=False):
+        resources_db = db_api.resource_get_all_by_stack(context,
+                                                        stack_id, key_id)
         resources = [
             (
-                resource_name,
+                resource_key,
                 cls._from_db_object(cls(context), context, resource_db)
             )
-            for resource_name, resource_db in six.iteritems(resources_db)
+            for resource_key, resource_db in six.iteritems(resources_db)
         ]
         return dict(resources)
 
@@ -158,7 +159,7 @@ class Resource(
     def update_and_save(self, values):
         resource_db = db_api.resource_get(self._context, self.id)
         resource_db.update_and_save(values)
-        return self._refresh()
+        return self.refresh()
 
     def select_and_update(self, values, expected_engine_id=None,
                           atomic_key=0):
@@ -166,16 +167,13 @@ class Resource(
                                       atomic_key=atomic_key,
                                       expected_engine_id=expected_engine_id)
 
-    def _refresh(self):
-        return self.__class__._from_db_object(
-            self,
-            self._context,
-            self.__class__.get_obj(self._context, self.id))
-
     def refresh(self, attrs=None):
         resource_db = db_api.resource_get(self._context, self.id)
         resource_db.refresh(attrs=attrs)
-        return self._refresh()
+        return self.__class__._from_db_object(
+            self,
+            self._context,
+            resource_db)
 
     @staticmethod
     def encrypt_properties_data(data):

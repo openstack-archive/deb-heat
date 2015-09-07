@@ -122,11 +122,15 @@ class Resource(object):
     # Resource implementations set this to update policies
     update_policy_schema = {}
 
+    # Default entity of resource, which is used for during resolving
+    # show attribute
+    entity = None
+
     # Description dictionary, that describes the common attributes for all
     # resources
     base_attributes_schema = {
         SHOW: attributes.Schema(
-            _("Dictionary with resource attributes."),
+            _("Detailed information about resource."),
             type=attributes.Schema.MAP
         )
     }
@@ -146,6 +150,10 @@ class Resource(object):
 
     # no signal actions
     no_signal_actions = (SUSPEND, DELETE)
+
+    # Whether all other resources need a metadata_update() after
+    # a signal to this resource
+    signal_needs_metadata_updates = True
 
     def __new__(cls, name, definition, stack):
         '''Create a new Resource of the appropriate class for its type.'''
@@ -172,11 +180,23 @@ class Resource(object):
                 service_name=ResourceClass.default_client_name,
                 resource_type=definition.resource_type
             )
-            LOG.error(six.text_type(ex))
+            LOG.info(six.text_type(ex))
 
             raise ex
 
         return super(Resource, cls).__new__(ResourceClass)
+
+    def _init_attributes(self):
+        """The method that defines attribute initialization for a resource.
+
+        Some resource requires different initialization of resource attributes.
+        So they must override this method and return the initialized
+        attributes to the resource.
+        :return: resource attributes
+        """
+        return attributes.Attributes(self.name,
+                                     self.attributes_schema,
+                                     self._resolve_all_attributes)
 
     def __init__(self, name, definition, stack):
 
@@ -192,16 +212,16 @@ class Resource(object):
         self.t = definition
         self.reparse()
         self.attributes_schema.update(self.base_attributes_schema)
-        self.attributes = attributes.Attributes(self.name,
-                                                self.attributes_schema,
-                                                self._resolve_attribute)
+        self.attributes = self._init_attributes()
 
         self.abandon_in_progress = False
 
         self.resource_id = None
-        # if the stack is being deleted, assume we've already been deleted
-        if stack.action == stack.DELETE:
-            self.action = self.DELETE
+        # if the stack is being deleted, assume we've already been deleted.
+        # or if the resource has not been created yet, and the stack was
+        # rollback, we set the resource to rollback
+        if stack.action == stack.DELETE or stack.action == stack.ROLLBACK:
+            self.action = stack.action
         else:
             self.action = self.INIT
         self.status = self.COMPLETE
@@ -211,8 +231,8 @@ class Resource(object):
         self._data = {}
         self._rsrc_metadata = None
         self._stored_properties_data = None
-        self.created_time = None
-        self.updated_time = None
+        self.created_time = stack.created_time
+        self.updated_time = stack.updated_time
         self._rpc_client = None
         self.needed_by = []
         self.requires = []
@@ -220,7 +240,7 @@ class Resource(object):
         self.replaced_by = None
         self.current_template_id = None
 
-        if not stack.has_cache_data():
+        if not stack.has_cache_data(name):
             resource = stack.db_resource_get(name)
             if resource:
                 self._load_data(resource)
@@ -273,14 +293,13 @@ class Resource(object):
         def special_stack(tmpl, swap_template):
             # TODO(sirushtim): Load stack from cache
             stk = stack_mod.Stack.load(context, db_res.stack_id)
-            stk.adopt_stack_data = data.get('adopt_stack_data')
-
             # NOTE(sirushtim): Because on delete/cleanup operations, we simply
             # update with another template, the stack object won't have the
             # template of the previous stack-run.
             if swap_template:
                 prev_tmpl = stk.t
                 stk.t = tmpl
+                stk.resources
             yield stk
             if swap_template:
                 stk.t = prev_tmpl
@@ -359,10 +378,12 @@ class Resource(object):
         self._rsrc_metadata = metadata
 
     @classmethod
-    def set_needed_by(cls, db_rsrc, needed_by):
+    def set_needed_by(cls, db_rsrc, needed_by, expected_engine_id=None):
         if db_rsrc:
-            db_rsrc.update_and_save(
-                {'needed_by': needed_by}
+            db_rsrc.select_and_update(
+                {'needed_by': needed_by},
+                atomic_key=db_rsrc.atomic_key,
+                expected_engine_id=expected_engine_id
             )
 
     @classmethod
@@ -387,7 +408,11 @@ class Resource(object):
                 self.clear_hook(hook)
                 self._add_event(
                     self.action, self.status,
-                    "Failure occured while waiting.")
+                    "Failure occurred while waiting.")
+
+    def has_nested(self):
+        # common resources have not nested, StackResource overrides it
+        return False
 
     def has_hook(self, hook):
         # Clear the cache to make sure the data is up to date:
@@ -693,22 +718,23 @@ class Resource(object):
         '''
         return self
 
-    def create_convergence(self, template_id, resource_data, engine_id):
+    def create_convergence(self, template_id, resource_data, engine_id,
+                           timeout):
         '''
         Creates the resource by invoking the scheduler TaskRunner.
         '''
         with self.lock(engine_id):
             self.requires = list(
                 set(data[u'id'] for data in resource_data.values()
-                    if data is not None)
+                    if data)
             )
             self.current_template_id = template_id
-            adopt_data = self.stack._adopt_kwargs(self)
-            if adopt_data['resource_data'] is None:
+            if self.stack.adopt_stack_data is None:
                 runner = scheduler.TaskRunner(self.create)
             else:
+                adopt_data = self.stack._adopt_kwargs(self)
                 runner = scheduler.TaskRunner(self.adopt, **adopt_data)
-            runner()
+            runner(timeout=timeout)
 
     @scheduler.wrappertask
     def create(self):
@@ -839,8 +865,11 @@ class Resource(object):
                 resource_data.get('metadata'))
 
     def _needs_update(self, after, before, after_props, before_props,
-                      prev_resource):
-        if self.status == self.FAILED or \
+                      prev_resource, check_init_complete=True):
+        if self.status == self.FAILED:
+            raise UpdateReplace(self)
+
+        if check_init_complete and \
                 (self.action == self.INIT and self.status == self.COMPLETE):
             raise UpdateReplace(self)
 
@@ -861,7 +890,8 @@ class Resource(object):
         except ValueError:
             return True
 
-    def update_convergence(self, template_id, resource_data, engine_id):
+    def update_convergence(self, template_id, resource_data, engine_id,
+                           timeout):
         '''
         Updates the resource by invoking the scheduler TaskRunner
         and it persists the resource's current_template_id to template_id and
@@ -872,7 +902,7 @@ class Resource(object):
             new_temp = template.Template.load(self.context, template_id)
             new_res_def = new_temp.resource_definitions(self.stack)[self.name]
             runner = scheduler.TaskRunner(self.update, new_res_def)
-            runner()
+            runner(timeout=timeout)
 
             # update the resource db record (stored in unlock)
             self.current_template_id = template_id
@@ -1077,14 +1107,69 @@ class Resource(object):
                 msg = _('"%s" deletion policy not supported') % policy
                 raise exception.StackValidationFailed(message=msg)
 
-    def delete_convergence(self, engine_id):
+    def _update_replacement_data(self, template_id):
+        # Update the replacement resource's needed_by and replaces
+        # fields. Make sure that the replacement belongs to the given
+        # template and there is no engine working on it.
+        if self.replaced_by is None:
+            return
+
+        try:
+            db_res = resource_objects.Resource.get_obj(
+                self.context, self.replaced_by)
+        except exception.NotFound:
+            LOG.info(_LI("Could not find replacement of resource %(name)s "
+                         "with id %(id)s while updating needed_by."),
+                     {'name': self.name, 'id': self.replaced_by})
+            return
+
+        if (db_res.current_template_id == template_id):
+                # Following update failure is ignorable; another
+                # update might have locked/updated the resource.
+                db_res.select_and_update(
+                    {'needed_by': self.needed_by,
+                     'replaces': None},
+                    atomic_key=db_res.atomic_key,
+                    expected_engine_id=None
+                )
+
+    def delete_convergence(self, template_id, input_data, engine_id, timeout):
+        '''Destroys the resource if it doesn't belong to given
+        template. The given template is suppose to be the current
+        template being provisioned.
+
+        Also, since this resource is visited as part of clean-up phase,
+        the needed_by should be updated. If this resource was
+        replaced by more recent resource, then delete this and update
+        the replacement resource's needed_by and replaces fields.
         '''
-        Destroys the resource. The destroy task is run in a scheduler
-        TaskRunner after acquiring the lock on resource.
-        '''
-        with self.lock(engine_id):
-            runner = scheduler.TaskRunner(self.destroy)
-            runner()
+        self._acquire(engine_id)
+        try:
+            self.needed_by = list(set(v for v in input_data.values()
+                                      if v is not None))
+
+            if self.current_template_id != template_id:
+                runner = scheduler.TaskRunner(self.destroy)
+                runner(timeout=timeout)
+
+                # update needed_by and replaces of replacement resource
+                self._update_replacement_data(template_id)
+            else:
+                self._release(engine_id)
+        except:  # noqa
+            with excutils.save_and_reraise_exception():
+                self._release(engine_id)
+
+    def handle_delete(self):
+        """Default implementation; should be overridden by resources."""
+        if self.entity and self.resource_id is not None:
+            try:
+                obj = getattr(self.client(), self.entity)
+                obj.delete(self.resource_id)
+            except Exception as ex:
+                self.client_plugin().ignore_not_found(ex)
+                return None
+            return self.resource_id
 
     @scheduler.wrappertask
     def delete(self):
@@ -1229,6 +1314,16 @@ class Resource(object):
 
     @contextlib.contextmanager
     def lock(self, engine_id):
+        self._acquire(engine_id)
+        try:
+            yield
+        except:  # noqa
+            with excutils.save_and_reraise_exception():
+                self._release(engine_id)
+        else:
+            self._release(engine_id)
+
+    def _acquire(self, engine_id):
         updated_ok = False
         try:
             rs = resource_objects.Resource.get_obj(self.context, self.id)
@@ -1246,28 +1341,61 @@ class Resource(object):
                 rs.atomic_key, rs.engine_id, engine_id))
             raise ex
 
-        try:
-            yield
-        except:  # noqa
-            with excutils.save_and_reraise_exception():
-                self.unlock(rs, engine_id, rs.atomic_key)
-        else:
-            self.unlock(rs, engine_id, rs.atomic_key)
-
-    def unlock(self, rsrc, engine_id, atomic_key):
+    def _release(self, engine_id):
+        rs = resource_objects.Resource.get_obj(self.context, self.id)
+        atomic_key = rs.atomic_key
         if atomic_key is None:
             atomic_key = 0
 
-        updated_ok = rsrc.select_and_update(
+        updated_ok = rs.select_and_update(
             {'engine_id': None,
              'current_template_id': self.current_template_id,
              'updated_at': self.updated_time,
-             'requires': self.requires},
+             'requires': self.requires,
+             'needed_by': self.needed_by},
             expected_engine_id=engine_id,
-            atomic_key=atomic_key + 1)
+            atomic_key=atomic_key)
 
         if not updated_ok:
-            LOG.warn(_LW('Failed to unlock resource %s'), rsrc.name)
+            LOG.warn(_LW('Failed to unlock resource %s'), self.name)
+
+    def _resolve_all_attributes(self, attr):
+        """Method for resolving all attributes.
+
+        This method uses basic _resolve_attribute method for resolving
+        specific attributes. Base attributes will be resolved with
+        corresponding method, which should be defined in each resource
+        class.
+
+        :param attr: attribute name, which will be resolved
+        :returns: method of resource class, which resolve base attribute
+        """
+        if attr in self.base_attributes_schema:
+            # check resource_id, because usually it is required for getting
+            # information about resource
+            if not self.resource_id:
+                return None
+            try:
+                return getattr(self, '_{0}_resource'.format(attr))()
+            except Exception as ex:
+                self.client_plugin().ignore_not_found(ex)
+                return None
+        else:
+            return self._resolve_attribute(attr)
+
+    def _show_resource(self):
+        """Default implementation; should be overridden by resources
+
+        :returns: the map of resource information or None
+        """
+        if self.entity:
+            try:
+                obj = getattr(self.client(), self.entity)
+                resource = obj.get(self.resource_id)
+                return resource.to_dict()
+            except AttributeError as ex:
+                LOG.warn(_LW("Resolving 'show' attribute has failed : %s"), ex)
+                return None
 
     def _resolve_attribute(self, name):
         """
@@ -1324,8 +1452,8 @@ class Resource(object):
 
         :results: the id or name of the resource.
         '''
-        if self.stack.has_cache_data():
-            return self.stack.cache_data_resource_id(self.name)
+        if self.stack.has_cache_data(self.name):
+            return self.stack.cache_data_reference_id(self.name)
 
         if self.resource_id is not None:
             return six.text_type(self.resource_id)
@@ -1347,10 +1475,13 @@ class Resource(object):
         :param path: a list of path components to select from the attribute.
         :returns: the attribute value.
         '''
-        if self.stack.has_cache_data():
+        if self.stack.has_cache_data(self.name):
             # Load from cache for lightweight resources.
+            complex_key = key
+            if path:
+                complex_key = tuple([key] + list(path))
             attribute = self.stack.cache_data_resource_attribute(
-                self.name, key)
+                self.name, complex_key)
         else:
             try:
                 attribute = self.attributes[key]

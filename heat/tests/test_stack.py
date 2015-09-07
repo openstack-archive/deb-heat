@@ -13,6 +13,7 @@
 
 import collections
 import copy
+import datetime
 import json
 import time
 
@@ -30,6 +31,7 @@ from heat.db import api as db_api
 from heat.engine.clients.os import keystone
 from heat.engine.clients.os import nova
 from heat.engine import environment
+from heat.engine import function
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import stack
@@ -39,7 +41,6 @@ from heat.objects import stack as stack_object
 from heat.objects import stack_tag as stack_tag_object
 from heat.objects import user_creds as ucreds_object
 from heat.tests import common
-from heat.tests.engine import tools
 from heat.tests import fakes
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
@@ -99,6 +100,59 @@ class StackTest(common.HeatTestCase):
         self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl,
                                  timeout_mins=10)
         self.assertEqual(600, self.stack.timeout_secs())
+
+    @mock.patch.object(stack, 'datetime')
+    def test_time_elapsed(self, mock_dt):
+        self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl)
+        # dummy create time 10:00:00
+        self.stack.created_time = datetime.datetime(2015, 7, 27, 10, 0, 0)
+        # mock utcnow set to 10:10:00 (600s offset)
+        mock_dt.datetime.utcnow.return_value = datetime.datetime(2015, 7, 27,
+                                                                 10, 10, 0)
+        self.assertEqual(600, self.stack.time_elapsed())
+
+    @mock.patch.object(stack, 'datetime')
+    def test_time_elapsed_with_updated_time(self, mock_dt):
+        self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl)
+        # dummy create time 10:00:00
+        self.stack.created_time = datetime.datetime(2015, 7, 27, 10, 0, 0)
+        # dummy updated time 11:00:00; should consider this not created_time
+        self.stack.updated_time = datetime.datetime(2015, 7, 27, 11, 0, 0)
+        # mock utcnow set to 11:10:00 (600s offset)
+        mock_dt.datetime.utcnow.return_value = datetime.datetime(2015, 7, 27,
+                                                                 11, 10, 0)
+        self.assertEqual(600, self.stack.time_elapsed())
+
+    @mock.patch.object(stack.Stack, 'time_elapsed')
+    def test_time_remaining(self, mock_te):
+        self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl)
+        # mock time elapsed; set to 600 seconds
+        mock_te.return_value = 600
+        # default stack timeout is 3600 seconds; remaining time 3000 secs
+        self.assertEqual(3000, self.stack.time_remaining())
+
+    @mock.patch.object(stack.Stack, 'time_elapsed')
+    def test_has_timed_out(self, mock_te):
+        self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl)
+        self.stack.status = self.stack.IN_PROGRESS
+
+        # test with timed out stack
+        mock_te.return_value = 3601
+        # default stack timeout is 3600 seconds; stack should time out
+        self.assertTrue(self.stack.has_timed_out())
+
+        # mock time elapsed; set to 600 seconds
+        mock_te.return_value = 600
+        # default stack timeout is 3600 seconds; remaining time 3000 secs
+        self.assertFalse(self.stack.has_timed_out())
+
+        # has_timed_out has no meaning when stack completes/fails;
+        # should return false
+        self.stack.status = self.stack.COMPLETE
+        self.assertFalse(self.stack.has_timed_out())
+
+        self.stack.status = self.stack.FAILED
+        self.assertFalse(self.stack.has_timed_out())
 
     def test_no_auth_token(self):
         ctx = utils.dummy_context()
@@ -195,7 +249,7 @@ class StackTest(common.HeatTestCase):
     def test_iter_resources(self):
         tpl = {'HeatTemplateFormatVersion': '2012-12-12',
                'Resources':
-               {'A': {'Type': 'GenericResourceType'},
+               {'A': {'Type': 'StackResourceType'},
                 'B': {'Type': 'GenericResourceType'}}}
         self.stack = stack.Stack(self.ctx, 'test_stack',
                                  template.Template(tpl),
@@ -222,12 +276,16 @@ class StackTest(common.HeatTestCase):
     def test_iter_resources_cached(self, mock_drg):
         tpl = {'HeatTemplateFormatVersion': '2012-12-12',
                'Resources':
-               {'A': {'Type': 'GenericResourceType'},
+               {'A': {'Type': 'StackResourceType'},
                 'B': {'Type': 'GenericResourceType'}}}
+
+        cache_data = {'A': {'reference_id': 'A-id'},
+                      'B': {'reference_id': 'B-id'}}
+
         self.stack = stack.Stack(self.ctx, 'test_stack',
                                  template.Template(tpl),
                                  status_reason='blarg',
-                                 cache_data={})
+                                 cache_data=cache_data)
 
         def get_more(nested_depth=0):
             yield 'X'
@@ -861,6 +919,9 @@ class StackTest(common.HeatTestCase):
         try:
             self.assertIsNone(self.stack.resource_by_refid('aaaa'))
             self.assertIsNone(self.stack.resource_by_refid('bbbb'))
+            # if there is cached data, we should ignore the state
+            self.stack.cache_data = {'AResource': {'reference_id': 'aaaa'}}
+            self.assertEqual(rsrc, self.stack.resource_by_refid('aaaa'))
         finally:
             rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE)
 
@@ -1599,7 +1660,7 @@ class StackTest(common.HeatTestCase):
         self.assertIn('The specified reference "resource" '
                       '(in unknown) is incorrect.', six.text_type(ex))
 
-    def test_incorrect_outputs_cfn_empty_output(self):
+    def test_incorrect_outputs_cfn_missing_value(self):
         tmpl = template_format.parse("""
         HeatTemplateFormatVersion: '2012-12-12'
         Resources:
@@ -1609,6 +1670,7 @@ class StackTest(common.HeatTestCase):
               Foo: abc
         Outputs:
           Resource_attr:
+            Description: the attr
         """)
         self.stack = stack.Stack(self.ctx, 'stack_with_correct_outputs',
                                  template.Template(tmpl))
@@ -1618,6 +1680,40 @@ class StackTest(common.HeatTestCase):
 
         self.assertIn('Each Output must contain a Value key.',
                       six.text_type(ex))
+
+    def test_incorrect_outputs_cfn_empty_value(self):
+        tmpl = template_format.parse("""
+        HeatTemplateFormatVersion: '2012-12-12'
+        Resources:
+          AResource:
+            Type: ResourceWithPropsType
+            Properties:
+              Foo: abc
+        Outputs:
+          Resource_attr:
+            Value: ''
+        """)
+        self.stack = stack.Stack(self.ctx, 'stack_with_correct_outputs',
+                                 template.Template(tmpl))
+
+        self.assertIsNone(self.stack.validate())
+
+    def test_incorrect_outputs_cfn_none_value(self):
+        tmpl = template_format.parse("""
+        HeatTemplateFormatVersion: '2012-12-12'
+        Resources:
+          AResource:
+            Type: ResourceWithPropsType
+            Properties:
+              Foo: abc
+        Outputs:
+          Resource_attr:
+            Value:
+        """)
+        self.stack = stack.Stack(self.ctx, 'stack_with_correct_outputs',
+                                 template.Template(tmpl))
+
+        self.assertIsNone(self.stack.validate())
 
     def test_incorrect_outputs_cfn_string_data(self):
         tmpl = template_format.parse("""
@@ -1861,7 +1957,9 @@ class StackTest(common.HeatTestCase):
             }
         })
 
-        cache_data = {'foo': {'attributes': {'bar': 'baz'}}}
+        cache_data = {'foo': {'reference_id': 'foo-id',
+                              'attrs': {'bar': 'baz'}},
+                      'bar': {'reference_id': 'bar-id'}}
         tmpl_stack = stack.Stack(self.ctx, 'test', tmpl)
         tmpl_stack.store()
         lightweight_stack = stack.Stack.load(self.ctx, stack_id=tmpl_stack.id,
@@ -1894,7 +1992,8 @@ class StackTest(common.HeatTestCase):
             }
         })
 
-        cache_data = {'foo': {'physical_resource_id': 'physical-resource-id'}}
+        cache_data = {'foo': {'reference_id': 'physical-resource-id'},
+                      'bar': {'reference_id': 'bar-id'}}
         tmpl_stack = stack.Stack(self.ctx, 'test', tmpl)
         tmpl_stack.store()
         lightweight_stack = stack.Stack.load(self.ctx, stack_id=tmpl_stack.id,
@@ -1942,7 +2041,6 @@ class StackTest(common.HeatTestCase):
         self.assertEqual('foo', params['param1'])
         self.assertEqual('bar', params['param2'])
 
-    @testtools.skipIf(six.PY3, "needs a separate change")
     def test_parameters_stored_encrypted_decrypted_on_load(self):
         '''
         Test stack loading with disabled parameter value validation.
@@ -2108,7 +2206,8 @@ class StackTest(common.HeatTestCase):
         self.assertIsNone(tmpl_stack.prev_raw_template_id)
         self.assertFalse(mock_store.called)
 
-    def test_validate_assertion_exception_rethrow(self):
+    @mock.patch.object(function, 'validate')
+    def test_validate_assertion_exception_rethrow(self, func_val):
         expected_msg = 'Expected Assertion Error'
         with mock.patch('heat.engine.stack.dependencies',
                         new_callable=mock.PropertyMock) as mock_dependencies:
@@ -2122,12 +2221,10 @@ class StackTest(common.HeatTestCase):
             mock_dependency.validate.assert_called_once_with()
 
         stc = stack.Stack(self.ctx, utils.random_name(), self.tmpl)
-        output_value = mock.MagicMock()
-        output_value.get.side_effect = AssertionError(expected_msg)
-        stc.outputs = {'foo': output_value}
+        stc.outputs = {'foo': {'Value': 'bar'}}
+        func_val.side_effect = AssertionError(expected_msg)
         expected_exception = self.assertRaises(AssertionError, stc.validate)
         self.assertEqual(expected_msg, six.text_type(expected_exception))
-        output_value.get.assert_called_once_with('Value')
 
     def test_resolve_static_data_assertion_exception_rethrow(self):
         tmpl = mock.MagicMock()
@@ -2140,6 +2237,55 @@ class StackTest(common.HeatTestCase):
                                                stc.resolve_static_data,
                                                None)
         self.assertEqual(expected_message, six.text_type(expected_exception))
+
+    def update_exception_handler(self, exc, action=stack.Stack.UPDATE,
+                                 disable_rollback=False):
+        tmpl = template.Template({
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'}
+            }
+        })
+        update_task = mock.MagicMock()
+
+        self.stack = stack.Stack(utils.dummy_context(),
+                                 'test_stack',
+                                 tmpl,
+                                 disable_rollback=disable_rollback)
+        self.stack.store()
+        self.m.ReplayAll()
+        res = self.stack._update_exception_handler(
+            exc=exc, action=action, update_task=update_task)
+        if isinstance(exc, exception.ResourceFailure):
+            if disable_rollback:
+                self.assertFalse(res)
+            else:
+                self.assertTrue(res)
+        elif isinstance(exc, stack.ForcedCancel):
+            update_task.updater.cancel_all.assert_called_once_with()
+            if exc.with_rollback or not disable_rollback:
+                self.assertTrue(res)
+            else:
+                self.assertFalse(res)
+        self.m.VerifyAll()
+
+    def test_update_exception_handler_resource_failure_no_rollback(self):
+        reason = 'something strange happened'
+        exc = exception.ResourceFailure(reason, None, action='UPDATE')
+        self.update_exception_handler(exc, disable_rollback=True)
+
+    def test_update_exception_handler_resource_failure_rollback(self):
+        reason = 'something strange happened'
+        exc = exception.ResourceFailure(reason, None, action='UPDATE')
+        self.update_exception_handler(exc, disable_rollback=False)
+
+    def test_update_exception_handler_force_cancel_with_rollback(self):
+        exc = stack.ForcedCancel(with_rollback=True)
+        self.update_exception_handler(exc, disable_rollback=False)
+
+    def test_update_exception_handler_force_cancel_no_rollback(self):
+        exc = stack.ForcedCancel(with_rollback=False)
+        self.update_exception_handler(exc, disable_rollback=True)
 
 
 class StackKwargsForCloningTest(common.HeatTestCase):
@@ -2192,53 +2338,3 @@ class StackKwargsForCloningTest(common.HeatTestCase):
             # just make sure that the kwargs are valid
             # (no exception should be raised)
             stack.Stack(ctx, utils.random_name(), tmpl, **res)
-
-
-class TestStackRollback(common.HeatTestCase):
-
-    def setUp(self):
-        super(TestStackRollback, self).setUp()
-        self.ctx = utils.dummy_context()
-        self.stack = tools.get_stack('test_stack_rollback', self.ctx,
-                                     template=tools.string_template_five,
-                                     convergence=True)
-
-    def test_trigger_rollback_uses_old_template_if_available(self):
-        # create a template and assign to stack as previous template
-        t = template_format.parse(tools.wp_template)
-        prev_tmpl = template.Template(t)
-        prev_tmpl.store(context=self.ctx)
-        self.stack.prev_raw_template_id = prev_tmpl.id
-        # mock failure
-        self.stack.action = self.stack.UPDATE
-        self.stack.status = self.stack.FAILED
-        self.stack.store()
-        # mock converge_stack()
-        self.stack.converge_stack = mock.Mock()
-        # call trigger_rollbac
-        self.stack.rollback()
-
-        # Make sure stack converge is called with previous template
-        self.assertTrue(self.stack.converge_stack.called)
-        self.assertIsNone(self.stack.prev_raw_template_id)
-        call_args, call_kwargs = self.stack.converge_stack.call_args
-        template_used_for_rollback = call_args[0]
-        self.assertEqual(prev_tmpl.id, template_used_for_rollback.id)
-
-    def test_trigger_rollback_uses_empty_template_if_prev_tmpl_not_available(
-            self):
-        # mock create failure with no previous template
-        self.stack.prev_raw_template_id = None
-        self.stack.action = self.stack.CREATE
-        self.stack.status = self.stack.FAILED
-        self.stack.store()
-        # mock converge_stack()
-        self.stack.converge_stack = mock.Mock()
-        # call trigger_rollback
-        self.stack.rollback()
-
-        # Make sure stack converge is called with empty template
-        self.assertTrue(self.stack.converge_stack.called)
-        call_args, call_kwargs = self.stack.converge_stack.call_args
-        template_used_for_rollback = call_args[0]
-        self.assertEqual({}, template_used_for_rollback['resources'])

@@ -84,6 +84,71 @@ resources:
             salt: {get_param: salt}
 '''
 
+string_template_five_update = '''
+heat_template_version: 2013-05-23
+description: Random String templates
+
+parameters:
+    salt:
+        type: string
+        default: "quickbrownfox123"
+
+resources:
+    A:
+        type: OS::Heat::RandomString
+        properties:
+            salt: {get_param: salt}
+
+    B:
+        type: OS::Heat::RandomString
+        properties:
+            salt: {get_param: salt}
+
+    F:
+        type: OS::Heat::RandomString
+        depends_on: [A, B]
+        properties:
+            salt: {get_param: salt}
+
+    G:
+        type: OS::Heat::RandomString
+        depends_on: F
+        properties:
+            salt: {get_param: salt}
+
+    H:
+        type: OS::Heat::RandomString
+        depends_on: F
+        properties:
+            salt: {get_param: salt}
+'''
+
+attr_cache_template = '''
+heat_template_version: 2013-05-23
+resources:
+    A:
+        type: ResourceWithComplexAttributesType
+    B:
+        type: OS::Heat::RandomString
+        properties:
+            salt: {get_attr: [A, flat_dict, key2]}
+    C:
+        type: OS::Heat::RandomString
+        depends_on: [A, B]
+        properties:
+            salt: {get_attr: [A, nested_dict, dict, a]}
+    D:
+        type: OS::Heat::RandomString
+        depends_on: C
+        properties:
+            salt: {get_attr: [A, nested_dict, dict, b]}
+    E:
+        type: OS::Heat::RandomString
+        depends_on: C
+        properties:
+            salt: {get_attr: [A, flat_dict, key3]}
+'''
+
 
 def get_stack(stack_name, ctx, template=None, with_params=True,
               convergence=False):
@@ -118,8 +183,8 @@ def setup_mock_for_image_constraint(mocks, imageId_input,
 def setup_mocks(mocks, stack, mock_image_constraint=True,
                 mock_keystone=True):
     fc = fakes_nova.FakeClient()
-    mocks.StubOutWithMock(instances.Instance, 'nova')
-    instances.Instance.nova().MultipleTimes().AndReturn(fc)
+    mocks.StubOutWithMock(instances.Instance, 'client')
+    instances.Instance.client().MultipleTimes().AndReturn(fc)
     mocks.StubOutWithMock(nova.NovaClientPlugin, '_create')
     nova.NovaClientPlugin._create().AndReturn(fc)
     instance = stack['WebServer']

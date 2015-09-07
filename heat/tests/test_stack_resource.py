@@ -17,6 +17,7 @@ import uuid
 import mock
 from oslo_config import cfg
 from oslo_messaging import exceptions as msg_exceptions
+from oslo_serialization import jsonutils
 import six
 import testtools
 
@@ -156,10 +157,23 @@ class StackResourceBaseTest(common.HeatTestCase):
 
 
 class StackResourceTest(StackResourceBaseTest):
+
     def setUp(self):
         super(StackResourceTest, self).setUp()
         self.templ = template_format.parse(param_template)
         self.simple_template = template_format.parse(simple_template)
+
+        # to get same json string from a dict for comparison,
+        # make sort_keys True
+        orig_dumps = jsonutils.dumps
+
+        def sorted_dumps(*args, **kwargs):
+            kwargs.setdefault('sort_keys', True)
+            return orig_dumps(*args, **kwargs)
+        patched_dumps = mock.patch(
+            'oslo_serialization.jsonutils.dumps', sorted_dumps)
+        patched_dumps.start()
+        self.addCleanup(lambda: patched_dumps.stop())
 
     def test_child_template_defaults_to_not_implemented(self):
         self.assertRaises(NotImplementedError,
@@ -181,6 +195,11 @@ class StackResourceTest(StackResourceBaseTest):
         nest.return_value.prepare_abandon.assert_called_once_with()
         self.assertEqual({'X': 'Y'}, ret)
 
+    def test_nested_abandon_stack_not_found(self):
+        self.parent_resource.nested = mock.MagicMock(return_value=None)
+        ret = self.parent_resource.prepare_abandon()
+        self.assertEqual({}, ret)
+
     @testtools.skipIf(six.PY3, "needs a separate change")
     def test_implementation_signature(self):
         self.parent_resource.child_template = mock.Mock(
@@ -188,8 +207,8 @@ class StackResourceTest(StackResourceBaseTest):
         sig1, sig2 = self.parent_resource.implementation_signature()
         self.assertEqual('7b0eaabb5b82b9e90804d42e0bb739035588cb797'
                          '82427770646686ca2235028', sig1)
-        self.assertEqual('5a58b34cc3dd7f4e11fa35b63daad7b6b3aaa1744'
-                         '19eb1c42b75d102bdda5fc9', sig2)
+        self.assertEqual('8fa647d036b8f36909386e1e1004539dfae7a8e88'
+                         'c24aac0d85399e881421301', sig2)
         self.parent_stack.t.files["foo"] = "bar"
         sig1a, sig2a = self.parent_resource.implementation_signature()
         self.assertEqual(sig1, sig1a)
@@ -450,10 +469,11 @@ class StackResourceTest(StackResourceBaseTest):
         parser.Stack.load(self.parent_resource.context,
                           self.parent_resource.resource_id,
                           show_deleted=False,
-                          force_reload=False).AndReturn(None)
+                          force_reload=False).AndRaise(
+            exception.NotFound)
         self.m.ReplayAll()
 
-        self.assertRaises(exception.NotFound, self.parent_resource.nested)
+        self.assertIsNone(self.parent_resource.nested())
         self.m.VerifyAll()
 
     def test_load_nested_cached(self):
@@ -480,10 +500,10 @@ class StackResourceTest(StackResourceBaseTest):
         parser.Stack.load(self.parent_resource.context,
                           self.parent_resource.resource_id,
                           show_deleted=False,
-                          force_reload=True).AndReturn(None)
+                          force_reload=True).AndRaise(
+            exception.NotFound)
         self.m.ReplayAll()
-        self.assertRaises(exception.NotFound, self.parent_resource.nested,
-                          force_reload=True)
+        self.assertIsNone(self.parent_resource.nested(force_reload=True))
         self.m.VerifyAll()
 
     def test_delete_nested_none_nested_stack(self):

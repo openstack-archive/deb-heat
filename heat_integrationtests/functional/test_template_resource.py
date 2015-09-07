@@ -15,9 +15,10 @@ import json
 import yaml
 
 from heat_integrationtests.common import test
+from heat_integrationtests.functional import functional_base
 
 
-class TemplateResourceTest(test.HeatIntegrationTest):
+class TemplateResourceTest(functional_base.FunctionalTestsBase):
     """Prove that we can use the registry in a nested provider."""
 
     template = '''
@@ -46,7 +47,6 @@ resource_registry:
 
     def setUp(self):
         super(TemplateResourceTest, self).setUp()
-        self.client = self.orchestration_client
 
     def test_nested_env(self):
         main_templ = '''
@@ -146,7 +146,7 @@ resource_registry:
         self.assertEqual('freddy', secret_out2)
 
 
-class NestedAttributesTest(test.HeatIntegrationTest):
+class NestedAttributesTest(functional_base.FunctionalTestsBase):
     """Prove that we can use the template resource references."""
 
     main_templ = '''
@@ -172,7 +172,6 @@ resource_registry:
 
     def setUp(self):
         super(NestedAttributesTest, self).setUp()
-        self.client = self.orchestration_client
 
     def test_stack_ref(self):
         nested_templ = '''
@@ -244,7 +243,7 @@ outputs:
         self.assertEqual(old_way, test_attr2)
 
 
-class TemplateResourceUpdateTest(test.HeatIntegrationTest):
+class TemplateResourceUpdateTest(functional_base.FunctionalTestsBase):
     """Prove that we can do template resource updates."""
 
     main_template = '''
@@ -458,7 +457,6 @@ Outputs:
 
     def setUp(self):
         super(TemplateResourceUpdateTest, self).setUp()
-        self.client = self.orchestration_client
 
     def test_template_resource_update_template_schema(self):
         stack_identifier = self.stack_create(
@@ -482,7 +480,7 @@ Outputs:
                                 self._stack_output(stack, 'value'))
 
 
-class TemplateResourceUpdateFailedTest(test.HeatIntegrationTest):
+class TemplateResourceUpdateFailedTest(functional_base.FunctionalTestsBase):
     """Prove that we can do updates on a nested stack to fix a stack."""
     main_template = '''
 HeatTemplateFormatVersion: '2012-12-12'
@@ -505,7 +503,6 @@ Resources:
 
     def setUp(self):
         super(TemplateResourceUpdateFailedTest, self).setUp()
-        self.client = self.orchestration_client
         self.assign_keypair()
 
     def test_update_on_failed_create(self):
@@ -526,7 +523,7 @@ Resources:
                           files={'server_fail.yaml': self.nested_templ})
 
 
-class TemplateResourceAdoptTest(test.HeatIntegrationTest):
+class TemplateResourceAdoptTest(functional_base.FunctionalTestsBase):
     """Prove that we can do template resource adopt/abandon."""
 
     main_template = '''
@@ -561,7 +558,6 @@ Outputs:
 
     def setUp(self):
         super(TemplateResourceAdoptTest, self).setUp()
-        self.client = self.orchestration_client
 
     def _yaml_to_json(self, yaml_templ):
         return yaml.load(yaml_templ)
@@ -606,7 +602,7 @@ Outputs:
         self.assertEqual('goopie', self._stack_output(stack, 'value'))
 
 
-class TemplateResourceCheckTest(test.HeatIntegrationTest):
+class TemplateResourceCheckTest(functional_base.FunctionalTestsBase):
     """Prove that we can do template resource check."""
 
     main_template = '''
@@ -641,7 +637,6 @@ Outputs:
 
     def setUp(self):
         super(TemplateResourceCheckTest, self).setUp()
-        self.client = self.orchestration_client
 
     def test_check(self):
         stack_identifier = self.stack_create(
@@ -653,7 +648,7 @@ Outputs:
         self._wait_for_stack_status(stack_identifier, 'CHECK_COMPLETE')
 
 
-class TemplateResourceErrorMessageTest(test.HeatIntegrationTest):
+class TemplateResourceErrorMessageTest(functional_base.FunctionalTestsBase):
     """Prove that nested stack errors don't suck."""
     template = '''
 HeatTemplateFormatVersion: '2012-12-12'
@@ -673,7 +668,6 @@ Resources:
 
     def setUp(self):
         super(TemplateResourceErrorMessageTest, self).setUp()
-        self.client = self.orchestration_client
 
     def test_fail(self):
         stack_identifier = self.stack_create(
@@ -687,3 +681,35 @@ Resources:
         exp = 'Resource CREATE failed: ValueError: %s: %s' % (exp_path,
                                                               exp_msg)
         self.assertEqual(exp, stack.stack_status_reason)
+
+
+class TemplateResourceSuspendResumeTest(functional_base.FunctionalTestsBase):
+    """Prove that we can do template resource suspend/resume."""
+
+    main_template = '''
+heat_template_version: 2014-10-16
+parameters:
+resources:
+  the_nested:
+    type: the.yaml
+'''
+
+    nested_templ = '''
+heat_template_version: 2014-10-16
+resources:
+  test_random_string:
+    type: OS::Heat::RandomString
+'''
+
+    def setUp(self):
+        super(TemplateResourceSuspendResumeTest, self).setUp()
+
+    def test_suspend_resume(self):
+        """Basic test for template resource suspend resume"""
+        stack_identifier = self.stack_create(
+            template=self.main_template,
+            files={'the.yaml': self.nested_templ}
+        )
+
+        self.stack_suspend(stack_identifier=stack_identifier)
+        self.stack_resume(stack_identifier=stack_identifier)

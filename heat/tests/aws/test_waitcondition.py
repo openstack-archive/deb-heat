@@ -18,6 +18,7 @@ import uuid
 
 from oslo_utils import timeutils
 import six
+from six.moves.urllib import parse
 
 from heat.common import exception
 from heat.common import identifier
@@ -249,7 +250,8 @@ class WaitConditionTest(common.HeatTestCase):
                          'Status': 'SUCCESS', 'UniqueId': '456'}
         ret = handle.handle_signal(test_metadata)
         wc_att = rsrc.FnGetAtt('Data')
-        self.assertEqual(u'{"123": "foo", "456": "dog"}', wc_att)
+        self.assertIsInstance(wc_att, six.string_types)
+        self.assertEqual({"123": "foo", "456": "dog"}, json.loads(wc_att))
         self.assertEqual('status:SUCCESS reason:cat', ret)
         self.m.VerifyAll()
 
@@ -390,17 +392,20 @@ class WaitConditionHandleTest(common.HeatTestCase):
             'http://server.test:8000/v1')
         self.m.ReplayAll()
         rsrc = self.stack['WaitHandle']
+        self.assertEqual(rsrc.resource_id, rsrc.data().get('user_id'))
         # clear the url
         rsrc.data_set('ec2_signed_url', None, False)
 
         rsrc.created_time = created_time
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
-
-        expected_url = "".join([
+        connection_url = "".join([
             'http://server.test:8000/v1/waitcondition/',
             'arn%3Aopenstack%3Aheat%3A%3Atest_tenant%3Astacks%2F',
             'test_stack2%2F', stack_id, '%2Fresources%2F',
-            'WaitHandle?',
+            'WaitHandle?'])
+
+        expected_url = "".join([
+            connection_url,
             'Timestamp=2012-11-29T13%3A49%3A37Z&',
             'SignatureMethod=HmacSHA256&',
             'AWSAccessKeyId=4567&',
@@ -408,14 +413,19 @@ class WaitConditionHandleTest(common.HeatTestCase):
             'Signature=',
             'fHyt3XFnHq8%2FSwYaVcHdJka1hz6jdK5mHtgbo8OOKbQ%3D'])
 
-        self.assertEqual(six.text_type(expected_url), rsrc.FnGetRefId())
+        actual_url = rsrc.FnGetRefId()
+        expected_params = parse.parse_qs(expected_url.split("?", 1)[1])
+        actual_params = parse.parse_qs(actual_url.split("?", 1)[1])
+        self.assertEqual(expected_params, actual_params)
+        self.assertTrue(connection_url.startswith(connection_url))
+
         self.m.VerifyAll()
 
     def test_handle_signal(self):
         self.stack = self.create_stack()
         rsrc = self.stack['WaitHandle']
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
-
+        self.assertEqual(rsrc.resource_id, rsrc.data().get('user_id'))
         test_metadata = {'Data': 'foo', 'Reason': 'bar',
                          'Status': 'SUCCESS', 'UniqueId': '123'}
         rsrc.handle_signal(test_metadata)
@@ -429,7 +439,7 @@ class WaitConditionHandleTest(common.HeatTestCase):
         self.stack = self.create_stack()
         rsrc = self.stack['WaitHandle']
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
-
+        self.assertEqual(rsrc.resource_id, rsrc.data().get('user_id'))
         # handle_signal should raise a ValueError if the metadata
         # is missing any of the expected keys
         err_metadata = {'Data': 'foo', 'Status': 'SUCCESS', 'UniqueId': '123'}
@@ -472,7 +482,7 @@ class WaitConditionHandleTest(common.HeatTestCase):
         self.stack = self.create_stack()
         rsrc = self.stack['WaitHandle']
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
-
+        self.assertEqual(rsrc.resource_id, rsrc.data().get('user_id'))
         # UnsetStubs, don't want get_status stubbed anymore..
         self.m.VerifyAll()
         self.m.UnsetStubs()
@@ -505,7 +515,8 @@ class WaitConditionHandleTest(common.HeatTestCase):
         test_metadata = {'Data': 'dog', 'Reason': 'cat',
                          'Status': 'SUCCESS', 'UniqueId': '456'}
         ret = rsrc.handle_signal(test_metadata)
-        self.assertEqual(['bar', 'cat'], rsrc.get_status_reason('SUCCESS'))
+        self.assertEqual(
+            ['bar', 'cat'], sorted(rsrc.get_status_reason('SUCCESS')))
         self.assertEqual('status:SUCCESS reason:cat', ret)
 
         test_metadata = {'Data': 'boo', 'Reason': 'hoo',

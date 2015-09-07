@@ -298,7 +298,7 @@ def resource_create(context, values):
     return resource_ref
 
 
-def resource_get_all_by_stack(context, stack_id):
+def resource_get_all_by_stack(context, stack_id, key_id=False):
     results = model_query(
         context, models.Resource
     ).filter_by(
@@ -308,7 +308,10 @@ def resource_get_all_by_stack(context, stack_id):
     if not results:
         raise exception.NotFound(_("no resources for stack_id %s were found")
                                  % stack_id)
-    return dict((res.name, res) for res in results)
+    if key_id:
+        return dict((res.id, res) for res in results)
+    else:
+        return dict((res.name, res) for res in results)
 
 
 def stack_get_by_name_and_owner_id(context, stack_name, owner_id):
@@ -885,7 +888,10 @@ def software_config_delete(context, config_id):
 def software_deployment_create(context, values):
     obj_ref = models.SoftwareDeployment()
     obj_ref.update(values)
-    obj_ref.save(_session(context))
+    session = _session(context)
+    session.begin()
+    obj_ref.save(session)
+    session.commit()
     return obj_ref
 
 
@@ -917,16 +923,13 @@ def software_deployment_get_all(context, server_id=None):
 
 def software_deployment_update(context, deployment_id, values):
     deployment = software_deployment_get(context, deployment_id)
-    deployment.update(values)
-    deployment.save(_session(context))
+    deployment.update_and_save(values)
     return deployment
 
 
 def software_deployment_delete(context, deployment_id):
     deployment = software_deployment_get(context, deployment_id)
-    session = orm_session.Session.object_session(deployment)
-    session.delete(deployment)
-    session.flush()
+    deployment.delete()
 
 
 def snapshot_create(context, values):
@@ -1142,14 +1145,23 @@ def db_version(engine):
     return migration.db_version(engine)
 
 
-def db_encrypt_parameters_and_properties(ctxt, encryption_key):
+def db_encrypt_parameters_and_properties(ctxt, encryption_key, batch_size=50):
+    """Encrypt parameters and properties for all templates in db.
+
+    :param ctxt: RPC context
+    :param encryption_key: key that will be used for parameter and property
+                           encryption
+    :param batch_size: number of templates requested from db in each iteration.
+                       50 means that heat requests 50 templates, encrypt them
+                       and proceed with next 50 items.
+    """
     from heat.engine import template
     session = get_session()
     with session.begin():
-
-        raw_templates = session.query(models.RawTemplate).all()
-
-        for raw_template in raw_templates:
+        query = session.query(models.RawTemplate)
+        for raw_template in _get_batch(
+                session=session, ctxt=ctxt, query=query,
+                model=models.RawTemplate, batch_size=batch_size):
             tmpl = template.Template.load(ctxt, raw_template.id, raw_template)
             env = raw_template.environment
 
@@ -1176,10 +1188,12 @@ def db_encrypt_parameters_and_properties(ctxt, encryption_key):
                 raw_template_update(ctxt, raw_template.id,
                                     {'environment': environment})
 
-        resources = session.query(models.Resource).filter(
+        query = session.query(models.Resource).filter(
             ~models.Resource.properties_data.is_(None),
-            ~models.Resource.properties_data_encrypted.is_(True)).all()
-        for resource in resources:
+            ~models.Resource.properties_data_encrypted.is_(True))
+        for resource in _get_batch(
+                session=session, ctxt=ctxt, query=query, model=models.Resource,
+                batch_size=batch_size):
             result = {}
             for prop_name, prop_value in resource.properties_data.items():
                 prop_string = jsonutils.dumps(prop_value)
@@ -1194,13 +1208,22 @@ def db_encrypt_parameters_and_properties(ctxt, encryption_key):
                             resource.atomic_key)
 
 
-def db_decrypt_parameters_and_properties(ctxt, encryption_key):
+def db_decrypt_parameters_and_properties(ctxt, encryption_key, batch_size=50):
+    """Decrypt parameters and properties for all templates in db.
+
+    :param ctxt: RPC context
+    :param encryption_key: key that will be used for parameter and property
+                           decryption
+    :param batch_size: number of templates requested from db in each iteration.
+                       50 means that heat requests 50 templates, encrypt them
+                       and proceed with next 50 items.
+    """
     session = get_session()
-
     with session.begin():
-        raw_templates = session.query(models.RawTemplate).all()
-
-        for raw_template in raw_templates:
+        query = session.query(models.RawTemplate)
+        for raw_template in _get_batch(
+                session=session, ctxt=ctxt, query=query,
+                model=models.RawTemplate, batch_size=batch_size):
             parameters = raw_template.environment['parameters']
             encrypted_params = raw_template.environment[
                 'encrypted_param_names']
@@ -1214,10 +1237,12 @@ def db_decrypt_parameters_and_properties(ctxt, encryption_key):
             raw_template_update(ctxt, raw_template.id,
                                 {'environment': environment})
 
-        resources = session.query(models.Resource).filter(
+        query = session.query(models.Resource).filter(
             ~models.Resource.properties_data.is_(None),
-            models.Resource.properties_data_encrypted.is_(True)).all()
-        for resource in resources:
+            models.Resource.properties_data_encrypted.is_(True))
+        for resource in _get_batch(
+                session=session, ctxt=ctxt, query=query, model=models.Resource,
+                batch_size=batch_size):
             result = {}
             for prop_name, prop_value in resource.properties_data.items():
                 method, value = prop_value
@@ -1231,3 +1256,17 @@ def db_decrypt_parameters_and_properties(ctxt, encryption_key):
                             {'properties_data': result,
                              'properties_data_encrypted': False},
                             resource.atomic_key)
+
+
+def _get_batch(session, ctxt, query, model, batch_size=50):
+    last_batch_marker = None
+    while True:
+        results = _paginate_query(
+            context=ctxt, query=query, model=model, limit=batch_size,
+            marker=last_batch_marker).all()
+        if not results:
+            break
+        else:
+            for result in results:
+                yield result
+            last_batch_marker = results[-1].id

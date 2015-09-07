@@ -70,7 +70,7 @@ class CinderClientPlugin(client_plugin.ClientPlugin):
         args = {
             'service_type': service_type,
             'auth_url': con.auth_url or '',
-            'project_id': con.tenant,
+            'project_id': con.tenant_id,
             'username': None,
             'api_key': None,
             'endpoint_type': endpoint_type,
@@ -106,6 +106,15 @@ class CinderClientPlugin(client_plugin.ClientPlugin):
                      {'snapshot': snapshot, 'ex': ex})
             raise exception.EntityNotFound(entity='VolumeSnapshot',
                                            name=snapshot)
+
+    def get_volume_backup(self, backup):
+        try:
+            return self.client().backups.get(backup)
+        except exceptions.NotFound as ex:
+            LOG.info(_LI('Volume backup (%(backup)s) not found: %(ex)s'),
+                     {'backup': backup, 'ex': ex})
+            raise exception.EntityNotFound(entity='Volume backup',
+                                           name=backup)
 
     def get_volume_type(self, volume_type):
         vt_id = None
@@ -177,44 +186,6 @@ class CinderClientPlugin(client_plugin.ClientPlugin):
         return True
 
 
-# NOTE(pshchelo): these Volume*Progress classes are simple key-value storages
-# meant to be passed between handle_<action> and check_<action>_complete,
-# being mutated during subsequent check_<action>_complete calls.
-class VolumeDetachProgress(object):
-    def __init__(self, srv_id, vol_id, attach_id, val=False):
-        self.called = val
-        self.cinder_complete = val
-        self.nova_complete = val
-        self.srv_id = srv_id
-        self.vol_id = vol_id
-        self.attach_id = attach_id
-
-
-class VolumeAttachProgress(object):
-    def __init__(self, srv_id, vol_id, device, val=False):
-        self.called = val
-        self.complete = val
-        self.srv_id = srv_id
-        self.vol_id = vol_id
-        self.device = device
-
-
-class VolumeDeleteProgress(object):
-    def __init__(self, val=False):
-        self.backup = {'called': val,
-                       'complete': val}
-        self.delete = {'called': val,
-                       'complete': val}
-        self.backup_id = None
-
-
-class VolumeResizeProgress(object):
-    def __init__(self, val=False, size=None):
-        self.called = val
-        self.complete = val
-        self.size = size
-
-
 class VolumeConstraint(constraints.BaseCustomConstraint):
 
     expected_exceptions = (exception.EntityNotFound,)
@@ -237,3 +208,11 @@ class VolumeTypeConstraint(constraints.BaseCustomConstraint):
 
     def validate_with_client(self, client, volume_type):
         client.client_plugin('cinder').get_volume_type(volume_type)
+
+
+class VolumeBackupConstraint(constraints.BaseCustomConstraint):
+
+    expected_exceptions = (exception.EntityNotFound,)
+
+    def validate_with_client(self, client, backup):
+        client.client_plugin('cinder').get_volume_backup(backup)

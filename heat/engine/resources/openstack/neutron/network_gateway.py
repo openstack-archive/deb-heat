@@ -97,9 +97,14 @@ class NetworkGateway(neutron.NeutronResource):
                     NETWORK_ID: properties.Schema(
                         properties.Schema.STRING,
                         support_status=support.SupportStatus(
-                            status=support.DEPRECATED,
+                            status=support.HIDDEN,
                             message=_('Use property %s.') % NETWORK,
-                            version='2014.2'),
+                            version='5.0.0',
+                            previous_status=support.SupportStatus(
+                                status=support.DEPRECATED,
+                                version='2014.2'
+                            )
+                        ),
                         constraints=[
                             constraints.CustomConstraint('neutron.network')
                         ],
@@ -143,8 +148,18 @@ class NetworkGateway(neutron.NeutronResource):
         ),
     }
 
+    def translation_rules(self):
+        return [
+            properties.TranslationRule(
+                self.properties,
+                properties.TranslationRule.REPLACE,
+                [self.CONNECTIONS, self.NETWORK],
+                value_name=self.NETWORK_ID
+            )
+        ]
+
     def _show_resource(self):
-        return self.neutron().show_network_gateway(
+        return self.client().show_network_gateway(
             self.resource_id)['network_gateway']
 
     def validate(self):
@@ -176,7 +191,7 @@ class NetworkGateway(neutron.NeutronResource):
             self.physical_resource_name())
 
         connections = props.pop(self.CONNECTIONS)
-        ret = self.neutron().create_network_gateway(
+        ret = self.client().create_network_gateway(
             {'network_gateway': props})['network_gateway']
 
         self.resource_id_set(ret['id'])
@@ -186,14 +201,13 @@ class NetworkGateway(neutron.NeutronResource):
                 connection, self.NETWORK, 'network_id')
             if self.NETWORK in six.iterkeys(connection):
                 connection.pop(self.NETWORK)
-            self.neutron().connect_network_gateway(
+            self.client().connect_network_gateway(
                 ret['id'], connection
             )
 
     def handle_delete(self):
         if not self.resource_id:
             return
-        client = self.neutron()
 
         connections = self.properties[self.CONNECTIONS]
         for connection in connections:
@@ -202,14 +216,14 @@ class NetworkGateway(neutron.NeutronResource):
                     connection, self.NETWORK, 'network_id')
                 if self.NETWORK in six.iterkeys(connection):
                     connection.pop(self.NETWORK)
-                client.disconnect_network_gateway(
+                self.client().disconnect_network_gateway(
                     self.resource_id, connection
                 )
             except Exception as ex:
                 self.client_plugin().ignore_not_found(ex)
 
         try:
-            client.delete_network_gateway(self.resource_id)
+            self.client().delete_network_gateway(self.resource_id)
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
@@ -228,7 +242,7 @@ class NetworkGateway(neutron.NeutronResource):
             props.pop(self.DEVICES, None)
 
         if self.NAME in prop_diff:
-            self.neutron().update_network_gateway(
+            self.client().update_network_gateway(
                 self.resource_id, {'network_gateway': props})
 
         if self.CONNECTIONS in prop_diff:
@@ -238,7 +252,7 @@ class NetworkGateway(neutron.NeutronResource):
                         connection, self.NETWORK, 'network_id')
                     if self.NETWORK in six.iterkeys(connection):
                         connection.pop(self.NETWORK)
-                    self.neutron().disconnect_network_gateway(
+                    self.client().disconnect_network_gateway(
                         self.resource_id, connection
                     )
                 except Exception as ex:
@@ -248,7 +262,7 @@ class NetworkGateway(neutron.NeutronResource):
                     connection, self.NETWORK, 'network_id')
                 if self.NETWORK in six.iterkeys(connection):
                     connection.pop(self.NETWORK)
-                self.neutron().connect_network_gateway(
+                self.client().connect_network_gateway(
                     self.resource_id, connection
                 )
 

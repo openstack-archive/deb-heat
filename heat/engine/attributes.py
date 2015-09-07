@@ -157,7 +157,8 @@ class Attributes(collections.Mapping):
         :returns: The attributes of the specified resource_class as a template
                   Output map
         """
-        schema = resource_class.attributes_schema
+        schema = resource_class.attributes_schema.copy()
+        schema.update(resource_class.base_attributes_schema)
         attribs = Attributes._make_attributes(schema).items()
 
         return dict((n, att.as_output(resource_name,
@@ -234,6 +235,34 @@ class Attributes(collections.Mapping):
     def __repr__(self):
         return ("Attributes for %s:\n\t" % self._resource_name +
                 '\n\t'.join(six.itervalues(self)))
+
+
+class DynamicSchemeAttributes(Attributes):
+    """The collection of attributes for resources without static attr scheme.
+
+    The class defines collection of attributes for such entities as Resource
+    Group, Software Deployment and so on that doesn't have static attribute
+    scheme. The attribute scheme for such kind of resources can contain
+    attribute from attribute scheme (like other resources) and dynamic
+    attributes (nested stack attrs or API response attrs).
+    """
+
+    def __getitem__(self, key):
+        try:
+            # check if the value can be resolved with attributes
+            # in attributes schema (static attributes)
+            return super(DynamicSchemeAttributes, self).__getitem__(key)
+        except KeyError:
+            # ok, the attribute is not present in attribute scheme
+            # try to check the attributes dynamically
+            if key in self._resolved_values:
+                return self._resolved_values[key]
+
+            value = self._resolver(key)
+            if value is not None:
+                self._resolved_values[key] = value
+
+            return value
 
 
 def select_from_attribute(attribute_value, path):

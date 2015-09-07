@@ -187,6 +187,8 @@ class ManilaShare(resource.Resource):
 
     default_client_name = 'manila'
 
+    entity = 'shares'
+
     def _request_share(self):
         return self.client().shares.get(self.resource_id)
 
@@ -257,15 +259,6 @@ class ManilaShare(resource.Resource):
                        ).format(self.resource_id)
             raise resource.ResourceUnknownStatus(status_reason=reason,
                                                  resource_status=share_status)
-
-    def handle_delete(self):
-        if not self.resource_id:
-            return
-
-        try:
-            self.client().shares.delete(self.resource_id)
-        except Exception as ex:
-            self.client_plugin().ignore_not_found(ex)
 
     def check_delete_complete(self, *args):
         if not self.resource_id:

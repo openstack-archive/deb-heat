@@ -32,6 +32,7 @@ from heat.engine.clients.os import zaqar
 from heat.engine import environment
 from heat.engine import resource
 from heat.engine.resources.openstack.nova import server as servers
+from heat.engine.resources import scheduler_hints as sh
 from heat.engine import scheduler
 from heat.engine import stack as parser
 from heat.engine import template
@@ -432,6 +433,8 @@ class ServersTest(common.HeatTestCase):
                                      exception.EntityNotFound(
                                          entity='Image',
                                          name='Slackware'))
+        self.stub_FlavorConstraint_validate()
+        self.stub_KeypairConstraint_validate()
         self.m.ReplayAll()
 
         create = scheduler.TaskRunner(server.create)
@@ -457,6 +460,8 @@ class ServersTest(common.HeatTestCase):
         self._mock_get_image_id_fail('CentOS 5.2',
                                      exception.PhysicalResourceNameAmbiguity(
                                          name='CentOS 5.2'))
+        self.stub_FlavorConstraint_validate()
+        self.stub_KeypairConstraint_validate()
         self.m.ReplayAll()
 
         create = scheduler.TaskRunner(server.create)
@@ -482,6 +487,8 @@ class ServersTest(common.HeatTestCase):
         self._mock_get_image_id_fail('1',
                                      exception.EntityNotFound(
                                          entity='Image', name='1'))
+        self.stub_KeypairConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         create = scheduler.TaskRunner(server.create)
@@ -973,7 +980,7 @@ class ServersTest(common.HeatTestCase):
     def test_server_create_with_stack_scheduler_hints(self):
         return_server = self.fc.servers.list()[1]
         return_server.id = '5678'
-        servers.cfg.CONF.set_override('stack_scheduler_hints', True)
+        sh.cfg.CONF.set_override('stack_scheduler_hints', True)
         # Unroll _create_test_server, to enable check
         # for addition of heat ids (stack id, resource name)
         stack_name = 'test_server_w_stack_sched_hints_s'
@@ -984,22 +991,28 @@ class ServersTest(common.HeatTestCase):
         server = servers.Server(server_name,
                                 resource_defns['WebServer'], stack)
 
+        # server.uuid is only available once the resource has been added.
+        stack.add_resource(server)
+        self.assertIsNotNone(server.uuid)
+
         self._mock_get_image_id_success('CentOS 5.2', 1)
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().MultipleTimes().AndReturn(self.fc)
 
         self.m.StubOutWithMock(self.fc.servers, 'create')
+        shm = sh.SchedulerHintsMixin
         self.fc.servers.create(
             image=1, flavor=1, key_name='test',
             name=server_name,
             security_groups=[],
             userdata=mox.IgnoreArg(),
-            scheduler_hints={'heat_root_stack_id': stack.root_stack_id(),
-                             'heat_stack_id': stack.id,
-                             'heat_stack_name': stack.name,
-                             'heat_path_in_stack': [(None, stack.name)],
-                             'heat_resource_name': server.name},
+            scheduler_hints={shm.HEAT_ROOT_STACK_ID: stack.root_stack_id(),
+                             shm.HEAT_STACK_ID: stack.id,
+                             shm.HEAT_STACK_NAME: stack.name,
+                             shm.HEAT_PATH_IN_STACK: [(None, stack.name)],
+                             shm.HEAT_RESOURCE_NAME: server.name,
+                             shm.HEAT_RESOURCE_UUID: server.uuid},
             meta=None, nics=None, availability_zone=None,
             block_device_mapping=None, block_device_mapping_v2=None,
             config_drive=None, disk_config=None, reservation_id=None,
@@ -1133,7 +1146,7 @@ class ServersTest(common.HeatTestCase):
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
-        self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self.stub_ImageConstraint_validate()
         self.m.ReplayAll()
 
         error = self.assertRaises(exception.StackValidationFailed,
@@ -1582,11 +1595,26 @@ class ServersTest(common.HeatTestCase):
 
         self._stub_glance_for_update()
         self.m.StubOutWithMock(self.fc.servers, 'get')
-        self.fc.servers.get('1234').AndReturn(return_server)
 
-        def activate_status(server):
-            server.status = 'VERIFY_RESIZE'
-        return_server.get = activate_status.__get__(return_server)
+        def status_resize(*args):
+            return_server.status = 'RESIZE'
+
+        def status_verify_resize(*args):
+            return_server.status = 'VERIFY_RESIZE'
+
+        def status_active(*args):
+            return_server.status = 'ACTIVE'
+
+        self.fc.servers.get('1234').WithSideEffects(
+            status_active).AndReturn(return_server)
+        self.fc.servers.get('1234').WithSideEffects(
+            status_resize).AndReturn(return_server)
+        self.fc.servers.get('1234').WithSideEffects(
+            status_verify_resize).AndReturn(return_server)
+        self.fc.servers.get('1234').WithSideEffects(
+            status_verify_resize).AndReturn(return_server)
+        self.fc.servers.get('1234').WithSideEffects(
+            status_active).AndReturn(return_server)
 
         self.m.StubOutWithMock(self.fc.client, 'post_servers_1234_action')
         self.fc.client.post_servers_1234_action(
@@ -1614,11 +1642,18 @@ class ServersTest(common.HeatTestCase):
         update_template['Properties']['flavor'] = 'm1.small'
 
         self.m.StubOutWithMock(self.fc.servers, 'get')
-        self.fc.servers.get('1234').AndReturn(return_server)
 
-        def fail_status(server):
-            server.status = 'ERROR'
-        return_server.get = fail_status.__get__(return_server)
+        def status_resize(*args):
+            return_server.status = 'RESIZE'
+
+        def status_error(*args):
+            return_server.status = 'ERROR'
+
+        self.fc.servers.get('1234').AndReturn(return_server)
+        self.fc.servers.get('1234').WithSideEffects(
+            status_resize).AndReturn(return_server)
+        self.fc.servers.get('1234').WithSideEffects(
+            status_error).AndReturn(return_server)
 
         self.m.StubOutWithMock(self.fc.client, 'post_servers_1234_action')
         self.fc.client.post_servers_1234_action(
@@ -1652,22 +1687,31 @@ class ServersTest(common.HeatTestCase):
 
         self._stub_glance_for_update()
         self.m.StubOutWithMock(self.fc.servers, 'get')
-        self.fc.servers.get('1234').AndReturn(server)
 
         # define status transition when server resize
         # ACTIVE(initial) -> ACTIVE -> RESIZE -> VERIFY_RESIZE
 
-        def active_status(srv):
-            srv.status = 'ACTIVE'
-        server.get = active_status.__get__(server)
+        def status_resize(*args):
+            server.status = 'RESIZE'
 
-        def resize_status(srv):
-            srv.status = 'RESIZE'
-        server.get = resize_status.__get__(server)
+        def status_verify_resize(*args):
+            server.status = 'VERIFY_RESIZE'
 
-        def verify_resize_status(srv):
-            srv.status = 'VERIFY_RESIZE'
-        server.get = verify_resize_status.__get__(server)
+        def status_active(*args):
+            server.status = 'ACTIVE'
+
+        self.fc.servers.get('1234').WithSideEffects(
+            status_active).AndReturn(server)
+        self.fc.servers.get('1234').WithSideEffects(
+            status_active).AndReturn(server)
+        self.fc.servers.get('1234').WithSideEffects(
+            status_resize).AndReturn(server)
+        self.fc.servers.get('1234').WithSideEffects(
+            status_verify_resize).AndReturn(server)
+        self.fc.servers.get('1234').WithSideEffects(
+            status_verify_resize).AndReturn(server)
+        self.fc.servers.get('1234').WithSideEffects(
+            status_active).AndReturn(server)
 
         self.m.StubOutWithMock(self.fc.client, 'post_servers_1234_action')
         self.fc.client.post_servers_1234_action(
@@ -2151,12 +2195,13 @@ class ServersTest(common.HeatTestCase):
 
         self.assertIsNone(server._build_nics([]))
         self.assertIsNone(server._build_nics(None))
-        self.assertEqual([{'port-id': 'aaaabbbb'},
-                          {'v4-fixed-ip': '192.0.2.0'}],
+        self.assertEqual([{'port-id': 'aaaabbbb', 'net-id': None},
+                          {'v4-fixed-ip': '192.0.2.0', 'net-id': None}],
                          server._build_nics([{'port': 'aaaabbbb'},
                                              {'fixed_ip': '192.0.2.0'}]))
-        self.assertEqual([{'port-id': 'aaaabbbb'},
-                          {'v6-fixed-ip': '2002::2'}],
+
+        self.assertEqual([{'port-id': 'aaaabbbb', 'net-id': None},
+                          {'v6-fixed-ip': '2002::2', 'net-id': None}],
                          server._build_nics([{'port': 'aaaabbbb'},
                                              {'fixed_ip': '2002::2'}]))
         self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
@@ -2279,9 +2324,11 @@ class ServersTest(common.HeatTestCase):
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('server_create_image_err',
                                 resource_defns['WebServer'], stack)
-        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        self.patchobject(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
-        self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self.stub_ImageConstraint_validate()
+        self.stub_VolumeConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
         exc = self.assertRaises(exception.StackValidationFailed,
                                 server.validate)
@@ -2726,98 +2773,15 @@ class ServersTest(common.HeatTestCase):
                          server._resolve_attribute("networks"))
         self.m.VerifyAll()
 
-    def test_default_instance_user(self):
-        """Test instance_user is disabled by default."""
-        return_server = self.fc.servers.list()[1]
-        server = self._setup_test_server(return_server, 'default_user')
-        metadata = server.metadata_get()
-        self.m.StubOutWithMock(nova.NovaClientPlugin, 'build_userdata')
-        nova.NovaClientPlugin.build_userdata(
-            metadata,
-            'wordpress',
-            instance_user=None,
-            user_data_format='HEAT_CFNTOOLS')
-        self.m.ReplayAll()
-        scheduler.TaskRunner(server.create)()
-        self.m.VerifyAll()
-
-    def test_admin_user_property(self):
-        """Test the admin_user property on the server overrides instance_user.
-
-        Launching the instance should call build_userdata with the
-        custom user name. This property is deprecated and will be
-        removed in Juno.
-        """
-        return_server = self.fc.servers.list()[1]
-        stack_name = 'stack_with_custom_admin_user_server'
-        (tmpl, stack) = self._setup_test_stack(stack_name)
-
-        wsp = tmpl.t['Resources']['WebServer']['Properties']
-        wsp['admin_user'] = 'custom_user'
-        resource_defns = tmpl.resource_definitions(stack)
-        server = servers.Server('create_metadata_test_server',
-                                resource_defns['WebServer'], stack)
-        self.m.StubOutWithMock(self.fc.servers, 'create')
-        image_id = mox.IgnoreArg()
-        self.fc.servers.create(
-            image=image_id, flavor=mox.IgnoreArg(), key_name='test',
-            name=mox.IgnoreArg(), security_groups=[],
-            userdata=mox.IgnoreArg(), scheduler_hints=None,
-            meta=mox.IgnoreArg(), nics=None, availability_zone=None,
-            block_device_mapping=None, block_device_mapping_v2=None,
-            config_drive=None, disk_config=None, reservation_id=None,
-            files={}, admin_pass=None).AndReturn(return_server)
-        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        nova.NovaClientPlugin._create().AndReturn(self.fc)
-        self._mock_get_image_id_success('F17-x86_64-gold', image_id)
-        metadata = server.metadata_get()
-        self.m.StubOutWithMock(nova.NovaClientPlugin, 'build_userdata')
-        nova.NovaClientPlugin.build_userdata(
-            metadata,
-            'wordpress',
-            instance_user='custom_user',
-            user_data_format='HEAT_CFNTOOLS')
-        self.m.ReplayAll()
-        scheduler.TaskRunner(server.create)()
-        self.m.VerifyAll()
-
-    def test_custom_instance_user(self):
-        """Test instance_user in heat.conf being set to a custom value.
-
-        Launching the instance should call build_userdata with the
-        custom user name.
-
-        This option is deprecated and will be removed in Juno.
-        """
-        return_server = self.fc.servers.list()[1]
-        server = self._setup_test_server(return_server, 'custom_user')
-        self.m.StubOutWithMock(servers.cfg.CONF, 'instance_user')
-        servers.cfg.CONF.instance_user = 'custom_user'
-        metadata = server.metadata_get()
-        self.m.StubOutWithMock(nova.NovaClientPlugin, 'build_userdata')
-        nova.NovaClientPlugin.build_userdata(
-            metadata,
-            'wordpress',
-            instance_user='custom_user',
-            user_data_format='HEAT_CFNTOOLS')
-        self.m.ReplayAll()
-        scheduler.TaskRunner(server.create)()
-        self.m.VerifyAll()
-
     def test_empty_instance_user(self):
-        """Test instance_user in heat.conf being empty.
+        """Test Nova server doesn't set instance_user in build_userdata
 
-        Launching the instance should not pass any user to
+        Launching the instance should not pass any user name to
         build_userdata. The default cloud-init user set up for the image
         will be used instead.
-
-        This will the default behaviour in Juno once we remove the
-        instance_user option.
         """
         return_server = self.fc.servers.list()[1]
-        server = self._setup_test_server(return_server, 'custom_user')
-        self.m.StubOutWithMock(servers.cfg.CONF, 'instance_user')
-        servers.cfg.CONF.instance_user = ''
+        server = self._setup_test_server(return_server, 'without_user')
         metadata = server.metadata_get()
         self.m.StubOutWithMock(nova.NovaClientPlugin, 'build_userdata')
         nova.NovaClientPlugin.build_userdata(
@@ -2829,8 +2793,10 @@ class ServersTest(common.HeatTestCase):
         scheduler.TaskRunner(server.create)()
         self.m.VerifyAll()
 
-    def create_old_net(self, port=None, net=None, ip=None, uuid=None):
-        return {'port': port, 'network': net, 'fixed_ip': ip, 'uuid': uuid}
+    def create_old_net(self, port=None, net=None, ip=None, uuid=None,
+                       subnet=None):
+        return {'port': port, 'network': net, 'fixed_ip': ip, 'uuid': uuid,
+                'subnet': subnet}
 
     def create_fake_iface(self, port, net, ip):
         class fake_interface(object):
@@ -2865,6 +2831,10 @@ class ServersTest(common.HeatTestCase):
         net_id = server._get_network_id(net)
         self.assertEqual('f3ef5d2f-d7ba-4b27-af66-58ca0b81e032', net_id)
 
+        net = {'network': '', 'fixed_ip': '1.2.3.4'}
+        net_id = server._get_network_id(net)
+        self.assertEqual(None, net_id)
+
     def test_get_network_id_nova(self):
         return_server = self.fc.servers.list()[3]
         server = self._create_test_server(return_server, 'networks_update')
@@ -2891,7 +2861,7 @@ class ServersTest(common.HeatTestCase):
         net_id = server._get_network_id(net)
         self.assertEqual('f3ef5d2f-d7ba-4b27-af66-58ca0b81e032', net_id)
 
-    def test_get_network_matches_no_matching(self):
+    def test_exclude_not_updated_networks_no_matching(self):
         return_server = self.fc.servers.list()[3]
         server = self._create_test_server(return_server, 'networks_update')
 
@@ -2909,15 +2879,16 @@ class ServersTest(common.HeatTestCase):
             new_nets_copy = copy.deepcopy(new_nets)
             old_nets_copy = copy.deepcopy(old_nets)
             for net in new_nets_copy:
-                for key in ('port', 'network', 'fixed_ip', 'uuid'):
+                for key in ('port', 'network', 'fixed_ip', 'uuid', 'subnet'):
                     net.setdefault(key)
 
-            matched_nets = server._get_network_matches(old_nets, new_nets)
+            matched_nets = server._exclude_not_updated_networks(old_nets,
+                                                                new_nets)
             self.assertEqual([], matched_nets)
             self.assertEqual(old_nets_copy, old_nets)
             self.assertEqual(new_nets_copy, new_nets)
 
-    def test_get_network_matches_success(self):
+    def test_exclude_not_updated_networks_success(self):
         return_server = self.fc.servers.list()[3]
         server = self._create_test_server(return_server, 'networks_update')
 
@@ -2938,15 +2909,15 @@ class ServersTest(common.HeatTestCase):
         new_nets_copy = copy.deepcopy(new_nets)
         old_nets_copy = copy.deepcopy(old_nets)
         for net in new_nets_copy:
-            for key in ('port', 'network', 'fixed_ip', 'uuid'):
+            for key in ('port', 'network', 'fixed_ip', 'uuid', 'subnet'):
                 net.setdefault(key)
 
-        matched_nets = server._get_network_matches(old_nets, new_nets)
+        matched_nets = server._exclude_not_updated_networks(old_nets, new_nets)
         self.assertEqual(old_nets_copy[:-1], matched_nets)
         self.assertEqual([old_nets_copy[2]], old_nets)
         self.assertEqual([new_nets_copy[2]], new_nets)
 
-    def test_get_network_matches_not_to_update(self):
+    def test_exclude_not_updated_networks_nothing_for_update(self):
         return_server = self.fc.servers.list()[3]
         server = self._create_test_server(return_server, 'networks_update')
 
@@ -2960,10 +2931,11 @@ class ServersTest(common.HeatTestCase):
             {'network': 'f3ef5d2f-d7ba-4b27-af66-58ca0b81e032',
              'fixed_ip': None,
              'port': None,
-             'uuid': None}]
+             'uuid': None,
+             'subnet': None}]
         new_nets_copy = copy.deepcopy(new_nets)
 
-        matched_nets = server._get_network_matches(old_nets, new_nets)
+        matched_nets = server._exclude_not_updated_networks(old_nets, new_nets)
         self.assertEqual(new_nets_copy, matched_nets)
         self.assertEqual([], old_nets)
         self.assertEqual([], new_nets)
@@ -2972,7 +2944,7 @@ class ServersTest(common.HeatTestCase):
         return_server = self.fc.servers.list()[3]
         server = self._create_test_server(return_server, 'networks_update')
 
-        # old order 0 1 2 3 4 5
+        # old order 0 1 2 3 4
         nets = [
             self.create_old_net(port='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
             self.create_old_net(net='gggggggg-1111-1111-1111-gggggggggggg',
@@ -2980,12 +2952,9 @@ class ServersTest(common.HeatTestCase):
             self.create_old_net(net='gggggggg-1111-1111-1111-gggggggggggg'),
             self.create_old_net(port='dddddddd-dddd-dddd-dddd-dddddddddddd'),
             self.create_old_net(uuid='gggggggg-1111-1111-1111-gggggggggggg',
-                                ip='5.6.7.8'),
-            self.create_old_net(uuid='0da8adbf-a7e2-4c59-a511-96b03d2da0d7')]
-        # new order 5 2 3 0 1 4
+                                ip='5.6.7.8')]
+        # new order 2 3 0 1 4
         interfaces = [
-            self.create_fake_iface('ffffffff-ffff-ffff-ffff-ffffffffffff',
-                                   nets[5]['uuid'], '10.0.0.10'),
             self.create_fake_iface('cccccccc-cccc-cccc-cccc-cccccccccccc',
                                    nets[2]['network'], '10.0.0.11'),
             self.create_fake_iface(nets[3]['port'],
@@ -3003,27 +2972,28 @@ class ServersTest(common.HeatTestCase):
             {'port': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
              'network': None,
              'fixed_ip': None,
-             'uuid': None},
+             'uuid': None,
+             'subnet': None},
             {'port': 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
              'network': 'gggggggg-1111-1111-1111-gggggggggggg',
              'fixed_ip': '1.2.3.4',
-             'uuid': None},
+             'uuid': None,
+             'subnet': None},
             {'port': 'cccccccc-cccc-cccc-cccc-cccccccccccc',
              'network': 'gggggggg-1111-1111-1111-gggggggggggg',
              'fixed_ip': None,
-             'uuid': None},
+             'uuid': None,
+             'subnet': None},
             {'port': 'dddddddd-dddd-dddd-dddd-dddddddddddd',
              'network': None,
              'fixed_ip': None,
-             'uuid': None},
+             'uuid': None,
+             'subnet': None},
             {'port': 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
              'uuid': 'gggggggg-1111-1111-1111-gggggggggggg',
              'fixed_ip': '5.6.7.8',
-             'network': None},
-            {'port': 'ffffffff-ffff-ffff-ffff-ffffffffffff',
              'network': None,
-             'fixed_ip': None,
-             'uuid': '0da8adbf-a7e2-4c59-a511-96b03d2da0d7'}]
+             'subnet': None}]
 
         self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
                          return_value='gggggggg-1111-1111-1111-gggggggggggg')
@@ -3131,6 +3101,9 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(return_server, 'interface_detach')
         return_server.interface_detach(
             'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa').AndReturn(None)
+
+        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
+                         return_value=None)
 
         self.m.StubOutWithMock(return_server, 'interface_attach')
         return_server.interface_attach(

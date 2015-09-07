@@ -24,8 +24,8 @@ from heat.common import exception
 from heat.common.i18n import _LE
 from heat.common.i18n import _LI
 from heat.common import messaging as rpc_messaging
-from heat.engine import dependencies
 from heat.engine import resource
+from heat.engine import scheduler
 from heat.engine import stack as parser
 from heat.engine import sync_point
 from heat.objects import resource as resource_objects
@@ -45,7 +45,7 @@ class WorkerService(service.Service):
     or expect replies from these messages.
     """
 
-    RPC_API_VERSION = '1.1'
+    RPC_API_VERSION = '1.2'
 
     def __init__(self,
                  host,
@@ -60,13 +60,18 @@ class WorkerService(service.Service):
 
         self._rpc_client = rpc_client.WorkerClient()
         self._rpc_server = None
+        self.target = None
 
     def start(self):
         target = oslo_messaging.Target(
             version=self.RPC_API_VERSION,
             server=self.host,
             topic=self.topic)
-        LOG.info(_LI("Starting WorkerService ..."))
+        self.target = target
+        LOG.info(_LI("Starting %(topic)s (%(version)s) in engine %(engine)s."),
+                 {'topic': self.topic,
+                  'version': self.RPC_API_VERSION,
+                  'engine': self.engine_id})
 
         self._rpc_server = rpc_messaging.get_rpc_server(target, self)
         self._rpc_server.start()
@@ -75,12 +80,14 @@ class WorkerService(service.Service):
 
     def stop(self):
         # Stop rpc connection at first for preventing new requests
-        LOG.info(_LI("Stopping WorkerService ..."))
+        LOG.info(_LI("Stopping %(topic)s in engine %(engine)s."),
+                 {'topic': self.topic, 'engine': self.engine_id})
         try:
             self._rpc_server.stop()
             self._rpc_server.wait()
         except Exception as e:
-            LOG.error(_LE("WorkerService is failed to stop, %s"), e)
+            LOG.error(_LE("%(topic)s is failed to stop, %(exc)s"),
+                      {'topic': self.topic, 'exc': e})
 
         super(WorkerService, self).stop()
 
@@ -101,13 +108,7 @@ class WorkerService(service.Service):
                  {'action': stack.action, 'stack_name': stack.name})
         stack.rollback()
 
-    def _handle_resource_failure(self, cnxt, stack_id, traversal_id,
-                                 failure_reason):
-        stack = parser.Stack.load(cnxt, stack_id=stack_id)
-        # make sure no new stack operation was triggered
-        if stack.current_traversal != traversal_id:
-            return
-
+    def _handle_failure(self, cnxt, stack, failure_reason):
         stack.state_set(stack.action, stack.FAILED, failure_reason)
 
         if (not stack.disable_rollback and
@@ -116,13 +117,28 @@ class WorkerService(service.Service):
         else:
             stack.purge_db()
 
-    def _load_resource(self, cnxt, resource_id, data, is_update):
-        adopt_data = data.get('adopt_stack_data')
-        data = dict(sync_point.deserialize_input_data(data))
-        cache_data = {in_data.get(
-            'name'): in_data for in_data in data.values()
-            if in_data is not None}
-        cache_data['adopt_stack_data'] = adopt_data
+    def _handle_resource_failure(self, cnxt, stack_id, traversal_id,
+                                 failure_reason):
+        stack = parser.Stack.load(cnxt, stack_id=stack_id)
+        # make sure no new stack operation was triggered
+        if stack.current_traversal != traversal_id:
+            return
+
+        self._handle_failure(cnxt, stack, failure_reason)
+
+    def _handle_stack_timeout(self, cnxt, stack):
+        failure_reason = u'Timed out'
+        self._handle_failure(cnxt, stack, failure_reason)
+
+    def _load_resource(self, cnxt, resource_id, resource_data, is_update):
+        if is_update:
+            cache_data = {in_data.get(
+                'name'): in_data for in_data in resource_data.values()
+                if in_data is not None}
+        else:
+            # no data to resolve in cleanup phase
+            cache_data = {}
+
         rsrc, stack = None, None
         try:
             rsrc, stack = resource.Resource.load(cnxt, resource_id, is_update,
@@ -132,48 +148,55 @@ class WorkerService(service.Service):
 
         return rsrc, stack
 
-    def _do_check_resource(self, cnxt, current_traversal, tmpl, data,
-                           is_update, rsrc, stack_id):
+    def _do_check_resource(self, cnxt, current_traversal, tmpl, resource_data,
+                           is_update, rsrc, stack, adopt_stack_data):
         try:
             if is_update:
                 try:
-                    check_resource_update(rsrc, tmpl.id, data, self.engine_id)
+                    check_resource_update(rsrc, tmpl.id, resource_data,
+                                          self.engine_id,
+                                          stack.time_remaining())
                 except resource.UpdateReplace:
                     new_res_id = rsrc.make_replacement(tmpl.id)
                     LOG.info("Replacing resource with new id %s", new_res_id)
-                    data = sync_point.serialize_input_data(data)
+                    rpc_data = sync_point.serialize_input_data(resource_data)
                     self._rpc_client.check_resource(cnxt,
                                                     new_res_id,
                                                     current_traversal,
-                                                    data, is_update)
+                                                    rpc_data, is_update,
+                                                    adopt_stack_data)
                     return False
 
             else:
-                check_resource_cleanup(rsrc, tmpl.id, data, self.engine_id)
+                check_resource_cleanup(rsrc, tmpl.id, resource_data,
+                                       self.engine_id, stack.time_remaining())
 
             return True
         except resource.UpdateInProgress:
             if self._try_steal_engine_lock(cnxt, rsrc.id):
+                rpc_data = sync_point.serialize_input_data(resource_data)
                 self._rpc_client.check_resource(cnxt,
                                                 rsrc.id,
                                                 current_traversal,
-                                                data, is_update)
+                                                rpc_data, is_update,
+                                                adopt_stack_data)
         except exception.ResourceFailure as ex:
             reason = 'Resource %s failed: %s' % (rsrc.action,
                                                  six.text_type(ex))
             self._handle_resource_failure(
-                cnxt, stack_id, current_traversal, reason)
+                cnxt, stack.id, current_traversal, reason)
+        except scheduler.Timeout:
+            # reload the stack to verify current traversal
+            stack = parser.Stack.load(cnxt, stack_id=stack.id)
+            if stack.current_traversal != current_traversal:
+                return
+            self._handle_stack_timeout(cnxt, stack)
 
         return False
 
-    def _compute_dependencies(self, stack):
-        current_deps = ([tuple(i), (tuple(j) if j is not None else None)]
-                        for i, j in stack.current_deps['edges'])
-        return dependencies.Dependencies(edges=current_deps)
-
     def _retrigger_check_resource(self, cnxt, is_update, resource_id, stack):
         current_traversal = stack.current_traversal
-        graph = self._compute_dependencies(stack).graph()
+        graph = stack.convergence_dependencies.graph()
         key = (resource_id, is_update)
         predecessors = graph[key]
 
@@ -190,10 +213,7 @@ class WorkerService(service.Service):
     def _initiate_propagate_resource(self, cnxt, resource_id,
                                      current_traversal, is_update, rsrc,
                                      stack):
-        input_data = None
-        if is_update:
-            input_data = construct_input_data(rsrc)
-        deps = self._compute_dependencies(stack)
+        deps = stack.convergence_dependencies
         graph = deps.graph()
         graph_key = (resource_id, is_update)
 
@@ -206,12 +226,26 @@ class WorkerService(service.Service):
             # for the next traversal.
             graph_key = (rsrc.replaces, is_update)
 
+        def _get_input_data(req, fwd):
+            if fwd:
+                return construct_input_data(rsrc)
+            else:
+                # Don't send data if initiating clean-up for self i.e.
+                # initiating delete of a replaced resource
+                if req not in graph_key:
+                    # send replaced resource as needed_by if it exists
+                    return (rsrc.replaced_by
+                            if rsrc.replaced_by is not None
+                            else resource_id)
+            return None
+
         try:
             for req, fwd in deps.required_by(graph_key):
+                input_data = _get_input_data(req, fwd)
                 propagate_check_resource(
                     cnxt, self._rpc_client, req, current_traversal,
-                    set(graph[(req, fwd)]), graph_key,
-                    input_data if fwd else None, fwd)
+                    set(graph[(req, fwd)]), graph_key, input_data, fwd,
+                    stack.adopt_stack_data)
 
             check_stack_complete(cnxt, stack, current_traversal,
                                  resource_id, deps, is_update)
@@ -230,14 +264,16 @@ class WorkerService(service.Service):
 
     @context.request_context
     def check_resource(self, cnxt, resource_id, current_traversal, data,
-                       is_update):
+                       is_update, adopt_stack_data):
         '''
         Process a node in the dependency graph.
 
         The node may be associated with either an update or a cleanup of its
         associated resource.
         '''
-        rsrc, stack = self._load_resource(cnxt, resource_id, data, is_update)
+        resource_data = dict(sync_point.deserialize_input_data(data))
+        rsrc, stack = self._load_resource(cnxt, resource_id, resource_data,
+                                          is_update)
 
         if rsrc is None:
             return
@@ -246,7 +282,12 @@ class WorkerService(service.Service):
             LOG.debug('[%s] Traversal cancelled; stopping.', current_traversal)
             return
 
+        if stack.has_timed_out():
+            self._handle_stack_timeout(cnxt, stack)
+            return
+
         tmpl = stack.t
+        stack.adopt_stack_data = adopt_stack_data
 
         if is_update:
             if (rsrc.replaced_by is not None and
@@ -254,8 +295,10 @@ class WorkerService(service.Service):
                 return
 
         check_resource_done = self._do_check_resource(cnxt, current_traversal,
-                                                      tmpl, data, is_update,
-                                                      rsrc, stack.id)
+                                                      tmpl, resource_data,
+                                                      is_update,
+                                                      rsrc, stack,
+                                                      adopt_stack_data)
 
         if check_resource_done:
             # initiate check on next set of resources from graph
@@ -272,13 +315,16 @@ def construct_input_data(rsrc):
     resolved_attributes = {}
     for attr in attributes:
         try:
-            resolved_attributes[attr] = rsrc.FnGetAtt(attr)
+            if isinstance(attr, six.string_types):
+                resolved_attributes[attr] = rsrc.FnGetAtt(attr)
+            else:
+                resolved_attributes[attr] = rsrc.FnGetAtt(*attr)
         except exception.InvalidTemplateAttribute as ita:
             LOG.info(six.text_type(ita))
 
     input_data = {'id': rsrc.id,
                   'name': rsrc.name,
-                  'physical_resource_id': rsrc.resource_id,
+                  'reference_id': rsrc.FnGetRefId(),
                   'attrs': resolved_attributes}
     return input_data
 
@@ -306,38 +352,33 @@ def check_stack_complete(cnxt, stack, current_traversal, sender_id, deps,
 
 def propagate_check_resource(cnxt, rpc_client, next_res_id,
                              current_traversal, predecessors, sender_key,
-                             sender_data, is_update):
+                             sender_data, is_update, adopt_stack_data):
     '''
     Trigger processing of a node if all of its dependencies are satisfied.
     '''
     def do_check(entity_id, data):
         rpc_client.check_resource(cnxt, entity_id, current_traversal,
-                                  data, is_update)
+                                  data, is_update, adopt_stack_data)
 
     sync_point.sync(cnxt, next_res_id, current_traversal,
                     is_update, do_check, predecessors,
                     {sender_key: sender_data})
 
 
-def check_resource_update(rsrc, template_id, data, engine_id):
+def check_resource_update(rsrc, template_id, resource_data, engine_id,
+                          timeout):
     '''
     Create or update the Resource if appropriate.
     '''
-    if (rsrc.resource_id is None
-            and not (rsrc.action == resource.Resource.CREATE and
-                     rsrc.status in [
-                         resource.Resource.COMPLETE,
-                         resource.Resource.FAILED
-                     ])):
-        rsrc.create_convergence(template_id, data, engine_id)
+    if rsrc.action == resource.Resource.INIT:
+        rsrc.create_convergence(template_id, resource_data, engine_id, timeout)
     else:
-        rsrc.update_convergence(template_id, data, engine_id)
+        rsrc.update_convergence(template_id, resource_data, engine_id, timeout)
 
 
-def check_resource_cleanup(rsrc, template_id, data, engine_id):
+def check_resource_cleanup(rsrc, template_id, resource_data, engine_id,
+                           timeout):
     '''
     Delete the Resource if appropriate.
     '''
-
-    if rsrc.current_template_id != template_id:
-        rsrc.delete_convergence(engine_id)
+    rsrc.delete_convergence(template_id, resource_data, engine_id, timeout)

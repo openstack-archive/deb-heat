@@ -13,6 +13,7 @@
 
 from heat.common.i18n import _
 from heat.engine import attributes
+from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine import support
@@ -46,7 +47,11 @@ class CronTrigger(resource.Resource):
         ),
         PATTERN: properties.Schema(
             properties.Schema.STRING,
-            _('Cron expression.')
+            _('Cron expression.'),
+            constraints=[
+                constraints.CustomConstraint(
+                    'cron_expression')
+            ]
         ),
         WORKFLOW: properties.Schema(
             properties.Schema.MAP,
@@ -75,14 +80,18 @@ class CronTrigger(resource.Resource):
 
     attributes_schema = {
         NEXT_EXECUTION_TIME: attributes.Schema(
-            _('Time of the next execution in format "YYYY-MM-DD HH:MM:SS".')
+            _('Time of the next execution in format "YYYY-MM-DD HH:MM:SS".'),
+            type=attributes.Schema.STRING
         ),
         REMAINING_EXECUTIONS: attributes.Schema(
-            _('Number of remaining executions.')
+            _('Number of remaining executions.'),
+            type=attributes.Schema.INTEGER
         )
     }
 
     default_client_name = 'mistral'
+
+    entity = 'cron_triggers'
 
     def _cron_trigger_name(self):
         return self.properties.get(self.NAME) or self.physical_resource_name()
@@ -101,15 +110,6 @@ class CronTrigger(resource.Resource):
         cron_trigger = self.client().cron_triggers.create(**args)
         self.resource_id_set(cron_trigger.name)
 
-    def handle_delete(self):
-        if not self.resource_id:
-            return
-
-        try:
-            self.client().cron_triggers.delete(self.resource_id)
-        except Exception as ex:
-            self.client_plugin().ignore_not_found(ex)
-
     def _resolve_attribute(self, name):
         try:
             trigger = self.client().cron_triggers.get(self.resource_id)
@@ -120,6 +120,13 @@ class CronTrigger(resource.Resource):
             return trigger.next_execution_time
         elif name == self.REMAINING_EXECUTIONS:
             return trigger.remaining_executions
+
+    # TODO(tlashchova): remove this method when mistralclient>1.0.0 is used.
+    def _show_resource(self):
+        cron_trigger = self.client().cron_triggers.get(self.resource_id)
+        if hasattr(cron_trigger, 'to_dict'):
+            super(CronTrigger, self)._show_resource()
+        return cron_trigger._data
 
 
 def resource_mapping():

@@ -17,12 +17,13 @@ from oslo_log import log as logging
 from testtools import matchers
 
 from heat_integrationtests.common import test
+from heat_integrationtests.functional import functional_base
 
 
 LOG = logging.getLogger(__name__)
 
 
-class AutoscalingGroupTest(test.HeatIntegrationTest):
+class AutoscalingGroupTest(functional_base.FunctionalTestsBase):
 
     template = '''
 {
@@ -104,7 +105,7 @@ resources:
   waiter:
     type: AWS::CloudFormation::WaitCondition
     properties:
-      Handle: {Ref: ready_poster}
+      Handle: {get_resource: ready_poster}
       Timeout: 1
 outputs:
   PublicIp:
@@ -113,7 +114,6 @@ outputs:
 
     def setUp(self):
         super(AutoscalingGroupTest, self).setUp()
-        self.client = self.orchestration_client
         if not self.conf.image_ref:
             raise self.skipException("No image configured to test")
         if not self.conf.minimal_image_ref:
@@ -235,7 +235,7 @@ class AutoscalingGroupBasicTest(AutoscalingGroupTest):
             parameters={},
             environment=env
         )
-        self.addCleanup(self.client.stacks.delete, stack_name)
+        self.addCleanup(self._stack_delete, stack_name)
         stack = self.client.stacks.get(stack_name)
         stack_identifier = '%s/%s' % (stack_name, stack.id)
         self._wait_for_stack_status(stack_identifier, 'CREATE_FAILED')

@@ -32,6 +32,8 @@ class Workflow(signal_responder.SignalResponder,
 
     default_client_name = 'mistral'
 
+    entity = 'workflows'
+
     PROPERTIES = (
         NAME, TYPE, DESCRIPTION, INPUT, OUTPUT, TASKS, PARAMS
     ) = (
@@ -170,17 +172,20 @@ class Workflow(signal_responder.SignalResponder,
 
     attributes_schema = {
         WORKFLOW_DATA: attributes.Schema(
-            _('A dictionary which contains name and input of the workflow.')
+            _('A dictionary which contains name and input of the workflow.'),
+            type=attributes.Schema.MAP
         ),
         ALARM_URL: attributes.Schema(
             _("A signed url to create executions for workflows specified in "
-              "Workflow resource.")
+              "Workflow resource."),
+            type=attributes.Schema.STRING
         ),
         EXECUTIONS: attributes.Schema(
             _("List of workflows' executions, each of them is a dictionary "
               "with information about execution. Each dictionary returns "
               "values for next keys: id, workflow_name, created_at, "
-              "updated_at, state for current execution state, input, output.")
+              "updated_at, state for current execution state, input, output."),
+            type=attributes.Schema.LIST
         )
     }
 
@@ -350,7 +355,7 @@ class Workflow(signal_responder.SignalResponder,
             executions.extend(self.data().get(self.EXECUTIONS).split(','))
         self.data_set(self.EXECUTIONS, ','.join(executions))
 
-    def handle_update(self, json_snippet=None, tmpl_diff=None, prop_diff=None):
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         update_allowed = [self.INPUT, self.PARAMS, self.DESCRIPTION]
         for prop in update_allowed:
             if prop in prop_diff:
@@ -405,6 +410,13 @@ class Workflow(signal_responder.SignalResponder,
 
         elif name == self.ALARM_URL:
             return six.text_type(self._get_ec2_signed_url())
+
+    # TODO(tlashchova): remove this method when mistralclient>1.0.0 is used.
+    def _show_resource(self):
+        workflow = self.client().workflows.get(self.resource_id)
+        if hasattr(workflow, 'to_dict'):
+            super(Workflow, self)._show_resource()
+        return workflow._data
 
 
 def resource_mapping():

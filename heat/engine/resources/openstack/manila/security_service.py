@@ -84,25 +84,18 @@ class SecurityService(resource.Resource):
 
     default_client_name = 'manila'
 
+    entity = 'security_services'
+
     def handle_create(self):
         args = dict((k, v) for k, v in self.properties.items()
                     if v is not None)
         security_service = self.client().security_services.create(**args)
         self.resource_id_set(security_service.id)
 
-    def handle_update(self, json_snippet=None, tmpl_diff=None, prop_diff=None):
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
             self.client().security_services.update(self.resource_id,
                                                    **prop_diff)
-
-    def handle_delete(self):
-        if self.resource_id is None:
-            return
-
-        try:
-            self.client().security_services.delete(self.resource_id)
-        except Exception as ex:
-            self.client_plugin().ignore_not_found(ex)
 
 
 def resource_mapping():

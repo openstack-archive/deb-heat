@@ -25,6 +25,8 @@ class DesignateDomain(resource.Resource):
     support_status = support.SupportStatus(
         version='5.0.0')
 
+    entity = 'domains'
+
     PROPERTIES = (
         NAME, TTL, DESCRIPTION, EMAIL
     ) = (
@@ -77,6 +79,8 @@ class DesignateDomain(resource.Resource):
 
     default_client_name = 'designate'
 
+    entity = 'domains'
+
     def handle_create(self):
         args = dict(
             name=self.properties[self.NAME],
@@ -89,10 +93,7 @@ class DesignateDomain(resource.Resource):
 
         self.resource_id_set(domain.id)
 
-    def handle_update(self,
-                      json_snippet=None,
-                      tmpl_diff=None,
-                      prop_diff=None):
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         args = dict()
 
         if prop_diff.get(self.EMAIL):
@@ -108,17 +109,15 @@ class DesignateDomain(resource.Resource):
             args['id'] = self.resource_id
             self.client_plugin().domain_update(**args)
 
-    def handle_delete(self):
-        if self.resource_id is not None:
-            try:
-                self.client().domains.delete(self.resource_id)
-            except Exception as ex:
-                self.client_plugin().ignore_not_found(ex)
-
     def _resolve_attribute(self, name):
         if name == self.SERIAL:
             domain = self.client().domains.get(self.resource_id)
             return domain.serial
+
+    # FIXME(kanagaraj-manickam) Remove this method once designate defect
+    # 1485552 is fixed.
+    def _show_resource(self):
+        return dict(self.client().domains.get(self.resource_id).items())
 
 
 def resource_mapping():

@@ -19,7 +19,7 @@ from heat.engine import resource
 from heat.engine import support
 
 
-class KeystoneRoleAssignment(resource.Resource):
+class KeystoneRoleAssignmentMixin(object):
     '''
     Keystone Role assignment class implements role assignments between
     user/groups and project/domain.
@@ -50,12 +50,6 @@ class KeystoneRoleAssignment(resource.Resource):
               project: {get_param: group_role_project}
     '''
 
-    support_status = support.SupportStatus(
-        version='2015.1',
-        message=_('Supported versions: keystone v3'))
-
-    default_client_name = 'keystone'
-
     PROPERTIES = (
         ROLES
     ) = (
@@ -68,7 +62,7 @@ class KeystoneRoleAssignment(resource.Resource):
         'role', 'domain', 'project'
     )
 
-    properties_schema = {
+    mixin_properties_schema = {
         ROLES: properties.Schema(
             properties.Schema.LIST,
             _('List of role assignments.'),
@@ -180,24 +174,23 @@ class KeystoneRoleAssignment(resource.Resource):
             })
         return role_assignments
 
-    @staticmethod
-    def _find_diff(updated_prps, stored_prps):
+    def _find_differences(self, updated_prps, stored_prps):
         updated_role_project_assignments = []
         updated_role_domain_assignments = []
 
         # Split the properties into two set of role assignments
         # (project, domain) from updated properties
         for role_assignment in updated_prps or []:
-            if role_assignment.get(KeystoneRoleAssignment.PROJECT) is not None:
+            if role_assignment.get(self.PROJECT) is not None:
                 updated_role_project_assignments.append(
                     '%s:%s' % (
-                        role_assignment[KeystoneRoleAssignment.ROLE],
-                        role_assignment[KeystoneRoleAssignment.PROJECT]))
-            elif (role_assignment.get(KeystoneRoleAssignment.DOMAIN)
+                        role_assignment[self.ROLE],
+                        role_assignment[self.PROJECT]))
+            elif (role_assignment.get(self.DOMAIN)
                   is not None):
                 updated_role_domain_assignments.append(
-                    '%s:%s' % (role_assignment[KeystoneRoleAssignment.ROLE],
-                               role_assignment[KeystoneRoleAssignment.DOMAIN]))
+                    '%s:%s' % (role_assignment[self.ROLE],
+                               role_assignment[self.DOMAIN]))
 
         stored_role_project_assignments = []
         stored_role_domain_assignments = []
@@ -205,16 +198,16 @@ class KeystoneRoleAssignment(resource.Resource):
         # Split the properties into two set of role assignments
         # (project, domain) from updated properties
         for role_assignment in (stored_prps or []):
-            if role_assignment.get(KeystoneRoleAssignment.PROJECT) is not None:
+            if role_assignment.get(self.PROJECT) is not None:
                 stored_role_project_assignments.append(
                     '%s:%s' % (
-                        role_assignment[KeystoneRoleAssignment.ROLE],
-                        role_assignment[KeystoneRoleAssignment.PROJECT]))
-            elif (role_assignment.get(KeystoneRoleAssignment.DOMAIN)
+                        role_assignment[self.ROLE],
+                        role_assignment[self.PROJECT]))
+            elif (role_assignment.get(self.DOMAIN)
                   is not None):
                 stored_role_domain_assignments.append(
-                    '%s:%s' % (role_assignment[KeystoneRoleAssignment.ROLE],
-                               role_assignment[KeystoneRoleAssignment.DOMAIN]))
+                    '%s:%s' % (role_assignment[self.ROLE],
+                               role_assignment[self.DOMAIN]))
 
         new_role_assignments = []
         removed_role_assignments = []
@@ -224,34 +217,34 @@ class KeystoneRoleAssignment(resource.Resource):
         for item in (set(updated_role_project_assignments) -
                      set(stored_role_project_assignments)):
             new_role_assignments.append(
-                {KeystoneRoleAssignment.ROLE: item[:item.find(':')],
-                 KeystoneRoleAssignment.PROJECT: item[item.find(':') + 1:]}
+                {self.ROLE: item[:item.find(':')],
+                 self.PROJECT: item[item.find(':') + 1:]}
             )
 
         for item in (set(updated_role_domain_assignments) -
                      set(stored_role_domain_assignments)):
             new_role_assignments.append(
-                {KeystoneRoleAssignment.ROLE: item[:item.find(':')],
-                 KeystoneRoleAssignment.DOMAIN: item[item.find(':') + 1:]}
+                {self.ROLE: item[:item.find(':')],
+                 self.DOMAIN: item[item.find(':') + 1:]}
             )
 
         # Old items
         for item in (set(stored_role_project_assignments) -
                      set(updated_role_project_assignments)):
             removed_role_assignments.append(
-                {KeystoneRoleAssignment.ROLE: item[:item.find(':')],
-                 KeystoneRoleAssignment.PROJECT: item[item.find(':') + 1:]}
+                {self.ROLE: item[:item.find(':')],
+                 self.PROJECT: item[item.find(':') + 1:]}
             )
         for item in (set(stored_role_domain_assignments) -
                      set(updated_role_domain_assignments)):
             removed_role_assignments.append(
-                {KeystoneRoleAssignment.ROLE: item[:item.find(':')],
-                 KeystoneRoleAssignment.DOMAIN: item[item.find(':') + 1:]}
+                {self.ROLE: item[:item.find(':')],
+                 self.DOMAIN: item[item.find(':') + 1:]}
             )
 
         return new_role_assignments, removed_role_assignments
 
-    def handle_create(self, user_id=None, group_id=None):
+    def create_assignment(self, user_id=None, group_id=None):
         if self.properties.get(self.ROLES) is not None:
             if user_id is not None:
                 self._add_role_assignments_to_user(
@@ -262,9 +255,9 @@ class KeystoneRoleAssignment(resource.Resource):
                     group_id,
                     self.properties.get(self.ROLES))
 
-    def handle_update(self, user_id=None, group_id=None, prop_diff=None):
+    def update_assignment(self, prop_diff, user_id=None, group_id=None):
         (new_role_assignments,
-         removed_role_assignments) = KeystoneRoleAssignment._find_diff(
+         removed_role_assignments) = self._find_differences(
             prop_diff.get(self.ROLES),
             self._stored_properties_data.get(self.ROLES))
 
@@ -288,7 +281,7 @@ class KeystoneRoleAssignment(resource.Resource):
                     group_id,
                     removed_role_assignments)
 
-    def handle_delete(self, user_id=None, group_id=None):
+    def delete_assignment(self, user_id=None, group_id=None):
         if self._stored_properties_data.get(self.ROLES) is not None:
             if user_id is not None:
                 self._remove_role_assignments_from_user(
@@ -301,9 +294,7 @@ class KeystoneRoleAssignment(resource.Resource):
                     (self._stored_properties_data.
                      get(self.ROLES)))
 
-    def validate(self):
-        super(KeystoneRoleAssignment, self).validate()
-
+    def validate_assignment_properties(self):
         if self.properties.get(self.ROLES) is not None:
             for role_assignment in self.properties.get(self.ROLES):
                 project = role_assignment.get(self.PROJECT)
@@ -317,3 +308,112 @@ class KeystoneRoleAssignment(resource.Resource):
                     msg = _('Either project or domain must be specified for'
                             ' role %s') % role_assignment.get(self.ROLE)
                     raise exception.StackValidationFailed(message=msg)
+
+
+class KeystoneUserRoleAssignment(resource.Resource,
+                                 KeystoneRoleAssignmentMixin):
+    '''Resource for granting roles to a user.'''
+
+    support_status = support.SupportStatus(
+        version='5.0.0',
+        message=_('Supported versions: keystone v3'))
+
+    default_client_name = 'keystone'
+
+    PROPERTIES = (
+        USER,
+    ) = (
+        'user',
+    )
+
+    properties_schema = {
+        USER: properties.Schema(
+            properties.Schema.STRING,
+            _('Name or id of keystone user.'),
+            required=True,
+            update_allowed=True,
+            constraints=[constraints.CustomConstraint('keystone.user')]
+        )
+    }
+
+    properties_schema.update(
+        KeystoneRoleAssignmentMixin.mixin_properties_schema)
+
+    def __init__(self, *args, **kwargs):
+        super(KeystoneUserRoleAssignment, self).__init__(*args, **kwargs)
+
+    @property
+    def user_id(self):
+        return (self.client_plugin().get_user_id(
+                self.properties.get(self.USER)))
+
+    def handle_create(self):
+        self.create_assignment(user_id=self.user_id)
+
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
+        self.update_assignment(user_id=self.user_id, prop_diff=prop_diff)
+
+    def handle_delete(self):
+        self.delete_assignment(user_id=self.user_id)
+
+    def validate(self):
+        super(KeystoneUserRoleAssignment, self).validate()
+        self.validate_assignment_properties()
+
+
+class KeystoneGroupRoleAssignment(resource.Resource,
+                                  KeystoneRoleAssignmentMixin):
+    '''Resource for granting roles to a group.'''
+
+    support_status = support.SupportStatus(
+        version='5.0.0',
+        message=_('Supported versions: keystone v3'))
+
+    default_client_name = 'keystone'
+
+    PROPERTIES = (
+        GROUP,
+    ) = (
+        'group',
+    )
+
+    properties_schema = {
+        GROUP: properties.Schema(
+            properties.Schema.STRING,
+            _('Name or id of keystone group.'),
+            required=True,
+            update_allowed=True,
+            constraints=[constraints.CustomConstraint('keystone.group')]
+        )
+    }
+
+    properties_schema.update(
+        KeystoneRoleAssignmentMixin.mixin_properties_schema)
+
+    def __init__(self, *args, **kwargs):
+        super(KeystoneGroupRoleAssignment, self).__init__(*args, **kwargs)
+
+    @property
+    def group_id(self):
+        return (self.client_plugin().get_group_id(
+                self.properties.get(self.GROUP)))
+
+    def handle_create(self):
+        self.create_assignment(group_id=self.group_id)
+
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
+        self.update_assignment(group_id=self.group_id, prop_diff=prop_diff)
+
+    def handle_delete(self):
+        self.delete_assignment(group_id=self.group_id)
+
+    def validate(self):
+        super(KeystoneGroupRoleAssignment, self).validate()
+        self.validate_assignment_properties()
+
+
+def resource_mapping():
+    return {
+        'OS::Keystone::UserRoleAssignment': KeystoneUserRoleAssignment,
+        'OS::Keystone::GroupRoleAssignment': KeystoneGroupRoleAssignment
+    }

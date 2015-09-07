@@ -33,19 +33,11 @@ from heat.engine.hot import functions as hot_functions
 from heat.engine.hot import template as hottemplate
 from heat.engine import resource as res
 from heat.engine import service
-from heat.engine import service_stack_watch
 from heat.engine import stack as parser
 from heat.engine import stack_lock
 from heat.engine import template as templatem
-from heat.engine import watchrule
-from heat.objects import raw_template as raw_template_object
-from heat.objects import resource as resource_objects
 from heat.objects import stack as stack_object
-from heat.objects import sync_point as sync_point_object
-from heat.objects import watch_data as watch_data_object
-from heat.objects import watch_rule as watch_rule_object
 from heat.rpc import api as rpc_api
-from heat.rpc import worker_client
 from heat.tests import common
 from heat.tests.engine import tools
 from heat.tests import generic_resource as generic_rsrc
@@ -54,46 +46,6 @@ from heat.tests import utils
 
 cfg.CONF.import_opt('engine_life_check_timeout', 'heat.common.config')
 cfg.CONF.import_opt('enable_stack_abandon', 'heat.common.config')
-
-
-string_template_five_update = '''
-heat_template_version: 2013-05-23
-description: Random String templates
-
-parameters:
-    salt:
-        type: string
-        default: "quickbrownfox123"
-
-resources:
-    A:
-        type: OS::Heat::RandomString
-        properties:
-            salt: {get_param: salt}
-
-    B:
-        type: OS::Heat::RandomString
-        properties:
-            salt: {get_param: salt}
-
-    F:
-        type: OS::Heat::RandomString
-        depends_on: [A, B]
-        properties:
-            salt: {get_param: salt}
-
-    G:
-        type: OS::Heat::RandomString
-        depends_on: F
-        properties:
-            salt: {get_param: salt}
-
-    H:
-        type: OS::Heat::RandomString
-        depends_on: F
-        properties:
-            salt: {get_param: salt}
-'''
 
 wp_template_no_default = '''
 {
@@ -132,6 +84,9 @@ policy_template = '''
         "Cooldown" : "60",
         "ScalingAdjustment" : "-1"
       }
+    },
+    "Random" : {
+      "Type" : "OS::Heat::RandomString"
     }
   }
 }
@@ -182,416 +137,6 @@ resources:
 '''
 
 
-@mock.patch.object(worker_client.WorkerClient, 'check_resource')
-class StackConvergenceCreateUpdateDeleteTest(common.HeatTestCase):
-    def setUp(self):
-        super(StackConvergenceCreateUpdateDeleteTest, self).setUp()
-        cfg.CONF.set_override('convergence_engine', True)
-
-    @mock.patch.object(parser.Stack, 'mark_complete')
-    def test_converge_empty_template(self, mock_mc, mock_cr):
-        empty_tmpl = templatem.Template.create_empty_template()
-        stack = parser.Stack(utils.dummy_context(), 'empty_tmpl_stack',
-                             empty_tmpl, convergence=True)
-        stack.store()
-        stack.converge_stack(template=stack.t, action=stack.CREATE)
-        self.assertFalse(mock_cr.called)
-        mock_mc.assert_called_once_with(stack.current_traversal)
-
-    def test_conv_wordpress_single_instance_stack_create(self, mock_cr):
-        stack = tools.get_stack('test_stack', utils.dummy_context(),
-                                convergence=True)
-        stack.store()  # usually, stack is stored before converge is called
-
-        stack.converge_stack(template=stack.t, action=stack.CREATE)
-        self.assertIsNone(stack.ext_rsrcs_db)
-        self.assertEqual('Dependencies([((1, True), None)])',
-                         repr(stack.convergence_dependencies))
-
-        stack_db = stack_object.Stack.get_by_id(stack.context, stack.id)
-        self.assertIsNotNone(stack_db.current_traversal)
-        self.assertIsNotNone(stack_db.raw_template_id)
-
-        self.assertIsNone(stack_db.prev_raw_template_id)
-
-        self.assertEqual(stack_db.convergence, True)
-        self.assertEqual({'edges': [[[1, True], None]]}, stack_db.current_deps)
-        leaves = stack.convergence_dependencies.leaves()
-        expected_calls = []
-        for rsrc_id, is_update in leaves:
-            expected_calls.append(
-                mock.call.worker_client.WorkerClient.check_resource(
-                    stack.context, rsrc_id, stack.current_traversal,
-                    {'input_data': {}, 'adopt_stack_data': None},
-                    is_update))
-        self.assertEqual(expected_calls, mock_cr.mock_calls)
-
-    def test_conv_string_five_instance_stack_create(self, mock_cr):
-        stack = tools.get_stack('test_stack', utils.dummy_context(),
-                                template=tools.string_template_five,
-                                convergence=True)
-        stack.store()
-        stack.converge_stack(template=stack.t, action=stack.CREATE)
-        self.assertIsNone(stack.ext_rsrcs_db)
-        self.assertEqual('Dependencies(['
-                         '((3, True), (5, True)), '
-                         '((3, True), (4, True)), '
-                         '((1, True), (3, True)), '
-                         '((2, True), (3, True))])',
-                         repr(stack.convergence_dependencies))
-
-        stack_db = stack_object.Stack.get_by_id(stack.context, stack.id)
-        self.assertIsNotNone(stack_db.current_traversal)
-        self.assertIsNotNone(stack_db.raw_template_id)
-        self.assertIsNone(stack_db.prev_raw_template_id)
-        self.assertEqual(stack_db.convergence, True)
-        self.assertEqual(sorted([[[3, True], [5, True]],    # C, A
-                                 [[3, True], [4, True]],    # C, B
-                                 [[1, True], [3, True]],    # E, C
-                                 [[2, True], [3, True]]]),  # D, C
-                         sorted(stack_db.current_deps['edges']))
-
-        # check if needed_by is stored properly
-        expected_needed_by = {'A': [3], 'B': [3],
-                              'C': [1, 2],
-                              'D': [], 'E': []}
-        rsrcs_db = resource_objects.Resource.get_all_by_stack(
-            stack_db._context, stack_db.id
-        )
-        self.assertEqual(5, len(rsrcs_db))
-        for rsrc_name, rsrc_obj in rsrcs_db.items():
-            self.assertEqual(sorted(expected_needed_by[rsrc_name]),
-                             sorted(rsrc_obj.needed_by))
-            self.assertEqual(stack_db.raw_template_id,
-                             rsrc_obj.current_template_id)
-
-        # check if sync_points were stored
-        for entity_id in [5, 4, 3, 2, 1, stack_db.id]:
-            sync_point = sync_point_object.SyncPoint.get_by_key(
-                stack_db._context, entity_id, stack_db.current_traversal, True
-            )
-            self.assertIsNotNone(sync_point)
-            self.assertEqual(stack_db.id, sync_point.stack_id)
-
-        leaves = stack.convergence_dependencies.leaves()
-        expected_calls = []
-        for rsrc_id, is_update in leaves:
-            expected_calls.append(
-                mock.call.worker_client.WorkerClient.check_resource(
-                    stack.context, rsrc_id, stack.current_traversal,
-                    {'input_data': {}, 'adopt_stack_data': None},
-                    is_update))
-        self.assertEqual(expected_calls, mock_cr.mock_calls)
-
-    def _mock_conv_update_requires(self, stack, conv_deps):
-        """Updates requires column of resources.
-        Required for testing the generation of convergence dependency graph
-        on an update.
-        """
-        requires = dict()
-        for rsrc_id, is_update in conv_deps:
-            reqs = conv_deps.requires((rsrc_id, is_update))
-            requires[rsrc_id] = list({id for id, is_update in reqs})
-
-        rsrcs_db = resource_objects.Resource.get_all_by_stack(
-            stack.context, stack.id)
-
-        for res_name, rsrc in rsrcs_db.items():
-            if rsrc.id in requires:
-                rsrcs_db[res_name].requires = requires[rsrc.id]
-
-        return rsrcs_db
-
-    def test_conv_string_five_instance_stack_update(self, mock_cr):
-        stack = tools.get_stack('test_stack', utils.dummy_context(),
-                                template=tools.string_template_five,
-                                convergence=True)
-        stack.store()
-        # create stack
-        stack.converge_stack(template=stack.t, action=stack.CREATE)
-
-        curr_stack_db = stack_object.Stack.get_by_id(stack.context, stack.id)
-        curr_stack = parser.Stack.load(curr_stack_db._context,
-                                       stack=curr_stack_db)
-        # update stack with new template
-        t2 = template_format.parse(string_template_five_update)
-        template2 = templatem.Template(
-            t2, env=environment.Environment({'KeyName2': 'test2'}))
-
-        # on our previous create_complete, worker would have updated the
-        # rsrc.requires. Mock the same behavior here.
-        with mock.patch.object(resource_objects.Resource, 'get_all_by_stack',
-                               return_value=self._mock_conv_update_requires(
-                                   stack, stack.convergence_dependencies)):
-            curr_stack.converge_stack(template=template2, action=stack.UPDATE)
-
-        self.assertIsNotNone(curr_stack.ext_rsrcs_db)
-        self.assertEqual('Dependencies(['
-                         '((7, True), (8, True)), '
-                         '((8, True), (5, True)), '
-                         '((8, True), (4, True)), '
-                         '((6, True), (8, True)), '
-                         '((3, False), (2, False)), '
-                         '((3, False), (1, False)), '
-                         '((5, False), (3, False)), '
-                         '((5, False), (5, True)), '
-                         '((4, False), (3, False)), '
-                         '((4, False), (4, True))])',
-                         repr(curr_stack.convergence_dependencies))
-
-        stack_db = stack_object.Stack.get_by_id(curr_stack.context,
-                                                curr_stack.id)
-        self.assertIsNotNone(stack_db.raw_template_id)
-        self.assertIsNotNone(stack_db.current_traversal)
-        self.assertIsNotNone(stack_db.prev_raw_template_id)
-        self.assertEqual(True, stack_db.convergence)
-        self.assertEqual(sorted([[[7, True], [8, True]],
-                                 [[8, True], [5, True]],
-                                 [[8, True], [4, True]],
-                                 [[6, True], [8, True]],
-                                 [[3, False], [2, False]],
-                                 [[3, False], [1, False]],
-                                 [[5, False], [3, False]],
-                                 [[5, False], [5, True]],
-                                 [[4, False], [3, False]],
-                                 [[4, False], [4, True]]]),
-                         sorted(stack_db.current_deps['edges']))
-        '''
-        To visualize:
-
-        G(7, True)       H(6, True)
-            \                 /
-              \             /           B(4, False)   A(5, False)
-                \         /               /       \  /    /
-                  \     /            /           /
-               F(8, True)       /             /     \  /
-                    /  \    /             /     C(3, False)
-                  /      \            /            /    \
-                /     /    \      /
-              /    /         \ /                /          \
-        B(4, True)      A(5, True)       D(2, False)    E(1, False)
-
-        Leaves are at the bottom
-        '''
-
-        # check if needed_by are stored properly
-        # For A & B:
-        # needed_by=C, F
-
-        expected_needed_by = {'A': [3, 8], 'B': [3, 8],
-                              'C': [1, 2],
-                              'D': [], 'E': [],
-                              'F': [6, 7],
-                              'G': [], 'H': []}
-        rsrcs_db = resource_objects.Resource.get_all_by_stack(
-            stack_db._context, stack_db.id
-        )
-        self.assertEqual(8, len(rsrcs_db))
-        for rsrc_name, rsrc_obj in rsrcs_db.items():
-            self.assertEqual(sorted(expected_needed_by[rsrc_name]),
-                             sorted(rsrc_obj.needed_by))
-
-        # check if sync_points are created for forward traversal
-        # [F, H, G, A, B, Stack]
-        for entity_id in [8, 7, 6, 5, 4, stack_db.id]:
-            sync_point = sync_point_object.SyncPoint.get_by_key(
-                stack_db._context, entity_id, stack_db.current_traversal, True
-            )
-            self.assertIsNotNone(sync_point)
-            self.assertEqual(stack_db.id, sync_point.stack_id)
-
-        # check if sync_points are created for cleanup traversal
-        # [A, B, C, D, E]
-        for entity_id in [5, 4, 3, 2, 1]:
-            sync_point = sync_point_object.SyncPoint.get_by_key(
-                stack_db._context, entity_id, stack_db.current_traversal, False
-            )
-            self.assertIsNotNone(sync_point)
-            self.assertEqual(stack_db.id, sync_point.stack_id)
-
-        leaves = stack.convergence_dependencies.leaves()
-        expected_calls = []
-        for rsrc_id, is_update in leaves:
-            expected_calls.append(
-                mock.call.worker_client.WorkerClient.check_resource(
-                    stack.context, rsrc_id, stack.current_traversal,
-                    {'input_data': {}, 'adopt_stack_data': None},
-                    is_update))
-
-        leaves = curr_stack.convergence_dependencies.leaves()
-        for rsrc_id, is_update in leaves:
-            expected_calls.append(
-                mock.call.worker_client.WorkerClient.check_resource(
-                    curr_stack.context, rsrc_id, curr_stack.current_traversal,
-                    {'input_data': {}, 'adopt_stack_data': None},
-                    is_update))
-        self.assertEqual(expected_calls, mock_cr.mock_calls)
-
-    def test_conv_empty_template_stack_update_delete(self, mock_cr):
-        stack = tools.get_stack('test_stack', utils.dummy_context(),
-                                template=tools.string_template_five,
-                                convergence=True)
-        stack.store()
-        # create stack
-        stack.converge_stack(template=stack.t, action=stack.CREATE)
-
-        # update stack with new template
-        template2 = templatem.Template.create_empty_template(
-            version=stack.t.version)
-
-        curr_stack_db = stack_object.Stack.get_by_id(stack.context, stack.id)
-        curr_stack = parser.Stack.load(curr_stack_db._context,
-                                       stack=curr_stack_db)
-        # on our previous create_complete, worker would have updated the
-        # rsrc.requires. Mock the same behavior here.
-        with mock.patch.object(resource_objects.Resource, 'get_all_by_stack',
-                               return_value=self._mock_conv_update_requires(
-                                   stack, stack.convergence_dependencies)):
-            curr_stack.converge_stack(template=template2, action=stack.DELETE)
-
-        self.assertIsNotNone(curr_stack.ext_rsrcs_db)
-        self.assertEqual('Dependencies(['
-                         '((3, False), (2, False)), '
-                         '((3, False), (1, False)), '
-                         '((5, False), (3, False)), '
-                         '((4, False), (3, False))])',
-                         repr(curr_stack.convergence_dependencies))
-
-        stack_db = stack_object.Stack.get_by_id(curr_stack.context,
-                                                curr_stack.id)
-        self.assertIsNotNone(stack_db.current_traversal)
-        self.assertIsNotNone(stack_db.prev_raw_template_id)
-        self.assertEqual(sorted([[[3, False], [2, False]],
-                                 [[3, False], [1, False]],
-                                 [[5, False], [3, False]],
-                                 [[4, False], [3, False]]]),
-                         sorted(stack_db.current_deps['edges']))
-
-        expected_needed_by = {'A': [3], 'B': [3],
-                              'C': [1, 2],
-                              'D': [], 'E': []}
-        rsrcs_db = resource_objects.Resource.get_all_by_stack(
-            stack_db._context, stack_db.id
-        )
-        self.assertEqual(5, len(rsrcs_db))
-        for rsrc_name, rsrc_obj in rsrcs_db.items():
-            self.assertEqual(sorted(expected_needed_by[rsrc_name]),
-                             sorted(rsrc_obj.needed_by))
-
-        # check if sync_points are created for cleanup traversal
-        # [A, B, C, D, E, Stack]
-        for entity_id in [5, 4, 3, 2, 1, stack_db.id]:
-            is_update = False
-            if entity_id == stack_db.id:
-                is_update = True
-            sync_point = sync_point_object.SyncPoint.get_by_key(
-                stack_db._context, entity_id, stack_db.current_traversal,
-                is_update)
-            self.assertIsNotNone(sync_point, 'entity %s' % entity_id)
-            self.assertEqual(stack_db.id, sync_point.stack_id)
-
-        leaves = stack.convergence_dependencies.leaves()
-        expected_calls = []
-        for rsrc_id, is_update in leaves:
-            expected_calls.append(
-                mock.call.worker_client.WorkerClient.check_resource(
-                    stack.context, rsrc_id, stack.current_traversal,
-                    {'input_data': {}, 'adopt_stack_data': None},
-                    is_update))
-
-        leaves = curr_stack.convergence_dependencies.leaves()
-        for rsrc_id, is_update in leaves:
-            expected_calls.append(
-                mock.call.worker_client.WorkerClient.check_resource(
-                    curr_stack.context, rsrc_id, curr_stack.current_traversal,
-                    {'input_data': {}, 'adopt_stack_data': None},
-                    is_update))
-        self.assertEqual(expected_calls, mock_cr.mock_calls)
-
-    def test_mark_complete_purges_db(self, mock_cr):
-        stack = tools.get_stack('test_stack', utils.dummy_context(),
-                                template=tools.string_template_five,
-                                convergence=True)
-        stack.store()
-        stack.purge_db = mock.Mock()
-        stack.mark_complete(stack.current_traversal)
-        self.assertTrue(stack.purge_db.called)
-
-    @mock.patch.object(raw_template_object.RawTemplate, 'delete')
-    def test_purge_db_deletes_previous_template(self, mock_tmpl_delete,
-                                                mock_cr):
-        stack = tools.get_stack('test_stack', utils.dummy_context(),
-                                template=tools.string_template_five,
-                                convergence=True)
-        stack.prev_raw_template_id = 10
-        stack.purge_db()
-        self.assertTrue(mock_tmpl_delete.called)
-
-    @mock.patch.object(raw_template_object.RawTemplate, 'delete')
-    def test_purge_db_does_not_delete_previous_template_when_stack_fails(
-            self, mock_tmpl_delete, mock_cr):
-        stack = tools.get_stack('test_stack', utils.dummy_context(),
-                                template=tools.string_template_five,
-                                convergence=True)
-        stack.status = stack.FAILED
-        stack.purge_db()
-        self.assertFalse(mock_tmpl_delete.called)
-
-    def test_purge_db_deletes_sync_points(self, mock_cr):
-        stack = tools.get_stack('test_stack', utils.dummy_context(),
-                                template=tools.string_template_five,
-                                convergence=True)
-        stack.store()
-        stack.purge_db()
-        rows = sync_point_object.SyncPoint.delete_all_by_stack_and_traversal(
-            stack.context, stack.id, stack.current_traversal)
-        self.assertEqual(0, rows)
-
-    @mock.patch.object(stack_object.Stack, 'delete')
-    def test_purge_db_deletes_stack_for_deleted_stack(self, mock_stack_delete,
-                                                      mock_cr):
-        stack = tools.get_stack('test_stack', utils.dummy_context(),
-                                template=tools.string_template_five,
-                                convergence=True)
-        stack.store()
-        stack.state_set(stack.DELETE, stack.COMPLETE, 'test reason')
-        stack.purge_db()
-        self.assertTrue(mock_stack_delete.called)
-
-    def test_get_best_existing_db_resource(self, mock_cr):
-        stack = tools.get_stack('test_stack', utils.dummy_context(),
-                                template=tools.string_template_five,
-                                convergence=True)
-        stack.store()
-        stack.prev_raw_template_id = 2
-        stack.t.id = 1
-        dummy_res = stack.resources['A']
-        a_res_2 = res.Resource('A', dummy_res.t, stack)
-        a_res_2.current_template_id = 2
-        a_res_2.id = 2
-        a_res_3 = res.Resource('A', dummy_res.t, stack)
-        a_res_3.current_template_id = 3
-        a_res_3.id = 3
-        a_res_1 = res.Resource('A', dummy_res.t, stack)
-        a_res_1.current_template_id = 1
-        a_res_1.id = 1
-        existing_res = {2: a_res_2,
-                        3: a_res_3,
-                        1: a_res_1}
-        stack.ext_rsrcs_db = existing_res
-        best_res = stack._get_best_existing_rsrc_db('A')
-        # should return resource with template id 1 which is current template
-        self.assertEqual(a_res_1.id, best_res.id)
-
-        # no resource with current template id as 1
-        existing_res = {2: a_res_2,
-                        3: a_res_3}
-        stack.ext_rsrcs_db = existing_res
-        best_res = stack._get_best_existing_rsrc_db('A')
-        # should return resource with template id 2 which is prev template
-        self.assertEqual(a_res_2.id, best_res.id)
-
-
 class StackCreateTest(common.HeatTestCase):
     def setUp(self):
         super(StackCreateTest, self).setUp()
@@ -604,7 +149,7 @@ class StackCreateTest(common.HeatTestCase):
         stack.create()
 
         self.assertIsNotNone(stack['WebServer'])
-        self.assertTrue(stack['WebServer'].resource_id > 0)
+        self.assertTrue(int(stack['WebServer'].resource_id) > 0)
         self.assertNotEqual(stack['WebServer'].ipaddress, '0.0.0.0')
 
     def test_wordpress_single_instance_stack_adopt(self):
@@ -670,7 +215,7 @@ class StackCreateTest(common.HeatTestCase):
         self.assertIsNotNone(db_s)
 
         self.assertIsNotNone(stack['WebServer'])
-        self.assertTrue(stack['WebServer'].resource_id > 0)
+        self.assertTrue(int(stack['WebServer'].resource_id) > 0)
 
         self.patchobject(fc.servers, 'delete',
                          side_effect=fakes_nova.fake_exception())
@@ -837,7 +382,7 @@ class StackServiceAdoptUpdateTest(common.HeatTestCase):
 
     def test_stack_update_existing_parameters(self):
         '''Use a template with existing parameters, then update with a
-        template containing additional paramters and ensure all are preserved.
+        template containing additional parameters and ensure all are preserved.
         '''
         stack_name = 'service_update_test_stack_existing_parameters'
         update_params = {'encrypted_param_names': [],
@@ -867,7 +412,7 @@ class StackServiceAdoptUpdateTest(common.HeatTestCase):
 
     def test_stack_update_existing_parameters_remove(self):
         '''Use a template with existing parameters, then update with a
-        template containing additional paramters and a list of
+        template containing additional parameters and a list of
         parameters to be removed.
         '''
         stack_name = 'service_update_test_stack_existing_parameters'
@@ -898,6 +443,111 @@ class StackServiceAdoptUpdateTest(common.HeatTestCase):
             tmpl = mock_stack.call_args[0][2]
             self.assertEqual({'KeyName': 'test', 'newparam': 123},
                              tmpl.env.params)
+            self.assertEqual(stack.identifier(), result)
+
+    def test_stack_update_existing_registry(self):
+        '''Use a template with existing flag and ensure the
+        environment registry is preserved.
+        '''
+        stack_name = 'service_update_test_stack_existing_registry'
+        intital_registry = {'OS::Foo': 'foo.yaml',
+                            'OS::Foo2': 'foo2.yaml',
+                            'resources': {
+                                'myserver': {'OS::Server': 'myserver.yaml'}}}
+        intial_params = {'encrypted_param_names': [],
+                         'parameter_defaults': {},
+                         'parameters': {},
+                         'resource_registry': intital_registry}
+        initial_files = {'foo.yaml': 'foo',
+                         'foo2.yaml': 'foo2',
+                         'myserver.yaml': 'myserver'}
+        update_registry = {'OS::Foo2': 'newfoo2.yaml',
+                           'resources': {
+                               'myother': {'OS::Other': 'myother.yaml'}}}
+        update_params = {'encrypted_param_names': [],
+                         'parameter_defaults': {},
+                         'parameters': {},
+                         'resource_registry': update_registry}
+        update_files = {'newfoo2.yaml': 'newfoo',
+                        'myother.yaml': 'myother'}
+        api_args = {rpc_api.PARAM_TIMEOUT: 60,
+                    rpc_api.PARAM_EXISTING: True}
+        t = template_format.parse(tools.wp_template)
+
+        stack = utils.parse_stack(t, stack_name=stack_name,
+                                  params=intial_params,
+                                  files=initial_files)
+        stack.set_stack_user_project_id('1234')
+        self.assertEqual(intial_params,
+                         stack.t.env.user_env_as_dict())
+
+        expected_reg = {'OS::Foo': 'foo.yaml',
+                        'OS::Foo2': 'newfoo2.yaml',
+                        'resources': {
+                            'myother': {'OS::Other': 'myother.yaml'},
+                            'myserver': {'OS::Server': 'myserver.yaml'}}}
+        expected_env = {'encrypted_param_names': [],
+                        'parameter_defaults': {},
+                        'parameters': {},
+                        'resource_registry': expected_reg}
+        # FIXME(shardy): Currently we don't prune unused old files
+        expected_files = {'foo.yaml': 'foo',
+                          'foo2.yaml': 'foo2',
+                          'myserver.yaml': 'myserver',
+                          'newfoo2.yaml': 'newfoo',
+                          'myother.yaml': 'myother'}
+        with mock.patch('heat.engine.stack.Stack') as mock_stack:
+            mock_stack.load.return_value = stack
+            mock_stack.validate.return_value = None
+            result = self.man.update_stack(self.ctx, stack.identifier(),
+                                           t,
+                                           update_params,
+                                           update_files,
+                                           api_args)
+            tmpl = mock_stack.call_args[0][2]
+            self.assertEqual(expected_env,
+                             tmpl.env.user_env_as_dict())
+            self.assertEqual(expected_files,
+                             tmpl.files)
+            self.assertEqual(stack.identifier(), result)
+
+    def test_stack_update_existing_parameter_defaults(self):
+        '''Use a template with existing flag and ensure the
+        environment parameter_defaults are preserved.
+        '''
+        stack_name = 'service_update_test_stack_existing_param_defaults'
+        intial_params = {'encrypted_param_names': [],
+                         'parameter_defaults': {'mydefault': 123},
+                         'parameters': {},
+                         'resource_registry': {}}
+        update_params = {'encrypted_param_names': [],
+                         'parameter_defaults': {'default2': 456},
+                         'parameters': {},
+                         'resource_registry': {}}
+        api_args = {rpc_api.PARAM_TIMEOUT: 60,
+                    rpc_api.PARAM_EXISTING: True}
+        t = template_format.parse(tools.wp_template)
+
+        stack = utils.parse_stack(t, stack_name=stack_name,
+                                  params=intial_params)
+        stack.set_stack_user_project_id('1234')
+
+        expected_env = {'encrypted_param_names': [],
+                        'parameter_defaults': {
+                            'mydefault': 123,
+                            'default2': 456},
+                        'parameters': {},
+                        'resource_registry': {'resources': {}}}
+        with mock.patch('heat.engine.stack.Stack') as mock_stack:
+            mock_stack.load.return_value = stack
+            mock_stack.validate.return_value = None
+            result = self.man.update_stack(self.ctx, stack.identifier(),
+                                           t,
+                                           update_params,
+                                           None, api_args)
+            tmpl = mock_stack.call_args[0][2]
+            self.assertEqual(expected_env,
+                             tmpl.env.user_env_as_dict())
             self.assertEqual(stack.identifier(), result)
 
     def test_stack_update_reuses_api_params(self):
@@ -956,7 +606,8 @@ class StackServiceAdoptUpdateTest(common.HeatTestCase):
         lock_mock = self.patchobject(stack_lock.StackLock, 'try_acquire')
         lock_mock.return_value = self.man.engine_id
         self.patchobject(self.man.thread_group_mgr, 'send')
-        self.man.stack_cancel_update(self.ctx, old_stack.identifier())
+        self.man.stack_cancel_update(self.ctx, old_stack.identifier(),
+                                     cancel_with_rollback=False)
         self.man.thread_group_mgr.send.assert_called_once_with(old_stack.id,
                                                                'cancel')
 
@@ -1243,6 +894,209 @@ class StackServiceAdoptUpdateTest(common.HeatTestCase):
 
         self.m.VerifyAll()
 
+    def _test_stack_update_preview(self, orig_template, new_template):
+        stack_name = 'service_update_test_stack'
+        params = {'foo': 'bar'}
+        old_stack = tools.get_stack(stack_name, self.ctx,
+                                    template=orig_template)
+        sid = old_stack.store()
+        old_stack.set_stack_user_project_id('1234')
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
+
+        stack = tools.get_stack(stack_name, self.ctx, template=new_template)
+
+        self._stub_update_mocks(s, old_stack)
+
+        templatem.Template(new_template, files=None,
+                           env=stack.env).AndReturn(stack.t)
+        environment.Environment(params).AndReturn(stack.env)
+        parser.Stack(self.ctx, stack.name,
+                     stack.t,
+                     convergence=False,
+                     current_traversal=None,
+                     prev_raw_template_id=None,
+                     current_deps=None,
+                     disable_rollback=True,
+                     nested_depth=0,
+                     owner_id=None,
+                     parent_resource=None,
+                     stack_user_project_id='1234',
+                     strict_validate=True,
+                     tenant_id='test_tenant_id',
+                     timeout_mins=60,
+                     user_creds_id=u'1',
+                     username='test_username').AndReturn(stack)
+
+        self.m.StubOutWithMock(stack, 'validate')
+        stack.validate().AndReturn(None)
+        self.m.ReplayAll()
+
+        api_args = {'timeout_mins': 60}
+        result = self.man.preview_update_stack(self.ctx,
+                                               old_stack.identifier(),
+                                               new_template, params, None,
+                                               api_args)
+        self.m.VerifyAll()
+
+        return result
+
+    def test_stack_update_preview_added_unchanged(self):
+        orig_template = '''
+heat_template_version: 2014-10-16
+resources:
+  web_server:
+    type: OS::Nova::Server
+    properties:
+      image: F17-x86_64-gold
+      flavor: m1.large
+      key_name: test
+      user_data: wordpress
+'''
+
+        new_template = '''
+heat_template_version: 2014-10-16
+resources:
+  web_server:
+    type: OS::Nova::Server
+    properties:
+      image: F17-x86_64-gold
+      flavor: m1.large
+      key_name: test
+      user_data: wordpress
+  password:
+    type: OS::Heat::RandomString
+    properties:
+      length: 8
+'''
+
+        result = self._test_stack_update_preview(orig_template, new_template)
+
+        added = [x for x in result['added']][0]
+        self.assertEqual(added['resource_name'], 'password')
+        unchanged = [x for x in result['unchanged']][0]
+        self.assertEqual(unchanged['resource_name'], 'web_server')
+
+        empty_sections = ('deleted', 'replaced', 'updated')
+        for section in empty_sections:
+            section_contents = [x for x in result[section]]
+            self.assertEqual(section_contents, [])
+
+        self.m.VerifyAll()
+
+    def test_stack_update_preview_replaced(self):
+        orig_template = '''
+heat_template_version: 2014-10-16
+resources:
+  web_server:
+    type: OS::Nova::Server
+    properties:
+      image: F17-x86_64-gold
+      flavor: m1.large
+      key_name: test
+      user_data: wordpress
+'''
+
+        new_template = '''
+heat_template_version: 2014-10-16
+resources:
+  web_server:
+    type: OS::Nova::Server
+    properties:
+      image: F17-x86_64-gold
+      flavor: m1.large
+      key_name: test2
+      user_data: wordpress
+'''
+
+        result = self._test_stack_update_preview(orig_template, new_template)
+
+        replaced = [x for x in result['replaced']][0]
+        self.assertEqual(replaced['resource_name'], 'web_server')
+        empty_sections = ('added', 'deleted', 'unchanged', 'updated')
+        for section in empty_sections:
+            section_contents = [x for x in result[section]]
+            self.assertEqual(section_contents, [])
+
+        self.m.VerifyAll()
+
+    def test_stack_update_preview_updated(self):
+        orig_template = '''
+heat_template_version: 2014-10-16
+resources:
+  web_server:
+    type: OS::Nova::Server
+    properties:
+      image: F17-x86_64-gold
+      flavor: m1.large
+      key_name: test
+      user_data: wordpress
+'''
+
+        new_template = '''
+heat_template_version: 2014-10-16
+resources:
+  web_server:
+    type: OS::Nova::Server
+    properties:
+      image: F17-x86_64-gold
+      flavor: m1.small
+      key_name: test
+      user_data: wordpress
+'''
+
+        result = self._test_stack_update_preview(orig_template, new_template)
+
+        updated = [x for x in result['updated']][0]
+        self.assertEqual(updated['resource_name'], 'web_server')
+        empty_sections = ('added', 'deleted', 'unchanged', 'replaced')
+        for section in empty_sections:
+            section_contents = [x for x in result[section]]
+            self.assertEqual(section_contents, [])
+
+        self.m.VerifyAll()
+
+    def test_stack_update_preview_deleted(self):
+        orig_template = '''
+heat_template_version: 2014-10-16
+resources:
+  web_server:
+    type: OS::Nova::Server
+    properties:
+      image: F17-x86_64-gold
+      flavor: m1.large
+      key_name: test
+      user_data: wordpress
+  password:
+    type: OS::Heat::RandomString
+    properties:
+      length: 8
+'''
+
+        new_template = '''
+heat_template_version: 2014-10-16
+resources:
+  web_server:
+    type: OS::Nova::Server
+    properties:
+      image: F17-x86_64-gold
+      flavor: m1.large
+      key_name: test
+      user_data: wordpress
+'''
+
+        result = self._test_stack_update_preview(orig_template, new_template)
+
+        deleted = [x for x in result['deleted']][0]
+        self.assertEqual(deleted['resource_name'], 'password')
+        unchanged = [x for x in result['unchanged']][0]
+        self.assertEqual(unchanged['resource_name'], 'web_server')
+        empty_sections = ('added', 'updated', 'replaced')
+        for section in empty_sections:
+            section_contents = [x for x in result[section]]
+            self.assertEqual(section_contents, [])
+
+        self.m.VerifyAll()
+
 
 class StackConvergenceServiceCreateUpdateTest(common.HeatTestCase):
 
@@ -1281,20 +1135,20 @@ class StackConvergenceServiceCreateUpdateTest(common.HeatTestCase):
                      parent_resource=None,
                      nested_depth=0, user_creds_id=None,
                      stack_user_project_id=None,
+                     timeout_mins=60,
+                     disable_rollback=False,
                      convergence=True).AndReturn(stack)
 
         self.m.StubOutWithMock(stack, 'validate')
         stack.validate().AndReturn(None)
 
         self.m.ReplayAll()
-
-        # TODO(later): Remove exception once convergence is supported.
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.man.create_stack, self.ctx, stack_name,
-                               template, params, None, {})
-        self.assertEqual(exception.NotSupported, ex.exc_info[0])
-        self.assertEqual('Convergence engine is not supported.',
-                         six.text_type(ex.exc_info[1]))
+        api_args = {'timeout_mins': 60, 'disable_rollback': False}
+        result = self.man.create_stack(self.ctx, 'service_create_test_stack',
+                                       template, params, None, api_args)
+        db_stack = stack_object.Stack.get_by_id(self.ctx, result['stack_id'])
+        self.assertEqual(db_stack.convergence, True)
+        self.assertEqual(result['stack_id'], db_stack.id)
         self.m.VerifyAll()
 
     def test_stack_create_enabled_convergence_engine(self):
@@ -1313,7 +1167,7 @@ class StackConvergenceServiceCreateUpdateTest(common.HeatTestCase):
         s = stack_object.Stack.get_by_id(self.ctx, sid)
 
         stack = tools.get_stack(stack_name, self.ctx,
-                                template=string_template_five_update,
+                                template=tools.string_template_five_update,
                                 convergence=True)
 
         self._stub_update_mocks(s, old_stack)
@@ -1451,26 +1305,6 @@ class StackServiceTest(common.HeatTestCase):
         self.eng.thread_group_mgr = tools.DummyThreadGroupManager()
         self.eng.engine_id = 'engine-fake-uuid'
         cfg.CONF.set_default('heat_stack_user_role', 'stack_user_role')
-
-    @mock.patch.object(service_stack_watch.StackWatch, 'start_watch_task')
-    @mock.patch.object(stack_object.Stack, 'get_all')
-    @mock.patch.object(service.service.Service, 'start')
-    def test_start_watches_all_stacks(self, mock_super_start, mock_get_all,
-                                      start_watch_task):
-        s1 = mock.Mock(id=1)
-        s2 = mock.Mock(id=2)
-        mock_get_all.return_value = [s1, s2]
-        start_watch_task.return_value = None
-
-        self.eng.thread_group_mgr = None
-        self.eng.create_periodic_tasks()
-
-        mock_get_all.assert_called_once_with(mock.ANY, tenant_safe=False,
-                                             show_hidden=True)
-        calls = start_watch_task.call_args_list
-        self.assertEqual(2, start_watch_task.call_count)
-        self.assertIn(mock.call(1, mock.ANY), calls)
-        self.assertIn(mock.call(2, mock.ANY), calls)
 
     @tools.stack_context('service_identify_test_stack', False)
     def test_stack_identify(self):
@@ -1971,32 +1805,6 @@ class StackServiceTest(common.HeatTestCase):
         self.assertIn('WordPress', s['description'])
         self.assertIn('parameters', s)
 
-    @mock.patch.object(res.Resource, 'is_service_available')
-    def test_list_resource_types(self, mock_is_service_available):
-        mock_is_service_available.return_value = True
-        resources = self.eng.list_resource_types(self.ctx)
-        self.assertIsInstance(resources, list)
-        self.assertIn('AWS::EC2::Instance', resources)
-        self.assertIn('AWS::RDS::DBInstance', resources)
-
-    @mock.patch.object(res.Resource, 'is_service_available')
-    def test_list_resource_types_deprecated(self,
-                                            mock_is_service_available):
-        mock_is_service_available.return_value = True
-        resources = self.eng.list_resource_types(self.ctx, "DEPRECATED")
-        self.assertEqual(set(['OS::Heat::HARestarter',
-                              'OS::Heat::SoftwareDeployments',
-                              'OS::Heat::StructuredDeployments']),
-                         set(resources))
-
-    @mock.patch.object(res.Resource, 'is_service_available')
-    def test_list_resource_types_supported(self,
-                                           mock_is_service_available):
-        mock_is_service_available.return_value = True
-        resources = self.eng.list_resource_types(self.ctx, "SUPPORTED")
-        self.assertNotIn(['OS::Neutron::RouterGateway'], resources)
-        self.assertIn('AWS::EC2::Instance', resources)
-
     @mock.patch('heat.engine.template._get_template_extension_manager')
     def test_list_template_versions(self, templ_mock):
 
@@ -2051,102 +1859,8 @@ class StackServiceTest(common.HeatTestCase):
                      'description': 'Dummy Func1'},
                     {'functions': 'dummy2',
                      'description': 'Dummy Func2'}]
-        self.assertEqual(sorted(expected), sorted(functions))
-
-    @mock.patch.object(res.Resource, 'is_service_available')
-    def test_list_resource_types_unavailable(
-            self,
-            mock_is_service_available):
-        mock_is_service_available.return_value = False
-        resources = self.eng.list_resource_types(self.ctx)
-        # Check for an known resource, not listed
-        self.assertNotIn('OS::Nova::Server', resources)
-
-    def test_resource_schema(self):
-        type_name = 'ResourceWithPropsType'
-        expected = {
-            'resource_type': type_name,
-            'properties': {
-                'Foo': {
-                    'type': 'string',
-                    'required': False,
-                    'update_allowed': False,
-                    'immutable': False,
-                },
-                'FooInt': {
-                    'type': 'integer',
-                    'required': False,
-                    'update_allowed': False,
-                    'immutable': False,
-                },
-            },
-            'attributes': {
-                'foo': {'description': 'A generic attribute'},
-                'Foo': {'description': 'Another generic attribute'},
-                'show': {
-                    'description': 'Dictionary with resource attributes.',
-                    'type': 'map'},
-            },
-            'support_status': {
-                'status': 'SUPPORTED',
-                'version': None,
-                'message': None,
-                'previous_status': None
-            },
-        }
-
-        schema = self.eng.resource_schema(self.ctx, type_name=type_name)
-        self.assertEqual(expected, schema)
-
-    def test_resource_schema_with_attr_type(self):
-
-        type_name = 'ResourceWithAttributeType'
-        expected = {
-            'resource_type': type_name,
-            'properties': {},
-            'attributes': {
-                'attr1': {'description': 'A generic attribute',
-                          'type': 'string'},
-                'attr2': {'description': 'Another generic attribute',
-                          'type': 'map'},
-            },
-            'support_status': {
-                'status': 'SUPPORTED',
-                'version': None,
-                'message': None,
-                'previous_status': None
-            },
-        }
-        schema = self.eng.resource_schema(self.ctx, type_name=type_name)
-        self.assertEqual(expected, schema)
-
-    def _no_template_file(self, function):
-        env = environment.Environment()
-        info = environment.ResourceInfo(env.registry,
-                                        ['ResourceWithWrongRefOnFile'],
-                                        'not_existing.yaml')
-        mock_iterable = mock.MagicMock(return_value=iter([info]))
-        with mock.patch('heat.engine.environment.ResourceRegistry.iterable_by',
-                        new=mock_iterable):
-            ex = self.assertRaises(exception.TemplateNotFound,
-                                   function,
-                                   self.ctx,
-                                   type_name='ResourceWithWrongRefOnFile')
-            msg = 'Could not fetch remote template "not_existing.yaml"'
-            self.assertIn(msg, six.text_type(ex))
-
-    def test_resource_schema_no_template_file(self):
-        self._no_template_file(self.eng.resource_schema)
-
-    def test_generate_template_no_template_file(self):
-        self._no_template_file(self.eng.generate_template)
-
-    def test_resource_schema_nonexist(self):
-        ex = self.assertRaises(exception.ResourceTypeNotFound,
-                               self.eng.resource_schema,
-                               self.ctx, type_name='Bogus')
-        msg = 'The Resource Type (Bogus) could not be found.'
-        self.assertEqual(msg, six.text_type(ex))
+        self.assertEqual(sorted(expected, key=lambda k: k['functions']),
+                         sorted(functions, key=lambda k: k['functions']))
 
     def _test_describe_stack_resource(self):
         self.m.StubOutWithMock(parser.Stack, 'load')
@@ -2528,212 +2242,59 @@ class StackServiceTest(common.HeatTestCase):
         self.assertEqual(test_metadata, md)
         self.m.VerifyAll()
 
-    @tools.stack_context('service_show_watch_test_stack', False)
-    def test_show_watch(self):
-        # Insert two dummy watch rules into the DB
-        rule = {u'EvaluationPeriods': u'1',
-                u'AlarmActions': [u'WebServerRestartPolicy'],
-                u'AlarmDescription': u'Restart the WikiDatabase',
-                u'Namespace': u'system/linux',
-                u'Period': u'300',
-                u'ComparisonOperator': u'GreaterThanThreshold',
-                u'Statistic': u'SampleCount',
-                u'Threshold': u'2',
-                u'MetricName': u'ServiceFailure'}
-        self.wr = []
-        self.wr.append(watchrule.WatchRule(context=self.ctx,
-                                           watch_name='show_watch_1',
-                                           rule=rule,
-                                           watch_data=[],
-                                           stack_id=self.stack.id,
-                                           state='NORMAL'))
-        self.wr[0].store()
+    def test_signal_calls_metadata_update(self):
+        stack = tools.get_stack('signal_reception', self.ctx, policy_template)
+        self.stack = stack
+        tools.setup_keystone_mocks(self.m, stack)
+        self.m.ReplayAll()
+        stack.store()
+        stack.create()
 
-        self.wr.append(watchrule.WatchRule(context=self.ctx,
-                                           watch_name='show_watch_2',
-                                           rule=rule,
-                                           watch_data=[],
-                                           stack_id=self.stack.id,
-                                           state='NORMAL'))
-        self.wr[1].store()
+        self.m.StubOutWithMock(service.EngineService, '_get_stack')
+        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
+        service.EngineService._get_stack(self.ctx,
+                                         self.stack.identifier()).AndReturn(s)
 
-        # watch_name=None should return all watches
-        result = self.eng.show_watch(self.ctx, watch_name=None)
-        result_names = [r.get('name') for r in result]
-        self.assertIn('show_watch_1', result_names)
-        self.assertIn('show_watch_2', result_names)
-
-        result = self.eng.show_watch(self.ctx, watch_name="show_watch_1")
-        self.assertEqual(1, len(result))
-        self.assertIn('name', result[0])
-        self.assertEqual('show_watch_1', result[0]['name'])
-
-        result = self.eng.show_watch(self.ctx, watch_name="show_watch_2")
-        self.assertEqual(1, len(result))
-        self.assertIn('name', result[0])
-        self.assertEqual('show_watch_2', result[0]['name'])
-
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.eng.show_watch,
-                               self.ctx, watch_name="nonexistent")
-        self.assertEqual(exception.WatchRuleNotFound, ex.exc_info[0])
-
-        # Check the response has all keys defined in the engine API
-        for key in rpc_api.WATCH_KEYS:
-            self.assertIn(key, result[0])
-
-    @tools.stack_context('service_show_watch_metric_test_stack', False)
-    def test_show_watch_metric(self):
-        # Insert dummy watch rule into the DB
-        rule = {u'EvaluationPeriods': u'1',
-                u'AlarmActions': [u'WebServerRestartPolicy'],
-                u'AlarmDescription': u'Restart the WikiDatabase',
-                u'Namespace': u'system/linux',
-                u'Period': u'300',
-                u'ComparisonOperator': u'GreaterThanThreshold',
-                u'Statistic': u'SampleCount',
-                u'Threshold': u'2',
-                u'MetricName': u'ServiceFailure'}
-        self.wr = watchrule.WatchRule(context=self.ctx,
-                                      watch_name='show_watch_metric_1',
-                                      rule=rule,
-                                      watch_data=[],
-                                      stack_id=self.stack.id,
-                                      state='NORMAL')
-        self.wr.store()
-
-        # And add a metric datapoint
-        watch = watch_rule_object.WatchRule.get_by_name(self.ctx,
-                                                        'show_watch_metric_1')
-        self.assertIsNotNone(watch)
-        values = {'watch_rule_id': watch.id,
-                  'data': {u'Namespace': u'system/linux',
-                           u'ServiceFailure': {
-                               u'Units': u'Counter', u'Value': 1}}}
-        watch_data_object.WatchData.create(self.ctx, values)
-
-        # Check there is one result returned
-        result = self.eng.show_watch_metric(self.ctx,
-                                            metric_namespace=None,
-                                            metric_name=None)
-        self.assertEqual(1, len(result))
-
-        # Create another metric datapoint and check we get two
-        watch_data_object.WatchData.create(self.ctx, values)
-        result = self.eng.show_watch_metric(self.ctx,
-                                            metric_namespace=None,
-                                            metric_name=None)
-        self.assertEqual(2, len(result))
-
-        # Check the response has all keys defined in the engine API
-        for key in rpc_api.WATCH_DATA_KEYS:
-            self.assertIn(key, result[0])
-
-    @tools.stack_context('service_show_watch_state_test_stack')
-    def test_set_watch_state(self):
-        self.eng.thread_group_mgr = tools.DummyThreadGroupMgrLogStart()
-        # Insert dummy watch rule into the DB
-        rule = {u'EvaluationPeriods': u'1',
-                u'AlarmActions': [u'WebServerRestartPolicy'],
-                u'AlarmDescription': u'Restart the WikiDatabase',
-                u'Namespace': u'system/linux',
-                u'Period': u'300',
-                u'ComparisonOperator': u'GreaterThanThreshold',
-                u'Statistic': u'SampleCount',
-                u'Threshold': u'2',
-                u'MetricName': u'ServiceFailure'}
-        self.wr = watchrule.WatchRule(context=self.ctx,
-                                      watch_name='OverrideAlarm',
-                                      rule=rule,
-                                      watch_data=[],
-                                      stack_id=self.stack.id,
-                                      state='NORMAL')
-        self.wr.store()
-
-        class DummyAction(object):
-            def signal(self):
-                return "dummyfoo"
-
-        dummy_action = DummyAction()
-        self.m.StubOutWithMock(parser.Stack, 'resource_by_refid')
-        parser.Stack.resource_by_refid(
-            'WebServerRestartPolicy').AndReturn(dummy_action)
-
+        self.m.StubOutWithMock(res.Resource, 'signal')
+        res.Resource.signal(mox.IgnoreArg()).AndReturn(None)
+        self.m.StubOutWithMock(res.Resource, 'metadata_update')
+        # this will be called once for the Random resource
+        res.Resource.metadata_update().AndReturn(None)
         self.m.ReplayAll()
 
-        state = watchrule.WatchRule.NODATA
-        result = self.eng.set_watch_state(self.ctx,
-                                          watch_name="OverrideAlarm",
-                                          state=state)
-        self.assertEqual(state, result[rpc_api.WATCH_STATE_VALUE])
-        self.assertEqual([], self.eng.thread_group_mgr.started)
-
-        state = watchrule.WatchRule.NORMAL
-        result = self.eng.set_watch_state(self.ctx,
-                                          watch_name="OverrideAlarm",
-                                          state=state)
-        self.assertEqual(state, result[rpc_api.WATCH_STATE_VALUE])
-        self.assertEqual([], self.eng.thread_group_mgr.started)
-
-        state = watchrule.WatchRule.ALARM
-        result = self.eng.set_watch_state(self.ctx,
-                                          watch_name="OverrideAlarm",
-                                          state=state)
-        self.assertEqual(state, result[rpc_api.WATCH_STATE_VALUE])
-        self.assertEqual([(self.stack.id, dummy_action.signal)],
-                         self.eng.thread_group_mgr.started)
-
+        self.eng.resource_signal(self.ctx,
+                                 dict(self.stack.identifier()),
+                                 'WebServerScaleDownPolicy', None,
+                                 sync_call=True)
         self.m.VerifyAll()
 
-    @tools.stack_context('service_show_watch_state_badstate_test_stack')
-    def test_set_watch_state_badstate(self):
-        # Insert dummy watch rule into the DB
-        rule = {u'EvaluationPeriods': u'1',
-                u'AlarmActions': [u'WebServerRestartPolicy'],
-                u'AlarmDescription': u'Restart the WikiDatabase',
-                u'Namespace': u'system/linux',
-                u'Period': u'300',
-                u'ComparisonOperator': u'GreaterThanThreshold',
-                u'Statistic': u'SampleCount',
-                u'Threshold': u'2',
-                u'MetricName': u'ServiceFailure'}
-        self.wr = watchrule.WatchRule(context=self.ctx,
-                                      watch_name='OverrideAlarm2',
-                                      rule=rule,
-                                      watch_data=[],
-                                      stack_id=self.stack.id,
-                                      state='NORMAL')
-        self.wr.store()
+    def test_signal_no_calls_metadata_update(self):
+        stack = tools.get_stack('signal_reception', self.ctx, policy_template)
+        self.stack = stack
+        tools.setup_keystone_mocks(self.m, stack)
+        self.m.ReplayAll()
+        stack.store()
+        stack.create()
 
-        self.m.StubOutWithMock(watchrule.WatchRule, 'set_watch_state')
-        for state in ["HGJHGJHG", "1234", "!\*(&%"]:
-            watchrule.WatchRule.set_watch_state(
-                state).InAnyOrder().AndRaise(ValueError)
+        res.Resource.signal_needs_metadata_updates = False
+
+        self.m.StubOutWithMock(service.EngineService, '_get_stack')
+        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
+        service.EngineService._get_stack(self.ctx,
+                                         self.stack.identifier()).AndReturn(s)
+
+        self.m.StubOutWithMock(res.Resource, 'signal')
+        res.Resource.signal(mox.IgnoreArg()).AndReturn(None)
+        # this will never be called
+        self.m.StubOutWithMock(res.Resource, 'metadata_update')
         self.m.ReplayAll()
 
-        for state in ["HGJHGJHG", "1234", "!\*(&%"]:
-            self.assertRaises(ValueError,
-                              self.eng.set_watch_state,
-                              self.ctx, watch_name="OverrideAlarm2",
-                              state=state)
-
+        self.eng.resource_signal(self.ctx,
+                                 dict(self.stack.identifier()),
+                                 'WebServerScaleDownPolicy', None,
+                                 sync_call=True)
         self.m.VerifyAll()
-
-    def test_set_watch_state_noexist(self):
-        state = watchrule.WatchRule.ALARM   # State valid
-
-        self.m.StubOutWithMock(watchrule.WatchRule, 'load')
-        watchrule.WatchRule.load(
-            self.ctx, "nonexistent"
-        ).AndRaise(exception.WatchRuleNotFound(watch_name='test'))
-        self.m.ReplayAll()
-
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.eng.set_watch_state,
-                               self.ctx, watch_name="nonexistent",
-                               state=state)
-        self.assertEqual(exception.WatchRuleNotFound, ex.exc_info[0])
-        self.m.VerifyAll()
+        res.Resource.signal_needs_metadata_updates = True
 
     def test_stack_list_all_empty(self):
         sl = self.eng.list_stacks(self.ctx)
@@ -2810,11 +2371,11 @@ class StackServiceTest(common.HeatTestCase):
         self.assertIsInstance(stack['resources'], list)
         self.assertEqual(2, len(stack['resources']))
 
-        resource_types = (r['resource_type'] for r in stack['resources'])
+        resource_types = set(r['resource_type'] for r in stack['resources'])
         self.assertIn('GenericResource1', resource_types)
         self.assertIn('GenericResource2', resource_types)
 
-        resource_names = (r['resource_name'] for r in stack['resources'])
+        resource_names = set(r['resource_name'] for r in stack['resources'])
         self.assertIn('SampleResource1', resource_names)
         self.assertIn('SampleResource2', resource_names)
 
@@ -2863,8 +2424,9 @@ class StackServiceTest(common.HeatTestCase):
                                self.eng._validate_new_stack,
                                self.ctx, 'test_existing_stack',
                                parsed_template)
-        msg = (u'u\'"Type" is not a valid keyword '
-               'inside a resource definition\'')
+        msg = (u'"Type" is not a valid keyword '
+               'inside a resource definition')
+
         self.assertEqual(msg, six.text_type(ex))
 
     def test_validate_new_stack_checks_incorrect_sections(self):

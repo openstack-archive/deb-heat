@@ -14,6 +14,7 @@
 import datetime
 import uuid
 
+from oslo_serialization import jsonutils as json
 from oslo_utils import timeutils
 import six
 
@@ -213,7 +214,8 @@ class HeatWaitConditionTest(common.HeatTestCase):
                          'status': 'SUCCESS', 'id': '456'}
         ret = handle.handle_signal(details=test_metadata)
         wc_att = rsrc.FnGetAtt('data')
-        self.assertEqual(u'{"123": "foo", "456": "dog"}', wc_att)
+        self.assertEqual(json.loads(u'{"123": "foo", "456": "dog"}'),
+                         json.loads(wc_att))
         self.assertEqual('status:SUCCESS reason:cat', ret)
         self.m.VerifyAll()
 
@@ -230,7 +232,8 @@ class HeatWaitConditionTest(common.HeatTestCase):
                          'status': 'SUCCESS'}
         ret = handle.handle_signal(details=test_metadata)
         wc_att = rsrc.FnGetAtt('data')
-        self.assertEqual(u'{"1": "foo", "2": "dog"}', wc_att)
+        self.assertEqual(json.loads(u'{"1": "foo", "2": "dog"}'),
+                         json.loads(wc_att))
         self.assertEqual('status:SUCCESS reason:cat', ret)
         self.m.VerifyAll()
 
@@ -244,7 +247,8 @@ class HeatWaitConditionTest(common.HeatTestCase):
 
         handle.handle_signal()
         wc_att = rsrc.FnGetAtt('data')
-        self.assertEqual(u'{"1": null, "2": null}', wc_att)
+        self.assertEqual(json.loads(u'{"1": null, "2": null}'),
+                         json.loads(wc_att))
         self.m.VerifyAll()
 
     def test_data_partial_complete(self):
@@ -261,7 +265,8 @@ class HeatWaitConditionTest(common.HeatTestCase):
         expected = 'status:SUCCESS reason:Signal 2 received'
         self.assertEqual(expected, ret)
         wc_att = rsrc.FnGetAtt('data')
-        self.assertEqual(u'{"1": null, "2": null}', wc_att)
+        self.assertEqual(json.loads(u'{"1": null, "2": null}'),
+                         json.loads(wc_att))
         self.m.VerifyAll()
 
     def _create_heat_handle(self):
@@ -273,6 +278,8 @@ class HeatWaitConditionTest(common.HeatTestCase):
 
         handle = self.stack['wait_handle']
         self.assertEqual((handle.CREATE, handle.COMPLETE), handle.state)
+        self.assertIsNotNone(handle.password)
+        self.assertEqual(handle.resource_id, handle.data().get('user_id'))
         return handle
 
     def test_get_status_none_complete(self):

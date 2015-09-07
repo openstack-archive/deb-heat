@@ -11,11 +11,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
+
 from oslo_log import log as logging
 from oslo_utils import timeutils
 import six
 
-from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LE
 from heat.common import param_utils
@@ -159,15 +160,20 @@ def format_resource_attributes(resource, with_attr=None):
     # 'console_urls' for nova server, user can view it by taking with_attr
     # parameter
     if 'show' in six.iterkeys(resolver):
-        show_attr = resolver['show']
-        for a in with_attr:
-            if a not in show_attr:
-                show_attr[a] = resolve(a, resolver)
-        return show_attr
-    else:
-        attributes = set(list(six.iterkeys(resolver)) + with_attr)
-        return dict((attr, resolve(attr, resolver))
-                    for attr in attributes)
+        show_attr = resolve('show', resolver)
+        # check if 'show' resolved to dictionary. so it's not None
+        if isinstance(show_attr, collections.Mapping):
+            for a in with_attr:
+                if a not in show_attr:
+                    show_attr[a] = resolve(a, resolver)
+            return show_attr
+        else:
+            # remove 'show' attribute if it's None or not a mapping
+            # then resolve all attributes manually
+            del resolver._attributes['show']
+    attributes = set(list(six.iterkeys(resolver)) + with_attr)
+    return dict((attr, resolve(attr, resolver))
+                for attr in attributes)
 
 
 def format_resource_properties(resource):
@@ -187,11 +193,12 @@ def format_stack_resource(resource, detail=True, with_props=False,
     Return a representation of the given resource that matches the API output
     expectations.
     '''
-    created_time = resource.created_time or timeutils.utcnow()
-    last_updated_time = resource.updated_time or created_time
+    created_time = resource.created_time and resource.created_time.isoformat()
+    last_updated_time = (resource.updated_time and
+                         resource.updated_time.isoformat()) or created_time
     res = {
-        rpc_api.RES_UPDATED_TIME: last_updated_time.isoformat(),
-        rpc_api.RES_CREATION_TIME: created_time.isoformat(),
+        rpc_api.RES_UPDATED_TIME: last_updated_time,
+        rpc_api.RES_CREATION_TIME: created_time,
         rpc_api.RES_NAME: resource.name,
         rpc_api.RES_PHYSICAL_ID: resource.resource_id or '',
         rpc_api.RES_ACTION: resource.action,
@@ -204,13 +211,9 @@ def format_stack_resource(resource, detail=True, with_props=False,
         rpc_api.RES_REQUIRED_BY: resource.required_by(),
     }
 
-    try:
-        if (hasattr(resource, 'nested') and callable(resource.nested) and
-                resource.nested() is not None):
-            res[rpc_api.RES_NESTED_STACK_ID] = dict(
-                resource.nested().identifier())
-    except exception.NotFound:
-        pass
+    if resource.has_nested():
+        res[rpc_api.RES_NESTED_STACK_ID] = dict(
+            resource.nested().identifier())
 
     if resource.stack.parent_resource_name:
         res[rpc_api.RES_PARENT_RESOURCE] = resource.stack.parent_resource_name
@@ -235,7 +238,7 @@ def format_stack_preview(stack):
         return format_stack_resource(res, with_props=True)
 
     fmt_stack = format_stack(stack, preview=True)
-    fmt_resources = map(format_resource, stack.preview_resources())
+    fmt_resources = list(map(format_resource, stack.preview_resources()))
     fmt_stack['resources'] = fmt_resources
 
     return fmt_stack

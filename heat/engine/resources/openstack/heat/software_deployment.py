@@ -139,8 +139,8 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         ),
         DEPLOY_ACTIONS: properties.Schema(
             properties.Schema.LIST,
-            _('Which stack actions will result in this deployment being '
-              'triggered.'),
+            _('Which lifecycle actions of the deployment resource will result '
+              'in this deployment being triggered.'),
             update_allowed=True,
             default=[resource.Resource.CREATE, resource.Resource.UPDATE],
             constraints=[constraints.AllowedValues(ALLOWED_DEPLOY_ACTIONS)]
@@ -158,9 +158,10 @@ class SoftwareDeployment(signal_responder.SignalResponder):
               'keypair signed URL. TEMP_URL_SIGNAL will create a '
               'Swift TempURL to be signaled via HTTP PUT. HEAT_SIGNAL '
               'will allow calls to the Heat API resource-signal using the '
-              'provided keystone credentials. NO_SIGNAL will result in the '
-              'resource going to the COMPLETE state without waiting for '
-              'any signal.'),
+              'provided keystone credentials. ZAQAR_SIGNAL will create a'
+              'dedicated zaqar queue to be signaled using the provided '
+              'keystone credentials. NO_SIGNAL will result in the resource '
+              'going to the COMPLETE state without waiting for any signal.'),
             default=cfg.CONF.default_deployment_signal_transport,
             constraints=[
                 constraints.AllowedValues(SIGNAL_TRANSPORTS),
@@ -186,6 +187,10 @@ class SoftwareDeployment(signal_responder.SignalResponder):
     default_client_name = 'heat'
 
     no_signal_actions = ()
+
+    # No need to make metadata_update() calls since deployments have a
+    # dedicated API for changing state on signals
+    signal_needs_metadata_updates = False
 
     def _signal_transport_cfn(self):
         return self.properties[
@@ -534,7 +539,8 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         if server:
             res = self.stack.resource_by_refid(server)
             if res:
-                if not res.user_data_software_config():
+                if not (res.properties.get('user_data_format') ==
+                        'SOFTWARE_CONFIG'):
                     raise exception.StackValidationFailed(message=_(
                         "Resource %s's property user_data_format should be "
                         "set to SOFTWARE_CONFIG since there are software "
@@ -542,6 +548,16 @@ class SoftwareDeployment(signal_responder.SignalResponder):
 
 
 class SoftwareDeploymentGroup(resource_group.ResourceGroup):
+    '''
+    This resource associates a group of servers with some configuration which
+    is to be deployed to all servers in the group.
+
+    The properties work in a similar way to OS::Heat::SoftwareDeployment,
+    and in addition to the attributes documented, you may pass any
+    attribute supported by OS::Heat::SoftwareDeployment, including those
+    exposing arbitrary outputs, and return a map of deployment names to
+    the specified attribute.
+    '''
 
     support_status = support.SupportStatus(version='5.0.0')
 
@@ -601,6 +617,11 @@ class SoftwareDeploymentGroup(resource_group.ResourceGroup):
         ),
     }
 
+    update_policy_schema = {}
+
+    def get_size(self):
+        return len(self.properties.get(self.SERVERS, {}))
+
     def _resource_names(self):
         return six.iterkeys(self.properties.get(self.SERVERS, {}))
 
@@ -627,14 +648,18 @@ class SoftwareDeploymentGroup(resource_group.ResourceGroup):
     def FnGetAtt(self, key, *path):
         rg = super(SoftwareDeploymentGroup, self)
         if key == self.STDOUTS:
-            return rg.FnGetAtt(
-                rg.ATTR_ATTRIBUTES, SoftwareDeployment.STDOUT)
-        if key == self.STDERRS:
-            return rg.FnGetAtt(
-                rg.ATTR_ATTRIBUTES, SoftwareDeployment.STDERR)
-        if key == self.STATUS_CODES:
-            return rg.FnGetAtt(
-                rg.ATTR_ATTRIBUTES, SoftwareDeployment.STATUS_CODE)
+            n_attr = SoftwareDeployment.STDOUT
+        elif key == self.STDERRS:
+            n_attr = SoftwareDeployment.STDERR
+        elif key == self.STATUS_CODES:
+            n_attr = SoftwareDeployment.STATUS_CODE
+        else:
+            # Allow any attribute valid for a single SoftwareDeployment
+            # including arbitrary outputs, so we can't validate here
+            n_attr = key
+
+        rg_attr = rg.FnGetAtt(rg.ATTR_ATTRIBUTES, n_attr)
+        return attributes.select_from_attribute(rg_attr, path)
 
 
 class SoftwareDeployments(SoftwareDeploymentGroup):

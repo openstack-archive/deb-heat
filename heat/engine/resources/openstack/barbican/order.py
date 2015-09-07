@@ -11,8 +11,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import six
-
 from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import attributes
@@ -27,6 +25,8 @@ class Order(resource.Resource):
     support_status = support.SupportStatus(version='2014.2')
 
     default_client_name = 'barbican'
+
+    entity = 'orders'
 
     PROPERTIES = (
         NAME, PAYLOAD_CONTENT_TYPE, MODE, EXPIRATION,
@@ -85,6 +85,7 @@ class Order(resource.Resource):
                     'key', 'asymmetric', 'certificate'
                 ]),
             ],
+            required=True,
             support_status=support.SupportStatus(version='5.0.0'),
         ),
         REQUEST_TYPE: properties.Schema(
@@ -186,19 +187,6 @@ class Order(resource.Resource):
 
         return order.status == 'ACTIVE'
 
-    def handle_delete(self):
-        if not self.resource_id:
-            return
-
-        client = self.client()
-        try:
-            client.orders.delete(self.resource_id)
-        except Exception as exc:
-            # This is the only exception the client raises
-            # Inspecting the message to see if it's a 'Not Found'
-            if 'Not Found' not in six.text_type(exc):
-                raise
-
     def _resolve_attribute(self, name):
         client = self.client()
         order = client.orders.get(self.resource_id)
@@ -210,6 +198,12 @@ class Order(resource.Resource):
             return secret.payload
 
         return getattr(order, name)
+
+    # TODO(ochuprykov): remove this method when bug #1485619 will be fixed
+    def _show_resource(self):
+        order = self.client().orders.get(self.resource_id)
+        info = order._get_formatted_entity()
+        return dict(zip(info[0], info[1]))
 
 
 def resource_mapping():

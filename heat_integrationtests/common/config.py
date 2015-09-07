@@ -27,7 +27,8 @@ IntegrationTestGroup = [
                help="API key to use when authenticating.",
                secret=True),
     cfg.StrOpt('tenant_name',
-               default=os.environ.get('OS_TENANT_NAME'),
+               default=(os.environ.get('OS_PROJECT_NAME') or
+                        os.environ.get('OS_TENANT_NAME')),
                help="Tenant name to use for API requests."),
     cfg.StrOpt('auth_url',
                default=os.environ.get('OS_AUTH_URL'),
@@ -93,18 +94,26 @@ IntegrationTestGroup = [
     cfg.IntOpt('tenant_network_mask_bits',
                default=28,
                help="The mask bits for tenant ipv4 subnets"),
-    cfg.BoolOpt('skip_software_config_tests',
-                default=True,
-                help="Skip software config deployment tests"),
+    cfg.BoolOpt('skip_scenario_tests',
+                default=False,
+                help="Skip all scenario tests"),
+    cfg.BoolOpt('skip_functional_tests',
+                default=False,
+                help="Skip all functional tests"),
+    cfg.ListOpt('skip_functional_test_list',
+                help="List of functional test class or class.method "
+                     "names to skip ex. AutoscalingGroupTest,"
+                     "InstanceGroupBasicTest.test_size_updates_work"),
+    cfg.ListOpt('skip_scenario_test_list',
+                help="List of scenario test class or class.method "
+                     "names to skip ex. NeutronLoadBalancerTest, "
+                     "CeilometerAlarmTest.test_alarm"),
+    cfg.ListOpt('skip_test_stack_action_list',
+                help="List of stack actions in tests to skip "
+                     "ex. ABANDON, ADOPT, SUSPEND, RESUME"),
     cfg.IntOpt('volume_size',
                default=1,
                help='Default size in GB for volumes created by volumes tests'),
-    cfg.BoolOpt('skip_stack_adopt_tests',
-                default=False,
-                help="Skip Stack Adopt Integration tests"),
-    cfg.BoolOpt('skip_stack_abandon_tests',
-                default=False,
-                help="Skip Stack Abandon Integration tests"),
     cfg.IntOpt('connectivity_timeout',
                default=120,
                help="Timeout in seconds to wait for connectivity to "

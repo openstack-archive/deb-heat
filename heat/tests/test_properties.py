@@ -898,6 +898,27 @@ class PropertyTest(common.HeatTestCase):
         self.assertRaises(exception.StackValidationFailed,
                           p.get_value, ['1', '2', '3'], True)
 
+    def test_map_list_default(self):
+        schema = {'Type': 'Map',
+                  'Default': ['foo', 'bar']}
+        p = properties.Property(schema)
+        p.schema.allow_conversion = True
+        self.assertEqual(jsonutils.dumps(['foo', 'bar']),
+                         p.get_value(None))
+
+    def test_map_list_default_empty(self):
+        schema = {'Type': 'Map',
+                  'Default': []}
+        p = properties.Property(schema)
+        p.schema.allow_conversion = True
+        self.assertEqual(jsonutils.dumps([]), p.get_value(None))
+
+    def test_map_list_no_default(self):
+        schema = {'Type': 'Map'}
+        p = properties.Property(schema)
+        p.schema.allow_conversion = True
+        self.assertEqual({}, p.get_value(None))
+
     def test_map_string(self):
         p = properties.Property({'Type': 'Map'})
         self.assertRaises(TypeError, p.get_value, 'foo')
@@ -1915,7 +1936,7 @@ class TestTranslationRule(common.HeatTestCase):
                                 properties.TranslationRule.ADD,
                                 ['any'],
                                 'value')
-        self.assertEqual('value must be list type when rule is ADD.',
+        self.assertEqual('value must be list type when rule is Add.',
                          six.text_type(exc))
 
     def test_add_rule_exist(self):
@@ -2007,7 +2028,7 @@ class TestTranslationRule(common.HeatTestCase):
                                           [props.get('bar')])
         exc = self.assertRaises(ValueError, rule.execute_rule)
 
-        self.assertEqual('ADD rule must be used only for lists.',
+        self.assertEqual('Add rule must be used only for lists.',
                          six.text_type(exc))
 
     def test_replace_rule_map_exist(self):
@@ -2148,6 +2169,7 @@ class TestTranslationRule(common.HeatTestCase):
         rule.execute_rule()
 
         self.assertEqual('one', props.get('bar'))
+        self.assertEqual('one', props.get('far'))
 
     def test_replace_rule_str_value_path_error(self):
         schema = {
@@ -2184,6 +2206,7 @@ class TestTranslationRule(common.HeatTestCase):
         rule.execute_rule()
 
         self.assertEqual('one', props.get('bar'))
+        self.assertIsNone(props.get('far'))
 
     def test_replace_rule_str_invalid(self):
         schema = {

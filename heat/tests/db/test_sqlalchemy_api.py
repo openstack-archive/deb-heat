@@ -115,8 +115,8 @@ class SqlAlchemyTest(common.HeatTestCase):
 
     def _mock_create(self, mocks):
         fc = fakes_nova.FakeClient()
-        mocks.StubOutWithMock(instances.Instance, 'nova')
-        instances.Instance.nova().MultipleTimes().AndReturn(fc)
+        mocks.StubOutWithMock(instances.Instance, 'client')
+        instances.Instance.client().MultipleTimes().AndReturn(fc)
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 744)
@@ -1621,7 +1621,7 @@ class DBAPIStackTest(common.HeatTestCase):
             'status': 'failed',
             'status_reason': "update_failed",
             'timeout': '90',
-            'current_traversal': 'dummy-uuid',
+            'current_traversal': 'another-dummy-uuid',
         }
         db_api.stack_update(self.ctx, stack.id, values)
         stack = db_api.stack_get(self.ctx, stack.id)
@@ -1630,7 +1630,7 @@ class DBAPIStackTest(common.HeatTestCase):
         self.assertEqual('failed', stack.status)
         self.assertEqual('update_failed', stack.status_reason)
         self.assertEqual(90, stack.timeout)
-        self.assertEqual('dummy-uuid', stack.current_traversal)
+        self.assertEqual('another-dummy-uuid', stack.current_traversal)
 
         self.assertRaises(exception.NotFound, db_api.stack_update, self.ctx,
                           UUID2, values)
@@ -2709,6 +2709,13 @@ class DBAPICryptParamsPropsTest(common.HeatTestCase):
     def setUp(self):
         super(DBAPICryptParamsPropsTest, self).setUp()
         self.ctx = utils.dummy_context()
+        self.template = self._create_template()
+        self.user_creds = create_user_creds(self.ctx)
+        self.stack = create_stack(self.ctx, self.template, self.user_creds)
+        self.resources = [create_resource(self.ctx, self.stack, name='res1')]
+
+    def _create_template(self):
+        """Initialize sample template."""
         t = template_format.parse('''
         heat_template_version: 2013-05-23
         parameters:
@@ -2728,67 +2735,87 @@ class DBAPICryptParamsPropsTest(common.HeatTestCase):
             'files': {'foo': 'bar'},
             'environment': {'parameters': {'param1': 'foo',
                                            'param2': 'bar'}}}
-        self.template = db_api.raw_template_create(self.ctx, template)
-        self.user_creds = create_user_creds(self.ctx)
-        self.stack = create_stack(self.ctx, self.template, self.user_creds)
-        self.resources = [create_resource(self.ctx, self.stack, name='res1')]
+        return db_api.raw_template_create(self.ctx, template)
 
-    def test_db_encrypt_decrypt(self):
+    def _test_db_encrypt_decrypt(self, batch_size=50):
         session = db_api.get_session()
-        env = session.query(models.RawTemplate).all()[0].environment
-        self.assertEqual('bar', env['parameters']['param2'])
-        prop_data = session.query(models.Resource).all()[0].properties_data
-        self.assertEqual('bar1', prop_data['foo1'])
+
+        for r_tmpl in session.query(models.RawTemplate).all():
+            self.assertEqual('bar', r_tmpl.environment['parameters']['param2'])
+        for resource in session.query(models.Resource).all():
+            self.assertEqual('bar1', resource.properties_data['foo1'])
 
         # Test encryption
         db_api.db_encrypt_parameters_and_properties(
-            self.ctx, cfg.CONF.auth_encryption_key)
+            self.ctx, cfg.CONF.auth_encryption_key, batch_size=batch_size)
         session = db_api.get_session()
-        env = session.query(models.RawTemplate).all()[0].environment
-        self.assertEqual('cryptography_decrypt_v1',
-                         env['parameters']['param2'][0])
-        encrypt_value = env['parameters']['param2'][1]
-        prop_data = session.query(models.Resource).all()[0].properties_data
-        self.assertEqual('cryptography_decrypt_v1', prop_data['foo1'][0])
+        for enc_tmpl in session.query(models.RawTemplate).all():
+            self.assertEqual('cryptography_decrypt_v1',
+                             enc_tmpl.environment['parameters']['param2'][0])
+        encrypt_value = enc_tmpl.environment['parameters']['param2'][1]
+        for enc_prop in session.query(models.Resource).all():
+            self.assertEqual('cryptography_decrypt_v1',
+                             enc_prop.properties_data['foo1'][0])
 
         # Test that encryption is idempotent
         db_api.db_encrypt_parameters_and_properties(
-            self.ctx, cfg.CONF.auth_encryption_key)
+            self.ctx, cfg.CONF.auth_encryption_key, batch_size=batch_size)
         session = db_api.get_session()
-        env = session.query(models.RawTemplate).all()[0].environment
-        self.assertEqual('cryptography_decrypt_v1',
-                         env['parameters']['param2'][0])
-        prop_data = session.query(models.Resource).all()[0].properties_data
-        self.assertEqual('cryptography_decrypt_v1', prop_data['foo1'][0])
+        for enc_tmpl in session.query(models.RawTemplate).all():
+            self.assertEqual('cryptography_decrypt_v1',
+                             enc_tmpl.environment['parameters']['param2'][0])
+        for enc_prop in session.query(models.Resource).all():
+            self.assertEqual('cryptography_decrypt_v1',
+                             enc_prop.properties_data['foo1'][0])
 
         # Test decryption
         db_api.db_decrypt_parameters_and_properties(
-            self.ctx, cfg.CONF.auth_encryption_key)
+            self.ctx, cfg.CONF.auth_encryption_key, batch_size=batch_size)
         session = db_api.get_session()
-        env = session.query(models.RawTemplate).all()[0].environment
-        self.assertEqual('bar', env['parameters']['param2'])
-        prop_data = session.query(models.Resource).all()[0].properties_data
-        self.assertEqual('bar1', prop_data['foo1'])
+        for dec_tmpl in session.query(models.RawTemplate).all():
+            self.assertEqual('bar',
+                             dec_tmpl.environment['parameters']['param2'])
+        for dec_prop in session.query(models.Resource).all():
+            self.assertEqual('bar1', dec_prop.properties_data['foo1'])
 
         # Test that decryption is idempotent
         db_api.db_decrypt_parameters_and_properties(
-            self.ctx, cfg.CONF.auth_encryption_key)
+            self.ctx, cfg.CONF.auth_encryption_key, batch_size=batch_size)
         session = db_api.get_session()
-        env = session.query(models.RawTemplate).all()[0].environment
-        self.assertEqual('bar', env['parameters']['param2'])
-        prop_data = session.query(models.Resource).all()[0].properties_data
-        self.assertEqual('bar1', prop_data['foo1'])
+        for dec_tmpl in session.query(models.RawTemplate).all():
+            self.assertEqual('bar',
+                             dec_tmpl.environment['parameters']['param2'])
+        for dec_prop in session.query(models.Resource).all():
+            self.assertEqual('bar1', dec_prop.properties_data['foo1'])
 
         # Test using a different encryption key to decrypt
         db_api.db_encrypt_parameters_and_properties(
-            self.ctx, '774c15be099ea74123a9b9592ff12680')
+            self.ctx, '774c15be099ea74123a9b9592ff12680',
+            batch_size=batch_size)
         session = db_api.get_session()
-        env = session.query(models.RawTemplate).all()[0].environment
-        self.assertNotEqual(encrypt_value,
-                            env['parameters']['param2'][1])
+        for r_tmpl in session.query(models.RawTemplate).all():
+            self.assertNotEqual(encrypt_value,
+                                r_tmpl.environment['parameters']['param2'][1])
 
         db_api.db_decrypt_parameters_and_properties(
-            self.ctx, '774c15be099ea74123a9b9592ff12680')
+            self.ctx, '774c15be099ea74123a9b9592ff12680',
+            batch_size=batch_size)
         session = db_api.get_session()
-        env = session.query(models.RawTemplate).all()[0].environment
-        self.assertEqual('bar', env['parameters']['param2'])
+        for r_tmpl in session.query(models.RawTemplate).all():
+            self.assertEqual('bar',
+                             r_tmpl.environment['parameters']['param2'])
+
+    def test_db_encrypt_decrypt(self):
+        """Test encryption and decryption for single template"""
+        self._create_template()
+        self._test_db_encrypt_decrypt()
+
+    def test_db_encrypt_decrypt_in_batches(self):
+        """Test encryption and decryption in for several templates.
+
+        Test encryption and decryption when heat requests templates in batch:
+        predefined amount records.
+        """
+        self._create_template()
+        self._create_template()
+        self._test_db_encrypt_decrypt(batch_size=1)

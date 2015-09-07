@@ -117,7 +117,7 @@ class TemplateResource(stack_resource.StackResource):
         self.attributes_schema.update(self.base_attributes_schema)
         self.attributes = attributes.Attributes(self.name,
                                                 self.attributes_schema,
-                                                self._resolve_attribute)
+                                                self._resolve_all_attributes)
 
     def child_params(self):
         '''
@@ -230,7 +230,9 @@ class TemplateResource(stack_resource.StackResource):
                            'n': n, 'type': self.type()})
                 raise exception.StackValidationFailed(message=msg)
 
-        for attr in facade_cls.attributes_schema:
+        facade_attrs = facade_cls.attributes_schema.copy()
+        facade_attrs.update(facade_cls.base_attributes_schema)
+        for attr in facade_attrs:
             if attr not in self.attributes_schema:
                 msg = (_("Attribute %(attr)s for facade %(type)s "
                        "missing in provider") % {

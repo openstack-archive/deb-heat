@@ -16,6 +16,7 @@ import six
 from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import attributes
+from heat.engine.clients import progress
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
@@ -149,22 +150,22 @@ class HealthMonitor(neutron.NeutronResource):
         properties = self.prepare_properties(
             self.properties,
             self.physical_resource_name())
-        health_monitor = self.neutron().create_health_monitor(
+        health_monitor = self.client().create_health_monitor(
             {'health_monitor': properties})['health_monitor']
         self.resource_id_set(health_monitor['id'])
 
     def _show_resource(self):
-        return self.neutron().show_health_monitor(
+        return self.client().show_health_monitor(
             self.resource_id)['health_monitor']
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
-            self.neutron().update_health_monitor(
+            self.client().update_health_monitor(
                 self.resource_id, {'health_monitor': prop_diff})
 
     def handle_delete(self):
         try:
-            self.neutron().delete_health_monitor(self.resource_id)
+            self.client().delete_health_monitor(self.resource_id)
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
@@ -220,9 +221,14 @@ class Pool(neutron.NeutronResource):
         SUBNET_ID: properties.Schema(
             properties.Schema.STRING,
             support_status=support.SupportStatus(
-                status=support.DEPRECATED,
+                status=support.HIDDEN,
+                version='5.0.0',
                 message=_('Use property %s.') % SUBNET,
-                version='2014.2'),
+                previous_status=support.SupportStatus(
+                    status=support.DEPRECATED,
+                    version='2014.2'
+                )
+            ),
             constraints=[
                 constraints.CustomConstraint('neutron.subnet')
             ]
@@ -382,6 +388,16 @@ class Pool(neutron.NeutronResource):
         ),
     }
 
+    def translation_rules(self):
+        return [
+            properties.TranslationRule(
+                self.properties,
+                properties.TranslationRule.REPLACE,
+                [self.SUBNET],
+                value_path=[self.SUBNET_ID]
+            )
+        ]
+
     def validate(self):
         res = super(Pool, self).validate()
         if res:
@@ -410,12 +426,12 @@ class Pool(neutron.NeutronResource):
             properties, self.SUBNET, 'subnet_id')
         vip_properties = properties.pop(self.VIP)
         monitors = properties.pop(self.MONITORS)
-        client = self.neutron()
-        pool = client.create_pool({'pool': properties})['pool']
+
+        pool = self.client().create_pool({'pool': properties})['pool']
         self.resource_id_set(pool['id'])
 
         for monitor in monitors:
-            client.associate_health_monitor(
+            self.client().associate_health_monitor(
                 pool['id'], {'health_monitor': {'id': monitor}})
 
         vip_arguments = self.prepare_properties(
@@ -436,12 +452,12 @@ class Pool(neutron.NeutronResource):
                 vip_arguments, self.VIP_SUBNET, 'subnet_id')
 
         vip_arguments['pool_id'] = pool['id']
-        vip = client.create_vip({'vip': vip_arguments})['vip']
+        vip = self.client().create_vip({'vip': vip_arguments})['vip']
 
         self.metadata_set({'vip': vip['id']})
 
     def _show_resource(self):
-        return self.neutron().show_pool(self.resource_id)['pool']
+        return self.client().show_pool(self.resource_id)['pool']
 
     def check_create_complete(self, data):
         attributes = self._show_resource()
@@ -449,7 +465,7 @@ class Pool(neutron.NeutronResource):
         if status == 'PENDING_CREATE':
             return False
         elif status == 'ACTIVE':
-            vip_attributes = self.neutron().show_vip(
+            vip_attributes = self.client().show_vip(
                 self.metadata_get()['vip'])['vip']
             vip_status = vip_attributes['status']
             if vip_status == 'PENDING_CREATE':
@@ -474,55 +490,47 @@ class Pool(neutron.NeutronResource):
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
-            client = self.neutron()
             if self.MONITORS in prop_diff:
                 monitors = set(prop_diff.pop(self.MONITORS))
                 old_monitors = set(self.properties[self.MONITORS])
                 for monitor in old_monitors - monitors:
-                    client.disassociate_health_monitor(self.resource_id,
-                                                       monitor)
+                    self.client().disassociate_health_monitor(
+                        self.resource_id, monitor)
                 for monitor in monitors - old_monitors:
-                    client.associate_health_monitor(
+                    self.client().associate_health_monitor(
                         self.resource_id, {'health_monitor': {'id': monitor}})
 
             if prop_diff:
-                client.update_pool(self.resource_id, {'pool': prop_diff})
+                self.client().update_pool(self.resource_id,
+                                          {'pool': prop_diff})
 
     def _resolve_attribute(self, name):
         if name == self.VIP_ATTR:
-            return self.neutron().show_vip(self.metadata_get()['vip'])['vip']
+            return self.client().show_vip(self.metadata_get()['vip'])['vip']
         return super(Pool, self)._resolve_attribute(name)
 
     def handle_delete(self):
-
-        class PoolDeleteProgress(object):
-            def __init__(self, val=False):
-                self.pool = {'delete_called': val,
-                             'deleted': val}
-                self.vip = {'delete_called': val,
-                            'deleted': val}
-
         if not self.resource_id:
-            progress = PoolDeleteProgress(True)
-            return progress
+            prg = progress.PoolDeleteProgress(True)
+            return prg
 
-        progress = PoolDeleteProgress()
+        prg = progress.PoolDeleteProgress()
         if not self.metadata_get():
-            progress.vip['delete_called'] = True
-            progress.vip['deleted'] = True
-        return progress
+            prg.vip['delete_called'] = True
+            prg.vip['deleted'] = True
+        return prg
 
     def _delete_vip(self):
         return self._not_found_in_call(
-            self.neutron().delete_vip, self.metadata_get()['vip'])
+            self.client().delete_vip, self.metadata_get()['vip'])
 
     def _check_vip_deleted(self):
         return self._not_found_in_call(
-            self.neutron().show_vip, self.metadata_get()['vip'])
+            self.client().show_vip, self.metadata_get()['vip'])
 
     def _delete_pool(self):
         return self._not_found_in_call(
-            self.neutron().delete_pool, self.resource_id)
+            self.client().delete_pool, self.resource_id)
 
     def check_delete_complete(self, prg):
         if not prg.vip['delete_called']:
@@ -632,7 +640,6 @@ class PoolMember(neutron.NeutronResource):
 
     def handle_create(self):
         pool = self.properties[self.POOL_ID]
-        client = self.neutron()
         protocol_port = self.properties[self.PROTOCOL_PORT]
         address = self.properties[self.ADDRESS]
         admin_state_up = self.properties[self.ADMIN_STATE_UP]
@@ -648,21 +655,20 @@ class PoolMember(neutron.NeutronResource):
         if weight is not None:
             params['weight'] = weight
 
-        member = client.create_member({'member': params})['member']
+        member = self.client().create_member({'member': params})['member']
         self.resource_id_set(member['id'])
 
     def _show_resource(self):
-        return self.neutron().show_member(self.resource_id)['member']
+        return self.client().show_member(self.resource_id)['member']
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
-            self.neutron().update_member(
+            self.client().update_member(
                 self.resource_id, {'member': prop_diff})
 
     def handle_delete(self):
-        client = self.neutron()
         try:
-            client.delete_member(self.resource_id)
+            self.client().delete_member(self.resource_id)
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
         else:
@@ -706,12 +712,11 @@ class LoadBalancer(resource.Resource):
 
     def handle_create(self):
         pool = self.properties[self.POOL_ID]
-        client = self.neutron()
         protocol_port = self.properties[self.PROTOCOL_PORT]
 
         for member in self.properties[self.MEMBERS] or []:
             address = self.client_plugin('nova').server_to_ipaddress(member)
-            lb_member = client.create_member({
+            lb_member = self.client().create_member({
                 'member': {
                     'pool_id': pool,
                     'address': address,
@@ -733,11 +738,10 @@ class LoadBalancer(resource.Resource):
             members = set(new_props[self.MEMBERS] or [])
             rd_members = self.data()
             old_members = set(six.iterkeys(rd_members))
-            client = self.neutron()
             for member in old_members - members:
                 member_id = rd_members[member]
                 try:
-                    client.delete_member(member_id)
+                    self.client().delete_member(member_id)
                 except Exception as ex:
                     self.client_plugin().ignore_not_found(ex)
                 self.data_delete(member)
@@ -746,7 +750,7 @@ class LoadBalancer(resource.Resource):
             for member in members - old_members:
                 address = self.client_plugin('nova').server_to_ipaddress(
                     member)
-                lb_member = client.create_member({
+                lb_member = self.client().create_member({
                     'member': {
                         'pool_id': pool,
                         'address': address,
@@ -754,12 +758,11 @@ class LoadBalancer(resource.Resource):
                 self.data_set(member, lb_member['id'])
 
     def handle_delete(self):
-        client = self.neutron()
         # FIXME(pshchelo): this deletes members in a tight loop,
         # so is prone to OverLimit bug similar to LP 1265937
         for member, member_id in self.data().items():
             try:
-                client.delete_member(member_id)
+                self.client().delete_member(member_id)
             except Exception as ex:
                 self.client_plugin().ignore_not_found(ex)
             self.data_delete(member)

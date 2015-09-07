@@ -53,7 +53,7 @@ class NovaFlavorTest(common.HeatTestCase):
         self.my_flavor = self.stack['my_flavor']
         nova = mock.MagicMock()
         self.novaclient = mock.MagicMock()
-        self.my_flavor.nova = nova
+        self.my_flavor.client = nova
         nova.return_value = self.novaclient
         self.flavors = self.novaclient.flavors
 
@@ -90,6 +90,18 @@ class NovaFlavorTest(common.HeatTestCase):
         flavor_id = '927202df-1afb-497f-8368-9c2d2f26e5db'
         self.my_flavor.resource_id = flavor_id
         self.flavors.delete.return_value = None
-        self.assertIsNone(self.my_flavor.handle_delete())
+        self.assertEqual('927202df-1afb-497f-8368-9c2d2f26e5db',
+                         self.my_flavor.handle_delete())
         self.flavors.delete.side_effect = fakes.fake_exception()
         self.assertIsNone(self.my_flavor.handle_delete())
+
+    def test_flavor_show_resourse(self):
+        self.my_flavor.resource_id = 'flavor_test_id'
+        self.my_flavor.client = mock.MagicMock()
+        flavors = mock.MagicMock()
+        flavor = mock.MagicMock()
+        flavor.to_dict.return_value = {'flavor': 'info'}
+        flavors.get.return_value = flavor
+        self.my_flavor.client().flavors = flavors
+        self.assertEqual({'flavor': 'info'}, self.my_flavor.FnGetAtt('show'))
+        flavors.get.assert_called_once_with('flavor_test_id')

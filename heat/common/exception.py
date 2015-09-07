@@ -46,53 +46,6 @@ class KeystoneError(Exception):
         return "Code: %s, message: %s" % (self.code, self.message)
 
 
-def wrap_exception(notifier=None, publisher_id=None, event_type=None,
-                   level=None):
-    """This decorator wraps a method to catch any exceptions that may
-    get thrown. It logs the exception as well as optionally sending
-    it to the notification system.
-    """
-    # TODO(sandy): Find a way to import nova.notifier.api so we don't have
-    # to pass it in as a parameter. Otherwise we get a cyclic import of
-    # nova.notifier.api -> nova.utils -> nova.exception :(
-    # TODO(johannes): Also, it would be nice to use
-    # utils.save_and_reraise_exception() without an import loop
-    def inner(f):
-        def wrapped(*args, **kw):
-            try:
-                return f(*args, **kw)
-            except Exception as e:
-                # Save exception since it can be clobbered during processing
-                # below before we can re-raise
-                exc_info = sys.exc_info()
-
-                if notifier:
-                    payload = dict(args=args, exception=e)
-                    payload.update(kw)
-
-                    # Use a temp vars so we don't shadow
-                    # our outer definitions.
-                    temp_level = level
-                    if not temp_level:
-                        temp_level = notifier.ERROR
-
-                    temp_type = event_type
-                    if not temp_type:
-                        # If f has multiple decorators, they must use
-                        # six.wraps to ensure the name is
-                        # propagated.
-                        temp_type = f.__name__
-
-                    notifier.notify(publisher_id, temp_type, temp_level,
-                                    payload)
-
-                # re-raise original exception since it may have been clobbered
-                raise_(exc_info[0], exc_info[1], exc_info[2])
-
-        return six.wraps(f)(wrapped)
-    return inner
-
-
 @six.python_2_unicode_compatible
 class HeatException(Exception):
     """Base Heat Exception
@@ -122,7 +75,7 @@ class HeatException(Exception):
                 raise_(exc_info[0], exc_info[1], exc_info[2])
 
     def __str__(self):
-        return six.text_type(self.message)
+        return self.message
 
     def __deepcopy__(self, memo):
         return self.__class__(**self.kwargs)
@@ -154,7 +107,10 @@ class NotAuthenticated(HeatException):
 
 
 class Forbidden(HeatException):
-    msg_fmt = _("You are not authorized to complete this action.")
+    msg_fmt = _("You are not authorized to use %(action)s.")
+
+    def __init__(self, action='this action'):
+        super(Forbidden, self).__init__(action=action)
 
 
 # NOTE(bcwaldon): here for backwards-compatibility, need to deprecate.
@@ -509,6 +465,10 @@ class ObjectActionError(HeatException):
 
 class ReadOnlyFieldError(HeatException):
     msg_fmt = _('Cannot modify readonly field %(field)s')
+
+
+class DeploymentConcurrentTransaction(HeatException):
+    msg_fmt = _('Concurrent transaction for deployments of server %(server)s')
 
 
 class ObjectFieldInvalid(HeatException):

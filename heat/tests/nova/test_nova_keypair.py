@@ -84,12 +84,14 @@ class NovaKeyPairTest(common.HeatTestCase):
         """Test basic create."""
         key_name = "generate_no_save"
         tp_test, created_key = self._get_mock_kp_for_create(key_name)
-        self.fake_keypairs.get(key_name).AndReturn(created_key)
+        self.fake_keypairs.get(key_name).MultipleTimes().AndReturn(created_key)
+        created_key.to_dict().AndReturn({'key_pair': 'info'})
         self.m.ReplayAll()
         scheduler.TaskRunner(tp_test.create)()
         self.assertEqual("", tp_test.FnGetAtt('private_key'))
         self.assertEqual("generated test public key",
                          tp_test.FnGetAtt('public_key'))
+        self.assertEqual({'key_pair': 'info'}, tp_test.FnGetAtt('show'))
         self.assertEqual((tp_test.CREATE, tp_test.COMPLETE), tp_test.state)
         self.assertEqual(tp_test.resource_id, created_key.name)
         self.m.VerifyAll()
@@ -139,14 +141,14 @@ class NovaKeyPairTest(common.HeatTestCase):
 
     def test_check_key(self):
         res = self._get_test_resource(self.kp_template)
-        res.nova = mock.Mock()
+        res.client = mock.Mock()
         scheduler.TaskRunner(res.check)()
         self.assertEqual((res.CHECK, res.COMPLETE), res.state)
 
     def test_check_key_fail(self):
         res = self._get_test_resource(self.kp_template)
-        res.nova = mock.Mock()
-        res.nova().keypairs.get.side_effect = Exception("boom")
+        res.client = mock.Mock()
+        res.client().keypairs.get.side_effect = Exception("boom")
         exc = self.assertRaises(exception.ResourceFailure,
                                 scheduler.TaskRunner(res.check))
         self.assertIn("boom", six.text_type(exc))

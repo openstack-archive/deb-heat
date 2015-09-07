@@ -45,7 +45,8 @@ class FormatTest(common.HeatTestCase):
                 'generic2': {
                     'Type': 'GenericResourceType',
                     'DependsOn': 'generic1'},
-                'generic3': {'Type': 'ResWithShowAttrType'}
+                'generic3': {'Type': 'ResWithShowAttrType'},
+                'generic4': {'Type': 'StackResourceType'}
             }
         })
         self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
@@ -61,6 +62,8 @@ class FormatTest(common.HeatTestCase):
                            id=event_id)
 
     def test_format_stack_resource(self):
+        self.stack.created_time = datetime(2015, 8, 3, 17, 5, 1)
+        self.stack.updated_time = datetime(2015, 8, 3, 17, 6, 2)
         res = self.stack['generic1']
 
         resource_keys = set((
@@ -89,6 +92,30 @@ class FormatTest(common.HeatTestCase):
 
         formatted = api.format_stack_resource(res, False)
         self.assertEqual(resource_keys, set(six.iterkeys(formatted)))
+        self.assertEqual(self.stack.created_time.isoformat(),
+                         formatted[rpc_api.RES_CREATION_TIME])
+        self.assertEqual(self.stack.updated_time.isoformat(),
+                         formatted[rpc_api.RES_UPDATED_TIME])
+        self.assertEqual(res.INIT, formatted[rpc_api.RES_ACTION])
+
+    def test_format_stack_resource_has_been_deleted(self):
+        # assume the stack and resource have been deleted,
+        # to test the resource's action inherit from stack
+        self.stack.state_set(self.stack.DELETE, self.stack.COMPLETE,
+                             'test_delete')
+        res = self.stack['generic1']
+        formatted = api.format_stack_resource(res, False)
+        self.assertEqual(res.DELETE, formatted[rpc_api.RES_ACTION])
+
+    def test_format_stack_resource_has_been_rollback(self):
+        # Rollback a stack, the resources perhaps have not been
+        # created yet or have been deleted when rollback.
+        # To test the resource's action inherit from stack
+        self.stack.state_set(self.stack.ROLLBACK, self.stack.COMPLETE,
+                             'test_rollback')
+        res = self.stack['generic1']
+        formatted = api.format_stack_resource(res, False)
+        self.assertEqual(res.ROLLBACK, formatted[rpc_api.RES_ACTION])
 
     @mock.patch.object(api, 'format_resource_properties')
     def test_format_stack_resource_with_props(self, mock_format_props):
@@ -110,12 +137,15 @@ class FormatTest(common.HeatTestCase):
 
     def test_format_resource_attributes(self):
         res = self.stack['generic1']
-        # the _resolve_attribute method of  'generic1' return res.name
+        # the _resolve_attribute method of  'generic1' returns map with all
+        # attributes except 'show' (because it's None in this test)
         formatted_attributes = api.format_resource_attributes(res)
-        self.assertEqual(res.name, formatted_attributes)
+        expected = {'foo': 'generic1', 'Foo': 'generic1'}
+        self.assertEqual(expected, formatted_attributes)
 
     def test_format_resource_attributes_show_attribute(self):
         res = self.stack['generic3']
+        res.resource_id = 'generic3_id'
         formatted_attributes = api.format_resource_attributes(res)
         self.assertEqual(3, len(formatted_attributes))
         self.assertIn('foo', formatted_attributes)
@@ -124,6 +154,7 @@ class FormatTest(common.HeatTestCase):
 
     def test_format_resource_attributes_show_attribute_with_attr(self):
         res = self.stack['generic3']
+        res.resource_id = 'generic3_id'
         formatted_attributes = api.format_resource_attributes(
             res, with_attr=['c'])
         self.assertEqual(4, len(formatted_attributes))
@@ -167,7 +198,7 @@ class FormatTest(common.HeatTestCase):
         self.assertEqual('', props['a_string'])
 
     def test_format_stack_resource_with_nested_stack(self):
-        res = self.stack['generic1']
+        res = self.stack['generic4']
         nested_id = {'foo': 'bar'}
         res.nested = mock.Mock()
         res.nested.return_value.identifier.return_value = nested_id
@@ -176,7 +207,7 @@ class FormatTest(common.HeatTestCase):
         self.assertEqual(nested_id, formatted[rpc_api.RES_NESTED_STACK_ID])
 
     def test_format_stack_resource_with_nested_stack_none(self):
-        res = self.stack['generic1']
+        res = self.stack['generic4']
         res.nested = mock.Mock()
         res.nested.return_value = None
 
@@ -198,9 +229,9 @@ class FormatTest(common.HeatTestCase):
         self.assertEqual(resource_keys, set(six.iterkeys(formatted)))
 
     def test_format_stack_resource_with_nested_stack_not_found(self):
-        res = self.stack['generic1']
-        res.nested = mock.Mock()
-        res.nested.side_effect = exception.NotFound()
+        res = self.stack['generic4']
+        self.patchobject(parser.Stack, 'load',
+                         side_effect=exception.NotFound())
 
         resource_keys = set((
             rpc_api.RES_CREATION_TIME,
@@ -217,10 +248,11 @@ class FormatTest(common.HeatTestCase):
             rpc_api.RES_REQUIRED_BY))
 
         formatted = api.format_stack_resource(res, False)
+        # 'nested_stack_id' is not in formatted
         self.assertEqual(resource_keys, set(six.iterkeys(formatted)))
 
     def test_format_stack_resource_with_nested_stack_empty(self):
-        res = self.stack['generic1']
+        res = self.stack['generic4']
         nested_id = {'foo': 'bar'}
 
         res.nested = mock.MagicMock()
@@ -290,7 +322,14 @@ class FormatTest(common.HeatTestCase):
         self.assertIsNone(stack.get('status_reason'))
         self.assertEqual('test_stack', stack['stack_name'])
         self.assertIn('resources', stack)
-        self.assertEqual(['fmt1', ['fmt2', ['fmt3']]], stack['resources'])
+        resources = list(stack['resources'])
+        self.assertEqual('fmt1', resources[0])
+
+        resources = list(resources[1])
+        self.assertEqual('fmt2', resources[0])
+
+        resources = list(resources[1])
+        self.assertEqual('fmt3', resources[0])
 
         kwargs = mock_fmt_resource.call_args[1]
         self.assertTrue(kwargs['with_props'])
@@ -383,7 +422,8 @@ class FormatTest(common.HeatTestCase):
                      'output_key': 'correct_output',
                      'output_value': 'generic'}]
 
-        self.assertEqual(expected, info)
+        self.assertEqual(expected, sorted(info, key=lambda k: k['output_key'],
+                                          reverse=True))
 
 
 class FormatValidateParameterTest(common.HeatTestCase):

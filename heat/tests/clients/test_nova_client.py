@@ -16,8 +16,10 @@ import collections
 import uuid
 
 import mock
+from novaclient import client as nc
 from novaclient import exceptions as nova_exceptions
 from oslo_config import cfg
+from oslo_serialization import jsonutils as json
 import six
 
 from heat.common import exception
@@ -45,21 +47,12 @@ class NovaClientPluginTests(NovaClientPluginTestCase):
     """
 
     def test_create(self):
-        self.nova_plugin._get_client_option = mock.MagicMock()
-        self.nova_plugin.url_for = mock.MagicMock()
-        if hasattr(nova.nc, 'discover_extensions'):
-            # novaclient >= 2.24.0 has this function
-            # so we should test it
-            nova.nc.discover_extensions = mock.MagicMock()
-            self.nova_plugin._create()
-            nova.nc.discover_extensions.assert_called_once_with('2')
-        else:
-            # FIXME(kairat_kushaev) need to delete this leaf when novaclient
-            # version will be greater than 2.24.0
-            with mock.patch(
-                    "nova.novashell.OpenStackComputeShell") as comp_shell:
-                self.nova_plugin._create()
-                comp_shell._discover_extensions.assert_called_once_with('2')
+        context = utils.dummy_context()
+        ext_mock = self.patchobject(nc, 'discover_extensions')
+        plugin = context.clients.client_plugin('nova')
+        client = plugin.client()
+        ext_mock.assert_called_once_with('2')
+        self.assertIsNotNone(client.servers)
 
     def test_get_ip(self):
         my_image = mock.MagicMock()
@@ -346,8 +339,6 @@ class NovaClientPluginUserdataTests(NovaClientPluginTestCase):
 
     def test_build_userdata_without_instance_user(self):
         """Don't add a custom instance user when not requested."""
-        cfg.CONF.set_override('instance_user',
-                              'config_instance_user')
         cfg.CONF.set_override('heat_metadata_server_url',
                               'http://server.test:123')
         cfg.CONF.set_override('heat_watch_server_url',
@@ -355,19 +346,18 @@ class NovaClientPluginUserdataTests(NovaClientPluginTestCase):
         data = self.nova_plugin.build_userdata({}, instance_user=None)
         self.assertNotIn('user: ', data)
         self.assertNotIn('useradd', data)
-        self.assertNotIn('config_instance_user', data)
+        self.assertNotIn('ec2-user', data)
 
     def test_build_userdata_with_instance_user(self):
-        """Add the custom instance user when requested."""
-        self.m.StubOutWithMock(nova.cfg, 'CONF')
-        cnf = nova.cfg.CONF
-        cnf.instance_user = 'config_instance_user'
-        cnf.heat_metadata_server_url = 'http://server.test:123'
-        cnf.heat_watch_server_url = 'http://server.test:345'
-        data = self.nova_plugin.build_userdata(
-            None, instance_user="custominstanceuser")
-        self.assertNotIn('config_instance_user', data)
-        self.assertIn("custominstanceuser", data)
+        """Add a custom instance user."""
+        cfg.CONF.set_override('heat_metadata_server_url',
+                              'http://server.test:123')
+        cfg.CONF.set_override('heat_watch_server_url',
+                              'http://server.test:345')
+        data = self.nova_plugin.build_userdata({}, instance_user='ec2-user')
+        self.assertIn('user: ', data)
+        self.assertIn('useradd', data)
+        self.assertIn('ec2-user', data)
 
 
 class NovaClientPluginMetadataTests(NovaClientPluginTestCase):
@@ -387,9 +377,16 @@ class NovaClientPluginMetadataTests(NovaClientPluginTestCase):
         self.assertEqual(expected, self.nova_plugin.meta_serialize(original))
 
     def test_serialize_dict(self):
-        original = {'test_key': {'a': 'b', 'c': 'd'}}
+        original = collections.OrderedDict([
+            ('test_key', collections.OrderedDict([
+                ('a', 'b'),
+                ('c', 'd'),
+            ]))
+        ])
         expected = {'test_key': '{"a": "b", "c": "d"}'}
-        self.assertEqual(expected, self.nova_plugin.meta_serialize(original))
+        actual = self.nova_plugin.meta_serialize(original)
+        self.assertEqual(json.loads(expected['test_key']),
+                         json.loads(actual['test_key']))
 
     def test_serialize_none(self):
         original = {'test_key': None}

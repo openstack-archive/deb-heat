@@ -28,7 +28,7 @@ from heat.common import wsgi
 class API(wsgi.Router):
 
     """
-    WSGI router for Heat v1 ReST API requests.
+    WSGI router for Heat v1 REST API requests.
     """
 
     def __init__(self, conf, **local_conf):
@@ -207,6 +207,12 @@ class API(wsgi.Router):
                         'url': '/stacks/{stack_name}/{stack_id}',
                         'action': 'update_patch',
                         'method': 'PATCH'
+                    },
+                    {
+                        'name': 'preview_stack_update',
+                        'url': '/stacks/{stack_name}/{stack_id}/preview',
+                        'action': 'preview_update',
+                        'method': 'PUT'
                     },
                     {
                         'name': 'stack_delete',

@@ -17,7 +17,6 @@ import uuid
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
-from oslo_utils import netutils
 from oslo_utils import uuidutils
 import six
 
@@ -25,25 +24,25 @@ from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LI
 from heat.engine import attributes
-from heat.engine.clients.os import nova as nova_cp
+from heat.engine.clients import progress
 from heat.engine import constraints
 from heat.engine import function
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources.openstack.neutron import subnet
+from heat.engine.resources.openstack.nova import server_network_mixin
+from heat.engine.resources import scheduler_hints as sh
 from heat.engine.resources import stack_user
-from heat.engine import scheduler
 from heat.engine import support
 from heat.rpc import api as rpc_api
 
-cfg.CONF.import_opt('instance_user', 'heat.common.config')
 cfg.CONF.import_opt('default_software_config_transport', 'heat.common.config')
-cfg.CONF.import_opt('stack_scheduler_hints', 'heat.common.config')
 
 LOG = logging.getLogger(__name__)
 
 
-class Server(stack_user.StackUser):
+class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
+             server_network_mixin.ServerNetworkMixin):
 
     PROPERTIES = (
         NAME, IMAGE, BLOCK_DEVICE_MAPPING, BLOCK_DEVICE_MAPPING_V2,
@@ -99,8 +98,10 @@ class Server(stack_user.StackUser):
 
     _NETWORK_KEYS = (
         NETWORK_UUID, NETWORK_ID, NETWORK_FIXED_IP, NETWORK_PORT,
+        NETWORK_SUBNET
     ) = (
         'uuid', 'network', 'fixed_ip', 'port',
+        'subnet'
     )
 
     _SOFTWARE_CONFIG_FORMATS = (
@@ -365,6 +366,14 @@ class Server(stack_user.StackUser):
                             constraints.CustomConstraint('neutron.port')
                         ]
                     ),
+                    NETWORK_SUBNET: properties.Schema(
+                        properties.Schema.STRING,
+                        _('Subnet in which to allocate the IP address for '
+                          'port. Used only if port property is not specified '
+                          'for creating port, based on derived properties.'),
+                        support_status=support.SupportStatus(version='5.0.0'),
+                        implemented=False
+                    )
                 },
             ),
             update_allowed=True
@@ -515,6 +524,8 @@ class Server(stack_user.StackUser):
     physical_resource_name_limit = 53
 
     default_client_name = 'nova'
+
+    entity = 'servers'
 
     def translation_rules(self):
         return [properties.TranslationRule(
@@ -686,17 +697,10 @@ class Server(stack_user.StackUser):
             self._create_transport_credentials()
             self._populate_deployments_metadata(metadata)
 
-        if self.properties[self.ADMIN_USER]:
-            instance_user = self.properties[self.ADMIN_USER]
-        elif cfg.CONF.instance_user:
-            instance_user = cfg.CONF.instance_user
-        else:
-            instance_user = None
-
         userdata = self.client_plugin().build_userdata(
             metadata,
             ud_content,
-            instance_user=instance_user,
+            instance_user=None,
             user_data_format=user_data_format)
 
         flavor = self.properties[self.FLAVOR]
@@ -713,15 +717,9 @@ class Server(stack_user.StackUser):
             instance_meta = self.client_plugin().meta_serialize(
                 instance_meta)
 
-        scheduler_hints = self.properties[self.SCHEDULER_HINTS]
-        if cfg.CONF.stack_scheduler_hints:
-            if scheduler_hints is None:
-                scheduler_hints = {}
-            scheduler_hints['heat_root_stack_id'] = self.stack.root_stack_id()
-            scheduler_hints['heat_stack_id'] = self.stack.id
-            scheduler_hints['heat_stack_name'] = self.stack.name
-            scheduler_hints['heat_path_in_stack'] = self.stack.path_in_stack()
-            scheduler_hints['heat_resource_name'] = self.name
+        scheduler_hints = self._scheduler_hints(
+            self.properties[self.SCHEDULER_HINTS])
+
         nics = self._build_nics(self.properties[self.NETWORKS])
         block_device_mapping = self._build_block_device_mapping(
             self.properties[self.BLOCK_DEVICE_MAPPING])
@@ -735,7 +733,7 @@ class Server(stack_user.StackUser):
 
         server = None
         try:
-            server = self.nova().servers.create(
+            server = self.client().servers.create(
                 name=self._server_name(),
                 image=image,
                 flavor=flavor_id,
@@ -859,37 +857,11 @@ class Server(stack_user.StackUser):
 
         return bdm_v2_list
 
-    def _build_nics(self, networks):
-        if not networks:
-            return None
-
-        nics = []
-
-        for net_data in networks:
-            nic_info = {}
-            net_identifier = (net_data.get(self.NETWORK_UUID) or
-                              net_data.get(self.NETWORK_ID))
-            if net_identifier:
-                if self.is_using_neutron():
-                    net_id = (self.client_plugin(
-                        'neutron').resolve_network(
-                        net_data, self.NETWORK_ID, self.NETWORK_UUID))
-                else:
-                    net_id = (self.client_plugin(
-                        'nova').get_nova_network_id(net_identifier))
-                nic_info['net-id'] = net_id
-            if net_data.get(self.NETWORK_FIXED_IP):
-                ip = net_data[self.NETWORK_FIXED_IP]
-                if netutils.is_valid_ipv6(ip):
-                    nic_info['v6-fixed-ip'] = ip
-                else:
-                    nic_info['v4-fixed-ip'] = ip
-            if net_data.get(self.NETWORK_PORT):
-                nic_info['port-id'] = net_data[self.NETWORK_PORT]
-            nics.append(nic_info)
-        return nics
-
     def _add_port_for_address(self, server):
+        """Method adds port id to list of addresses.
+
+        This method is used only for resolving attributes.
+        """
         nets = copy.deepcopy(server.addresses)
         ifaces = server.interface_list()
         ip_mac_mapping_on_port_id = dict(((iface.fixed_ips[0]['ip_address'],
@@ -902,8 +874,12 @@ class Server(stack_user.StackUser):
         return self._extend_networks(nets)
 
     def _extend_networks(self, networks):
+        """Method adds same networks with replaced name on network id.
+
+        This method is used only for resolving attributes.
+        """
         nets = copy.deepcopy(networks)
-        for key in nets.keys():
+        for key in list(nets.keys()):
             try:
                 net_id = self.client_plugin().get_net_id_by_label(key)
             except (exception.NovaNetworkNotFound,
@@ -920,7 +896,7 @@ class Server(stack_user.StackUser):
         if name == self.NAME_ATTR:
             return self._server_name()
         try:
-            server = self.nova().servers.get(self.resource_id)
+            server = self.client().servers.get(self.resource_id)
         except Exception as e:
             self.client_plugin().ignore_not_found(e)
             return ''
@@ -934,8 +910,6 @@ class Server(stack_user.StackUser):
             return server.accessIPv4
         if name == self.ACCESSIPV6:
             return server.accessIPv6
-        if name == self.SHOW:
-            return server._info
         if name == self.CONSOLE_URLS:
             return self.client_plugin('nova').get_console_urls(server)
 
@@ -964,76 +938,7 @@ class Server(stack_user.StackUser):
                         deps += (self, res)
                         break
 
-    def _get_network_matches(self, old_networks, new_networks):
-        # make new_networks similar on old_networks
-        for new_net in new_networks:
-            for key in ('port', 'network', 'fixed_ip', 'uuid'):
-                # if new_net.get(key) is '', convert to None
-                if not new_net.get(key):
-                    new_net[key] = None
-        for old_net in old_networks:
-            for key in ('port', 'network', 'fixed_ip', 'uuid'):
-                # if old_net.get(key) is '', convert to None
-                if not old_net.get(key):
-                    old_net[key] = None
-        # find matches and remove them from old and new networks
-        not_updated_networks = []
-        for net in old_networks:
-            if net in new_networks:
-                new_networks.remove(net)
-                not_updated_networks.append(net)
-        for net in not_updated_networks:
-            old_networks.remove(net)
-        return not_updated_networks
-
-    def _get_network_id(self, net):
-        net_id = None
-        if net.get(self.NETWORK_ID):
-            if self.is_using_neutron():
-                net_id = self.client_plugin(
-                    'neutron').resolve_network(
-                    net,
-                    self.NETWORK_ID, self.NETWORK_UUID)
-            else:
-                net_id = self.client_plugin(
-                    'nova').get_nova_network_id(net.get(self.NETWORK_ID))
-        return net_id
-
-    def update_networks_matching_iface_port(self, nets, interfaces):
-
-        def find_equal(port, net_id, ip, nets):
-            for net in nets:
-
-                if (net.get('port') == port or
-                        (net.get('fixed_ip') == ip and
-                         (self._get_network_id(net) == net_id or
-                          net.get('uuid') == net_id))):
-                    return net
-
-        def find_poor_net(net_id, nets):
-            for net in nets:
-                if (not net.get('port') and not net.get('fixed_ip') and
-                        (self._get_network_id(net) == net_id or
-                         net.get('uuid') == net_id)):
-                    return net
-
-        for iface in interfaces:
-            # get interface properties
-            props = {'port': iface.port_id,
-                     'net_id': iface.net_id,
-                     'ip': iface.fixed_ips[0]['ip_address'],
-                     'nets': nets}
-            # try to match by port or network_id with fixed_ip
-            net = find_equal(**props)
-            if net is not None:
-                net['port'] = props['port']
-                continue
-            # find poor net that has only network_id
-            net = find_poor_net(props['net_id'], nets)
-            if net is not None:
-                net['port'] = props['port']
-
-    def _update_flavor(self, server, prop_diff):
+    def _update_flavor(self, prop_diff):
         flavor_update_policy = (
             prop_diff.get(self.FLAVOR_UPDATE_POLICY) or
             self.properties[self.FLAVOR_UPDATE_POLICY])
@@ -1043,12 +948,18 @@ class Server(stack_user.StackUser):
             raise resource.UpdateReplace(self.name)
 
         flavor_id = self.client_plugin().get_flavor_id(flavor)
-        if not server:
-            server = self.nova().servers.get(self.resource_id)
-        return scheduler.TaskRunner(self.client_plugin().resize,
-                                    server, flavor, flavor_id)
+        handler_args = {'args': (flavor_id,)}
+        checker_args = {'args': (flavor_id, flavor)}
 
-    def _update_image(self, server, prop_diff):
+        prg_resize = progress.ServerUpdateProgress(self.resource_id,
+                                                   'resize',
+                                                   handler_extra=handler_args,
+                                                   checker_extra=checker_args)
+        prg_verify = progress.ServerUpdateProgress(self.resource_id,
+                                                   'verify_resize')
+        return prg_resize, prg_verify
+
+    def _update_image(self, prop_diff):
         image_update_policy = (
             prop_diff.get(self.IMAGE_UPDATE_POLICY) or
             self.properties[self.IMAGE_UPDATE_POLICY])
@@ -1056,135 +967,96 @@ class Server(stack_user.StackUser):
             raise resource.UpdateReplace(self.name)
         image = prop_diff[self.IMAGE]
         image_id = self.client_plugin('glance').get_image_id(image)
-        if not server:
-            server = self.nova().servers.get(self.resource_id)
         preserve_ephemeral = (
             image_update_policy == 'REBUILD_PRESERVE_EPHEMERAL')
         password = (prop_diff.get(self.ADMIN_PASS) or
                     self.properties[self.ADMIN_PASS])
-        return scheduler.TaskRunner(
-            self.client_plugin().rebuild, server, image_id,
-            password=password,
-            preserve_ephemeral=preserve_ephemeral)
+        kwargs = {'password': password,
+                  'preserve_ephemeral': preserve_ephemeral}
+        prg = progress.ServerUpdateProgress(self.resource_id,
+                                            'rebuild',
+                                            handler_extra={'args': (image_id,),
+                                                           'kwargs': kwargs})
+        return prg
 
     def _update_networks(self, server, prop_diff):
-        checkers = []
+        updaters = []
         new_networks = prop_diff.get(self.NETWORKS)
-        attach_first_free_port = False
-        if not new_networks:
-            new_networks = []
-            attach_first_free_port = True
         old_networks = self.properties[self.NETWORKS]
 
         if not server:
-            server = self.nova().servers.get(self.resource_id)
+            server = self.client().servers.get(self.resource_id)
         interfaces = server.interface_list()
+        remove_ports, add_nets = self.calculate_networks(
+            old_networks, new_networks, interfaces)
 
-        # if old networks is None, it means that the server got first
-        # free port. so we should detach this interface.
-        if old_networks is None:
-            for iface in interfaces:
-                checker = scheduler.TaskRunner(server.interface_detach,
-                                               iface.port_id)
-                checkers.append(checker)
+        for port in remove_ports:
+            updaters.append(
+                progress.ServerUpdateProgress(
+                    self.resource_id, 'interface_detach',
+                    complete=True,
+                    handler_extra={'args': (port,)})
+            )
 
-        # if we have any information in networks field, we should:
-        # 1. find similar networks, if they exist
-        # 2. remove these networks from new_networks and old_networks
-        #    lists
-        # 3. detach unmatched networks, which were present in old_networks
-        # 4. attach unmatched networks, which were present in new_networks
-        else:
-            # remove not updated networks from old and new networks lists,
-            # also get list these networks
-            not_updated_networks = self._get_network_matches(
-                old_networks, new_networks)
+        for args in add_nets:
+            updaters.append(
+                progress.ServerUpdateProgress(
+                    self.resource_id, 'interface_attach',
+                    complete=True,
+                    handler_extra={'kwargs': args})
+            )
 
-            self.update_networks_matching_iface_port(
-                old_networks + not_updated_networks, interfaces)
-
-            # according to nova interface-detach command detached port
-            # will be deleted
-            for net in old_networks:
-                if net.get(self.NETWORK_PORT):
-                    checker = scheduler.TaskRunner(server.interface_detach,
-                                                   net.get(self.NETWORK_PORT))
-                    checkers.append(checker)
-
-        # attach section similar for both variants that
-        # were mentioned above
-
-        for net in new_networks:
-            if net.get(self.NETWORK_PORT):
-                checker = scheduler.TaskRunner(server.interface_attach,
-                                               net.get(self.NETWORK_PORT),
-                                               None, None)
-                checkers.append(checker)
-            elif net.get(self.NETWORK_ID):
-                checker = scheduler.TaskRunner(server.interface_attach,
-                                               None, self._get_network_id(net),
-                                               net.get('fixed_ip'))
-                checkers.append(checker)
-            elif net.get('uuid'):
-                checker = scheduler.TaskRunner(server.interface_attach,
-                                               None, net['uuid'],
-                                               net.get('fixed_ip'))
-                checkers.append(checker)
-
-        # if new_networks is None, we should attach first free port,
-        # according to similar behavior during instance creation
-        if attach_first_free_port:
-            checker = scheduler.TaskRunner(server.interface_attach,
-                                           None, None, None)
-            checkers.append(checker)
-
-        return checkers
+        return updaters
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if 'Metadata' in tmpl_diff:
             self.metadata_set(tmpl_diff['Metadata'])
 
-        checkers = []
+        updaters = []
         server = None
 
         if self.METADATA in prop_diff:
-            server = self.nova().servers.get(self.resource_id)
+            server = self.client().servers.get(self.resource_id)
             self.client_plugin().meta_update(server,
                                              prop_diff[self.METADATA])
 
         if self.FLAVOR in prop_diff:
-            checkers.append(self._update_flavor(server, prop_diff))
+            updaters.extend(self._update_flavor(prop_diff))
 
         if self.IMAGE in prop_diff:
-            checkers.append(self._update_image(server, prop_diff))
+            updaters.append(self._update_image(prop_diff))
         elif self.ADMIN_PASS in prop_diff:
             if not server:
-                server = self.nova().servers.get(self.resource_id)
+                server = self.client().servers.get(self.resource_id)
             server.change_password(prop_diff[self.ADMIN_PASS])
 
         if self.NAME in prop_diff:
             if not server:
-                server = self.nova().servers.get(self.resource_id)
+                server = self.client().servers.get(self.resource_id)
             self.client_plugin().rename(server, prop_diff[self.NAME])
 
         if self.NETWORKS in prop_diff:
-            checkers.extend(self._update_networks(server, prop_diff))
+            updaters.extend(self._update_networks(server, prop_diff))
 
-        # Optimization: make sure the first task is started before
-        # check_update_complete.
-        if checkers:
-            checkers[0].start()
+        # NOTE(pas-ha) optimization is possible (starting first task
+        # right away), but we'd rather not, as this method already might
+        # have called several APIs
+        return updaters
 
-        return checkers
-
-    def check_update_complete(self, checkers):
-        '''Push all checkers to completion in list order.'''
-        for checker in checkers:
-            if not checker.started():
-                checker.start()
-            if not checker.step():
+    def check_update_complete(self, updaters):
+        '''Push all updaters to completion in list order.'''
+        for prg in updaters:
+            if not prg.called:
+                handler = getattr(self.client_plugin(), prg.handler)
+                prg.called = handler(*prg.handler_args,
+                                     **prg.handler_kwargs)
                 return False
-        return True
+            if not prg.complete:
+                check_complete = getattr(self.client_plugin(), prg.checker)
+                prg.complete = check_complete(*prg.checker_args,
+                                              **prg.checker_kwargs)
+                break
+        return all(prg.complete for prg in updaters)
 
     def metadata_update(self, new_metadata=None):
         '''
@@ -1262,6 +1134,39 @@ class Server(stack_user.StackUser):
 
         return bootable_vol
 
+    def _validate_network(self, network):
+        if (network.get(self.NETWORK_ID) is None
+            and network.get(self.NETWORK_PORT) is None
+                and network.get(self.NETWORK_UUID) is None):
+            msg = _('One of the properties "%(id)s", "%(port_id)s", '
+                    '"%(uuid)s" should be set for the '
+                    'specified network of server "%(server)s".'
+                    '') % dict(id=self.NETWORK_ID,
+                               port_id=self.NETWORK_PORT,
+                               uuid=self.NETWORK_UUID,
+                               server=self.name)
+            raise exception.StackValidationFailed(message=msg)
+
+        if network.get(self.NETWORK_UUID) and network.get(self.NETWORK_ID):
+            msg = _('Properties "%(uuid)s" and "%(id)s" are both set '
+                    'to the network "%(network)s" for the server '
+                    '"%(server)s". The "%(uuid)s" property is deprecated. '
+                    'Use only "%(id)s" property.'
+                    '') % dict(uuid=self.NETWORK_UUID,
+                               id=self.NETWORK_ID,
+                               network=network[self.NETWORK_ID],
+                               server=self.name)
+            raise exception.StackValidationFailed(message=msg)
+        elif network.get(self.NETWORK_UUID):
+            LOG.info(_LI('For the server "%(server)s" the "%(uuid)s" '
+                         'property is set to network "%(network)s". '
+                         '"%(uuid)s" property is deprecated. Use '
+                         '"%(id)s"  property instead.'),
+                     dict(uuid=self.NETWORK_UUID,
+                          id=self.NETWORK_ID,
+                          network=network[self.NETWORK_ID],
+                          server=self.name))
+
     def validate(self):
         '''
         Validate any of the provided params
@@ -1285,37 +1190,7 @@ class Server(stack_user.StackUser):
         for network in networks:
             networks_with_port = (networks_with_port or
                                   network.get(self.NETWORK_PORT))
-            if (network.get(self.NETWORK_ID) is None
-                and network.get(self.NETWORK_PORT) is None
-                    and network.get(self.NETWORK_UUID) is None):
-                msg = _('One of the properties "%(id)s", "%(port_id)s", '
-                        '"%(uuid)s" should be set for the '
-                        'specified network of server "%(server)s".'
-                        '') % dict(id=self.NETWORK_ID,
-                                   port_id=self.NETWORK_PORT,
-                                   uuid=self.NETWORK_UUID,
-                                   server=self.name)
-                raise exception.StackValidationFailed(message=msg)
-
-            if network.get(self.NETWORK_UUID) and network.get(self.NETWORK_ID):
-                msg = _('Properties "%(uuid)s" and "%(id)s" are both set '
-                        'to the network "%(network)s" for the server '
-                        '"%(server)s". The "%(uuid)s" property is deprecated. '
-                        'Use only "%(id)s" property.'
-                        '') % dict(uuid=self.NETWORK_UUID,
-                                   id=self.NETWORK_ID,
-                                   network=network[self.NETWORK_ID],
-                                   server=self.name)
-                raise exception.StackValidationFailed(message=msg)
-            elif network.get(self.NETWORK_UUID):
-                LOG.info(_LI('For the server "%(server)s" the "%(uuid)s" '
-                             'property is set to network "%(network)s". '
-                             '"%(uuid)s" property is deprecated. Use '
-                             '"%(id)s"  property instead.'),
-                         dict(uuid=self.NETWORK_UUID,
-                              id=self.NETWORK_ID,
-                              network=network[self.NETWORK_ID],
-                              server=self.name))
+            self._validate_network(network)
 
         # retrieve provider's absolute limits if it will be needed
         metadata = self.properties[self.METADATA]
@@ -1354,7 +1229,7 @@ class Server(stack_user.StackUser):
                          "file size (%(max_size)s bytes).") %
                        {'path': path,
                         'max_size': limits['maxPersonalitySize']})
-                self._check_maximum(len(bytes(contents)),
+                self._check_maximum(len(bytes(contents.encode('utf-8'))),
                                     limits['maxPersonalitySize'], msg)
 
     def _delete_temp_url(self):
@@ -1386,10 +1261,9 @@ class Server(stack_user.StackUser):
 
     def handle_snapshot_delete(self, state):
         if state[0] != self.FAILED:
-            client = self.nova()
-            image_id = client.servers.create_image(
+            image_id = self.client().servers.create_image(
                 self.resource_id, self.physical_resource_name())
-            return nova_cp.ServerDeleteProgress(
+            return progress.ServerDeleteProgress(
                 self.resource_id, image_id, False)
         return self.handle_delete()
 
@@ -1408,24 +1282,24 @@ class Server(stack_user.StackUser):
         except Exception as e:
             self.client_plugin().ignore_not_found(e)
             return
-        return nova_cp.ServerDeleteProgress(self.resource_id)
+        return progress.ServerDeleteProgress(self.resource_id)
 
-    def check_delete_complete(self, progress):
-        if not progress:
+    def check_delete_complete(self, prg):
+        if not prg:
             return True
 
-        if not progress.image_complete:
-            image = self.nova().images.get(progress.image_id)
+        if not prg.image_complete:
+            image = self.client().images.get(prg.image_id)
             if image.status in ('DELETED', 'ERROR'):
                 raise exception.Error(image.status)
             elif image.status == 'ACTIVE':
-                progress.image_complete = True
+                prg.image_complete = True
                 if not self.handle_delete():
                     return True
             return False
 
         return self.client_plugin().check_delete_server_complete(
-            progress.server_id)
+            prg.server_id)
 
     def handle_suspend(self):
         '''
@@ -1438,7 +1312,7 @@ class Server(stack_user.StackUser):
                                   self.name)
 
         try:
-            server = self.nova().servers.get(self.resource_id)
+            server = self.client().servers.get(self.resource_id)
         except Exception as e:
             if self.client_plugin().is_not_found(e):
                 raise exception.NotFound(_('Failed to find server %s') %
@@ -1480,7 +1354,7 @@ class Server(stack_user.StackUser):
                                   self.name)
 
         try:
-            server = self.nova().servers.get(self.resource_id)
+            server = self.client().servers.get(self.resource_id)
         except Exception as e:
             if self.client_plugin().is_not_found(e):
                 raise exception.NotFound(_('Failed to find server %s') %
@@ -1499,13 +1373,13 @@ class Server(stack_user.StackUser):
         return self.client_plugin()._check_active(server_id)
 
     def handle_snapshot(self):
-        image_id = self.nova().servers.create_image(
+        image_id = self.client().servers.create_image(
             self.resource_id, self.physical_resource_name())
         self.data_set('snapshot_image_id', image_id)
         return image_id
 
     def check_snapshot_complete(self, image_id):
-        image = self.nova().images.get(image_id)
+        image = self.client().images.get(image_id)
         if image.status == 'ACTIVE':
             return True
         elif image.status == 'ERROR' or image.status == 'DELETED':
@@ -1516,7 +1390,7 @@ class Server(stack_user.StackUser):
     def handle_delete_snapshot(self, snapshot):
         image_id = snapshot['resource_data'].get('snapshot_image_id')
         try:
-            self.nova().images.delete(image_id)
+            self.client().images.delete(image_id)
         except Exception as e:
             self.client_plugin().ignore_not_found(e)
 

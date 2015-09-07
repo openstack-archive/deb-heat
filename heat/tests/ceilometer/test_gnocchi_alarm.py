@@ -86,6 +86,9 @@ resources:
 class FakeCeilometerAlarm(object):
     alarm_id = 'foo'
 
+    def __init__(self):
+        self.to_dict = lambda: {'attr': 'val'}
+
 
 class GnocchiResourcesAlarmTest(common.HeatTestCase):
     def setUp(self):
@@ -114,7 +117,9 @@ class GnocchiResourcesAlarmTest(common.HeatTestCase):
                 "resource_type": "instance",
                 "resource_id": "5a517ceb-b068-4aca-9eb9-3e4eb9b90d9a",
                 "comparison_operator": "gt",
-            }
+            },
+            time_constraints=[],
+            severity='low',
         ).AndReturn(FakeCeilometerAlarm())
         snippet = template_format.parse(gnocchi_resources_alarm_template)
         self.stack = utils.parse_stack(snippet)
@@ -223,6 +228,14 @@ class GnocchiResourcesAlarmTest(common.HeatTestCase):
         self.assertEqual((res.CHECK, res.FAILED), res.state)
         self.assertIn('Boom', res.status_reason)
 
+    def test_show_resource(self):
+        res = self._prepare_check_resource()
+        res.client().alarms.create.return_value = mock.MagicMock(
+            alarm_id='2')
+        res.client().alarms.get.return_value = FakeCeilometerAlarm()
+        scheduler.TaskRunner(res.create)()
+        self.assertEqual({'attr': 'val'}, res.FnGetAtt('show'))
+
 
 class GnocchiAggregationByMetricsAlarmTest(GnocchiResourcesAlarmTest):
 
@@ -248,7 +261,9 @@ class GnocchiAggregationByMetricsAlarmTest(GnocchiResourcesAlarmTest):
                 "comparison_operator": "gt",
                 "metrics": ["911fce07-e0d7-4210-8c8c-4a9d811fcabc",
                             "2543d435-fe93-4443-9351-fb0156930f94"],
-            }
+            },
+            time_constraints=[],
+            severity='low',
         ).AndReturn(FakeCeilometerAlarm())
         snippet = template_format.parse(
             gnocchi_aggregation_by_metrics_alarm_template)
@@ -289,6 +304,14 @@ class GnocchiAggregationByMetricsAlarmTest(GnocchiResourcesAlarmTest):
         res.client().alarms.get.return_value = mock_alarm
         return res
 
+    def test_show_resource(self):
+        res = self._prepare_check_resource()
+        res.client().alarms.create.return_value = mock.MagicMock(
+            alarm_id='2')
+        res.client().alarms.get.return_value = FakeCeilometerAlarm()
+        scheduler.TaskRunner(res.create)()
+        self.assertEqual({'attr': 'val'}, res.FnGetAtt('show'))
+
 
 class GnocchiAggregationByResourcesAlarmTest(GnocchiResourcesAlarmTest):
 
@@ -315,7 +338,9 @@ class GnocchiAggregationByResourcesAlarmTest(GnocchiResourcesAlarmTest):
                 "metric": "cpu_util",
                 "resource_type": "instance",
                 "query": '{"=": {"server_group": "my_autoscaling_group"}}',
-            }
+            },
+            time_constraints=[],
+            severity='low',
         ).AndReturn(FakeCeilometerAlarm())
         snippet = template_format.parse(
             gnocchi_aggregation_by_resources_alarm_template)
@@ -353,3 +378,11 @@ class GnocchiAggregationByResourcesAlarmTest(GnocchiResourcesAlarmTest):
         mock_alarm = mock.Mock(enabled=True, state='ok')
         res.client().alarms.get.return_value = mock_alarm
         return res
+
+    def test_show_resource(self):
+        res = self._prepare_check_resource()
+        res.client().alarms.create.return_value = mock.MagicMock(
+            alarm_id='2')
+        res.client().alarms.get.return_value = FakeCeilometerAlarm()
+        scheduler.TaskRunner(res.create)()
+        self.assertEqual({'attr': 'val'}, res.FnGetAtt('show'))

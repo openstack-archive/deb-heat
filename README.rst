@@ -3,7 +3,7 @@ Heat
 ====
 
 Heat is a service to orchestrate multiple composite cloud applications using
-templates, through both an OpenStack-native ReST API and a
+templates, through both an OpenStack-native REST API and a
 CloudFormation-compatible Query API.
 
 Why heat? It makes the clouds rise and keeps them there.
@@ -42,3 +42,9 @@ We have integration with
 * https://github.com/openstack/python-glanceclient (image service)
 * https://github.com/openstack/python-troveclient (database as a Service)
 * https://github.com/openstack/python-saharaclient (hadoop cluster)
+* https://github.com/openstack/python-barbicanclient (key management service)
+* https://github.com/openstack/python-designateclient (DNS service)
+* https://github.com/openstack/python-magnumclient (container service)
+* https://github.com/openstack/python-manilaclient (shared file system service)
+* https://github.com/openstack/python-mistralclient (workflow service)
+* https://github.com/openstack/python-zaqarclient (messaging service)

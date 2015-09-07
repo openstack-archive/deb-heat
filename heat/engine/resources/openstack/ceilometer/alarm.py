@@ -23,13 +23,20 @@ from heat.engine import watchrule
 
 
 COMMON_PROPERTIES = (
-    ALARM_ACTIONS, OK_ACTIONS, REPEAT_ACTIONS, INSUFFICIENT_DATA_ACTIONS,
-    DESCRIPTION, ENABLED,
+    ALARM_ACTIONS, OK_ACTIONS, REPEAT_ACTIONS,
+    INSUFFICIENT_DATA_ACTIONS, DESCRIPTION, ENABLED, TIME_CONSTRAINTS,
+    SEVERITY,
 ) = (
     'alarm_actions', 'ok_actions', 'repeat_actions',
-    'insufficient_data_actions', 'description', 'enabled',
+    'insufficient_data_actions', 'description', 'enabled', 'time_constraints',
+    'severity',
 )
 
+_TIME_CONSTRAINT_KEYS = (
+    NAME, START, DURATION, TIMEZONE, TIME_CONSTRAINT_DESCRIPTION,
+) = (
+    'name', 'start', 'duration', 'timezone', 'description',
+)
 
 common_properties_schema = {
     DESCRIPTION: properties.Schema(
@@ -68,6 +75,68 @@ common_properties_schema = {
           "each time the threshold is reached."),
         default='true',
         update_allowed=True
+    ),
+    SEVERITY: properties.Schema(
+        properties.Schema.STRING,
+        _('Severity of the alarm.'),
+        default='low',
+        constraints=[
+            constraints.AllowedValues(['low', 'moderate', 'critical'])
+        ],
+        update_allowed=True,
+        support_status=support.SupportStatus(version='5.0.0'),
+    ),
+    TIME_CONSTRAINTS: properties.Schema(
+        properties.Schema.LIST,
+        _('Describe time constraints for the alarm. '
+          'Only evaluate the alarm if the time at evaluation '
+          'is within this time constraint. Start point(s) of '
+          'the constraint are specified with a cron expression,'
+          'whereas its duration is given in seconds. '
+          ),
+        schema=properties.Schema(
+            properties.Schema.MAP,
+            schema={
+                NAME: properties.Schema(
+                    properties.Schema.STRING,
+                    _("Name for the time constraint."),
+                    required=True
+                ),
+                START: properties.Schema(
+                    properties.Schema.STRING,
+                    _("Start time for the time constraint. "
+                      "A CRON expression property."),
+                    constraints=[
+                        constraints.CustomConstraint(
+                            'cron_expression')
+                    ],
+                    required=True
+                ),
+                TIME_CONSTRAINT_DESCRIPTION: properties.Schema(
+                    properties.Schema.STRING,
+                    _("Description for the time constraint."),
+                ),
+                DURATION: properties.Schema(
+                    properties.Schema.INTEGER,
+                    _("Duration for the time constraint."),
+                    constraints=[
+                        constraints.Range(min=0)
+                    ],
+                    required=True
+                ),
+                TIMEZONE: properties.Schema(
+                    properties.Schema.STRING,
+                    _("Timezone for the time constraint "
+                      "(eg. 'Taiwan/Taipei', 'Europe/Amsterdam')"),
+                    constraints=[
+                        constraints.CustomConstraint('timezone')
+                    ],
+                )
+            }
+
+        ),
+        support_status=support.SupportStatus(version='5.0.0'),
+        default=[],
     )
 }
 
@@ -216,6 +285,8 @@ class CeilometerAlarm(resource.Resource):
 
     default_client_name = 'ceilometer'
 
+    entity = 'alarms'
+
     def cfn_to_ceilometer(self, stack, properties):
         """Apply all relevant compatibility xforms."""
 
@@ -301,11 +372,7 @@ class CeilometerAlarm(resource.Resource):
         except exception.WatchRuleNotFound:
             pass
 
-        if self.resource_id is not None:
-            try:
-                self.client().alarms.delete(self.resource_id)
-            except Exception as ex:
-                self.client_plugin().ignore_not_found(ex)
+        super(CeilometerAlarm, self).handle_delete()
 
     def handle_check(self):
         watch_name = self.physical_resource_name()
@@ -315,6 +382,8 @@ class CeilometerAlarm(resource.Resource):
 
 class BaseCeilometerAlarm(resource.Resource):
     default_client_name = 'ceilometer'
+
+    entity = 'alarms'
 
     def handle_create(self):
         properties = actions_to_urls(self.stack,
@@ -350,12 +419,6 @@ class BaseCeilometerAlarm(resource.Resource):
     def handle_resume(self):
         self.client().alarms.update(
             alarm_id=self.resource_id, enabled=True)
-
-    def handle_delete(self):
-        try:
-            self.client().alarms.delete(self.resource_id)
-        except Exception as ex:
-            self.client_plugin().ignore_not_found(ex)
 
     def handle_check(self):
         self.client().alarms.get(self.resource_id)

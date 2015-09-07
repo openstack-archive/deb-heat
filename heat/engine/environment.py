@@ -12,11 +12,11 @@
 #    under the License.
 
 import collections
-import copy
 import fnmatch
 import glob
 import itertools
 import os.path
+import re
 import warnings
 
 from oslo_config import cfg
@@ -29,6 +29,7 @@ from heat.common.i18n import _
 from heat.common.i18n import _LE
 from heat.common.i18n import _LI
 from heat.common.i18n import _LW
+from heat.common import policy
 from heat.engine import support
 
 LOG = log.getLogger(__name__)
@@ -438,8 +439,18 @@ class ResourceRegistry(object):
 
         return _as_dict(self._registry)
 
-    def get_types(self, cnxt=None, support_status=None):
+    def get_types(self,
+                  cnxt=None,
+                  support_status=None,
+                  type_name=None):
         '''Return a list of valid resource types.'''
+
+        # validate the support status
+        if support_status is not None and not support.is_valid_status(
+                support_status):
+            msg = (_('Invalid support status and should be one of %s') %
+                   six.text_type(support.SUPPORT_STATUSES))
+            raise exception.Invalid(reason=msg)
 
         def is_resource(key):
             return isinstance(self._registry[key], (ClassResourceInfo,
@@ -448,7 +459,7 @@ class ResourceRegistry(object):
         def status_matches(cls):
             return (support_status is None or
                     cls.get_class().support_status.status ==
-                    support_status.encode())
+                    support_status)
 
         def is_available(cls):
             if cnxt is None:
@@ -459,10 +470,30 @@ class ResourceRegistry(object):
         def not_hidden_matches(cls):
             return cls.get_class().support_status.status != support.HIDDEN
 
+        def is_allowed(enforcer, name):
+            if cnxt is None:
+                return True
+            try:
+                enforcer.enforce(cnxt, name)
+            except enforcer.exc:
+                return False
+            else:
+                return True
+
+        enforcer = policy.ResourceEnforcer()
+
+        def name_matches(name):
+            try:
+                return type_name is None or re.match(type_name, name)
+            except:  # noqa
+                return False
+
         return [name for name, cls in six.iteritems(self._registry)
                 if (is_resource(name) and
+                    name_matches(name) and
                     status_matches(cls) and
                     is_available(cls) and
+                    is_allowed(enforcer, name) and
                     not_hidden_matches(cls))]
 
 
@@ -508,19 +539,6 @@ class Environment(object):
         self.params.update(env_snippet.get(env_fmt.PARAMETERS, {}))
         self.param_defaults.update(
             env_snippet.get(env_fmt.PARAMETER_DEFAULTS, {}))
-
-    def patch_previous_parameters(self, previous_env, clear_parameters=[]):
-        """This instance of Environment is the new environment where
-        we are reusing as default the previous parameter values.
-        """
-        previous_parameters = copy.deepcopy(previous_env.params)
-        # clear the parameters from the previous set as requested
-        for p in clear_parameters:
-            previous_parameters.pop(p, None)
-
-        # patch the new set of parameters
-        previous_parameters.update(self.params)
-        self.params = previous_parameters
 
     def user_env_as_dict(self):
         """Get the environment as a dict, ready for storing in the db."""

@@ -42,9 +42,11 @@ To achieve this:
 
 The following examples illustrate how you can use a custom template to define
 new types of resources. These examples use a custom template stored in a
-:file:`my_nova.yaml` file::
+:file:`my_nova.yaml` file
 
-  heat_template_version: 2014-10-16
+.. code-block:: yaml
+
+  heat_template_version: 2015-04-30
 
   parameters:
     key_name:
@@ -62,9 +64,11 @@ new types of resources. These examples use a custom template stored in a
 Use the template filename as type
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 The following template defines the :file:`my_nova.yaml` file as value for the
-``type`` property of a resource::
+``type`` property of a resource
 
-  heat_template_version: 2014-10-16
+.. code-block:: yaml
+
+  heat_template_version: 2015-04-30
 
   resources:
     my_server:
@@ -99,7 +103,9 @@ resource will override the default one.
 In the following example a new ``OS::Nova::Server`` resource overrides the
 default resource of the same name.
 
-An :file:`env.yaml` environment file holds the definition of the new resource::
+An :file:`env.yaml` environment file holds the definition of the new resource
+
+.. code-block:: yaml
 
   resource_registry:
     "OS::Nova::Server": my_nova.yaml
@@ -108,9 +114,11 @@ An :file:`env.yaml` environment file holds the definition of the new resource::
 
    See :ref:`environments` for more detail about environment files.
 
-You can now use the new ``OS::Nova::Server`` in your new template::
+You can now use the new ``OS::Nova::Server`` in your new template
 
-  heat_template_version: 2014-10-16
+.. code-block:: yaml
+
+  heat_template_version: 2015-04-30
 
   resources:
     my_server:
@@ -126,9 +134,11 @@ Get access to nested attributes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 There are implicit attributes of a template resource. Accessing nested
 attributes requires ``heat_template_version`` 2014-10-16 or higher. These are
-accessible as follows::
+accessible as follows
 
-  heat_template_version: 2014-10-16
+.. code-block:: yaml
+
+  heat_template_version: 2015-04-30
 
   resources:
     my_server:
@@ -146,9 +156,11 @@ Making your template resource more "transparent"
 
 If you wish to be able to return the ID of one of the inner resources
 instead of the nested stack's identifier, you can add the special reserved
-output ``OS::stack_id`` to your template resource::
+output ``OS::stack_id`` to your template resource
 
-  heat_template_version: 2014-10-16
+.. code-block:: yaml
+
+  heat_template_version: 2015-04-30
 
   resources:
     server:

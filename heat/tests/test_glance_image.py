@@ -71,7 +71,7 @@ class GlanceImageTest(common.HeatTestCase):
         self.my_image = self.stack['my_image']
         glance = mock.MagicMock()
         self.glanceclient = mock.MagicMock()
-        self.my_image.glance = glance
+        self.my_image.client = glance
         glance.return_value = self.glanceclient
         self.images = self.glanceclient.images
 
@@ -192,6 +192,29 @@ class GlanceImageTest(common.HeatTestCase):
         image_id = '41f0e60c-ebb4-4375-a2b4-845ae8b9c995'
         self.my_image.resource_id = image_id
         self.images.delete.return_value = None
-        self.assertIsNone(self.my_image.handle_delete())
+        self.assertEqual('41f0e60c-ebb4-4375-a2b4-845ae8b9c995',
+                         self.my_image.handle_delete())
         self.images.delete.side_effect = glance_exceptions.HTTPNotFound(404)
         self.assertIsNone(self.my_image.handle_delete())
+
+    def test_image_show_resourse_v1(self):
+        self.glanceclient.version = 1.0
+        self.my_image.resource_id = 'test_image_id'
+        image = mock.MagicMock()
+        images = mock.MagicMock()
+        image.to_dict.return_value = {'image': 'info'}
+        images.get.return_value = image
+        self.my_image.client().images = images
+        self.assertEqual({'image': 'info'}, self.my_image.FnGetAtt('show'))
+        images.get.assert_called_once_with('test_image_id')
+
+    def test_image_show_resourse_v2(self):
+        self.my_image.resource_id = 'test_image_id'
+        # glance image in v2 is warlock.model object, so it can be
+        # handled via dict(). In test we use easiest analog - dict.
+        image = {"key1": "val1", "key2": "val2"}
+        self.images.get.return_value = image
+        self.glanceclient.version = 2.0
+        self.assertEqual({"key1": "val1", "key2": "val2"},
+                         self.my_image.FnGetAtt('show'))
+        self.images.get.assert_called_once_with('test_image_id')

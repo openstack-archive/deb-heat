@@ -44,9 +44,14 @@ class FloatingIP(neutron.NeutronResource):
         FLOATING_NETWORK_ID: properties.Schema(
             properties.Schema.STRING,
             support_status=support.SupportStatus(
-                status=support.DEPRECATED,
+                status=support.HIDDEN,
+                version='5.0.0',
                 message=_('Use property %s.') % FLOATING_NETWORK,
-                version='2014.2'),
+                previous_status=support.SupportStatus(
+                    status=support.DEPRECATED,
+                    version='2014.2'
+                )
+            ),
             constraints=[
                 constraints.CustomConstraint('neutron.network')
             ],
@@ -123,6 +128,16 @@ class FloatingIP(neutron.NeutronResource):
         ),
     }
 
+    def translation_rules(self):
+        return [
+            properties.TranslationRule(
+                self.properties,
+                properties.TranslationRule.REPLACE,
+                [self.FLOATING_NETWORK],
+                value_path=[self.FLOATING_NETWORK_ID]
+            )
+        ]
+
     def add_dependencies(self, deps):
         super(FloatingIP, self).add_dependencies(deps)
 
@@ -152,7 +167,7 @@ class FloatingIP(neutron.NeutronResource):
                         p_net = (resource.properties.get(port.Port.NETWORK) or
                                  resource.properties.get(port.Port.NETWORK_ID))
                         if p_net and p_net != 'None':
-                            subnets = self.neutron().show_network(p_net)[
+                            subnets = self.client().show_network(p_net)[
                                 'network']['subnets']
                             return subnet in subnets
                     else:
@@ -206,24 +221,21 @@ class FloatingIP(neutron.NeutronResource):
             self.physical_resource_name())
         self.client_plugin().resolve_network(props, self.FLOATING_NETWORK,
                                              'floating_network_id')
-        fip = self.neutron().create_floatingip({
+        fip = self.client().create_floatingip({
             'floatingip': props})['floatingip']
         self.resource_id_set(fip['id'])
 
     def _show_resource(self):
-        return self.neutron().show_floatingip(self.resource_id)['floatingip']
+        return self.client().show_floatingip(self.resource_id)['floatingip']
 
     def handle_delete(self):
-        client = self.neutron()
         try:
-            client.delete_floatingip(self.resource_id)
+            self.client().delete_floatingip(self.resource_id)
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
-            neutron_client = self.neutron()
-
             port_id = prop_diff.get(self.PORT_ID,
                                     self.properties[self.PORT_ID])
 
@@ -236,7 +248,7 @@ class FloatingIP(neutron.NeutronResource):
                     'port_id': port_id,
                     'fixed_ip_address': fixed_ip_address}}
 
-            neutron_client.update_floatingip(self.resource_id, request_body)
+            self.client().update_floatingip(self.resource_id, request_body)
 
 
 class FloatingIPAssociation(neutron.NeutronResource):
@@ -304,16 +316,16 @@ class FloatingIPAssociation(neutron.NeutronResource):
 
         floatingip_id = props.pop(self.FLOATINGIP_ID)
 
-        self.neutron().update_floatingip(floatingip_id, {
+        self.client().update_floatingip(floatingip_id, {
             'floatingip': props})
         self.resource_id_set(self.id)
 
     def handle_delete(self):
         if not self.resource_id:
             return
-        client = self.neutron()
+
         try:
-            client.update_floatingip(
+            self.client().update_floatingip(
                 self.properties[self.FLOATINGIP_ID],
                 {'floatingip': {'port_id': None}})
         except Exception as ex:
@@ -323,12 +335,11 @@ class FloatingIPAssociation(neutron.NeutronResource):
         if prop_diff:
             floatingip_id = self.properties[self.FLOATINGIP_ID]
             port_id = self.properties[self.PORT_ID]
-            neutron_client = self.neutron()
             # if the floatingip_id is changed, disassociate the port which
             # associated with the old floatingip_id
             if self.FLOATINGIP_ID in prop_diff:
                 try:
-                    neutron_client.update_floatingip(
+                    self.client().update_floatingip(
                         floatingip_id,
                         {'floatingip': {'port_id': None}})
                 except Exception as ex:
@@ -347,7 +358,7 @@ class FloatingIPAssociation(neutron.NeutronResource):
                     'port_id': port_id,
                     'fixed_ip_address': fixed_ip_address}}
 
-            neutron_client.update_floatingip(floatingip_id, request_body)
+            self.client().update_floatingip(floatingip_id, request_body)
             self.resource_id_set(self.id)
 
 

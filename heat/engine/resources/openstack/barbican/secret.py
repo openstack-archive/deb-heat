@@ -11,8 +11,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import six
-
 from heat.common.i18n import _
 from heat.engine import attributes
 from heat.engine import constraints
@@ -27,12 +25,14 @@ class Secret(resource.Resource):
 
     default_client_name = 'barbican'
 
+    entity = 'secrets'
+
     PROPERTIES = (
         NAME, PAYLOAD, PAYLOAD_CONTENT_TYPE, PAYLOAD_CONTENT_ENCODING,
-        MODE, EXPIRATION, ALGORITHM, BIT_LENGTH,
+        MODE, EXPIRATION, ALGORITHM, BIT_LENGTH, SECRET_TYPE,
     ) = (
         'name', 'payload', 'payload_content_type', 'payload_content_encoding',
-        'mode', 'expiration', 'algorithm', 'bit_length',
+        'mode', 'expiration', 'algorithm', 'bit_length', 'secret_type'
     )
 
     ATTRIBUTES = (
@@ -49,6 +49,17 @@ class Secret(resource.Resource):
         PAYLOAD: properties.Schema(
             properties.Schema.STRING,
             _('The unencrypted plain text of the secret.'),
+        ),
+        SECRET_TYPE: properties.Schema(
+            properties.Schema.STRING,
+            _('The type of the secret.'),
+            constraints=[
+                constraints.AllowedValues([
+                    'symmetric', 'public', 'private', 'certificate',
+                    'passphrase', 'opaque'
+                ]),
+            ],
+            support_status=support.SupportStatus(version='5.0.0'),
         ),
         PAYLOAD_CONTENT_TYPE: properties.Schema(
             properties.Schema.STRING,
@@ -114,19 +125,6 @@ class Secret(resource.Resource):
         self.resource_id_set(secret_ref)
         return secret_ref
 
-    def handle_delete(self):
-        if not self.resource_id:
-            return
-
-        client = self.client()
-        try:
-            client.secrets.delete(self.resource_id)
-        except Exception as exc:
-            # This is the only exception the client raises
-            # Inspecting the message to see if it's a 'Not Found'
-            if 'Not Found' not in six.text_type(exc):
-                raise
-
     def _resolve_attribute(self, name):
         secret = self.client().secrets.get(self.resource_id)
 
@@ -135,6 +133,12 @@ class Secret(resource.Resource):
 
         if name == self.STATUS:
             return secret.status
+
+    # TODO(ochuprykov): remove this method when bug #1485619 will be fixed
+    def _show_resource(self):
+        order = self.client().secrets.get(self.resource_id)
+        info = order._get_formatted_entity()
+        return dict(zip(info[0], info[1]))
 
 
 def resource_mapping():

@@ -13,6 +13,7 @@
 
 import collections
 import datetime
+import itertools
 import os
 import socket
 import warnings
@@ -30,6 +31,7 @@ import six
 import webob
 
 from heat.common import context
+from heat.common import environment_format as env_fmt
 from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LE
@@ -37,6 +39,7 @@ from heat.common.i18n import _LI
 from heat.common.i18n import _LW
 from heat.common import identifier
 from heat.common import messaging as rpc_messaging
+from heat.common import policy
 from heat.common import service_utils
 from heat.engine import api
 from heat.engine import attributes
@@ -54,6 +57,7 @@ from heat.engine import stack as parser
 from heat.engine import stack_lock
 from heat.engine import support
 from heat.engine import template as templatem
+from heat.engine import update
 from heat.engine import watchrule
 from heat.engine import worker
 from heat.objects import event as event_object
@@ -269,9 +273,9 @@ class EngineService(service.Service):
     by the RPC caller.
     """
 
-    RPC_API_VERSION = '1.13'
+    RPC_API_VERSION = '1.15'
 
-    def __init__(self, host, topic, manager=None):
+    def __init__(self, host, topic):
         super(EngineService, self).__init__()
         resources.initialise()
         self.host = host
@@ -291,11 +295,7 @@ class EngineService(service.Service):
         self.manage_thread_grp = None
         self._rpc_server = None
         self.software_config = service_software_config.SoftwareConfigService()
-
-        if cfg.CONF.instance_user:
-            warnings.warn('The "instance_user" option in heat.conf is '
-                          'deprecated and will be removed in the Juno '
-                          'release.', DeprecationWarning)
+        self.resource_enforcer = policy.ResourceEnforcer()
 
         if cfg.CONF.trusts_delegated_roles:
             warnings.warn('The default value of "trusts_delegated_roles" '
@@ -339,8 +339,6 @@ class EngineService(service.Service):
                 thread_group_mgr=self.thread_group_mgr
             )
             self.worker_service.start()
-            LOG.debug("WorkerService is started in engine %s" %
-                      self.engine_id)
 
         target = messaging.Target(
             version=self.RPC_API_VERSION, server=self.host,
@@ -376,8 +374,6 @@ class EngineService(service.Service):
         if cfg.CONF.convergence_engine:
             # Stop the WorkerService
             self.worker_service.stop()
-            LOG.info(_LI("WorkerService is stopped in engine %s"),
-                     self.engine_id)
 
         # Wait for all active threads to be finished
         for stack_id in list(self.thread_group_mgr.groups.keys()):
@@ -640,9 +636,6 @@ class EngineService(service.Service):
         LOG.info(_LI('previewing stack %s'), stack_name)
 
         conv_eng = cfg.CONF.convergence_engine
-        if conv_eng:
-            raise exception.NotSupported(feature=_('Convergence engine'))
-
         stack = self._parse_template_and_validate_stack(cnxt,
                                                         stack_name,
                                                         template,
@@ -651,6 +644,7 @@ class EngineService(service.Service):
                                                         args,
                                                         convergence=conv_eng)
 
+        self.resource_enforcer.enforce_stack(stack)
         return api.format_stack_preview(stack)
 
     @context.request_context
@@ -710,10 +704,10 @@ class EngineService(service.Service):
             nested_depth, user_creds_id, stack_user_project_id, convergence,
             parent_resource_name)
 
+        self.resource_enforcer.enforce_stack(stack)
         stack.store()
         _create_stack_user(stack)
         if convergence:
-            raise exception.NotSupported(feature=_('Convergence engine'))
             action = stack.CREATE
             if stack.adopt_stack_data:
                 action = stack.ADOPT
@@ -723,6 +717,46 @@ class EngineService(service.Service):
                                                   _stack_create, stack)
 
         return dict(stack.identifier())
+
+    def _prepare_stack_updates(self, cnxt, current_stack, tmpl, params,
+                               files, args):
+        """
+        Given a stack and update context, return the current and updated stack.
+
+        Changes *will not* be persisted, this is a helper method for
+        update_stack and preview_update_stack.
+
+        :param cnxt: RPC context.
+        :param stack: A stack to be updated.
+        :param tmpl: Template object of stack you want to update to.
+        :param params: Stack Input Params
+        :param files: Files referenced from the template
+        :param args: Request parameters/args passed from API
+        """
+        max_resources = cfg.CONF.max_resources_per_stack
+        if max_resources != -1 and len(tmpl[tmpl.RESOURCES]) > max_resources:
+            raise exception.RequestLimitExceeded(
+                message=exception.StackResourceLimitExceeded.msg_fmt)
+
+        stack_name = current_stack.name
+        current_kwargs = current_stack.get_kwargs_for_cloning()
+
+        common_params = api.extract_args(args)
+        common_params.setdefault(rpc_api.PARAM_TIMEOUT,
+                                 current_stack.timeout_mins)
+        common_params.setdefault(rpc_api.PARAM_DISABLE_ROLLBACK,
+                                 current_stack.disable_rollback)
+
+        current_kwargs.update(common_params)
+        updated_stack = parser.Stack(cnxt, stack_name, tmpl,
+                                     **current_kwargs)
+        self.resource_enforcer.enforce_stack(updated_stack)
+        updated_stack.parameters.set_stack_id(current_stack.identifier())
+
+        self._validate_deferred_auth_context(cnxt, updated_stack)
+        updated_stack.validate()
+
+        return current_stack, updated_stack
 
     @context.request_context
     def update_stack(self, cnxt, stack_identity, template, params,
@@ -745,6 +779,7 @@ class EngineService(service.Service):
         LOG.info(_LI('Updating stack %s'), db_stack.name)
 
         current_stack = parser.Stack.load(cnxt, stack=db_stack)
+        self.resource_enforcer.enforce_stack(current_stack)
 
         if current_stack.action == current_stack.SUSPEND:
             msg = _('Updating a stack when it is suspended')
@@ -755,35 +790,29 @@ class EngineService(service.Service):
             raise exception.NotSupported(feature=msg)
 
         # Now parse the template and any parameters for the updated
-        # stack definition.
-        env = environment.Environment(params)
+        # stack definition.  If PARAM_EXISTING is specified, we merge
+        # any environment provided into the existing one.
         if args.get(rpc_api.PARAM_EXISTING, None):
-            env.patch_previous_parameters(
-                current_stack.env,
-                args.get(rpc_api.PARAM_CLEAR_PARAMETERS, []))
-        tmpl = templatem.Template(template, files=files, env=env)
-        max_resources = cfg.CONF.max_resources_per_stack
-        if max_resources != -1 and len(tmpl[tmpl.RESOURCES]) > max_resources:
-            raise exception.RequestLimitExceeded(
-                message=exception.StackResourceLimitExceeded.msg_fmt)
-        stack_name = current_stack.name
-        current_kwargs = current_stack.get_kwargs_for_cloning()
+            existing_env = current_stack.env.user_env_as_dict()
+            existing_params = existing_env[env_fmt.PARAMETERS]
+            clear_params = set(args.get(rpc_api.PARAM_CLEAR_PARAMETERS, []))
+            retained = dict((k, v) for k, v in existing_params.items()
+                            if k not in clear_params)
+            existing_env[env_fmt.PARAMETERS] = retained
+            new_env = environment.Environment(existing_env)
+            new_env.load(params)
 
-        common_params = api.extract_args(args)
-        common_params.setdefault(rpc_api.PARAM_TIMEOUT,
-                                 current_stack.timeout_mins)
-        common_params.setdefault(rpc_api.PARAM_DISABLE_ROLLBACK,
-                                 current_stack.disable_rollback)
+            new_files = current_stack.t.files.copy()
+            new_files.update(files or {})
+        else:
+            new_env = environment.Environment(params)
+            new_files = files
+        tmpl = templatem.Template(template, files=new_files, env=new_env)
 
-        current_kwargs.update(common_params)
-        updated_stack = parser.Stack(cnxt, stack_name, tmpl,
-                                     **current_kwargs)
-        updated_stack.parameters.set_stack_id(current_stack.identifier())
+        current_stack, updated_stack = self._prepare_stack_updates(
+            cnxt, current_stack, tmpl, params, files, args)
 
-        self._validate_deferred_auth_context(cnxt, updated_stack)
-        updated_stack.validate()
-
-        if current_kwargs['convergence']:
+        if current_stack.get_kwargs_for_cloning()['convergence']:
             current_stack.converge_stack(template=tmpl,
                                          new_stack=updated_stack)
         else:
@@ -799,11 +828,64 @@ class EngineService(service.Service):
         return dict(current_stack.identifier())
 
     @context.request_context
-    def stack_cancel_update(self, cnxt, stack_identity):
+    def preview_update_stack(self, cnxt, stack_identity, template, params,
+                             files, args):
+        """
+        The preview_update_stack method shows the resources that would be
+        changed with an update to an existing stack based on the provided
+        template and parameters. See update_stack for description of
+        parameters.
+
+        This method *cannot* guarantee that an update will have the actions
+        specified because resource plugins can influence changes/replacements
+        at runtime.
+
+        Note that at this stage the template has already been fetched from the
+        heat-api process if using a template-url.
+        """
+        # Get the database representation of the existing stack
+        db_stack = self._get_stack(cnxt, stack_identity)
+        LOG.info(_LI('Previewing update of stack %s'), db_stack.name)
+
+        current_stack = parser.Stack.load(cnxt, stack=db_stack)
+
+        # Now parse the template and any parameters for the updated
+        # stack definition.
+        env = environment.Environment(params)
+        if args.get(rpc_api.PARAM_EXISTING, None):
+            env.patch_previous_parameters(
+                current_stack.env,
+                args.get(rpc_api.PARAM_CLEAR_PARAMETERS, []))
+        tmpl = templatem.Template(template, files=files, env=env)
+
+        current_stack, updated_stack = self._prepare_stack_updates(
+            cnxt, current_stack, tmpl, params, files, args)
+
+        update_task = update.StackUpdate(current_stack, updated_stack, None)
+
+        actions = update_task.preview()
+
+        fmt_updated_res = lambda k: api.format_stack_resource(
+            updated_stack.resources.get(k))
+        fmt_current_res = lambda k: api.format_stack_resource(
+            current_stack.resources.get(k))
+
+        return {
+            'unchanged': map(fmt_updated_res, actions['unchanged']),
+            'updated': map(fmt_current_res, actions['updated']),
+            'replaced': map(fmt_updated_res, actions['replaced']),
+            'added': map(fmt_updated_res, actions['added']),
+            'deleted': map(fmt_current_res, actions['deleted']),
+        }
+
+    @context.request_context
+    def stack_cancel_update(self, cnxt, stack_identity,
+                            cancel_with_rollback=True):
         """Cancel currently running stack update.
 
         :param cnxt: RPC context.
         :param stack_identity: Name of the stack for which to cancel update.
+        :param cancel_with_rollback: Force rollback when cancel update.
         """
         # Get the database representation of the existing stack
         db_stack = self._get_stack(cnxt, stack_identity)
@@ -821,19 +903,25 @@ class EngineService(service.Service):
         lock = stack_lock.StackLock(cnxt, current_stack.id,
                                     self.engine_id)
         engine_id = lock.try_acquire()
+
+        if cancel_with_rollback:
+            cancel_message = rpc_api.THREAD_CANCEL_WITH_ROLLBACK
+        else:
+            cancel_message = rpc_api.THREAD_CANCEL
+
         # Current engine has the lock
         if engine_id == self.engine_id:
-            self.thread_group_mgr.send(current_stack.id, 'cancel')
+            self.thread_group_mgr.send(current_stack.id, cancel_message)
 
         # Another active engine has the lock
         elif stack_lock.StackLock.engine_alive(cnxt, engine_id):
             cancel_result = self._remote_call(
                 cnxt, engine_id, self.listener.SEND,
-                stack_identity=stack_identity, message=rpc_api.THREAD_CANCEL)
+                stack_identity=stack_identity, message=cancel_message)
             if cancel_result is None:
                 LOG.debug("Successfully sent %(msg)s message "
                           "to remote task on engine %(eng)s" % {
-                              'eng': engine_id, 'msg': 'cancel'})
+                              'eng': engine_id, 'msg': cancel_message})
             else:
                 raise exception.EventSendFailed(stack_name=current_stack.name,
                                                 engine_id=engine_id)
@@ -873,6 +961,12 @@ class EngineService(service.Service):
                 # it as we need to download the template and convert the
                 # parameters into properties_schema.
                 continue
+
+            if not ResourceClass.is_service_available(cnxt):
+                raise exception.ResourceTypeUnavailable(
+                    service_name=ResourceClass.default_client_name,
+                    resource_type=res['Type']
+                )
 
             props = properties.Properties(
                 ResourceClass.properties_schema,
@@ -949,6 +1043,7 @@ class EngineService(service.Service):
         st = self._get_stack(cnxt, stack_identity)
         LOG.info(_LI('Deleting stack %s'), st.name)
         stack = parser.Stack.load(cnxt, stack=st)
+        self.resource_enforcer.enforce_stack(stack)
 
         if stack.convergence:
             template = templatem.Template.create_empty_template()
@@ -1059,6 +1154,7 @@ class EngineService(service.Service):
         :param cnxt: RPC context.
         :param type_name: Name of the resource type to obtain the schema of.
         """
+        self.resource_enforcer.enforce(cnxt, type_name)
         try:
             resource_class = resources.global_env().get_class(type_name)
         except (exception.InvalidResourceType,
@@ -1069,6 +1165,12 @@ class EngineService(service.Service):
         if resource_class.support_status.status == support.HIDDEN:
             raise exception.NotSupported(type_name)
 
+        if not resource_class.is_service_available(cnxt):
+            raise exception.ResourceTypeUnavailable(
+                service_name=resource_class.default_client_name,
+                resource_type=type_name
+            )
+
         def properties_schema():
             for name, schema_dict in resource_class.properties_schema.items():
                 schema = properties.Schema.from_legacy(schema_dict)
@@ -1076,7 +1178,9 @@ class EngineService(service.Service):
                     yield name, dict(schema)
 
         def attributes_schema():
-            for name, schema_data in resource_class.attributes_schema.items():
+            for name, schema_data in itertools.chain(
+                    resource_class.attributes_schema.items(),
+                    resource_class.base_attributes_schema.items()):
                 schema = attributes.Schema.from_attribute(schema_data)
                 yield name, dict(schema)
 
@@ -1096,6 +1200,7 @@ class EngineService(service.Service):
         :param type_name: Name of the resource type to generate a template for.
         :param template_type: the template type to generate, cfn or hot.
         """
+        self.resource_enforcer.enforce(cnxt, type_name)
         try:
             resource_class = resources.global_env().get_class(type_name)
             if resource_class.support_status.status == support.HIDDEN:
@@ -1218,6 +1323,9 @@ class EngineService(service.Service):
             LOG.debug("signaling resource %s:%s" % (stack.name, rsrc.name))
             rsrc.signal(details)
 
+            if not rsrc.signal_needs_metadata_updates:
+                return
+
             # Refresh the metadata for all other resources, since signals can
             # update metadata which is used by other resources, e.g
             # when signalling a WaitConditionHandle resource, and other
@@ -1298,6 +1406,7 @@ class EngineService(service.Service):
         s = self._get_stack(cnxt, stack_identity)
 
         stack = parser.Stack.load(cnxt, stack=s)
+        self.resource_enforcer.enforce_stack(stack)
         self.thread_group_mgr.start_with_lock(cnxt, stack, self.engine_id,
                                               _stack_suspend, stack)
 
@@ -1313,6 +1422,7 @@ class EngineService(service.Service):
         s = self._get_stack(cnxt, stack_identity)
 
         stack = parser.Stack.load(cnxt, stack=s)
+        self.resource_enforcer.enforce_stack(stack)
         self.thread_group_mgr.start_with_lock(cnxt, stack, self.engine_id,
                                               _stack_resume, stack)
 
@@ -1399,8 +1509,11 @@ class EngineService(service.Service):
 
         s = self._get_stack(cnxt, stack_identity)
         stack = parser.Stack.load(cnxt, stack=s)
+        self.resource_enforcer.enforce_stack(stack)
         snapshot = snapshot_object.Snapshot.get_snapshot_by_stack(
             cnxt, snapshot_id, s)
+        # FIXME(pas-ha) has to be ammended to deny restoring stacks
+        # that have disallowed for current user
 
         self.thread_group_mgr.start_with_lock(cnxt, stack, self.engine_id,
                                               _stack_restore, stack, snapshot)

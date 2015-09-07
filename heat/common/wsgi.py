@@ -64,7 +64,7 @@ api_opts = [
                help=_('Address to bind the server. Useful when '
                       'selecting a particular network interface.'),
                deprecated_group='DEFAULT'),
-    cfg.IntOpt('bind_port', default=8004,
+    cfg.IntOpt('bind_port', default=8004, min=1, max=65535,
                help=_('The port on which the server will listen.'),
                deprecated_group='DEFAULT'),
     cfg.IntOpt('backlog', default=4096,
@@ -102,7 +102,7 @@ api_cfn_opts = [
                help=_('Address to bind the server. Useful when '
                       'selecting a particular network interface.'),
                deprecated_group='DEFAULT'),
-    cfg.IntOpt('bind_port', default=8000,
+    cfg.IntOpt('bind_port', default=8000, min=1, max=65535,
                help=_('The port on which the server will listen.'),
                deprecated_group='DEFAULT'),
     cfg.IntOpt('backlog', default=4096,
@@ -140,7 +140,7 @@ api_cw_opts = [
                help=_('Address to bind the server. Useful when '
                       'selecting a particular network interface.'),
                deprecated_group='DEFAULT'),
-    cfg.IntOpt('bind_port', default=8003,
+    cfg.IntOpt('bind_port', default=8003, min=1, max=65535,
                help=_('The port on which the server will listen.'),
                deprecated_group='DEFAULT'),
     cfg.IntOpt('backlog', default=4096,
@@ -761,7 +761,7 @@ def is_json_content_type(request):
     if not content_type or content_type.startswith('text/plain'):
         content_type = 'application/json'
     if (content_type in ('JSON', 'application/json')
-            and request.body.startswith('{')):
+            and request.body.startswith(b'{')):
         return True
     return False
 
@@ -773,7 +773,8 @@ class JSONRequestDeserializer(object):
 
         :param request:  Webob.Request object
         """
-        if request.content_length > 0 and is_json_content_type(request):
+        if (int(request.content_length or 0) > 0 and
+                is_json_content_type(request)):
             return True
 
         return False

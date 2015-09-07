@@ -101,25 +101,25 @@ class GlanceImage(resource.Resource):
 
     default_client_name = 'glance'
 
+    entity = 'images'
+
     def handle_create(self):
         args = dict((k, v) for k, v in self.properties.items()
                     if v is not None)
-        image_id = self.glance().images.create(**args).id
+        image_id = self.client().images.create(**args).id
         self.resource_id_set(image_id)
         return image_id
 
     def check_create_complete(self, image_id):
-        image = self.glance().images.get(image_id)
+        image = self.client().images.get(image_id)
         return image.status == 'active'
 
-    def handle_delete(self):
-        if self.resource_id is None:
-            return
-
-        try:
-            self.glance().images.delete(self.resource_id)
-        except Exception as ex:
-            self.client_plugin().ignore_not_found(ex)
+    def _show_resource(self):
+        if self.glance().version == 1.0:
+            return super(GlanceImage, self)._show_resource()
+        else:
+            image = self.glance().images.get(self.resource_id)
+            return dict(image)
 
 
 def resource_mapping():

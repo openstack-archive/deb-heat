@@ -12,7 +12,6 @@
 #    under the License.
 
 from heat.common.i18n import _
-from heat.engine import clients
 from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
@@ -118,6 +117,8 @@ class BayModel(resource.Resource):
 
     default_client_name = 'magnum'
 
+    entity = 'baymodels'
+
     def handle_create(self):
         args = {
             'name': self.properties[self.NAME],
@@ -135,23 +136,8 @@ class BayModel(resource.Resource):
         bm = self.client().baymodels.create(**args)
         self.resource_id_set(bm.uuid)
 
-    def handle_delete(self):
-        if not self.resource_id:
-            return
-        try:
-            self.client().baymodels.delete(self.resource_id)
-        except Exception as exc:
-            self.client_plugin().ignore_not_found(exc)
-
 
 def resource_mapping():
     return {
         'OS::Magnum::BayModel': BayModel
     }
-
-
-def available_resource_mapping():
-    if not clients.has_client('magnum'):
-        return {}
-
-    return resource_mapping()

@@ -26,6 +26,8 @@ class ServerGroup(resource.Resource):
 
     default_client_name = 'nova'
 
+    entity = 'server_groups'
+
     PROPERTIES = (
         NAME, POLICIES
     ) = (
@@ -54,16 +56,9 @@ class ServerGroup(resource.Resource):
     def handle_create(self):
         name = self.physical_resource_name()
         policies = self.properties[self.POLICIES]
-        server_group = self.nova().server_groups.create(name=name,
-                                                        policies=policies)
+        server_group = self.client().server_groups.create(name=name,
+                                                          policies=policies)
         self.resource_id_set(server_group.id)
-
-    def handle_delete(self):
-        if self.resource_id:
-            try:
-                self.nova().server_groups.delete(self.resource_id)
-            except Exception as e:
-                self.client_plugin().ignore_not_found(e)
 
     def physical_resource_name(self):
         name = self.properties[self.NAME]

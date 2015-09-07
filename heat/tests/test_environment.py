@@ -25,8 +25,10 @@ from heat.engine import environment
 from heat.engine import resources
 from heat.engine.resources.aws.ec2 import instance
 from heat.engine.resources.openstack.nova import server
+from heat.engine import support
 from heat.tests import common
 from heat.tests import generic_resource
+
 
 cfg.CONF.import_opt('environment_dir', 'heat.common.config')
 
@@ -53,67 +55,6 @@ class EnvironmentTest(common.HeatTestCase):
                                           u'resources': {}}}
         env = environment.Environment(new_env)
         self.assertEqual(new_env, env.user_env_as_dict())
-
-    def test_existing_parameters(self):
-        # This tests reusing the existing parameters as is
-        prev_params = {'foo': 'bar', 'tester': 'Yes'}
-        params = {}
-        expected = {'parameters': prev_params,
-                    'encrypted_param_names': [],
-                    'parameter_defaults': {},
-                    'resource_registry': {'resources': {}}}
-        prev_env = environment.Environment(
-            {'parameters': prev_params,
-             'resource_registry': {'resources': {}}})
-        env = environment.Environment(params)
-        env.patch_previous_parameters(prev_env)
-        self.assertEqual(expected, env.user_env_as_dict())
-
-    def test_patch_existing_parameters(self):
-        # This tests patching cli parameters over the existing parameters
-        prev_params = {'foo': 'bar', 'tester': 'Yes'}
-        params = {'tester': 'patched'}
-        expected = {'parameters': {'foo': 'bar', 'tester': 'patched'},
-                    'encrypted_param_names': [],
-                    'parameter_defaults': {},
-                    'resource_registry': {'resources': {}}}
-        prev_env = environment.Environment(
-            {'parameters': prev_params,
-             'resource_registry': {'resources': {}}})
-        env = environment.Environment(params)
-        env.patch_previous_parameters(prev_env)
-        self.assertEqual(expected, env.user_env_as_dict())
-
-    def test_patch_and_clear_existing_parameters(self):
-        # This tests patching cli parameters over the existing parameters
-        prev_params = {'foo': 'bar', 'tester': 'Yes',
-                       'another_tester': 'Yes'}
-        params = {'tester': 'patched'}
-        expected = {'parameters': {'foo': 'bar', 'tester': 'patched'},
-                    'encrypted_param_names': [],
-                    'parameter_defaults': {},
-                    'resource_registry': {'resources': {}}}
-        prev_env = environment.Environment(
-            {'parameters': prev_params,
-             'resource_registry': {'resources': {}}})
-        env = environment.Environment(params)
-        env.patch_previous_parameters(prev_env, ['another_tester'])
-        self.assertEqual(expected, env.user_env_as_dict())
-
-    def test_clear_existing_parameters(self):
-        # This tests removing some parameters in the existing set of parameters
-        prev_params = {'foo': 'bar', 'tester': 'Yes'}
-        params = {}
-        expected = {'parameters': {'foo': 'bar'},
-                    'encrypted_param_names': [],
-                    'parameter_defaults': {},
-                    'resource_registry': {'resources': {}}}
-        prev_env = environment.Environment(
-            {'parameters': prev_params,
-             'resource_registry': {'resources': {}}})
-        env = environment.Environment(params)
-        env.patch_previous_parameters(prev_env, ['tester'])
-        self.assertEqual(expected, env.user_env_as_dict())
 
     def test_global_registry(self):
         self.g_env.register_class('CloudX::Nova::Server',
@@ -267,6 +208,9 @@ class EnvironmentDuplicateTest(common.HeatTestCase):
         ('diff_path', dict(resource_type='a/test.yaml',
                            expected_equal=False)),
     ]
+
+    def setUp(self):
+        super(EnvironmentDuplicateTest, self).setUp(quieten_logging=False)
 
     def test_env_load(self):
         env_initial = {u'resource_registry': {
@@ -787,6 +731,53 @@ class ResourceRegistryTest(common.HeatTestCase):
         ex = self.assertRaises(exception.InvalidBreakPointHook,
                                registry.load, {'resources': resources})
         self.assertEqual(msg, six.text_type(ex))
+
+    def test_list_type_validation_invalid_support_status(self):
+        registry = environment.ResourceRegistry(None, {})
+
+        ex = self.assertRaises(exception.Invalid,
+                               registry.get_types,
+                               support_status='junk')
+        msg = ('Invalid support status and should be one of %s' %
+               six.text_type(support.SUPPORT_STATUSES))
+
+        self.assertIn(msg, ex.message)
+
+    def test_list_type_validation_valid_support_status(self):
+        registry = environment.ResourceRegistry(None, {})
+
+        for status in support.SUPPORT_STATUSES:
+            self.assertEqual([],
+                             registry.get_types(support_status=status))
+
+    def test_list_type_find_by_status(self):
+        registry = resources.global_env().registry
+        types = registry.get_types(support_status=support.UNSUPPORTED)
+        self.assertIn('ResourceTypeUnSupportedLiberty', types)
+        self.assertNotIn('GenericResourceType', types)
+
+    def test_list_type_find_by_status_none(self):
+        registry = resources.global_env().registry
+        types = registry.get_types(support_status=None)
+        self.assertIn('ResourceTypeUnSupportedLiberty', types)
+        self.assertIn('GenericResourceType', types)
+
+    def test_list_type_with_name(self):
+        registry = resources.global_env().registry
+        types = registry.get_types(type_name='ResourceType*')
+        self.assertIn('ResourceTypeUnSupportedLiberty', types)
+        self.assertNotIn('GenericResourceType', types)
+
+    def test_list_type_with_name_none(self):
+        registry = resources.global_env().registry
+        types = registry.get_types(type_name=None)
+        self.assertIn('ResourceTypeUnSupportedLiberty', types)
+        self.assertIn('GenericResourceType', types)
+
+    def test_list_type_with_invalid_type_name(self):
+        registry = resources.global_env().registry
+        types = registry.get_types(type_name="r'[^\+]'")
+        self.assertEqual([], types)
 
 
 class HookMatchTest(common.HeatTestCase):

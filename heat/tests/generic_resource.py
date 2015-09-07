@@ -11,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
 from oslo_log import log as logging
 import six
 
@@ -22,7 +23,7 @@ from heat.engine import resource
 from heat.engine.resources import signal_responder
 from heat.engine.resources import stack_resource
 from heat.engine.resources import stack_user
-
+from heat.engine import support
 LOG = logging.getLogger(__name__)
 
 
@@ -31,8 +32,9 @@ class GenericResource(resource.Resource):
     Dummy resource for use in tests
     '''
     properties_schema = {}
-    attributes_schema = {'foo': attributes.Schema('A generic attribute'),
-                         'Foo': attributes.Schema('Another generic attribute')}
+    attributes_schema = collections.OrderedDict([
+        ('foo', attributes.Schema('A generic attribute')),
+        ('Foo', attributes.Schema('Another generic attribute'))])
 
     @classmethod
     def is_service_available(cls, context):
@@ -63,18 +65,10 @@ class GenericResource(resource.Resource):
 
 
 class ResWithShowAttr(GenericResource):
-    attributes_schema = {'foo': attributes.Schema('A generic attribute'),
-                         'Foo': attributes.Schema('Another generic attribute'),
-                         'show': attributes.Schema('A dict of all details '
-                                                   'of attributes')}
-
-    def _resolve_attribute(self, name):
-        if name == 'show':
-            return {'foo': self.name,
-                    'Foo': self.name,
-                    'Another': self.name}
-        else:
-            return self.name
+    def _show_resource(self):
+        return {'foo': self.name,
+                'Foo': self.name,
+                'Another': self.name}
 
 
 class ResWithComplexPropsAndAttrs(GenericResource):
@@ -149,6 +143,12 @@ class ResourceWithComplexAttributes(GenericResource):
 class ResourceWithRequiredProps(GenericResource):
     properties_schema = {'Foo': properties.Schema(properties.Schema.STRING,
                                                   required=True)}
+
+
+class ResourceWithRequiredPropsAndEmptyAttrs(GenericResource):
+    properties_schema = {'Foo': properties.Schema(properties.Schema.STRING,
+                                                  required=True)}
+    attributes_schema = {}
 
 
 class SignalResource(signal_responder.SignalResponder):
@@ -254,6 +254,12 @@ class StackResourceType(stack_resource.StackResource, GenericResource):
     def handle_delete(self):
         self.delete_nested()
 
+    def has_nested(self):
+        if self.nested() is not None:
+            return True
+
+        return False
+
 
 class ResourceWithRestoreType(ResWithComplexPropsAndAttrs):
 
@@ -265,3 +271,33 @@ class ResourceWithRestoreType(ResWithComplexPropsAndAttrs):
         value = data['resource_data']['a_string']
         props['a_string'] = value
         return defn.freeze(properties=props)
+
+
+class DynamicSchemaResource(resource.Resource):
+    """Resource with an attribute not registered in the attribute schema."""
+    properties_schema = {}
+
+    attributes_schema = {
+        'stat_attr': attributes.Schema('A generic static attribute',
+                                       type=attributes.Schema.STRING),
+    }
+
+    def _init_attributes(self):
+        # software deployment scheme is not static
+        # so return dynamic attributes for it
+        return attributes.DynamicSchemeAttributes(
+            self.name, self.attributes_schema, self._resolve_attribute)
+
+    def _resolve_attribute(self, name):
+        if name == 'stat_attr':
+            return "static_attribute"
+        elif name == 'dynamic_attr':
+            return "dynamic_attribute"
+        else:
+            raise KeyError()
+
+
+class ResourceTypeUnSupportedLiberty(GenericResource):
+    support_status = support.SupportStatus(
+        version='5.0.0',
+        status=support.UNSUPPORTED)

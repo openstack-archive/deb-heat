@@ -25,6 +25,7 @@ import testtools
 
 from heat.common import context
 from heat.common import messaging
+from heat.common import policy
 from heat.engine.clients.os import cinder
 from heat.engine.clients.os import glance
 from heat.engine.clients.os import keystone
@@ -41,13 +42,14 @@ from heat.tests import utils
 
 
 TEST_DEFAULT_LOGLEVELS = {'migrate': logging.WARN,
-                          'sqlalchemy': logging.WARN}
+                          'sqlalchemy': logging.WARN,
+                          'heat.engine.environment': logging.ERROR}
 _LOG_FORMAT = "%(levelname)8s [%(name)s] %(message)s"
 _TRUE_VALUES = ('True', 'true', '1', 'yes')
 
 
 class FakeLogMixin(object):
-    def setup_logging(self):
+    def setup_logging(self, quieten=True):
         # Assign default logs to self.LOG so we can still
         # assert on heat logs.
         default_level = logging.INFO
@@ -66,16 +68,23 @@ class FakeLogMixin(object):
             elif base != 'heat':
                 self.useFixture(fixtures.FakeLogger(
                     name=base, format=_LOG_FORMAT))
+        if quieten:
+            for ll in TEST_DEFAULT_LOGLEVELS:
+                if ll.startswith('heat.'):
+                    self.useFixture(fixtures.FakeLogger(
+                        level=TEST_DEFAULT_LOGLEVELS[ll],
+                        name=ll, format=_LOG_FORMAT))
 
 
 class HeatTestCase(testscenarios.WithScenarios,
                    testtools.TestCase, FakeLogMixin):
 
-    def setUp(self, mock_keystone=True):
+    def setUp(self, mock_keystone=True, mock_resource_policy=True,
+              quieten_logging=True):
         super(HeatTestCase, self).setUp()
         self.m = mox.Mox()
         self.addCleanup(self.m.UnsetStubs)
-        self.setup_logging()
+        self.setup_logging(quieten=quieten_logging)
         self.warnings = self.useFixture(fixtures.WarningsCapture())
         scheduler.ENABLE_SLEEP = False
         self.useFixture(fixtures.MonkeyPatch(
@@ -117,6 +126,9 @@ class HeatTestCase(testscenarios.WithScenarios,
 
         if mock_keystone:
             self.stub_keystoneclient()
+        if mock_resource_policy:
+            self.mock_resource_policy = self.patchobject(
+                policy.ResourceEnforcer, 'enforce')
         utils.setup_dummy_db()
         self.register_test_resources()
         self.addCleanup(utils.reset_dummy_db)
@@ -138,6 +150,9 @@ class HeatTestCase(testscenarios.WithScenarios,
                                  generic_rsrc.ResourceWithAttributeType)
         resource._register_class('ResourceWithRequiredProps',
                                  generic_rsrc.ResourceWithRequiredProps)
+        resource._register_class(
+            'ResourceWithRequiredPropsAndEmptyAttrs',
+            generic_rsrc.ResourceWithRequiredPropsAndEmptyAttrs)
         resource._register_class('ResourceWithPropsAndAttrs',
                                  generic_rsrc.ResourceWithPropsAndAttrs)
         resource._register_class('ResWithComplexPropsAndAttrs',
@@ -158,6 +173,10 @@ class HeatTestCase(testscenarios.WithScenarios,
                                  generic_rsrc.StackResourceType)
         resource._register_class('ResourceWithRestoreType',
                                  generic_rsrc.ResourceWithRestoreType)
+        resource._register_class('DynamicSchemaResource',
+                                 generic_rsrc.DynamicSchemaResource)
+        resource._register_class('ResourceTypeUnSupportedLiberty',
+                                 generic_rsrc.ResourceTypeUnSupportedLiberty)
 
     def patchobject(self, obj, attr, **kwargs):
         mockfixture = self.useFixture(mockpatch.PatchObject(obj, attr,
@@ -211,6 +230,10 @@ class HeatTestCase(testscenarios.WithScenarios,
         validate = self.patchobject(cinder.VolumeTypeConstraint, 'validate')
         validate.return_value = True
 
+    def stub_VolumeBackupConstraint_validate(self):
+        validate = self.patchobject(cinder.VolumeBackupConstraint, 'validate')
+        validate.return_value = True
+
     def stub_ServerConstraint_validate(self):
         validate = self.patchobject(nova.ServerConstraint, 'validate')
         validate.return_value = True
@@ -237,4 +260,9 @@ class HeatTestCase(testscenarios.WithScenarios,
 
     def stub_NovaNetworkConstraint(self):
         validate = self.patchobject(nova.NetworkConstraint, 'validate')
+        validate.return_value = True
+
+    def stub_KeystoneProjectConstraint(self):
+        validate = self.patchobject(keystone.KeystoneProjectConstraint,
+                                    'validate')
         validate.return_value = True
