@@ -1,3 +1,2 @@
 only-run-tests-in-heat.tests.patch
 allow-route-2.0.patch
-Fix_DummyResource_missing_in_provider_error.patch
