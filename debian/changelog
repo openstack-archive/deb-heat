@@ -1,6 +1,7 @@
-heat (1:5.0.0~b3-2) UNRELEASED; urgency=medium
+heat (1:5.0.0~b3-2) experimental; urgency=medium
 
   * Added nl.po.
+  * Fixed wrong (build-)depends on python-neutronclient: EPOCH should be 1:.
 
  -- Thomas Goirand <zigo@debian.org>  Mon, 14 Sep 2015 11:38:40 +0200
 
