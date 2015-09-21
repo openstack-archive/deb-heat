@@ -2,6 +2,7 @@ heat (1:5.0.0~rc1-1) experimental; urgency=medium
 
   * New upstream release.
   * Fixed (build-)depends for this release.
+  * Now heat-api depends on python-openstackclient.
 
  -- Thomas Goirand <zigo@debian.org>  Wed, 23 Sep 2015 18:33:01 +0200
 

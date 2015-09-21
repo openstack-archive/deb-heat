@@ -183,6 +183,7 @@ Package: heat-api
 Architecture: all
 Depends: adduser,
          heat-common (=${binary:Version}),
+         python-openstackclient,
          ${misc:Depends},
          ${ostack-lsb-base},
          ${python:Depends},
