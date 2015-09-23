@@ -51,10 +51,10 @@ class BaseVolume(resource.Resource):
         if vol.status in self._volume_creating_status:
             return False
         if vol.status == 'error':
-            raise resource.ResourceInError(
+            raise exception.ResourceInError(
                 resource_status=vol.status)
         else:
-            raise resource.ResourceUnknownStatus(
+            raise exception.ResourceUnknownStatus(
                 resource_status=vol.status,
                 result=_('Volume create failed'))
 
@@ -108,11 +108,17 @@ class BaseVolume(resource.Resource):
         if backup.status == 'available':
             return True
         else:
-            raise resource.ResourceUnknownStatus(
+            raise exception.ResourceUnknownStatus(
                 resource_status=backup.status,
                 result=_('Volume backup failed'))
 
     def _delete_volume(self):
+        """Call the volume delete API
+
+        Returns False if further checking of volume status is required,
+        True otherwise.
+
+        """
         try:
             cinder = self.client()
             vol = cinder.volumes.get(self.resource_id)
@@ -122,13 +128,10 @@ class BaseVolume(resource.Resource):
             # just wait for the deletion to complete
             if vol.status != 'deleting':
                 cinder.volumes.delete(self.resource_id)
-            else:
-                return True
+            return False
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
             return True
-        else:
-            return False
 
     def check_delete_complete(self, prg):
         if not prg.backup['called']:
@@ -147,11 +150,14 @@ class BaseVolume(resource.Resource):
 
         if not prg.delete['complete']:
             try:
-                self.client().volumes.get(self.resource_id)
+                vol = self.client().volumes.get(self.resource_id)
             except Exception as ex:
                 self.client_plugin().ignore_not_found(ex)
                 prg.delete['complete'] = True
                 return True
+            if 'error' in vol.status.lower():
+                raise exception.ResourceInError(status_reason='delete',
+                                                resource_status=vol.status)
             else:
                 return False
         return True
@@ -167,7 +173,8 @@ class BaseVolumeAttachment(resource.Resource):
     def handle_create(self):
         server_id = self.properties[self.INSTANCE_ID]
         volume_id = self.properties[self.VOLUME_ID]
-        dev = self.properties[self.DEVICE]
+        dev = (self.properties[self.DEVICE] if self.properties[self.DEVICE]
+               else None)
 
         attach_id = self.client_plugin('nova').attach_volume(
             server_id, volume_id, dev)
@@ -180,16 +187,23 @@ class BaseVolumeAttachment(resource.Resource):
         return self.client_plugin().check_attach_volume_complete(volume_id)
 
     def handle_delete(self):
-        server_id = self.properties[self.INSTANCE_ID]
-        vol_id = self.properties[self.VOLUME_ID]
-        self.client_plugin('nova').detach_volume(server_id,
-                                                 self.resource_id)
-        prg = progress.VolumeDetachProgress(
-            server_id, vol_id, self.resource_id)
-        prg.called = True
+        prg = None
+
+        if self.resource_id:
+            server_id = self.properties[self.INSTANCE_ID]
+            vol_id = self.properties[self.VOLUME_ID]
+            self.client_plugin('nova').detach_volume(server_id,
+                                                     self.resource_id)
+            prg = progress.VolumeDetachProgress(
+                server_id, vol_id, self.resource_id)
+            prg.called = True
+
         return prg
 
     def check_delete_complete(self, prg):
+        if prg is None:
+            return True
+
         if not prg.cinder_complete:
             prg.cinder_complete = self.client_plugin(
             ).check_detach_volume_complete(prg.vol_id)

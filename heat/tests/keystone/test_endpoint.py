@@ -57,7 +57,7 @@ class KeystoneEndpointTest(common.HeatTestCase):
         self.keystoneclient = mock.MagicMock()
         self.test_endpoint.client = mock.MagicMock()
         self.test_endpoint.client.return_value = self.keystoneclient
-        self.endpoints = self.keystoneclient.client.endpoints
+        self.endpoints = self.keystoneclient.endpoints
 
         # Mock client plugin
         keystone_client_plugin = mock.MagicMock()
@@ -154,25 +154,6 @@ class KeystoneEndpointTest(common.HeatTestCase):
             url=None,
             name='foo'
         )
-
-    def test_endpoint_handle_delete(self):
-        self.test_endpoint.resource_id = '477e8273-60a7-4c41-b683-fdb0bc7cd151'
-        self.endpoints.delete.return_value = None
-
-        self.assertIsNone(self.test_endpoint.handle_delete())
-        self.endpoints.delete.assert_called_once_with(
-            self.test_endpoint.resource_id
-        )
-
-    def test_endpoint_handle_delete_resource_id_is_none(self):
-        self.test_endpoint.resource_id = None
-        self.assertIsNone(self.test_endpoint.handle_delete())
-
-    def test_endpoint_handle_delete_not_found(self):
-        exc = self.keystoneclient.NotFound
-        self.endpoints.delete.side_effect = exc
-
-        self.assertIsNone(self.test_endpoint.handle_delete())
 
     def test_resource_mapping(self):
         mapping = endpoint.resource_mapping()
@@ -316,3 +297,10 @@ class KeystoneEndpointTest(common.HeatTestCase):
                          schema.description,
                          'description for property %s is modified' %
                          endpoint.KeystoneEndpoint.NAME)
+
+    def test_show_resource(self):
+        endpoint = mock.Mock()
+        endpoint.to_dict.return_value = {'attr': 'val'}
+        self.endpoints.get.return_value = endpoint
+        res = self.test_endpoint._show_resource()
+        self.assertEqual({'attr': 'val'}, res)

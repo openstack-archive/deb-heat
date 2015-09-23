@@ -251,13 +251,13 @@ class RemoteStack(resource.Resource):
         elif stack.status == self.COMPLETE:
             return True
         elif stack.status == self.FAILED:
-            raise resource.ResourceInError(
+            raise exception.ResourceInError(
                 resource_status=stack.stack_status,
                 status_reason=stack.stack_status_reason)
         else:
             # Note: this should never happen, so it really means that
             # the resource/engine is in serious problem if it happens.
-            raise resource.ResourceUnknownStatus(
+            raise exception.ResourceUnknownStatus(
                 resource_status=stack.stack_status,
                 status_reason=stack.stack_status_reason)
 
@@ -290,12 +290,7 @@ class RemoteStack(resource.Resource):
         return self._check_action_complete(action=self.CHECK)
 
     def _resolve_attribute(self, name):
-        try:
-            stack = self.heat().stacks.get(stack_id=self.resource_id)
-        except Exception as e:
-            self.client_plugin().ignore_not_found(e)
-            return None
-
+        stack = self.heat().stacks.get(stack_id=self.resource_id)
         if name == self.NAME_ATTR:
             value = getattr(stack, name, None)
             return value or self.physical_resource_name_or_FnGetRefId()

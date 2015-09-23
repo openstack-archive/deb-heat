@@ -11,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
 import itertools
 import json
 import os
@@ -199,11 +200,10 @@ class ResourceTest(common.HeatTestCase):
             for status in res.STATUSES:
                 res.state_set(action, status)
                 ev = self.patchobject(res, '_add_event')
-                ex = self.assertRaises(exception.ResourceFailure,
+                ex = self.assertRaises(exception.NotSupported,
                                        res.signal)
-                self.assertEqual('Exception: resources.res: '
-                                 'Cannot signal resource during '
-                                 '%s' % action, six.text_type(ex))
+                self.assertEqual('Signal resource during %s is not '
+                                 'supported.' % action, six.text_type(ex))
                 ev.assert_called_with(
                     action, status,
                     'Cannot signal resource during %s' % action)
@@ -367,11 +367,52 @@ class ResourceTest(common.HeatTestCase):
         tmpl = rsrc_defn.ResourceDefinition('test_resource',
                                             'TestResource')
         res = TestResource('test_resource', tmpl, self.stack)
+        res.prepare_for_replace = mock.Mock()
 
         utmpl = rsrc_defn.ResourceDefinition('test_resource', 'TestResource',
                                              {'a_string': 'foo'})
         self.assertRaises(
-            resource.UpdateReplace, scheduler.TaskRunner(res.update, utmpl))
+            exception.UpdateReplace, scheduler.TaskRunner(res.update, utmpl))
+        self.assertTrue(res.prepare_for_replace.called)
+
+    def test_update_rsrc_in_progress_raises_exception(self):
+        class TestResource(resource.Resource):
+            properties_schema = {'a_string': {'Type': 'String'}}
+            update_allowed_properties = ('a_string',)
+
+        cfg.CONF.set_override('convergence_engine', False)
+        resource._register_class('TestResource', TestResource)
+
+        tmpl = rsrc_defn.ResourceDefinition('test_resource',
+                                            'TestResource')
+        res = TestResource('test_resource', tmpl, self.stack)
+
+        utmpl = rsrc_defn.ResourceDefinition('test_resource', 'TestResource',
+                                             {'a_string': 'foo'})
+        res.action = res.UPDATE
+        res.status = res.IN_PROGRESS
+        self.assertRaises(
+            exception.ResourceFailure, scheduler.TaskRunner(res.update, utmpl))
+
+    def test_update_replace_rollback(self):
+        class TestResource(resource.Resource):
+            properties_schema = {'a_string': {'Type': 'String'}}
+            update_allowed_properties = ('a_string',)
+
+        resource._register_class('TestResource', TestResource)
+
+        tmpl = rsrc_defn.ResourceDefinition('test_resource',
+                                            'TestResource')
+        self.stack.state_set('ROLLBACK', 'IN_PROGRESS', 'Simulate rollback')
+        res = TestResource('test_resource', tmpl, self.stack)
+
+        res.restore_after_rollback = mock.Mock()
+
+        utmpl = rsrc_defn.ResourceDefinition('test_resource', 'TestResource',
+                                             {'a_string': 'foo'})
+        self.assertRaises(
+            exception.UpdateReplace, scheduler.TaskRunner(res.update, utmpl))
+        self.assertTrue(res.restore_after_rollback.called)
 
     def test_update_replace_in_failed_without_nested(self):
         tmpl = rsrc_defn.ResourceDefinition('test_resource',
@@ -394,7 +435,7 @@ class ResourceTest(common.HeatTestCase):
         # resource in failed status and hasn't nested will enter
         # UpdateReplace flow
         self.assertRaises(
-            resource.UpdateReplace, scheduler.TaskRunner(res.update, utmpl))
+            exception.UpdateReplace, scheduler.TaskRunner(res.update, utmpl))
 
         self.m.VerifyAll()
 
@@ -586,7 +627,7 @@ class ResourceTest(common.HeatTestCase):
         after_props = {'Bar': '456'}
         res = generic_rsrc.ResourceWithProps('test_resource', tmpl, self.stack)
         res.update_allowed_properties = ('Cat',)
-        self.assertRaises(resource.UpdateReplace,
+        self.assertRaises(exception.UpdateReplace,
                           res.update_template_diff_properties,
                           after_props, before_props)
 
@@ -682,11 +723,11 @@ class ResourceTest(common.HeatTestCase):
 
         # first attempt to create fails
         generic_rsrc.ResourceWithProps.handle_create().AndRaise(
-            resource.ResourceInError(resource_name='test_resource',
-                                     resource_status='ERROR',
-                                     resource_type='GenericResourceType',
-                                     resource_action='CREATE',
-                                     status_reason='just because'))
+            exception.ResourceInError(resource_name='test_resource',
+                                      resource_status='ERROR',
+                                      resource_type='GenericResourceType',
+                                      resource_action='CREATE',
+                                      status_reason='just because'))
         # delete error resource from first attempt
         generic_rsrc.ResourceWithProps.handle_delete().AndReturn(None)
 
@@ -711,11 +752,11 @@ class ResourceTest(common.HeatTestCase):
 
         # attempt to create fails
         generic_rsrc.ResourceWithProps.handle_create().AndRaise(
-            resource.ResourceInError(resource_name='test_resource',
-                                     resource_status='ERROR',
-                                     resource_type='GenericResourceType',
-                                     resource_action='CREATE',
-                                     status_reason='just because'))
+            exception.ResourceInError(resource_name='test_resource',
+                                      resource_status='ERROR',
+                                      resource_type='GenericResourceType',
+                                      resource_action='CREATE',
+                                      status_reason='just because'))
         self.m.ReplayAll()
 
         estr = ('ResourceInError: resources.test_resource: '
@@ -738,26 +779,26 @@ class ResourceTest(common.HeatTestCase):
 
         # first attempt to create fails
         generic_rsrc.ResourceWithProps.handle_create().AndRaise(
-            resource.ResourceInError(resource_name='test_resource',
-                                     resource_status='ERROR',
-                                     resource_type='GenericResourceType',
-                                     resource_action='CREATE',
-                                     status_reason='just because'))
+            exception.ResourceInError(resource_name='test_resource',
+                                      resource_status='ERROR',
+                                      resource_type='GenericResourceType',
+                                      resource_action='CREATE',
+                                      status_reason='just because'))
         # first attempt to delete fails
         generic_rsrc.ResourceWithProps.handle_delete().AndRaise(
-            resource.ResourceInError(resource_name='test_resource',
-                                     resource_status='ERROR',
-                                     resource_type='GenericResourceType',
-                                     resource_action='DELETE',
-                                     status_reason='delete failed'))
+            exception.ResourceInError(resource_name='test_resource',
+                                      resource_status='ERROR',
+                                      resource_type='GenericResourceType',
+                                      resource_action='DELETE',
+                                      status_reason='delete failed'))
         # second attempt to delete fails
         timeutils.retry_backoff_delay(1, jitter_max=2.0).AndReturn(0.01)
         generic_rsrc.ResourceWithProps.handle_delete().AndRaise(
-            resource.ResourceInError(resource_name='test_resource',
-                                     resource_status='ERROR',
-                                     resource_type='GenericResourceType',
-                                     resource_action='DELETE',
-                                     status_reason='delete failed again'))
+            exception.ResourceInError(resource_name='test_resource',
+                                      resource_status='ERROR',
+                                      resource_type='GenericResourceType',
+                                      resource_action='DELETE',
+                                      status_reason='delete failed again'))
 
         # third attempt to delete succeeds
         timeutils.retry_backoff_delay(2, jitter_max=2.0).AndReturn(0.01)
@@ -783,22 +824,22 @@ class ResourceTest(common.HeatTestCase):
 
         # first attempt to create fails
         generic_rsrc.ResourceWithProps.handle_create().AndRaise(
-            resource.ResourceInError(resource_name='test_resource',
-                                     resource_status='ERROR',
-                                     resource_type='GenericResourceType',
-                                     resource_action='CREATE',
-                                     status_reason='just because'))
+            exception.ResourceInError(resource_name='test_resource',
+                                      resource_status='ERROR',
+                                      resource_type='GenericResourceType',
+                                      resource_action='CREATE',
+                                      status_reason='just because'))
         # delete error resource from first attempt
         generic_rsrc.ResourceWithProps.handle_delete().AndReturn(None)
 
         # second attempt to create fails
         timeutils.retry_backoff_delay(1, jitter_max=2.0).AndReturn(0.01)
         generic_rsrc.ResourceWithProps.handle_create().AndRaise(
-            resource.ResourceInError(resource_name='test_resource',
-                                     resource_status='ERROR',
-                                     resource_type='GenericResourceType',
-                                     resource_action='CREATE',
-                                     status_reason='just because'))
+            exception.ResourceInError(resource_name='test_resource',
+                                      resource_status='ERROR',
+                                      resource_type='GenericResourceType',
+                                      resource_action='CREATE',
+                                      status_reason='just because'))
         # delete error resource from second attempt
         generic_rsrc.ResourceWithProps.handle_delete().AndReturn(None)
 
@@ -859,12 +900,12 @@ class ResourceTest(common.HeatTestCase):
         tmpl_diff = {'Properties': {'Foo': 'xyz'}}
         prop_diff = {'Foo': 'xyz'}
         generic_rsrc.ResourceWithProps.handle_update(
-            utmpl, tmpl_diff, prop_diff).AndRaise(resource.UpdateReplace(
+            utmpl, tmpl_diff, prop_diff).AndRaise(exception.UpdateReplace(
                 res.name))
         self.m.ReplayAll()
         # should be re-raised so parser.Stack can handle replacement
         updater = scheduler.TaskRunner(res.update, utmpl)
-        ex = self.assertRaises(resource.UpdateReplace, updater)
+        ex = self.assertRaises(exception.UpdateReplace, updater)
         self.assertEqual('The Resource test_resource requires replacement.',
                          six.text_type(ex))
         self.m.VerifyAll()
@@ -885,11 +926,11 @@ class ResourceTest(common.HeatTestCase):
         tmpl_diff = {'Properties': {'Foo': 'xyz'}}
         prop_diff = {'Foo': 'xyz'}
         generic_rsrc.ResourceWithProps.handle_update(
-            utmpl, tmpl_diff, prop_diff).AndRaise(resource.UpdateReplace())
+            utmpl, tmpl_diff, prop_diff).AndRaise(exception.UpdateReplace())
         self.m.ReplayAll()
         # should be re-raised so parser.Stack can handle replacement
         updater = scheduler.TaskRunner(res.update, utmpl)
-        ex = self.assertRaises(resource.UpdateReplace, updater)
+        ex = self.assertRaises(exception.UpdateReplace, updater)
         self.assertEqual('The Resource Unknown requires replacement.',
                          six.text_type(ex))
         self.m.VerifyAll()
@@ -903,7 +944,7 @@ class ResourceTest(common.HeatTestCase):
         self.assertEqual((res.INIT, res.COMPLETE), res.state)
 
         prop = {'Foo': 'abc'}
-        self.assertRaises(resource.UpdateReplace,
+        self.assertRaises(exception.UpdateReplace,
                           res._needs_update, tmpl, tmpl, prop, prop, res)
 
     def test_update_fail_missing_req_prop(self):
@@ -1406,6 +1447,104 @@ class ResourceTest(common.HeatTestCase):
         res.FnGetAtt('attr2')
         self.assertIn("Attribute attr2 is not of type Map", self.LOG.output)
 
+    def test_getatt_with_path(self):
+
+        tmpl = template.Template({
+            'heat_template_version': '2013-05-23',
+            'resources': {
+                'res': {
+                    'type': 'ResourceWithComplexAttributesType'
+                }
+            }
+        })
+        stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
+        res = stack['res']
+        self.assertEqual('abc', res.FnGetAtt('nested_dict', 'string'))
+
+    def test_getatt_with_cache_data(self):
+
+        tmpl = template.Template({
+            'heat_template_version': '2013-05-23',
+            'resources': {
+                'res': {
+                    'type': 'ResourceWithAttributeType'
+                }
+            }
+        })
+        stack = parser.Stack(utils.dummy_context(), 'test', tmpl,
+                             cache_data={
+                                 'res': {'attrs': {'Foo': 'Res',
+                                                   'foo': 'res'},
+                                         'uuid': mock.ANY,
+                                         'id': mock.ANY,
+                                         'action': 'CREATE',
+                                         'status': 'COMPLETE'}})
+
+        res = stack['res']
+        self.assertEqual('Res', res.FnGetAtt('Foo'))
+
+    def test_getatt_with_path_cache_data(self):
+
+        tmpl = template.Template({
+            'heat_template_version': '2013-05-23',
+            'resources': {
+                'res': {
+                    'type': 'ResourceWithComplexAttributesType'
+                }
+            }
+        })
+        stack = parser.Stack(utils.dummy_context(), 'test', tmpl,
+                             cache_data={
+                                 'res': {
+                                     'attrs': {('nested', 'string'): 'abc'},
+                                     'uuid': mock.ANY,
+                                     'id': mock.ANY,
+                                     'action': 'CREATE',
+                                     'status': 'COMPLETE'}})
+
+        res = stack['res']
+        self.assertEqual('abc', res.FnGetAtt('nested', 'string'))
+
+    def test_getatts(self):
+        tmpl = template.Template({
+            'heat_template_version': '2013-05-23',
+            'resources': {
+                'res': {
+                    'type': 'ResourceWithComplexAttributesType'
+                }
+            }
+        })
+        stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
+        res = stack['res']
+        self.assertEqual({'list': ['foo', 'bar'],
+                          'flat_dict': {'key1': 'val1',
+                                        'key2': 'val2',
+                                        'key3': 'val3'},
+                          'nested_dict': {'list': [1, 2, 3],
+                                          'string': 'abc',
+                                          'dict': {'a': 1, 'b': 2, 'c': 3}},
+                          'none': None}, res.FnGetAtts())
+
+    def test_getatts_with_cache_data(self):
+        tmpl = template.Template({
+            'heat_template_version': '2013-05-23',
+            'resources': {
+                'res': {
+                    'type': 'ResourceWithPropsType'
+                }
+            }
+        })
+        stack = parser.Stack(utils.dummy_context(), 'test', tmpl,
+                             cache_data={
+                                 'res': {'attributes': {'Foo': 'res',
+                                                        'foo': 'res'},
+                                         'uuid': mock.ANY,
+                                         'id': mock.ANY,
+                                         'action': 'CREATE',
+                                         'status': 'COMPLETE'}})
+        res = stack['res']
+        self.assertEqual({'foo': 'res', 'Foo': 'res'}, res.FnGetAtts())
+
     def test_properties_data_stored_encrypted_decrypted_on_load(self):
         cfg.CONF.set_override('encrypt_parameters_and_properties', True)
 
@@ -1637,7 +1776,7 @@ class ResourceTest(common.HeatTestCase):
 
         res_data = {(1, True): {u'id': 4, u'name': 'A', 'attrs': {}},
                     (2, True): {u'id': 3, u'name': 'B', 'attrs': {}}}
-        ex = self.assertRaises(resource.UpdateInProgress,
+        ex = self.assertRaises(exception.UpdateInProgress,
                                res.update_convergence,
                                'template_key',
                                res_data, 'engine-007',
@@ -1647,6 +1786,72 @@ class ResourceTest(common.HeatTestCase):
         self.assertEqual(msg, six.text_type(ex))
         # ensure requirements are not updated for failed resource
         self.assertEqual([1, 2], res.requires)
+
+    @mock.patch.object(resource.Resource, 'update')
+    def test_update_resource_convergence_failed(self, mock_update):
+        tmpl = rsrc_defn.ResourceDefinition('test_res',
+                                            'ResourceWithPropsType')
+        res = generic_rsrc.GenericResource('test_res', tmpl, self.stack)
+        res.requires = [2]
+        res._store()
+        self._assert_resource_lock(res.id, None, None)
+
+        new_temp = template.Template({
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Resources': {
+                'test_res': {'Type': 'ResourceWithPropsType',
+                             'Properties': {'Foo': 'abc'}}
+            }}, env=self.env)
+        new_temp.store()
+
+        res_data = {(1, True): {u'id': 4, u'name': 'A', 'attrs': {}},
+                    (2, True): {u'id': 3, u'name': 'B', 'attrs': {}}}
+        exc = Exception(_('Resource update failed'))
+        dummy_ex = exception.ResourceFailure(exc, res, action=res.UPDATE)
+        mock_update.side_effect = dummy_ex
+        self.assertRaises(exception.ResourceFailure,
+                          res.update_convergence, new_temp.id, res_data,
+                          'engine-007', 120)
+
+        expected_rsrc_def = new_temp.resource_definitions(self.stack)[res.name]
+        mock_update.assert_called_once_with(expected_rsrc_def)
+        # check if current_template_id was updated
+        self.assertEqual(new_temp.id, res.current_template_id)
+        # check if requires was updated
+        self.assertItemsEqual([3, 4], res.requires)
+        self._assert_resource_lock(res.id, None, 2)
+
+    @mock.patch.object(resource.Resource, 'update')
+    def test_update_resource_convergence_update_replace(self, mock_update):
+        tmpl = rsrc_defn.ResourceDefinition('test_res',
+                                            'ResourceWithPropsType')
+        res = generic_rsrc.GenericResource('test_res', tmpl, self.stack)
+        res.requires = [2]
+        res._store()
+        self._assert_resource_lock(res.id, None, None)
+
+        new_temp = template.Template({
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Resources': {
+                'test_res': {'Type': 'ResourceWithPropsType',
+                             'Properties': {'Foo': 'abc'}}
+            }}, env=self.env)
+        new_temp.store()
+
+        res_data = {(1, True): {u'id': 4, u'name': 'A', 'attrs': {}},
+                    (2, True): {u'id': 3, u'name': 'B', 'attrs': {}}}
+        mock_update.side_effect = exception.UpdateReplace
+        self.assertRaises(exception.UpdateReplace,
+                          res.update_convergence, new_temp.id, res_data,
+                          'engine-007', 120)
+
+        expected_rsrc_def = new_temp.resource_definitions(self.stack)[res.name]
+        mock_update.assert_called_once_with(expected_rsrc_def)
+        # ensure that current_template_id was not updated
+        self.assertEqual(None, res.current_template_id)
+        # ensure that requires was not updated
+        self.assertItemsEqual([2], res.requires)
+        self._assert_resource_lock(res.id, None, 2)
 
     @mock.patch.object(resource.scheduler.TaskRunner, '__init__',
                        return_value=None)
@@ -1708,7 +1913,7 @@ class ResourceTest(common.HeatTestCase):
         rs = resource_objects.Resource.get_obj(self.stack.context, res.id)
         rs.update_and_save({'engine_id': 'not-this'})
         self._assert_resource_lock(res.id, 'not-this', None)
-        ex = self.assertRaises(resource.UpdateInProgress,
+        ex = self.assertRaises(exception.UpdateInProgress,
                                res.delete_convergence,
                                1, {}, 'engine-007', self.dummy_timeout)
         msg = ("The resource %s is already being updated." %
@@ -1788,14 +1993,13 @@ class ResourceTest(common.HeatTestCase):
             self.assertEqual(1, show_attr.call_count)
 
             # clean resolved_values
-            with mock.patch.object(res.attributes, '_resolved_values') as r_v:
-                with mock.patch.object(res, 'client_plugin') as client_plug:
-                    r_v.return_value = {}
-                    # generate error during calling _show_resource
-                    show_attr.side_effect = [Exception]
-                    self.assertIsNone(res.FnGetAtt('show'))
-                    self.assertEqual(2, show_attr.call_count)
-                    self.assertEqual(1, client_plug.call_count)
+            res.attributes.reset_resolved_values()
+            with mock.patch.object(res, 'client_plugin') as client_plugin:
+                # generate error during calling _show_resource
+                show_attr.side_effect = [Exception]
+                self.assertIsNone(res.FnGetAtt('show'))
+                self.assertEqual(2, show_attr.call_count)
+                self.assertEqual(1, client_plugin.call_count)
 
     def test_resolve_attributes_stuff_custom_attribute(self):
         # check path with resolve_attribute
@@ -1803,8 +2007,15 @@ class ResourceTest(common.HeatTestCase):
         res = stack['res']
 
         with mock.patch.object(res, '_resolve_attribute') as res_attr:
-            res.FnGetAtt('Foo')
+            res_attr.side_effect = ['Works', Exception]
+            self.assertEqual('Works', res.FnGetAtt('Foo'))
             res_attr.assert_called_once_with('Foo')
+
+            # clean resolved_values
+            res.attributes.reset_resolved_values()
+            with mock.patch.object(res, 'client_plugin') as client_plugin:
+                self.assertIsNone(res.FnGetAtt('Foo'))
+                self.assertEqual(1, client_plugin.call_count)
 
     def test_show_resource(self):
         # check default function _show_resource
@@ -1829,7 +2040,12 @@ class ResourceTest(common.HeatTestCase):
 
         self.assertEqual({'test': 'info'}, res._show_resource())
 
+        # check the case where resource entity isn't defined
+        res.entity = None
+        self.assertIsNone(res._show_resource())
+
         # check handling AttributeError exception
+        res.entity = 'test'
         test_obj.get.side_effect = AttributeError
         self.assertIsNone(res._show_resource())
 
@@ -1840,6 +2056,34 @@ class ResourceTest(common.HeatTestCase):
         timeout = 0  # to emulate timeout
         self.assertRaises(scheduler.Timeout, res.delete_convergence,
                           1, {}, 'engine-007', timeout)
+
+    @mock.patch.object(parser.Stack, 'load')
+    @mock.patch.object(resource.Resource, '_load_data')
+    @mock.patch.object(template.Template, 'load')
+    def test_load_loads_stack_with_cached_data(self, mock_tmpl_load,
+                                               mock_load_data,
+                                               mock_stack_load):
+        tmpl = template.Template({
+            'heat_template_version': '2013-05-23',
+            'resources': {
+                'res': {
+                    'type': 'GenericResourceType'
+                }
+            }
+        }, env=self.env)
+        stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                             tmpl)
+        stack.store()
+        mock_tmpl_load.return_value = tmpl
+        res = stack['res']
+        res._store()
+        data = {'bar': {'atrr1': 'baz', 'attr2': 'baz2'}}
+        mock_stack_load.return_value = stack
+        resource.Resource.load(stack.context, res.id, True, data)
+        mock_stack_load.assert_called_once_with(stack.context,
+                                                stack.id,
+                                                cache_data=data)
+        self.assertTrue(mock_load_data.called)
 
 
 class ResourceAdoptTest(common.HeatTestCase):
@@ -2579,10 +2823,10 @@ class ResourceHookTest(common.HeatTestCase):
         self.assertFalse(res.clear_hook.called)
 
         self.assertRaises(exception.ResourceActionNotSupported,
-                          res.signal, {})
+                          res.signal, {'other_hook': 'alarm'})
         self.assertFalse(res.clear_hook.called)
 
-        self.assertRaises(exception.ResourceActionNotSupported,
+        self.assertRaises(exception.InvalidBreakPointHook,
                           res.signal, {'unset_hook': 'unknown_hook'})
         self.assertFalse(res.clear_hook.called)
 
@@ -2593,7 +2837,7 @@ class ResourceHookTest(common.HeatTestCase):
         res.clear_hook.assert_called_with('pre-update')
 
         res.has_hook = mock.Mock(return_value=False)
-        self.assertRaises(exception.ResourceActionNotSupported,
+        self.assertRaises(exception.InvalidBreakPointHook,
                           res.signal, {'unset_hook': 'pre-create'})
 
 
@@ -2719,3 +2963,119 @@ class ResourceAvailabilityTest(common.HeatTestCase):
 
             # Make sure is_service_available is called on the right class
             mock_method.assert_called_once_with(mock_stack.context)
+
+    def test_handle_delete_successful(self):
+        self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                                  template.Template(empty_template))
+        self.stack.store()
+        snippet = rsrc_defn.ResourceDefinition('aresource',
+                                               'OS::Heat::None')
+        res = resource.Resource('aresource', snippet, self.stack)
+
+        FakeClient = collections.namedtuple('Client',
+                                            ['entity'])
+        client = FakeClient(collections.namedtuple('entity', ['delete']))
+        self.patchobject(resource.Resource, 'client', return_value=client)
+        delete = mock.Mock()
+        res.client().entity.delete = delete
+        res.entity = 'entity'
+        res.resource_id = '12345'
+
+        self.assertEqual('12345', res.handle_delete())
+        delete.assert_called_once_with('12345')
+
+    def test_handle_delete_not_found(self):
+        self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                                  template.Template(empty_template))
+        self.stack.store()
+        snippet = rsrc_defn.ResourceDefinition('aresource',
+                                               'OS::Heat::None')
+        res = resource.Resource('aresource', snippet, self.stack)
+
+        FakeClient = collections.namedtuple('Client', ['entity'])
+        client = FakeClient(collections.namedtuple('entity', ['delete']))
+
+        class FakeClientPlugin(object):
+            def ignore_not_found(self, ex):
+                if not isinstance(ex, exception.NotFound):
+                    raise ex
+
+        self.patchobject(resource.Resource, 'client', return_value=client)
+        self.patchobject(resource.Resource, 'client_plugin',
+                         return_value=FakeClientPlugin())
+        delete = mock.Mock()
+        delete.side_effect = [exception.NotFound()]
+        res.client().entity.delete = delete
+        res.entity = 'entity'
+        res.resource_id = '12345'
+
+        self.assertIsNone(res.handle_delete())
+        delete.assert_called_once_with('12345')
+
+    def test_handle_delete_raise_error(self):
+        self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                                  template.Template(empty_template))
+        self.stack.store()
+        snippet = rsrc_defn.ResourceDefinition('aresource',
+                                               'OS::Heat::None')
+        res = resource.Resource('aresource', snippet, self.stack)
+
+        FakeClient = collections.namedtuple('Client', ['entity'])
+        client = FakeClient(collections.namedtuple('entity', ['delete']))
+
+        class FakeClientPlugin(object):
+            def ignore_not_found(self, ex):
+                if not isinstance(ex, exception.NotFound):
+                    raise ex
+
+        self.patchobject(resource.Resource, 'client', return_value=client)
+        self.patchobject(resource.Resource, 'client_plugin',
+                         return_value=FakeClientPlugin())
+        delete = mock.Mock()
+        delete.side_effect = [exception.Error('boom!')]
+        res.client().entity.delete = delete
+        res.entity = 'entity'
+        res.resource_id = '12345'
+
+        ex = self.assertRaises(exception.Error, res.handle_delete)
+        self.assertEqual('boom!', six.text_type(ex))
+        delete.assert_called_once_with('12345')
+
+    def test_handle_delete_no_entity(self):
+        self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                                  template.Template(empty_template))
+        self.stack.store()
+        snippet = rsrc_defn.ResourceDefinition('aresource',
+                                               'OS::Heat::None')
+        res = resource.Resource('aresource', snippet, self.stack)
+
+        FakeClient = collections.namedtuple('Client',
+                                            ['entity'])
+        client = FakeClient(collections.namedtuple('entity', ['delete']))
+        self.patchobject(resource.Resource, 'client', return_value=client)
+        delete = mock.Mock()
+        res.client().entity.delete = delete
+        res.resource_id = '12345'
+
+        self.assertIsNone(res.handle_delete())
+        self.assertEqual(0, delete.call_count)
+
+    def test_handle_delete_no_resource_id(self):
+        self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                                  template.Template(empty_template))
+        self.stack.store()
+        snippet = rsrc_defn.ResourceDefinition('aresource',
+                                               'OS::Heat::None')
+        res = resource.Resource('aresource', snippet, self.stack)
+
+        FakeClient = collections.namedtuple('Client',
+                                            ['entity'])
+        client = FakeClient(collections.namedtuple('entity', ['delete']))
+        self.patchobject(resource.Resource, 'client', return_value=client)
+        delete = mock.Mock()
+        res.client().entity.delete = delete
+        res.entity = 'entity'
+        res.resource_id = None
+
+        self.assertIsNone(res.handle_delete())
+        self.assertEqual(0, delete.call_count)

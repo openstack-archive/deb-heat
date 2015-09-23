@@ -23,7 +23,6 @@ import testtools
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import resource
 from heat.engine.resources import stack_resource
 from heat.engine import stack as parser
 from heat.engine import template as templatem
@@ -543,7 +542,7 @@ class StackResourceTest(StackResourceBaseTest):
         self.parent_resource.state_set(self.parent_resource.INIT,
                                        self.parent_resource.FAILED)
         self.parent_resource._nested = None
-        self.assertRaises(resource.UpdateReplace,
+        self.assertRaises(exception.UpdateReplace,
                           self.parent_resource._needs_update,
                           self.parent_resource.t,
                           self.parent_resource.t,
@@ -559,7 +558,7 @@ class StackResourceTest(StackResourceBaseTest):
         self.parent_resource.state_set(self.parent_resource.INIT,
                                        self.parent_resource.COMPLETE)
         self.parent_resource._nested = None
-        self.assertRaises(resource.UpdateReplace,
+        self.assertRaises(exception.UpdateReplace,
                           self.parent_resource._needs_update,
                           self.parent_resource.t,
                           self.parent_resource.t,
@@ -758,7 +757,7 @@ class StackResourceCheckCompleteTest(StackResourceBaseTest):
         self.nested.status_reason = 'broken on purpose'
         complete = getattr(self.parent_resource,
                            'check_%s_complete' % self.action)
-        self.assertRaises(resource.ResourceUnknownStatus, complete, None)
+        self.assertRaises(exception.ResourceUnknownStatus, complete, None)
         self.parent_resource.nested.assert_called_once_with(
             show_deleted=self.show_deleted, force_reload=True)
 

@@ -321,7 +321,27 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
             'username': 'fake username',
             'tenant': 'fake tenant',
             'owner_id': 'fake owner-id',
-            'balrog': 'you shall not pass!'
+            'stack_name': 'fake stack name',
+            'stack_identity': 'fake identity',
+            'creation_time': 'create timestamp',
+            'updated_time': 'update timestamp',
+            'deletion_time': 'deletion timestamp',
+            'notification_topics': 'fake topic',
+            'description': 'fake description',
+            'template_description': 'fake description',
+            'parameters': 'fake params',
+            'outputs': 'fake outputs',
+            'stack_action': 'fake action',
+            'stack_status': 'fake status',
+            'stack_status_reason': 'fake status reason',
+            'capabilities': 'fake capabilities',
+            'disable_rollback': 'fake value',
+            'timeout_mins': 'fake timeout',
+            'stack_owner': 'fake owner',
+            'parent': 'fake parent',
+            'stack_user_project_id': 'fake project id',
+            'tags': 'fake tags',
+            'barlog': 'you shall not pass!'
         }
         req = self._get('/stacks', params=params)
         mock_call.return_value = []
@@ -333,15 +353,18 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
         self.assertIn('filters', engine_args)
 
         filters = engine_args['filters']
-        self.assertEqual(7, len(filters))
-        self.assertIn('id', filters)
-        self.assertIn('status', filters)
-        self.assertIn('name', filters)
-        self.assertIn('action', filters)
-        self.assertIn('username', filters)
-        self.assertIn('tenant', filters)
-        self.assertIn('owner_id', filters)
-        self.assertNotIn('balrog', filters)
+        self.assertEqual(16, len(filters))
+        for key in ('id', 'status', 'name', 'action', 'username', 'tenant',
+                    'owner_id', 'stack_name', 'stack_action', 'stack_status',
+                    'stack_status_reason', 'disable_rollback', 'timeout_mins',
+                    'stack_owner', 'parent', 'stack_user_project_id'):
+            self.assertIn(key, filters)
+
+        for key in ('stack_identity', 'creation_time', 'updated_time',
+                    'deletion_time', 'notification_topics', 'description',
+                    'template_description', 'parameters', 'outputs',
+                    'capabilities', 'tags', 'barlog'):
+            self.assertNotIn(key, filters)
 
     def test_index_returns_stack_count_if_with_count_is_true(
             self, mock_enforce):
@@ -1101,6 +1124,41 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
 
         self.assertEqual({'stack': 'formatted_stack'}, result)
 
+    @mock.patch.object(rpc_client.EngineClient, 'call')
+    @mock.patch.object(stacks.stacks_view, 'format_stack')
+    def test_preview_with_tags_timeout(self, mock_format, mock_call,
+                                       mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'preview', True)
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '1')
+        template = {u'Foo': u'bar'}
+        parameters = {u'InstanceType': u'm1.xlarge'}
+        body = {'template': template,
+                'stack_name': identity.stack_name,
+                'parameters': parameters,
+                'tags': 'tag1,tag2',
+                'timeout_mins': 30}
+
+        req = self._post('/stacks/preview', json.dumps(body))
+        mock_call.return_value = {}
+        mock_format.return_value = 'formatted_stack_preview'
+        response = self.controller.preview(req,
+                                           tenant_id=identity.tenant,
+                                           body=body)
+        rpc_client.EngineClient.call.assert_called_once_with(
+            req.context,
+            ('preview_stack',
+             {'stack_name': identity.stack_name,
+              'template': template,
+              'params': {'parameters': parameters,
+                         'encrypted_param_names': [],
+                         'parameter_defaults': {},
+                         'resource_registry': {}},
+              'files': {},
+              'args': {'timeout_mins': 30, 'tags': ['tag1', 'tag2']}})
+        )
+
+        self.assertEqual({'stack': 'formatted_stack_preview'}, response)
+
     def test_preview_update_stack(self, mock_enforce):
         self._mock_enforce_setup(mock_enforce, 'preview_update', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
@@ -1626,6 +1684,41 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
         self.assertEqual(403, resp.status_int)
         self.assertIn('403 Forbidden', six.text_type(resp))
 
+    def test_update_with_existing_template(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'update_patch', True)
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
+        body = {'template': None,
+                'parameters': {},
+                'files': {},
+                'timeout_mins': 30}
+
+        req = self._patch('/stacks/%(stack_name)s/%(stack_id)s' % identity,
+                          json.dumps(body))
+
+        self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
+        rpc_client.EngineClient.call(
+            req.context,
+            ('update_stack',
+             {'stack_identity': dict(identity),
+              'template': None,
+              'params': {'parameters': {},
+                         'encrypted_param_names': [],
+                         'parameter_defaults': {},
+                         'resource_registry': {}},
+              'files': {},
+              'args': {rpc_api.PARAM_EXISTING: True,
+                       'timeout_mins': 30}})
+        ).AndReturn(dict(identity))
+        self.m.ReplayAll()
+
+        self.assertRaises(webob.exc.HTTPAccepted,
+                          self.controller.update_patch,
+                          req, tenant_id=identity.tenant,
+                          stack_name=identity.stack_name,
+                          stack_id=identity.stack_id,
+                          body=body)
+        self.m.VerifyAll()
+
     def test_update_with_existing_parameters(self, mock_enforce):
         self._mock_enforce_setup(mock_enforce, 'update_patch', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
@@ -1965,7 +2058,10 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': {},
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
-                         'resource_registry': {}}})
+                         'resource_registry': {}},
+              'files': {},
+              'show_nested': False}),
+            version='1.18'
         ).AndReturn(engine_response)
         self.m.ReplayAll()
 
@@ -1990,7 +2086,10 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': {},
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
-                         'resource_registry': {}}})
+                         'resource_registry': {}},
+              'files': {},
+              'show_nested': False}),
+            version='1.18'
         ).AndReturn({'Error': 'fubar'})
         self.m.ReplayAll()
 
@@ -2024,8 +2123,14 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
 
         self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
         rpc_client.EngineClient.call(
-            req.context, ('list_resource_types', {'support_status': None}),
-            version="1.1"
+            req.context,
+            ('list_resource_types',
+             {
+                 'support_status': None,
+                 'type_name': None,
+                 'heat_version': None
+             }),
+            version="1.16"
         ).AndReturn(engine_response)
         self.m.ReplayAll()
         response = self.controller.list_resource_types(req,
@@ -2042,8 +2147,12 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
         rpc_client.EngineClient.call(
             req.context,
             ('list_resource_types',
-             {'support_status': None},
-             ), version="1.1"
+             {
+                 'support_status': None,
+                 'type_name': None,
+                 'heat_version': None
+             }),
+            version="1.16"
         ).AndRaise(tools.to_remote_error(error))
         self.m.ReplayAll()
 

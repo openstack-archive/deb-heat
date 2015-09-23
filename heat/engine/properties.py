@@ -38,8 +38,7 @@ SCHEMA_KEYS = (
 
 
 class Schema(constr.Schema):
-    """
-    Schema class for validating resource properties.
+    """Schema class for validating resource properties.
 
     This class is used for defining schema constraints for resource properties.
     It inherits generic validation features from the base Schema class and add
@@ -74,9 +73,7 @@ class Schema(constr.Schema):
 
     @classmethod
     def from_legacy(cls, schema_dict):
-        """
-        Return a Property Schema object from a legacy schema dictionary.
-        """
+        """Return a Property Schema object from a legacy schema dictionary."""
 
         # Check for fully-fledged Schema objects
         if isinstance(schema_dict, cls):
@@ -134,8 +131,7 @@ class Schema(constr.Schema):
 
     @classmethod
     def from_parameter(cls, param):
-        """
-        Return a Property Schema corresponding to a Parameter Schema.
+        """Return a Property Schema corresponding to a Parameter Schema.
 
         Convert a parameter schema from a provider template to a property
         Schema for the corresponding resource facade.
@@ -169,8 +165,7 @@ class Schema(constr.Schema):
                    default=param.default)
 
     def allowed_param_prop_type(self):
-        """
-        Return allowed type of Property Schema converted from parameter.
+        """Return allowed type of Property Schema converted from parameter.
 
         Especially, when generating Schema from parameter, Integer Property
         Schema will be supplied by Number parameter.
@@ -196,8 +191,7 @@ class Schema(constr.Schema):
 
 
 def schemata(schema_dicts):
-    """
-    Return dictionary of Schema objects for given dictionary of schemata.
+    """Return dictionary of Schema objects for given dictionary of schemata.
 
     The input schemata are converted from the legacy (dictionary-based)
     format to Schema objects where necessary.
@@ -354,9 +348,7 @@ class Properties(collections.Mapping):
 
     @staticmethod
     def schema_from_params(params_snippet):
-        """
-        Convert a template snippet that defines parameters
-        into a properties schema
+        """Convert a template snippet with parameters into a properties schema.
 
         :param params_snippet: parameter definition from a template
         :returns: an equivalent properties schema for the specified params
@@ -421,12 +413,11 @@ class Properties(collections.Mapping):
         if any(res.action == res.INIT for res in deps):
             return True
 
-    def _get_property_value(self, key, validate=False):
+    def get_user_value(self, key, validate=False):
         if key not in self:
             raise KeyError(_('Invalid Property %s') % key)
 
         prop = self.props[key]
-
         if key in self.data:
             try:
                 unresolved_value = self.data[key]
@@ -446,12 +437,18 @@ class Properties(collections.Mapping):
             # so handle this generically
             except Exception as e:
                 raise ValueError(six.text_type(e))
+
+    def _get_property_value(self, key, validate=False):
+        if key not in self:
+            raise KeyError(_('Invalid Property %s') % key)
+
+        prop = self.props[key]
+        if key in self.data:
+            return self.get_user_value(key, validate)
         elif prop.has_default():
             return prop.get_value(None, validate)
         elif prop.required():
             raise ValueError(_('Property %s not assigned') % key)
-        else:
-            return None
 
     def __getitem__(self, key):
         return self._get_property_value(key)
@@ -467,9 +464,7 @@ class Properties(collections.Mapping):
 
     @staticmethod
     def _param_def_from_prop(schema):
-        """
-        Return a template parameter definition corresponding to a property.
-        """
+        """Return a template parameter definition corresponding to property."""
         param_type_map = {
             schema.INTEGER: parameters.Schema.NUMBER,
             schema.STRING: parameters.Schema.STRING,
@@ -512,9 +507,7 @@ class Properties(collections.Mapping):
 
     @staticmethod
     def _prop_def_from_prop(name, schema):
-        """
-        Return a provider template property definition for a property.
-        """
+        """Return a provider template property definition for a property."""
         if schema.type == Schema.LIST:
             return {'Fn::Split': [',', {'Ref': name}]}
         else:
@@ -522,10 +515,7 @@ class Properties(collections.Mapping):
 
     @staticmethod
     def _hot_param_def_from_prop(schema):
-        """
-        Return parameter definition corresponding to a property for
-        hot template.
-        """
+        """Parameter definition corresponding to property for hot template."""
         param_type_map = {
             schema.INTEGER: hot_param.HOTParamSchema.NUMBER,
             schema.STRING: hot_param.HOTParamSchema.STRING,
@@ -564,15 +554,12 @@ class Properties(collections.Mapping):
 
     @staticmethod
     def _hot_prop_def_from_prop(name, schema):
-        """
-        Return a provider template property definition for a property.
-        """
+        """Return a provider template property definition for a property."""
         return {'get_param': name}
 
     @classmethod
     def schema_to_parameters_and_properties(cls, schema, template_type='cfn'):
-        """Generates properties with params resolved for a resource's
-        properties_schema.
+        """Generates properties with params resolved for a schema.
 
         :param schema: A resource type's properties_schema
         :returns: A tuple of params and properties dicts

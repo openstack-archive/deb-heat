@@ -112,6 +112,17 @@ class StackTest(common.HeatTestCase):
         self.assertEqual(600, self.stack.time_elapsed())
 
     @mock.patch.object(stack, 'datetime')
+    def test_time_elapsed_ms(self, mock_dt):
+        self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl)
+        # dummy create time 10:00:00
+        self.stack.created_time = datetime.datetime(2015, 7, 27, 10, 5, 0)
+        # mock utcnow set to microsecond offset
+        mock_dt.datetime.utcnow.return_value = datetime.datetime(2015, 7, 27,
+                                                                 10, 4, 59,
+                                                                 750000)
+        self.assertEqual(0, self.stack.time_elapsed())
+
+    @mock.patch.object(stack, 'datetime')
     def test_time_elapsed_with_updated_time(self, mock_dt):
         self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl)
         # dummy create time 10:00:00
@@ -279,8 +290,12 @@ class StackTest(common.HeatTestCase):
                {'A': {'Type': 'StackResourceType'},
                 'B': {'Type': 'GenericResourceType'}}}
 
-        cache_data = {'A': {'reference_id': 'A-id'},
-                      'B': {'reference_id': 'B-id'}}
+        cache_data = {'A': {'reference_id': 'A-id', 'uuid': mock.ANY,
+                            'id': mock.ANY, 'action': 'CREATE',
+                            'status': 'COMPLETE'},
+                      'B': {'reference_id': 'B-id', 'uuid': mock.ANY,
+                            'id': mock.ANY, 'action': 'CREATE',
+                            'status': 'COMPLETE'}}
 
         self.stack = stack.Stack(self.ctx, 'test_stack',
                                  template.Template(tpl),
@@ -511,6 +526,39 @@ class StackTest(common.HeatTestCase):
                                template.Template(tmpl))
         self.stack.update(newstack)
         self.assertIsNotNone(self.stack.updated_time)
+
+    def test_update_prev_raw_template(self):
+        self.stack = stack.Stack(self.ctx, 'updated_time_test',
+                                 self.tmpl)
+        self.assertIsNone(self.stack.updated_time)
+        self.stack.store()
+        self.stack.create()
+
+        self.assertIsNone(self.stack.prev_raw_template_id)
+
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Resources': {'R1': {'Type': 'GenericResourceType'}}}
+        newstack = stack.Stack(self.ctx, 'updated_time_test',
+                               template.Template(tmpl))
+        self.stack.update(newstack)
+        self.assertIsNotNone(self.stack.prev_raw_template_id)
+        prev_t = template.Template.load(self.ctx,
+                                        self.stack.prev_raw_template_id)
+        self.assertEqual(tmpl, prev_t.t)
+        prev_id = self.stack.prev_raw_template_id
+
+        tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
+                 'Resources': {'R2': {'Type': 'GenericResourceType'}}}
+        newstack2 = stack.Stack(self.ctx, 'updated_time_test',
+                                template.Template(tmpl2))
+        self.stack.update(newstack2)
+        self.assertIsNotNone(self.stack.prev_raw_template_id)
+        self.assertNotEqual(prev_id, self.stack.prev_raw_template_id)
+        prev_t2 = template.Template.load(self.ctx,
+                                         self.stack.prev_raw_template_id)
+        self.assertEqual(tmpl2, prev_t2.t)
+        self.assertRaises(exception.NotFound,
+                          template.Template.load, self.ctx, prev_id)
 
     def test_access_policy_update(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
@@ -919,9 +967,6 @@ class StackTest(common.HeatTestCase):
         try:
             self.assertIsNone(self.stack.resource_by_refid('aaaa'))
             self.assertIsNone(self.stack.resource_by_refid('bbbb'))
-            # if there is cached data, we should ignore the state
-            self.stack.cache_data = {'AResource': {'reference_id': 'aaaa'}}
-            self.assertEqual(rsrc, self.stack.resource_by_refid('aaaa'))
         finally:
             rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE)
 
@@ -1758,6 +1803,68 @@ class StackTest(common.HeatTestCase):
         self.stack.strict_validate = False
         self.assertIsNone(self.stack.validate())
 
+    def test_disable_validate_required_param(self):
+        tmpl = template_format.parse("""
+        heat_template_version: 2013-05-23
+        parameters:
+          aparam:
+            type: number
+        resources:
+          AResource:
+            type: ResourceWithPropsRefPropOnValidate
+            properties:
+              FooInt: {get_param: aparam}
+        """)
+        self.stack = stack.Stack(self.ctx, 'stack_with_reqd_param',
+                                 template.Template(tmpl))
+
+        ex = self.assertRaises(exception.UserParameterMissing,
+                               self.stack.validate)
+        self.assertIn("The Parameter (aparam) was not provided",
+                      six.text_type(ex))
+
+        self.stack.strict_validate = False
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               self.stack.validate)
+        self.assertIn("The Parameter (aparam) was not provided",
+                      six.text_type(ex))
+
+        self.stack.resource_validate = False
+        self.assertIsNone(self.stack.validate())
+
+    def test_nodisable_validate_tmpl_err(self):
+        tmpl = template_format.parse("""
+        heat_template_version: 2013-05-23
+        resources:
+          AResource:
+            type: ResourceWithPropsRefPropOnValidate
+            depends_on: noexist
+            properties:
+              FooInt: 123
+        """)
+        self.stack = stack.Stack(self.ctx, 'stack_with_tmpl_err',
+                                 template.Template(tmpl))
+
+        ex = self.assertRaises(exception.InvalidTemplateReference,
+                               self.stack.validate)
+        self.assertIn(
+            "The specified reference \"noexist\" (in AResource) is incorrect",
+            six.text_type(ex))
+
+        self.stack.strict_validate = False
+        ex = self.assertRaises(exception.InvalidTemplateReference,
+                               self.stack.validate)
+        self.assertIn(
+            "The specified reference \"noexist\" (in AResource) is incorrect",
+            six.text_type(ex))
+
+        self.stack.resource_validate = False
+        ex = self.assertRaises(exception.InvalidTemplateReference,
+                               self.stack.validate)
+        self.assertIn(
+            "The specified reference \"noexist\" (in AResource) is incorrect",
+            six.text_type(ex))
+
     def test_validate_property_getatt(self):
         tmpl = {
             'HeatTemplateFormatVersion': '2012-12-12',
@@ -1812,6 +1919,44 @@ class StackTest(common.HeatTestCase):
 
         self.assertIn('Outputs must contain Output. '
                       'Found a [%s] instead' % type([]), six.text_type(ex))
+
+    def test_incorrect_deletion_policy(self):
+        tmpl = template_format.parse("""
+        HeatTemplateFormatVersion: '2012-12-12'
+        Resources:
+          AResource:
+            Type: ResourceWithPropsType
+            DeletionPolicy: wibble
+            Properties:
+              Foo: abc
+        """)
+        self.stack = stack.Stack(self.ctx, 'stack_bad_delpol',
+                                 template.Template(tmpl))
+
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               self.stack.validate)
+
+        self.assertIn('Invalid deletion policy "wibble"',
+                      six.text_type(ex))
+
+    def test_incorrect_deletion_policy_hot(self):
+        tmpl = template_format.parse("""
+        heat_template_version: 2013-05-23
+        resources:
+          AResource:
+            type: ResourceWithPropsType
+            deletion_policy: wibble
+            properties:
+              Foo: abc
+        """)
+        self.stack = stack.Stack(self.ctx, 'stack_bad_delpol',
+                                 template.Template(tmpl))
+
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               self.stack.validate)
+
+        self.assertIn('Invalid deletion policy "wibble"',
+                      six.text_type(ex))
 
     def test_incorrect_outputs_hot_get_attr(self):
         tmpl = {'heat_template_version': '2013-05-23',
@@ -1958,8 +2103,12 @@ class StackTest(common.HeatTestCase):
         })
 
         cache_data = {'foo': {'reference_id': 'foo-id',
-                              'attrs': {'bar': 'baz'}},
-                      'bar': {'reference_id': 'bar-id'}}
+                              'attrs': {'bar': 'baz'}, 'uuid': mock.ANY,
+                              'id': mock.ANY, 'action': 'CREATE',
+                              'status': 'COMPLETE'},
+                      'bar': {'reference_id': 'bar-id', 'uuid': mock.ANY,
+                              'id': mock.ANY, 'action': 'CREATE',
+                              'status': 'COMPLETE'}}
         tmpl_stack = stack.Stack(self.ctx, 'test', tmpl)
         tmpl_stack.store()
         lightweight_stack = stack.Stack.load(self.ctx, stack_id=tmpl_stack.id,
@@ -1992,8 +2141,12 @@ class StackTest(common.HeatTestCase):
             }
         })
 
-        cache_data = {'foo': {'reference_id': 'physical-resource-id'},
-                      'bar': {'reference_id': 'bar-id'}}
+        cache_data = {'foo': {'reference_id': 'physical-resource-id',
+                              'uuid': mock.ANY, 'id': mock.ANY,
+                              'action': 'CREATE', 'status': 'COMPLETE'},
+                      'bar': {'reference_id': 'bar-id', 'uuid': mock.ANY,
+                              'id': mock.ANY, 'action': 'CREATE',
+                              'status': 'COMPLETE'}}
         tmpl_stack = stack.Stack(self.ctx, 'test', tmpl)
         tmpl_stack.store()
         lightweight_stack = stack.Stack.load(self.ctx, stack_id=tmpl_stack.id,

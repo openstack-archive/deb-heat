@@ -13,7 +13,6 @@
 
 import uuid
 
-from eventlet import event as grevent
 import mock
 import mox
 from oslo_config import cfg
@@ -24,7 +23,6 @@ import six
 from heat.common import context
 from heat.common import exception
 from heat.common import identifier
-from heat.common import messaging
 from heat.common import template_format
 from heat.engine.cfn import template as cfntemplate
 from heat.engine import dependencies
@@ -34,10 +32,8 @@ from heat.engine.hot import template as hottemplate
 from heat.engine import resource as res
 from heat.engine import service
 from heat.engine import stack as parser
-from heat.engine import stack_lock
 from heat.engine import template as templatem
 from heat.objects import stack as stack_object
-from heat.rpc import api as rpc_api
 from heat.tests import common
 from heat.tests.engine import tools
 from heat.tests import generic_resource as generic_rsrc
@@ -229,873 +225,6 @@ class StackCreateTest(common.HeatTestCase):
         db_s.refresh()
         self.assertEqual('DELETE', db_s.action)
         self.assertEqual('COMPLETE', db_s.status, )
-
-
-class StackServiceAdoptUpdateTest(common.HeatTestCase):
-
-    def setUp(self):
-        super(StackServiceAdoptUpdateTest, self).setUp()
-        self.ctx = utils.dummy_context()
-        self.man = service.EngineService('a-host', 'a-topic')
-        self.man.thread_group_mgr = tools.DummyThreadGroupManager()
-
-    def _get_stack_adopt_data_and_template(self, environment=None):
-        template = {
-            "heat_template_version": "2013-05-23",
-            "parameters": {"app_dbx": {"type": "string"}},
-            "resources": {"res1": {"type": "GenericResourceType"}}}
-
-        adopt_data = {
-            "status": "COMPLETE",
-            "name": "rtrove1",
-            "environment": environment,
-            "template": template,
-            "action": "CREATE",
-            "id": "8532f0d3-ea84-444e-b2bb-2543bb1496a4",
-            "resources": {"res1": {
-                    "status": "COMPLETE",
-                    "name": "database_password",
-                    "resource_id": "yBpuUROjfGQ2gKOD",
-                    "action": "CREATE",
-                    "type": "GenericResourceType",
-                    "metadata": {}}}}
-        return template, adopt_data
-
-    def test_stack_adopt_with_params(self):
-        cfg.CONF.set_override('enable_stack_adopt', True)
-        environment = {'parameters': {"app_dbx": "test"}}
-        template, adopt_data = self._get_stack_adopt_data_and_template(
-            environment)
-        result = self.man.create_stack(self.ctx, "test_adopt_stack",
-                                       template, {}, None,
-                                       {'adopt_stack_data': str(adopt_data)})
-
-        stack = stack_object.Stack.get_by_id(self.ctx, result['stack_id'])
-        self.assertEqual(template, stack.raw_template.template)
-        self.assertEqual(environment['parameters'],
-                         stack.raw_template.environment['parameters'])
-
-    def test_stack_adopt_saves_input_params(self):
-        cfg.CONF.set_override('enable_stack_adopt', True)
-        environment = {'parameters': {"app_dbx": "foo"}}
-        input_params = {
-            "parameters": {"app_dbx": "bar"}
-        }
-        template, adopt_data = self._get_stack_adopt_data_and_template(
-            environment)
-        result = self.man.create_stack(self.ctx, "test_adopt_stack",
-                                       template, input_params, None,
-                                       {'adopt_stack_data': str(adopt_data)})
-
-        stack = stack_object.Stack.get_by_id(self.ctx, result['stack_id'])
-        self.assertEqual(template, stack.raw_template.template)
-        self.assertEqual(input_params['parameters'],
-                         stack.raw_template.environment['parameters'])
-
-    def test_stack_adopt_stack_state(self):
-        cfg.CONF.set_override('enable_stack_adopt', True)
-        env = {'parameters': {"app_dbx": "test"}}
-        template, adopt_data = self._get_stack_adopt_data_and_template(
-            env)
-        result = self.man.create_stack(self.ctx, "test_adopt_stack",
-                                       template, {}, None,
-                                       {'adopt_stack_data': str(adopt_data)})
-
-        stack = stack_object.Stack.get_by_id(self.ctx, result['stack_id'])
-        self.assertEqual((parser.Stack.ADOPT, parser.Stack.COMPLETE),
-                         (stack.action, stack.status))
-
-    def test_stack_adopt_disabled(self):
-        # to test disable stack adopt
-        cfg.CONF.set_override('enable_stack_adopt', False)
-        environment = {'parameters': {"app_dbx": "test"}}
-        template, adopt_data = self._get_stack_adopt_data_and_template(
-            environment)
-        ex = self.assertRaises(
-            dispatcher.ExpectedException,
-            self.man.create_stack,
-            self.ctx, "test_adopt_stack_disabled",
-            template, {}, None,
-            {'adopt_stack_data': str(adopt_data)})
-        self.assertEqual(exception.NotSupported, ex.exc_info[0])
-        self.assertIn('Stack Adopt', six.text_type(ex.exc_info[1]))
-
-    def _stub_update_mocks(self, stack_to_load, stack_to_return):
-        self.m.StubOutWithMock(parser, 'Stack')
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(self.ctx, stack=stack_to_load
-                          ).AndReturn(stack_to_return)
-
-        self.m.StubOutWithMock(templatem, 'Template')
-        self.m.StubOutWithMock(environment, 'Environment')
-
-    def test_stack_update(self):
-        stack_name = 'service_update_test_stack'
-        params = {'foo': 'bar'}
-        template = '{ "Template": "data" }'
-        old_stack = tools.get_stack(stack_name, self.ctx)
-        sid = old_stack.store()
-        old_stack.set_stack_user_project_id('1234')
-        s = stack_object.Stack.get_by_id(self.ctx, sid)
-
-        stack = tools.get_stack(stack_name, self.ctx)
-
-        self._stub_update_mocks(s, old_stack)
-
-        templatem.Template(template, files=None,
-                           env=stack.env).AndReturn(stack.t)
-        environment.Environment(params).AndReturn(stack.env)
-        parser.Stack(self.ctx, stack.name,
-                     stack.t,
-                     convergence=False,
-                     current_traversal=None,
-                     prev_raw_template_id=None,
-                     current_deps=None,
-                     disable_rollback=True,
-                     nested_depth=0,
-                     owner_id=None,
-                     parent_resource=None,
-                     stack_user_project_id='1234',
-                     strict_validate=True,
-                     tenant_id='test_tenant_id',
-                     timeout_mins=60,
-                     user_creds_id=u'1',
-                     username='test_username').AndReturn(stack)
-
-        self.m.StubOutWithMock(stack, 'validate')
-        stack.validate().AndReturn(None)
-
-        evt_mock = self.m.CreateMockAnything()
-        self.m.StubOutWithMock(grevent, 'Event')
-        grevent.Event().AndReturn(evt_mock)
-
-        self.m.ReplayAll()
-
-        api_args = {'timeout_mins': 60}
-        result = self.man.update_stack(self.ctx, old_stack.identifier(),
-                                       template, params, None, api_args)
-        self.assertEqual(old_stack.identifier(), result)
-        self.assertIsInstance(result, dict)
-        self.assertTrue(result['stack_id'])
-        self.assertEqual([evt_mock], self.man.thread_group_mgr.events)
-        self.m.VerifyAll()
-
-    def test_stack_update_existing_parameters(self):
-        '''Use a template with existing parameters, then update with a
-        template containing additional parameters and ensure all are preserved.
-        '''
-        stack_name = 'service_update_test_stack_existing_parameters'
-        update_params = {'encrypted_param_names': [],
-                         'parameter_defaults': {},
-                         'parameters': {'newparam': 123},
-                         'resource_registry': {'resources': {}}}
-        api_args = {rpc_api.PARAM_TIMEOUT: 60,
-                    rpc_api.PARAM_EXISTING: True}
-        t = template_format.parse(tools.wp_template)
-
-        stack = tools.get_stack(stack_name, self.ctx, with_params=True)
-        stack.store()
-        stack.set_stack_user_project_id('1234')
-        self.assertEqual({'KeyName': 'test'}, stack.t.env.params)
-
-        with mock.patch('heat.engine.stack.Stack') as mock_stack:
-            mock_stack.load.return_value = stack
-            mock_stack.validate.return_value = None
-            result = self.man.update_stack(self.ctx, stack.identifier(),
-                                           t,
-                                           update_params,
-                                           None, api_args)
-            tmpl = mock_stack.call_args[0][2]
-            self.assertEqual({'KeyName': 'test', 'newparam': 123},
-                             tmpl.env.params)
-            self.assertEqual(stack.identifier(), result)
-
-    def test_stack_update_existing_parameters_remove(self):
-        '''Use a template with existing parameters, then update with a
-        template containing additional parameters and a list of
-        parameters to be removed.
-        '''
-        stack_name = 'service_update_test_stack_existing_parameters'
-        update_params = {'encrypted_param_names': [],
-                         'parameter_defaults': {},
-                         'parameters': {'newparam': 123},
-                         'resource_registry': {'resources': {}}}
-        api_args = {rpc_api.PARAM_TIMEOUT: 60,
-                    rpc_api.PARAM_EXISTING: True,
-                    rpc_api.PARAM_CLEAR_PARAMETERS: ['removeme']}
-        t = template_format.parse(tools.wp_template)
-        t['parameters']['removeme'] = {'type': 'string'}
-
-        stack = utils.parse_stack(t, stack_name=stack_name,
-                                  params={'KeyName': 'test',
-                                          'removeme': 'foo'})
-        stack.set_stack_user_project_id('1234')
-        self.assertEqual({'KeyName': 'test', 'removeme': 'foo'},
-                         stack.t.env.params)
-
-        with mock.patch('heat.engine.stack.Stack') as mock_stack:
-            mock_stack.load.return_value = stack
-            mock_stack.validate.return_value = None
-            result = self.man.update_stack(self.ctx, stack.identifier(),
-                                           t,
-                                           update_params,
-                                           None, api_args)
-            tmpl = mock_stack.call_args[0][2]
-            self.assertEqual({'KeyName': 'test', 'newparam': 123},
-                             tmpl.env.params)
-            self.assertEqual(stack.identifier(), result)
-
-    def test_stack_update_existing_registry(self):
-        '''Use a template with existing flag and ensure the
-        environment registry is preserved.
-        '''
-        stack_name = 'service_update_test_stack_existing_registry'
-        intital_registry = {'OS::Foo': 'foo.yaml',
-                            'OS::Foo2': 'foo2.yaml',
-                            'resources': {
-                                'myserver': {'OS::Server': 'myserver.yaml'}}}
-        intial_params = {'encrypted_param_names': [],
-                         'parameter_defaults': {},
-                         'parameters': {},
-                         'resource_registry': intital_registry}
-        initial_files = {'foo.yaml': 'foo',
-                         'foo2.yaml': 'foo2',
-                         'myserver.yaml': 'myserver'}
-        update_registry = {'OS::Foo2': 'newfoo2.yaml',
-                           'resources': {
-                               'myother': {'OS::Other': 'myother.yaml'}}}
-        update_params = {'encrypted_param_names': [],
-                         'parameter_defaults': {},
-                         'parameters': {},
-                         'resource_registry': update_registry}
-        update_files = {'newfoo2.yaml': 'newfoo',
-                        'myother.yaml': 'myother'}
-        api_args = {rpc_api.PARAM_TIMEOUT: 60,
-                    rpc_api.PARAM_EXISTING: True}
-        t = template_format.parse(tools.wp_template)
-
-        stack = utils.parse_stack(t, stack_name=stack_name,
-                                  params=intial_params,
-                                  files=initial_files)
-        stack.set_stack_user_project_id('1234')
-        self.assertEqual(intial_params,
-                         stack.t.env.user_env_as_dict())
-
-        expected_reg = {'OS::Foo': 'foo.yaml',
-                        'OS::Foo2': 'newfoo2.yaml',
-                        'resources': {
-                            'myother': {'OS::Other': 'myother.yaml'},
-                            'myserver': {'OS::Server': 'myserver.yaml'}}}
-        expected_env = {'encrypted_param_names': [],
-                        'parameter_defaults': {},
-                        'parameters': {},
-                        'resource_registry': expected_reg}
-        # FIXME(shardy): Currently we don't prune unused old files
-        expected_files = {'foo.yaml': 'foo',
-                          'foo2.yaml': 'foo2',
-                          'myserver.yaml': 'myserver',
-                          'newfoo2.yaml': 'newfoo',
-                          'myother.yaml': 'myother'}
-        with mock.patch('heat.engine.stack.Stack') as mock_stack:
-            mock_stack.load.return_value = stack
-            mock_stack.validate.return_value = None
-            result = self.man.update_stack(self.ctx, stack.identifier(),
-                                           t,
-                                           update_params,
-                                           update_files,
-                                           api_args)
-            tmpl = mock_stack.call_args[0][2]
-            self.assertEqual(expected_env,
-                             tmpl.env.user_env_as_dict())
-            self.assertEqual(expected_files,
-                             tmpl.files)
-            self.assertEqual(stack.identifier(), result)
-
-    def test_stack_update_existing_parameter_defaults(self):
-        '''Use a template with existing flag and ensure the
-        environment parameter_defaults are preserved.
-        '''
-        stack_name = 'service_update_test_stack_existing_param_defaults'
-        intial_params = {'encrypted_param_names': [],
-                         'parameter_defaults': {'mydefault': 123},
-                         'parameters': {},
-                         'resource_registry': {}}
-        update_params = {'encrypted_param_names': [],
-                         'parameter_defaults': {'default2': 456},
-                         'parameters': {},
-                         'resource_registry': {}}
-        api_args = {rpc_api.PARAM_TIMEOUT: 60,
-                    rpc_api.PARAM_EXISTING: True}
-        t = template_format.parse(tools.wp_template)
-
-        stack = utils.parse_stack(t, stack_name=stack_name,
-                                  params=intial_params)
-        stack.set_stack_user_project_id('1234')
-
-        expected_env = {'encrypted_param_names': [],
-                        'parameter_defaults': {
-                            'mydefault': 123,
-                            'default2': 456},
-                        'parameters': {},
-                        'resource_registry': {'resources': {}}}
-        with mock.patch('heat.engine.stack.Stack') as mock_stack:
-            mock_stack.load.return_value = stack
-            mock_stack.validate.return_value = None
-            result = self.man.update_stack(self.ctx, stack.identifier(),
-                                           t,
-                                           update_params,
-                                           None, api_args)
-            tmpl = mock_stack.call_args[0][2]
-            self.assertEqual(expected_env,
-                             tmpl.env.user_env_as_dict())
-            self.assertEqual(stack.identifier(), result)
-
-    def test_stack_update_reuses_api_params(self):
-        stack_name = 'service_update_test_stack'
-        params = {'foo': 'bar'}
-        template = '{ "Template": "data" }'
-
-        old_stack = tools.get_stack(stack_name, self.ctx)
-        old_stack.timeout_mins = 1
-        old_stack.disable_rollback = False
-        sid = old_stack.store()
-        old_stack.set_stack_user_project_id('1234')
-        s = stack_object.Stack.get_by_id(self.ctx, sid)
-
-        stack = tools.get_stack(stack_name, self.ctx)
-
-        self._stub_update_mocks(s, old_stack)
-
-        templatem.Template(template, files=None,
-                           env=stack.env).AndReturn(stack.t)
-        environment.Environment(params).AndReturn(stack.env)
-        parser.Stack(self.ctx, stack.name,
-                     stack.t,
-                     convergence=False, current_traversal=None,
-                     prev_raw_template_id=None, current_deps=None,
-                     disable_rollback=False, nested_depth=0,
-                     owner_id=None, parent_resource=None,
-                     stack_user_project_id='1234',
-                     strict_validate=True,
-                     tenant_id='test_tenant_id', timeout_mins=1,
-                     user_creds_id=u'1',
-                     username='test_username').AndReturn(stack)
-
-        self.m.StubOutWithMock(stack, 'validate')
-        stack.validate().AndReturn(None)
-
-        self.m.ReplayAll()
-
-        api_args = {}
-        result = self.man.update_stack(self.ctx, old_stack.identifier(),
-                                       template, params, None, api_args)
-        self.assertEqual(old_stack.identifier(), result)
-        self.assertIsInstance(result, dict)
-        self.assertTrue(result['stack_id'])
-        self.m.VerifyAll()
-
-    def test_stack_cancel_update_same_engine(self):
-        stack_name = 'service_update_cancel_test_stack'
-        old_stack = tools.get_stack(stack_name, self.ctx)
-        old_stack.state_set(old_stack.UPDATE, old_stack.IN_PROGRESS,
-                            'test_override')
-        old_stack.disable_rollback = False
-        old_stack.store()
-        load_mock = self.patchobject(parser.Stack, 'load')
-        load_mock.return_value = old_stack
-        lock_mock = self.patchobject(stack_lock.StackLock, 'try_acquire')
-        lock_mock.return_value = self.man.engine_id
-        self.patchobject(self.man.thread_group_mgr, 'send')
-        self.man.stack_cancel_update(self.ctx, old_stack.identifier(),
-                                     cancel_with_rollback=False)
-        self.man.thread_group_mgr.send.assert_called_once_with(old_stack.id,
-                                                               'cancel')
-
-    def test_stack_cancel_update_different_engine(self):
-        stack_name = 'service_update_cancel_test_stack'
-        old_stack = tools.get_stack(stack_name, self.ctx)
-        old_stack.state_set(old_stack.UPDATE, old_stack.IN_PROGRESS,
-                            'test_override')
-        old_stack.disable_rollback = False
-        old_stack.store()
-        load_mock = self.patchobject(parser.Stack, 'load')
-        load_mock.return_value = old_stack
-        lock_mock = self.patchobject(stack_lock.StackLock, 'try_acquire')
-        another_engine_has_lock = str(uuid.uuid4())
-        lock_mock.return_value = another_engine_has_lock
-        self.patchobject(stack_lock.StackLock,
-                         'engine_alive').return_value(True)
-        self.man.listener = mock.Mock()
-        self.man.listener.SEND = 'send'
-        self.man._client = messaging.get_rpc_client(
-            version=self.man.RPC_API_VERSION)
-        # In fact the another engine is not alive, so the call will timeout
-        self.assertRaises(dispatcher.ExpectedException,
-                          self.man.stack_cancel_update,
-                          self.ctx, old_stack.identifier())
-
-    def test_stack_cancel_update_wrong_state_fails(self):
-        stack_name = 'service_update_cancel_test_stack'
-        old_stack = tools.get_stack(stack_name, self.ctx)
-        old_stack.state_set(old_stack.UPDATE, old_stack.COMPLETE,
-                            'test_override')
-        old_stack.store()
-        load_mock = self.patchobject(parser.Stack, 'load')
-        load_mock.return_value = old_stack
-
-        ex = self.assertRaises(
-            dispatcher.ExpectedException,
-            self.man.stack_cancel_update, self.ctx, old_stack.identifier())
-
-        self.assertEqual(exception.NotSupported, ex.exc_info[0])
-        self.assertIn("Cancelling update when stack is "
-                      "('UPDATE', 'COMPLETE')",
-                      six.text_type(ex.exc_info[1]))
-
-    @mock.patch.object(stack_object.Stack, 'count_total_resources')
-    def test_stack_update_equals(self, ctr):
-        stack_name = 'test_stack_update_equals_resource_limit'
-        params = {}
-        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
-               'Resources': {
-                   'A': {'Type': 'GenericResourceType'},
-                   'B': {'Type': 'GenericResourceType'},
-                   'C': {'Type': 'GenericResourceType'}}}
-
-        template = templatem.Template(tpl)
-
-        old_stack = parser.Stack(self.ctx, stack_name, template)
-        sid = old_stack.store()
-        old_stack.set_stack_user_project_id('1234')
-        s = stack_object.Stack.get_by_id(self.ctx, sid)
-        ctr.return_value = 3
-
-        stack = parser.Stack(self.ctx, stack_name, template)
-
-        self._stub_update_mocks(s, old_stack)
-
-        templatem.Template(template, files=None,
-                           env=stack.env).AndReturn(stack.t)
-        environment.Environment(params).AndReturn(stack.env)
-        parser.Stack(self.ctx, stack.name,
-                     stack.t,
-                     convergence=False, current_traversal=None,
-                     prev_raw_template_id=None, current_deps=None,
-                     disable_rollback=True, nested_depth=0,
-                     owner_id=None, parent_resource=None,
-                     stack_user_project_id='1234', strict_validate=True,
-                     tenant_id='test_tenant_id',
-                     timeout_mins=60, user_creds_id=u'1',
-                     username='test_username').AndReturn(stack)
-
-        self.m.StubOutWithMock(stack, 'validate')
-        stack.validate().AndReturn(None)
-
-        self.m.ReplayAll()
-
-        cfg.CONF.set_override('max_resources_per_stack', 3)
-
-        api_args = {'timeout_mins': 60}
-        result = self.man.update_stack(self.ctx, old_stack.identifier(),
-                                       template, params, None, api_args)
-        self.assertEqual(old_stack.identifier(), result)
-        self.assertIsInstance(result, dict)
-        self.assertTrue(result['stack_id'])
-        root_stack_id = old_stack.root_stack_id()
-        self.assertEqual(3, old_stack.total_resources(root_stack_id))
-        self.m.VerifyAll()
-
-    def test_stack_update_stack_id_equal(self):
-        stack_name = 'test_stack_update_stack_id_equal'
-        tpl = {
-            'HeatTemplateFormatVersion': '2012-12-12',
-            'Resources': {
-                'A': {
-                    'Type': 'ResourceWithPropsType',
-                    'Properties': {
-                        'Foo': {'Ref': 'AWS::StackId'}
-                    }
-                }
-            }
-        }
-
-        template = templatem.Template(tpl)
-
-        create_stack = parser.Stack(self.ctx, stack_name, template)
-        sid = create_stack.store()
-        create_stack.create()
-        self.assertEqual((create_stack.CREATE, create_stack.COMPLETE),
-                         create_stack.state)
-
-        s = stack_object.Stack.get_by_id(self.ctx, sid)
-
-        old_stack = parser.Stack.load(self.ctx, stack=s)
-
-        self.assertEqual((old_stack.CREATE, old_stack.COMPLETE),
-                         old_stack.state)
-        self.assertEqual(create_stack.identifier().arn(),
-                         old_stack['A'].properties['Foo'])
-
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(
-            self.ctx,
-            stack=s).AndReturn(old_stack)
-
-        self.m.ReplayAll()
-
-        result = self.man.update_stack(self.ctx, create_stack.identifier(),
-                                       tpl, {}, None, {})
-
-        self.assertEqual((old_stack.UPDATE, old_stack.COMPLETE),
-                         old_stack.state)
-        self.assertEqual(create_stack.identifier(), result)
-        self.assertIsNotNone(create_stack.identifier().stack_id)
-        self.assertEqual(create_stack.identifier().arn(),
-                         old_stack['A'].properties['Foo'])
-
-        self.assertEqual(create_stack['A'].id, old_stack['A'].id)
-        self.m.VerifyAll()
-
-    def test_stack_update_exceeds_resource_limit(self):
-        stack_name = 'test_stack_update_exceeds_resource_limit'
-        params = {}
-        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
-               'Resources': {
-                   'A': {'Type': 'GenericResourceType'},
-                   'B': {'Type': 'GenericResourceType'},
-                   'C': {'Type': 'GenericResourceType'}}}
-
-        template = templatem.Template(tpl)
-        old_stack = parser.Stack(self.ctx, stack_name, template)
-        sid = old_stack.store()
-        self.assertIsNotNone(sid)
-
-        cfg.CONF.set_override('max_resources_per_stack', 2)
-
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.man.update_stack, self.ctx,
-                               old_stack.identifier(), tpl, params,
-                               None, {})
-        self.assertEqual(exception.RequestLimitExceeded, ex.exc_info[0])
-        self.assertIn(exception.StackResourceLimitExceeded.msg_fmt,
-                      six.text_type(ex.exc_info[1]))
-
-    def test_stack_update_verify_err(self):
-        stack_name = 'service_update_verify_err_test_stack'
-        params = {'foo': 'bar'}
-        template = '{ "Template": "data" }'
-
-        old_stack = tools.get_stack(stack_name, self.ctx)
-        old_stack.store()
-        sid = old_stack.store()
-        old_stack.set_stack_user_project_id('1234')
-        s = stack_object.Stack.get_by_id(self.ctx, sid)
-        stack = tools.get_stack(stack_name, self.ctx)
-
-        self._stub_update_mocks(s, old_stack)
-
-        templatem.Template(template, files=None,
-                           env=stack.env).AndReturn(stack.t)
-        environment.Environment(params).AndReturn(stack.env)
-        parser.Stack(self.ctx, stack.name,
-                     stack.t,
-                     convergence=False, current_traversal=None,
-                     prev_raw_template_id=None, current_deps=None,
-                     disable_rollback=True, nested_depth=0,
-                     owner_id=None, parent_resource=None,
-                     stack_user_project_id='1234', strict_validate=True,
-                     tenant_id='test_tenant_id',
-                     timeout_mins=60, user_creds_id=u'1',
-                     username='test_username').AndReturn(stack)
-
-        self.m.StubOutWithMock(stack, 'validate')
-        stack.validate().AndRaise(exception.StackValidationFailed(
-            message='fubar'))
-
-        self.m.ReplayAll()
-
-        api_args = {'timeout_mins': 60}
-        ex = self.assertRaises(
-            dispatcher.ExpectedException,
-            self.man.update_stack,
-            self.ctx, old_stack.identifier(),
-            template, params, None, api_args)
-        self.assertEqual(exception.StackValidationFailed, ex.exc_info[0])
-        self.m.VerifyAll()
-
-    def test_stack_update_nonexist(self):
-        stack_name = 'service_update_nonexist_test_stack'
-        params = {'foo': 'bar'}
-        template = '{ "Template": "data" }'
-        stack = tools.get_stack(stack_name, self.ctx)
-
-        self.m.ReplayAll()
-
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.man.update_stack,
-                               self.ctx, stack.identifier(), template,
-                               params, None, {})
-        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
-        self.m.VerifyAll()
-
-    def test_stack_update_no_credentials(self):
-        cfg.CONF.set_default('deferred_auth_method', 'password')
-        stack_name = 'test_stack_update_no_credentials'
-        params = {'foo': 'bar'}
-        template = '{ "Template": "data" }'
-
-        old_stack = tools.get_stack(stack_name, self.ctx)
-        # force check for credentials on create
-        old_stack['WebServer'].requires_deferred_auth = True
-
-        sid = old_stack.store()
-        old_stack.set_stack_user_project_id('1234')
-        s = stack_object.Stack.get_by_id(self.ctx, sid)
-
-        self.ctx = utils.dummy_context(password=None)
-
-        self.m.StubOutWithMock(self.man, '_get_stack')
-
-        self.man._get_stack(self.ctx, old_stack.identifier()).AndReturn(s)
-
-        self._stub_update_mocks(s, old_stack)
-
-        templatem.Template(template, files=None,
-                           env=old_stack.env).AndReturn(old_stack.t)
-        environment.Environment(params).AndReturn(old_stack.env)
-        parser.Stack(self.ctx, old_stack.name,
-                     old_stack.t,
-                     convergence=False,
-                     current_traversal=None,
-                     prev_raw_template_id=None,
-                     current_deps=None,
-                     disable_rollback=True,
-                     nested_depth=0,
-                     owner_id=None,
-                     parent_resource=None,
-                     stack_user_project_id='1234',
-                     strict_validate=True,
-                     tenant_id='test_tenant_id',
-                     timeout_mins=60,
-                     user_creds_id=u'1',
-                     username='test_username').AndReturn(old_stack)
-
-        self.m.ReplayAll()
-
-        api_args = {'timeout_mins': 60}
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.man.update_stack, self.ctx,
-                               old_stack.identifier(),
-                               template, params, None, api_args)
-        self.assertEqual(exception.MissingCredentialError, ex.exc_info[0])
-        self.assertEqual(
-            'Missing required credential: X-Auth-Key',
-            six.text_type(ex.exc_info[1]))
-
-        self.m.VerifyAll()
-
-    def _test_stack_update_preview(self, orig_template, new_template):
-        stack_name = 'service_update_test_stack'
-        params = {'foo': 'bar'}
-        old_stack = tools.get_stack(stack_name, self.ctx,
-                                    template=orig_template)
-        sid = old_stack.store()
-        old_stack.set_stack_user_project_id('1234')
-        s = stack_object.Stack.get_by_id(self.ctx, sid)
-
-        stack = tools.get_stack(stack_name, self.ctx, template=new_template)
-
-        self._stub_update_mocks(s, old_stack)
-
-        templatem.Template(new_template, files=None,
-                           env=stack.env).AndReturn(stack.t)
-        environment.Environment(params).AndReturn(stack.env)
-        parser.Stack(self.ctx, stack.name,
-                     stack.t,
-                     convergence=False,
-                     current_traversal=None,
-                     prev_raw_template_id=None,
-                     current_deps=None,
-                     disable_rollback=True,
-                     nested_depth=0,
-                     owner_id=None,
-                     parent_resource=None,
-                     stack_user_project_id='1234',
-                     strict_validate=True,
-                     tenant_id='test_tenant_id',
-                     timeout_mins=60,
-                     user_creds_id=u'1',
-                     username='test_username').AndReturn(stack)
-
-        self.m.StubOutWithMock(stack, 'validate')
-        stack.validate().AndReturn(None)
-        self.m.ReplayAll()
-
-        api_args = {'timeout_mins': 60}
-        result = self.man.preview_update_stack(self.ctx,
-                                               old_stack.identifier(),
-                                               new_template, params, None,
-                                               api_args)
-        self.m.VerifyAll()
-
-        return result
-
-    def test_stack_update_preview_added_unchanged(self):
-        orig_template = '''
-heat_template_version: 2014-10-16
-resources:
-  web_server:
-    type: OS::Nova::Server
-    properties:
-      image: F17-x86_64-gold
-      flavor: m1.large
-      key_name: test
-      user_data: wordpress
-'''
-
-        new_template = '''
-heat_template_version: 2014-10-16
-resources:
-  web_server:
-    type: OS::Nova::Server
-    properties:
-      image: F17-x86_64-gold
-      flavor: m1.large
-      key_name: test
-      user_data: wordpress
-  password:
-    type: OS::Heat::RandomString
-    properties:
-      length: 8
-'''
-
-        result = self._test_stack_update_preview(orig_template, new_template)
-
-        added = [x for x in result['added']][0]
-        self.assertEqual(added['resource_name'], 'password')
-        unchanged = [x for x in result['unchanged']][0]
-        self.assertEqual(unchanged['resource_name'], 'web_server')
-
-        empty_sections = ('deleted', 'replaced', 'updated')
-        for section in empty_sections:
-            section_contents = [x for x in result[section]]
-            self.assertEqual(section_contents, [])
-
-        self.m.VerifyAll()
-
-    def test_stack_update_preview_replaced(self):
-        orig_template = '''
-heat_template_version: 2014-10-16
-resources:
-  web_server:
-    type: OS::Nova::Server
-    properties:
-      image: F17-x86_64-gold
-      flavor: m1.large
-      key_name: test
-      user_data: wordpress
-'''
-
-        new_template = '''
-heat_template_version: 2014-10-16
-resources:
-  web_server:
-    type: OS::Nova::Server
-    properties:
-      image: F17-x86_64-gold
-      flavor: m1.large
-      key_name: test2
-      user_data: wordpress
-'''
-
-        result = self._test_stack_update_preview(orig_template, new_template)
-
-        replaced = [x for x in result['replaced']][0]
-        self.assertEqual(replaced['resource_name'], 'web_server')
-        empty_sections = ('added', 'deleted', 'unchanged', 'updated')
-        for section in empty_sections:
-            section_contents = [x for x in result[section]]
-            self.assertEqual(section_contents, [])
-
-        self.m.VerifyAll()
-
-    def test_stack_update_preview_updated(self):
-        orig_template = '''
-heat_template_version: 2014-10-16
-resources:
-  web_server:
-    type: OS::Nova::Server
-    properties:
-      image: F17-x86_64-gold
-      flavor: m1.large
-      key_name: test
-      user_data: wordpress
-'''
-
-        new_template = '''
-heat_template_version: 2014-10-16
-resources:
-  web_server:
-    type: OS::Nova::Server
-    properties:
-      image: F17-x86_64-gold
-      flavor: m1.small
-      key_name: test
-      user_data: wordpress
-'''
-
-        result = self._test_stack_update_preview(orig_template, new_template)
-
-        updated = [x for x in result['updated']][0]
-        self.assertEqual(updated['resource_name'], 'web_server')
-        empty_sections = ('added', 'deleted', 'unchanged', 'replaced')
-        for section in empty_sections:
-            section_contents = [x for x in result[section]]
-            self.assertEqual(section_contents, [])
-
-        self.m.VerifyAll()
-
-    def test_stack_update_preview_deleted(self):
-        orig_template = '''
-heat_template_version: 2014-10-16
-resources:
-  web_server:
-    type: OS::Nova::Server
-    properties:
-      image: F17-x86_64-gold
-      flavor: m1.large
-      key_name: test
-      user_data: wordpress
-  password:
-    type: OS::Heat::RandomString
-    properties:
-      length: 8
-'''
-
-        new_template = '''
-heat_template_version: 2014-10-16
-resources:
-  web_server:
-    type: OS::Nova::Server
-    properties:
-      image: F17-x86_64-gold
-      flavor: m1.large
-      key_name: test
-      user_data: wordpress
-'''
-
-        result = self._test_stack_update_preview(orig_template, new_template)
-
-        deleted = [x for x in result['deleted']][0]
-        self.assertEqual(deleted['resource_name'], 'password')
-        unchanged = [x for x in result['unchanged']][0]
-        self.assertEqual(unchanged['resource_name'], 'web_server')
-        empty_sections = ('added', 'updated', 'replaced')
-        for section in empty_sections:
-            section_contents = [x for x in result[section]]
-            self.assertEqual(section_contents, [])
-
-        self.m.VerifyAll()
 
 
 class StackConvergenceServiceCreateUpdateTest(common.HeatTestCase):
@@ -1424,6 +553,27 @@ class StackServiceTest(common.HeatTestCase):
                                                    mock.ANY,
                                                    mock.ANY,
                                                    filters,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   )
+
+    @mock.patch.object(stack_object.Stack, 'get_all')
+    def test_stack_list_passes_filter_translated(self, mock_stack_get_all):
+        filters = {'stack_name': 'bar'}
+        self.eng.list_stacks(self.ctx, filters=filters)
+        translated = {'name': 'bar'}
+        mock_stack_get_all.assert_called_once_with(mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   mock.ANY,
+                                                   translated,
                                                    mock.ANY,
                                                    mock.ANY,
                                                    mock.ANY,
@@ -2111,21 +1261,24 @@ class StackServiceTest(common.HeatTestCase):
 
         self.m.VerifyAll()
 
-    def test_signal_reception_async(self):
-        self.eng.thread_group_mgr = tools.DummyThreadGroupMgrLogStart()
-        stack_name = 'signal_reception_async'
+    def _stack_create(self, stack_name):
         stack = tools.get_stack(stack_name, self.ctx, policy_template)
-        self.stack = stack
         tools.setup_keystone_mocks(self.m, stack)
         self.m.ReplayAll()
         stack.store()
         stack.create()
-        test_data = {'food': 'yum'}
-
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
+        s = stack_object.Stack.get_by_id(self.ctx, stack.id)
         service.EngineService._get_stack(self.ctx,
-                                         self.stack.identifier()).AndReturn(s)
+                                         stack.identifier()).AndReturn(s)
+        self.m.ReplayAll()
+        return stack
+
+    def test_signal_reception_async(self):
+        self.eng.thread_group_mgr = tools.DummyThreadGroupMgrLogStart()
+        stack_name = 'signal_reception_async'
+        self.stack = self._stack_create(stack_name)
+        test_data = {'food': 'yum'}
 
         self.m.ReplayAll()
 
@@ -2140,21 +1293,11 @@ class StackServiceTest(common.HeatTestCase):
 
     def test_signal_reception_sync(self):
         stack_name = 'signal_reception_sync'
-        stack = tools.get_stack(stack_name, self.ctx, policy_template)
-        self.stack = stack
-        tools.setup_keystone_mocks(self.m, stack)
-        self.m.ReplayAll()
-        stack.store()
-        stack.create()
+        self.stack = self._stack_create(stack_name)
         test_data = {'food': 'yum'}
 
-        self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
-        service.EngineService._get_stack(self.ctx,
-                                         self.stack.identifier()).AndReturn(s)
-
         self.m.StubOutWithMock(res.Resource, 'signal')
-        res.Resource.signal(mox.IgnoreArg()).AndReturn(None)
+        res.Resource.signal(mox.IgnoreArg(), False).AndReturn(None)
         self.m.ReplayAll()
 
         self.eng.resource_signal(self.ctx,
@@ -2166,19 +1309,8 @@ class StackServiceTest(common.HeatTestCase):
 
     def test_signal_reception_no_resource(self):
         stack_name = 'signal_reception_no_resource'
-        stack = tools.get_stack(stack_name, self.ctx, policy_template)
-        tools.setup_keystone_mocks(self.m, stack)
-        self.stack = stack
-        self.m.ReplayAll()
-        stack.store()
-        stack.create()
+        self.stack = self._stack_create(stack_name)
         test_data = {'food': 'yum'}
-
-        self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
-        service.EngineService._get_stack(self.ctx,
-                                         self.stack.identifier()).AndReturn(s)
-        self.m.ReplayAll()
 
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.eng.resource_signal, self.ctx,
@@ -2216,23 +1348,13 @@ class StackServiceTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_signal_returns_metadata(self):
-        stack = tools.get_stack('signal_reception', self.ctx, policy_template)
-        self.stack = stack
-        tools.setup_keystone_mocks(self.m, stack)
-        self.m.ReplayAll()
-        stack.store()
-        stack.create()
+        self.stack = self._stack_create('signal_reception')
+        rsrc = self.stack['WebServerScaleDownPolicy']
         test_metadata = {'food': 'yum'}
-        rsrc = stack['WebServerScaleDownPolicy']
         rsrc.metadata_set(test_metadata)
 
-        self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
-        service.EngineService._get_stack(self.ctx,
-                                         self.stack.identifier()).AndReturn(s)
-
         self.m.StubOutWithMock(res.Resource, 'signal')
-        res.Resource.signal(mox.IgnoreArg()).AndReturn(None)
+        res.Resource.signal(mox.IgnoreArg(), False).AndReturn(None)
         self.m.ReplayAll()
 
         md = self.eng.resource_signal(self.ctx,
@@ -2240,6 +1362,40 @@ class StackServiceTest(common.HeatTestCase):
                                       'WebServerScaleDownPolicy', None,
                                       sync_call=True)
         self.assertEqual(test_metadata, md)
+
+        self.m.VerifyAll()
+
+    def test_signal_unset_invalid_hook(self):
+        self.stack = self._stack_create('signal_unset_invalid_hook')
+        details = {'unset_hook': 'invalid_hook'}
+
+        ex = self.assertRaises(dispatcher.ExpectedException,
+                               self.eng.resource_signal,
+                               self.ctx,
+                               dict(self.stack.identifier()),
+                               'WebServerScaleDownPolicy',
+                               details)
+        msg = 'Invalid hook type "invalid_hook"'
+        self.assertIn(msg, six.text_type(ex.exc_info[1]))
+        self.assertEqual(exception.InvalidBreakPointHook,
+                         ex.exc_info[0])
+        self.m.VerifyAll()
+
+    def test_signal_unset_not_defined_hook(self):
+        self.stack = self._stack_create('signal_unset_not_defined_hook')
+        details = {'unset_hook': 'pre-update'}
+        ex = self.assertRaises(dispatcher.ExpectedException,
+                               self.eng.resource_signal,
+                               self.ctx,
+                               dict(self.stack.identifier()),
+                               'WebServerScaleDownPolicy',
+                               details)
+        msg = ('The "pre-update" hook is not defined on '
+               'AWSScalingPolicy "WebServerScaleDownPolicy"')
+        self.assertIn(msg, six.text_type(ex.exc_info[1]))
+        self.assertEqual(exception.InvalidBreakPointHook,
+                         ex.exc_info[0])
+
         self.m.VerifyAll()
 
     def test_signal_calls_metadata_update(self):
@@ -2256,7 +1412,7 @@ class StackServiceTest(common.HeatTestCase):
                                          self.stack.identifier()).AndReturn(s)
 
         self.m.StubOutWithMock(res.Resource, 'signal')
-        res.Resource.signal(mox.IgnoreArg()).AndReturn(None)
+        res.Resource.signal(mox.IgnoreArg(), False).AndReturn(None)
         self.m.StubOutWithMock(res.Resource, 'metadata_update')
         # this will be called once for the Random resource
         res.Resource.metadata_update().AndReturn(None)
@@ -2284,7 +1440,7 @@ class StackServiceTest(common.HeatTestCase):
                                          self.stack.identifier()).AndReturn(s)
 
         self.m.StubOutWithMock(res.Resource, 'signal')
-        res.Resource.signal(mox.IgnoreArg()).AndReturn(None)
+        res.Resource.signal(mox.IgnoreArg(), False).AndReturn(None)
         # this will never be called
         self.m.StubOutWithMock(res.Resource, 'metadata_update')
         self.m.ReplayAll()
@@ -2490,7 +1646,7 @@ class StackServiceTest(common.HeatTestCase):
         fake_stack.action = 'CREATE'
         fake_stack.id = 'foo'
         fake_stack.status = 'IN_PROGRESS'
-        fake_stack.state_set.return_value = None
+
         mock_stack_load.return_value = fake_stack
 
         fake_lock = mock.MagicMock()
@@ -2511,6 +1667,54 @@ class StackServiceTest(common.HeatTestCase):
                                                 stack=db_stack,
                                                 use_stored_context=True)
         mock_thread.start_with_acquired_lock.assert_called_once_with(
-            fake_stack, fake_lock, fake_stack.state_set, fake_stack.action,
-            fake_stack.FAILED, 'Engine went down during stack CREATE'
+            fake_stack, fake_lock,
+            self.eng.set_stack_and_resource_to_failed, fake_stack
         )
+
+    def test_set_stack_and_resource_to_failed(self):
+
+        def fake_stack():
+            stk = mock.MagicMock()
+            stk.action = 'CREATE'
+            stk.id = 'foo'
+            stk.status = 'IN_PROGRESS'
+            stk.FAILED = 'FAILED'
+
+            def mock_stack_state_set(a, s, reason):
+                stk.status = s
+                stk.action = a
+                stk.status_reason = reason
+
+            stk.state_set = mock_stack_state_set
+
+            return stk
+
+        def fake_stack_resource(name, action, status):
+            rs = mock.MagicMock()
+            rs.name = name
+            rs.action = action
+            rs.status = status
+            rs.IN_PROGRESS = 'IN_PROGRESS'
+            rs.FAILED = 'FAILED'
+
+            def mock_resource_state_set(a, s, reason='engine_down'):
+                rs.status = s
+                rs.action = a
+                rs.status_reason = reason
+
+            rs.state_set = mock_resource_state_set
+
+            return rs
+
+        test_stack = fake_stack()
+
+        test_stack.resources = {
+            'r1': fake_stack_resource('r1', 'UPDATE', 'COMPLETE'),
+            'r2': fake_stack_resource('r2', 'UPDATE', 'IN_PROGRESS'),
+            'r3': fake_stack_resource('r3', 'UPDATE', 'FAILED')}
+
+        self.eng.set_stack_and_resource_to_failed(test_stack)
+        self.assertEqual('FAILED', test_stack.status)
+        self.assertEqual('COMPLETE', test_stack.resources.get('r1').status)
+        self.assertEqual('FAILED', test_stack.resources.get('r2').status)
+        self.assertEqual('FAILED', test_stack.resources.get('r3').status)

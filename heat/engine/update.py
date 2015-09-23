@@ -14,9 +14,9 @@
 from oslo_log import log as logging
 import six
 
+from heat.common import exception
 from heat.common.i18n import _LI
 from heat.engine import dependencies
-from heat.engine import resource
 from heat.engine import scheduler
 from heat.objects import resource as resource_objects
 
@@ -24,9 +24,7 @@ LOG = logging.getLogger(__name__)
 
 
 class StackUpdate(object):
-    """
-    A Task to perform the update of an existing stack to a new template.
-    """
+    """A Task to perform the update of an existing stack to a new template."""
 
     def __init__(self, existing_stack, new_stack, previous_stack,
                  rollback=False, error_wait_time=None):
@@ -145,7 +143,7 @@ class StackUpdate(object):
             try:
                 yield self._update_in_place(existing_res,
                                             new_res)
-            except resource.UpdateReplace:
+            except exception.UpdateReplace:
                 pass
             else:
                 # Save updated resource definition to backup stack
@@ -198,11 +196,11 @@ class StackUpdate(object):
             self.existing_stack.remove_resource(res_name)
 
     def dependencies(self):
-        '''
-        Return a Dependencies object representing the dependencies between
-        update operations to move from an existing stack definition to a new
-        one.
-        '''
+        """Return a Dependencies object.
+
+        Dependencies object representing the dependencies between update
+        operations to move from an existing stack definition to a new one.
+        """
         existing_deps = self.existing_stack.dependencies
         new_deps = self.new_stack.dependencies
 
@@ -248,7 +246,7 @@ class StackUpdate(object):
                     current_res.update_template_diff_properties(updated_props,
                                                                 current_props)
                     updated_keys.append(key)
-            except resource.UpdateReplace:
+            except exception.UpdateReplace:
                 replaced_keys.append(key)
 
         return {

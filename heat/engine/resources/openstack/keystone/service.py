@@ -26,6 +26,8 @@ class KeystoneService(resource.Resource):
 
     default_client_name = 'keystone'
 
+    entity = 'services'
+
     PROPERTIES = (
         NAME, DESCRIPTION, TYPE
     ) = (
@@ -51,24 +53,24 @@ class KeystoneService(resource.Resource):
         )
     }
 
+    def client(self):
+        return super(KeystoneService, self).client().client
+
     def _create_service(self,
                         name,
                         type,
                         description=None):
-        return self.client().client.services.create(
+        return self.client().services.create(
             name=name,
             description=description,
             type=type)
-
-    def _delete_service(self, service_id):
-        return self.client().client.services.delete(service_id)
 
     def _update_service(self,
                         service_id,
                         new_name=None,
                         new_description=None,
                         new_type=None):
-        return self.client().client.services.update(
+        return self.client().services.update(
             service=service_id,
             name=new_name,
             description=new_description,
@@ -102,13 +104,6 @@ class KeystoneService(resource.Resource):
             new_description=description,
             new_type=type
         )
-
-    def handle_delete(self):
-        if self.resource_id is not None:
-            try:
-                self._delete_service(service_id=self.resource_id)
-            except Exception as ex:
-                self.client_plugin().ignore_not_found(ex)
 
 
 def resource_mapping():

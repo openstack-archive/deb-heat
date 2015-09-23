@@ -6,9 +6,9 @@
 #, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: heat 5.0.0.0b2.dev397\n"
+"Project-Id-Version: heat 5.0.0.0b4.dev19\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2015-07-29 06:18+0000\n"
+"POT-Creation-Date: 2015-09-05 06:03+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -16,4 +16,9 @@ msgstr ""
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.0\n"
+
+#: heat/cmd/engine.py:59
+#, python-format
+msgid "%s"
+msgstr ""
 

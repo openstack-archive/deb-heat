@@ -218,23 +218,20 @@ class ResourceGroupTest(common.HeatTestCase):
             "heat_template_version": "2015-04-30",
             "resources": {
                 "0": {
-                    "depends_on": [],
-                    "type": "OverwrittenFnGetRefIdType",
-                    "properties": {
-                        "foo": "baz"
-                    }
-                },
-                "1": {
-                    "depends_on": [],
                     "type": "OverwrittenFnGetRefIdType",
                     "properties": {
                         "foo": "bar"
+                    }
+                },
+                "1": {
+                    "type": "OverwrittenFnGetRefIdType",
+                    "properties": {
+                        "foo": "baz"
                     }
                 }
             }
         }
         resource_def = {
-            "depends_on": [],
             "type": "OverwrittenFnGetRefIdType",
             "properties": {
                 "foo": "baz"
@@ -245,21 +242,19 @@ class ResourceGroupTest(common.HeatTestCase):
         resg = resource_group.ResourceGroup('test', snip, stack)
         resg._nested = get_fake_nested_stack(['0', '1'])
         resg._build_resource_definition = mock.Mock(return_value=resource_def)
-        self.assertEqual(expect, resg._assemble_for_rolling_update(['0'], []))
+        self.assertEqual(expect, resg._assemble_for_rolling_update(2, 1))
 
     def test_assemble_nested_rolling_update_none(self):
         expect = {
             "heat_template_version": "2015-04-30",
             "resources": {
                 "0": {
-                    "depends_on": [],
                     "type": "OverwrittenFnGetRefIdType",
                     "properties": {
                         "foo": "bar"
                     }
                 },
                 "1": {
-                    "depends_on": [],
                     "type": "OverwrittenFnGetRefIdType",
                     "properties": {
                         "foo": "bar"
@@ -268,7 +263,6 @@ class ResourceGroupTest(common.HeatTestCase):
             }
         }
         resource_def = {
-            "depends_on": [],
             "type": "OverwrittenFnGetRefIdType",
             "properties": {
                 "foo": "baz"
@@ -279,7 +273,7 @@ class ResourceGroupTest(common.HeatTestCase):
         resg = resource_group.ResourceGroup('test', snip, stack)
         resg._nested = get_fake_nested_stack(['0', '1'])
         resg._build_resource_definition = mock.Mock(return_value=resource_def)
-        self.assertEqual(expect, resg._assemble_for_rolling_update([], []))
+        self.assertEqual(expect, resg._assemble_for_rolling_update(2, 0))
 
     def test_index_var(self):
         stack = utils.parse_stack(template_repl)
@@ -453,8 +447,20 @@ class ResourceGroupTest(common.HeatTestCase):
         snip = stack.t.resource_definitions(stack)['group1']
         resgrp = resource_group.ResourceGroup('test', snip, stack)
         resgrp.create_with_template = mock.Mock(return_value=None)
-        resgrp.handle_create()
-        self.assertEqual(1, resgrp.create_with_template.call_count)
+        self.patchobject(scheduler.TaskRunner, 'start')
+        checkers = resgrp.handle_create()
+        self.assertEqual(1, len(checkers))
+
+    def test_handle_create_with_batching(self):
+        stack = utils.parse_stack(tmpl_with_default_updt_policy())
+        snip = stack.t.resource_definitions(stack)['group1']
+        snip['UpdatePolicy']['batch_create'] = {'max_batch_size': 3}
+        snip['Properties']['count'] = 10
+        resgrp = resource_group.ResourceGroup('test', snip, stack)
+        resgrp.create_with_template = mock.Mock(return_value=None)
+        self.patchobject(scheduler.TaskRunner, 'start')
+        checkers = resgrp.handle_create()
+        self.assertEqual(4, len(checkers))
 
     def test_update_in_failed(self):
         stack = utils.parse_stack(template2)
@@ -463,10 +469,9 @@ class ResourceGroupTest(common.HeatTestCase):
         resgrp.state_set('CREATE', 'FAILED')
         resgrp._assemble_nested = mock.Mock(return_value='tmpl')
         resgrp.properties.data[resgrp.COUNT] = 2
-        resgrp._assemble_nested_for_size = mock.Mock(return_value=None)
         self.patchobject(scheduler.TaskRunner, 'start')
         resgrp.handle_update(snip, None, None)
-        resgrp._assemble_nested_for_size.assert_called_once_with(2)
+        self.assertTrue(resgrp._assemble_nested.called)
 
     def test_handle_delete(self):
         stack = utils.parse_stack(template2)
@@ -480,11 +485,11 @@ class ResourceGroupTest(common.HeatTestCase):
         stack = utils.parse_stack(template2)
         snip = stack.t.resource_definitions(stack)['group1']
         resgrp = resource_group.ResourceGroup('test', snip, stack)
-        resgrp._assemble_nested_for_size = mock.Mock(return_value=None)
+        resgrp._assemble_nested = mock.Mock(return_value=None)
         resgrp.properties.data[resgrp.COUNT] = 5
         self.patchobject(scheduler.TaskRunner, 'start')
         resgrp.handle_update(snip, None, None)
-        resgrp._assemble_nested_for_size.assert_called_once_with(5)
+        self.assertTrue(resgrp._assemble_nested.called)
 
 
 class ResourceGroupBlackList(common.HeatTestCase):
@@ -759,28 +764,28 @@ class ReplaceTest(common.HeatTestCase):
     scenarios = [
         ('1', dict(min_in_service=0, count=2,
                    existing=['0', '1'], black_listed=['0'],
-                   batch_size=1, pause_sec=0, tasks=1)),
+                   batch_size=1, pause_sec=0, tasks=2)),
         ('2', dict(min_in_service=3, count=2,
                    existing=['0', '1'], black_listed=[],
-                   batch_size=2, pause_sec=0, tasks=2)),
+                   batch_size=2, pause_sec=0, tasks=3)),
         ('3', dict(min_in_service=3, count=2,
                    existing=['0', '1'], black_listed=['0'],
-                   batch_size=2, pause_sec=0, tasks=2)),
+                   batch_size=2, pause_sec=0, tasks=3)),
         ('4', dict(min_in_service=3, count=2,
                    existing=['0', '1', '2', '3'], black_listed=['2', '3'],
-                   batch_size=1, pause_sec=0, tasks=3)),
+                   batch_size=1, pause_sec=0, tasks=4)),
         ('5', dict(min_in_service=2, count=2,
                    existing=['0', '1', '2', '3'], black_listed=[],
-                   batch_size=2, pause_sec=0, tasks=1)),
+                   batch_size=2, pause_sec=0, tasks=2)),
         ('6', dict(min_in_service=2, count=3,
                    existing=['0', '1'], black_listed=['0', '1'],
-                   batch_size=2, pause_sec=0, tasks=0)),
+                   batch_size=2, pause_sec=0, tasks=2)),
         ('7', dict(min_in_service=0, count=5,
                    existing=['0', '1'], black_listed=[],
-                   batch_size=1, pause_sec=0, tasks=2)),
+                   batch_size=1, pause_sec=0, tasks=5)),
         ('8', dict(min_in_service=0, count=5,
                    existing=['0', '1'], black_listed=['0'],
-                   batch_size=1, pause_sec=0, tasks=1)),
+                   batch_size=1, pause_sec=0, tasks=5)),
         ('9', dict(min_in_service=0, count=3,
                    existing=['0', '1', '2', '3', '4', '5'],
                    black_listed=['0'],
@@ -874,7 +879,7 @@ class RollingUpdatePolicyTest(common.HeatTestCase):
         tmpl_batch_sz = int(tmpl_policy['max_batch_size'])
         grp = stack['group1']
         self.assertTrue(grp.update_policy)
-        self.assertEqual(1, len(grp.update_policy))
+        self.assertEqual(2, len(grp.update_policy))
         self.assertIn('rolling_update', grp.update_policy)
         policy = grp.update_policy['rolling_update']
         self.assertTrue(policy and len(policy) > 0)
@@ -888,7 +893,7 @@ class RollingUpdatePolicyTest(common.HeatTestCase):
         stack.validate()
         grp = stack['group1']
         self.assertTrue(grp.update_policy)
-        self.assertEqual(1, len(grp.update_policy))
+        self.assertEqual(2, len(grp.update_policy))
         self.assertIn('rolling_update', grp.update_policy)
         policy = grp.update_policy['rolling_update']
         self.assertTrue(policy and len(policy) > 0)
@@ -902,17 +907,6 @@ class RollingUpdatePolicyTest(common.HeatTestCase):
         error = self.assertRaises(
             exception.StackValidationFailed, stack.validate)
         self.assertIn("foo", six.text_type(error))
-
-    def test_parse_with_max_pausetime_in_update_policy(self):
-        tmpl = tmpl_with_default_updt_policy()
-        group = tmpl['resources']['group1']
-        policy = group['update_policy']['rolling_update']
-        policy['pause_time'] = '7200'
-        stack = utils.parse_stack(tmpl)
-        error = self.assertRaises(
-            exception.StackValidationFailed, stack.validate)
-        self.assertIn("Maximum pause_time allowed is 1hr(3600s), "
-                      "provided 7200 seconds.", six.text_type(error))
 
 
 class RollingUpdatePolicyDiffTest(common.HeatTestCase):
@@ -1009,38 +1003,35 @@ class RollingUpdateTest(common.HeatTestCase):
             properties=updated_grp_json['Properties'],
             update_policy=updated_policy)
         self.current_grp._replace = mock.Mock(return_value=[])
-        self.current_grp._assemble_nested_for_size = mock.Mock()
+        self.current_grp._assemble_nested = mock.Mock()
         self.patchobject(scheduler.TaskRunner, 'start')
         self.current_grp.handle_update(update_snippet, tmpl_diff, prop_diff)
 
     def test_update_without_policy_prop_diff(self):
         self.check_with_update(with_diff=True)
-        self.current_grp._assemble_nested_for_size.assert_called_once_with(2)
+        self.assertTrue(self.current_grp._assemble_nested.called)
 
     def test_update_with_policy_prop_diff(self):
         self.check_with_update(with_policy=True, with_diff=True)
         self.current_grp._replace.assert_called_once_with(1, 2, 1)
-        self.current_grp._assemble_nested_for_size.assert_called_once_with(2)
+        self.assertTrue(self.current_grp._assemble_nested.called)
 
     def test_update_time_not_sufficient(self):
-        efft_capacity, efft_bat_sz, pause_sec = 5, 2, 100
         current = copy.deepcopy(template)
         self.stack = utils.parse_stack(current)
         self.current_grp = self.stack['group1']
         self.stack.timeout_secs = mock.Mock(return_value=200)
         err = self.assertRaises(ValueError, self.current_grp._update_timeout,
-                                efft_capacity, efft_bat_sz, pause_sec)
+                                3, 100)
         self.assertIn('The current UpdatePolicy will result in stack update '
                       'timeout.', six.text_type(err))
 
     def test_update_time_sufficient(self):
-        efft_capacity, efft_bat_sz, pause_sec = 5, 2, 100
         current = copy.deepcopy(template)
         self.stack = utils.parse_stack(current)
         self.current_grp = self.stack['group1']
         self.stack.timeout_secs = mock.Mock(return_value=400)
-        self.assertEqual(200, self.current_grp._update_timeout(
-            efft_capacity, efft_bat_sz, pause_sec))
+        self.assertEqual(200, self.current_grp._update_timeout(3, 100))
 
 
 class TestUtils(common.HeatTestCase):
@@ -1066,3 +1057,308 @@ class TestUtils(common.HeatTestCase):
         resgrp._name_blacklist = mock.Mock(return_value=set(self.black_listed))
         rcount = resgrp._count_black_listed()
         self.assertEqual(self.count, rcount)
+
+
+class TestGetBatches(common.HeatTestCase):
+
+    scenarios = [
+        ('4_4_1_0', dict(targ_cap=4, init_cap=4, bat_size=1, min_serv=0,
+                         batches=[
+                             (4, 1, ['4']),
+                             (4, 1, ['3']),
+                             (4, 1, ['2']),
+                             (4, 1, ['1']),
+                         ])),
+        ('4_4_1_4', dict(targ_cap=4, init_cap=4, bat_size=1, min_serv=4,
+                         batches=[
+                             (5, 1, ['5']),
+                             (5, 1, ['4']),
+                             (5, 1, ['3']),
+                             (5, 1, ['2']),
+                             (5, 1, ['1']),
+                             (4, 0, []),
+                         ])),
+        ('4_4_1_5', dict(targ_cap=4, init_cap=4, bat_size=1, min_serv=5,
+                         batches=[
+                             (5, 1, ['5']),
+                             (5, 1, ['4']),
+                             (5, 1, ['3']),
+                             (5, 1, ['2']),
+                             (5, 1, ['1']),
+                             (4, 0, []),
+                         ])),
+        ('4_4_2_0', dict(targ_cap=4, init_cap=4, bat_size=2, min_serv=0,
+                         batches=[
+                             (4, 2, ['4', '3']),
+                             (4, 2, ['2', '1']),
+                         ])),
+        ('4_4_2_4', dict(targ_cap=4, init_cap=4, bat_size=2, min_serv=4,
+                         batches=[
+                             (6, 2, ['6', '5']),
+                             (6, 2, ['4', '3']),
+                             (6, 2, ['2', '1']),
+                             (4, 0, []),
+                         ])),
+        ('5_5_2_0', dict(targ_cap=5, init_cap=5, bat_size=2, min_serv=0,
+                         batches=[
+                             (5, 2, ['5', '4']),
+                             (5, 2, ['3', '2']),
+                             (5, 1, ['1']),
+                         ])),
+        ('5_5_2_4', dict(targ_cap=5, init_cap=5, bat_size=2, min_serv=4,
+                         batches=[
+                             (6, 2, ['6', '5']),
+                             (6, 2, ['4', '3']),
+                             (6, 2, ['2', '1']),
+                             (5, 0, []),
+                         ])),
+        ('3_3_2_0', dict(targ_cap=3, init_cap=3, bat_size=2, min_serv=0,
+                         batches=[
+                             (3, 2, ['3', '2']),
+                             (3, 1, ['1']),
+                         ])),
+        ('3_3_2_4', dict(targ_cap=3, init_cap=3, bat_size=2, min_serv=4,
+                         batches=[
+                             (5, 2, ['5', '4']),
+                             (5, 2, ['3', '2']),
+                             (4, 1, ['1']),
+                             (3, 0, []),
+                         ])),
+        ('4_4_4_0', dict(targ_cap=4, init_cap=4, bat_size=4, min_serv=0,
+                         batches=[
+                             (4, 4, ['4', '3', '2', '1']),
+                         ])),
+        ('4_4_5_0', dict(targ_cap=4, init_cap=4, bat_size=5, min_serv=0,
+                         batches=[
+                             (4, 4, ['4', '3', '2', '1']),
+                         ])),
+        ('4_4_4_1', dict(targ_cap=4, init_cap=4, bat_size=4, min_serv=1,
+                         batches=[
+                             (5, 4, ['5', '4', '3', '2']),
+                             (4, 1, ['1']),
+                         ])),
+        ('4_4_6_1', dict(targ_cap=4, init_cap=4, bat_size=6, min_serv=1,
+                         batches=[
+                             (5, 4, ['5', '4', '3', '2']),
+                             (4, 1, ['1']),
+                         ])),
+        ('4_4_4_2', dict(targ_cap=4, init_cap=4, bat_size=4, min_serv=2,
+                         batches=[
+                             (6, 4, ['6', '5', '4', '3']),
+                             (4, 2, ['2', '1']),
+                         ])),
+        ('4_4_4_4', dict(targ_cap=4, init_cap=4, bat_size=4, min_serv=4,
+                         batches=[
+                             (8, 4, ['8', '7', '6', '5']),
+                             (8, 4, ['4', '3', '2', '1']),
+                             (4, 0, []),
+                         ])),
+        ('4_4_5_6', dict(targ_cap=4, init_cap=4, bat_size=5, min_serv=6,
+                         batches=[
+                             (8, 4, ['8', '7', '6', '5']),
+                             (8, 4, ['4', '3', '2', '1']),
+                             (4, 0, []),
+                         ])),
+
+        ('4_7_1_0', dict(targ_cap=4, init_cap=7, bat_size=1, min_serv=0,
+                         batches=[
+                             (4, 1, ['4']),
+                             (4, 1, ['3']),
+                             (4, 1, ['2']),
+                             (4, 1, ['1']),
+                         ])),
+        ('4_7_1_4', dict(targ_cap=4, init_cap=7, bat_size=1, min_serv=4,
+                         batches=[
+                             (5, 1, ['4']),
+                             (5, 1, ['3']),
+                             (5, 1, ['2']),
+                             (5, 1, ['1']),
+                             (4, 0, []),
+                         ])),
+        ('4_7_1_5', dict(targ_cap=4, init_cap=7, bat_size=1, min_serv=5,
+                         batches=[
+                             (5, 1, ['4']),
+                             (5, 1, ['3']),
+                             (5, 1, ['2']),
+                             (5, 1, ['1']),
+                             (4, 0, []),
+                         ])),
+        ('4_7_2_0', dict(targ_cap=4, init_cap=7, bat_size=2, min_serv=0,
+                         batches=[
+                             (4, 2, ['4', '3']),
+                             (4, 2, ['2', '1']),
+                         ])),
+        ('4_7_2_4', dict(targ_cap=4, init_cap=7, bat_size=2, min_serv=4,
+                         batches=[
+                             (6, 2, ['4', '3']),
+                             (6, 2, ['2', '1']),
+                             (4, 0, []),
+                         ])),
+        ('5_7_2_0', dict(targ_cap=5, init_cap=7, bat_size=2, min_serv=0,
+                         batches=[
+                             (5, 2, ['5', '4']),
+                             (5, 2, ['3', '2']),
+                             (5, 1, ['1']),
+                         ])),
+        ('5_7_2_4', dict(targ_cap=5, init_cap=7, bat_size=2, min_serv=4,
+                         batches=[
+                             (6, 2, ['5', '4']),
+                             (6, 2, ['3', '2']),
+                             (5, 1, ['1']),
+                         ])),
+        ('4_7_4_4', dict(targ_cap=4, init_cap=7, bat_size=4, min_serv=4,
+                         batches=[
+                             (8, 4, ['8', '4', '3', '2']),
+                             (5, 1, ['1']),
+                             (4, 0, []),
+                         ])),
+        ('4_7_5_6', dict(targ_cap=4, init_cap=7, bat_size=5, min_serv=6,
+                         batches=[
+                             (8, 4, ['8', '4', '3', '2']),
+                             (5, 1, ['1']),
+                             (4, 0, []),
+                         ])),
+
+        ('6_4_1_0', dict(targ_cap=6, init_cap=4, bat_size=1, min_serv=0,
+                         batches=[
+                             (5, 1, ['5']),
+                             (6, 1, ['6']),
+                             (6, 1, ['4']),
+                             (6, 1, ['3']),
+                             (6, 1, ['2']),
+                             (6, 1, ['1']),
+                         ])),
+        ('6_4_1_4', dict(targ_cap=6, init_cap=4, bat_size=1, min_serv=4,
+                         batches=[
+                             (5, 1, ['5']),
+                             (6, 1, ['6']),
+                             (6, 1, ['4']),
+                             (6, 1, ['3']),
+                             (6, 1, ['2']),
+                             (6, 1, ['1']),
+                         ])),
+        ('6_4_1_5', dict(targ_cap=6, init_cap=4, bat_size=1, min_serv=5,
+                         batches=[
+                             (5, 1, ['5']),
+                             (6, 1, ['6']),
+                             (6, 1, ['4']),
+                             (6, 1, ['3']),
+                             (6, 1, ['2']),
+                             (6, 1, ['1']),
+                         ])),
+        ('6_4_2_0', dict(targ_cap=6, init_cap=4, bat_size=2, min_serv=0,
+                         batches=[
+                             (6, 2, ['5', '6']),
+                             (6, 2, ['4', '3']),
+                             (6, 2, ['2', '1']),
+                         ])),
+        ('6_4_2_4', dict(targ_cap=6, init_cap=4, bat_size=2, min_serv=4,
+                         batches=[
+                             (6, 2, ['5', '6']),
+                             (6, 2, ['4', '3']),
+                             (6, 2, ['2', '1']),
+                         ])),
+        ('6_5_2_0', dict(targ_cap=6, init_cap=5, bat_size=2, min_serv=0,
+                         batches=[
+                             (6, 2, ['6', '5']),
+                             (6, 2, ['4', '3']),
+                             (6, 2, ['2', '1']),
+                         ])),
+        ('6_5_2_4', dict(targ_cap=6, init_cap=5, bat_size=2, min_serv=4,
+                         batches=[
+                             (6, 2, ['6', '5']),
+                             (6, 2, ['4', '3']),
+                             (6, 2, ['2', '1']),
+                         ])),
+        ('6_3_2_0', dict(targ_cap=6, init_cap=3, bat_size=2, min_serv=0,
+                         batches=[
+                             (5, 2, ['4', '5']),
+                             (6, 2, ['6', '3']),
+                             (6, 2, ['2', '1']),
+                         ])),
+        ('6_3_2_4', dict(targ_cap=6, init_cap=3, bat_size=2, min_serv=4,
+                         batches=[
+                             (5, 2, ['4', '5']),
+                             (6, 2, ['6', '3']),
+                             (6, 2, ['2', '1']),
+                         ])),
+        ('6_4_4_0', dict(targ_cap=6, init_cap=4, bat_size=4, min_serv=0,
+                         batches=[
+                             (6, 4, ['5', '6', '4', '3']),
+                             (6, 2, ['2', '1']),
+                         ])),
+        ('6_4_5_0', dict(targ_cap=6, init_cap=4, bat_size=5, min_serv=0,
+                         batches=[
+                             (6, 5, ['5', '6', '4', '3', '2']),
+                             (6, 1, ['1']),
+                         ])),
+        ('6_4_4_1', dict(targ_cap=6, init_cap=4, bat_size=4, min_serv=1,
+                         batches=[
+                             (6, 4, ['5', '6', '4', '3']),
+                             (6, 2, ['2', '1']),
+                         ])),
+        ('6_4_6_1', dict(targ_cap=6, init_cap=4, bat_size=6, min_serv=1,
+                         batches=[
+                             (7, 6, ['5', '6', '7', '4', '3', '2']),
+                             (6, 1, ['1']),
+                         ])),
+        ('6_4_4_2', dict(targ_cap=6, init_cap=4, bat_size=4, min_serv=2,
+                         batches=[
+                             (6, 4, ['5', '6', '4', '3']),
+                             (6, 2, ['2', '1']),
+                         ])),
+        ('6_4_4_4', dict(targ_cap=6, init_cap=4, bat_size=4, min_serv=4,
+                         batches=[
+                             (8, 4, ['8', '7', '6', '5']),
+                             (8, 4, ['4', '3', '2', '1']),
+                             (6, 0, []),
+                         ])),
+        ('6_4_5_6', dict(targ_cap=6, init_cap=4, bat_size=5, min_serv=6,
+                         batches=[
+                             (9, 5, ['9', '8', '7', '6', '5']),
+                             (10, 4, ['10', '4', '3', '2']),
+                             (7, 1, ['1']),
+                             (6, 0, []),
+                         ])),
+    ]
+
+    def setUp(self):
+        super(TestGetBatches, self).setUp()
+
+        self.stack = utils.parse_stack(template)
+        self.grp = self.stack['group1']
+        self.grp._name_blacklist = mock.Mock(return_value={'0'})
+
+    def test_get_batches(self):
+        batches = list(self.grp._get_batches(self.targ_cap,
+                                             self.init_cap,
+                                             self.bat_size,
+                                             self.min_serv))
+        self.assertEqual([(s, u) for s, u, n in self.batches], batches)
+
+    def test_assemble(self):
+        resources = [(str(i), False) for i in range(self.init_cap + 1)]
+
+        self.grp.get_size = mock.Mock(return_value=self.targ_cap)
+        self.grp._build_resource_definition = mock.Mock(return_value=True)
+        self.grp._get_resources = mock.Mock(return_value=resources)
+        self.grp._do_prop_replace = mock.Mock(side_effect=lambda g, d: d)
+
+        all_updated_names = set()
+
+        for size, max_upd, names in self.batches:
+
+            template = self.grp._assemble_for_rolling_update(size,
+                                                             max_upd,
+                                                             names)
+            res_dict = template['resources']
+
+            expected_names = set(map(str, range(1, size + 1)))
+            self.assertEqual(expected_names, set(res_dict))
+
+            all_updated_names &= expected_names
+            all_updated_names |= set(names)
+            updated = set(n for n, v in res_dict.items() if v is True)
+            self.assertEqual(all_updated_names, updated)
+
+            resources[:] = sorted(res_dict.items(), key=lambda i: int(i[0]))

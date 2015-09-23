@@ -22,6 +22,7 @@ from heat.common import exception
 from heat.common import template_format
 from heat.engine.clients.os import cinder
 from heat.engine.clients.os import glance
+from heat.engine.clients.os import nova
 from heat.engine.resources.openstack.cinder import volume as c_vol
 from heat.engine.resources import scheduler_hints as sh
 from heat.engine import rsrc_defn
@@ -298,6 +299,40 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
 
         self.create_volume(self.t, stack, 'volume')
         rsrc = self.create_attachment(self.t, stack, 'attachment')
+        scheduler.TaskRunner(rsrc.delete)()
+
+        self.m.VerifyAll()
+
+    def test_cinder_attachment_no_mountpoint(self):
+        stack_name = 'test_cvolume_attach_stack'
+
+        self._mock_create_volume(vt_base.FakeVolume('creating'), stack_name)
+        self._mock_create_server_volume_script(vt_base.FakeVolume('attaching'),
+                                               device=None)
+        self.stub_VolumeConstraint_validate()
+
+        # delete script
+        fva = vt_base.FakeVolume('in-use')
+        self.fc.volumes.get_server_volume(u'WikiDatabase',
+                                          'vol-123').AndReturn(fva)
+        self.cinder_fc.volumes.get(fva.id).AndReturn(fva)
+        self.fc.volumes.delete_server_volume(
+            'WikiDatabase', 'vol-123').MultipleTimes().AndReturn(None)
+        self.cinder_fc.volumes.get(fva.id).AndReturn(
+            vt_base.FakeVolume('available'))
+        self.fc.volumes.get_server_volume(u'WikiDatabase',
+                                          'vol-123').AndReturn(fva)
+        self.fc.volumes.get_server_volume(
+            u'WikiDatabase', 'vol-123').AndRaise(fakes_nova.fake_exception())
+
+        self.m.ReplayAll()
+
+        self.t['resources']['attachment']['properties']['mountpoint'] = ''
+        stack = utils.parse_stack(self.t, stack_name=stack_name)
+
+        self.create_volume(self.t, stack, 'volume')
+        rsrc = self.create_attachment(self.t, stack, 'attachment')
+
         scheduler.TaskRunner(rsrc.delete)()
 
         self.m.VerifyAll()
@@ -715,7 +750,8 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
 
         self._mock_create_volume(vt_base.FakeVolume('creating'), stack_name)
         self._mock_create_server_volume_script(
-            vt_base.FakeVolume('attaching'))
+            vt_base.FakeVolume('attaching'),
+            device=u'/dev/vdc')
         self.stub_VolumeConstraint_validate()
 
         # delete script
@@ -734,7 +770,7 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
 
         # attach script
         self._mock_create_server_volume_script(vt_base.FakeVolume('attaching'),
-                                               device=u'/dev/vdd',
+                                               device=None,
                                                update=True)
 
         self.m.ReplayAll()
@@ -745,7 +781,7 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
         rsrc = self.create_attachment(self.t, stack, 'attachment')
 
         props = copy.deepcopy(rsrc.properties.data)
-        props['mountpoint'] = '/dev/vdd'
+        props['mountpoint'] = ''
         props['volume_id'] = 'vol-123'
         after = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(), props)
         scheduler.TaskRunner(rsrc.update, after)()
@@ -853,6 +889,24 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
 
         self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
         self.m.VerifyAll()
+
+    def test_delete_attachment_has_not_been_created(self):
+        stack_name = 'test_delete_attachment_has_not_been_created'
+        stack = utils.parse_stack(self.t, stack_name=stack_name)
+        resource_defn = stack.t.resource_definitions(stack)
+
+        att_rsrc = c_vol.CinderVolumeAttachment(
+            'test_attachment',
+            resource_defn['attachment'],
+            stack)
+        att_rsrc.state_set(att_rsrc.UPDATE, att_rsrc.COMPLETE)
+        self.assertIsNone(att_rsrc.resource_id)
+        # assert even not to create the novaclient instance
+        nc = self.patchobject(nova.NovaClientPlugin, '_create')
+
+        scheduler.TaskRunner(att_rsrc.delete)()
+        self.assertEqual(0, nc.call_count)
+        self.assertEqual((att_rsrc.DELETE, att_rsrc.COMPLETE), att_rsrc.state)
 
     def test_cinder_create_with_scheduler_hints(self):
         fv = vt_base.FakeVolume('creating')

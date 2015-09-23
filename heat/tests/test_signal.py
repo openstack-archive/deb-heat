@@ -21,7 +21,6 @@ from six.moves.urllib import parse as urlparse
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import stack as parser
 from heat.engine import template
@@ -521,7 +520,7 @@ class SignalTest(common.HeatTestCase):
         self.m.StubOutWithMock(generic_resource.SignalResource,
                                'handle_signal')
         generic_resource.SignalResource.handle_signal(test_d).AndRaise(
-            resource.NoActionRequired())
+            exception.NoActionRequired())
 
         # _add_event should not be called.
         self.m.StubOutWithMock(generic_resource.SignalResource,
@@ -619,9 +618,7 @@ class SignalTest(common.HeatTestCase):
 
         self.m.VerifyAll()
 
-    def test_signal_reception_wrong_state(self):
-        # assert that we get the correct exception when calling a
-        # resource.signal() that is in having a destructive action.
+    def _test_signal_not_supported_action(self, action='DELETE'):
         self.stack = self.create_stack()
 
         self.m.ReplayAll()
@@ -630,13 +627,24 @@ class SignalTest(common.HeatTestCase):
         rsrc = self.stack['signal_handler']
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
         # manually override the action to DELETE
-        rsrc.action = rsrc.DELETE
+        rsrc.action = action
 
         err_metadata = {'Data': 'foo', 'Status': 'SUCCESS', 'UniqueId': '123'}
-        self.assertRaises(exception.ResourceFailure, rsrc.signal,
-                          details=err_metadata)
-
+        msg = 'Signal resource during %s is not supported.' % action
+        exc = self.assertRaises(exception.NotSupported, rsrc.signal,
+                                details=err_metadata)
+        self.assertEqual(msg, six.text_type(exc))
         self.m.VerifyAll()
+
+    def test_signal_in_delete_state(self):
+        # assert that we get the correct exception when calling a
+        # resource.signal() that is in delete action.
+        self._test_signal_not_supported_action()
+
+    def test_signal_in_suspend_state(self):
+        # assert that we get the correct exception when calling a
+        # resource.signal() that is in suspend action.
+        self._test_signal_not_supported_action(action='SUSPEND')
 
     def test_signal_reception_failed_call(self):
         # assert that we get the correct exception from resource.signal()

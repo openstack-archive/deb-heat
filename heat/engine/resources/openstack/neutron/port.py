@@ -12,14 +12,15 @@
 #    under the License.
 
 from oslo_log import log as logging
+from oslo_serialization import jsonutils
 import six
 
+from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LW
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
-from heat.engine import resource
 from heat.engine.resources.openstack.neutron import neutron
 from heat.engine.resources.openstack.neutron import subnet
 from heat.engine import support
@@ -415,7 +416,7 @@ class Port(neutron.NeutronResource):
                       prev_resource, check_init_complete=True):
 
         if after_props.get(self.REPLACEMENT_POLICY) == 'REPLACE_ALWAYS':
-            raise resource.UpdateReplace(self.name)
+            raise exception.UpdateReplace(self.name)
 
         return super(Port, self)._needs_update(
             after, before, after_props, before_props, prev_resource,
@@ -431,6 +432,25 @@ class Port(neutron.NeutronResource):
     def check_update_complete(self, *args):
         attributes = self._show_resource()
         return self.is_built(attributes)
+
+    def prepare_for_replace(self):
+        # store port fixed_ips for restoring after failed update
+        fixed_ips = self._show_resource().get('fixed_ips', [])
+        self.data_set('port_fip', jsonutils.dumps(fixed_ips))
+        # reset fixed_ips for this port by setting fixed_ips to []
+        props = {'fixed_ips': []}
+        self.client().update_port(self.resource_id, {'port': props})
+
+    def restore_after_rollback(self):
+        old_port = self.stack._backup_stack().resources.get(self.name)
+        fixed_ips = old_port.data().get('port_fip', [])
+        # restore fixed_ips for this port by setting fixed_ips to []
+        props = {'fixed_ips': []}
+        old_props = {'fixed_ips': jsonutils.loads(fixed_ips)}
+        # remove ip from new port
+        self.client().update_port(self.resource_id, {'port': props})
+        # restore ip for old port
+        self.client().update_port(old_port.resource_id, {'port': old_props})
 
 
 def resource_mapping():

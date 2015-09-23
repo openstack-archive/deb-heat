@@ -22,7 +22,6 @@ from heat.engine import attributes
 from heat.engine.clients import progress
 from heat.engine import constraints
 from heat.engine import properties
-from heat.engine import resource
 from heat.engine.resources import scheduler_hints as sh
 from heat.engine.resources import volume_base as vb
 from heat.engine import support
@@ -305,7 +304,7 @@ class CinderVolume(vb.BaseVolume, sh.SchedulerHintsMixin):
             LOG.info(_LI("Resize failed: Volume %(vol)s "
                          "is in %(status)s state."),
                      {'vol': vol.id, 'status': vol.status})
-            raise resource.ResourceUnknownStatus(
+            raise exception.ResourceUnknownStatus(
                 resource_status=vol.status,
                 result=_('Volume resize failed'))
 
@@ -335,7 +334,7 @@ class CinderVolume(vb.BaseVolume, sh.SchedulerHintsMixin):
         if vol.status != 'available':
             LOG.info(_LI("Restore failed: Volume %(vol)s is in %(status)s "
                          "state."), {'vol': vol.id, 'status': vol.status})
-            raise resource.ResourceUnknownStatus(
+            raise exception.ResourceUnknownStatus(
                 resource_status=vol.status,
                 result=_('Volume backup restore failed'))
 
@@ -640,9 +639,11 @@ class CinderVolumeAttachment(vb.BaseVolumeAttachment):
             if self.VOLUME_ID in prop_diff:
                 volume_id = prop_diff.get(self.VOLUME_ID)
 
-            device = self.properties[self.DEVICE]
+            device = (self.properties[self.DEVICE]
+                      if self.properties[self.DEVICE] else None)
             if self.DEVICE in prop_diff:
-                device = prop_diff.get(self.DEVICE)
+                device = (prop_diff[self.DEVICE]
+                          if prop_diff[self.DEVICE] else None)
 
             if self.INSTANCE_ID in prop_diff:
                 server_id = prop_diff.get(self.INSTANCE_ID)

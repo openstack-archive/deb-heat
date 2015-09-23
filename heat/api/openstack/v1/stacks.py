@@ -66,6 +66,7 @@ class InstantiationData(object):
         to distinguish.
         """
         self.data = data
+        self.patch = patch
         if patch:
             self.data[rpc_api.PARAM_EXISTING] = True
 
@@ -92,6 +93,7 @@ class InstantiationData(object):
         Get template file contents, either inline, from stack adopt data or
         from a URL, in JSON or YAML format.
         """
+        template_data = None
         if rpc_api.PARAM_ADOPT_STACK_DATA in self.data:
             adopt_data = self.data[rpc_api.PARAM_ADOPT_STACK_DATA]
             try:
@@ -112,8 +114,12 @@ class InstantiationData(object):
             except IOError as ex:
                 err_reason = _('Could not retrieve template: %s') % ex
                 raise exc.HTTPBadRequest(err_reason)
-        else:
-            raise exc.HTTPBadRequest(_("No template specified"))
+
+        if template_data is None:
+            if self.patch:
+                return None
+            else:
+                raise exc.HTTPBadRequest(_("No template specified"))
 
         with self.parse_error_check('Template'):
             return template_format.parse(template_data)
@@ -186,6 +192,8 @@ class StackController(object):
 
     def _index(self, req, tenant_safe=True):
         filter_whitelist = {
+            # usage of keys in this list are not encouraged, please use
+            # rpc_api.STACK_KEYS instead
             'id': 'mixed',
             'status': 'mixed',
             'name': 'mixed',
@@ -208,7 +216,25 @@ class StackController(object):
             'not_tags_any': 'single',
         }
         params = util.get_allowed_params(req.params, whitelist)
-        filter_params = util.get_allowed_params(req.params, filter_whitelist)
+        stack_keys = dict.fromkeys(rpc_api.STACK_KEYS, 'mixed')
+        unsupported = (
+            rpc_api.STACK_ID,  # not user visible
+            rpc_api.STACK_CAPABILITIES,  # not supported
+            rpc_api.STACK_CREATION_TIME,  # don't support timestamp
+            rpc_api.STACK_DELETION_TIME,  # don't support timestamp
+            rpc_api.STACK_DESCRIPTION,  # not supported
+            rpc_api.STACK_NOTIFICATION_TOPICS,  # not supported
+            rpc_api.STACK_OUTPUTS,  # not in database
+            rpc_api.STACK_PARAMETERS,  # not in this table
+            rpc_api.STACK_TAGS,  # tags query following a specific guideline
+            rpc_api.STACK_TMPL_DESCRIPTION,  # not supported
+            rpc_api.STACK_UPDATED_TIME,  # don't support timestamp
+        )
+        for key in unsupported:
+            stack_keys.pop(key)
+        # downward compatibility
+        stack_keys.update(filter_whitelist)
+        filter_params = util.get_allowed_params(req.params, stack_keys)
 
         show_deleted = False
         p_name = rpc_api.PARAM_SHOW_DELETED
@@ -329,13 +355,13 @@ class StackController(object):
         """
 
         data = InstantiationData(body)
-
+        args = self.prepare_args(data)
         result = self.rpc_client.preview_stack(req.context,
                                                data.stack_name(),
                                                data.template(),
                                                data.environment(),
                                                data.files(),
-                                               data.args())
+                                               args)
 
         formatted_stack = stacks_view.format_stack(req, result)
         return {'stack': formatted_stack}
@@ -509,9 +535,20 @@ class StackController(object):
 
         data = InstantiationData(body)
 
+        whitelist = {'show_nested': 'single'}
+        params = util.get_allowed_params(req.params, whitelist)
+
+        show_nested = False
+        p_name = rpc_api.PARAM_SHOW_NESTED
+        if p_name in params:
+            params[p_name] = self._extract_bool_param(p_name, params[p_name])
+            show_nested = params[p_name]
+
         result = self.rpc_client.validate_template(req.context,
                                                    data.template(),
-                                                   data.environment())
+                                                   data.environment(),
+                                                   files=data.files(),
+                                                   show_nested=show_nested)
 
         if 'Error' in result:
             raise exc.HTTPBadRequest(result['Error'])
@@ -524,9 +561,14 @@ class StackController(object):
         Returns a list of valid resource types that may be used in a template.
         """
         support_status = req.params.get('support_status')
+        type_name = req.params.get('name')
+        version = req.params.get('version')
         return {
             'resource_types':
-            self.rpc_client.list_resource_types(req.context, support_status)}
+            self.rpc_client.list_resource_types(req.context,
+                                                support_status=support_status,
+                                                type_name=type_name,
+                                                heat_version=version)}
 
     @util.policy_enforce
     def list_template_versions(self, req):

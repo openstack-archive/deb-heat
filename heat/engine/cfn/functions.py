@@ -24,15 +24,14 @@ from heat.engine import function
 
 
 class FindInMap(function.Function):
-    '''
-    A function for resolving keys in the template mappings.
+    """A function for resolving keys in the template mappings.
 
     Takes the form::
 
         { "Fn::FindInMap" : [ "mapping",
                               "key",
                               "value" ] }
-    '''
+    """
 
     def __init__(self, stack, fn_name, args):
         super(FindInMap, self).__init__(stack, fn_name, args)
@@ -50,13 +49,12 @@ class FindInMap(function.Function):
 
 
 class GetAZs(function.Function):
-    '''
-    A function for retrieving the availability zones.
+    """A function for retrieving the availability zones.
 
     Takes the form::
 
         { "Fn::GetAZs" : "<region>" }
-    '''
+    """
 
     def result(self):
         # TODO(therve): Implement region scoping
@@ -69,13 +67,12 @@ class GetAZs(function.Function):
 
 
 class ParamRef(function.Function):
-    '''
-    A function for resolving parameter references.
+    """A function for resolving parameter references.
 
     Takes the form::
 
         { "Ref" : "<param_name>" }
-    '''
+    """
 
     def __init__(self, stack, fn_name, args):
         super(ParamRef, self).__init__(stack, fn_name, args)
@@ -93,13 +90,12 @@ class ParamRef(function.Function):
 
 
 class ResourceRef(function.Function):
-    '''
-    A function for resolving resource references.
+    """A function for resolving resource references.
 
     Takes the form::
 
         { "Ref" : "<resource_name>" }
-    '''
+    """
 
     def _resource(self, path='unknown'):
         resource_name = function.resolve(self.args)
@@ -119,8 +115,7 @@ class ResourceRef(function.Function):
 
 
 def Ref(stack, fn_name, args):
-    '''
-    A function for resolving parameters or resource references.
+    """A function for resolving parameters or resource references.
 
     Takes the form::
 
@@ -129,7 +124,7 @@ def Ref(stack, fn_name, args):
     or::
 
         { "Ref" : "<resource_name>" }
-    '''
+    """
     if args in stack:
         RefClass = ResourceRef
     else:
@@ -138,14 +133,13 @@ def Ref(stack, fn_name, args):
 
 
 class GetAtt(function.Function):
-    '''
-    A function for resolving resource attributes.
+    """A function for resolving resource attributes.
 
     Takes the form::
 
         { "Fn::GetAtt" : [ "<resource_name>",
                            "<attribute_name" ] }
-    '''
+    """
 
     def __init__(self, stack, fn_name, args):
         super(GetAtt, self).__init__(stack, fn_name, args)
@@ -196,7 +190,8 @@ class GetAtt(function.Function):
         attribute = function.resolve(self._attribute)
 
         r = self._resource()
-        if (r.action in (r.CREATE, r.ADOPT, r.SUSPEND, r.RESUME, r.UPDATE)):
+        if r.action in (r.CREATE, r.ADOPT, r.SUSPEND, r.RESUME,
+                        r.UPDATE, r.ROLLBACK):
             return r.FnGetAtt(attribute)
         # NOTE(sirushtim): Add r.INIT to states above once convergence
         # is the default.
@@ -207,8 +202,7 @@ class GetAtt(function.Function):
 
 
 class Select(function.Function):
-    '''
-    A function for selecting an item from a list or map.
+    """A function for selecting an item from a list or map.
 
     Takes the form (for a list lookup)::
 
@@ -220,7 +214,7 @@ class Select(function.Function):
 
     If the selected index is not found, this function resolves to an empty
     string.
-    '''
+    """
 
     def __init__(self, stack, fn_name, args):
         super(Select, self).__init__(stack, fn_name, args)
@@ -281,8 +275,7 @@ class Select(function.Function):
 
 
 class Join(function.Function):
-    '''
-    A function for joining strings.
+    """A function for joining strings.
 
     Takes the form::
 
@@ -291,7 +284,7 @@ class Join(function.Function):
     And resolves to::
 
         "<string_1><delim><string_2><delim>..."
-    '''
+    """
 
     def __init__(self, stack, fn_name, args):
         super(Join, self).__init__(stack, fn_name, args)
@@ -335,8 +328,7 @@ class Join(function.Function):
 
 
 class Split(function.Function):
-    '''
-    A function for splitting strings.
+    """A function for splitting strings.
 
     Takes the form::
 
@@ -345,7 +337,7 @@ class Split(function.Function):
     And resolves to::
 
         [ "<string_1>", "<string_2>", ... ]
-    '''
+    """
 
     def __init__(self, stack, fn_name, args):
         super(Split, self).__init__(stack, fn_name, args)
@@ -378,8 +370,7 @@ class Split(function.Function):
 
 
 class Replace(function.Function):
-    '''
-    A function for performing string substitutions.
+    """A function for performing string substitutions.
 
     Takes the form::
 
@@ -394,7 +385,7 @@ class Replace(function.Function):
 
     This is implemented using python str.replace on each key. The order in
     which replacements are performed is undefined.
-    '''
+    """
 
     def __init__(self, stack, fn_name, args):
         super(Replace, self).__init__(stack, fn_name, args)
@@ -457,8 +448,7 @@ class Replace(function.Function):
 
 
 class Base64(function.Function):
-    '''
-    A placeholder function for converting to base64.
+    """A placeholder function for converting to base64.
 
     Takes the form::
 
@@ -467,7 +457,7 @@ class Base64(function.Function):
     This function actually performs no conversion. It is included for the
     benefit of templates that convert UserData to Base64. Heat accepts UserData
     in plain text.
-    '''
+    """
 
     def result(self):
         resolved = function.resolve(self.args)
@@ -477,9 +467,7 @@ class Base64(function.Function):
 
 
 class MemberListToMap(function.Function):
-    '''
-    A function for converting lists containing enumerated keys and values to
-    a mapping.
+    """A function to convert lists with enumerated keys and values to mapping.
 
     Takes the form::
 
@@ -494,7 +482,7 @@ class MemberListToMap(function.Function):
         { "<key_0>" : "<value_0>", ... }
 
     The first two arguments are the names of the key and value.
-    '''
+    """
 
     def __init__(self, stack, fn_name, args):
         super(MemberListToMap, self).__init__(stack, fn_name, args)
@@ -534,7 +522,8 @@ class MemberListToMap(function.Function):
 
 
 class ResourceFacade(function.Function):
-    '''
+    """A function for retrieving data in a parent provider template.
+
     A function for obtaining data from the facade resource from within the
     corresponding provider template.
 
@@ -544,7 +533,7 @@ class ResourceFacade(function.Function):
 
     where the valid attribute types are "Metadata", "DeletionPolicy" and
     "UpdatePolicy".
-    '''
+    """
 
     _RESOURCE_ATTRIBUTES = (
         METADATA, DELETION_POLICY, UPDATE_POLICY,

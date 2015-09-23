@@ -93,12 +93,12 @@ class StackResource(resource.Resource):
 
         # FIXME (ricolin): seems currently can not call super here
         if self.nested() is None and self.status == self.FAILED:
-            raise resource.UpdateReplace(self)
+            raise exception.UpdateReplace(self)
 
         if (check_init_complete and
                 self.nested() is None and
                 self.action == self.INIT and self.status == self.COMPLETE):
-            raise resource.UpdateReplace(self)
+            raise exception.UpdateReplace(self)
 
         return True
 
@@ -248,9 +248,8 @@ class StackResource(resource.Resource):
     def _validate_nested_resources(self, templ):
         if cfg.CONF.max_resources_per_stack == -1:
             return
-        root_stack_id = self.stack.root_stack_id()
         total_resources = (len(templ[templ.RESOURCES]) +
-                           self.stack.total_resources(root_stack_id))
+                           self.stack.total_resources(self.root_stack_id))
 
         if self.nested():
             # It's an update and these resources will be deleted
@@ -372,7 +371,7 @@ class StackResource(resource.Resource):
             raise exception.ResourceFailure(nested.status_reason, self,
                                             action=action)
         else:
-            raise resource.ResourceUnknownStatus(
+            raise exception.ResourceUnknownStatus(
                 resource_status=nested.status,
                 status_reason=nested.status_reason,
                 result=_('Stack unknown status'))

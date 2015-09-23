@@ -20,7 +20,6 @@ from heat.common import exception
 from heat.engine.clients.os import neutron
 from heat.engine.hot import functions
 from heat.engine import properties
-from heat.engine import resource
 from heat.engine.resources.openstack.neutron import net
 from heat.engine.resources.openstack.neutron import neutron as nr
 from heat.engine.resources.openstack.neutron import subnet
@@ -91,13 +90,13 @@ class NeutronTest(common.HeatTestCase):
         self.assertTrue(nr.NeutronResource.is_built({'status': 'DOWN'}))
         self.assertFalse(nr.NeutronResource.is_built({'status': 'BUILD'}))
         e = self.assertRaises(
-            resource.ResourceInError,
+            exception.ResourceInError,
             nr.NeutronResource.is_built, {'status': 'ERROR'})
         self.assertEqual(
             'Went to status ERROR due to "Unknown"',
             six.text_type(e))
         e = self.assertRaises(
-            resource.ResourceUnknownStatus,
+            exception.ResourceUnknownStatus,
             nr.NeutronResource.is_built, {'status': 'FROBULATING'})
         self.assertEqual('Resource is not built - Unknown status '
                          'FROBULATING due to "Unknown"',
@@ -127,19 +126,18 @@ class NeutronTest(common.HeatTestCase):
 
         self.assertEqual({'attr1': 'val1', 'attr2': 'val2'},
                          res.FnGetAtt('show'))
-        self.assertEqual('val2', res._resolve_attribute('attr2'))
-        self.assertRaises(KeyError, res._resolve_attribute, 'attr3')
-        self.assertIsNone(res._resolve_attribute('attr2'))
+        self.assertEqual('val2', res._resolve_all_attributes('attr2'))
+        self.assertRaises(KeyError, res._resolve_all_attributes, 'attr3')
+        self.assertIsNone(res._resolve_all_attributes('attr2'))
 
         res.resource_id = None
         # use local cached object
         self.assertEqual({'attr1': 'val1', 'attr2': 'val2'},
                          res.FnGetAtt('show'))
-        # reset cache and call 'show' again, so resolver should be used again
+        # reset cache, so resolver should be used again
         # and return None due to resource_id is None
-        with mock.patch.object(res.attributes, '_resolved_values') as res_vals:
-            res_vals.return_value = {}
-            self.assertIsNone(res.FnGetAtt('show'))
+        res.attributes.reset_resolved_values()
+        self.assertIsNone(res.FnGetAtt('show'))
 
 
 class GetSecGroupUuidTest(common.HeatTestCase):

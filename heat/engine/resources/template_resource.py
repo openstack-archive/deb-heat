@@ -27,8 +27,12 @@ from heat.engine.resources import stack_resource
 from heat.engine import template
 
 
-def generate_class(name, template_name, env):
-    data = TemplateResource.get_template_file(template_name, ('file',))
+def generate_class(name, template_name, env, files=None):
+    data = None
+    if files is not None:
+        data = files.get(template_name)
+    if data is None:
+        data = TemplateResource.get_template_file(template_name, ('file',))
     tmpl = template.Template(template_format.parse(data))
     props, attrs = TemplateResource.get_schemas(tmpl, env.param_defaults)
     cls = type(name, (TemplateResource,),
@@ -129,7 +133,7 @@ class TemplateResource(stack_resource.StackResource):
                 continue
 
             try:
-                val = self.properties[pname]
+                val = self.properties.get_user_value(pname)
             except ValueError:
                 if self.action == self.INIT:
                     prop = self.properties.props[pname]
@@ -150,7 +154,13 @@ class TemplateResource(stack_resource.StackResource):
                                 flattened.append(mem_str)
                         params[pname] = ','.join(flattened)
                     else:
-                        params[pname] = ','.join(val)
+                        # When None is returned from get_attr, creating a
+                        # delimited list with it fails during validation.
+                        # we should sanitize the None values to empty strings.
+                        # FIXME(rabi) this needs a permanent solution
+                        # to sanitize attributes and outputs in the future.
+                        params[pname] = ','.join(
+                            (x if x is not None else '') for x in val)
                 else:
                     # for MAP, the JSON param takes either a collection or
                     # string, so just pass it on and let the param validate
@@ -179,6 +189,7 @@ class TemplateResource(stack_resource.StackResource):
         # 3. look in the db
         reported_excp = None
         t_data = self.stack.t.files.get(self.template_name)
+        stored_t_data = t_data
         if not t_data and self.template_name.endswith((".yaml", ".template")):
             try:
                 t_data = self.get_template_file(self.template_name,
@@ -193,7 +204,8 @@ class TemplateResource(stack_resource.StackResource):
                 t_data = jsonutils.dumps(self.nested().t.t)
 
         if t_data is not None:
-            self.stack.t.files[self.template_name] = t_data
+            if t_data != stored_t_data:
+                self.stack.t.files[self.template_name] = t_data
             self.stack.t.env.register_class(self.resource_type,
                                             self.template_name,
                                             path=self.resource_path)
@@ -249,15 +261,15 @@ class TemplateResource(stack_resource.StackResource):
         except ValueError as ex:
             msg = _("Failed to retrieve template data: %s") % ex
             raise exception.StackValidationFailed(message=msg)
-        cri = self.stack.env.get_resource_info(
+        fri = self.stack.env.get_resource_info(
             self.type(),
             resource_name=self.name,
-            registry_type=environment.ClassResourceInfo)
+            ignore=self.resource_info)
 
         # If we're using an existing resource type as a facade for this
         # template, check for compatibility between the interfaces.
-        if cri is not None and not isinstance(self, cri.get_class()):
-            facade_cls = cri.get_class()
+        if fri is not None:
+            facade_cls = fri.get_class(files=self.stack.t.files)
             self._validate_against_facade(facade_cls)
 
         return super(TemplateResource, self).validate()
@@ -282,7 +294,7 @@ class TemplateResource(stack_resource.StackResource):
         return self.update_with_template(self.child_template(),
                                          self.child_params())
 
-    def FnGetRefId(self):
+    def get_reference_id(self):
         if self.nested() is None:
             return six.text_type(self.name)
 

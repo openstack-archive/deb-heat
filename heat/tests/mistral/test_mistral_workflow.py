@@ -13,6 +13,7 @@
 
 import mock
 import six
+import yaml
 
 from mistralclient.api.v2 import executions
 
@@ -73,6 +74,61 @@ resources:
 """
 
 workflow_template_full = """
+heat_template_version: 2013-05-23
+resources:
+ create_vm:
+   type: OS::Mistral::Workflow
+   properties:
+     name: create_vm
+     type: direct
+     input:
+       name: create_test_server
+       image: 31d8eeaf-686e-4e95-bb27-765014b9f20b
+       flavor: 2
+     output:
+       vm_id: <% $.vm_id %>
+     task_defaults:
+       on_error:
+         - on_error
+     tasks:
+       - name: create_server
+         action: |
+           nova.servers_create name=<% $.name %> image=<% $.image %>
+           flavor=<% $.flavor %>
+         publish:
+           vm_id: <% $.create_server.id %>
+         on_success:
+           - check_server_exists
+       - name: check_server_exists
+         action: nova.servers_get server=<% $.vm_id %>
+         publish:
+           server_exists: True
+         on_success:
+           - list_machines
+       - name: wait_instance
+         action: nova.servers_find id=<% $.vm_id_new %> status='ACTIVE'
+         retry:
+             delay: 5
+             count: 15
+         wait_before: 7
+         wait_after: 8
+         pause_before: true
+         timeout: 11
+         keep_result: false
+         target: test
+         with_items: vm_id_new in <% $.list_servers %>
+       - name: list_machines
+         action: nova.servers_list
+         publish:
+           -list_servers:  <% $.list_machines %>
+         on_success:
+           - wait_instance
+       - name: on_error
+         action: std.echo output="output"
+
+"""
+
+workflow_template_backward_support = """
 heat_template_version: 2013-05-23
 resources:
  create_vm:
@@ -169,6 +225,26 @@ resources:
             result: <% $.hello %>
 """
 
+workflow_template_duplicate_polices = """
+heat_template_version: 2013-05-23
+resources:
+ workflow:
+   type: OS::Mistral::Workflow
+   properties:
+     name: list
+     type: direct
+     tasks:
+       - name: list
+         action: nova.servers_list
+         policies:
+           retry:
+             delay: 5
+             count: 15
+         retry:
+             delay: 6
+             count: 16
+"""
+
 
 class FakeWorkflow(object):
     def __init__(self, name):
@@ -176,14 +252,7 @@ class FakeWorkflow(object):
         self._data = {'workflow': 'info'}
 
 
-class MistralWorkFlowTestResource(workflow.Workflow):
-    @classmethod
-    def is_service_available(cls, context):
-        return True
-
-
 class TestMistralWorkflow(common.HeatTestCase):
-
     def setUp(self):
         super(TestMistralWorkflow, self).setUp()
         resources.initialise()
@@ -196,7 +265,7 @@ class TestMistralWorkflow(common.HeatTestCase):
         self.rsrc_defn = resource_defns['workflow']
 
         self.mistral = mock.Mock()
-        self.patchobject(MistralWorkFlowTestResource, 'client',
+        self.patchobject(workflow.Workflow, 'client',
                          return_value=self.mistral)
 
         self.patches = []
@@ -219,7 +288,7 @@ class TestMistralWorkflow(common.HeatTestCase):
             patch.stop()
 
     def _create_resource(self, name, snippet, stack):
-        wf = MistralWorkFlowTestResource(name, snippet, stack)
+        wf = workflow.Workflow(name, snippet, stack)
         self.mistral.workflows.create.return_value = [
             FakeWorkflow('test_stack-workflow-b5fiekfci3yc')]
         scheduler.TaskRunner(wf.create)()
@@ -237,7 +306,7 @@ class TestMistralWorkflow(common.HeatTestCase):
 
         rsrc_defns = stack.t.resource_definitions(stack)['create_vm']
 
-        wf = MistralWorkFlowTestResource('create_vm', rsrc_defns, stack)
+        wf = workflow.Workflow('create_vm', rsrc_defns, stack)
         self.mistral.workflows.create.return_value = [
             FakeWorkflow('create_vm')]
         scheduler.TaskRunner(wf.create)()
@@ -245,6 +314,37 @@ class TestMistralWorkflow(common.HeatTestCase):
         expected_state = (wf.CREATE, wf.COMPLETE)
         self.assertEqual(expected_state, wf.state)
         self.assertEqual('create_vm', wf.resource_id)
+
+    def test_create_with_task_parms(self):
+        tmpl = template_format.parse(workflow_template_full)
+        stack = utils.parse_stack(tmpl)
+
+        rsrc_defns = stack.t.resource_definitions(stack)['create_vm']
+        wf = workflow.Workflow('create_vm', rsrc_defns, stack)
+        self.mistral.workflows.create.side_effect = (lambda args:
+                                                     self.verify_create_params(
+                                                         args))
+        scheduler.TaskRunner(wf.create)()
+
+    def test_backward_support(self):
+        tmpl = template_format.parse(workflow_template_backward_support)
+        stack = utils.parse_stack(tmpl)
+
+        rsrc_defns = stack.t.resource_definitions(stack)['create_vm']
+
+        wf = workflow.Workflow('create_vm', rsrc_defns, stack)
+        self.mistral.workflows.create.return_value = [
+            FakeWorkflow('create_vm')]
+        scheduler.TaskRunner(wf.create)()
+
+        expected_state = (wf.CREATE, wf.COMPLETE)
+        self.assertEqual(expected_state, wf.state)
+        self.assertEqual('create_vm', wf.resource_id)
+        for task in wf.properties['tasks']:
+            if task['name'] is 'wait_instance':
+                self.assertEqual(5, task['retry']['delay'])
+                self.assertEqual(15, task['retry']['count'])
+                break
 
     def test_attributes(self):
         wf = self._create_resource('workflow', self.rsrc_defn, self.stack)
@@ -275,7 +375,7 @@ class TestMistralWorkflow(common.HeatTestCase):
 
         rsrc_defns = stack.t.resource_definitions(stack)['workflow']
 
-        wf = MistralWorkFlowTestResource('workflow', rsrc_defns, stack)
+        wf = workflow.Workflow('workflow', rsrc_defns, stack)
 
         exc = self.assertRaises(exception.StackValidationFailed,
                                 wf.validate)
@@ -287,7 +387,7 @@ class TestMistralWorkflow(common.HeatTestCase):
 
         rsrc_defns = stack.t.resource_definitions(stack)['workflow']
 
-        wf = MistralWorkFlowTestResource('workflow', rsrc_defns, stack)
+        wf = workflow.Workflow('workflow', rsrc_defns, stack)
 
         self.mistral.workflows.create.side_effect = Exception('boom!')
 
@@ -309,7 +409,7 @@ class TestMistralWorkflow(common.HeatTestCase):
         self.mistral.workflows.update.return_value = new_workflows
         self.mistral.workflows.delete.return_value = None
 
-        err = self.assertRaises(resource.UpdateReplace,
+        err = self.assertRaises(exception.UpdateReplace,
                                 scheduler.TaskRunner(wf.update,
                                                      new_workflow))
         msg = 'The Resource workflow requires replacement.'
@@ -385,7 +485,7 @@ class TestMistralWorkflow(common.HeatTestCase):
         tmpl = template_format.parse(workflow_template_full)
         stack = utils.parse_stack(tmpl)
         rsrc_defns = stack.t.resource_definitions(stack)['create_vm']
-        wf = MistralWorkFlowTestResource('create_vm', rsrc_defns, stack)
+        wf = workflow.Workflow('create_vm', rsrc_defns, stack)
         self.mistral.workflows.create.return_value = [
             FakeWorkflow('create_vm')]
         scheduler.TaskRunner(wf.create)()
@@ -400,30 +500,35 @@ class TestMistralWorkflow(common.HeatTestCase):
         tmpl = template_format.parse(workflow_template_full)
         stack = utils.parse_stack(tmpl)
         rsrc_defns = stack.t.resource_definitions(stack)['create_vm']
-        wf = MistralWorkFlowTestResource('create_vm', rsrc_defns, stack)
+        wf = workflow.Workflow('create_vm', rsrc_defns, stack)
         self.mistral.workflows.create.return_value = [
             FakeWorkflow('create_vm')]
         scheduler.TaskRunner(wf.create)()
         details = {'input': '3'}
         err = self.assertRaises(exception.ResourceFailure,
                                 scheduler.TaskRunner(wf.signal, details))
+        if six.PY3:
+            entity = 'class'
+        else:
+            entity = 'type'
         error_message = ("StackValidationFailed: resources.create_vm: "
                          "Signal data error: Input in"
-                         " signal data must be a map, find a <type 'str'>")
+                         " signal data must be a map, find a <%s 'str'>" %
+                         entity)
         self.assertEqual(error_message, six.text_type(err))
         details = {'params': '3'}
         err = self.assertRaises(exception.ResourceFailure,
                                 scheduler.TaskRunner(wf.signal, details))
         error_message = ("StackValidationFailed: resources.create_vm: "
                          "Signal data error: Params "
-                         "must be a map, find a <type 'str'>")
+                         "must be a map, find a <%s 'str'>" % entity)
         self.assertEqual(error_message, six.text_type(err))
 
     def test_signal_wrong_input_key(self):
         tmpl = template_format.parse(workflow_template_full)
         stack = utils.parse_stack(tmpl)
         rsrc_defns = stack.t.resource_definitions(stack)['create_vm']
-        wf = MistralWorkFlowTestResource('create_vm', rsrc_defns, stack)
+        wf = workflow.Workflow('create_vm', rsrc_defns, stack)
         self.mistral.workflows.create.return_value = [
             FakeWorkflow('create_vm')]
         scheduler.TaskRunner(wf.create)()
@@ -438,7 +543,7 @@ class TestMistralWorkflow(common.HeatTestCase):
         tmpl = template_format.parse(workflow_template_full)
         stack = utils.parse_stack(tmpl)
         rsrc_defns = stack.t.resource_definitions(stack)['create_vm']
-        wf = MistralWorkFlowTestResource('create_vm', rsrc_defns, stack)
+        wf = workflow.Workflow('create_vm', rsrc_defns, stack)
         self.mistral.workflows.create.return_value = [
             FakeWorkflow('create_vm')]
         scheduler.TaskRunner(wf.create)()
@@ -460,7 +565,7 @@ class TestMistralWorkflow(common.HeatTestCase):
         tmpl = template_format.parse(workflow_template_full)
         stack = utils.parse_stack(tmpl)
         rsrc_defns = stack.t.resource_definitions(stack)['create_vm']
-        wf = MistralWorkFlowTestResource('create_vm', rsrc_defns, stack)
+        wf = workflow.Workflow('create_vm', rsrc_defns, stack)
         self.mistral.workflows.create.return_value = [
             FakeWorkflow('create_vm')]
         scheduler.TaskRunner(wf.create)()
@@ -476,7 +581,7 @@ class TestMistralWorkflow(common.HeatTestCase):
         tmpl = template_format.parse(workflow_template_with_params)
         stack = utils.parse_stack(tmpl)
         rsrc_defns = stack.t.resource_definitions(stack)['workflow']
-        wf = MistralWorkFlowTestResource('workflow', rsrc_defns, stack)
+        wf = workflow.Workflow('workflow', rsrc_defns, stack)
         self.mistral.workflows.create.return_value = [
             FakeWorkflow('workflow')]
         scheduler.TaskRunner(wf.create)()
@@ -491,7 +596,7 @@ class TestMistralWorkflow(common.HeatTestCase):
         tmpl = template_format.parse(workflow_template_with_params_override)
         stack = utils.parse_stack(tmpl)
         rsrc_defns = stack.t.resource_definitions(stack)['workflow']
-        wf = MistralWorkFlowTestResource('workflow', rsrc_defns, stack)
+        wf = workflow.Workflow('workflow', rsrc_defns, stack)
         self.mistral.workflows.create.return_value = [
             FakeWorkflow('workflow')]
         scheduler.TaskRunner(wf.create)()
@@ -502,9 +607,34 @@ class TestMistralWorkflow(common.HeatTestCase):
             lambda *args, **kw: self.verify_params(*args, **kw))
         scheduler.TaskRunner(wf.signal, details)()
 
+    def test_duplicate_attribute_validation_error(self):
+        error_msg = ("Property policies and retry cannot be "
+                     "used both at one time.")
+        self._test_validation_failed(workflow_template_duplicate_polices,
+                                     error_msg)
+
     def verify_params(self, workflow_name, workflow_input=None, **params):
         self.assertEqual({'test': 'param_value', 'test1': 'param_value_1'},
                          params)
         execution = mock.Mock()
         execution.id = '12345'
         return execution
+
+    def verify_create_params(self, wf_yaml):
+        wf = yaml.load(wf_yaml)["create_vm"]
+        self.assertEqual(['on_error'], wf["task-defaults"]["on-error"])
+
+        tasks = wf['tasks']
+        task = tasks['wait_instance']
+        self.assertEqual('vm_id_new in <% $.list_servers %>',
+                         task['with-items'])
+        self.assertEqual(5, task['retry']['delay'])
+        self.assertEqual(15, task['retry']['count'])
+        self.assertEqual(8, task['wait-after'])
+        self.assertEqual(True, task['pause-before'])
+        self.assertEqual(11, task['timeout'])
+        self.assertEqual('test', task['target'])
+        self.assertEqual(7, task['wait-before'])
+        self.assertEqual(False, task['keep-result'])
+
+        return [FakeWorkflow('create_vm')]

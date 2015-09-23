@@ -30,7 +30,7 @@ Heat Db version
 
 ``heat-manage db_version``
 
-    Print out the db schema revision.
+    Print out the db schema version.
 
 ``heat-manage db_sync``
 
@@ -43,6 +43,10 @@ Heat Db version
 ``heat-manage service list``
 
     Shows details for all currently running heat-engines.
+
+``heat-manage service clean``
+
+    Clean dead engine records.
 
 ``heat-manage --version``
 

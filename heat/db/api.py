@@ -11,8 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-'''
-Interface for database access.
+"""Interface for database access.
 
 Usage:
 
@@ -22,7 +21,7 @@ Usage:
 
 The underlying driver is loaded . SQLAlchemy is currently the only
 supported backend.
-'''
+"""
 
 from oslo_config import cfg
 from oslo_db import api
@@ -178,8 +177,8 @@ def stack_create(context, values):
     return IMPL.stack_create(context, values)
 
 
-def stack_update(context, stack_id, values):
-    return IMPL.stack_update(context, stack_id, values)
+def stack_update(context, stack_id, values, exp_trvsl=None):
+    return IMPL.stack_update(context, stack_id, values, exp_trvsl=exp_trvsl)
 
 
 def stack_delete(context, stack_id):

@@ -52,6 +52,17 @@ class SaharaClientPlugin(client_plugin.ClientPlugin):
         client = sahara_client.Client('1.1', **args)
         return client
 
+    def validate_hadoop_version(self, plugin_name, hadoop_version):
+        plugin = self.client().plugins.get(plugin_name)
+        allowed_versions = plugin.versions
+        if hadoop_version not in allowed_versions:
+            msg = (_("Requested plugin '%(plugin)s' doesn\'t support version "
+                     "'%(version)s'. Allowed versions are %(allowed)s") %
+                   {'plugin': plugin_name,
+                    'version': hadoop_version,
+                    'allowed': ', '.join(allowed_versions)})
+            raise exception.StackValidationFailed(message=msg)
+
     def is_not_found(self, ex):
         return (isinstance(ex, sahara_base.APIException) and
                 ex.error_code == 404)
@@ -70,14 +81,13 @@ class SaharaClientPlugin(client_plugin.ClientPlugin):
                 ex.error_name == 'IMAGE_NOT_REGISTERED')
 
     def get_image_id(self, image_identifier):
-        '''
-        Return an id for the specified image name or identifier.
+        """Return the ID for the specified image name or identifier.
 
         :param image_identifier: image name or a UUID-like identifier
         :returns: the id of the requested :image_identifier:
         :raises: exception.EntityNotFound,
                  exception.PhysicalResourceNameAmbiguity
-        '''
+        """
         if uuidutils.is_uuid_like(image_identifier):
             try:
                 image_id = self.client().images.get(image_identifier).id
@@ -89,14 +99,13 @@ class SaharaClientPlugin(client_plugin.ClientPlugin):
         return image_id
 
     def get_image_id_by_name(self, image_identifier):
-        '''
-        Return an id for the specified image name.
+        """Return the ID for the specified image name.
 
         :param image_identifier: image name
         :returns: the id of the requested :image_identifier:
         :raises: exception.EntityNotFound,
                  exception.PhysicalResourceNameAmbiguity
-        '''
+        """
         try:
             filters = {'name': image_identifier}
             image_list = self.client().images.find(**filters)
@@ -118,6 +127,20 @@ class SaharaClientPlugin(client_plugin.ClientPlugin):
         else:
             return image_list[0].id
 
+    def get_plugin_id(self, plugin_name):
+        """Get the id for the specified plugin name.
+
+        :param plugin_name: the name of the plugin to find
+        :returns: the id of :plugin:
+        :raises: exception.EntityNotFound
+        """
+        try:
+            self.client().plugins.get(plugin_name)
+        except sahara_base.APIException:
+            LOG.info(_LI("Plugin %s was not found in sahara"), plugin_name)
+            raise exception.EntityNotFound(entity='Plugin',
+                                           name=plugin_name)
+
 
 class ImageConstraint(constraints.BaseCustomConstraint):
 
@@ -126,3 +149,11 @@ class ImageConstraint(constraints.BaseCustomConstraint):
 
     def validate_with_client(self, client, value):
         client.client_plugin('sahara').get_image_id(value)
+
+
+class PluginConstraint(constraints.BaseCustomConstraint):
+
+    expected_exceptions = (exception.EntityNotFound,)
+
+    def validate_with_client(self, client, value):
+        client.client_plugin('sahara').get_plugin_id(value)

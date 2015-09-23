@@ -28,7 +28,6 @@ from heat.engine.clients.os import neutron
 from heat.engine.clients.os import nova
 from heat.engine.clients import progress
 from heat.engine import environment
-from heat.engine import resource
 from heat.engine.resources.aws.ec2 import instance as instances
 from heat.engine.resources import scheduler_hints as sh
 from heat.engine import scheduler
@@ -525,7 +524,7 @@ class InstancesTest(common.HeatTestCase):
         return_server.status = 'BOGUS'
         self.fc.servers.get(instance.resource_id).AndReturn(return_server)
         self.m.ReplayAll()
-        e = self.assertRaises(resource.ResourceUnknownStatus,
+        e = self.assertRaises(exception.ResourceUnknownStatus,
                               instance.check_create_complete,
                               (creator, None))
         self.assertEqual('Instance is not active - Unknown status BOGUS '
@@ -549,7 +548,7 @@ class InstancesTest(common.HeatTestCase):
         self.fc.servers.get(instance.resource_id).AndReturn(return_server)
         self.m.ReplayAll()
 
-        e = self.assertRaises(resource.ResourceInError,
+        e = self.assertRaises(exception.ResourceInError,
                               instance.check_create_complete,
                               (creator, None))
         self.assertEqual(
@@ -572,7 +571,7 @@ class InstancesTest(common.HeatTestCase):
         self.m.ReplayAll()
 
         e = self.assertRaises(
-            resource.ResourceInError, instance.check_create_complete,
+            exception.ResourceInError, instance.check_create_complete,
             (creator, None))
         self.assertEqual(
             'Went to status ERROR due to "Message: Unknown, Code: Unknown"',
@@ -1118,7 +1117,7 @@ class InstancesTest(common.HeatTestCase):
         update_template = copy.deepcopy(instance.t)
         update_template['Properties']['ImageId'] = 'mustreplace'
         updater = scheduler.TaskRunner(instance.update, update_template)
-        self.assertRaises(resource.UpdateReplace, updater)
+        self.assertRaises(exception.UpdateReplace, updater)
 
         self.m.VerifyAll()
 

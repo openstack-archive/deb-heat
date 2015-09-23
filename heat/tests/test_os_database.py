@@ -22,7 +22,6 @@ from heat.common import template_format
 from heat.engine.clients.os import neutron
 from heat.engine.clients.os import nova
 from heat.engine.clients.os import trove
-from heat.engine import resource
 from heat.engine.resources.openstack.trove import os_database
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
@@ -183,6 +182,7 @@ class OSDBInstanceTest(common.HeatTestCase):
     def test_create_failed(self):
         mock_stack = mock.Mock()
         mock_stack.db_resource_get.return_value = None
+        mock_stack.has_cache_data.return_value = False
         res_def = mock.Mock(spec=rsrc_defn.ResourceDefinition)
         osdb_res = os_database.OSDBInstance("test", res_def, mock_stack)
 
@@ -195,7 +195,7 @@ class OSDBInstanceTest(common.HeatTestCase):
         trove_mock.instances.get.return_value = mock_input
         error_string = ('Went to status ERROR due to "The last operation for '
                         'the database instance failed due to an error."')
-        exc = self.assertRaises(resource.ResourceInError,
+        exc = self.assertRaises(exception.ResourceInError,
                                 osdb_res.check_create_complete,
                                 mock_input)
         self.assertIn(error_string, six.text_type(exc))
@@ -208,7 +208,7 @@ class OSDBInstanceTest(common.HeatTestCase):
                         'datastore. If a database instance is in the FAILED '
                         'state, it should be deleted and a new one should '
                         'be created."')
-        exc = self.assertRaises(resource.ResourceInError,
+        exc = self.assertRaises(exception.ResourceInError,
                                 osdb_res.check_create_complete,
                                 mock_input)
         self.assertIn(error_string, six.text_type(exc))
@@ -220,7 +220,7 @@ class OSDBInstanceTest(common.HeatTestCase):
         mock_input.status = 'ERROR'
         error_string = ('Went to status ERROR due to "Unknown"')
         trove_mock.instances.get.return_value = mock_input
-        exc = self.assertRaises(resource.ResourceInError,
+        exc = self.assertRaises(exception.ResourceInError,
                                 osdb_res.check_create_complete,
                                 mock_input)
         self.assertIn(error_string, six.text_type(exc))

@@ -111,22 +111,18 @@ class NeutronResource(resource.Resource):
         if status in ('ACTIVE', 'DOWN'):
             return True
         elif status == 'ERROR':
-            raise resource.ResourceInError(
+            raise exception.ResourceInError(
                 resource_status=status)
         else:
-            raise resource.ResourceUnknownStatus(
+            raise exception.ResourceUnknownStatus(
                 resource_status=status,
                 result=_('Resource is not built'))
 
     def _resolve_attribute(self, name):
-        try:
-            attributes = self._show_resource()
-        except Exception as ex:
-            self.client_plugin().ignore_not_found(ex)
-            return None
+        attributes = self._show_resource()
         return attributes[name]
 
-    def FnGetRefId(self):
+    def get_reference_id(self):
         return six.text_type(self.resource_id)
 
     @staticmethod

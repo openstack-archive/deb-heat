@@ -16,7 +16,6 @@ import six
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import resource
 from heat.engine import resources
 from heat.engine.resources.openstack.manila import security_service
 from heat.engine import scheduler
@@ -123,24 +122,6 @@ class ManilaSecurityServiceTest(common.HeatTestCase):
         self.assertEqual(security_service.SecurityService,
                          mapping['OS::Manila::SecurityService'])
 
-    def test_delete(self):
-        ss = self._create_resource('security_service', self.rsrc_defn,
-                                   self.stack)
-        scheduler.TaskRunner(ss.delete)()
-        self.assertEqual((ss.DELETE, ss.COMPLETE), ss.state)
-        self.client.security_services.delete.assert_called_once_with(
-            ss.resource_id)
-
-    def test_delete_not_found(self):
-        ss = self._create_resource('security_service', self.rsrc_defn,
-                                   self.stack)
-        self.client.security_services.delete.side_effect = (
-            self.client.exceptions.NotFound())
-        scheduler.TaskRunner(ss.delete)()
-        self.assertEqual((ss.DELETE, ss.COMPLETE), ss.state)
-        self.client.security_services.delete.assert_called_once_with(
-            ss.resource_id)
-
     def test_update(self):
         ss = self._create_resource('security_service', self.rsrc_defn,
                                    self.stack)
@@ -166,7 +147,7 @@ class ManilaSecurityServiceTest(common.HeatTestCase):
         rsrc_defns = template.Template(t).resource_definitions(self.stack)
         new_ss = rsrc_defns['security_service']
         self.assertEqual(0, self.client.security_services.update.call_count)
-        err = self.assertRaises(resource.UpdateReplace,
+        err = self.assertRaises(exception.UpdateReplace,
                                 scheduler.TaskRunner(ss.update, new_ss))
         msg = 'The Resource security_service requires replacement.'
         self.assertEqual(msg, six.text_type(err))

@@ -34,7 +34,6 @@ from heat.common.i18n import _LI
 from heat.common.i18n import _LW
 from heat.engine.clients import client_plugin
 from heat.engine import constraints
-from heat.engine import resource
 
 LOG = logging.getLogger(__name__)
 
@@ -118,8 +117,7 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
             raise exception.EntityNotFound(entity='Server', name=server)
 
     def fetch_server(self, server_id):
-        """
-        Fetch fresh server object from Nova.
+        """Fetch fresh server object from Nova.
 
         Log warnings and return None for non-critical API errors.
         Use this method in various ``check_*_complete`` resource methods,
@@ -145,10 +143,10 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
         return server
 
     def refresh_server(self, server):
-        '''
-        Refresh server's attributes and log warnings for non-critical
-        API errors.
-        '''
+        """Refresh server's attributes.
+
+        Also log warnings for non-critical API errors.
+        """
         try:
             server.get()
         except exceptions.OverLimit as exc:
@@ -177,11 +175,11 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
                     return ip['addr']
 
     def get_status(self, server):
-        '''
-        Return the server's status.
+        """Return the server's status.
+
         :param server: server object
         :returns: status as a string
-        '''
+        """
         # Some clouds append extra (STATUS) strings to the status, strip it
         return server.status.split('(')[0]
 
@@ -215,26 +213,26 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
             return True
         elif status == 'ERROR':
             fault = getattr(server, 'fault', {})
-            raise resource.ResourceInError(
+            raise exception.ResourceInError(
                 resource_status=status,
                 status_reason=_("Message: %(message)s, Code: %(code)s") % {
                     'message': fault.get('message', _('Unknown')),
                     'code': fault.get('code', _('Unknown'))
                 })
         else:
-            raise resource.ResourceUnknownStatus(
+            raise exception.ResourceUnknownStatus(
                 resource_status=server.status,
                 result=_('%s is not active') % res_name)
 
     def get_flavor_id(self, flavor):
-        '''
-        Get the id for the specified flavor name.
+        """Get the id for the specified flavor name.
+
         If the specified value is flavor id, just return it.
 
         :param flavor: the name of the flavor to find
         :returns: the id of :flavor:
         :raises: exception.FlavorMissing
-        '''
+        """
         flavor_id = None
         flavor_list = self.client().flavors.list()
         for o in flavor_list:
@@ -249,13 +247,12 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
         return flavor_id
 
     def get_keypair(self, key_name):
-        '''
-        Get the public key specified by :key_name:
+        """Get the public key specified by :key_name:
 
         :param key_name: the name of the key to look for
         :returns: the keypair (name, public_key) for :key_name:
         :raises: exception.UserKeyPairMissing
-        '''
+        """
         try:
             return self.client().keypairs.get(key_name)
         except exceptions.NotFound:
@@ -263,9 +260,10 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
 
     def build_userdata(self, metadata, userdata=None, instance_user=None,
                        user_data_format='HEAT_CFNTOOLS'):
-        '''
-        Build multipart data blob for CloudInit which includes user-supplied
-        Metadata, user data, and the required Heat in-instance configuration.
+        """Build multipart data blob for CloudInit.
+
+        Data blob includes user-supplied Metadata, user data, and the required
+        Heat in-instance configuration.
 
         :param resource: the resource implementation
         :type resource: heat.engine.Resource
@@ -276,7 +274,7 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
         :param user_data_format: Format of user data to return
         :type user_data_format: string
         :returns: multipart mime as a string
-        '''
+        """
 
         if user_data_format == 'RAW':
             return userdata
@@ -406,8 +404,8 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
                        "%(message)s") % dict(name=server.name,
                                              code=code,
                                              message=message)
-            raise resource.ResourceInError(resource_status=status,
-                                           status_reason=errmsg)
+            raise exception.ResourceInError(resource_status=status,
+                                            status_reason=errmsg)
         return False
 
     def rename(self, server, name):
@@ -424,8 +422,8 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
             return False
 
     def check_resize(self, server_id, flavor_id, flavor):
-        """
-        Verify that a resizing server is properly resized.
+        """Verify that a resizing server is properly resized.
+
         If that's the case, confirm the resize, if not raise an error.
         """
         server = self.fetch_server(server_id)
@@ -451,8 +449,8 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
             return True
         else:
             msg = _("Could not confirm resize of server %s") % server_id
-            raise resource.ResourceUnknownStatus(result=msg,
-                                                 resource_status=status)
+            raise exception.ResourceUnknownStatus(
+                result=msg, resource_status=status)
 
     def check_verify_resize(self, server_id):
         server = self.fetch_server(server_id)
@@ -465,8 +463,8 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
             return False
         else:
             msg = _("Confirm resize for server %s failed") % server_id
-            raise resource.ResourceUnknownStatus(result=msg,
-                                                 resource_status=status)
+            raise exception.ResourceUnknownStatus(
+                result=msg, resource_status=status)
 
     def rebuild(self, server_id, image_id, password=None,
                 preserve_ephemeral=False):
@@ -480,8 +478,8 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
             return False
 
     def check_rebuild(self, server_id):
-        """
-        Verify that a rebuilding server is rebuilt.
+        """Verify that a rebuilding server is rebuilt.
+
         Raise error if it ends up in an ERROR state.
         """
         server = self.fetch_server(server_id)
@@ -494,10 +492,7 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
             return True
 
     def meta_serialize(self, metadata):
-        """
-        Serialize non-string metadata values before sending them to
-        Nova.
-        """
+        """Serialize non-string metadata values before sending them to Nova."""
         if not isinstance(metadata, collections.Mapping):
             raise exception.StackValidationFailed(message=_(
                 "nova server metadata needs to be a Map."))
@@ -520,9 +515,7 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
         client.servers.set_meta(server, metadata)
 
     def server_to_ipaddress(self, server):
-        '''
-        Return the server's IP address, fetching it from Nova.
-        '''
+        """Return the server's IP address, fetching it from Nova."""
         try:
             server = self.client().servers.get(server)
         except exceptions.NotFound as ex:
@@ -543,7 +536,6 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
         """Return dict-like structure of server's console urls.
 
         The actual console url is lazily resolved on access.
-
         """
 
         class ConsoleUrls(collections.Mapping):

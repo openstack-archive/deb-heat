@@ -27,6 +27,8 @@ class KeystoneEndpoint(resource.Resource):
 
     default_client_name = 'keystone'
 
+    entity = 'endpoints'
+
     PROPERTIES = (
         NAME, REGION, SERVICE, INTERFACE, SERVICE_URL
     ) = (
@@ -68,21 +70,21 @@ class KeystoneEndpoint(resource.Resource):
         )
     }
 
+    def client(self):
+        return super(KeystoneEndpoint, self).client().client
+
     def _create_endpoint(self,
                          service,
                          interface,
                          url,
                          region=None,
                          name=None):
-        return self.client().client.endpoints.create(
+        return self.client().endpoints.create(
             region=region,
             service=service,
             interface=interface,
             url=url,
             name=name)
-
-    def _delete_endpoint(self, endpoint_id):
-        return self.client().client.endpoints.delete(endpoint_id)
 
     def _update_endpoint(self,
                          endpoint_id,
@@ -91,7 +93,7 @@ class KeystoneEndpoint(resource.Resource):
                          new_interface=None,
                          new_url=None,
                          new_name=None):
-        return self.client().client.endpoints.update(
+        return self.client().endpoints.update(
             endpoint=endpoint_id,
             region=new_region,
             service=new_service,
@@ -135,13 +137,6 @@ class KeystoneEndpoint(resource.Resource):
             new_url=url,
             new_name=name
         )
-
-    def handle_delete(self):
-        if self.resource_id is not None:
-            try:
-                self._delete_endpoint(endpoint_id=self.resource_id)
-            except Exception as ex:
-                self.client_plugin().ignore_not_found(ex)
 
 
 def resource_mapping():

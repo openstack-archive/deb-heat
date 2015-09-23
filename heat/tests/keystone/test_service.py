@@ -54,7 +54,7 @@ class KeystoneServiceTest(common.HeatTestCase):
         self.keystoneclient = mock.MagicMock()
         self.test_service.client = mock.MagicMock()
         self.test_service.client.return_value = self.keystoneclient
-        self.services = self.keystoneclient.client.services
+        self.services = self.keystoneclient.services
 
         # Mock client plugin
         keystone_client_plugin = mock.MagicMock()
@@ -169,25 +169,6 @@ class KeystoneServiceTest(common.HeatTestCase):
             description=None
         )
 
-    def test_service_handle_delete(self):
-        self.test_service.resource_id = '477e8273-60a7-4c41-b683-fdb0bc7cd151'
-        self.services.delete.return_value = None
-
-        self.assertIsNone(self.test_service.handle_delete())
-        self.services.delete.assert_called_once_with(
-            self.test_service.resource_id
-        )
-
-    def test_service_handle_delete_resource_id_is_none(self):
-        self.test_service.resource_id = None
-        self.assertIsNone(self.test_service.handle_delete())
-
-    def test_service_handle_delete_not_found(self):
-        exc = self.keystoneclient.NotFound
-        self.services.delete.side_effect = exc
-
-        self.assertIsNone(self.test_service.handle_delete())
-
     def test_resource_mapping(self):
         mapping = service.resource_mapping()
         self.assertEqual(1, len(mapping))
@@ -266,3 +247,10 @@ class KeystoneServiceTest(common.HeatTestCase):
                          schema.description,
                          'description for property %s is modified' %
                          service.KeystoneService.TYPE)
+
+    def test_show_resource(self):
+        service = mock.Mock()
+        service.to_dict.return_value = {'attr': 'val'}
+        self.services.get.return_value = service
+        res = self.test_service._show_resource()
+        self.assertEqual({'attr': 'val'}, res)

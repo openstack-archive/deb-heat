@@ -13,6 +13,8 @@
 
 import six
 
+import oslo_db.exception
+
 from heat.common import exception
 from heat.common.i18n import _
 from heat.common import identifier
@@ -20,16 +22,17 @@ from heat.objects import event as event_object
 
 
 class Event(object):
-    '''Class representing a Resource state change.'''
+    """Class representing a Resource state change."""
 
     def __init__(self, context, stack, action, status, reason,
                  physical_resource_id, resource_properties, resource_name,
                  resource_type, uuid=None, timestamp=None, id=None):
-        '''
+        """Initialisation of the event.
+
         Initialise from a context, stack, and event information. The timestamp
         and database ID may also be initialised if the event is already in the
         database.
-        '''
+        """
         self.context = context
         self.stack = stack
         self.action = action
@@ -48,7 +51,7 @@ class Event(object):
 
     @classmethod
     def load(cls, context, event_id, event=None, stack=None):
-        '''Retrieve an Event from the database.'''
+        """Retrieve an Event from the database."""
         from heat.engine import stack as parser
 
         ev = (event if event is not None else
@@ -66,7 +69,7 @@ class Event(object):
                    ev.resource_type, ev.uuid, ev.created_at, ev.id)
 
     def store(self):
-        '''Store the Event in the database.'''
+        """Store the Event in the database."""
         ev = {
             'resource_name': self.resource_name,
             'physical_resource_id': self.physical_resource_id,
@@ -84,12 +87,27 @@ class Event(object):
         if self.timestamp is not None:
             ev['created_at'] = self.timestamp
 
-        new_ev = event_object.Event.create(self.context, ev)
+        try:
+            new_ev = event_object.Event.create(self.context, ev)
+        except oslo_db.exception.DBError:
+            # Attempt do drop the largest key and re-store as we expect
+            # This to mostly happen with one large config blob property
+            max_key, max_val = max(ev['resource_properties'].items(),
+                                   key=lambda i: len(repr(i[1])))
+            err = 'Resource properties are too large to store'
+            ev['resource_properties'].update({'Error': err})
+            ev['resource_properties'][max_key] = '<Deleted, too large>'
+            try:
+                new_ev = event_object.Event.create(self.context, ev)
+            except oslo_db.exception.DBError:
+                # Give up and drop all properties..
+                ev['resource_properties'] = {'Error': err}
+                new_ev = event_object.Event.create(self.context, ev)
         self.id = new_ev.id
         return self.id
 
     def identifier(self):
-        '''Return a unique identifier for the event.'''
+        """Return a unique identifier for the event."""
         if self.uuid is None:
             return None
 

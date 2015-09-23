@@ -160,18 +160,24 @@ For example, Heat currently supports the following values for the
     The key with value ``2015-10-15`` indicates that the YAML document is a HOT
     template and it may contain features added and/or removed up until the
     Liberty release. This version removes the *Fn::Select* function, path based
-    ``get_attr``/``get_param`` references should be used instead::
+    ``get_attr``/``get_param`` references should be used instead. Moreover
+    ``get_attr`` since this version returns dict of all attributes for the
+    given resource excluding *show* attribute, if there's no <attribute name>
+    specified, e.g. :code:`{ get_attr: [<resource name>]}`. This version
+    also adds the str_split function and support for passing multiple lists to
+    the existing list_join function. The complete list of supported functions
+    is::
 
-  get_attr
-  get_file
-  get_param
-  get_resource
-  list_join
-  repeat
-  digest
-  resource_facade
-  str_replace
-  str_split
+      get_attr
+      get_file
+      get_param
+      get_resource
+      list_join
+      repeat
+      digest
+      resource_facade
+      str_replace
+      str_split
 
 .. _hot_spec_parameter_groups:
 
@@ -504,6 +510,16 @@ For example
        constraints:
          - custom_constraint: nova.keypair
 
+The following section lists the custom constraints and the plug-ins
+that support them.
+
+.. table_from_text:: ../../setup.cfg
+   :header: Name,Plug-in
+   :regex: (.*)=(.*)
+   :start-after: heat.constraints =
+   :end-before: heat.stack_lifecycle_plugins =
+   :sort:
+
 .. _hot_spec_pseudo_parameters:
 
 Pseudo parameters
@@ -725,7 +741,7 @@ attribute name
     specified. These additional parameters are used to navigate the data
     structure to return the desired value.
 
-The following example demonstrates how to use the :code:`get_attr` function
+The following example demonstrates how to use the :code:`get_attr` function:
 
 .. code-block:: yaml
 
@@ -747,9 +763,18 @@ In this example, if the ``networks`` attribute contained the following data::
    {"public": ["2001:0db8:0000:0000:0000:ff00:0042:8329", "1.2.3.4"],
     "private": ["10.0.0.1"]}
 
-then the value of :code:`get_attr` function would resolve to ``10.0.0.1``
+then the value of ``get_attr`` function would resolve to ``10.0.0.1``
 (first item of the ``private`` entry in the ``networks`` map).
 
+From ``heat_template_version``: '2015-10-15' <attribute_name> is optional and
+if <attribute_name> is not specified, ``get_attr`` returns dict of all
+attributes for the given resource excluding *show* attribute. In this case
+syntax would be next:
+
+.. code-block:: yaml
+
+  get_attr:
+    - <resource_name>
 
 get_file
 --------
@@ -906,6 +931,19 @@ For example
    list_join: [', ', ['one', 'two', 'and three']]
 
 This resolve to the string ``one, two, and three``.
+
+From HOT version ``2015-10-15`` you may optionally pass additional lists, which
+will be appended to the previous lists to join.
+
+For example::
+
+   list_join: [', ', ['one', 'two'], ['three', 'four']]]
+
+This resolve to the string ``one, two, three, four``.
+
+From HOT version ``2015-10-15`` you may optionally also pass non-string list
+items (e.g json/map/list parameters or attributes) and they will be serialized
+as json before joining.
 
 
 digest
@@ -1071,7 +1109,11 @@ template
 
 params
     Provides parameter mappings in the form of dictionary. Each key refers to a
-    placeholder used in the ``template`` attribute.
+    placeholder used in the ``template`` attribute. From HOT version
+    ``2015-10-15`` you may optionally pass non-string parameter values
+    (e.g json/map/list parameters or attributes) and they will be serialized
+    as json before replacing, prior heat/HOT versions require string values.
+
 
 The following example shows a simple use of the ``str_replace`` function in the
 outputs section of a template to build a URL for logging into a deployed

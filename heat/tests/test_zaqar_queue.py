@@ -16,7 +16,6 @@ import six
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import resource
 from heat.engine.resources.openstack.zaqar import queue
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
@@ -199,6 +198,7 @@ class ZaqarMessageQueueTest(common.HeatTestCase):
         mock_def = mock.Mock(spec=rsrc_defn.ResourceDefinition)
         mock_stack = mock.Mock()
         mock_stack.db_resource_get.return_value = None
+        mock_stack.has_cache_data.return_value = False
 
         zaqar_q = mock.Mock()
         zaqar_q.delete.side_effect = ResourceNotFound
@@ -261,7 +261,7 @@ class ZaqarMessageQueueTest(common.HeatTestCase):
         new_queue = resource_defns['MyQueue2']
 
         scheduler.TaskRunner(queue.create)()
-        err = self.assertRaises(resource.UpdateReplace,
+        err = self.assertRaises(exception.UpdateReplace,
                                 scheduler.TaskRunner(queue.update,
                                                      new_queue))
         msg = 'The Resource MyQueue2 requires replacement.'

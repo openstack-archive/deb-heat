@@ -178,7 +178,8 @@ class ProviderTemplateTest(common.HeatTestCase):
         # verify Map conversion
         self.assertEqual(map_prop_val, converted_params.get("AMap"))
 
-        with mock.patch.object(properties.Properties, '__getitem__') as m_get:
+        with mock.patch.object(properties.Properties,
+                               'get_user_value') as m_get:
             m_get.side_effect = ValueError('boom')
 
             # If the property doesn't exist on INIT, return default value
@@ -432,6 +433,47 @@ class ProviderTemplateTest(common.HeatTestCase):
         self.assertEqual("Property Foo type mismatch between facade "
                          "DummyResource (Map) and provider (String)",
                          six.text_type(ex))
+
+    def test_properties_list_with_none(self):
+        provider = {
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Parameters': {
+                'Foo': {'Type': "CommaDelimitedList"},
+            },
+        }
+        files = {'test_resource.template': json.dumps(provider)}
+
+        class DummyResource(generic_rsrc.GenericResource):
+            support_status = support.SupportStatus()
+            properties_schema = {"Foo":
+                                 properties.Schema(properties.Schema.LIST)}
+            attributes_schema = {}
+
+        env = environment.Environment()
+        resource._register_class('DummyResource', DummyResource)
+        env.load({'resource_registry':
+                  {'DummyResource': 'test_resource.template'}})
+        stack = parser.Stack(utils.dummy_context(), 'test_stack',
+                             template.Template(
+                                 {'HeatTemplateFormatVersion': '2012-12-12'},
+                                 files=files, env=env),
+                             stack_id=str(uuid.uuid4()))
+
+        definition = rsrc_defn.ResourceDefinition('test_t_res',
+                                                  "DummyResource",
+                                                  {"Foo": [None,
+                                                           'test', None]})
+        temp_res = template_resource.TemplateResource('test_t_res',
+                                                      definition, stack)
+        self.assertIsNone(temp_res.validate())
+
+        definition = rsrc_defn.ResourceDefinition('test_t_res',
+                                                  "DummyResource",
+                                                  {"Foo": [None,
+                                                           None, None]})
+        temp_res = template_resource.TemplateResource('test_t_res',
+                                                      definition, stack)
+        self.assertIsNone(temp_res.validate())
 
     def test_properties_type_match(self):
         provider = {
@@ -943,7 +985,7 @@ class TemplateResourceCrudTest(common.HeatTestCase):
         self.res.handle_create()
 
         self.res.create_with_template.assert_called_once_with(
-            self.provider, {'Foo': 'bar', 'Blarg': 'wibble'})
+            self.provider, {'Foo': 'bar'})
 
     def test_handle_adopt(self):
         self.res.create_with_template = mock.Mock(return_value=None)
@@ -951,7 +993,7 @@ class TemplateResourceCrudTest(common.HeatTestCase):
         self.res.handle_adopt(resource_data={'resource_id': 'fred'})
 
         self.res.create_with_template.assert_called_once_with(
-            self.provider, {'Foo': 'bar', 'Blarg': 'wibble'},
+            self.provider, {'Foo': 'bar'},
             adopt_data={'resource_id': 'fred'})
 
     def test_handle_update(self):
@@ -960,7 +1002,7 @@ class TemplateResourceCrudTest(common.HeatTestCase):
         self.res.handle_update(self.defn, None, None)
 
         self.res.update_with_template.assert_called_once_with(
-            self.provider, {'Foo': 'bar', 'Blarg': 'wibble'})
+            self.provider, {'Foo': 'bar'})
 
     def test_handle_delete(self):
         self.res.rpc_client = mock.MagicMock()

@@ -388,6 +388,38 @@ class PropertyUnspecifiedError(HeatException):
         super(PropertyUnspecifiedError, self).__init__(**kwargs)
 
 
+class UpdateReplace(Exception):
+    '''Raised when resource update requires replacement.'''
+    def __init__(self, resource_name='Unknown'):
+        msg = _("The Resource %s requires replacement.") % resource_name
+        super(Exception, self).__init__(six.text_type(msg))
+
+
+class ResourceUnknownStatus(HeatException):
+    msg_fmt = _('%(result)s - Unknown status %(resource_status)s due to '
+                '"%(status_reason)s"')
+
+    def __init__(self, result=_('Resource failed'),
+                 status_reason=_('Unknown'), **kwargs):
+        super(ResourceUnknownStatus, self).__init__(
+            result=result, status_reason=status_reason, **kwargs)
+
+
+class ResourceInError(HeatException):
+    msg_fmt = _('Went to status %(resource_status)s '
+                'due to "%(status_reason)s"')
+
+    def __init__(self, status_reason=_('Unknown'), **kwargs):
+        super(ResourceInError, self).__init__(status_reason=status_reason,
+                                              **kwargs)
+
+
+class UpdateInProgress(Exception):
+    def __init__(self, resource_name='Unknown'):
+        msg = _("The resource %s is already being updated.") % resource_name
+        super(Exception, self).__init__(six.text_type(msg))
+
+
 class HTTPExceptionDisguise(Exception):
     """Disguises HTTP exceptions so they can be handled by the webob fault
     application in the wsgi pipeline.
@@ -487,3 +519,7 @@ class SIGHUPInterrupt(HeatException):
 class ResourceTypeUnavailable(HeatException):
     msg_fmt = _("Service %(service_name)s does not have required endpoint in "
                 "service catalog for the resource type %(resource_type)s")
+
+
+class NoActionRequired(Exception):
+    pass

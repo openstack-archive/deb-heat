@@ -473,18 +473,18 @@ class Pool(neutron.NeutronResource):
             if vip_status == 'ACTIVE':
                 return True
             if vip_status == 'ERROR':
-                raise resource.ResourceInError(
+                raise exception.ResourceInError(
                     resource_status=vip_status,
                     status_reason=_('error in vip'))
-            raise resource.ResourceUnknownStatus(
+            raise exception.ResourceUnknownStatus(
                 resource_status=vip_status,
                 result=_('Pool creation failed due to vip'))
         elif status == 'ERROR':
-            raise resource.ResourceInError(
+            raise exception.ResourceInError(
                 resource_status=status,
                 status_reason=_('error in pool'))
         else:
-            raise resource.ResourceUnknownStatus(
+            raise exception.ResourceUnknownStatus(
                 resource_status=status,
                 result=_('Pool creation failed'))
 

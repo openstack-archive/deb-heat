@@ -26,7 +26,10 @@ test_template_one_resource = {
                 'value': 'Test1',
                 'fail': False,
                 'update_replace': False,
-                'wait_secs': 0
+                'wait_secs': 0,
+                'action_wait_secs': {'create': 1},
+                'client_name': 'nova',
+                'entity_name': 'servers',
             }
         }
     }
@@ -42,7 +45,8 @@ test_template_two_resource = {
                 'value': 'Test1',
                 'fail': False,
                 'update_replace': False,
-                'wait_secs': 0
+                'wait_secs': 0,
+                'action_wait_secs': {'update': 1}
             }
         },
         'test2': {
@@ -236,6 +240,29 @@ resources:
                           disable_rollback=False)
         # since stack update failed only the original resource is present
         updated_resources = {'test1': 'OS::Heat::TestResource'}
+        self.assertEqual(updated_resources,
+                         self.list_resources(stack_identifier))
+
+    def test_stack_update_from_failed(self):
+        # Prove it's possible to update from an UPDATE_FAILED state
+        template = _change_rsrc_properties(test_template_one_resource,
+                                           ['test1'],
+                                           {'value': 'test_update_failed'})
+        stack_identifier = self.stack_create(
+            template=template)
+        initial_resources = {'test1': 'OS::Heat::TestResource'}
+        self.assertEqual(initial_resources,
+                         self.list_resources(stack_identifier))
+
+        tmpl_update = _change_rsrc_properties(
+            test_template_one_resource, ['test1'], {'fail': True})
+        # Update with bad template, we should fail
+        self.update_stack(stack_identifier, tmpl_update,
+                          expected_status='UPDATE_FAILED')
+        # but then passing a good template should succeed
+        self.update_stack(stack_identifier, test_template_two_resource)
+        updated_resources = {'test1': 'OS::Heat::TestResource',
+                             'test2': 'OS::Heat::TestResource'}
         self.assertEqual(updated_resources,
                          self.list_resources(stack_identifier))
 

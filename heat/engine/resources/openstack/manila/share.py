@@ -14,6 +14,7 @@
 from oslo_log import log as logging
 import six
 
+from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LI
 from heat.engine import attributes
@@ -248,17 +249,17 @@ class ManilaShare(resource.Resource):
                     'Error during applying access rules to share "{0}". '
                     'The root cause of the problem is the following: {1}.'
                 ).format(self.resource_id, ex.message)
-                raise resource.ResourceInError(status_reason=reason)
+                raise exception.ResourceInError(status_reason=reason)
         elif share_status == self.STATUS_ERROR:
             reason = _('Error during creation of share "{0}"').format(
                 self.resource_id)
-            raise resource.ResourceInError(status_reason=reason,
-                                           resource_status=share_status)
+            raise exception.ResourceInError(status_reason=reason,
+                                            resource_status=share_status)
         else:
             reason = _('Unknown share_status during creation of share "{0}"'
                        ).format(self.resource_id)
-            raise resource.ResourceUnknownStatus(status_reason=reason,
-                                                 resource_status=share_status)
+            raise exception.ResourceUnknownStatus(
+                status_reason=reason, resource_status=share_status)
 
     def check_delete_complete(self, *args):
         if not self.resource_id:
@@ -275,7 +276,7 @@ class ManilaShare(resource.Resource):
                 return False
             elif share.status in (self.STATUS_ERROR,
                                   self.STATUS_ERROR_DELETING):
-                raise resource.ResourceInError(
+                raise exception.ResourceInError(
                     status_reason=_(
                         'Error during deleting share "{0}".'
                     ).format(self.resource_id),
@@ -283,7 +284,7 @@ class ManilaShare(resource.Resource):
             else:
                 reason = _('Unknown status during deleting share '
                            '"{0}"').format(self.resource_id)
-                raise resource.ResourceUnknownStatus(
+                raise exception.ResourceUnknownStatus(
                     status_reason=reason, resource_status=share.status)
 
     def handle_check(self):
