@@ -9,7 +9,7 @@ Index: heat/requirements.txt
 ===================================================================
 --- heat.orig/requirements.txt
 +++ heat/requirements.txt
-@@ -51,8 +51,7 @@ python-zaqarclient>=0.1.1
+@@ -49,8 +49,7 @@ python-zaqarclient>=0.1.1
  pytz>=2013.6
  PyYAML>=3.1.0
  requests>=2.5.2

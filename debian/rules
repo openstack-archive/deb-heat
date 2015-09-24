@@ -58,6 +58,8 @@ override_dh_install:
 
 
 	dh_install --fail-missing -Xbin/cinder-keystone-setup
+	# Some files are missing, fix that...
+	cp -axuf heat/db/sqlalchemy/migrate_repo/* $(CURDIR)/debian/python-heat/usr/lib/python2.7/dist-packages/heat/db/sqlalchemy/migrate_repo
 
 override_dh_auto_build:
 	dh_auto_build
