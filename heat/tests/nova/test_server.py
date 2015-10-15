@@ -1378,11 +1378,6 @@ class ServersTest(common.HeatTestCase):
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
         self.stub_NetworkConstraint_validate()
 
-        self.patchobject(neutronV20, 'find_resourceid_by_name_or_id',
-                         return_value='12345')
-        self.patchobject(neutronclient.Client, 'show_network',
-                         return_value={'network': {'subnets': ['abcd1234']}})
-
         self.m.ReplayAll()
 
         self.assertIsNone(server.validate())
@@ -1403,11 +1398,6 @@ class ServersTest(common.HeatTestCase):
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
         self.stub_NetworkConstraint_validate()
-
-        self.patchobject(neutronV20, 'find_resourceid_by_name_or_id',
-                         return_value='12345')
-        self.patchobject(neutronclient.Client, 'show_network',
-                         return_value={'network': {'subnets': ['abcd1234']}})
 
         self.m.ReplayAll()
 
@@ -3869,7 +3859,7 @@ class ServerInternalPortTest(common.HeatTestCase):
         self.assertEqual([{'port-id': '12345', 'net-id': '4321'}], nics)
         self.assertEqual(0, create_internal_port.call_count)
 
-    def validate_internal_port_subnet_not_this_network(self):
+    def test_validate_internal_port_subnet_not_this_network(self):
         tmpl = """
         heat_template_version: 2015-10-15
         resources:
@@ -3885,14 +3875,19 @@ class ServerInternalPortTest(common.HeatTestCase):
         t, stack, server = self._return_template_stack_and_rsrc_defn('test',
                                                                      tmpl)
 
+        networks = server.properties['networks']
+        for network in networks:
+            # validation passes at validate time
+            server._validate_network(network)
+
         self.patchobject(neutron.NeutronClientPlugin,
                          'network_id_from_subnet_id',
                          return_value='not_this_network')
         self.resolve.return_value = '4321'
 
         ex = self.assertRaises(exception.StackValidationFailed,
-                               server.validate)
-        self.assertEqual('Specified subnet 1234 does not belongs to'
+                               server._build_nics, networks)
+        self.assertEqual('Specified subnet 1234 does not belongs to '
                          'network 4321.', six.text_type(ex))
 
     def test_build_nics_create_internal_port_all_props(self):
@@ -4154,7 +4149,8 @@ class ServerInternalPortTest(common.HeatTestCase):
 
         server.client = mock.Mock()
         server.client().servers.get.return_value = Fake()
-
+        server.client_plugin = mock.Mock()
+        server.client_plugin()._has_extension.return_value = True
         server._data = {"internal_ports": '[{"id": "1122"}]',
                         "external_ports": '[{"id": "3344"},{"id": "5566"}]'}
 
@@ -4289,3 +4285,39 @@ class ServerInternalPortTest(common.HeatTestCase):
         self.port_update.has_calls((1122, {'port': port1_fixed_ip}),
                                    (3344, {'port': port2_fixed_ip}),
                                    (5566, {'port': port3_fixed_ip}))
+
+    def test_store_external_ports_os_interface_not_installed(self):
+        tmpl = """
+        heat_template_version: 2015-10-15
+        resources:
+          server:
+            type: OS::Nova::Server
+            properties:
+              flavor: m1.small
+              image: F17-x86_64-gold
+              networks:
+                - network: 4321
+        """
+        t, stack, server = self._return_template_stack_and_rsrc_defn('test',
+                                                                     tmpl)
+
+        class Fake(object):
+            def interface_list(self):
+                return [iface('1122'),
+                        iface('1122'),
+                        iface('2233'),
+                        iface('3344')]
+
+        server.client = mock.Mock()
+        server.client().servers.get.return_value = Fake()
+        server.client_plugin = mock.Mock()
+        server.client_plugin()._has_extension.return_value = False
+
+        server._data = {"internal_ports": '[{"id": "1122"}]',
+                        "external_ports": '[{"id": "3344"},{"id": "5566"}]'}
+
+        iface = collections.namedtuple('iface', ['port_id'])
+        update_data = self.patchobject(server, '_data_update_ports')
+
+        server.store_external_ports()
+        self.assertEqual(0, update_data.call_count)

@@ -20,7 +20,6 @@ from oslo_utils import netutils
 from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LI
-from heat.engine.cfn import functions as cfn_funcs
 
 LOG = logging.getLogger(__name__)
 
@@ -65,32 +64,20 @@ class ServerNetworkMixin(object):
                           network=network[self.NETWORK_ID],
                           server=self.name))
 
-        # If subnet and net are specified with some external resources, check
-        # them. Otherwise, if their are resources of current stack, skip
-        # validating in case of raising error and check it only during
-        # resource creating.
-        is_ref = False
-        for item in [subnet, net_uuid, net_id]:
-            if isinstance(item, (cfn_funcs.ResourceRef, cfn_funcs.GetAtt)):
-                is_ref = True
-                break
-        if not is_ref:
-            self._validate_belonging_subnet_to_net(network)
-
     def _validate_belonging_subnet_to_net(self, network):
         if network.get(self.NETWORK_PORT) is None and self.is_using_neutron():
             net = self._get_network_id(network)
             # check if there are subnet and network both specified that
             # subnet belongs to specified network
-            if (network.get(self.NETWORK_SUBNET) is not None
-               and (net is not None)):
+            subnet = network.get(self.NETWORK_SUBNET)
+            if (subnet is not None and net is not None):
                 subnet_net = self.client_plugin(
                     'neutron').network_id_from_subnet_id(
                     self._get_subnet_id(network))
                 if subnet_net != net:
-                    msg = _('Specified subnet %(subnet)s does not belongs to'
+                    msg = _('Specified subnet %(subnet)s does not belongs to '
                             'network %(network)s.') % {
-                        'subnet': subnet_net,
+                        'subnet': subnet,
                         'network': net}
                     raise exception.StackValidationFailed(message=msg)
 
@@ -159,6 +146,16 @@ class ServerNetworkMixin(object):
         creating. We need to store information about that ports, so store
         their IDs to data with key `external_ports`.
         """
+        if not self.is_using_neutron():
+            return
+
+        # check if OSInterface extension is installed on this cloud. If it's
+        # not, then novaclient's interface_list method cannot be used to get
+        # the list of interfaces.
+        if not self.client_plugin()._has_extension(
+                self.client_plugin().OS_INTERFACE_EXTENSION):
+            return
+
         server = self.client().servers.get(self.resource_id)
         ifaces = server.interface_list()
         external_port_ids = set(iface.port_id for iface in ifaces)
@@ -331,6 +328,9 @@ class ServerNetworkMixin(object):
         return remove_ports, add_nets
 
     def prepare_ports_for_replace(self):
+        if not self.is_using_neutron():
+            return
+
         data = {'external_ports': [],
                 'internal_ports': []}
         port_data = itertools.chain(
@@ -356,6 +356,9 @@ class ServerNetworkMixin(object):
                 port['id'], {'port': {'fixed_ips': []}})
 
     def restore_ports_after_rollback(self):
+        if not self.is_using_neutron():
+            return
+
         old_server = self.stack._backup_stack().resources.get(self.name)
 
         port_data = itertools.chain(self._data_get_ports(),
