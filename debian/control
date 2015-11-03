@@ -157,6 +157,7 @@ Architecture: all
 Depends: adduser,
          dbconfig-common,
          python-heat (=${binary:Version}),
+         q-text-as-data,
          ${misc:Depends},
          ${python:Depends},
 Description: OpenStack orchestration service - common files
