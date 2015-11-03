@@ -1,3 +1,9 @@
+heat (1:5.0.0-2) unstable; urgency=medium
+
+  * Rebuilt with openstack-pkg-tools 37 to use Keystone API v3.
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 03 Nov 2015 08:21:25 +0000
+
 heat (1:5.0.0-1) unstable; urgency=medium
 
   * New upstream release.
