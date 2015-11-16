@@ -1,3 +1,10 @@
+heat (1:5.0.0-4) unstable; urgency=medium
+
+  * debian/rules:
+    - add copying of dist-packages/heat/cloudinit/ content
+
+ -- Daniil Trishkin <dtrishkin@mirantis.com>  Mon, 16 Nov 2015 16:53:39 +0300
+
 heat (1:5.0.0-3) unstable; urgency=medium
 
   * Added q-text-as-data in depends: for heat-common.
