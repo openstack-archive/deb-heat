@@ -199,6 +199,14 @@ class StackResourceTest(StackResourceBaseTest):
         ret = self.parent_resource.prepare_abandon()
         self.assertEqual({}, ret)
 
+    def test_abandon_nested_not_deleted(self):
+        delete_nested = self.patchobject(self.parent_resource, 'delete_nested')
+
+        self.parent_stack.prepare_abandon()
+        self.parent_stack.delete(abandon=True)
+
+        self.assertEqual(0, delete_nested.call_count)
+
     @testtools.skipIf(six.PY3, "needs a separate change")
     def test_implementation_signature(self):
         self.parent_resource.child_template = mock.Mock(
@@ -214,8 +222,10 @@ class StackResourceTest(StackResourceBaseTest):
         self.assertNotEqual(sig2, sig2a)
 
     def test_propagated_files(self):
-        """Makes sure that the files map in the top level stack
-        are passed on to the child stack.
+        """Test passing of the files map in the top level to the child.
+
+        Makes sure that the files map in the top level stack are passed on to
+        the child stack.
         """
         self.parent_stack.t.files["foo"] = "bar"
         parsed_t = self.parent_resource._parse_child_template(self.templ, None)
@@ -377,28 +387,22 @@ class StackResourceTest(StackResourceBaseTest):
         self.assertEqual(raise_exc_msg, six.text_type(exc))
 
     def _test_validate_unknown_resource_type(self, stack_name, tmpl,
-                                             resource_name,
-                                             stack_resource=True):
-        raise_exc_msg = 'The Resource Type (idontexist) could not be found.'
+                                             resource_name):
+        raise_exc_msg = ('Unknown resource Type : idontexist')
         stack = parser.Stack(utils.dummy_context(), stack_name, tmpl)
         rsrc = stack[resource_name]
-        if stack_resource:
-            exc = self.assertRaises(exception.StackValidationFailed,
-                                    rsrc.validate)
-        else:
-            exc = self.assertRaises(exception.ResourceTypeNotFound,
-                                    rsrc.validate)
+
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                rsrc.validate)
         self.assertIn(raise_exc_msg, six.text_type(exc))
 
     def test_validate_resource_group(self):
-        # resource group validate without nested template is a normal
-        # resource validation
+        # test validate without nested template
         stack_name = 'validate_resource_group_template'
         t = template_format.parse(resource_group_template)
         tmpl = templatem.Template(t)
         self._test_validate_unknown_resource_type(stack_name, tmpl,
-                                                  'my_resource_group',
-                                                  stack_resource=False)
+                                                  'my_resource_group')
 
         # validate with nested template
         res_prop = t['resources']['my_resource_group']['properties']
@@ -409,7 +413,7 @@ class StackResourceTest(StackResourceBaseTest):
                                                   'my_resource_group')
 
     def test_validate_heat_autoscaling_group(self):
-        # Autoscaling validation is a nested stack validation
+        # test validate without nested template
         stack_name = 'validate_heat_autoscaling_group_template'
         t = template_format.parse(heat_autoscaling_group_template)
         tmpl = templatem.Template(t)
@@ -520,9 +524,10 @@ class StackResourceTest(StackResourceBaseTest):
             self.parent_resource.context, mock.ANY)
 
     def test_need_update_for_nested_resource(self):
-        """
-        The resource in Create or Update state and has nested stack,
-        should need update.
+        """Test the resource with nested stack should need update.
+
+        The resource in Create or Update state and has nested stack, should
+        need update.
         """
         self.parent_resource.action = self.parent_resource.CREATE
         need_update = self.parent_resource._needs_update(
@@ -532,10 +537,11 @@ class StackResourceTest(StackResourceBaseTest):
             self.parent_resource.properties,
             self.parent_resource)
 
-        self.assertEqual(True, need_update)
+        self.assertTrue(need_update)
 
     def test_need_update_in_failed_state_for_nested_resource(self):
-        """
+        """Test the resource with no nested stack should need replacement.
+
         The resource in failed state and has no nested stack,
         should need update with UpdateReplace.
         """
@@ -551,7 +557,8 @@ class StackResourceTest(StackResourceBaseTest):
                           self.parent_resource)
 
     def test_need_update_in_init_complete_state_for_nested_resource(self):
-        """
+        """Test the resource with no nested stack should need replacement.
+
         The resource in failed state and has no nested stack,
         should need update with UpdateReplace.
         """
@@ -717,7 +724,8 @@ class StackResourceCheckCompleteTest(StackResourceBaseTest):
         self.nested.COMPLETE = 'COMPLETE'
 
     def test_state_ok(self):
-        """
+        """Test case when check_create_complete should return True.
+
         check_create_complete should return True create task is
         done and the nested stack is in (<action>,COMPLETE) state.
         """
@@ -729,7 +737,8 @@ class StackResourceCheckCompleteTest(StackResourceBaseTest):
             show_deleted=self.show_deleted, force_reload=True)
 
     def test_state_err(self):
-        """
+        """Test case when check_create_complete should raise error.
+
         check_create_complete should raise error when create task is
         done but the nested stack is not in (<action>,COMPLETE) state
         """
@@ -749,7 +758,8 @@ class StackResourceCheckCompleteTest(StackResourceBaseTest):
             show_deleted=self.show_deleted, force_reload=True)
 
     def test_state_unknown(self):
-        """
+        """Test case when check_create_complete should raise error.
+
         check_create_complete should raise error when create task is
         done but the nested stack is not in (<action>,COMPLETE) state
         """
@@ -839,7 +849,8 @@ class WithTemplateTest(StackResourceBaseTest):
         nested = mock.MagicMock()
         nested.updated_time = 'now_time'
         nested.state = ('CREATE', 'COMPLETE')
-        nested.identifier.return_value = 'stack_identifier'
+        nested.identifier.return_value = {'stack_identifier':
+                                          'stack-identifier'}
         self.parent_resource.nested = mock.MagicMock(return_value=nested)
         self.parent_resource._nested = nested
 
@@ -856,15 +867,16 @@ class WithTemplateTest(StackResourceBaseTest):
             self.empty_temp, user_params=self.params,
             timeout_mins=self.timeout_mins)
         rpcc.return_value.update_stack.assert_called_once_with(
-            self.ctx, 'stack_identifier', self.empty_temp.t,
-            child_env, {}, {'timeout_mins': self.timeout_mins})
+            self.ctx, {'stack_identifier': 'stack-identifier'},
+            self.empty_temp.t, child_env, {},
+            {'timeout_mins': self.timeout_mins})
 
 
 class RaiseLocalException(StackResourceBaseTest):
 
     def test_heat_exception(self):
-        local = exception.InvalidResourceType(message='test')
-        self.assertRaises(exception.InvalidResourceType,
+        local = exception.StackValidationFailed(message='test')
+        self.assertRaises(exception.StackValidationFailed,
                           self.parent_resource.raise_local_exception, local)
 
     def test_messaging_timeout(self):
@@ -873,9 +885,9 @@ class RaiseLocalException(StackResourceBaseTest):
                           self.parent_resource.raise_local_exception, local)
 
     def test_remote_heat_ex(self):
-        class InvalidResourceType_Remote(exception.InvalidResourceType):
+        class StackValidationFailed_Remote(exception.StackValidationFailed):
             pass
 
-        local = InvalidResourceType_Remote(message='test')
+        local = StackValidationFailed_Remote(message='test')
         self.assertRaises(exception.ResourceFailure,
                           self.parent_resource.raise_local_exception, local)

@@ -27,6 +27,7 @@ from heat.engine import resource
 from heat.engine.resources.openstack.heat import resource_group
 from heat.engine.resources.openstack.heat import software_config as sc
 from heat.engine.resources import signal_responder
+from heat.engine import rsrc_defn
 from heat.engine import support
 from heat.rpc import api as rpc_api
 
@@ -37,9 +38,9 @@ LOG = logging.getLogger(__name__)
 
 
 class SoftwareDeployment(signal_responder.SignalResponder):
-    '''
-    This resource associates a server with some configuration which
-    is to be deployed to that server.
+    """This resource associates a server with some configuration.
+
+    The configuration is to be deployed to that server.
 
     A deployment allows input values to be specified which map to the inputs
     schema defined in the config resource. These input values are interpreted
@@ -64,7 +65,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
     actions, or a config can read the value of the deploy_action input to
     allow conditional logic to perform different configuration for different
     actions.
-    '''
+    """
 
     support_status = support.SupportStatus(version='2014.1')
 
@@ -505,9 +506,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             timeutils.utcnow().isoformat())
 
     def FnGetAtt(self, key, *path):
-        '''
-        Resource attributes map to deployment outputs values
-        '''
+        """Resource attributes map to deployment outputs values."""
         sd = self.rpc_client().show_software_deployment(
             self.context, self.resource_id)
         ov = sd[rpc_api.SOFTWARE_DEPLOYMENT_OUTPUT_VALUES] or {}
@@ -527,11 +526,10 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         return None
 
     def validate(self):
-        '''
-        Validate any of the provided params
+        """Validate any of the provided params.
 
         :raises StackValidationFailed: if any property failed validation.
-        '''
+        """
         super(SoftwareDeployment, self).validate()
         server = self.properties[self.SERVER]
         if server:
@@ -546,16 +544,16 @@ class SoftwareDeployment(signal_responder.SignalResponder):
 
 
 class SoftwareDeploymentGroup(resource_group.ResourceGroup):
-    '''
-    This resource associates a group of servers with some configuration which
-    is to be deployed to all servers in the group.
+    """This resource associates a group of servers with some configuration.
+
+    The configuration is to be deployed to all servers in the group.
 
     The properties work in a similar way to OS::Heat::SoftwareDeployment,
     and in addition to the attributes documented, you may pass any
     attribute supported by OS::Heat::SoftwareDeployment, including those
     exposing arbitrary outputs, and return a map of deployment names to
     the specified attribute.
-    '''
+    """
 
     support_status = support.SupportStatus(version='5.0.0')
 
@@ -623,25 +621,16 @@ class SoftwareDeploymentGroup(resource_group.ResourceGroup):
     def _resource_names(self):
         return six.iterkeys(self.properties.get(self.SERVERS, {}))
 
-    def _do_prop_replace(self, res_name, res_def_template):
-        res_def = copy.deepcopy(res_def_template)
-        props = res_def[self.RESOURCE_DEF_PROPERTIES]
-        servers = self.properties.get(self.SERVERS, {})
-        props[SoftwareDeployment.SERVER] = servers.get(res_name)
-        return res_def
+    def get_resource_def(self, include_all=False):
+        return dict(self.properties)
 
-    def _build_resource_definition(self, include_all=False):
-        p = self.properties
-        return {
-            self.RESOURCE_DEF_TYPE: 'OS::Heat::SoftwareDeployment',
-            self.RESOURCE_DEF_PROPERTIES: {
-                self.CONFIG: p[self.CONFIG],
-                self.INPUT_VALUES: p[self.INPUT_VALUES],
-                self.DEPLOY_ACTIONS: p[self.DEPLOY_ACTIONS],
-                self.SIGNAL_TRANSPORT: p[self.SIGNAL_TRANSPORT],
-                self.NAME: p[self.NAME],
-            }
-        }
+    def build_resource_definition(self, res_name, res_defn):
+        props = copy.deepcopy(res_defn)
+        servers = props.pop(self.SERVERS)
+        props[SoftwareDeployment.SERVER] = servers.get(res_name)
+        return rsrc_defn.ResourceDefinition(res_name,
+                                            'OS::Heat::SoftwareDeployment',
+                                            props, None)
 
     def FnGetAtt(self, key, *path):
         rg = super(SoftwareDeploymentGroup, self)
@@ -662,8 +651,9 @@ class SoftwareDeploymentGroup(resource_group.ResourceGroup):
 
 class SoftwareDeployments(SoftwareDeploymentGroup):
 
-    deprecation_msg = _('This resource is deprecated and use is discouraged. '
-                        'Please use resource OS::Heat:SoftwareDeploymentGroup '
+    deprecation_msg = _('The resource OS::Heat::SoftwareDeployments is '
+                        'deprecated and usage is discouraged. Please use '
+                        'resource OS::Heat::SoftwareDeploymentGroup '
                         'instead.')
     support_status = support.SupportStatus(status=support.DEPRECATED,
                                            message=deprecation_msg,

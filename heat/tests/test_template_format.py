@@ -21,6 +21,7 @@ import yaml
 from heat.common import config
 from heat.common import exception
 from heat.common import template_format
+from heat.engine.clients.os import neutron
 from heat.tests import common
 from heat.tests import utils
 
@@ -39,10 +40,9 @@ class JsonToYamlTest(common.HeatTestCase):
 
         template_test_count = 0
         for (json_str,
-             yml_str,
-             file_name) in self.convert_all_json_to_yaml(path):
+             yml_str) in self.convert_all_json_to_yaml(path):
 
-            self.compare_json_vs_yaml(json_str, yml_str, file_name)
+            self.compare_json_vs_yaml(json_str, yml_str)
             template_test_count += 1
             if template_test_count >= self.expected_test_count:
                 break
@@ -51,12 +51,11 @@ class JsonToYamlTest(common.HeatTestCase):
                         'Expected at least %d templates to be tested, not %d' %
                         (self.expected_test_count, template_test_count))
 
-    def compare_json_vs_yaml(self, json_str, yml_str, file_name):
+    def compare_json_vs_yaml(self, json_str, yml_str):
         yml = template_format.parse(yml_str)
 
-        self.assertEqual(u'2012-12-12', yml[u'HeatTemplateFormatVersion'],
-                         file_name)
-        self.assertFalse(u'AWSTemplateFormatVersion' in yml, file_name)
+        self.assertEqual(u'2012-12-12', yml[u'HeatTemplateFormatVersion'])
+        self.assertNotIn(u'AWSTemplateFormatVersion', yml)
         del(yml[u'HeatTemplateFormatVersion'])
 
         jsn = template_format.parse(json_str)
@@ -64,17 +63,17 @@ class JsonToYamlTest(common.HeatTestCase):
         if u'AWSTemplateFormatVersion' in jsn:
             del(jsn[u'AWSTemplateFormatVersion'])
 
-        self.assertEqual(yml, jsn, file_name)
+        self.assertEqual(yml, jsn)
 
     def convert_all_json_to_yaml(self, dirpath):
         for path in os.listdir(dirpath):
             if not path.endswith('.template') and not path.endswith('.json'):
                 continue
-            f = open(os.path.join(dirpath, path), 'r')
-            json_str = f.read()
+            with open(os.path.join(dirpath, path), 'r') as f:
+                json_str = f.read()
 
             yml_str = template_format.convert_json_to_yaml(json_str)
-            yield (json_str, yml_str, f.name)
+            yield (json_str, yml_str)
 
     def test_integer_only_keys_get_translated_correctly(self):
         path = os.path.join(os.path.dirname(os.path.realpath(__file__)),
@@ -85,7 +84,7 @@ class JsonToYamlTest(common.HeatTestCase):
             match = re.search('[\s,{]\d+\s*:', yml_str)
             # Check that there are no matches of integer-only keys
             # lacking explicit quotes
-            self.assertEqual(match, None)
+            self.assertIsNone(match)
 
 
 class YamlMinimalTest(common.HeatTestCase):
@@ -205,6 +204,8 @@ class JsonYamlResolvedCompareTest(common.HeatTestCase):
             self.assertEqual(stack1[key].t, stack2[key].t)
 
     def test_neutron_resolved(self):
+        self.patchobject(neutron.NeutronClientPlugin, 'has_extension',
+                         return_value=True)
         self.compare_stacks('Neutron.template', 'Neutron.yaml', {})
 
     def test_wordpress_resolved(self):

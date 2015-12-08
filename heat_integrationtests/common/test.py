@@ -18,6 +18,7 @@ import time
 
 import fixtures
 from heatclient import exc as heat_exceptions
+from neutronclient.common import exceptions as network_exceptions
 from oslo_log import log as logging
 from oslo_utils import timeutils
 import six
@@ -35,7 +36,8 @@ _LOG_FORMAT = "%(levelname)8s [%(name)s] %(message)s"
 
 
 def call_until_true(duration, sleep_for, func, *args, **kwargs):
-    """
+    """Call the function until it returns True or the duration elapsed.
+
     Call the given function until it returns True (and return True) or
     until the specified duration (in seconds) elapses (and return
     False).
@@ -174,6 +176,13 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
             if net['name'] == net_name:
                 return net
 
+    def is_network_extension_supported(self, extension_alias):
+        try:
+            self.network_client.show_extension(extension_alias)
+        except network_exceptions.NeutronClientException:
+            return False
+        return True
+
     @staticmethod
     def _stack_output(stack, output_key, validate_errors=True):
         """Return a stack output value for a given key."""
@@ -281,8 +290,7 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
     def _wait_for_stack_status(self, stack_identifier, status,
                                failure_pattern=None,
                                success_on_not_found=False):
-        """
-        Waits for a Stack to reach a given status.
+        """Waits for a Stack to reach a given status.
 
         Note this compares the full $action_$status, e.g
         CREATE_COMPLETE, not just COMPLETE which is exposed
@@ -322,49 +330,56 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
 
     def _stack_delete(self, stack_identifier):
         try:
-            self.client.stacks.delete(stack_identifier)
+            self._handle_in_progress(self.client.stacks.delete,
+                                     stack_identifier)
         except heat_exceptions.HTTPNotFound:
             pass
         self._wait_for_stack_status(
             stack_identifier, 'DELETE_COMPLETE',
             success_on_not_found=True)
 
-    def update_stack(self, stack_identifier, template, environment=None,
-                     files=None, parameters=None, tags=None,
-                     expected_status='UPDATE_COMPLETE',
-                     disable_rollback=True):
-        env = environment or {}
-        env_files = files or {}
-        parameters = parameters or {}
-        stack_name = stack_identifier.split('/')[0]
-
+    def _handle_in_progress(self, fn, *args, **kwargs):
         build_timeout = self.conf.build_timeout
         build_interval = self.conf.build_interval
         start = timeutils.utcnow()
-        self.updated_time[stack_identifier] = self.client.stacks.get(
-            stack_identifier).updated_time
         while timeutils.delta_seconds(start,
                                       timeutils.utcnow()) < build_timeout:
             try:
-                self.client.stacks.update(
-                    stack_id=stack_identifier,
-                    stack_name=stack_name,
-                    template=template,
-                    files=env_files,
-                    disable_rollback=disable_rollback,
-                    parameters=parameters,
-                    environment=env,
-                    tags=tags
-                )
+                fn(*args, **kwargs)
             except heat_exceptions.HTTPConflict as ex:
                 # FIXME(sirushtim): Wait a little for the stack lock to be
-                # released and hopefully, the stack should be updatable again.
+                # released and hopefully, the stack should be usable again.
                 if ex.error['error']['type'] != 'ActionInProgress':
                     raise ex
 
                 time.sleep(build_interval)
             else:
                 break
+
+    def update_stack(self, stack_identifier, template=None, environment=None,
+                     files=None, parameters=None, tags=None,
+                     expected_status='UPDATE_COMPLETE',
+                     disable_rollback=True,
+                     existing=False):
+        env = environment or {}
+        env_files = files or {}
+        parameters = parameters or {}
+        stack_name = stack_identifier.split('/')[0]
+
+        self.updated_time[stack_identifier] = self.client.stacks.get(
+            stack_identifier).updated_time
+
+        self._handle_in_progress(
+            self.client.stacks.update,
+            stack_id=stack_identifier,
+            stack_name=stack_name,
+            template=template,
+            files=env_files,
+            disable_rollback=disable_rollback,
+            parameters=parameters,
+            environment=env,
+            tags=tags,
+            existing=existing)
 
         kwargs = {'stack_identifier': stack_identifier,
                   'status': expected_status}
@@ -374,6 +389,25 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
             kwargs['failure_pattern'] = '^ROLLBACK_FAILED$'
 
         self._wait_for_stack_status(**kwargs)
+
+    def preview_update_stack(self, stack_identifier, template,
+                             environment=None, files=None, parameters=None,
+                             tags=None, disable_rollback=True):
+        env = environment or {}
+        env_files = files or {}
+        parameters = parameters or {}
+        stack_name = stack_identifier.split('/')[0]
+
+        return self.client.stacks.preview_update(
+            stack_id=stack_identifier,
+            stack_name=stack_name,
+            template=template,
+            files=env_files,
+            disable_rollback=disable_rollback,
+            parameters=parameters,
+            environment=env,
+            tags=tags
+        )
 
     def assert_resource_is_a_stack(self, stack_identifier, res_name,
                                    wait=False):
@@ -410,6 +444,27 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
         parent_id = stack_identifier.split("/")[-1]
         self.assertEqual(parent_id, nested_stack.parent)
         return nested_identifier
+
+    def group_nested_identifier(self, stack_identifier,
+                                group_name):
+        # Get the nested stack identifier from a group resource
+        rsrc = self.client.resources.get(stack_identifier, group_name)
+        physical_resource_id = rsrc.physical_resource_id
+
+        nested_stack = self.client.stacks.get(physical_resource_id)
+        nested_identifier = '%s/%s' % (nested_stack.stack_name,
+                                       nested_stack.id)
+        parent_id = stack_identifier.split("/")[-1]
+        self.assertEqual(parent_id, nested_stack.parent)
+        return nested_identifier
+
+    def list_group_resources(self, stack_identifier,
+                             group_name, minimal=True):
+        nested_identifier = self.group_nested_identifier(stack_identifier,
+                                                         group_name)
+        if minimal:
+            return self.list_resources(nested_identifier)
+        return self.client.resources.list(nested_identifier)
 
     def list_resources(self, stack_identifier):
         resources = self.client.resources.list(stack_identifier)
@@ -487,7 +542,7 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
             self.addCleanup(self._stack_delete, stack_identifier)
             self.skipTest('Testing Stack suspend disabled in conf, skipping')
         stack_name = stack_identifier.split('/')[0]
-        self.client.actions.suspend(stack_name)
+        self._handle_in_progress(self.client.actions.suspend, stack_name)
         # improve debugging by first checking the resource's state.
         self._wait_for_all_resource_status(stack_identifier,
                                            'SUSPEND_COMPLETE')
@@ -499,7 +554,7 @@ class HeatIntegrationTest(testscenarios.WithScenarios,
             self.addCleanup(self._stack_delete, stack_identifier)
             self.skipTest('Testing Stack resume disabled in conf, skipping')
         stack_name = stack_identifier.split('/')[0]
-        self.client.actions.resume(stack_name)
+        self._handle_in_progress(self.client.actions.resume, stack_name)
         # improve debugging by first checking the resource's state.
         self._wait_for_all_resource_status(stack_identifier,
                                            'RESUME_COMPLETE')

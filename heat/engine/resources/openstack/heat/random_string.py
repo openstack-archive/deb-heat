@@ -26,11 +26,10 @@ from heat.engine import support
 
 
 class RandomString(resource.Resource):
-    '''
-    A resource which generates a random string.
+    """A resource which generates a random string.
 
     This is useful for configuring passwords and secrets on services.
-    '''
+    """
 
     support_status = support.SupportStatus(version='2014.1')
 
@@ -173,18 +172,18 @@ class RandomString(resource.Resource):
         'octdigits': string.octdigits
     }
 
-    def translation_rules(self):
-        if self.properties.get(self.SEQUENCE):
+    def translation_rules(self, props):
+        if props.get(self.SEQUENCE):
             return [
                 properties.TranslationRule(
-                    self.properties,
+                    props,
                     properties.TranslationRule.ADD,
                     [self.CHARACTER_CLASSES],
-                    [{self.CHARACTER_CLASSES_CLASS: self.properties.get(
+                    [{self.CHARACTER_CLASSES_CLASS: props.get(
                         self.SEQUENCE),
                         self.CHARACTER_CLASSES_MIN: 1}]),
                 properties.TranslationRule(
-                    self.properties,
+                    props,
                     properties.TranslationRule.DELETE,
                     [self.SEQUENCE]
                 )
@@ -299,7 +298,7 @@ class RandomString(resource.Resource):
         if name == self.VALUE:
             return self.data().get(self.VALUE)
 
-    def FnGetRefId(self):
+    def get_reference_id(self):
         if self.resource_id is not None:
             return self.data().get('value')
         else:

@@ -13,9 +13,12 @@
 
 Heat and DevStack
 =================
-Heat is fully integrated into DevStack. This is a convenient way to try out or develop heat alongside the current development state of all the other OpenStack projects. Heat on DevStack works on both Ubuntu and Fedora.
+Heat is fully integrated into DevStack. This is a convenient way to try out or
+develop heat alongside the current development state of all the other
+OpenStack projects. Heat on DevStack works on both Ubuntu and Fedora.
 
-These instructions assume you already have a working DevStack installation which can launch basic instances.
+These instructions assume you already have a working DevStack installation
+which can launch basic instances.
 
 Configure DevStack to enable Heat
 ---------------------------------
@@ -34,19 +37,25 @@ It would also be useful to automatically download and register
 a VM image that Heat can launch. To do that add the following to your
 devstack `localrc`::
 
-    IMAGE_URLS+=",http://download.fedoraproject.org/pub/fedora/linux/releases/21/Cloud/Images/x86_64/Fedora-Cloud-Base-20141203-21.x86_64.qcow2"
+    IMAGE_URL_SITE="http://download.fedoraproject.org"
+    IMAGE_URL_PATH="/pub/fedora/linux/releases/21/Cloud/Images/x86_64/"
+    IMAGE_URL_FILE="Fedora-Cloud-Base-20141203-21.x86_64.qcow2"
+    IMAGE_URLS+=","$IMAGE_URL_SITE$IMAGE_URL_PATH$IMAGE_URL_FILE
 
-URLs for any cloud image may be specified, but fedora images from F20 contain the heat-cfntools package which is required for some heat functionality.
+URLs for any cloud image may be specified, but fedora images from F20 contain
+the heat-cfntools package which is required for some heat functionality.
 
-That is all the configuration that is required. When you run `./stack.sh` the Heat processes will be launched in `screen` with the labels prefixed with `h-`.
+That is all the configuration that is required. When you run `./stack.sh` the
+Heat processes will be launched in `screen` with the labels prefixed with `h-`.
 
 Configure DevStack to enable Ceilometer (if using Alarms)
 ---------------------------------------------------------
 To use Ceilometer Alarms you need to enable Ceilometer in devstack.
-Adding the following lines to your `localrc` file will enable the ceilometer services::
+Adding the following lines to your `localrc` file will enable the ceilometer
+services::
 
     CEILOMETER_BACKEND=mongodb
-    enable_plugin ceilometer git://git.openstack.org/openstack/ceilometer
+    enable_plugin ceilometer https://git.openstack.org/openstack/ceilometer
 
 Configure DevStack to enable OSprofiler
 ---------------------------------------
@@ -57,7 +66,9 @@ Add the profiler notifier to your Ceilometer to your config::
 
 Enable the profiler in /etc/heat/heat.conf::
 
-  $ echo -e "[profiler]\nprofiler_enabled = True\ntrace_sqlalchemy = True\n" >> /etc/heat/heat.conf
+  $ echo -e "[profiler]\nprofiler_enabled = True\n"\
+        "trace_sqlalchemy = True\n"\
+        >> /etc/heat/heat.conf
 
 Change the default hmac_key in /etc/heat/api-paste.ini::
 
@@ -74,87 +85,8 @@ Get pretty HTML with traces::
 
 Note that osprofiler should be run with the admin user name & tenant.
 
+Create a stack
+--------------
 
-Confirming Heat is responding
------------------------------
-
-Before any Heat commands can be run, the authentication environment
-needs to be loaded::
-
-    source openrc
-
-You can confirm that Heat is running and responding
-with this command::
-
-    heat stack-list
-
-This should return an empty line
-
-Preparing Nova for running stacks
----------------------------------
-
-Enabling Heat in devstack will replace the default Nova flavors with
-flavors that the Heat example templates expect. You can see what
-those flavors are by running::
-
-    nova flavor-list
-
-Heat needs to launch instances with a keypair, so we need
-to generate one::
-
-    nova keypair-add heat_key > heat_key.priv
-    chmod 600 heat_key.priv
-
-Launching a stack
------------------
-Now lets launch a stack, using an example template from the heat-templates repository::
-
-    heat stack-create teststack -u
-    http://git.openstack.org/cgit/openstack/heat-templates/plain/hot/F20/WordPress_Native.yaml -P key_name=heat_key -P image_id=Fedora-x86_64-20-20131211.1-sda
-
-Which will respond::
-
-    +--------------------------------------+-----------+--------------------+----------------------+
-    | ID                                   | Name      | Status             | Created              |
-    +--------------------------------------+-----------+--------------------+----------------------+
-    | (uuid)                               | teststack | CREATE_IN_PROGRESS | (timestamp)          |
-    +--------------------------------------+-----------+--------------------+----------------------+
-
-
-List stacks
-~~~~~~~~~~~
-List the stacks in your tenant::
-
-    heat stack-list
-
-List stack events
-~~~~~~~~~~~~~~~~~
-
-List the events related to a particular stack::
-
-   heat event-list teststack
-
-Describe the wordpress stack
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Show detailed state of a stack::
-
-   heat stack-show teststack
-
-Note: After a few seconds, the stack_status should change from IN_PROGRESS to CREATE_COMPLETE.
-
-Verify instance creation
-~~~~~~~~~~~~~~~~~~~~~~~~
-Because the software takes some time to install from the repository, it may be a few minutes before the Wordpress instance is in a running state.
-
-Point a web browser at the location given by the WebsiteURL Output as shown by heat stack-show teststack::
-
-    wget ${WebsiteURL}
-
-Delete the instance when done
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Note: The list operation will show no running stack.::
-
-    heat stack-delete teststack
-    heat stack-list
+Now that you have a working Heat environment you can go to
+:ref:`create-a-stack`.

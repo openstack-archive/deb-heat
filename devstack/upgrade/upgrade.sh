@@ -53,6 +53,7 @@ source $TARGET_DEVSTACK_DIR/functions
 source $TARGET_DEVSTACK_DIR/stackrc
 source $TARGET_DEVSTACK_DIR/lib/tls
 source $TARGET_DEVSTACK_DIR/lib/stack
+source $TARGET_DEVSTACK_DIR/lib/apache
 source $TARGET_DEVSTACK_DIR/lib/heat
 
 # Print the commands being run so that we can see the command that triggers
@@ -81,6 +82,12 @@ start_heat
 
 # Don't succeed unless the services come up
 ensure_services_started heat-api heat-engine heat-api-cloudwatch heat-api-cfn
+
+# run heat_integrationtests instead of tempest smoke after upgrade
+pushd $TARGET_DEVSTACK_DIR/../heat
+source $TARGET_DEVSTACK_DIR/openrc demo demo
+tox -eintegration heat_integrationtests.functional.test_create_update
+popd
 
 set +o xtrace
 echo "*********************************************************************"

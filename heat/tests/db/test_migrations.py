@@ -21,6 +21,7 @@ if possible.
 """
 
 import datetime
+import fixtures
 import os
 import uuid
 
@@ -29,6 +30,7 @@ from oslo_db.sqlalchemy import test_base
 from oslo_db.sqlalchemy import test_migrations
 from oslo_db.sqlalchemy import utils
 from oslo_serialization import jsonutils
+from oslo_utils import timeutils
 import six
 import sqlalchemy
 import testtools
@@ -37,6 +39,48 @@ from heat.db.sqlalchemy import migrate_repo
 from heat.db.sqlalchemy import migration
 from heat.db.sqlalchemy import models
 from heat.tests import common
+
+
+class DBNotAllowed(Exception):
+    pass
+
+
+class BannedDBSchemaOperations(fixtures.Fixture):
+    """Ban some operations for migrations"""
+    def __init__(self, banned_resources=None):
+        super(BannedDBSchemaOperations, self).__init__()
+        self._banned_resources = banned_resources or []
+
+    @staticmethod
+    def _explode(resource, op):
+        print('%s.%s()' % (resource, op))
+        raise DBNotAllowed(
+            'Operation %s.%s() is not allowed in a database migration' % (
+                resource, op))
+
+    def setUp(self):
+        super(BannedDBSchemaOperations, self).setUp()
+        for thing in self._banned_resources:
+            self.useFixture(fixtures.MonkeyPatch(
+                'sqlalchemy.%s.drop' % thing,
+                lambda *a, **k: self._explode(thing, 'drop')))
+            self.useFixture(fixtures.MonkeyPatch(
+                'sqlalchemy.%s.alter' % thing,
+                lambda *a, **k: self._explode(thing, 'alter')))
+
+
+class TestBannedDBSchemaOperations(testtools.TestCase):
+    def test_column(self):
+        column = sqlalchemy.Column()
+        with BannedDBSchemaOperations(['Column']):
+            self.assertRaises(DBNotAllowed, column.drop)
+            self.assertRaises(DBNotAllowed, column.alter)
+
+    def test_table(self):
+        table = sqlalchemy.Table()
+        with BannedDBSchemaOperations(['Table']):
+            self.assertRaises(DBNotAllowed, table.drop)
+            self.assertRaises(DBNotAllowed, table.alter)
 
 
 class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
@@ -67,7 +111,31 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
     def migrate_engine(self):
         return self.engine
 
-    @testtools.skipIf(six.PY3, "skip until a new release of oslo.db is cut")
+    def migrate_up(self, version, with_data=False):
+        """Check that migrations don't cause downtime.
+
+        Schema migrations can be done online, allowing for rolling upgrades.
+        """
+        # NOTE(xek): This is a list of migrations where we allow dropping
+        # things. The rules for adding exceptions are very very specific.
+        # Chances are you don't meet the critera.
+        # Reviewers: DO NOT ALLOW THINGS TO BE ADDED HERE
+        exceptions = [
+            64,  # drop constraint
+        ]
+        # Reviewers: DO NOT ALLOW THINGS TO BE ADDED HERE
+
+        # NOTE(xek): We start requiring things be additive in
+        # liberty, so ignore all migrations before that point.
+        LIBERTY_START = 63
+
+        if version >= LIBERTY_START and version not in exceptions:
+            banned = ['Table', 'Column']
+        else:
+            banned = None
+        with BannedDBSchemaOperations(banned):
+            super(HeatMigrationsCheckers, self).migrate_up(version, with_data)
+
     def test_walk_versions(self):
         self.walk_versions(self.snake_walk, self.downgrade)
 
@@ -162,7 +230,7 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
             'resource_status_reason': '',
             'resource_type': '',
             'resource_properties': None,
-            'created_at': datetime.datetime.now()},
+            'created_at': timeutils.utcnow()},
             {'id': '11111111-152e-405d-b13a-35d4c816390c',
              'stack_id': '967aaefb-152e-405d-b13a-35d4c816390c',
              'resource_action': 'Test',
@@ -172,7 +240,7 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
              'resource_status_reason': '',
              'resource_type': '',
              'resource_properties': None,
-             'created_at': datetime.datetime.now() +
+             'created_at': timeutils.utcnow() +
                 datetime.timedelta(days=5)}]
         engine.execute(event_table.insert(), data)
         return data
@@ -200,7 +268,7 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
             'resource_status_reason': '',
             'resource_type': '',
             'resource_properties': None,
-            'created_at': datetime.datetime.now()}]
+            'created_at': timeutils.utcnow()}]
         result = engine.execute(event_table.insert(), data)
         self.assertEqual(last_id + 1, result.inserted_primary_key[0])
 
@@ -453,10 +521,10 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
                      username='test_user',
                      disable_rollback=True,
                      parameters='test_params',
-                     created_at=datetime.datetime.utcnow(),
+                     created_at=timeutils.utcnow(),
                      deleted_at=None)
                 for ll_id, templ_id in stack_ids]
-        data[-1]['deleted_at'] = datetime.datetime.utcnow()
+        data[-1]['deleted_at'] = timeutils.utcnow()
 
         engine.execute(stack.insert(), data)
         return data
@@ -647,7 +715,7 @@ class HeatMigrationsCheckers(test_migrations.WalkVersionsMixin,
                      username='test_user',
                      disable_rollback=True,
                      parameters='test_params',
-                     created_at=datetime.datetime.utcnow(),
+                     created_at=timeutils.utcnow(),
                      deleted_at=None)
                 for ll_id, templ_id, owner_id in stack_ids]
 

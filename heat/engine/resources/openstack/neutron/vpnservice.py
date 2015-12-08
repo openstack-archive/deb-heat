@@ -20,9 +20,9 @@ from heat.engine import support
 
 
 class VPNService(neutron.NeutronResource):
-    """
-    A resource for VPN service in Neutron.
-    """
+    """A resource for VPN service in Neutron."""
+
+    required_service_extension = 'vpnaas'
 
     PROPERTIES = (
         NAME, DESCRIPTION, ADMIN_STATE_UP,
@@ -76,6 +76,7 @@ class VPNService(neutron.NeutronResource):
             properties.Schema.STRING,
             _('Subnet in which the vpn service will be created.'),
             support_status=support.SupportStatus(version='2014.2'),
+            required=True,
             constraints=[
                 constraints.CustomConstraint('neutron.subnet')
             ]
@@ -85,10 +86,14 @@ class VPNService(neutron.NeutronResource):
             _('Unique identifier for the router to which the vpn service '
               'will be inserted.'),
             support_status=support.SupportStatus(
-                status=support.DEPRECATED,
-                message=_('Use property %s') % ROUTER,
-                version='2015.1',
-                previous_status=support.SupportStatus(version='2013.2')),
+                status=support.HIDDEN,
+                version='6.0.0',
+                previous_status=support.SupportStatus(
+                    status=support.DEPRECATED,
+                    message=_('Use property %s') % ROUTER,
+                    version='2015.1',
+                    previous_status=support.SupportStatus(version='2013.2'))
+            ),
             constraints=[
                 constraints.CustomConstraint('neutron.router')
             ]
@@ -97,6 +102,7 @@ class VPNService(neutron.NeutronResource):
             properties.Schema.STRING,
             _('The router to which the vpn service will be inserted.'),
             support_status=support.SupportStatus(version='2015.1'),
+            required=True,
             constraints=[
                 constraints.CustomConstraint('neutron.router')
             ]
@@ -136,25 +142,24 @@ class VPNService(neutron.NeutronResource):
         ),
     }
 
-    def translation_rules(self):
+    def translation_rules(self, props):
         return [
             properties.TranslationRule(
-                self.properties,
+                props,
                 properties.TranslationRule.REPLACE,
                 [self.SUBNET],
                 value_path=[self.SUBNET_ID]
+            ),
+            properties.TranslationRule(
+                props,
+                properties.TranslationRule.REPLACE,
+                [self.ROUTER],
+                value_path=[self.ROUTER_ID]
             )
         ]
 
     def _show_resource(self):
         return self.client().show_vpnservice(self.resource_id)['vpnservice']
-
-    def validate(self):
-        super(VPNService, self).validate()
-        self._validate_depr_property_required(
-            self.properties, self.SUBNET, self.SUBNET_ID)
-        self._validate_depr_property_required(
-            self.properties, self.ROUTER, self.ROUTER_ID)
 
     def handle_create(self):
         props = self.prepare_properties(
@@ -181,9 +186,9 @@ class VPNService(neutron.NeutronResource):
 
 
 class IPsecSiteConnection(neutron.NeutronResource):
-    """
-    A resource for IPsec site connection in Neutron.
-    """
+    """A resource for IPsec site connection in Neutron."""
+
+    required_service_extension = 'vpnaas'
 
     PROPERTIES = (
         NAME, DESCRIPTION, PEER_ADDRESS, PEER_ID, PEER_CIDRS, MTU,
@@ -425,9 +430,9 @@ class IPsecSiteConnection(neutron.NeutronResource):
 
 
 class IKEPolicy(neutron.NeutronResource):
-    """
-    A resource for IKE policy in Neutron.
-    """
+    """A resource for IKE policy in Neutron."""
+
+    required_service_extension = 'vpnaas'
 
     PROPERTIES = (
         NAME, DESCRIPTION, AUTH_ALGORITHM, ENCRYPTION_ALGORITHM,
@@ -593,9 +598,9 @@ class IKEPolicy(neutron.NeutronResource):
 
 
 class IPsecPolicy(neutron.NeutronResource):
-    """
-    A resource for IPsec policy in Neutron.
-    """
+    """A resource for IPsec policy in Neutron."""
+
+    required_service_extension = 'vpnaas'
 
     PROPERTIES = (
         NAME, DESCRIPTION, TRANSFORM_PROTOCOL, ENCAPSULATION_MODE,

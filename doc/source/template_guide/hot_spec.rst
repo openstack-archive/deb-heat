@@ -101,6 +101,7 @@ For example, Heat currently supports the following values for the
 ``heat_template_version`` key:
 
 2013-05-23
+----------
     The key with value ``2013-05-23`` indicates that the YAML document is a HOT
     template and it may contain features implemented until the Icehouse
     release. This version supports the following functions (some are back
@@ -124,6 +125,7 @@ For example, Heat currently supports the following values for the
       Ref
 
 2014-10-16
+----------
     The key with value ``2014-10-16`` indicates that the YAML document is a HOT
     template and it may contain features added and/or removed up until the Juno
     release.  This version removes most CFN functions that were supported in
@@ -140,6 +142,7 @@ For example, Heat currently supports the following values for the
       Fn::Select
 
 2015-04-30
+----------
     The key with value ``2015-04-30`` indicates that the YAML document is a HOT
     template and it may contain features added and/or removed up until the Kilo
     release. This version adds the ``repeat`` function. So the complete list of
@@ -157,6 +160,7 @@ For example, Heat currently supports the following values for the
       Fn::Select
 
 2015-10-15
+----------
     The key with value ``2015-10-15`` indicates that the YAML document is a HOT
     template and it may contain features added and/or removed up until the
     Liberty release. This version removes the *Fn::Select* function, path based
@@ -175,6 +179,26 @@ For example, Heat currently supports the following values for the
       list_join
       repeat
       digest
+      resource_facade
+      str_replace
+      str_split
+
+2016-04-08
+----------
+    The key with value ``2016-04-08`` indicates that the YAML document is a HOT
+    template and it may contain features added and/or removed up until the
+    Mitaka release.  This version also adds the map_merge function which
+    can be used to merge the contents of maps. The complete list of supported
+    functions is::
+
+      digest
+      get_attr
+      get_file
+      get_param
+      get_resource
+      list_join
+      map_merge
+      repeat
       resource_facade
       str_replace
       str_split
@@ -1209,3 +1233,28 @@ The result of which is:
 
 Note: The index starts at zero, and any value outside the maximum (e.g the
 length of the list minus one) will cause an error.
+
+map_merge
+---------
+The ``map_merge`` function merges maps together. Values in the latter maps
+override any values in earlier ones. Can be very useful when composing maps
+that contain configuration data into a single consolidated map.
+
+The syntax of the ``map_merge`` function is
+
+.. code-block:: yaml
+
+    map_merge:
+    - <map 1>
+    - <map 2>
+    - ...
+
+For example
+
+.. code-block:: yaml
+
+    map_merge: [{'k1': 'v1', 'k2': 'v2'}, {'k1': 'v2'}]
+
+This resolves to a map containing ``{'k1': 'v2', 'k2': 'v2'}``.
+
+Maps containing no items resolve to {}.

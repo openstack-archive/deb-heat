@@ -69,6 +69,7 @@ class StackLock(object):
             return
 
         stack = stack_object.Stack.get_by_id(self.context, self.stack_id,
+                                             tenant_safe=False,
                                              show_deleted=True)
         if (lock_engine_id == self.engine_id or
                 self.engine_alive(self.context, lock_engine_id)):
@@ -124,14 +125,17 @@ class StackLock(object):
                                      'stack': self.stack_id})
 
     @contextlib.contextmanager
-    def thread_lock(self):
+    def thread_lock(self, retry=True):
         """Acquire a lock and release it only if there is an exception.
 
         The release method still needs to be scheduled to be run at the
         end of the thread using the Thread.link method.
+
+        :param retry: When True, retry if lock was released while stealing.
+        :type retry: boolean
         """
         try:
-            self.acquire()
+            self.acquire(retry)
             yield
         except exception.ActionInProgress:
             raise

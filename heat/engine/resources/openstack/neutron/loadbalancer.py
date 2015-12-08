@@ -25,9 +25,9 @@ from heat.engine import support
 
 
 class HealthMonitor(neutron.NeutronResource):
-    """
-    A resource for managing health monitors for load balancers in Neutron.
-    """
+    """A resource for managing health monitors for loadbalancers in Neutron."""
+
+    required_service_extension = 'lbaas'
 
     PROPERTIES = (
         DELAY, TYPE, MAX_RETRIES, TIMEOUT, ADMIN_STATE_UP,
@@ -173,9 +173,9 @@ class HealthMonitor(neutron.NeutronResource):
 
 
 class Pool(neutron.NeutronResource):
-    """
-    A resource for managing load balancer pools in Neutron.
-    """
+    """A resource for managing load balancer pools in Neutron."""
+
+    required_service_extension = 'lbaas'
 
     PROPERTIES = (
         PROTOCOL, SUBNET_ID, SUBNET, LB_METHOD, NAME, DESCRIPTION,
@@ -238,6 +238,7 @@ class Pool(neutron.NeutronResource):
             _('The subnet for the port on which the members '
               'of the pool will be connected.'),
             support_status=support.SupportStatus(version='2014.2'),
+            required=True,
             constraints=[
                 constraints.CustomConstraint('neutron.subnet')
             ]
@@ -388,10 +389,10 @@ class Pool(neutron.NeutronResource):
         ),
     }
 
-    def translation_rules(self):
+    def translation_rules(self, props):
         return [
             properties.TranslationRule(
-                self.properties,
+                props,
                 properties.TranslationRule.REPLACE,
                 [self.SUBNET],
                 value_path=[self.SUBNET_ID]
@@ -402,8 +403,6 @@ class Pool(neutron.NeutronResource):
         res = super(Pool, self).validate()
         if res:
             return res
-        self._validate_depr_property_required(
-            self.properties, self.SUBNET, self.SUBNET_ID)
         session_p = self.properties[self.VIP].get(self.VIP_SESSION_PERSISTENCE)
         if session_p is None:
             # session persistence is not configured, skip validation
@@ -551,9 +550,9 @@ class Pool(neutron.NeutronResource):
 
 
 class PoolMember(neutron.NeutronResource):
-    """
-    A resource to handle load balancer members.
-    """
+    """A resource to handle loadbalancer members."""
+
+    required_service_extension = 'lbaas'
 
     support_status = support.SupportStatus(version='2014.1')
 
@@ -676,9 +675,9 @@ class PoolMember(neutron.NeutronResource):
 
 
 class LoadBalancer(resource.Resource):
-    """
-    A resource to link a neutron pool with servers.
-    """
+    """A resource to link a neutron pool with servers."""
+
+    required_service_extension = 'lbaas'
 
     PROPERTIES = (
         POOL_ID, PROTOCOL_PORT, MEMBERS,
@@ -740,10 +739,8 @@ class LoadBalancer(resource.Resource):
             old_members = set(six.iterkeys(rd_members))
             for member in old_members - members:
                 member_id = rd_members[member]
-                try:
+                with self.client_plugin().ignore_not_found:
                     self.client().delete_member(member_id)
-                except Exception as ex:
-                    self.client_plugin().ignore_not_found(ex)
                 self.data_delete(member)
             pool = self.properties[self.POOL_ID]
             protocol_port = self.properties[self.PROTOCOL_PORT]
@@ -761,10 +758,8 @@ class LoadBalancer(resource.Resource):
         # FIXME(pshchelo): this deletes members in a tight loop,
         # so is prone to OverLimit bug similar to LP 1265937
         for member, member_id in self.data().items():
-            try:
+            with self.client_plugin().ignore_not_found:
                 self.client().delete_member(member_id)
-            except Exception as ex:
-                self.client_plugin().ignore_not_found(ex)
             self.data_delete(member)
 
 

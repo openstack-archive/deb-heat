@@ -261,15 +261,15 @@ which builds a curl command with a valid token:
                 # Or you optionally can specify any of the additional fields
                 wc_notify --data-binary '{"status": "SUCCESS", "reason": "signal2"}'
                 wc_notify --data-binary '{"status": "SUCCESS", "reason": "signal3", "data": "data3"}'
-                wc_notify --data-binary '{"status": "SUCCESS", "reason": "signal4", "data": "data4"}'
+                wc_notify --data-binary '{"status": "SUCCESS", "reason": "signal4", "id": "id4", "data": "data4"}'
 
                 # If you require control of the ID, you can pass it.
                 # The ID should be unique, unless you intend for duplicate
                 # signals to overwrite each other.  The following two calls
                 # do the exact same thing, and will be treated as one signal
                 # (You can prove this by changing count above to 7)
-                wc_notify --data-binary '{"status": "SUCCESS", "id": "5"}'
-                wc_notify --data-binary '{"status": "SUCCESS", "id": "5"}'
+                wc_notify --data-binary '{"status": "SUCCESS", "id": "id5"}'
+                wc_notify --data-binary '{"status": "SUCCESS", "id": "id5"}'
 
                 # Example of sending a failure signal, optionally
                 # reason, id, and data can be specified as above
@@ -281,10 +281,10 @@ which builds a curl command with a valid token:
       wc_data:
         value: { get_attr: [wait_condition, data] }
         # this would return the following json
-        # {"1": null, "2": null, "3": "data3", "4": "data4", "5": null}
+        # {"1": null, "2": null, "3": "data3", "id4": "data4", "id5": null}
 
       wc_data_4:
-        value: { get_attr: [wait_condition, data, '4'] }
+        value: { 'Fn::Select': ['id4', { get_attr: [wait_condition, data] }] }
         # this would return "data4"
 
 ..
@@ -788,14 +788,14 @@ contents of the file ``example-puppet-manifest.pp``, containing:
 
 
 .. _`AWS::CloudFormation::Init`: http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-init.html
-.. _diskimage-builder: https://github.com/openstack/diskimage-builder
+.. _diskimage-builder: https://git.openstack.org/cgit/openstack/diskimage-builder
 .. _imagefactory: http://imgfac.org/
 .. _`Metadata service`: http://docs.openstack.org/admin-guide-cloud/compute-networking-nova.html#metadata-service
 .. _Cloud-init: http://cloudinit.readthedocs.org/en/latest/
 .. _curl: http://curl.haxx.se/
 .. _`Orchestration API`: http://developer.openstack.org/api-ref-orchestration-v1.html
-.. _os-refresh-config: https://github.com/openstack/os-refresh-config
-.. _os-apply-config: https://github.com/openstack/os-apply-config
-.. _tripleo-heat-templates: https://github.com/openstack/tripleo-heat-templates
-.. _tripleo-image-elements: https://github.com/openstack/tripleo-image-elements
+.. _os-refresh-config: https://git.openstack.org/cgit/openstack/os-refresh-config
+.. _os-apply-config: https://git.openstack.org/cgit/openstack/os-apply-config
+.. _tripleo-heat-templates: https://git.openstack.org/cgit/openstack/tripleo-heat-templates
+.. _tripleo-image-elements: https://git.openstack.org/cgit/openstack/tripleo-image-elements
 .. _puppet: http://puppetlabs.com/

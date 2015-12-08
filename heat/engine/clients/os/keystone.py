@@ -50,6 +50,8 @@ class KeystoneClientPlugin(client_plugin.ClientPlugin):
         raise exception.EntityNotFound(entity='KeystoneRole', name=role)
 
     def get_project_id(self, project):
+        if project is None:
+            return None
         try:
             project_obj = self.client().client.projects.get(project)
             return project_obj.id
@@ -63,6 +65,8 @@ class KeystoneClientPlugin(client_plugin.ClientPlugin):
                                        name=project)
 
     def get_domain_id(self, domain):
+        if domain is None:
+            return None
         try:
             domain_obj = self.client().client.domains.get(domain)
             return domain_obj.id
@@ -75,6 +79,8 @@ class KeystoneClientPlugin(client_plugin.ClientPlugin):
         raise exception.EntityNotFound(entity='KeystoneDomain', name=domain)
 
     def get_group_id(self, group):
+        if group is None:
+            return None
         try:
             group_obj = self.client().client.groups.get(group)
             return group_obj.id
@@ -87,6 +93,8 @@ class KeystoneClientPlugin(client_plugin.ClientPlugin):
         raise exception.EntityNotFound(entity='KeystoneGroup', name=group)
 
     def get_service_id(self, service):
+        if service is None:
+            return None
         try:
             service_obj = self.client().client.services.get(service)
             return service_obj.id
@@ -102,6 +110,8 @@ class KeystoneClientPlugin(client_plugin.ClientPlugin):
                                                name=service)
 
     def get_user_id(self, user):
+        if user is None:
+            return None
         try:
             user_obj = self.client().client.users.get(user)
             return user_obj.id
@@ -112,6 +122,14 @@ class KeystoneClientPlugin(client_plugin.ClientPlugin):
                     return user_obj.id
 
         raise exception.EntityNotFound(entity='KeystoneUser', name=user)
+
+    def get_region_id(self, region):
+        try:
+            region_obj = self.client().client.regions.get(region)
+            return region_obj.id
+        except exceptions.NotFound:
+            raise exception.EntityNotFound(entity='KeystoneRegion',
+                                           name=region)
 
 
 class KeystoneRoleConstraint(constraints.BaseCustomConstraint):
@@ -161,3 +179,11 @@ class KeystoneUserConstraint(constraints.BaseCustomConstraint):
 
     def validate_with_client(self, client, user):
         client.client_plugin('keystone').get_user_id(user)
+
+
+class KeystoneRegionConstraint(constraints.BaseCustomConstraint):
+
+    expected_exceptions = (exception.EntityNotFound,)
+
+    def validate_with_client(self, client, region):
+        client.client_plugin('keystone').get_region_id(region)

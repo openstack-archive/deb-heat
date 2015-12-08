@@ -24,7 +24,7 @@ from heat.engine.resources.aws.ec2 import instance as instances
 from heat.engine import stack as parser
 from heat.engine import template as templatem
 from heat.tests import fakes as test_fakes
-from heat.tests.nova import fakes as fakes_nova
+from heat.tests.openstack.nova import fakes as fakes_nova
 from heat.tests import utils
 
 wp_template = '''
@@ -250,10 +250,11 @@ def clean_up_stack(stack, delete_res=True):
 
 
 def stack_context(stack_name, create_res=True):
-    """
+    """Decorator for creating and deleting stack.
+
     Decorator which creates a stack by using the test case's context and
     deletes it afterwards to ensure tests clean up their stacks regardless
-    of test success/failure
+    of test success/failure.
     """
     def stack_delete(test_fn):
         @six.wraps(test_fn)

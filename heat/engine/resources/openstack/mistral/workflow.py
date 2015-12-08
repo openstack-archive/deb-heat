@@ -319,7 +319,7 @@ class Workflow(signal_responder.SignalResponder,
         )
     }
 
-    def FnGetRefId(self):
+    def get_reference_id(self):
         return self._workflow_name()
 
     def _validate_signal_data(self, data):
@@ -522,19 +522,17 @@ class Workflow(signal_responder.SignalResponder,
             self.data_set(self.NAME, workflow[0].name)
             self.resource_id_set(workflow[0].name)
 
-    def handle_delete(self):
-        super(Workflow, self).handle_delete()
-
-        if self.resource_id is None:
-            return
-
-        try:
-            self.client().workflows.delete(self.resource_id)
-            if self.data().get(self.EXECUTIONS):
-                for id in self.data().get(self.EXECUTIONS).split(','):
+    def _delete_executions(self):
+        if self.data().get(self.EXECUTIONS):
+            for id in self.data().get(self.EXECUTIONS).split(','):
+                with self.client_plugin().ignore_not_found:
                     self.client().executions.delete(id)
-        except Exception as e:
-            self.client_plugin().ignore_not_found(e)
+
+            self.data_delete('executions')
+
+    def handle_delete(self):
+        self._delete_executions()
+        return super(Workflow, self).handle_delete()
 
     def _resolve_attribute(self, name):
         if name == self.EXECUTIONS:

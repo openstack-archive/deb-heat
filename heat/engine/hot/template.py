@@ -246,37 +246,35 @@ class HOTemplate20130523(template.Template):
 
     def resource_definitions(self, stack):
         resources = self.t.get(self.RESOURCES) or {}
+        parsed_resources = self.parse(stack, resources)
+        return dict((name, self.rsrc_defn_from_snippet(name, data))
+                    for name, data in parsed_resources.items())
 
-        def rsrc_defn_item(name, snippet):
-            data = self.parse(stack, snippet)
+    @staticmethod
+    def rsrc_defn_from_snippet(name, data):
+        depends = data.get(RES_DEPENDS_ON)
+        if isinstance(depends, six.string_types):
+            depends = [depends]
 
-            depends = data.get(RES_DEPENDS_ON)
-            if isinstance(depends, six.string_types):
-                depends = [depends]
+        deletion_policy = data.get(RES_DELETION_POLICY)
+        if deletion_policy is not None:
+            if deletion_policy not in HOTemplate20130523.deletion_policies:
+                msg = _('Invalid deletion policy "%s"') % deletion_policy
+                raise exception.StackValidationFailed(message=msg)
+            else:
+                deletion_policy = HOTemplate20130523.deletion_policies[
+                    deletion_policy]
+        kwargs = {
+            'resource_type': data.get(RES_TYPE),
+            'properties': data.get(RES_PROPERTIES),
+            'metadata': data.get(RES_METADATA),
+            'depends': depends,
+            'deletion_policy': deletion_policy,
+            'update_policy': data.get(RES_UPDATE_POLICY),
+            'description': None
+        }
 
-            deletion_policy = data.get(RES_DELETION_POLICY)
-            if deletion_policy is not None:
-                if deletion_policy not in self.deletion_policies:
-                    msg = _('Invalid deletion policy "%s"') % deletion_policy
-                    raise exception.StackValidationFailed(message=msg)
-                else:
-                    deletion_policy = self.deletion_policies[deletion_policy]
-
-            kwargs = {
-                'resource_type': data.get(RES_TYPE),
-                'properties': data.get(RES_PROPERTIES),
-                'metadata': data.get(RES_METADATA),
-                'depends': depends,
-                'deletion_policy': deletion_policy,
-                'update_policy': data.get(RES_UPDATE_POLICY),
-                'description': None
-            }
-
-            defn = rsrc_defn.ResourceDefinition(name, **kwargs)
-            return name, defn
-
-        return dict(rsrc_defn_item(name, data)
-                    for name, data in resources.items())
+        return rsrc_defn.ResourceDefinition(name, **kwargs)
 
     def add_resource(self, definition, name=None):
         if name is None:
@@ -348,6 +346,39 @@ class HOTemplate20151015(HOTemplate20150430):
         'repeat': hot_funcs.Repeat,
         'resource_facade': hot_funcs.ResourceFacade,
         'str_replace': hot_funcs.ReplaceJson,
+
+        # functions added since 20150430
+        'str_split': hot_funcs.StrSplit,
+
+        # functions removed from 20150430
+        'Fn::Select': hot_funcs.Removed,
+
+        # functions removed from 20130523
+        'Fn::GetAZs': hot_funcs.Removed,
+        'Fn::Join': hot_funcs.Removed,
+        'Fn::Split': hot_funcs.Removed,
+        'Fn::Replace': hot_funcs.Removed,
+        'Fn::Base64': hot_funcs.Removed,
+        'Fn::MemberListToMap': hot_funcs.Removed,
+        'Fn::ResourceFacade': hot_funcs.Removed,
+        'Ref': hot_funcs.Removed,
+    }
+
+
+class HOTemplate20160408(HOTemplate20151015):
+    functions = {
+        'digest': hot_funcs.Digest,
+        'get_attr': hot_funcs.GetAttAllAttributes,
+        'get_file': hot_funcs.GetFile,
+        'get_param': hot_funcs.GetParam,
+        'get_resource': cfn_funcs.ResourceRef,
+        'list_join': hot_funcs.JoinMultiple,
+        'repeat': hot_funcs.Repeat,
+        'resource_facade': hot_funcs.ResourceFacade,
+        'str_replace': hot_funcs.ReplaceJson,
+
+        # functions added since 20151015
+        'map_merge': hot_funcs.MapMerge,
 
         # functions added since 20150430
         'str_split': hot_funcs.StrSplit,

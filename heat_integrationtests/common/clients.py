@@ -23,12 +23,13 @@ import swiftclient
 
 
 class ClientManager(object):
-    """
+    """Provides access to the official python clients for calling various APIs.
+
     Manager that provides access to the official python clients for
     calling various OpenStack APIs.
     """
 
-    CINDERCLIENT_VERSION = '1'
+    CINDERCLIENT_VERSION = '2'
     HEATCLIENT_VERSION = '1'
     NOVACLIENT_VERSION = '2'
     CEILOMETER_VERSION = '2'

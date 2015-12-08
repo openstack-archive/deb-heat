@@ -24,9 +24,7 @@ from heat.engine.resources import stack_resource
 
 
 class NestedStack(stack_resource.StackResource):
-    '''
-    A Resource representing a child stack to allow composition of templates.
-    '''
+    """Represents a child stack to allow composition of templates."""
 
     PROPERTIES = (
         TEMPLATE_URL, TIMEOUT_IN_MINS, PARAMETERS,
@@ -89,7 +87,7 @@ class NestedStack(stack_resource.StackResource):
         attribute = self.get_output(key.partition('.')[-1])
         return attributes.select_from_attribute(attribute, path)
 
-    def FnGetRefId(self):
+    def get_reference_id(self):
         if self.nested() is None:
             return six.text_type(self.name)
 

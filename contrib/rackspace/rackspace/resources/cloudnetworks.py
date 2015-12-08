@@ -47,10 +47,14 @@ class CloudNetwork(resource.Resource):
     """
 
     support_status = support.SupportStatus(
-        status=support.DEPRECATED,
-        message=_('Use OS::Neutron::Net instead.'),
-        version='2015.1',
-        previous_status=support.SupportStatus(version='2014.1')
+        status=support.HIDDEN,
+        version='6.0.0',
+        previous_status=support.SupportStatus(
+            status=support.DEPRECATED,
+            message=_('Use OS::Neutron::Net instead.'),
+            version='2015.1',
+            previous_status=support.SupportStatus(version='2014.1')
+        )
     )
 
     PROPERTIES = (
@@ -120,6 +124,9 @@ class CloudNetwork(resource.Resource):
         self.cloud_networks().get(self.resource_id)
 
     def check_delete_complete(self, cookie):
+        if not self.resource_id:
+            return True
+
         try:
             network = self.cloud_networks().get(self.resource_id)
         except NotFound:

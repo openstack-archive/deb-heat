@@ -24,9 +24,12 @@ from heat.engine import support
 
 class ExtraRoute(neutron.NeutronResource):
 
+    required_service_extension = 'extraroute'
+
     support_status = support.SupportStatus(
         status=support.UNSUPPORTED,
-        message=_('This resource is not supported, use at your own risk.'))
+        message=_('The resource OS::Neutron::ExtraRoute is not supported, '
+                  'use at your own risk.'))
 
     PROPERTIES = (
         ROUTER_ID, DESTINATION, NEXTHOP,
@@ -58,10 +61,13 @@ class ExtraRoute(neutron.NeutronResource):
         for resource in six.itervalues(self.stack):
             # depend on any RouterInterface in this template with the same
             # router_id as this router_id
-            if (resource.has_interface('OS::Neutron::RouterInterface') and
-                resource.properties['router_id'] ==
-                    self.properties['router_id']):
-                        deps += (self, resource)
+            if resource.has_interface('OS::Neutron::RouterInterface'):
+                dep_router_id = self.client_plugin().resolve_router({
+                    'router': resource.properties.get('router'),
+                    'router_id': None}, 'router', 'router_id')
+                router_id = self.properties[self.ROUTER_ID]
+                if dep_router_id == router_id:
+                    deps += (self, resource)
             # depend on any RouterGateway in this template with the same
             # router_id as this router_id
             elif (resource.has_interface('OS::Neutron::RouterGateway') and
@@ -91,7 +97,7 @@ class ExtraRoute(neutron.NeutronResource):
         if not self.resource_id:
             return
         (router_id, destination, nexthop) = self.resource_id.split(':')
-        try:
+        with self.client_plugin().ignore_not_found:
             routes = self.client().show_router(
                 router_id).get('router').get('routes', [])
             try:
@@ -101,8 +107,6 @@ class ExtraRoute(neutron.NeutronResource):
                 return
             self.client().update_router(router_id,
                                         {'router': {'routes': routes}})
-        except Exception as ex:
-            self.client_plugin().ignore_not_found(ex)
 
 
 def resource_mapping():

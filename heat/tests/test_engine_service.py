@@ -25,7 +25,6 @@ from heat.common import exception
 from heat.common import identifier
 from heat.common import template_format
 from heat.engine.cfn import template as cfntemplate
-from heat.engine import dependencies
 from heat.engine import environment
 from heat.engine.hot import functions as hot_functions
 from heat.engine.hot import template as hottemplate
@@ -37,7 +36,7 @@ from heat.objects import stack as stack_object
 from heat.tests import common
 from heat.tests.engine import tools
 from heat.tests import generic_resource as generic_rsrc
-from heat.tests.nova import fakes as fakes_nova
+from heat.tests.openstack.nova import fakes as fakes_nova
 from heat.tests import utils
 
 cfg.CONF.import_opt('engine_life_check_timeout', 'heat.common.config')
@@ -62,27 +61,6 @@ wp_template_no_default = '''
         "KeyName"        : "test",
         "UserData"       : "wordpress"
       }
-    }
-  }
-}
-'''
-
-policy_template = '''
-{
-  "AWSTemplateFormatVersion" : "2010-09-09",
-  "Description" : "alarming",
-  "Resources" : {
-    "WebServerScaleDownPolicy" : {
-      "Type" : "AWS::AutoScaling::ScalingPolicy",
-      "Properties" : {
-        "AdjustmentType" : "ChangeInCapacity",
-        "AutoScalingGroupName" : "",
-        "Cooldown" : "60",
-        "ScalingAdjustment" : "-1"
-      }
-    },
-    "Random" : {
-      "Type" : "OS::Heat::RandomString"
     }
   }
 }
@@ -276,7 +254,7 @@ class StackConvergenceServiceCreateUpdateTest(common.HeatTestCase):
         result = self.man.create_stack(self.ctx, 'service_create_test_stack',
                                        template, params, None, api_args)
         db_stack = stack_object.Stack.get_by_id(self.ctx, result['stack_id'])
-        self.assertEqual(db_stack.convergence, True)
+        self.assertTrue(db_stack.convergence)
         self.assertEqual(result['stack_id'], db_stack.id)
         self.m.VerifyAll()
 
@@ -329,7 +307,7 @@ class StackConvergenceServiceCreateUpdateTest(common.HeatTestCase):
         api_args = {'timeout_mins': 60, 'disable_rollback': False}
         result = self.man.update_stack(self.ctx, old_stack.identifier(),
                                        template, params, None, api_args)
-        self.assertEqual(old_stack.convergence, True)
+        self.assertTrue(old_stack.convergence)
         self.assertEqual(old_stack.identifier(), result)
         self.assertIsInstance(result, dict)
         self.assertTrue(result['stack_id'])
@@ -344,7 +322,6 @@ class StackServiceAuthorizeTest(common.HeatTestCase):
         self.ctx = utils.dummy_context(tenant_id='stack_service_test_tenant')
         self.eng = service.EngineService('a-host', 'a-topic')
         self.eng.engine_id = 'engine-fake-uuid'
-        cfg.CONF.set_default('heat_stack_user_role', 'stack_user_role')
 
     @tools.stack_context('service_authorize_stack_user_nocreds_test_stack')
     def test_stack_authorize_stack_user_nocreds(self):
@@ -433,7 +410,6 @@ class StackServiceTest(common.HeatTestCase):
         self.eng = service.EngineService('a-host', 'a-topic')
         self.eng.thread_group_mgr = tools.DummyThreadGroupManager()
         self.eng.engine_id = 'engine-fake-uuid'
-        cfg.CONF.set_default('heat_stack_user_role', 'stack_user_role')
 
     @tools.stack_context('service_identify_test_stack', False)
     def test_stack_identify(self):
@@ -474,7 +450,7 @@ class StackServiceTest(common.HeatTestCase):
     def test_stack_identify_nonexist(self):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.eng.identify_stack, self.ctx, 'wibble')
-        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
+        self.assertEqual(exception.EntityNotFound, ex.exc_info[0])
 
     @tools.stack_context('service_create_existing_test_stack', False)
     def test_stack_create_existing(self):
@@ -839,8 +815,8 @@ class StackServiceTest(common.HeatTestCase):
                                                      not_tags=None,
                                                      not_tags_any=None)
 
-    @tools.stack_context('service_abandon_stack')
-    def test_abandon_stack(self):
+    @tools.stack_context('service_export_stack')
+    def test_export_stack(self):
         cfg.CONF.set_override('enable_stack_abandon', True)
         self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.ctx,
@@ -854,12 +830,13 @@ class StackServiceTest(common.HeatTestCase):
                 'resource_id': '9999',
                 'status': 'COMPLETE',
                 'type': u'AWS::EC2::Instance'}}
+        self.stack.tags = ['tag1', 'tag2']
         self.m.ReplayAll()
-        ret = self.eng.abandon_stack(self.ctx, self.stack.identifier())
-        self.assertEqual(10, len(ret))
+        ret = self.eng.export_stack(self.ctx, self.stack.identifier())
+        self.assertEqual(11, len(ret))
         self.assertEqual('CREATE', ret['action'])
         self.assertEqual('COMPLETE', ret['status'])
-        self.assertEqual('service_abandon_stack', ret['name'])
+        self.assertEqual('service_export_stack', ret['name'])
         self.assertEqual({}, ret['files'])
         self.assertIn('id', ret)
         self.assertEqual(expected_res, ret['resources'])
@@ -868,6 +845,21 @@ class StackServiceTest(common.HeatTestCase):
         self.assertIn('stack_user_project_id', ret)
         self.assertIn('environment', ret)
         self.assertIn('files', ret)
+        self.assertEqual(['tag1', 'tag2'], ret['tags'])
+        self.m.VerifyAll()
+
+    @tools.stack_context('service_abandon_stack')
+    def test_abandon_stack(self):
+        cfg.CONF.set_override('enable_stack_abandon', True)
+        self.m.StubOutWithMock(parser.Stack, 'load')
+        parser.Stack.load(self.ctx,
+                          stack=mox.IgnoreArg()).AndReturn(self.stack)
+        self.m.ReplayAll()
+        self.eng.abandon_stack(self.ctx, self.stack.identifier())
+        ex = self.assertRaises(dispatcher.ExpectedException,
+                               self.eng.show_stack,
+                               self.ctx, self.stack.identifier())
+        self.assertEqual(exception.EntityNotFound, ex.exc_info[0])
         self.m.VerifyAll()
 
     def test_stack_describe_nonexistent(self):
@@ -875,7 +867,8 @@ class StackServiceTest(common.HeatTestCase):
             self.ctx.tenant_id, 'wibble',
             '18d06e2e-44d3-4bef-9fbf-52480d604b02')
 
-        stack_not_found_exc = exception.StackNotFound(stack_name='test')
+        stack_not_found_exc = exception.EntityNotFound(
+            entity='Stack', name='test')
         self.m.StubOutWithMock(service.EngineService, '_get_stack')
         service.EngineService._get_stack(
             self.ctx, non_exist_identifier,
@@ -885,7 +878,7 @@ class StackServiceTest(common.HeatTestCase):
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.eng.show_stack,
                                self.ctx, non_exist_identifier)
-        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
+        self.assertEqual(exception.EntityNotFound, ex.exc_info[0])
         self.m.VerifyAll()
 
     def test_stack_describe_bad_tenant(self):
@@ -981,16 +974,15 @@ class StackServiceTest(common.HeatTestCase):
     def test_list_template_functions(self, templ_mock):
 
         class DummyFunc1(object):
-            """
-            Dummy Func1
+            """Dummy Func1.
 
-            Dummy Func1 Long Description
+            Dummy Func1 Long Description.
             """
 
         class DummyFunc2(object):
-            """Dummy Func2
+            """Dummy Func2.
 
-            Dummy Func2 Long Description
+            Dummy Func2 Long Description.
             """
 
         plugin_mock = mock.Mock(
@@ -1006,451 +998,83 @@ class StackServiceTest(common.HeatTestCase):
         templ_mock.return_value = DummyMgr()
         functions = self.eng.list_template_functions(self.ctx, 'dummytemplate')
         expected = [{'functions': 'dummy1',
-                     'description': 'Dummy Func1'},
+                     'description': 'Dummy Func1.'},
                     {'functions': 'dummy2',
-                     'description': 'Dummy Func2'}]
+                     'description': 'Dummy Func2.'}]
         self.assertEqual(sorted(expected, key=lambda k: k['functions']),
                          sorted(functions, key=lambda k: k['functions']))
 
-    def _test_describe_stack_resource(self):
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(self.ctx,
-                          stack=mox.IgnoreArg()).AndReturn(self.stack)
-        self.m.ReplayAll()
+    @mock.patch('heat.engine.template._get_template_extension_manager')
+    def test_list_template_functions_version_not_found(self, templ_mock):
+        class DummyMgr(object):
+            def __getitem__(self, item):
+                raise KeyError()
 
-        r = self.eng.describe_stack_resource(self.ctx, self.stack.identifier(),
-                                             'WebServer', with_attr=None)
-
-        self.assertIn('resource_identity', r)
-        self.assertIn('description', r)
-        self.assertIn('updated_time', r)
-        self.assertIn('stack_identity', r)
-        self.assertIsNotNone(r['stack_identity'])
-        self.assertIn('stack_name', r)
-        self.assertEqual(self.stack.name, r['stack_name'])
-        self.assertIn('metadata', r)
-        self.assertIn('resource_status', r)
-        self.assertIn('resource_status_reason', r)
-        self.assertIn('resource_type', r)
-        self.assertIn('physical_resource_id', r)
-        self.assertIn('resource_name', r)
-        self.assertIn('attributes', r)
-        self.assertEqual('WebServer', r['resource_name'])
-
-        self.m.VerifyAll()
-
-    @tools.stack_context('service_stack_resource_describe__test_stack')
-    def test_stack_resource_describe(self):
-        self._test_describe_stack_resource()
-
-    def test_stack_resource_describe_nonexist_stack(self):
-        non_exist_identifier = identifier.HeatIdentifier(
-            self.ctx.tenant_id,
-            'wibble',
-            '18d06e2e-44d3-4bef-9fbf-52480d604b02')
-
-        stack_not_found_exc = exception.StackNotFound(stack_name='test')
-        self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        service.EngineService._get_stack(
-            self.ctx, non_exist_identifier).AndRaise(stack_not_found_exc)
-        self.m.ReplayAll()
-
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.eng.describe_stack_resource,
-                               self.ctx, non_exist_identifier, 'WebServer')
-        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
-
-        self.m.VerifyAll()
-
-    @tools.stack_context('service_resource_describe_nonexist_test_stack')
-    def test_stack_resource_describe_nonexist_resource(self):
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(self.ctx,
-                          stack=mox.IgnoreArg()).AndReturn(self.stack)
-
-        self.m.ReplayAll()
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.eng.describe_stack_resource,
-                               self.ctx, self.stack.identifier(), 'foo')
-        self.assertEqual(exception.ResourceNotFound, ex.exc_info[0])
-
-        self.m.VerifyAll()
-
-    @tools.stack_context('service_resource_describe_noncreated_test_stack',
-                         create_res=False)
-    def test_stack_resource_describe_noncreated_resource(self):
-        self._test_describe_stack_resource()
-
-    @tools.stack_context('service_resource_describe_user_deny_test_stack')
-    def test_stack_resource_describe_stack_user_deny(self):
-        self.ctx.roles = [cfg.CONF.heat_stack_user_role]
-        self.m.StubOutWithMock(service.EngineService, '_authorize_stack_user')
-        service.EngineService._authorize_stack_user(self.ctx, mox.IgnoreArg(),
-                                                    'foo').AndReturn(False)
-        self.m.ReplayAll()
-
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.eng.describe_stack_resource,
-                               self.ctx, self.stack.identifier(), 'foo')
-        self.assertEqual(exception.Forbidden, ex.exc_info[0])
-
-        self.m.VerifyAll()
-
-    @tools.stack_context('service_resources_describe_test_stack')
-    def test_stack_resources_describe(self):
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(self.ctx,
-                          stack=mox.IgnoreArg()).AndReturn(self.stack)
-        self.m.ReplayAll()
-
-        resources = self.eng.describe_stack_resources(self.ctx,
-                                                      self.stack.identifier(),
-                                                      'WebServer')
-
-        self.assertEqual(1, len(resources))
-        r = resources[0]
-        self.assertIn('resource_identity', r)
-        self.assertIn('description', r)
-        self.assertIn('updated_time', r)
-        self.assertIn('stack_identity', r)
-        self.assertIsNotNone(r['stack_identity'])
-        self.assertIn('stack_name', r)
-        self.assertEqual(self.stack.name, r['stack_name'])
-        self.assertIn('resource_status', r)
-        self.assertIn('resource_status_reason', r)
-        self.assertIn('resource_type', r)
-        self.assertIn('physical_resource_id', r)
-        self.assertIn('resource_name', r)
-        self.assertEqual('WebServer', r['resource_name'])
-
-        self.m.VerifyAll()
-
-    @tools.stack_context('service_resources_describe_no_filter_test_stack')
-    def test_stack_resources_describe_no_filter(self):
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(self.ctx,
-                          stack=mox.IgnoreArg()).AndReturn(self.stack)
-        self.m.ReplayAll()
-
-        resources = self.eng.describe_stack_resources(self.ctx,
-                                                      self.stack.identifier(),
-                                                      None)
-
-        self.assertEqual(1, len(resources))
-        r = resources[0]
-        self.assertIn('resource_name', r)
-        self.assertEqual('WebServer', r['resource_name'])
-
-        self.m.VerifyAll()
-
-    def test_stack_resources_describe_bad_lookup(self):
-        self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        service.EngineService._get_stack(
-            self.ctx, None).AndRaise(TypeError)
-        self.m.ReplayAll()
-
-        self.assertRaises(TypeError,
-                          self.eng.describe_stack_resources,
-                          self.ctx, None, 'WebServer')
-        self.m.VerifyAll()
-
-    def test_stack_resources_describe_nonexist_stack(self):
-        non_exist_identifier = identifier.HeatIdentifier(
-            self.ctx.tenant_id, 'wibble',
-            '18d06e2e-44d3-4bef-9fbf-52480d604b02')
-
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.eng.describe_stack_resources,
-                               self.ctx, non_exist_identifier, 'WebServer')
-        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
-
-    @tools.stack_context('find_phys_res_stack')
-    def test_find_physical_resource(self):
-        resources = self.eng.describe_stack_resources(self.ctx,
-                                                      self.stack.identifier(),
-                                                      None)
-        phys_id = resources[0]['physical_resource_id']
-
-        result = self.eng.find_physical_resource(self.ctx, phys_id)
-        self.assertIsInstance(result, dict)
-        resource_identity = identifier.ResourceIdentifier(**result)
-        self.assertEqual(self.stack.identifier(), resource_identity.stack())
-        self.assertEqual('WebServer', resource_identity.resource_name)
-
-    def test_find_physical_resource_nonexist(self):
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.eng.find_physical_resource,
-                               self.ctx, 'foo')
-        self.assertEqual(exception.PhysicalResourceNotFound, ex.exc_info[0])
-
-    @tools.stack_context('service_resources_list_test_stack')
-    def test_stack_resources_list(self):
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(self.ctx,
-                          stack=mox.IgnoreArg()).AndReturn(self.stack)
-        self.m.ReplayAll()
-
-        resources = self.eng.list_stack_resources(self.ctx,
-                                                  self.stack.identifier())
-
-        self.assertEqual(1, len(resources))
-        r = resources[0]
-        self.assertIn('resource_identity', r)
-        self.assertIn('updated_time', r)
-        self.assertIn('physical_resource_id', r)
-        self.assertIn('resource_name', r)
-        self.assertEqual('WebServer', r['resource_name'])
-        self.assertIn('resource_status', r)
-        self.assertIn('resource_status_reason', r)
-        self.assertIn('resource_type', r)
-
-        self.m.VerifyAll()
-
-    @mock.patch.object(parser.Stack, 'load')
-    @tools.stack_context('service_resources_list_test_stack_with_depth')
-    def test_stack_resources_list_with_depth(self, mock_load):
-        mock_load.return_value = self.stack
-        resources = six.itervalues(self.stack)
-        self.stack.iter_resources = mock.Mock(return_value=resources)
-        resources = self.eng.list_stack_resources(self.ctx,
-                                                  self.stack.identifier(),
-                                                  2)
-        self.stack.iter_resources.assert_called_once_with(2)
-
-    @mock.patch.object(parser.Stack, 'load')
-    @tools.stack_context('service_resources_list_test_stack_with_max_depth')
-    def test_stack_resources_list_with_max_depth(self, mock_load):
-        mock_load.return_value = self.stack
-        resources = six.itervalues(self.stack)
-        self.stack.iter_resources = mock.Mock(return_value=resources)
-        resources = self.eng.list_stack_resources(self.ctx,
-                                                  self.stack.identifier(),
-                                                  99)
-        max_depth = cfg.CONF.max_nested_stack_depth
-        self.stack.iter_resources.assert_called_once_with(max_depth)
-
-    @mock.patch.object(parser.Stack, 'load')
-    def test_stack_resources_list_deleted_stack(self, mock_load):
-        stack = tools.setup_stack('resource_list_deleted_stack', self.ctx)
-        stack_id = stack.identifier()
-        mock_load.return_value = stack
-        tools.clean_up_stack(stack)
-        resources = self.eng.list_stack_resources(self.ctx, stack_id)
-        self.assertEqual(1, len(resources))
-
-        res = resources[0]
-        self.assertEqual('DELETE', res['resource_action'])
-        self.assertEqual('COMPLETE', res['resource_status'])
-
-    def test_stack_resources_list_nonexist_stack(self):
-        non_exist_identifier = identifier.HeatIdentifier(
-            self.ctx.tenant_id, 'wibble',
-            '18d06e2e-44d3-4bef-9fbf-52480d604b02')
-
-        stack_not_found_exc = exception.StackNotFound(stack_name='test')
-        self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        service.EngineService._get_stack(
-            self.ctx, non_exist_identifier, show_deleted=True
-        ).AndRaise(stack_not_found_exc)
-        self.m.ReplayAll()
-
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.eng.list_stack_resources,
-                               self.ctx, non_exist_identifier)
-        self.assertEqual(exception.StackNotFound, ex.exc_info[0])
-
-        self.m.VerifyAll()
-
-    def _stack_create(self, stack_name):
-        stack = tools.get_stack(stack_name, self.ctx, policy_template)
-        tools.setup_keystone_mocks(self.m, stack)
-        self.m.ReplayAll()
-        stack.store()
-        stack.create()
-        self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = stack_object.Stack.get_by_id(self.ctx, stack.id)
-        service.EngineService._get_stack(self.ctx,
-                                         stack.identifier()).AndReturn(s)
-        self.m.ReplayAll()
-        return stack
-
-    def test_signal_reception_async(self):
-        self.eng.thread_group_mgr = tools.DummyThreadGroupMgrLogStart()
-        stack_name = 'signal_reception_async'
-        self.stack = self._stack_create(stack_name)
-        test_data = {'food': 'yum'}
-
-        self.m.ReplayAll()
-
-        self.eng.resource_signal(self.ctx,
-                                 dict(self.stack.identifier()),
-                                 'WebServerScaleDownPolicy',
-                                 test_data)
-
-        self.assertEqual([(self.stack.id, mox.IgnoreArg())],
-                         self.eng.thread_group_mgr.started)
-        self.m.VerifyAll()
-
-    def test_signal_reception_sync(self):
-        stack_name = 'signal_reception_sync'
-        self.stack = self._stack_create(stack_name)
-        test_data = {'food': 'yum'}
-
-        self.m.StubOutWithMock(res.Resource, 'signal')
-        res.Resource.signal(mox.IgnoreArg(), False).AndReturn(None)
-        self.m.ReplayAll()
-
-        self.eng.resource_signal(self.ctx,
-                                 dict(self.stack.identifier()),
-                                 'WebServerScaleDownPolicy',
-                                 test_data,
-                                 sync_call=True)
-        self.m.VerifyAll()
-
-    def test_signal_reception_no_resource(self):
-        stack_name = 'signal_reception_no_resource'
-        self.stack = self._stack_create(stack_name)
-        test_data = {'food': 'yum'}
-
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.eng.resource_signal, self.ctx,
-                               dict(self.stack.identifier()),
-                               'resource_does_not_exist',
-                               test_data)
-        self.assertEqual(exception.ResourceNotFound, ex.exc_info[0])
-        self.m.VerifyAll()
-
-    def test_signal_reception_unavailable_resource(self):
-        stack_name = 'signal_reception_unavailable_resource'
-        stack = tools.get_stack(stack_name, self.ctx, policy_template)
-        stack.store()
-        self.stack = stack
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(
-            self.ctx, stack=mox.IgnoreArg(),
-            use_stored_context=mox.IgnoreArg()
-        ).AndReturn(self.stack)
-        self.m.ReplayAll()
-
-        test_data = {'food': 'yum'}
-        self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
-        service.EngineService._get_stack(self.ctx,
-                                         self.stack.identifier()).AndReturn(s)
-        self.m.ReplayAll()
-
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.eng.resource_signal, self.ctx,
-                               dict(self.stack.identifier()),
-                               'WebServerScaleDownPolicy',
-                               test_data)
-        self.assertEqual(exception.ResourceNotAvailable, ex.exc_info[0])
-        self.m.VerifyAll()
-
-    def test_signal_returns_metadata(self):
-        self.stack = self._stack_create('signal_reception')
-        rsrc = self.stack['WebServerScaleDownPolicy']
-        test_metadata = {'food': 'yum'}
-        rsrc.metadata_set(test_metadata)
-
-        self.m.StubOutWithMock(res.Resource, 'signal')
-        res.Resource.signal(mox.IgnoreArg(), False).AndReturn(None)
-        self.m.ReplayAll()
-
-        md = self.eng.resource_signal(self.ctx,
-                                      dict(self.stack.identifier()),
-                                      'WebServerScaleDownPolicy', None,
-                                      sync_call=True)
-        self.assertEqual(test_metadata, md)
-
-        self.m.VerifyAll()
-
-    def test_signal_unset_invalid_hook(self):
-        self.stack = self._stack_create('signal_unset_invalid_hook')
-        details = {'unset_hook': 'invalid_hook'}
-
-        ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.eng.resource_signal,
+        templ_mock.return_value = DummyMgr()
+        version = 'dummytemplate'
+        ex = self.assertRaises(exception.NotFound,
+                               self.eng.list_template_functions,
                                self.ctx,
-                               dict(self.stack.identifier()),
-                               'WebServerScaleDownPolicy',
-                               details)
-        msg = 'Invalid hook type "invalid_hook"'
-        self.assertIn(msg, six.text_type(ex.exc_info[1]))
-        self.assertEqual(exception.InvalidBreakPointHook,
-                         ex.exc_info[0])
-        self.m.VerifyAll()
+                               version)
+        msg = "Template with version %s not found" % version
+        self.assertEqual(msg, six.text_type(ex))
 
-    def test_signal_unset_not_defined_hook(self):
-        self.stack = self._stack_create('signal_unset_not_defined_hook')
-        details = {'unset_hook': 'pre-update'}
+    def test_stack_list_outputs(self):
+        t = template_format.parse(tools.wp_template)
+        t['outputs'] = {
+            'test': {'value': '{ get_attr: fir }',
+                     'description': 'sec'},
+            'test2': {'value': 'sec'}}
+        tmpl = templatem.Template(t)
+        stack = parser.Stack(self.ctx, 'service_list_outputs_stack', tmpl)
+
+        self.patchobject(self.eng, '_get_stack')
+        self.patchobject(parser.Stack, 'load', return_value=stack)
+
+        outputs = self.eng.list_outputs(self.ctx, mock.ANY)
+
+        self.assertIn({'output_key': 'test',
+                       'description': 'sec'}, outputs)
+        self.assertIn({'output_key': 'test2',
+                       'description': 'No description given'},
+                      outputs)
+
+    def test_stack_empty_list_outputs(self):
+        # Ensure that stack with no output returns empty list
+        t = template_format.parse(tools.wp_template)
+        t['outputs'] = {}
+        tmpl = templatem.Template(t)
+        stack = parser.Stack(self.ctx, 'service_list_outputs_stack', tmpl)
+
+        self.patchobject(self.eng, '_get_stack')
+        self.patchobject(parser.Stack, 'load', return_value=stack)
+
+        outputs = self.eng.list_outputs(self.ctx, mock.ANY)
+        self.assertEqual([], outputs)
+
+    def test_stack_show_output(self):
+        t = template_format.parse(tools.wp_template)
+        t['outputs'] = {'test': {'value': 'first', 'description': 'sec'},
+                        'test2': {'value': 'sec'}}
+        tmpl = templatem.Template(t)
+        stack = parser.Stack(self.ctx, 'service_list_outputs_stack', tmpl,
+                             resolve_data=False)
+
+        self.patchobject(self.eng, '_get_stack')
+        self.patchobject(parser.Stack, 'load', return_value=stack)
+
+        output = self.eng.show_output(self.ctx, mock.ANY, 'test')
+        self.assertEqual({'output_key': 'test', 'output_value': 'first',
+                          'description': 'sec'},
+                         output)
+
+        # Ensure that stack raised NotFound error with incorrect key.
         ex = self.assertRaises(dispatcher.ExpectedException,
-                               self.eng.resource_signal,
-                               self.ctx,
-                               dict(self.stack.identifier()),
-                               'WebServerScaleDownPolicy',
-                               details)
-        msg = ('The "pre-update" hook is not defined on '
-               'AWSScalingPolicy "WebServerScaleDownPolicy"')
-        self.assertIn(msg, six.text_type(ex.exc_info[1]))
-        self.assertEqual(exception.InvalidBreakPointHook,
-                         ex.exc_info[0])
-
-        self.m.VerifyAll()
-
-    def test_signal_calls_metadata_update(self):
-        stack = tools.get_stack('signal_reception', self.ctx, policy_template)
-        self.stack = stack
-        tools.setup_keystone_mocks(self.m, stack)
-        self.m.ReplayAll()
-        stack.store()
-        stack.create()
-
-        self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
-        service.EngineService._get_stack(self.ctx,
-                                         self.stack.identifier()).AndReturn(s)
-
-        self.m.StubOutWithMock(res.Resource, 'signal')
-        res.Resource.signal(mox.IgnoreArg(), False).AndReturn(None)
-        self.m.StubOutWithMock(res.Resource, 'metadata_update')
-        # this will be called once for the Random resource
-        res.Resource.metadata_update().AndReturn(None)
-        self.m.ReplayAll()
-
-        self.eng.resource_signal(self.ctx,
-                                 dict(self.stack.identifier()),
-                                 'WebServerScaleDownPolicy', None,
-                                 sync_call=True)
-        self.m.VerifyAll()
-
-    def test_signal_no_calls_metadata_update(self):
-        stack = tools.get_stack('signal_reception', self.ctx, policy_template)
-        self.stack = stack
-        tools.setup_keystone_mocks(self.m, stack)
-        self.m.ReplayAll()
-        stack.store()
-        stack.create()
-
-        res.Resource.signal_needs_metadata_updates = False
-
-        self.m.StubOutWithMock(service.EngineService, '_get_stack')
-        s = stack_object.Stack.get_by_id(self.ctx, self.stack.id)
-        service.EngineService._get_stack(self.ctx,
-                                         self.stack.identifier()).AndReturn(s)
-
-        self.m.StubOutWithMock(res.Resource, 'signal')
-        res.Resource.signal(mox.IgnoreArg(), False).AndReturn(None)
-        # this will never be called
-        self.m.StubOutWithMock(res.Resource, 'metadata_update')
-        self.m.ReplayAll()
-
-        self.eng.resource_signal(self.ctx,
-                                 dict(self.stack.identifier()),
-                                 'WebServerScaleDownPolicy', None,
-                                 sync_call=True)
-        self.m.VerifyAll()
-        res.Resource.signal_needs_metadata_updates = True
+                               self.eng.show_output,
+                               self.ctx, mock.ANY, 'bunny')
+        self.assertEqual(exception.NotFound, ex.exc_info[0])
+        self.assertEqual('Specified output key bunny not found.',
+                         six.text_type(ex.exc_info[1]))
 
     def test_stack_list_all_empty(self):
         sl = self.eng.list_stacks(self.ctx)
@@ -1461,39 +1085,6 @@ class StackServiceTest(common.HeatTestCase):
         sl = self.eng.show_stack(self.ctx, None)
 
         self.assertEqual(0, len(sl))
-
-    def test_lazy_load_resources(self):
-        stack_name = 'lazy_load_test'
-
-        lazy_load_template = {
-            'HeatTemplateFormatVersion': '2012-12-12',
-            'Resources': {
-                'foo': {'Type': 'GenericResourceType'},
-                'bar': {
-                    'Type': 'ResourceWithPropsType',
-                    'Properties': {
-                        'Foo': {'Ref': 'foo'},
-                    }
-                }
-            }
-        }
-        templ = templatem.Template(lazy_load_template)
-        stack = parser.Stack(self.ctx, stack_name, templ)
-
-        self.assertIsNone(stack._resources)
-        self.assertIsNone(stack._dependencies)
-
-        resources = stack.resources
-        self.assertIsInstance(resources, dict)
-        self.assertEqual(2, len(resources))
-        self.assertIsInstance(resources.get('foo'),
-                              generic_rsrc.GenericResource)
-        self.assertIsInstance(resources.get('bar'),
-                              generic_rsrc.ResourceWithProps)
-
-        stack_dependencies = stack.dependencies
-        self.assertIsInstance(stack_dependencies, dependencies.Dependencies)
-        self.assertEqual(2, len(stack_dependencies.graph()))
 
     def _preview_stack(self):
         res._register_class('GenericResource1', generic_rsrc.GenericResource)
@@ -1623,6 +1214,7 @@ class StackServiceTest(common.HeatTestCase):
     @mock.patch('heat.engine.service.ThreadGroupManager',
                 return_value=mock.Mock())
     @mock.patch.object(stack_object.Stack, 'get_all')
+    @mock.patch.object(stack_object.Stack, 'get_by_id')
     @mock.patch('heat.engine.stack_lock.StackLock',
                 return_value=mock.Mock())
     @mock.patch.object(parser.Stack, 'load')
@@ -1632,6 +1224,7 @@ class StackServiceTest(common.HeatTestCase):
             mock_admin_context,
             mock_stack_load,
             mock_stacklock,
+            mock_get_by_id,
             mock_get_all,
             mock_thread):
         mock_admin_context.return_value = self.ctx
@@ -1640,7 +1233,19 @@ class StackServiceTest(common.HeatTestCase):
         db_stack.id = 'foo'
         db_stack.status = 'IN_PROGRESS'
         db_stack.status_reason = None
-        mock_get_all.return_value = [db_stack]
+
+        unlocked_stack = mock.MagicMock()
+        unlocked_stack.id = 'bar'
+        unlocked_stack.status = 'IN_PROGRESS'
+        unlocked_stack.status_reason = None
+
+        unlocked_stack_failed = mock.MagicMock()
+        unlocked_stack_failed.id = 'bar'
+        unlocked_stack_failed.status = 'FAILED'
+        unlocked_stack_failed.status_reason = 'because'
+
+        mock_get_all.return_value = [db_stack, unlocked_stack]
+        mock_get_by_id.side_effect = [db_stack, unlocked_stack_failed]
 
         fake_stack = mock.MagicMock()
         fake_stack.action = 'CREATE'
@@ -1649,26 +1254,36 @@ class StackServiceTest(common.HeatTestCase):
 
         mock_stack_load.return_value = fake_stack
 
-        fake_lock = mock.MagicMock()
-        fake_lock.get_engine_id.return_value = 'old-engine'
-        fake_lock.acquire.return_value = None
-        mock_stacklock.return_value = fake_lock
+        lock1 = mock.MagicMock()
+        lock1.get_engine_id.return_value = 'old-engine'
+        lock1.acquire.return_value = None
+        lock2 = mock.MagicMock()
+        lock2.acquire.return_value = None
+        mock_stacklock.side_effect = [lock1, lock2]
 
         self.eng.thread_group_mgr = mock_thread
 
         self.eng.reset_stack_status()
 
         mock_admin_context.assert_called_once_with()
-        filters = {'status': parser.Stack.IN_PROGRESS}
+        filters = {
+            'status': parser.Stack.IN_PROGRESS,
+            'convergence': False
+        }
         mock_get_all.assert_called_once_with(self.ctx,
                                              filters=filters,
                                              tenant_safe=False,
                                              show_nested=True)
+        mock_get_by_id.assert_has_calls([
+            mock.call(self.ctx, 'foo', tenant_safe=False, eager_load=True),
+            mock.call(self.ctx, 'bar', tenant_safe=False, eager_load=True),
+        ])
         mock_stack_load.assert_called_once_with(self.ctx,
                                                 stack=db_stack,
                                                 use_stored_context=True)
+        self.assertTrue(lock2.release.called)
         mock_thread.start_with_acquired_lock.assert_called_once_with(
-            fake_stack, fake_lock,
+            fake_stack, lock1,
             self.eng.set_stack_and_resource_to_failed, fake_stack
         )
 
@@ -1719,3 +1334,54 @@ class StackServiceTest(common.HeatTestCase):
         self.assertEqual('COMPLETE', test_stack.resources.get('r1').status)
         self.assertEqual('FAILED', test_stack.resources.get('r2').status)
         self.assertEqual('FAILED', test_stack.resources.get('r3').status)
+
+    def test_parse_adopt_stack_data_without_parameters(self):
+        cfg.CONF.set_override('enable_stack_adopt', True)
+        template = {"heat_template_version": "2015-04-30",
+                    "resources": {
+                        "myres": {
+                            "type": "OS::Cinder::Volume",
+                            "properties": {
+                                "name": "volname",
+                                "size": "1"
+                            }
+                        }
+                    }}
+
+        # Assert no KeyError exception raised like before, when trying to
+        # get parameters from adopt stack data which doesn't have it.
+        args = {"adopt_stack_data": '''{}'''}
+        self.eng._parse_template_and_validate_stack(
+            self.ctx, 'stack_name', template, {}, {}, args)
+
+        args = {"adopt_stack_data": '''{
+            "environment": {}
+        }'''}
+        self.eng._parse_template_and_validate_stack(
+            self.ctx, 'stack_name', template, {}, {}, args)
+
+    def test_parse_adopt_stack_data_with_parameters(self):
+        cfg.CONF.set_override('enable_stack_adopt', True)
+        template = {"heat_template_version": "2015-04-30",
+                    "parameters": {
+                        "volsize": {"type": "number"}
+                    },
+                    "resources": {
+                        "myres": {
+                            "type": "OS::Cinder::Volume",
+                            "properties": {
+                                "name": "volname",
+                                "size": {"get_param": "volsize"}
+                            }
+                        }
+                    }}
+
+        args = {"adopt_stack_data": '''{
+            "environment": {
+                "parameters": {
+                    "volsize": 1
+                }
+            }}'''}
+        stack = self.eng._parse_template_and_validate_stack(
+            self.ctx, 'stack_name', template, {}, {}, args)
+        self.assertEqual(1, stack.parameters['volsize'])

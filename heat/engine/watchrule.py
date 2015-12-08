@@ -77,7 +77,8 @@ class WatchRule(object):
     def load(cls, context, watch_name=None, watch=None):
         """Load the watchrule object.
 
-        Loading object either by name or via an existing DB object.
+        The object can be loaded either from the DB by name or from an existing
+        DB object.
         """
         if watch is None:
             try:
@@ -87,7 +88,8 @@ class WatchRule(object):
                 LOG.warn(_LW('WatchRule.load (%(watch_name)s) db error '
                              '%(ex)s'), {'watch_name': watch_name, 'ex': ex})
         if watch is None:
-            raise exception.WatchRuleNotFound(watch_name=watch_name)
+            raise exception.EntityNotFound(entity='Watch Rule',
+                                           name=watch_name)
         else:
             return cls(context=context,
                        watch_name=watch.name,

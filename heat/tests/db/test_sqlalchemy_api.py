@@ -35,9 +35,8 @@ from heat.engine import scheduler
 from heat.engine import stack as parser
 from heat.engine import template as tmpl
 from heat.tests import common
-from heat.tests.nova import fakes as fakes_nova
+from heat.tests.openstack.nova import fakes as fakes_nova
 from heat.tests import utils
-
 
 wp_template = '''
 {
@@ -144,14 +143,14 @@ class SqlAlchemyTest(common.HeatTestCase):
         query = mock.Mock()
         db_api._filter_and_page_query(self.ctx, query)
 
-        assert mock_paginate_query.called
+        self.assertTrue(mock_paginate_query.called)
 
     @mock.patch.object(db_api, '_events_paginate_query')
     def test_events_filter_and_page_query(self, mock_events_paginate_query):
         query = mock.Mock()
         db_api._events_filter_and_page_query(self.ctx, query)
 
-        assert mock_events_paginate_query.called
+        self.assertTrue(mock_events_paginate_query.called)
 
     @mock.patch.object(db_api.db_filters, 'exact_filter')
     def test_filter_and_page_query_handles_no_filters(self, mock_db_filter):
@@ -174,7 +173,7 @@ class SqlAlchemyTest(common.HeatTestCase):
         filters = {'foo': 'bar'}
         db_api._filter_and_page_query(self.ctx, query, filters=filters)
 
-        assert mock_db_filter.called
+        self.assertTrue(mock_db_filter.called)
 
     @mock.patch.object(db_api.db_filters, 'exact_filter')
     def test_events_filter_and_page_query_applies_filters(self,
@@ -183,7 +182,7 @@ class SqlAlchemyTest(common.HeatTestCase):
         filters = {'foo': 'bar'}
         db_api._events_filter_and_page_query(self.ctx, query, filters=filters)
 
-        assert mock_db_filter.called
+        self.assertTrue(mock_db_filter.called)
 
     @mock.patch.object(db_api, '_paginate_query')
     def test_filter_and_page_query_whitelists_sort_keys(self,
@@ -1335,7 +1334,8 @@ def create_stack(ctx, template, user_creds, **kwargs):
         'owner_id': None,
         'timeout': '60',
         'disable_rollback': 0,
-        'current_traversal': 'dummy-uuid'
+        'current_traversal': 'dummy-uuid',
+        'prev_raw_template': None
     }
     values.update(kwargs)
     return db_api.stack_create(ctx, values)
@@ -1861,7 +1861,7 @@ class DBAPIStackTest(common.HeatTestCase):
                          db_api.stack_count_all(self.ctx, tenant_safe=False))
 
     def test_purge_deleted(self):
-        now = datetime.datetime.now()
+        now = timeutils.utcnow()
         delta = datetime.timedelta(seconds=3600 * 7)
         deleted = [now - delta * i for i in range(1, 6)]
         templates = [create_raw_template(self.ctx) for i in range(5)]
@@ -1884,6 +1884,20 @@ class DBAPIStackTest(common.HeatTestCase):
         db_api.purge_deleted(age=3600, granularity='seconds')
         self._deleted_stack_existance(utils.dummy_context(), stacks,
                                       (), (0, 1, 2, 3, 4))
+
+    def test_purge_deleted_prev_raw_template(self):
+        now = timeutils.utcnow()
+        templates = [create_raw_template(self.ctx) for i in range(2)]
+        stacks = [create_stack(self.ctx, templates[0],
+                               create_user_creds(self.ctx),
+                               deleted_at=now - datetime.timedelta(seconds=10),
+                               prev_raw_template=templates[1])]
+
+        db_api.purge_deleted(age=3600, granularity='seconds')
+        ctx = utils.dummy_context()
+        self.assertIsNotNone(db_api.stack_get(ctx, stacks[0].id,
+                                              show_deleted=True))
+        self.assertIsNotNone(db_api.raw_template_get(ctx, templates[1].id))
 
     def _deleted_stack_existance(self, ctx, stacks, existing, deleted):
         for s in existing:
@@ -2486,8 +2500,9 @@ class DBAPIServiceTest(common.HeatTestCase):
 
         # Delete
         db_api.service_delete(self.ctx, service.id, False)
-        self.assertRaises(exception.ServiceNotFound, db_api.service_get,
-                          self.ctx, service.id)
+        ex = self.assertRaises(exception.EntityNotFound, db_api.service_get,
+                               self.ctx, service.id)
+        self.assertEqual('Service', ex.kwargs.get('entity'))
 
 
 class DBAPIResourceUpdateTest(common.HeatTestCase):
@@ -2760,12 +2775,12 @@ class DBAPISyncPointTest(common.HeatTestCase):
             ret_sync_point_rsrc = db_api.sync_point_get(
                 self.ctx, str(res.id), self.stack.current_traversal, True
             )
-            self.assertEqual(None, ret_sync_point_rsrc)
+            self.assertIsNone(ret_sync_point_rsrc)
 
         ret_sync_point_stack = db_api.sync_point_get(
             self.ctx, self.stack.id, self.stack.current_traversal, True
         )
-        self.assertEqual(None, ret_sync_point_stack)
+        self.assertIsNone(ret_sync_point_stack)
 
 
 class DBAPICryptParamsPropsTest(common.HeatTestCase):

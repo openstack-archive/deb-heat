@@ -35,5 +35,4 @@ echo -e '[heat_api]\nworkers=1\n' >> $localconf
 echo -e '[heat_api_cfn]\nworkers=1\n' >> $localconf
 echo -e '[heat_api_cloudwatch]\nworkers=1\n' >> $localconf
 
-echo -e '[[post-config|/etc/neutron/neutron_vpnaas.conf]]\n' >> $localconf
-echo -e '[service_providers]\nservice_provider=VPN:openswan:neutron_vpnaas.services.vpn.service_drivers.ipsec.IPsecVPNDriver:default' >> $localconf
+echo -e '[cache]\nenabled=True\n' >> $localconf

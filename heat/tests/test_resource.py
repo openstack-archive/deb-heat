@@ -73,7 +73,7 @@ class ResourceTest(common.HeatTestCase):
         self.assertEqual(generic_rsrc.GenericResource, cls)
 
     def test_get_class_noexist(self):
-        self.assertRaises(exception.ResourceTypeNotFound,
+        self.assertRaises(exception.StackValidationFailed,
                           resources.global_env().get_class,
                           'NoExistResourceType')
 
@@ -95,8 +95,8 @@ class ResourceTest(common.HeatTestCase):
         res.current_template_id = self.stack.t.id
         res.state_set('CREATE', 'IN_PROGRESS')
         self.stack.add_resource(res)
-        loaded_res, stack = resource.Resource.load(self.stack.context,
-                                                   res.id, True, {})
+        loaded_res, res_owning_stack, stack = resource.Resource.load(
+            self.stack.context, res.id, True, {})
         self.assertEqual(loaded_res.id, res.id)
         self.assertEqual(self.stack.t, stack.t)
 
@@ -119,8 +119,8 @@ class ResourceTest(common.HeatTestCase):
         res.current_template_id = self.old_stack.t.id
         res.state_set('CREATE', 'IN_PROGRESS')
         self.old_stack.add_resource(res)
-        loaded_res, stack = resource.Resource.load(self.old_stack.context,
-                                                   res.id, False, {})
+        loaded_res, res_owning_stack, stack = resource.Resource.load(
+            self.old_stack.context, res.id, False, {})
         self.assertEqual(loaded_res.id, res.id)
         self.assertEqual(self.old_stack.t, stack.t)
         self.assertNotEqual(self.new_stack.t, stack.t)
@@ -141,12 +141,12 @@ class ResourceTest(common.HeatTestCase):
         res.current_template_id = self.stack.t.id
         res.state_set('CREATE', 'IN_PROGRESS')
         self.stack.add_resource(res)
-        origin_resources = self.stack._resources
+        origin_resources = self.stack.resources
         self.stack._resources = None
 
-        loaded_res, stack = resource.Resource.load(self.stack.context,
-                                                   res.id, False, {})
-        self.assertEqual(origin_resources, stack._resources)
+        loaded_res, res_owning_stack, stack = resource.Resource.load(
+            self.stack.context, res.id, False, {})
+        self.assertEqual(origin_resources, stack.resources)
         self.assertEqual(loaded_res.id, res.id)
         self.assertEqual(self.stack.t, stack.t)
 
@@ -173,13 +173,13 @@ class ResourceTest(common.HeatTestCase):
     def test_resource_new_err(self):
         snippet = rsrc_defn.ResourceDefinition('aresource',
                                                'NoExistResourceType')
-        self.assertRaises(exception.ResourceTypeNotFound,
+        self.assertRaises(exception.StackValidationFailed,
                           resource.Resource, 'aresource', snippet, self.stack)
 
     def test_resource_non_type(self):
         resource_name = 'aresource'
         snippet = rsrc_defn.ResourceDefinition(resource_name, '')
-        ex = self.assertRaises(exception.InvalidResourceType,
+        ex = self.assertRaises(exception.StackValidationFailed,
                                resource.Resource, resource_name,
                                snippet, self.stack)
         self.assertIn(_('Resource "%s" has no type') % resource_name,
@@ -337,6 +337,12 @@ class ResourceTest(common.HeatTestCase):
         res = generic_rsrc.GenericResource('test_resource', tmpl, self.stack)
         self.assertTrue(res.has_interface('GenericResourceType'))
 
+    def test_has_interface_mapping_no_match(self):
+        tmpl = rsrc_defn.ResourceDefinition('test_resource',
+                                            'OS::Test::GenoricResort')
+        res = generic_rsrc.GenericResource('test_resource', tmpl, self.stack)
+        self.assertFalse(res.has_interface('GenericResourceType'))
+
     def test_created_time(self):
         tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo')
         res = generic_rsrc.GenericResource('test_res_new', tmpl, self.stack)
@@ -357,62 +363,75 @@ class ResourceTest(common.HeatTestCase):
         self.assertIsNotNone(res.updated_time)
         self.assertNotEqual(res.updated_time, stored_time)
 
-    def test_update_replace(self):
+    def _setup_resource_for_update(self, res_name):
         class TestResource(resource.Resource):
             properties_schema = {'a_string': {'Type': 'String'}}
             update_allowed_properties = ('a_string',)
 
         resource._register_class('TestResource', TestResource)
 
-        tmpl = rsrc_defn.ResourceDefinition('test_resource',
+        tmpl = rsrc_defn.ResourceDefinition(res_name,
                                             'TestResource')
         res = TestResource('test_resource', tmpl, self.stack)
+
+        utmpl = rsrc_defn.ResourceDefinition(res_name, 'TestResource',
+                                             {'a_string': 'foo'})
+
+        return res, utmpl
+
+    def test_update_replace(self):
+        res, utmpl = self._setup_resource_for_update(
+            res_name='test_update_replace')
         res.prepare_for_replace = mock.Mock()
 
-        utmpl = rsrc_defn.ResourceDefinition('test_resource', 'TestResource',
-                                             {'a_string': 'foo'})
         self.assertRaises(
             exception.UpdateReplace, scheduler.TaskRunner(res.update, utmpl))
         self.assertTrue(res.prepare_for_replace.called)
 
+    def test_update_replace_prepare_replace_error(self):
+        # test if any error happened when prepare_for_replace,
+        # whether the resource will go to FAILED
+        res, utmpl = self._setup_resource_for_update(
+            res_name='test_update_replace_prepare_replace_error')
+        res.prepare_for_replace = mock.Mock(side_effect=Exception)
+
+        self.assertRaises(
+            exception.ResourceFailure,
+            scheduler.TaskRunner(res.update, utmpl))
+        self.assertTrue(res.prepare_for_replace.called)
+        self.assertEqual((res.UPDATE, res.FAILED), res.state)
+
     def test_update_rsrc_in_progress_raises_exception(self):
-        class TestResource(resource.Resource):
-            properties_schema = {'a_string': {'Type': 'String'}}
-            update_allowed_properties = ('a_string',)
+        res, utmpl = self._setup_resource_for_update(
+            res_name='test_update_rsrc_in_progress_raises_exception')
 
         cfg.CONF.set_override('convergence_engine', False)
-        resource._register_class('TestResource', TestResource)
 
-        tmpl = rsrc_defn.ResourceDefinition('test_resource',
-                                            'TestResource')
-        res = TestResource('test_resource', tmpl, self.stack)
-
-        utmpl = rsrc_defn.ResourceDefinition('test_resource', 'TestResource',
-                                             {'a_string': 'foo'})
         res.action = res.UPDATE
         res.status = res.IN_PROGRESS
         self.assertRaises(
             exception.ResourceFailure, scheduler.TaskRunner(res.update, utmpl))
 
     def test_update_replace_rollback(self):
-        class TestResource(resource.Resource):
-            properties_schema = {'a_string': {'Type': 'String'}}
-            update_allowed_properties = ('a_string',)
-
-        resource._register_class('TestResource', TestResource)
-
-        tmpl = rsrc_defn.ResourceDefinition('test_resource',
-                                            'TestResource')
+        res, utmpl = self._setup_resource_for_update(
+            res_name='test_update_replace_rollback')
+        res.restore_prev_rsrc = mock.Mock()
         self.stack.state_set('ROLLBACK', 'IN_PROGRESS', 'Simulate rollback')
-        res = TestResource('test_resource', tmpl, self.stack)
 
-        res.restore_after_rollback = mock.Mock()
-
-        utmpl = rsrc_defn.ResourceDefinition('test_resource', 'TestResource',
-                                             {'a_string': 'foo'})
         self.assertRaises(
             exception.UpdateReplace, scheduler.TaskRunner(res.update, utmpl))
-        self.assertTrue(res.restore_after_rollback.called)
+        self.assertTrue(res.restore_prev_rsrc.called)
+
+    def test_update_replace_rollback_restore_prev_rsrc_error(self):
+        res, utmpl = self._setup_resource_for_update(
+            res_name='restore_prev_rsrc_error')
+        res.restore_prev_rsrc = mock.Mock(side_effect=Exception)
+        self.stack.state_set('ROLLBACK', 'IN_PROGRESS', 'Simulate rollback')
+
+        self.assertRaises(
+            exception.ResourceFailure, scheduler.TaskRunner(res.update, utmpl))
+        self.assertTrue(res.restore_prev_rsrc.called)
+        self.assertEqual((res.UPDATE, res.FAILED), res.state)
 
     def test_update_replace_in_failed_without_nested(self):
         tmpl = rsrc_defn.ResourceDefinition('test_resource',
@@ -1335,8 +1354,8 @@ class ResourceTest(common.HeatTestCase):
     def _test_skip_validation_if_custom_constraint(self, tmpl):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
         stack.store()
-        path = ('heat.engine.clients.os.neutron.NetworkConstraint.'
-                'validate_with_client')
+        path = ('heat.engine.clients.os.neutron.neutron_constraints.'
+                'NetworkConstraint.validate_with_client')
         with mock.patch(path) as mock_validate:
             mock_validate.side_effect = neutron_exp.NeutronClientException
             rsrc2 = stack['bar']
@@ -1662,13 +1681,14 @@ class ResourceTest(common.HeatTestCase):
 
         self.assertRaises(scheduler.Timeout, res.create_convergence,
                           self.stack.t.id, res_data, 'engine-007',
-                          0)
+                          -1)
 
     def test_create_convergence_sets_requires_for_failure(self):
-        '''
+        """Ensure that requires are computed correctly.
+
         Ensure that requires are computed correctly even if resource
-        create fails,
-        '''
+        create fails.
+        """
         tmpl = rsrc_defn.ResourceDefinition('test_res', 'Foo')
         res = generic_rsrc.GenericResource('test_res', tmpl, self.stack)
         res._store()
@@ -1737,7 +1757,8 @@ class ResourceTest(common.HeatTestCase):
 
         res_data = {(1, True): {u'id': 4, u'name': 'A', 'attrs': {}},
                     (2, True): {u'id': 3, u'name': 'B', 'attrs': {}}}
-        res.update_convergence(new_temp.id, res_data, 'engine-007', 120)
+        res.update_convergence(new_temp.id, res_data, 'engine-007', 120,
+                               mock.ANY)
 
         expected_rsrc_def = new_temp.resource_definitions(self.stack)[res.name]
         mock_init.assert_called_once_with(res.update, expected_rsrc_def)
@@ -1763,7 +1784,7 @@ class ResourceTest(common.HeatTestCase):
         res_data = {}
         self.assertRaises(scheduler.Timeout, res.update_convergence,
                           new_temp.id, res_data, 'engine-007',
-                          0)
+                          -1, mock.ANY)
 
     def test_update_in_progress_convergence(self):
         tmpl = rsrc_defn.ResourceDefinition('test_res', 'Foo')
@@ -1780,7 +1801,8 @@ class ResourceTest(common.HeatTestCase):
                                res.update_convergence,
                                'template_key',
                                res_data, 'engine-007',
-                               self.dummy_timeout)
+                               self.dummy_timeout,
+                               mock.ANY)
         msg = ("The resource %s is already being updated." %
                res.name)
         self.assertEqual(msg, six.text_type(ex))
@@ -1811,7 +1833,7 @@ class ResourceTest(common.HeatTestCase):
         mock_update.side_effect = dummy_ex
         self.assertRaises(exception.ResourceFailure,
                           res.update_convergence, new_temp.id, res_data,
-                          'engine-007', 120)
+                          'engine-007', 120, mock.ANY)
 
         expected_rsrc_def = new_temp.resource_definitions(self.stack)[res.name]
         mock_update.assert_called_once_with(expected_rsrc_def)
@@ -1843,12 +1865,12 @@ class ResourceTest(common.HeatTestCase):
         mock_update.side_effect = exception.UpdateReplace
         self.assertRaises(exception.UpdateReplace,
                           res.update_convergence, new_temp.id, res_data,
-                          'engine-007', 120)
+                          'engine-007', 120, mock.ANY)
 
         expected_rsrc_def = new_temp.resource_definitions(self.stack)[res.name]
         mock_update.assert_called_once_with(expected_rsrc_def)
         # ensure that current_template_id was not updated
-        self.assertEqual(None, res.current_template_id)
+        self.assertIsNone(res.current_template_id)
         # ensure that requires was not updated
         self.assertItemsEqual([2], res.requires)
         self._assert_resource_lock(res.id, None, 2)
@@ -1948,7 +1970,7 @@ class ResourceTest(common.HeatTestCase):
         self.assertTrue(db_res.select_and_update.called)
         args, kwargs = db_res.select_and_update.call_args
         self.assertEqual({'replaces': None, 'needed_by': [4, 5]}, args[0])
-        self.assertEqual(None, kwargs['expected_engine_id'])
+        self.assertIsNone(kwargs['expected_engine_id'])
 
     @mock.patch.object(resource_objects.Resource, 'get_obj')
     def test_update_replacement_data_ignores_rsrc_from_different_tmpl(
@@ -2053,7 +2075,7 @@ class ResourceTest(common.HeatTestCase):
         tmpl = rsrc_defn.ResourceDefinition('test_res', 'Foo')
         res = generic_rsrc.GenericResource('test_res', tmpl, self.stack)
         res._store()
-        timeout = 0  # to emulate timeout
+        timeout = -1  # to emulate timeout
         self.assertRaises(scheduler.Timeout, res.delete_convergence,
                           1, {}, 'engine-007', timeout)
 
@@ -2076,13 +2098,15 @@ class ResourceTest(common.HeatTestCase):
         stack.store()
         mock_tmpl_load.return_value = tmpl
         res = stack['res']
+        res.current_template_id = stack.t.id
         res._store()
         data = {'bar': {'atrr1': 'baz', 'attr2': 'baz2'}}
         mock_stack_load.return_value = stack
         resource.Resource.load(stack.context, res.id, True, data)
-        mock_stack_load.assert_called_once_with(stack.context,
-                                                stack.id,
-                                                cache_data=data)
+        self.assertTrue(mock_stack_load.called)
+        mock_stack_load.assert_called_with(stack.context,
+                                           stack_id=stack.id,
+                                           cache_data=data)
         self.assertTrue(mock_load_data.called)
 
 
@@ -2763,10 +2787,6 @@ class ResourceHookTest(common.HeatTestCase):
         super(ResourceHookTest, self).setUp()
 
         self.env = environment.Environment()
-        self.env.load({u'resource_registry':
-                      {u'OS::Test::GenericResource': u'GenericResourceType',
-                       u'OS::Test::ResourceWithCustomConstraint':
-                       u'ResourceWithCustomConstraint'}})
 
         self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
                                   template.Template(empty_template,
@@ -2793,6 +2813,11 @@ class ResourceHookTest(common.HeatTestCase):
         res.data = mock.Mock(return_value={'pre-update': 'True'})
         self.assertFalse(res.has_hook('pre-create'))
         self.assertTrue(res.has_hook('pre-update'))
+
+        res.data = mock.Mock(return_value={'pre-delete': 'True'})
+        self.assertFalse(res.has_hook('pre-create'))
+        self.assertFalse(res.has_hook('pre-update'))
+        self.assertTrue(res.has_hook('pre-delete'))
 
     def test_set_hook(self):
         snippet = rsrc_defn.ResourceDefinition('res',
@@ -2840,6 +2865,38 @@ class ResourceHookTest(common.HeatTestCase):
         self.assertRaises(exception.InvalidBreakPointHook,
                           res.signal, {'unset_hook': 'pre-create'})
 
+    def test_pre_create_hook_call(self):
+        self.stack.env.registry.load(
+            {'resources': {'res': {'hooks': 'pre-create'}}})
+        snippet = rsrc_defn.ResourceDefinition('res',
+                                               'GenericResourceType')
+        res = resource.Resource('res', snippet, self.stack)
+        res.id = '1234'
+        task = scheduler.TaskRunner(res.create)
+        task.start()
+        task.step()
+        self.assertTrue(res.has_hook('pre-create'))
+        res.clear_hook('pre-create')
+        task.run_to_completion()
+        self.assertEqual((res.CREATE, res.COMPLETE), res.state)
+
+    def test_pre_delete_hook_call(self):
+        self.stack.env.registry.load(
+            {'resources': {'res': {'hooks': 'pre-delete'}}})
+        snippet = rsrc_defn.ResourceDefinition('res',
+                                               'GenericResourceType')
+        res = resource.Resource('res', snippet, self.stack)
+        res.id = '1234'
+        res.action = 'CREATE'
+        self.stack.action = 'DELETE'
+        task = scheduler.TaskRunner(res.delete)
+        task.start()
+        task.step()
+        self.assertTrue(res.has_hook('pre-delete'))
+        res.clear_hook('pre-delete')
+        task.run_to_completion()
+        self.assertEqual((res.DELETE, res.COMPLETE), res.state)
+
 
 class ResourceAvailabilityTest(common.HeatTestCase):
     def _mock_client_plugin(self, service_types=[], is_available=True):
@@ -2851,9 +2908,10 @@ class ResourceAvailabilityTest(common.HeatTestCase):
         return mock_service_types, mock_client_plugin
 
     def test_default_true_with_default_client_name_none(self):
-        '''
+        """Test availability of resource when default_client_name is None.
+
         When default_client_name is None, resource is considered as available.
-        '''
+        """
         with mock.patch(('heat.tests.generic_resource'
                         '.ResourceWithDefaultClientName.default_client_name'),
                         new_callable=mock.PropertyMock) as mock_client_name:
@@ -2865,9 +2923,10 @@ class ResourceAvailabilityTest(common.HeatTestCase):
     def test_default_true_empty_service_types(
             self,
             mock_client_plugin_method):
-        '''
+        """Test availability of resource when service_types is empty list.
+
         When service_types is empty list, resource is considered as available.
-        '''
+        """
 
         mock_service_types, mock_client_plugin = self._mock_client_plugin()
         mock_client_plugin_method.return_value = mock_client_plugin
@@ -2883,9 +2942,10 @@ class ResourceAvailabilityTest(common.HeatTestCase):
     def test_service_deployed(
             self,
             mock_client_plugin_method):
-        '''
+        """Test availability of resource when the service is deployed.
+
         When the service is deployed, resource is considered as available.
-        '''
+        """
 
         mock_service_types, mock_client_plugin = self._mock_client_plugin(
             ['test_type']
@@ -2908,10 +2968,11 @@ class ResourceAvailabilityTest(common.HeatTestCase):
     def test_service_not_deployed(
             self,
             mock_client_plugin_method):
-        '''
+        """Test availability of resource when the service is not deployed.
+
         When the service is not deployed, resource is considered as
         unavailable.
-        '''
+        """
 
         mock_service_types, mock_client_plugin = self._mock_client_plugin(
             ['test_type_un_deployed'],
@@ -2931,11 +2992,114 @@ class ResourceAvailabilityTest(common.HeatTestCase):
                           .default_client_name)
         )
 
+    @mock.patch.object(clients.OpenStackClients, 'client_plugin')
+    def test_service_deployed_required_extension_true(
+            self,
+            mock_client_plugin_method):
+        """Test availability of resource with a required extension. """
+
+        mock_service_types, mock_client_plugin = self._mock_client_plugin(
+            ['test_type']
+        )
+        mock_client_plugin.has_extension = mock.Mock(
+            return_value=True)
+        mock_client_plugin_method.return_value = mock_client_plugin
+
+        self.assertTrue(
+            generic_rsrc.ResourceWithDefaultClientNameExt.is_service_available(
+                context=mock.Mock()))
+        mock_client_plugin_method.assert_called_once_with(
+            generic_rsrc.ResourceWithDefaultClientName.default_client_name)
+        mock_service_types.assert_called_once_with()
+        mock_client_plugin.does_endpoint_exist.assert_called_once_with(
+            service_type='test_type',
+            service_name=(generic_rsrc.ResourceWithDefaultClientName
+                          .default_client_name))
+        mock_client_plugin.has_extension.assert_called_once_with('foo')
+
+    @mock.patch.object(clients.OpenStackClients, 'client_plugin')
+    def test_service_deployed_required_extension_false(
+            self,
+            mock_client_plugin_method):
+        """Test availability of resource with a required extension. """
+
+        mock_service_types, mock_client_plugin = self._mock_client_plugin(
+            ['test_type']
+        )
+        mock_client_plugin.has_extension = mock.Mock(
+            return_value=False)
+        mock_client_plugin_method.return_value = mock_client_plugin
+
+        self.assertFalse(
+            generic_rsrc.ResourceWithDefaultClientNameExt.is_service_available(
+                context=mock.Mock()))
+        mock_client_plugin_method.assert_called_once_with(
+            generic_rsrc.ResourceWithDefaultClientName.default_client_name)
+        mock_service_types.assert_called_once_with()
+        mock_client_plugin.does_endpoint_exist.assert_called_once_with(
+            service_type='test_type',
+            service_name=(generic_rsrc.ResourceWithDefaultClientName
+                          .default_client_name))
+        mock_client_plugin.has_extension.assert_called_once_with('foo')
+
+    @mock.patch.object(clients.OpenStackClients, 'client_plugin')
+    def test_service_deployed_required_extension_exception(
+            self,
+            mock_client_plugin_method):
+        """Test availability of resource with a required extension. """
+
+        mock_service_types, mock_client_plugin = self._mock_client_plugin(
+            ['test_type']
+        )
+        mock_client_plugin.has_extension = mock.Mock(
+            side_effect=Exception("error"))
+        mock_client_plugin_method.return_value = mock_client_plugin
+
+        self.assertFalse(
+            generic_rsrc.ResourceWithDefaultClientNameExt.is_service_available(
+                context=mock.Mock()))
+        mock_client_plugin_method.assert_called_once_with(
+            generic_rsrc.ResourceWithDefaultClientName.default_client_name)
+        mock_service_types.assert_called_once_with()
+        mock_client_plugin.does_endpoint_exist.assert_called_once_with(
+            service_type='test_type',
+            service_name=(generic_rsrc.ResourceWithDefaultClientName
+                          .default_client_name))
+        mock_client_plugin.has_extension.assert_called_once_with('foo')
+
+    @mock.patch.object(clients.OpenStackClients, 'client_plugin')
+    def test_service_not_deployed_required_extension(
+            self,
+            mock_client_plugin_method):
+        """Test availability of resource when the service is not deployed.
+
+        When the service is not deployed, resource is considered as
+        unavailable.
+        """
+
+        mock_service_types, mock_client_plugin = self._mock_client_plugin(
+            ['test_type_un_deployed'],
+            False
+        )
+        mock_client_plugin_method.return_value = mock_client_plugin
+
+        self.assertFalse(
+            generic_rsrc.ResourceWithDefaultClientNameExt.is_service_available(
+                context=mock.Mock()))
+        mock_client_plugin_method.assert_called_once_with(
+            generic_rsrc.ResourceWithDefaultClientName.default_client_name)
+        mock_service_types.assert_called_once_with()
+        mock_client_plugin.does_endpoint_exist.assert_called_once_with(
+            service_type='test_type_un_deployed',
+            service_name=(generic_rsrc.ResourceWithDefaultClientName
+                          .default_client_name))
+
     def test_service_not_deployed_throws_exception(self):
-        '''
+        """Test raising exception when the service is not deployed.
+
         When the service is not deployed, make sure resource is throwing
         ResourceTypeUnavailable exception.
-        '''
+        """
         with mock.patch.object(
                 generic_rsrc.ResourceWithDefaultClientName,
                 'is_service_available') as mock_method:

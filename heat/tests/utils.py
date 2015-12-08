@@ -38,8 +38,7 @@ class UUIDStub(object):
 
     def __enter__(self):
         self.uuid4 = uuid.uuid4
-        uuid_stub = lambda: self.value
-        uuid.uuid4 = uuid_stub
+        uuid.uuid4 = lambda: self.value
 
     def __exit__(self, *exc_info):
         uuid.uuid4 = self.uuid4
@@ -89,7 +88,7 @@ def dummy_context(user='test_username', tenant_id='test_tenant_id',
 
 
 def parse_stack(t, params=None, files=None, stack_name=None,
-                stack_id=None, timeout_mins=None):
+                stack_id=None, timeout_mins=None, cache_data=None):
     params = params or {}
     files = files or {}
     ctx = dummy_context()
@@ -99,7 +98,7 @@ def parse_stack(t, params=None, files=None, stack_name=None,
     if stack_name is None:
         stack_name = random_name()
     stk = stack.Stack(ctx, stack_name, templ, stack_id=stack_id,
-                      timeout_mins=timeout_mins)
+                      timeout_mins=timeout_mins, cache_data=cache_data)
     stk.store()
     return stk
 

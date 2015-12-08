@@ -21,6 +21,7 @@ from heat.common.i18n import _LW
 from heat.engine import attributes
 from heat.engine import constraints
 from heat.engine import properties
+from heat.engine import resource
 from heat.engine.resources.openstack.neutron import neutron
 from heat.engine.resources.openstack.neutron import subnet
 from heat.engine import support
@@ -31,16 +32,19 @@ LOG = logging.getLogger(__name__)
 class Port(neutron.NeutronResource):
 
     PROPERTIES = (
-        NETWORK_ID, NETWORK, NAME, VALUE_SPECS,
-        ADMIN_STATE_UP, FIXED_IPS, MAC_ADDRESS,
-        DEVICE_ID, SECURITY_GROUPS, ALLOWED_ADDRESS_PAIRS,
-        DEVICE_OWNER, REPLACEMENT_POLICY, VNIC_TYPE,
-        PORT_SECURITY_ENABLED,
+        NAME, NETWORK_ID, NETWORK, FIXED_IPS, SECURITY_GROUPS,
+        REPLACEMENT_POLICY, DEVICE_ID, DEVICE_OWNER
     ) = (
-        'network_id', 'network', 'name', 'value_specs',
-        'admin_state_up', 'fixed_ips', 'mac_address',
-        'device_id', 'security_groups', 'allowed_address_pairs',
-        'device_owner', 'replacement_policy', 'binding:vnic_type',
+        'name', 'network_id', 'network', 'fixed_ips', 'security_groups',
+        'replacement_policy', 'device_id', 'device_owner'
+    )
+
+    EXTRA_PROPERTIES = (
+        VALUE_SPECS, ADMIN_STATE_UP, MAC_ADDRESS,
+        ALLOWED_ADDRESS_PAIRS, VNIC_TYPE, PORT_SECURITY_ENABLED,
+    ) = (
+        'value_specs', 'admin_state_up', 'mac_address',
+        'allowed_address_pairs', 'binding:vnic_type',
         'port_security_enabled',
     )
 
@@ -69,6 +73,11 @@ class Port(neutron.NeutronResource):
     )
 
     properties_schema = {
+        NAME: properties.Schema(
+            properties.Schema.STRING,
+            _('A symbolic name for this port.'),
+            update_allowed=True
+        ),
         NETWORK_ID: properties.Schema(
             properties.Schema.STRING,
             support_status=support.SupportStatus(
@@ -92,26 +101,21 @@ class Port(neutron.NeutronResource):
               'with %(subnet)s') % {'fixed_ips': FIXED_IPS,
                                     'subnet': FIXED_IP_SUBNET},
             support_status=support.SupportStatus(version='2014.2'),
+            required=True,
             constraints=[
                 constraints.CustomConstraint('neutron.network')
             ],
         ),
-
-        NAME: properties.Schema(
+        DEVICE_ID: properties.Schema(
             properties.Schema.STRING,
-            _('A symbolic name for this port.'),
+            _('Device ID of this port.'),
             update_allowed=True
         ),
-        VALUE_SPECS: properties.Schema(
-            properties.Schema.MAP,
-            _('Extra parameters to include in the "port" object in the '
-              'creation request.'),
-            default={}
-        ),
-        ADMIN_STATE_UP: properties.Schema(
-            properties.Schema.BOOLEAN,
-            _('The administrative state of this port.'),
-            default=True,
+        DEVICE_OWNER: properties.Schema(
+            properties.Schema.STRING,
+            _('Name of the network owning the port. '
+              'The value is typically network:floatingip '
+              'or network:router_interface or network:dhcp'),
             update_allowed=True
         ),
         FIXED_IPS: properties.Schema(
@@ -156,22 +160,46 @@ class Port(neutron.NeutronResource):
             ),
             update_allowed=True
         ),
+        SECURITY_GROUPS: properties.Schema(
+            properties.Schema.LIST,
+            _('Security group IDs to associate with this port.'),
+            update_allowed=True
+        ),
+        REPLACEMENT_POLICY: properties.Schema(
+            properties.Schema.STRING,
+            _('Policy on how to respond to a stack-update for this resource. '
+              'REPLACE_ALWAYS will replace the port regardless of any '
+              'property changes. AUTO will update the existing port for any '
+              'changed update-allowed property.'),
+            default='AUTO',
+            constraints=[
+                constraints.AllowedValues(['REPLACE_ALWAYS', 'AUTO']),
+            ],
+            update_allowed=True
+        ),
+    }
+
+    # NOTE(prazumovsky): properties_schema has been separated because some
+    # properties used in server for creating internal port.
+    extra_properties_schema = {
+        VALUE_SPECS: properties.Schema(
+            properties.Schema.MAP,
+            _('Extra parameters to include in the "port" object in the '
+              'creation request.'),
+            default={}
+        ),
+        ADMIN_STATE_UP: properties.Schema(
+            properties.Schema.BOOLEAN,
+            _('The administrative state of this port.'),
+            default=True,
+            update_allowed=True
+        ),
         MAC_ADDRESS: properties.Schema(
             properties.Schema.STRING,
             _('MAC address to give to this port.'),
             constraints=[
                 constraints.CustomConstraint('mac_addr')
             ]
-        ),
-        DEVICE_ID: properties.Schema(
-            properties.Schema.STRING,
-            _('Device ID of this port.'),
-            update_allowed=True
-        ),
-        SECURITY_GROUPS: properties.Schema(
-            properties.Schema.LIST,
-            _('Security group IDs to associate with this port.'),
-            update_allowed=True
         ),
         ALLOWED_ADDRESS_PAIRS: properties.Schema(
             properties.Schema.LIST,
@@ -192,30 +220,11 @@ class Port(neutron.NeutronResource):
                         _('IP address to allow through this port.'),
                         required=True,
                         constraints=[
-                            constraints.CustomConstraint('ip_addr')
+                            constraints.CustomConstraint('net_cidr')
                         ]
                     ),
                 },
             )
-        ),
-        DEVICE_OWNER: properties.Schema(
-            properties.Schema.STRING,
-            _('Name of the network owning the port. '
-              'The value is typically network:floatingip '
-              'or network:router_interface or network:dhcp'),
-            update_allowed=True
-        ),
-        REPLACEMENT_POLICY: properties.Schema(
-            properties.Schema.STRING,
-            _('Policy on how to respond to a stack-update for this resource. '
-              'REPLACE_ALWAYS will replace the port regardless of any '
-              'property changes. AUTO will update the existing port for any '
-              'changed update-allowed property.'),
-            default='AUTO',
-            constraints=[
-                constraints.AllowedValues(['REPLACE_ALWAYS', 'AUTO']),
-            ],
-            update_allowed=True
         ),
         VNIC_TYPE: properties.Schema(
             properties.Schema.STRING,
@@ -299,26 +308,26 @@ class Port(neutron.NeutronResource):
         ),
     }
 
-    def translation_rules(self):
+    def __init__(self, name, definition, stack):
+        """Overloaded init in case of merging two schemas to one."""
+        self.properties_schema.update(self.extra_properties_schema)
+        super(Port, self).__init__(name, definition, stack)
+
+    def translation_rules(self, props):
         return [
             properties.TranslationRule(
-                self.properties,
+                props,
                 properties.TranslationRule.REPLACE,
                 [self.NETWORK],
                 value_path=[self.NETWORK_ID]
             ),
             properties.TranslationRule(
-                self.properties,
+                props,
                 properties.TranslationRule.REPLACE,
                 [self.FIXED_IPS, self.FIXED_IP_SUBNET],
                 value_name=self.FIXED_IP_SUBNET_ID
             )
         ]
-
-    def validate(self):
-        super(Port, self).validate()
-        self._validate_depr_property_required(self.properties,
-                                              self.NETWORK, self.NETWORK_ID)
 
     def add_dependencies(self, deps):
         super(Port, self).add_dependencies(deps)
@@ -329,11 +338,8 @@ class Port(neutron.NeutronResource):
         # the ports in that network.
         for res in six.itervalues(self.stack):
             if res.has_interface('OS::Neutron::Subnet'):
-                dep_network = res.properties.get(
-                    subnet.Subnet.NETWORK) or res.properties.get(
-                        subnet.Subnet.NETWORK_ID)
-                network = self.properties[
-                    self.NETWORK] or self.properties[self.NETWORK_ID]
+                dep_network = res.properties.get(subnet.Subnet.NETWORK)
+                network = self.properties[self.NETWORK]
                 if dep_network == network:
                     deps += (self, res)
 
@@ -434,6 +440,9 @@ class Port(neutron.NeutronResource):
         return self.is_built(attributes)
 
     def prepare_for_replace(self):
+        # if the port has not been created yet, return directly
+        if self.resource_id is None:
+            return
         # store port fixed_ips for restoring after failed update
         fixed_ips = self._show_resource().get('fixed_ips', [])
         self.data_set('port_fip', jsonutils.dumps(fixed_ips))
@@ -441,16 +450,30 @@ class Port(neutron.NeutronResource):
         props = {'fixed_ips': []}
         self.client().update_port(self.resource_id, {'port': props})
 
-    def restore_after_rollback(self):
-        old_port = self.stack._backup_stack().resources.get(self.name)
-        fixed_ips = old_port.data().get('port_fip', [])
-        # restore fixed_ips for this port by setting fixed_ips to []
+    def restore_prev_rsrc(self, convergence=False):
+        # In case of convergence, during rollback, the previous rsrc is
+        # already selected and is being acted upon.
+        prev_port = self if convergence else \
+            self.stack._backup_stack().resources.get(self.name)
+        fixed_ips = prev_port.data().get('port_fip', [])
+
         props = {'fixed_ips': []}
-        old_props = {'fixed_ips': jsonutils.loads(fixed_ips)}
-        # remove ip from new port
-        self.client().update_port(self.resource_id, {'port': props})
-        # restore ip for old port
-        self.client().update_port(old_port.resource_id, {'port': old_props})
+        if convergence:
+            existing_port, rsrc_owning_stack, stack = resource.Resource.load(
+                prev_port.context, prev_port.replaced_by, True,
+                prev_port.stack.cache_data
+            )
+            existing_port_id = existing_port.resource_id
+        else:
+            existing_port_id = self.resource_id
+        if existing_port_id:
+            # reset fixed_ips to [] for new resource
+            self.client().update_port(existing_port_id, {'port': props})
+        if fixed_ips and prev_port.resource_id:
+            # restore ip for old port
+            prev_port_props = {'fixed_ips': jsonutils.loads(fixed_ips)}
+            self.client().update_port(prev_port.resource_id,
+                                      {'port': prev_port_props})
 
 
 def resource_mapping():

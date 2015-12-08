@@ -16,6 +16,7 @@ import datetime
 import mock
 from oslo_config import cfg
 from oslo_service import threadgroup
+from oslo_utils import timeutils
 
 from heat.common import context
 from heat.common import service_utils
@@ -39,7 +40,7 @@ class ServiceEngineTest(common.HeatTestCase):
 
     def test_make_sure_rpc_version(self):
         self.assertEqual(
-            '1.18',
+            '1.19',
             service.EngineService.RPC_API_VERSION,
             ('RPC version is changed, please update this test to new version '
              'and make sure additional test cases are added for RPC APIs '
@@ -89,7 +90,7 @@ class ServiceEngineTest(common.HeatTestCase):
                                            mock_service_delete,
                                            mock_get_all):
         mock_admin_context.return_value = self.ctx
-        ages_a_go = datetime.datetime.utcnow() - datetime.timedelta(
+        ages_a_go = timeutils.utcnow() - datetime.timedelta(
             seconds=4000)
         mock_get_all.return_value = [{'id': 'foo',
                                       'deleted_at': None,

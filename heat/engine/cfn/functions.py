@@ -58,7 +58,6 @@ class GetAZs(function.Function):
 
     def result(self):
         # TODO(therve): Implement region scoping
-        # region = function.resolve(self.args)
 
         if self.stack is None:
             return ['nova']
@@ -176,9 +175,19 @@ class GetAtt(function.Function):
         return itertools.chain(super(GetAtt, self).dependencies(path),
                                [self._resource(path)])
 
+    def _allow_without_attribute_name(self):
+        return False
+
     def validate(self):
         super(GetAtt, self).validate()
         res = self._resource()
+
+        if self._allow_without_attribute_name():
+            # if allow without attribute_name, then don't check
+            # when attribute_name is None
+            if self._attribute is None:
+                return
+
         attr = function.resolve(self._attribute)
         from heat.engine import resource
         if (type(res).FnGetAtt == resource.Resource.FnGetAtt and
@@ -191,7 +200,7 @@ class GetAtt(function.Function):
 
         r = self._resource()
         if r.action in (r.CREATE, r.ADOPT, r.SUSPEND, r.RESUME,
-                        r.UPDATE, r.ROLLBACK):
+                        r.UPDATE, r.ROLLBACK, r.SNAPSHOT, r.CHECK):
             return r.FnGetAtt(attribute)
         # NOTE(sirushtim): Add r.INIT to states above once convergence
         # is the default.
@@ -228,11 +237,6 @@ class Select(function.Function):
     def result(self):
         index = function.resolve(self._lookup)
 
-        try:
-            index = int(index)
-        except (ValueError, TypeError):
-            pass
-
         strings = function.resolve(self._strings)
 
         if strings == '':
@@ -255,6 +259,11 @@ class Select(function.Function):
                 raise TypeError(_('Index to "%s" must be a string') %
                                 self.fn_name)
             return strings.get(index, '')
+
+        try:
+            index = int(index)
+        except (ValueError, TypeError):
+            pass
 
         if (isinstance(strings, collections.Sequence) and
                 not isinstance(strings, six.string_types)):
@@ -293,7 +302,7 @@ class Join(function.Function):
         fmt_data = {'fn_name': self.fn_name,
                     'example': example}
 
-        if isinstance(self.args, (six.string_types, collections.Mapping)):
+        if not isinstance(self.args, list):
             raise TypeError(_('Incorrect arguments to "%(fn_name)s" '
                               'should be: %(example)s') % fmt_data)
 
@@ -321,7 +330,8 @@ class Join(function.Function):
                 return ''
             if not isinstance(s, six.string_types):
                 raise TypeError(
-                    _('Items to join must be strings %s') % (repr(s)[:200]))
+                    _('Items to join must be strings not %s'
+                      ) % (repr(s)[:200]))
             return s
 
         return delim.join(ensure_string(s) for s in strings)

@@ -60,6 +60,7 @@ class FloatingIP(neutron.NeutronResource):
             properties.Schema.STRING,
             _('Network to allocate floating IP from.'),
             support_status=support.SupportStatus(version='2014.2'),
+            required=True,
             constraints=[
                 constraints.CustomConstraint('neutron.network')
             ],
@@ -128,10 +129,10 @@ class FloatingIP(neutron.NeutronResource):
         ),
     }
 
-    def translation_rules(self):
+    def translation_rules(self, props):
         return [
             properties.TranslationRule(
-                self.properties,
+                props,
                 properties.TranslationRule.REPLACE,
                 [self.FLOATING_NETWORK],
                 value_path=[self.FLOATING_NETWORK_ID]
@@ -148,9 +149,7 @@ class FloatingIP(neutron.NeutronResource):
                 gateway_network = resource.properties.get(
                     router.RouterGateway.NETWORK) or resource.properties.get(
                         router.RouterGateway.NETWORK_ID)
-                floating_network = self.properties[
-                    self.FLOATING_NETWORK] or self.properties[
-                    self.FLOATING_NETWORK_ID]
+                floating_network = self.properties[self.FLOATING_NETWORK]
                 if gateway_network == floating_network:
                     deps += (self, resource)
 
@@ -199,16 +198,12 @@ class FloatingIP(neutron.NeutronResource):
                 if gateway:
                     gateway_network = gateway.get(
                         router.Router.EXTERNAL_GATEWAY_NETWORK)
-                    floating_network = self.properties[
-                        self.FLOATING_NETWORK] or self.properties[
-                            self.FLOATING_NETWORK_ID]
+                    floating_network = self.properties[self.FLOATING_NETWORK]
                     if gateway_network == floating_network:
                         deps += (self, resource)
 
     def validate(self):
         super(FloatingIP, self).validate()
-        self._validate_depr_property_required(
-            self.properties, self.FLOATING_NETWORK, self.FLOATING_NETWORK_ID)
         # fixed_ip_address cannot be specified without a port_id
         if self.properties[self.PORT_ID] is None and self.properties[
                 self.FIXED_IP_ADDRESS] is not None:
@@ -229,10 +224,8 @@ class FloatingIP(neutron.NeutronResource):
         return self.client().show_floatingip(self.resource_id)['floatingip']
 
     def handle_delete(self):
-        try:
+        with self.client_plugin().ignore_not_found:
             self.client().delete_floatingip(self.resource_id)
-        except Exception as ex:
-            self.client_plugin().ignore_not_found(ex)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
@@ -324,12 +317,10 @@ class FloatingIPAssociation(neutron.NeutronResource):
         if not self.resource_id:
             return
 
-        try:
+        with self.client_plugin().ignore_not_found:
             self.client().update_floatingip(
                 self.properties[self.FLOATINGIP_ID],
                 {'floatingip': {'port_id': None}})
-        except Exception as ex:
-            self.client_plugin().ignore_not_found(ex)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
@@ -338,12 +329,10 @@ class FloatingIPAssociation(neutron.NeutronResource):
             # if the floatingip_id is changed, disassociate the port which
             # associated with the old floatingip_id
             if self.FLOATINGIP_ID in prop_diff:
-                try:
+                with self.client_plugin().ignore_not_found:
                     self.client().update_floatingip(
                         floatingip_id,
                         {'floatingip': {'port_id': None}})
-                except Exception as ex:
-                    self.client_plugin().ignore_not_found(ex)
 
             # associate the floatingip with the new port
             floatingip_id = (prop_diff.get(self.FLOATINGIP_ID) or

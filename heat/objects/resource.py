@@ -13,10 +13,7 @@
 # under the License.
 
 
-"""
-Resource object
-"""
-
+"""Resource object."""
 
 from oslo_config import cfg
 from oslo_serialization import jsonutils
@@ -73,12 +70,9 @@ class Resource(
             return None
         for field in resource.fields:
             if field == 'data':
-                resource['data'] = map(
-                    lambda resd: resource_data.ResourceData._from_db_object(
-                        resource_data.ResourceData(context), resd
-                    ),
-                    db_resource.data
-                )
+                resource['data'] = [resource_data.ResourceData._from_db_object(
+                    resource_data.ResourceData(context), resd
+                ) for resd in db_resource.data]
             else:
                 resource[field] = db_resource[field]
 

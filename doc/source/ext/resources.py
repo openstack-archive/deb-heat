@@ -12,6 +12,7 @@
 #    under the License.
 # -*- coding: utf-8 -*-
 
+from functools import cmp_to_key
 import pydoc
 
 from docutils import core
@@ -30,7 +31,8 @@ _CODE_NAMES = {'2013.1': 'Grizzly',
                '2014.1': 'Icehouse',
                '2014.2': 'Juno',
                '2015.1': 'Kilo',
-               '5.0.0': 'Liberty'}
+               '5.0.0': 'Liberty',
+               '6.0.0': 'Mitaka'}
 
 all_resources = {}
 
@@ -140,7 +142,10 @@ class ResourcePages(compat.Directive):
         if not prop:
             return 'Value'
         if prop.type == properties.Schema.LIST:
-            schema = lambda i: prop.schema[i] if prop.schema else None
+
+            def schema(i):
+                return prop.schema[i] if prop.schema else None
+
             sub_type = [self._prop_syntax_example(schema(i))
                         for i in range(2)]
             return '[%s, %s, ...]' % tuple(sub_type)
@@ -184,13 +189,14 @@ resources:
         x_key, x_prop = x
         y_key, y_prop = y
         if x_prop.support_status.status == y_prop.support_status.status:
-            return cmp(x_key, y_key)
-        if x_prop.support_status.status == support.SUPPORTED:
+            return (x_key > y_key) - (x_key < y_key)
+        x_status = x_prop.support_status.status
+        y_status = y_prop.support_status.status
+        if x_status == support.SUPPORTED:
             return -1
-        if x_prop.support_status.status == support.DEPRECATED:
+        if x_status == support.DEPRECATED:
             return 1
-        return cmp(x_prop.support_status.status,
-                   y_prop.support_status.status)
+        return (x_status > y_status) - (x_status < y_status)
 
     def contribute_property(self, parent, prop_key, prop, upd_para=None,
                             id_pattern_prefix=None):
@@ -256,13 +262,13 @@ resources:
             sub_schema = prop.schema
 
         if sub_schema:
-            for sub_prop_key, sub_prop in sorted(sub_schema.items(),
-                                                 self.cmp_prop):
-                if sub_prop.support_status.status != support.HIDDEN:
+            for _key, _prop in sorted(sub_schema.items(),
+                                      key=cmp_to_key(self.cmp_prop)):
+                if _prop.support_status.status != support.HIDDEN:
                     indent = nodes.block_quote()
                     definition.append(indent)
                     self.contribute_property(
-                        indent, sub_prop_key, sub_prop, upd_para, id_pattern)
+                        indent, _key, _prop, upd_para, id_pattern)
 
     def contribute_properties(self, parent):
         if not self.props_schemata:
@@ -278,7 +284,7 @@ resources:
                 parent, _('Required Properties'), '%s-props-req')
 
             for prop_key, prop in sorted(required_props.items(),
-                                         self.cmp_prop):
+                                         key=cmp_to_key(self.cmp_prop)):
                 self.contribute_property(section, prop_key, prop)
 
         optional_props = dict((k, v) for k, v in props.items()
@@ -288,7 +294,7 @@ resources:
                 parent, _('Optional Properties'), '%s-props-opt')
 
             for prop_key, prop in sorted(optional_props.items(),
-                                         self.cmp_prop):
+                                         key=cmp_to_key(self.cmp_prop)):
                 self.contribute_property(section, prop_key, prop)
 
     def contribute_attributes(self, parent):
@@ -310,10 +316,10 @@ resources:
     def contribute_update_policy(self, parent):
         if not self.update_policy_schemata:
             return
-        section = self._section(parent, _('UpdatePolicy'), '%s-updpolicy')
-        for prop_key, prop in sorted(self.update_policy_schemata.items(),
-                                     self.cmp_prop):
-            self.contribute_property(section, prop_key, prop)
+        section = self._section(parent, _('update_policy'), '%s-updpolicy')
+        for _key, _prop in sorted(self.update_policy_schemata.items(),
+                                  key=cmp_to_key(self.cmp_prop)):
+            self.contribute_property(section, _key, _prop)
 
 
 class IntegrateResourcePages(ResourcePages):

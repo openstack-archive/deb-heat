@@ -327,6 +327,26 @@ class ParameterTestSpecific(common.HeatTestCase):
                                 'foo,baz,blarg')
         self.assertIn('wibble', six.text_type(err))
 
+    def test_list_validate_good(self):
+        schema = {'Type': 'CommaDelimitedList'}
+        val = ['foo', 'bar', 'baz']
+        val_s = 'foo,bar,baz'
+        p = new_parameter('p', schema, val_s, validate_value=False)
+        p.validate()
+        self.assertEqual(val, p.value())
+        self.assertEqual(val, p.parsed)
+
+    def test_list_validate_bad(self):
+        schema = {'Type': 'CommaDelimitedList'}
+        # just need something here that is growing to throw an AttributeError
+        # when .split() is called
+        val_s = 0
+        p = new_parameter('p', schema, validate_value=False)
+        p.user_value = val_s
+        err = self.assertRaises(exception.StackValidationFailed,
+                                p.validate)
+        self.assertIn('Parameter \'p\' is invalid', six.text_type(err))
+
     def test_map_value(self):
         '''Happy path for value that's already a map.'''
         schema = {'Type': 'Json'}
@@ -396,17 +416,35 @@ class ParameterTestSpecific(common.HeatTestCase):
         self.assertIn("fizz", p.value())
         self.assertIn("buzz", p.value())
 
+    def test_json_validate_good(self):
+        schema = {'Type': 'Json'}
+        val = {"foo": "bar", "items": [1, 2, 3]}
+        val_s = json.dumps(val)
+        p = new_parameter('p', schema, val_s, validate_value=False)
+        p.validate()
+        self.assertEqual(val, p.value())
+        self.assertEqual(val, p.parsed)
+
+    def test_json_validate_bad(self):
+        schema = {'Type': 'Json'}
+        val_s = '{"foo": "bar", "invalid": ]}'
+        p = new_parameter('p', schema, validate_value=False)
+        p.user_value = val_s
+        err = self.assertRaises(exception.StackValidationFailed,
+                                p.validate)
+        self.assertIn('Parameter \'p\' is invalid', six.text_type(err))
+
     def test_bool_value_true(self):
         schema = {'Type': 'Boolean'}
         for val in ('1', 't', 'true', 'on', 'y', 'yes', True, 1):
             bo = new_parameter('bo', schema, val)
-            self.assertEqual(True, bo.value())
+            self.assertTrue(bo.value())
 
     def test_bool_value_false(self):
         schema = {'Type': 'Boolean'}
         for val in ('0', 'f', 'false', 'off', 'n', 'no', False, 0):
             bo = new_parameter('bo', schema, val)
-            self.assertEqual(False, bo.value())
+            self.assertFalse(bo.value())
 
     def test_bool_value_invalid(self):
         schema = {'Type': 'Boolean'}
@@ -453,7 +491,7 @@ params_schema = json.loads('''{
 }''')
 
 
-class ParametersTest(common.HeatTestCase):
+class ParametersBase(common.HeatTestCase):
     def new_parameters(self, stack_name, tmpl, user_params=None,
                        stack_id=None, validate_value=True,
                        param_defaults=None):
@@ -465,6 +503,9 @@ class ParametersTest(common.HeatTestCase):
             user_params, param_defaults=param_defaults)
         params.validate(validate_value)
         return params
+
+
+class ParametersTest(ParametersBase):
 
     def test_pseudo_params(self):
         stack_name = 'test_stack'
@@ -571,20 +612,59 @@ class ParametersTest(common.HeatTestCase):
                           'test',
                           params)
 
-    def test_use_user_default(self):
-        template = {'Parameters': {'a': {'Type': 'Number', 'Default': '42'}}}
+
+class ParameterDefaultsTest(ParametersBase):
+    scenarios = [
+        ('type_list', dict(p_type='CommaDelimitedList',
+                           value='1,1,1',
+                           expected=[['4', '2'], ['7', '7'], ['1', '1', '1']],
+                           param_default='7,7',
+                           default='4,2')),
+        ('type_number', dict(p_type='Number',
+                             value=111,
+                             expected=[42, 77, 111],
+                             param_default=77,
+                             default=42)),
+        ('type_string', dict(p_type='String',
+                             value='111',
+                             expected=['42', '77', '111'],
+                             param_default='77',
+                             default='42')),
+        ('type_json', dict(p_type='Json',
+                           value={'1': '11'},
+                           expected=[{'4': '2'}, {'7': '7'}, {'1': '11'}],
+                           param_default={'7': '7'},
+                           default={'4': '2'})),
+        ('type_boolean1', dict(p_type='Boolean',
+                               value=True,
+                               expected=[False, False, True],
+                               param_default=False,
+                               default=False)),
+        ('type_boolean2', dict(p_type='Boolean',
+                               value=False,
+                               expected=[False, True, False],
+                               param_default=True,
+                               default=False)),
+        ('type_boolean3', dict(p_type='Boolean',
+                               value=False,
+                               expected=[True, False, False],
+                               param_default=False,
+                               default=True))]
+
+    def test_use_expected_default(self):
+        template = {'Parameters': {'a': {'Type': self.p_type,
+                                         'Default': self.default}}}
+        params = self.new_parameters('test_params', template)
+        self.assertEqual(self.expected[0], params['a'])
+
         params = self.new_parameters('test_params', template,
-                                     param_defaults={'a': '77'})
+                                     param_defaults={'a': self.param_default})
+        self.assertEqual(self.expected[1], params['a'])
 
-        self.assertEqual(77, params['a'])
-
-    def test_dont_use_user_default(self):
-        template = {'Parameters': {'a': {'Type': 'Number', 'Default': '42'}}}
         params = self.new_parameters('test_params', template,
-                                     {'a': '111'},
-                                     param_defaults={'a': '77'})
-
-        self.assertEqual(111, params['a'])
+                                     {'a': self.value},
+                                     param_defaults={'a': self.param_default})
+        self.assertEqual(self.expected[2], params['a'])
 
 
 class ParameterSchemaTest(common.HeatTestCase):

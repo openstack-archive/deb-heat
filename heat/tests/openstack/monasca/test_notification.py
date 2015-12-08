@@ -40,10 +40,11 @@ RESOURCE_TYPE = 'OS::Monasca::Notification'
 
 
 class MonascaNotification(notification.MonascaNotification):
-    '''
+    """This class overrides the is_service_available to return True.
+
     Monasca service is not available by default. So, this class overrides
-    the is_service_available to return True
-    '''
+    the is_service_available to return True.
+    """
     @classmethod
     def is_service_available(cls, context):
         return True
@@ -66,15 +67,17 @@ class MonascaNotificationTest(common.HeatTestCase):
 
         self.test_resource = self.stack['test_resource']
 
-        # Mock client plugin
-        self.test_client_plugin = mock.MagicMock()
-        self.test_resource.client_plugin = mock.MagicMock(
-            return_value=self.test_client_plugin)
-
         # Mock client
         self.test_client = mock.MagicMock()
         self.test_resource.client = mock.MagicMock(
             return_value=self.test_client)
+
+        # Mock client plugin
+        self.test_client_plugin = client_plugin.MonascaClientPlugin(self.ctx)
+        self.test_client_plugin._create = mock.MagicMock(
+            return_value=self.test_client)
+        self.test_resource.client_plugin = mock.MagicMock(
+            return_value=self.test_client_plugin)
 
     def _get_mock_resource(self):
         value = dict(id='477e8273-60a7-4c41-b683-fdb0bc7cd152')
@@ -162,11 +165,8 @@ class MonascaNotificationTest(common.HeatTestCase):
         mock_notification_delete = self.test_client.notifications.delete
         mock_notification_delete.side_effect = (
             client_plugin.monasca_exc.NotFound)
+
         self.assertIsNone(self.test_resource.handle_delete())
-        self.assertEqual(1,
-                         self.test_client_plugin.ignore_not_found.call_count)
-        e_type = type(self.test_client_plugin.ignore_not_found.call_args[0][0])
-        self.assertEqual(type(client_plugin.monasca_exc.NotFound()), e_type)
 
     def test_resource_mapping(self):
         mapping = notification.resource_mapping()

@@ -33,9 +33,8 @@ from heat.engine import rsrc_defn
 from heat.engine import stack
 from heat.engine import template
 from heat.tests import common
-from heat.tests.nova import fakes as fakes_nova
+from heat.tests.openstack.nova import fakes as fakes_nova
 from heat.tests import utils
-
 
 mapping_template = template_format.parse('''{
   "AWSTemplateFormatVersion" : "2010-09-09",
@@ -451,7 +450,7 @@ class TemplateTest(common.HeatTestCase):
         init_ex = self.assertRaises(exception.InvalidTemplateVersion,
                                     template.Template, invalid_hot_version_tmp)
         valid_versions = ['2013-05-23', '2014-10-16',
-                          '2015-04-30', '2015-10-15']
+                          '2015-04-30', '2015-10-15', '2016-04-08']
         ex_error_msg = ('The template version is invalid: '
                         '"heat_template_version: 2012-12-12". '
                         '"heat_template_version" should be one of: %s'
@@ -634,7 +633,7 @@ class TemplateTest(common.HeatTestCase):
 
         p_snippet = {"Ref": "baz"}
         parsed = tmpl.parse(stk, p_snippet)
-        self.assertTrue(isinstance(parsed, cfn_funcs.ParamRef))
+        self.assertIsInstance(parsed, cfn_funcs.ParamRef)
 
     def test_select_from_list(self):
         tmpl = template.Template(empty_template)
@@ -659,6 +658,11 @@ class TemplateTest(common.HeatTestCase):
         tmpl = template.Template(empty_template)
         data = {"Fn::Select": ["red", {"red": "robin", "re": "foo"}]}
         self.assertEqual("robin", self.resolve(data, tmpl))
+
+    def test_select_int_from_dict(self):
+        tmpl = template.Template(empty_template)
+        data = {"Fn::Select": ["2", {"1": "bar", "2": "foo"}]}
+        self.assertEqual("foo", self.resolve(data, tmpl))
 
     def test_select_from_none(self):
         tmpl = template.Template(empty_template)
@@ -975,7 +979,7 @@ class TemplateFnErrorTest(common.HeatTestCase):
               snippet={"Fn::Select": ["one", ["foo", "bar"]]})),
         ('select_from_dict_not_str',
          dict(expect=TypeError,
-              snippet={"Fn::Select": ["1", {"red": "robin", "re": "foo"}]})),
+              snippet={"Fn::Select": [1, {"red": "robin", "re": "foo"}]})),
         ('select_from_serialized_json_wrong',
          dict(expect=ValueError,
               snippet={"Fn::Select": ["not", "no json"]})),
@@ -1083,7 +1087,10 @@ class TemplateFnErrorTest(common.HeatTestCase):
 
     def test_bad_input(self):
         tmpl = template.Template(empty_template)
-        resolve = lambda s: TemplateTest.resolve(s, tmpl)
+
+        def resolve(s):
+            return TemplateTest.resolve(s, tmpl)
+
         error = self.assertRaises(self.expect,
                                   resolve,
                                   self.snippet)

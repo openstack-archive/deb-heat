@@ -13,9 +13,7 @@
 # under the License.
 
 
-"""
-Stack object
-"""
+"""Stack object."""
 
 from oslo_versionedobjects import base
 from oslo_versionedobjects import fields
@@ -116,23 +114,15 @@ class Stack(
     @classmethod
     def get_all(cls, context, *args, **kwargs):
         db_stacks = db_api.stack_get_all(context, *args, **kwargs)
-        stacks = map(
-            lambda db_stack: cls._from_db_object(
-                context,
-                cls(context),
-                db_stack),
-            db_stacks)
+        stacks = [cls._from_db_object(context, cls(context), db_stack)
+                  for db_stack in db_stacks]
         return stacks
 
     @classmethod
     def get_all_by_owner_id(cls, context, owner_id):
         db_stacks = db_api.stack_get_all_by_owner_id(context, owner_id)
-        stacks = map(
-            lambda db_stack: cls._from_db_object(
-                context,
-                cls(context),
-                db_stack),
-            db_stacks)
+        stacks = [cls._from_db_object(context, cls(context), db_stack)
+                  for db_stack in db_stacks]
         return stacks
 
     @classmethod
@@ -161,6 +151,9 @@ class Stack(
     def select_and_update(cls, context, stack_id, values, exp_trvsl=None):
         """Update the stack by selecting on traversal ID.
 
+        Uses UPDATE ... WHERE (compare and swap) to catch any concurrent
+        update problem.
+
         If the stack is found with given traversal, it is updated.
 
         If there occurs a race while updating, only one will succeed and
@@ -188,8 +181,6 @@ class Stack(
                                            'id': self.id,
                                            'traversal': self.current_traversal,
                                            'msg': 'that does not exist'})
-
-        return self.refresh()
 
     def __eq__(self, another):
         self.refresh()  # to make test object comparison work well

@@ -11,18 +11,18 @@
       License for the specific language governing permissions and limitations
       under the License.
 
-This page documents the templates at https://github.com/openstack/heat-templates/
+This page documents the templates at https://git.openstack.org/cgit/openstack/heat-templates/
 
-HOT Templates
-=============
+Example HOT Templates
+=====================
 
 .. toctree::
   :maxdepth: 1
 
   hot/hello_world
 
-CFN Templates
-=============
+Example CFN Templates
+=====================
 
 .. toctree::
   :maxdepth: 1

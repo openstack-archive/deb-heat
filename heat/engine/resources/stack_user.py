@@ -85,6 +85,8 @@ class StackUser(resource.Resource):
     def handle_delete(self):
         self._delete_user()
 
+        return super(StackUser, self).handle_delete()
+
     def _delete_user(self):
         user_id = self._get_user_id()
         if user_id is None:
@@ -167,6 +169,8 @@ class StackUser(resource.Resource):
             self.keystone().delete_stack_domain_user_keypair(
                 user_id=user_id, project_id=self.stack.stack_user_project_id,
                 credential_id=credential_id)
+        except kc_exception.NotFound:
+            pass
         except ValueError:
             self.keystone().delete_ec2_keypair(
                 user_id=user_id, credential_id=credential_id)

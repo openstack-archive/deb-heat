@@ -614,7 +614,7 @@ class ProviderTemplateTest(common.HeatTestCase):
         env_str = {'resource_registry': {'resources': {'fred': {
             "OS::ResourceType": "some_magic.yaml"}}}}
         env = environment.Environment(env_str)
-        ex = self.assertRaises(exception.TemplateNotFound, env.get_class,
+        ex = self.assertRaises(exception.NotFound, env.get_class,
                                'OS::ResourceType', 'fred')
         self.assertIn('Could not fetch remote template "some_magic.yaml"',
                       six.text_type(ex))
@@ -674,8 +674,7 @@ class ProviderTemplateTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_template_as_resource(self):
-        """
-        Test that the resulting resource has the right prop and attrib schema.
+        """Test that resulting resource has the right prop and attrib schema.
 
         Note that this test requires the Wordpress_Single_Instance.yaml
         template in the templates directory since we want to test using a
@@ -734,7 +733,8 @@ class ProviderTemplateTest(common.HeatTestCase):
                          resources.global_env().registry._registry)
 
     def test_persisted_unregistered_provider_templates(self):
-        """
+        """Test that templates are registered correctly.
+
         Test that templates persisted in the database prior to
         https://review.openstack.org/#/c/79953/1 are registered correctly.
         """
@@ -934,16 +934,18 @@ class TemplateDataTest(common.HeatTestCase):
         self.res.action = self.res.UPDATE
         self.res.nested = mock.MagicMock()
         self.res.get_template_file = mock.Mock(
-            side_effect=exception.TemplateNotFound(
-                message='test_resource.template'))
-        self.assertRaises(exception.TemplateNotFound, self.res.template_data)
+            side_effect=exception.NotFound(
+                msg_fmt='Could not fetch remote template '
+                        '"test_resource.template": file not found'))
+        self.assertRaises(exception.NotFound, self.res.template_data)
 
     def test_template_data_in_create_without_template_file(self):
         self.res.action = self.res.CREATE
         self.res.nested = mock.MagicMock()
         self.res.get_template_file = mock.Mock(
-            side_effect=exception.TemplateNotFound(
-                message='test_resource.template'))
+            side_effect=exception.NotFound(
+                msg_fmt='Could not fetch remote template '
+                        '"test_resource.template": file not found'))
         self.assertEqual('{}', self.res.template_data())
 
 

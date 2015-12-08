@@ -20,6 +20,9 @@ from oslo_utils import netutils
 from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LI
+from heat.engine import resource
+
+from heat.engine.resources.openstack.neutron import port as neutron_port
 
 LOG = logging.getLogger(__name__)
 
@@ -85,8 +88,19 @@ class ServerNetworkMixin(object):
         name = _('%(server)s-port-%(number)s') % {'server': self.name,
                                                   'number': net_number}
 
-        kwargs = {'network_id': self._get_network_id(net_data),
-                  'name': name}
+        kwargs = self._prepare_internal_port_kwargs(net_data)
+        kwargs['name'] = name
+
+        port = self.client('neutron').create_port({'port': kwargs})['port']
+
+        # Store ids (used for floating_ip association, updating, etc.)
+        # in resource's data.
+        self._data_update_ports(port['id'], 'add')
+
+        return port['id']
+
+    def _prepare_internal_port_kwargs(self, net_data):
+        kwargs = {'network_id': self._get_network_id(net_data)}
         fixed_ip = net_data.get(self.NETWORK_FIXED_IP)
         subnet = net_data.get(self.NETWORK_SUBNET)
         body = {}
@@ -98,20 +112,39 @@ class ServerNetworkMixin(object):
         if body:
             kwargs.update({'fixed_ips': [body]})
 
-        port = self.client('neutron').create_port({'port': kwargs})['port']
+        if net_data.get(self.SECURITY_GROUPS):
+            sec_uuids = self.client_plugin(
+                'neutron').get_secgroup_uuids(net_data.get(
+                    self.SECURITY_GROUPS))
+            kwargs['security_groups'] = sec_uuids
 
-        # Store ids (used for floating_ip association, updating, etc.)
-        # in resource's data.
-        self._data_update_ports(port['id'], 'add')
+        extra_props = net_data.get(self.NETWORK_PORT_EXTRA)
+        if extra_props is not None:
+            port_extra_keys = list(neutron_port.Port.EXTRA_PROPERTIES)
+            port_extra_keys.remove(neutron_port.Port.ALLOWED_ADDRESS_PAIRS)
+            for key in port_extra_keys:
+                if extra_props.get(key) is not None:
+                    kwargs[key] = extra_props.get(key)
 
-        return port['id']
+            allowed_address_pairs = extra_props.get(
+                neutron_port.Port.ALLOWED_ADDRESS_PAIRS)
+            if allowed_address_pairs is not None:
+                for pair in allowed_address_pairs:
+                    if (neutron_port.Port.ALLOWED_ADDRESS_PAIR_MAC_ADDRESS
+                        in pair and pair.get(
+                            neutron_port.Port.ALLOWED_ADDRESS_PAIR_MAC_ADDRESS)
+                            is None):
+                        del pair[
+                            neutron_port.Port.ALLOWED_ADDRESS_PAIR_MAC_ADDRESS]
+                kwargs[neutron_port.Port.ALLOWED_ADDRESS_PAIRS] = \
+                    allowed_address_pairs
+
+        return kwargs
 
     def _delete_internal_port(self, port_id):
         """Delete physical port by id."""
-        try:
+        with self.client_plugin('neutron').ignore_not_found:
             self.client('neutron').delete_port(port_id)
-        except Exception as ex:
-            self.client_plugin('neutron').ignore_not_found(ex)
 
         self._data_update_ports(port_id, 'delete')
 
@@ -149,11 +182,10 @@ class ServerNetworkMixin(object):
         if not self.is_using_neutron():
             return
 
-        # check if OSInterface extension is installed on this cloud. If it's
-        # not, then novaclient's interface_list method cannot be used to get
-        # the list of interfaces.
-        if not self.client_plugin()._has_extension(
-                self.client_plugin().OS_INTERFACE_EXTENSION):
+        # check if os-attach-interfaces extension is available on this cloud.
+        # If it's not, then novaclient's interface_list method cannot be used
+        # to get the list of interfaces.
+        if not self.client_plugin().has_extension('os-attach-interfaces'):
             return
 
         server = self.client().servers.get(self.resource_id)
@@ -333,10 +365,10 @@ class ServerNetworkMixin(object):
 
         data = {'external_ports': [],
                 'internal_ports': []}
-        port_data = itertools.chain(
+        port_data = list(itertools.chain(
             [('internal_ports', port) for port in self._data_get_ports()],
             [('external_ports', port)
-             for port in self._data_get_ports('external_ports')])
+             for port in self._data_get_ports('external_ports')]))
         for port_type, port in port_data:
             # store port fixed_ips for restoring after failed update
             port_details = self.client('neutron').show_port(port['id'])['port']
@@ -355,22 +387,38 @@ class ServerNetworkMixin(object):
             self.client('neutron').update_port(
                 port['id'], {'port': {'fixed_ips': []}})
 
-    def restore_ports_after_rollback(self):
+    def restore_ports_after_rollback(self, convergence):
         if not self.is_using_neutron():
             return
 
-        old_server = self.stack._backup_stack().resources.get(self.name)
+        # In case of convergence, during rollback, the previous rsrc is
+        # already selected and is being acted upon.
+        prev_server = self if convergence else \
+            self.stack._backup_stack().resources.get(self.name)
 
-        port_data = itertools.chain(self._data_get_ports(),
-                                    self._data_get_ports('external_ports'))
+        if convergence:
+            rsrc, rsrc_owning_stack, stack = resource.Resource.load(
+                prev_server.context, prev_server.replaced_by, True,
+                prev_server.stack.cache_data
+            )
+            existing_server = rsrc
+        else:
+            existing_server = self
+
+        port_data = itertools.chain(
+            existing_server._data_get_ports(),
+            existing_server._data_get_ports('external_ports')
+        )
         for port in port_data:
+            # reset fixed_ips to [] for new resource
             self.client('neutron').update_port(port['id'],
                                                {'port': {'fixed_ips': []}})
 
-        old_port_data = itertools.chain(
-            old_server._data_get_ports(),
-            old_server._data_get_ports('external_ports'))
-        for port in old_port_data:
+        # restore ip for old port
+        prev_port_data = itertools.chain(
+            prev_server._data_get_ports(),
+            prev_server._data_get_ports('external_ports'))
+        for port in prev_port_data:
             fixed_ips = port['fixed_ips']
             self.client('neutron').update_port(
                 port['id'], {'port': {'fixed_ips': fixed_ips}})

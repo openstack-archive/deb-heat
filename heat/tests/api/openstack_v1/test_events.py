@@ -27,10 +27,11 @@ from heat.tests import common
 
 @mock.patch.object(policy.Enforcer, 'enforce')
 class EventControllerTest(tools.ControllerTest, common.HeatTestCase):
-    '''
+    """Tests the API class EventController.
+
     Tests the API class which acts as the WSGI controller,
     the endpoint processing API requests after they are routed
-    '''
+    """
 
     def setUp(self):
         super(EventControllerTest, self).setUp()
@@ -290,7 +291,7 @@ class EventControllerTest(tools.ControllerTest, common.HeatTestCase):
                   'limit': None, 'sort_keys': None, 'marker': None,
                   'sort_dir': None, 'filters': None}
 
-        error = heat_exc.StackNotFound(stack_name='a')
+        error = heat_exc.EntityNotFound(entity='Stack', name='a')
         self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
         rpc_client.EngineClient.call(
             req.context,
@@ -306,7 +307,7 @@ class EventControllerTest(tools.ControllerTest, common.HeatTestCase):
             stack_id=stack_identity.stack_id)
 
         self.assertEqual(404, resp.json['code'])
-        self.assertEqual('StackNotFound', resp.json['error']['type'])
+        self.assertEqual('EntityNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_index_err_denied_policy(self, mock_enforce):
@@ -564,7 +565,7 @@ class EventControllerTest(tools.ControllerTest, common.HeatTestCase):
                   'limit': None, 'sort_keys': None, 'marker': None,
                   'sort_dir': None, 'filters': {'resource_name': res_name}}
 
-        error = heat_exc.StackNotFound(stack_name='a')
+        error = heat_exc.EntityNotFound(entity='Stack', name='a')
         self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
         rpc_client.EngineClient.call(
             req.context, ('list_events', kwargs)
@@ -581,7 +582,7 @@ class EventControllerTest(tools.ControllerTest, common.HeatTestCase):
             event_id=event_id)
 
         self.assertEqual(404, resp.json['code'])
-        self.assertEqual('StackNotFound', resp.json['error']['type'])
+        self.assertEqual('EntityNotFound', resp.json['error']['type'])
         self.m.VerifyAll()
 
     def test_show_err_denied_policy(self, mock_enforce):

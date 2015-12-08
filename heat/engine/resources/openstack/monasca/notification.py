@@ -20,9 +20,10 @@ from heat.engine import support
 
 
 class MonascaNotification(resource.Resource):
-    """Heat Template Resource for Monasca Notification. This plug-in
-    requires python-monascaclient>=1.0.22 .So to enable this plug-in, install
-    this client library and restart the heat-engine.
+    """Heat Template Resource for Monasca Notification.
+
+    This plug-in requires python-monascaclient>=1.0.22. So to enable this
+    plug-in, install this client library and restart the heat-engine.
     """
 
     support_status = support.SupportStatus(
@@ -100,11 +101,9 @@ class MonascaNotification(resource.Resource):
 
     def handle_delete(self):
         if self.resource_id is not None:
-            try:
+            with self.client_plugin().ignore_not_found:
                 self.client().notifications.delete(
                     notification_id=self.resource_id)
-            except Exception as ex:
-                self.client_plugin().ignore_not_found(ex)
 
     # FIXME(kanagaraj-manickam) Remove this method once monasca defect 1484900
     # is fixed.

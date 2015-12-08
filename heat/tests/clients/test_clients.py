@@ -30,13 +30,12 @@ from testtools import testcase
 from troveclient import client as troveclient
 from zaqarclient.transport import errors as zaqar_exc
 
-from heat.common import context
 from heat.common import exception
 from heat.engine import clients
 from heat.engine.clients import client_plugin
 from heat.tests import common
 from heat.tests import fakes
-from heat.tests.nova import fakes as fakes_nova
+from heat.tests.openstack.nova import fakes as fakes_nova
 from heat.tests import utils
 
 
@@ -183,10 +182,10 @@ class ClientPluginTest(common.HeatTestCase):
                          plugin._get_client_option('foo', 'ca_file'))
 
     def test_get_client_args(self):
-        plugin = FooClientsPlugin(mock.Mock())
+        ctxt = mock.Mock()
+        plugin = FooClientsPlugin(ctxt)
 
         plugin.url_for = mock.Mock(return_value='sample_endpoint_url')
-        plugin.context = mock.Mock()
         plugin.context.auth_url = 'sample_auth_url'
         plugin.context.tenant_id = 'sample_project_id'
 
@@ -276,9 +275,8 @@ class ClientPluginTest(common.HeatTestCase):
                          plugin.url_for(service_type='foo'))
         self.assertTrue(con.auth_plugin.get_endpoint.called)
 
-    @mock.patch.object(context, "RequestContext")
     @mock.patch.object(v3, "Token", name="v3_token")
-    def test_get_missing_service_catalog(self, mock_v3, mkreqctx):
+    def test_get_missing_service_catalog(self, mock_v3):
         class FakeKeystone(fakes.FakeKeystoneClient):
             def __init__(self):
                 super(FakeKeystone, self).__init__()
@@ -286,7 +284,7 @@ class ClientPluginTest(common.HeatTestCase):
                 self.version = 'v3'
 
         self.stub_keystoneclient(fake_client=FakeKeystone())
-        con = mock.Mock(auth_token="1234", trust_id=None)
+        con = mock.MagicMock(auth_token="1234", trust_id=None)
         c = clients.Clients(con)
         con.clients = c
 
@@ -301,13 +299,36 @@ class ClientPluginTest(common.HeatTestCase):
         mock_v3.return_value = mock_token_obj
 
         plugin = FooClientsPlugin(con)
-        mock_cxt_dict = {'auth_token_info': {'token': {'catalog': 'baz'}}}
-        plugin.context.to_dict.return_value = mock_cxt_dict
-
-        mkreqctx.from_dict.return_value.auth_plugin = con.auth_plugin
 
         self.assertEqual('http://192.0.2.1/bar',
                          plugin.url_for(service_type='bar'))
+
+    @mock.patch.object(v3, "Token", name="v3_token")
+    def test_endpoint_not_found(self, mock_v3):
+        class FakeKeystone(fakes.FakeKeystoneClient):
+            def __init__(self):
+                super(FakeKeystone, self).__init__()
+                self.client = self
+                self.version = 'v3'
+
+        self.stub_keystoneclient(fake_client=FakeKeystone())
+        con = mock.MagicMock(auth_token="1234", trust_id=None)
+        c = clients.Clients(con)
+        con.clients = c
+
+        con.auth_plugin = mock.Mock(name="auth_plugin")
+        get_endpoint_side_effects = [keystone_exc.EmptyCatalog(), None]
+        con.auth_plugin.get_endpoint = mock.Mock(
+            name="get_endpoint", side_effect=get_endpoint_side_effects)
+
+        mock_token_obj = mock.Mock()
+        mock_v3.return_value = mock_token_obj
+        mock_token_obj.get_auth_ref.return_value = {'no_catalog': 'without'}
+
+        plugin = FooClientsPlugin(con)
+
+        self.assertRaises(keystone_exc.EndpointNotFound,
+                          plugin.url_for, service_type='nonexistent')
 
     def test_abstract_create(self):
         con = mock.Mock()
@@ -315,6 +336,32 @@ class ClientPluginTest(common.HeatTestCase):
         con.clients = c
 
         self.assertRaises(TypeError, client_plugin.ClientPlugin, c)
+
+    def test_create_client_on_token_expiration(self):
+        cfg.CONF.set_override('reauthentication_auth_method', 'trusts')
+        con = mock.Mock()
+        con.auth_plugin.auth_ref.will_expire_soon.return_value = False
+        plugin = FooClientsPlugin(con)
+        plugin._create = mock.Mock()
+        plugin.client()
+        self.assertEqual(1, plugin._create.call_count)
+        plugin.client()
+        self.assertEqual(1, plugin._create.call_count)
+        con.auth_plugin.auth_ref.will_expire_soon.return_value = True
+        plugin.client()
+        self.assertEqual(2, plugin._create.call_count)
+
+    def test_create_client_on_invalidate(self):
+        con = mock.Mock()
+        plugin = FooClientsPlugin(con)
+        plugin._create = mock.Mock()
+        plugin.client()
+        self.assertEqual(1, plugin._create.call_count)
+        plugin.client()
+        self.assertEqual(1, plugin._create.call_count)
+        plugin.invalidate()
+        plugin.client()
+        self.assertEqual(2, plugin._create.call_count)
 
 
 class TestClientPluginsInitialise(common.HeatTestCase):
@@ -347,9 +394,21 @@ class TestClientPluginsInitialise(common.HeatTestCase):
             self.assertEqual(con, plugin.context)
             self.assertIsNone(plugin._client)
             self.assertTrue(clients.has_client(plugin_name))
-            self.assertTrue(isinstance(plugin.service_types, list))
+            self.assertIsInstance(plugin.service_types, list)
             self.assertTrue(len(plugin.service_types) >= 1,
                             'service_types is not defined for plugin')
+
+    @mock.patch.object(client_plugin.ClientPlugin, 'invalidate')
+    def test_invalidate_all_clients(self, mock_invalidate):
+        plugin_types = clients._mgr.names()
+        con = mock.Mock()
+        c = clients.Clients(con)
+        con.clients = c
+        for plugin_name in plugin_types:
+            plugin = c.client_plugin(plugin_name)
+            self.assertIsNotNone(plugin)
+        c.invalidate_plugins()
+        self.assertEqual(len(plugin_types), mock_invalidate.call_count)
 
 
 class TestIsNotFound(common.HeatTestCase):
@@ -801,6 +860,23 @@ class TestIsNotFound(common.HeatTestCase):
                                   client_plugin.ignore_not_found,
                                   e)
 
+    def test_ignore_not_found_context_manager(self):
+        con = mock.Mock()
+        c = clients.Clients(con)
+        client_plugin = c.client_plugin(self.plugin)
+
+        exp = self.exception()
+        exp_class = exp.__class__
+
+        def try_raise():
+            with client_plugin.ignore_not_found:
+                raise exp
+
+        if self.is_not_found:
+            try_raise()
+        else:
+            self.assertRaises(exp_class, try_raise)
+
     def test_ignore_conflict_and_not_found(self):
         con = mock.Mock()
         c = clients.Clients(con)
@@ -816,6 +892,23 @@ class TestIsNotFound(common.HeatTestCase):
                 self.assertRaises(exp_class,
                                   client_plugin.ignore_conflict_and_not_found,
                                   e)
+
+    def test_ignore_conflict_and_not_found_context_manager(self):
+        con = mock.Mock()
+        c = clients.Clients(con)
+        client_plugin = c.client_plugin(self.plugin)
+
+        exp = self.exception()
+        exp_class = exp.__class__
+
+        def try_raise():
+            with client_plugin.ignore_conflict_and_not_found:
+                raise exp
+
+        if self.is_conflict or self.is_not_found:
+            try_raise()
+        else:
+            self.assertRaises(exp_class, try_raise)
 
     def test_is_over_limit(self):
         con = mock.Mock()

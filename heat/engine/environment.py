@@ -35,7 +35,11 @@ from heat.engine import support
 LOG = log.getLogger(__name__)
 
 
-HOOK_TYPES = (HOOK_PRE_CREATE, HOOK_PRE_UPDATE) = ('pre-create', 'pre-update')
+HOOK_TYPES = (
+    HOOK_PRE_CREATE, HOOK_PRE_UPDATE, HOOK_PRE_DELETE
+) = (
+    'pre-create', 'pre-update', 'pre-delete'
+)
 
 
 def valid_hook_type(hook):
@@ -223,8 +227,7 @@ class ResourceRegistry(object):
     def _register_info(self, path, info):
         """Place the new info in the correct location in the registry.
 
-        :param path: a list of keys ['resources', 'my_server',
-         'OS::Nova::Server']
+        :param path: a list of keys ['resources', 'my_srv', 'OS::Nova::Server']
         """
         descriptive_path = '/'.join(path)
         name = path[-1]
@@ -420,19 +423,20 @@ class ResourceRegistry(object):
     def get_class(self, resource_type, resource_name=None, files=None):
         if resource_type == "":
             msg = _('Resource "%s" has no type') % resource_name
-            raise exception.InvalidResourceType(message=msg)
+            raise exception.StackValidationFailed(message=msg)
         elif resource_type is None:
             msg = _('Non-empty resource type is required '
                     'for resource "%s"') % resource_name
-            raise exception.InvalidResourceType(message=msg)
+            raise exception.StackValidationFailed(message=msg)
         elif not isinstance(resource_type, six.string_types):
             msg = _('Resource "%s" type is not a string') % resource_name
-            raise exception.InvalidResourceType(message=msg)
+            raise exception.StackValidationFailed(message=msg)
 
         info = self.get_resource_info(resource_type,
                                       resource_name=resource_name)
         if info is None:
-            raise exception.ResourceTypeNotFound(type_name=resource_type)
+            msg = _("Unknown resource Type : %s") % resource_type
+            raise exception.StackValidationFailed(message=msg)
         return info.get_class(files=files)
 
     def as_dict(self):
@@ -517,14 +521,14 @@ class ResourceRegistry(object):
 class Environment(object):
 
     def __init__(self, env=None, user_env=True):
-        """Create an Environment from a dict of varying format.
+        """Create an Environment from an input dict.
 
-        Next formats are available:
-          1) old-school flat parameters
-          2) or newer {resource_registry: bla, parameters: foo}
+        The dict may be in one of two formats:
+          1) old-school flat parameters; or
+          2) newer {resource_registry: bla, parameters: foo}
 
         :param env: the json environment
-        :param user_env: boolean, if false then we manage python resources too.
+        :param user_env: boolean, if False then we manage python resources too.
         """
         if env is None:
             env = {}
@@ -612,7 +616,7 @@ def get_child_environment(parent_env, child_params, item_to_remove=None,
     environment.
 
     1. resource_registry must be merged (child env should be loaded after the
-       parent env to take presence).
+       parent env to take precedence).
     2. child parameters must overwrite the parent's as they won't be relevant
        in the child template.
 

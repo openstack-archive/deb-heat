@@ -14,8 +14,9 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-"""A middleware that turns exceptions into parsable string. Inspired by
-Cinder's faultwrapper
+"""A middleware that turns exceptions into parsable string.
+
+Inspired by Cinder's faultwrapper.
 """
 import six
 
@@ -56,14 +57,12 @@ class FaultWrapper(wsgi.Middleware):
         'ActionInProgress': webob.exc.HTTPConflict,
         'ValueError': webob.exc.HTTPBadRequest,
         'EntityNotFound': webob.exc.HTTPNotFound,
-        'StackNotFound': webob.exc.HTTPNotFound,
         'NotFound': webob.exc.HTTPNotFound,
         'ResourceActionNotSupported': webob.exc.HTTPBadRequest,
         'ResourceNotFound': webob.exc.HTTPNotFound,
-        'ResourceTypeNotFound': webob.exc.HTTPNotFound,
+        'InvalidGlobalResource': webob.exc.HTTPInternalServerError,
         'SnapshotNotFound': webob.exc.HTTPNotFound,
         'ResourceNotAvailable': webob.exc.HTTPNotFound,
-        'PhysicalResourceNotFound': webob.exc.HTTPNotFound,
         'PhysicalResourceNameAmbiguity': webob.exc.HTTPBadRequest,
         'InvalidTenant': webob.exc.HTTPForbidden,
         'Forbidden': webob.exc.HTTPForbidden,

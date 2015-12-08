@@ -17,6 +17,7 @@ import mock
 
 from heat.common import exception
 from heat.common import template_format
+from heat.db.sqlalchemy import api as db_api
 from heat.engine import environment
 from heat.engine import resource
 from heat.engine import scheduler
@@ -50,6 +51,7 @@ class StackUpdateTest(common.HeatTestCase):
                                  template.Template(tmpl))
         self.stack.store()
         self.stack.create()
+        raw_template_id = self.stack.t.id
         self.assertEqual((stack.Stack.CREATE, stack.Stack.COMPLETE),
                          self.stack.state)
 
@@ -63,6 +65,10 @@ class StackUpdateTest(common.HeatTestCase):
         self.assertEqual((stack.Stack.UPDATE, stack.Stack.COMPLETE),
                          self.stack.state)
         self.assertIn('BResource', self.stack)
+        self.assertNotEqual(raw_template_id, self.stack.t.id)
+        self.assertNotEqual(raw_template_id, self.stack.prev_raw_template_id)
+        self.assertRaises(exception.NotFound,
+                          db_api.raw_template_get, self.ctx, raw_template_id)
 
     def test_update_remove(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
@@ -183,7 +189,7 @@ class StackUpdateTest(common.HeatTestCase):
         self.stack.update(updated_stack)
         self.assertEqual((stack.Stack.UPDATE, stack.Stack.COMPLETE),
                          self.stack.state)
-        self.assertEqual(True, self.stack.disable_rollback)
+        self.assertTrue(self.stack.disable_rollback)
 
     def test_update_tags(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
@@ -226,7 +232,7 @@ class StackUpdateTest(common.HeatTestCase):
         self.stack.update(updated_stack)
         self.assertEqual((stack.Stack.UPDATE, stack.Stack.COMPLETE),
                          self.stack.state)
-        self.assertEqual(None, self.stack.tags)
+        self.assertIsNone(self.stack.tags)
 
     def test_update_modify_ok_replace(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
@@ -361,6 +367,79 @@ class StackUpdateTest(common.HeatTestCase):
              'Properties': {'Foo': 'xyz'}},
             {'Type': 'ResourceWithPropsType',
              'Properties': {'Foo': 'abc'}})
+
+    def test_update_replace_create_hook(self):
+        tmpl = {
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Parameters': {
+                'foo': {'Type': 'String'}
+            },
+            'Resources': {
+                'AResource': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {'Foo': {'Ref': 'foo'}}
+                }
+            }
+        }
+
+        self.stack = stack.Stack(
+            self.ctx, 'update_test_stack',
+            template.Template(
+                tmpl, env=environment.Environment({'foo': 'abc'})))
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((stack.Stack.CREATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+
+        env2 = environment.Environment({'foo': 'xyz'})
+        # Add a create hook on the resource
+        env2.registry.load(
+            {'resources': {'AResource': {'hooks': 'pre-create'}}})
+        updated_stack = stack.Stack(self.ctx, 'updated_stack',
+                                    template.Template(tmpl, env=env2))
+
+        self.stack.update(updated_stack)
+        # The hook is not called, and update succeeds properly
+        self.assertEqual((stack.Stack.UPDATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+        self.assertEqual('xyz', self.stack['AResource'].properties['Foo'])
+
+    def test_update_replace_delete_hook(self):
+        tmpl = {
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Parameters': {
+                'foo': {'Type': 'String'}
+            },
+            'Resources': {
+                'AResource': {
+                    'Type': 'ResourceWithPropsType',
+                    'Properties': {'Foo': {'Ref': 'foo'}}
+                }
+            }
+        }
+
+        env = environment.Environment({'foo': 'abc'})
+        env.registry.load(
+            {'resources': {'AResource': {'hooks': 'pre-delete'}}})
+        self.stack = stack.Stack(
+            self.ctx, 'update_test_stack',
+            template.Template(tmpl, env=env))
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((stack.Stack.CREATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+
+        env2 = environment.Environment({'foo': 'xyz'})
+        env2.registry.load(
+            {'resources': {'AResource': {'hooks': 'pre-delete'}}})
+        updated_stack = stack.Stack(self.ctx, 'updated_stack',
+                                    template.Template(tmpl, env=env2))
+
+        self.stack.update(updated_stack)
+        # The hook is not called, and update succeeds properly
+        self.assertEqual((stack.Stack.UPDATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+        self.assertEqual('xyz', self.stack['AResource'].properties['Foo'])
 
     def test_update_modify_update_failed(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
@@ -859,8 +938,9 @@ class StackUpdateTest(common.HeatTestCase):
         mock_create = self.patchobject(generic_rsrc.ResourceWithProps,
                                        'handle_create', side_effect=Exception)
 
-        with mock.patch.object(stack_object.Stack,
-                               'update_by_id') as mock_db_update:
+        with mock.patch.object(
+                stack_object.Stack, 'update_by_id',
+                wraps=stack_object.Stack.update_by_id) as mock_db_update:
             self.stack.update(updated_stack)
             self.assertEqual((stack.Stack.ROLLBACK, stack.Stack.COMPLETE),
                              self.stack.state)
@@ -1056,11 +1136,11 @@ class StackUpdateTest(common.HeatTestCase):
         self.m.UnsetStubs()
 
     def test_update_replace_by_reference(self):
-        '''
-        assertion:
-        changes in dynamic attributes, due to other resources been updated
+        """Test case for changes in dynamic attributes.
+
+        Changes in dynamic attributes, due to other resources been updated
         are not ignored and can cause dependent resources to be updated.
-        '''
+        """
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
                     'AResource': {'Type': 'ResourceWithPropsType',
@@ -1111,11 +1191,11 @@ class StackUpdateTest(common.HeatTestCase):
         mock_id.assert_called_with()
 
     def test_update_with_new_resources_with_reference(self):
-        '''
-        assertion:
-        check, that during update with new resources which one has
+        """Check correct resolving of references in new resources.
+
+        Check, that during update with new resources which one has
         reference on second, reference will be correct resolved.
-        '''
+        """
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
                     'CResource': {'Type': 'ResourceWithPropsType',
@@ -1157,11 +1237,10 @@ class StackUpdateTest(common.HeatTestCase):
         mock_create.assert_called_with()
 
     def test_update_by_reference_and_rollback_1(self):
-        '''
-        assertion:
-        check that rollback still works with dynamic metadata
-        this test fails the first instance
-        '''
+        """Check that rollback still works with dynamic metadata.
+
+        This test fails the first instance.
+        """
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': {
                     'AResource': {'Type': 'ResourceWithPropsType',
@@ -1208,11 +1287,10 @@ class StackUpdateTest(common.HeatTestCase):
         mock_create.assert_called_once_with()
 
     def test_update_by_reference_and_rollback_2(self):
-        '''
-        assertion:
-        check that rollback still works with dynamic metadata
-        this test fails the second instance
-        '''
+        """Check that rollback still works with dynamic metadata.
+
+        This test fails the second instance.
+        """
 
         class ResourceTypeA(generic_rsrc.ResourceWithProps):
             count = 0
@@ -1267,11 +1345,10 @@ class StackUpdateTest(common.HeatTestCase):
         mock_create.assert_called_once_with()
 
     def test_update_failure_recovery(self):
-        '''
-        assertion:
-        check that rollback still works with dynamic metadata
-        this test fails the second instance
-        '''
+        """Check that rollback still works with dynamic metadata.
+
+        This test fails the second instance.
+        """
 
         class ResourceTypeA(generic_rsrc.ResourceWithProps):
             count = 0
@@ -1351,11 +1428,10 @@ class StackUpdateTest(common.HeatTestCase):
         mock_delete_A.assert_called_once_with()
 
     def test_update_failure_recovery_new_param(self):
-        '''
-        assertion:
-        check that rollback still works with dynamic metadata
-        this test fails the second instance
-        '''
+        """Check that rollback still works with dynamic metadata.
+
+        This test fails the second instance.
+        """
 
         class ResourceTypeA(generic_rsrc.ResourceWithProps):
             count = 0
@@ -1446,11 +1522,10 @@ class StackUpdateTest(common.HeatTestCase):
         self.assertEqual(2, mock_create.call_count)
 
     def test_update_failure_recovery_new_param_stack_list(self):
-        '''
-        assertion:
-        check that stack-list is not broken if update fails in between.
-        Also ensure that next update passes
-        '''
+        """Check that stack-list is not broken if update fails in between.
+
+        Also ensure that next update passes.
+        """
 
         class ResourceTypeA(generic_rsrc.ResourceWithProps):
             count = 0
@@ -1547,11 +1622,11 @@ class StackUpdateTest(common.HeatTestCase):
         self.assertEqual(2, mock_create.call_count)
 
     def test_update_replace_parameters(self):
-        '''
-        assertion:
-        changes in static environment parameters
-        are not ignored and can cause dependent resources to be updated.
-        '''
+        """Check that changes in static environment parameters are not ignored.
+
+        Changes in static environment parameters are not ignored and can cause
+        dependent resources to be updated.
+        """
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Parameters': {'AParam': {'Type': 'String'}},
                 'Resources': {

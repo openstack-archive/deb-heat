@@ -25,6 +25,7 @@ import oslo_messaging as messaging
 from oslo_serialization import jsonutils
 from oslo_service import service
 from oslo_service import threadgroup
+from oslo_utils import timeutils
 from oslo_utils import uuidutils
 from osprofiler import profiler
 import six
@@ -94,7 +95,7 @@ class ThreadGroupManager(object):
     def _service_task(self):
         """Dummy task which gets queued on the service.Service threadgroup.
 
-        Without this service.Service sees nothing running i.e has nothing to
+        Without this, service.Service sees nothing running i.e has nothing to
         wait() on, so the process exits. This could also be used to trigger
         periodic non-stack-specific housekeeping tasks.
         """
@@ -120,12 +121,23 @@ class ThreadGroupManager(object):
         """Run the given method in a sub-thread."""
         if stack_id not in self.groups:
             self.groups[stack_id] = threadgroup.ThreadGroup()
-        return self.groups[stack_id].add_thread(self._start_with_trace,
-                                                self._serialize_profile_info(),
-                                                func, *args, **kwargs)
+
+        def log_exceptions(gt):
+            try:
+                gt.wait()
+            except Exception:
+                LOG.exception(_LE('Unhandled error in asynchronous task'))
+            except BaseException:
+                pass
+
+        th = self.groups[stack_id].add_thread(self._start_with_trace,
+                                              self._serialize_profile_info(),
+                                              func, *args, **kwargs)
+        th.link(log_exceptions)
+        return th
 
     def start_with_lock(self, cnxt, stack, engine_id, func, *args, **kwargs):
-        """Run the method in sub-thread if acquire a stack lock is successful.
+        """Run the method in sub-thread after acquiring the stack lock.
 
         Release the lock when the thread finishes.
 
@@ -145,7 +157,7 @@ class ThreadGroupManager(object):
             return th
 
     def start_with_acquired_lock(self, stack, lock, func, *args, **kwargs):
-        """Run the given method in a sub-thread.
+        """Run the given method in a sub-thread with an existing stack lock.
 
         Release the provided lock when the thread finishes.
 
@@ -178,7 +190,7 @@ class ThreadGroupManager(object):
     def add_timer(self, stack_id, func, *args, **kwargs):
         """Define a periodic task in the stack threadgroups.
 
-        Defining is to be run in a separate thread.
+        The task is run in a separate greenthread.
 
         Periodicity is cfg.CONF.periodic_interval
         """
@@ -250,7 +262,7 @@ class EngineListener(service.Service):
         server.start()
 
     def listening(self, ctxt):
-        """Confirm the engine performing the action is still alive.
+        """Respond to a watchdog request.
 
         Respond affirmatively to confirm that the engine performing the action
         is still alive.
@@ -279,7 +291,7 @@ class EngineService(service.Service):
     by the RPC caller.
     """
 
-    RPC_API_VERSION = '1.18'
+    RPC_API_VERSION = '1.19'
 
     def __init__(self, host, topic):
         super(EngineService, self).__init__()
@@ -427,7 +439,7 @@ class EngineService(service.Service):
             stack = parser.Stack.load(cnxt, stack=s)
             return dict(stack.identifier())
         else:
-            raise exception.StackNotFound(stack_name=stack_name)
+            raise exception.EntityNotFound(entity='Stack', name=stack_name)
 
     def _get_stack(self, cnxt, stack_identity, show_deleted=False):
         identity = identifier.HeatIdentifier(**stack_identity)
@@ -439,7 +451,8 @@ class EngineService(service.Service):
             eager_load=True)
 
         if s is None:
-            raise exception.StackNotFound(stack_name=identity.stack_name)
+            raise exception.EntityNotFound(entity='Stack',
+                                           name=identity.stack_name)
 
         if cnxt.tenant_id not in (identity.tenant, s.stack_user_project_id):
             # The DB API should not allow this, but sanity-check anyway..
@@ -447,7 +460,8 @@ class EngineService(service.Service):
                                           actual=cnxt.tenant_id)
 
         if identity.path or s.name != identity.stack_name:
-            raise exception.StackNotFound(stack_name=identity.stack_name)
+            raise exception.EntityNotFound(entity='Stack',
+                                           name=identity.stack_name)
 
         return s
 
@@ -603,8 +617,10 @@ class EngineService(service.Service):
                 raise exception.NotSupported(feature='Stack Adopt')
 
             # Override the params with values given with -P option
-            new_params = common_params[rpc_api.PARAM_ADOPT_STACK_DATA][
-                'environment'][rpc_api.STACK_PARAMETERS].copy()
+            new_params = {}
+            if 'environment' in common_params[rpc_api.PARAM_ADOPT_STACK_DATA]:
+                new_params = common_params[rpc_api.PARAM_ADOPT_STACK_DATA][
+                    'environment'].get(rpc_api.STACK_PARAMETERS, {}).copy()
             new_params.update(params.get(rpc_api.STACK_PARAMETERS, {}))
             params[rpc_api.STACK_PARAMETERS] = new_params
 
@@ -631,7 +647,7 @@ class EngineService(service.Service):
 
     @context.request_context
     def preview_stack(self, cnxt, stack_name, template, params, files, args):
-        """Simulates a new stack using the provided template.
+        """Simulate a new stack using the provided template.
 
         Note that at this stage the template has already been fetched from the
         heat-api process if using a template-url.
@@ -662,7 +678,7 @@ class EngineService(service.Service):
     def create_stack(self, cnxt, stack_name, template, params, files, args,
                      owner_id=None, nested_depth=0, user_creds_id=None,
                      stack_user_project_id=None, parent_resource_name=None):
-        """Creates a new stack using the template provided.
+        """Create a new stack using the template provided.
 
         Note that at this stage the template has already been fetched from the
         heat-api process if using a template-url.
@@ -715,7 +731,10 @@ class EngineService(service.Service):
             parent_resource_name)
 
         self.resource_enforcer.enforce_stack(stack)
-        stack.store()
+        stack_id = stack.store()
+        if cfg.CONF.reauthentication_auth_method == 'trusts':
+            stack = parser.Stack.load(
+                cnxt, stack_id=stack_id, use_stored_context=True)
         _create_stack_user(stack)
         if convergence:
             action = stack.CREATE
@@ -730,7 +749,7 @@ class EngineService(service.Service):
 
     def _prepare_stack_updates(self, cnxt, current_stack, template, params,
                                files, args):
-        """Return the current and updated stack.
+        """Return the current and updated stack for a given transition.
 
         Changes *will not* be persisted, this is a helper method for
         update_stack and preview_update_stack.
@@ -818,7 +837,7 @@ class EngineService(service.Service):
     @context.request_context
     def update_stack(self, cnxt, stack_identity, template, params,
                      files, args):
-        """Updates an existing stack based on the provided template and params.
+        """Update an existing stack based on the provided template and params.
 
         Note that at this stage the template has already been fetched from the
         heat-api process if using a template-url.
@@ -833,8 +852,11 @@ class EngineService(service.Service):
         # Get the database representation of the existing stack
         db_stack = self._get_stack(cnxt, stack_identity)
         LOG.info(_LI('Updating stack %s'), db_stack.name)
-
-        current_stack = parser.Stack.load(cnxt, stack=db_stack)
+        if cfg.CONF.reauthentication_auth_method == 'trusts':
+            current_stack = parser.Stack.load(
+                cnxt, stack=db_stack, use_stored_context=True)
+        else:
+            current_stack = parser.Stack.load(cnxt, stack=db_stack)
         self.resource_enforcer.enforce_stack(current_stack)
 
         if current_stack.action == current_stack.SUSPEND:
@@ -866,7 +888,7 @@ class EngineService(service.Service):
     @context.request_context
     def preview_update_stack(self, cnxt, stack_identity, template, params,
                              files, args):
-        """Shows the resources that would be updated.
+        """Show the resources that would be updated.
 
         The preview_update_stack method shows the resources that would be
         changed with an update to an existing stack based on the provided
@@ -893,11 +915,13 @@ class EngineService(service.Service):
 
         actions = update_task.preview()
 
-        fmt_updated_res = lambda k: api.format_stack_resource(
-            updated_stack.resources.get(k))
-        fmt_current_res = lambda k: api.format_stack_resource(
-            current_stack.resources.get(k))
+        def fmt_updated_res(k):
+            return api.format_stack_resource(updated_stack.resources.get(k))
 
+        def fmt_current_res(k):
+            return api.format_stack_resource(current_stack.resources.get(k))
+
+        updated_stack.id = current_stack.id
         return {
             'unchanged': map(fmt_updated_res, actions['unchanged']),
             'updated': map(fmt_current_res, actions['updated']),
@@ -957,9 +981,11 @@ class EngineService(service.Service):
     @context.request_context
     def validate_template(self, cnxt, template, params=None, files=None,
                           show_nested=False):
-        """
-        The validate_template method uses the stack parser to check
-        the validity of a template.
+        """Check the validity of a template.
+
+        Checks, so far as we can, that a template is valid, and returns
+        information about the parameters suitable for producing a user
+        interface through which to specify the parameter values.
 
         :param cnxt: RPC context.
         :param template: Template of stack you want to create.
@@ -1049,6 +1075,43 @@ class EngineService(service.Service):
             return s.raw_template.template
         return None
 
+    @context.request_context
+    def list_outputs(self, cntx, stack_identity):
+        """Get a list of stack outputs.
+
+        :param cntx: RPC context.
+        :param stack_identity: Name of the stack you want to see.
+        :return: list of stack outputs in defined format.
+        """
+        s = self._get_stack(cntx, stack_identity)
+        stack = parser.Stack.load(cntx, stack=s, resolve_data=False)
+
+        return api.format_stack_outputs(stack, stack.t[stack.t.OUTPUTS])
+
+    @context.request_context
+    def show_output(self, cntx, stack_identity, output_key):
+        """Returns dict with specified output key, value and description.
+
+        :param cntx: RPC context.
+        :param stack_identity: Name of the stack you want to see.
+        :param output_key: key of desired stack output.
+        :return: dict with output key, value and description in defined format.
+        """
+        s = self._get_stack(cntx, stack_identity)
+        stack = parser.Stack.load(cntx, stack=s, resolve_data=False)
+
+        outputs = stack.t[stack.t.OUTPUTS]
+
+        if output_key not in outputs:
+            raise exception.NotFound(_('Specified output key %s not '
+                                       'found.') % output_key)
+        output = stack.resolve_static_data(outputs[output_key])
+
+        if not stack.outputs:
+            stack.outputs.update({output_key: output})
+
+        return api.format_stack_output(stack, {output_key: output}, output_key)
+
     def _remote_call(self, cnxt, lock_engine_id, call, **kwargs):
         timeout = cfg.CONF.engine_life_check_timeout
         self.cctxt = self._client.prepare(
@@ -1063,7 +1126,7 @@ class EngineService(service.Service):
 
     @context.request_context
     def delete_stack(self, cnxt, stack_identity):
-        """The delete_stack method deletes a given stack.
+        """Delete a given stack.
 
         :param cnxt: RPC context.
         :param stack_identity: Name of the stack you want to delete.
@@ -1119,26 +1182,42 @@ class EngineService(service.Service):
         return None
 
     @context.request_context
-    def abandon_stack(self, cnxt, stack_identity):
-        """The abandon_stack method abandons a given stack.
+    def export_stack(self, cnxt, stack_identity):
+        """Exports the stack data json.
+
+        Intended to be used to safely retrieve the stack data before
+        performing the abandon action.
+
+        :param cnxt: RPC context.
+        :param stack_identity: Name of the stack you want to export.
+        """
+        return self.abandon_stack(cnxt, stack_identity, abandon=False)
+
+    @context.request_context
+    def abandon_stack(self, cnxt, stack_identity, abandon=True):
+        """Abandon a given stack.
 
         :param cnxt: RPC context.
         :param stack_identity: Name of the stack you want to abandon.
+        :param abandon: Delete Heat stack but not physical resources.
         """
         if not cfg.CONF.enable_stack_abandon:
             raise exception.NotSupported(feature='Stack Abandon')
 
         st = self._get_stack(cnxt, stack_identity)
-        LOG.info(_LI('abandoning stack %s'), st.name)
         stack = parser.Stack.load(cnxt, stack=st)
         lock = stack_lock.StackLock(cnxt, stack.id, self.engine_id)
         with lock.thread_lock():
             # Get stack details before deleting it.
             stack_info = stack.prepare_abandon()
-            self.thread_group_mgr.start_with_acquired_lock(stack,
-                                                           lock,
-                                                           stack.delete,
-                                                           abandon=True)
+            if abandon:
+                LOG.info(_LI('abandoning stack %s'), st.name)
+                self.thread_group_mgr.start_with_acquired_lock(stack,
+                                                               lock,
+                                                               stack.delete,
+                                                               abandon=True)
+            else:
+                LOG.info(_LI('exporting stack %s'), st.name)
             return stack_info
 
     def list_resource_types(self,
@@ -1172,7 +1251,12 @@ class EngineService(service.Service):
 
     def list_template_functions(self, cnxt, template_version):
         mgr = templatem._get_template_extension_manager()
-        tmpl_class = mgr[template_version]
+        try:
+            tmpl_class = mgr[template_version]
+        except KeyError:
+            raise exception.NotFound(_("Template with version %s not found") %
+                                     template_version)
+
         functions = []
         for func_name, func in six.iteritems(tmpl_class.plugin.functions):
             if func is not hot_functions.Removed:
@@ -1195,10 +1279,14 @@ class EngineService(service.Service):
         self.resource_enforcer.enforce(cnxt, type_name)
         try:
             resource_class = resources.global_env().get_class(type_name)
-        except (exception.InvalidResourceType,
-                exception.ResourceTypeNotFound,
-                exception.TemplateNotFound) as ex:
-            raise ex
+        except exception.StackValidationFailed:
+            raise exception.EntityNotFound(entity='Resource Type',
+                                           name=type_name)
+        except exception.NotFound:
+            LOG.exception(_LE('Error loading resource type %s '
+                              'from global environment.'),
+                          type_name)
+            raise exception.InvalidGlobalResource(type_name=type_name)
 
         if resource_class.support_status.status == support.HIDDEN:
             raise exception.NotSupported(type_name)
@@ -1244,10 +1332,14 @@ class EngineService(service.Service):
                 raise exception.NotSupported(type_name)
             return resource_class.resource_to_template(type_name,
                                                        template_type)
-        except (exception.InvalidResourceType,
-                exception.ResourceTypeNotFound,
-                exception.TemplateNotFound) as ex:
-            raise ex
+        except exception.StackValidationFailed:
+            raise exception.EntityNotFound(entity='Resource Type',
+                                           name=type_name)
+        except exception.NotFound:
+            LOG.exception(_LE('Error loading resource type %s '
+                              'from global environment.'),
+                          type_name)
+            raise exception.InvalidGlobalResource(type_name=type_name)
 
     @context.request_context
     def list_events(self, cnxt, stack_identity, filters=None, limit=None,
@@ -1405,8 +1497,8 @@ class EngineService(service.Service):
             cnxt,
             physical_resource_id)
         if not rs:
-            raise exception.PhysicalResourceNotFound(
-                resource_id=physical_resource_id)
+            raise exception.EntityNotFound(entity='Resource',
+                                           name=physical_resource_id)
 
         stack = parser.Stack.load(cnxt, stack_id=rs.stack.id)
         resource = stack[rs.name]
@@ -1580,13 +1672,14 @@ class EngineService(service.Service):
         if not rule_run:
             if watch_name is None:
                 watch_name = 'Unknown'
-            raise exception.WatchRuleNotFound(watch_name=watch_name)
+            raise exception.EntityNotFound(entity='Watch Rule',
+                                           name=watch_name)
 
         return stats_data
 
     @context.request_context
     def show_watch(self, cnxt, watch_name):
-        """The show_watch method returns the attributes of one watch/alarm.
+        """Return the attributes of one watch/alarm.
 
         :param cnxt: RPC context.
         :param watch_name: Name of the watch you want to see, or None to see
@@ -1607,7 +1700,7 @@ class EngineService(service.Service):
 
     @context.request_context
     def show_watch_metric(self, cnxt, metric_namespace=None, metric_name=None):
-        """The show_watch method returns the datapoints for a metric.
+        """Return the datapoints for a metric.
 
         :param cnxt: RPC context.
         :param metric_namespace: Name of the namespace you want to see, or None
@@ -1775,7 +1868,7 @@ class EngineService(service.Service):
     def service_manage_cleanup(self):
         cnxt = context.get_admin_context()
         last_updated_window = (3 * cfg.CONF.periodic_interval)
-        time_line = datetime.datetime.utcnow() - datetime.timedelta(
+        time_line = timeutils.utcnow() - datetime.timedelta(
             seconds=last_updated_window)
 
         service_refs = service_objects.Service.get_all_by_args(
@@ -1803,30 +1896,48 @@ class EngineService(service.Service):
 
     def reset_stack_status(self):
         cnxt = context.get_admin_context()
-        filters = {'status': parser.Stack.IN_PROGRESS}
+        filters = {
+            'status': parser.Stack.IN_PROGRESS,
+            'convergence': False
+        }
         stacks = stack_object.Stack.get_all(cnxt,
                                             filters=filters,
                                             tenant_safe=False,
                                             show_nested=True) or []
         for s in stacks:
-            lock = stack_lock.StackLock(cnxt, s.id, self.engine_id)
-            # If stacklock is released, means stack status may changed.
+            stack_id = s.id
+            lock = stack_lock.StackLock(cnxt, stack_id, self.engine_id)
             engine_id = lock.get_engine_id()
-            if not engine_id:
-                continue
-            # Try to steal the lock and set status to failed.
             try:
-                lock.acquire(retry=False)
+                with lock.thread_lock(retry=False):
+
+                    # refetch stack and confirm it is still IN_PROGRESS
+                    s = stack_object.Stack.get_by_id(
+                        cnxt,
+                        stack_id,
+                        tenant_safe=False,
+                        eager_load=True)
+                    if s.status != parser.Stack.IN_PROGRESS:
+                        lock.release()
+                        continue
+
+                    stk = parser.Stack.load(cnxt, stack=s,
+                                            use_stored_context=True)
+                    LOG.info(_LI('Engine %(engine)s went down when stack '
+                                 '%(stack_id)s was in action %(action)s'),
+                             {'engine': engine_id, 'action': stk.action,
+                              'stack_id': stk.id})
+
+                    # Set stack and resources status to FAILED in sub thread
+                    self.thread_group_mgr.start_with_acquired_lock(
+                        stk,
+                        lock,
+                        self.set_stack_and_resource_to_failed,
+                        stk
+                    )
             except exception.ActionInProgress:
                 continue
-            stk = parser.Stack.load(cnxt, stack=s,
-                                    use_stored_context=True)
-            LOG.info(_LI('Engine %(engine)s went down when stack %(stack_id)s'
-                         ' was in action %(action)s'),
-                     {'engine': engine_id, 'action': stk.action,
-                      'stack_id': stk.id})
-
-            # Set stack and resources status to FAILED in sub thread
-            self.thread_group_mgr.start_with_acquired_lock(
-                stk, lock, self.set_stack_and_resource_to_failed, stk
-            )
+            except Exception:
+                LOG.exception(_LE('Error while resetting stack: %s')
+                              % stack_id)
+                continue

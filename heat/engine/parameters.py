@@ -202,7 +202,7 @@ class Parameter(object):
         return ParamClass(name, schema, value)
 
     def __init__(self, name, schema, value=None):
-        """Initialisation of the parameter.
+        """Initialise the parameter.
 
         Initialise the Parameter with a name, schema and optional user-supplied
         value.
@@ -255,10 +255,9 @@ class Parameter(object):
         return self.user_value is not None or self.has_default()
 
     def hidden(self):
-        """Return if parameter is hidden.
+        """Return whether the parameter is hidden.
 
-        Return whether the parameter should be sanitised in any output to
-        the user.
+        Hidden parameters should be sanitised in any output to the user.
         """
         return self.schema.hidden
 
@@ -340,18 +339,31 @@ class StringParam(Parameter):
         self.schema.validate_value(val, context)
 
 
-class CommaDelimitedListParam(Parameter, collections.Sequence):
-    """A template parameter of type "CommaDelimitedList"."""
+class ParsedParameter(Parameter):
+    """A template parameter with cached parsed value."""
 
     def __init__(self, name, schema, value=None):
-        super(CommaDelimitedListParam, self).__init__(name, schema, value)
+        super(ParsedParameter, self).__init__(name, schema, value)
+        self._update_parsed()
+
+    def set_default(self, value):
+        super(ParsedParameter, self).set_default(value)
+        self._update_parsed()
+
+    def _update_parsed(self):
         if self.has_value():
             if self.user_value is not None:
                 self.parsed = self.parse(self.user_value)
             else:
                 self.parsed = self.parse(self.default())
-        else:
-            self.parsed = []
+
+
+class CommaDelimitedListParam(ParsedParameter, collections.Sequence):
+    """A template parameter of type "CommaDelimitedList"."""
+
+    def __init__(self, name, schema, value=None):
+        self.parsed = []
+        super(CommaDelimitedListParam, self).__init__(name, schema, value)
 
     def parse(self, value):
         # only parse when value is not already a list
@@ -387,22 +399,19 @@ class CommaDelimitedListParam(Parameter, collections.Sequence):
         return ",".join(self.value())
 
     def _validate(self, val, context):
-        parsed = self.parse(val)
+        try:
+            parsed = self.parse(val)
+        except ValueError as ex:
+            raise exception.StackValidationFailed(message=six.text_type(ex))
         self.schema.validate_value(parsed, context)
 
 
-class JsonParam(Parameter):
+class JsonParam(ParsedParameter):
     """A template parameter who's value is map or list."""
 
     def __init__(self, name, schema, value=None):
+        self.parsed = {}
         super(JsonParam, self).__init__(name, schema, value)
-        if self.has_value():
-            if self.user_value is not None:
-                self.parsed = self.parse(self.user_value)
-            else:
-                self.parsed = self.parse(self.default())
-        else:
-            self.parsed = {}
 
     def parse(self, value):
         try:
@@ -438,14 +447,17 @@ class JsonParam(Parameter):
         return encodeutils.safe_decode(jsonutils.dumps(self.value()))
 
     def _validate(self, val, context):
-        val = self.parse(val)
-        self.schema.validate_value(val, context)
+        try:
+            parsed = self.parse(val)
+        except ValueError as ex:
+            raise exception.StackValidationFailed(message=six.text_type(ex))
+        self.schema.validate_value(parsed, context)
 
 
 class Parameters(collections.Mapping):
     """Parameters of a stack.
 
-    The parameters of a stack, with type checking, defaults etc., specified by
+    The parameters of a stack, with type checking, defaults, etc. specified by
     the stack's template.
     """
 
@@ -515,10 +527,10 @@ class Parameters(collections.Mapping):
         return self.params[key].value()
 
     def map(self, func, filter_func=lambda p: True):
-        """Map the supplied filter function onto each Parameter.
+        """Map the supplied function onto each Parameter.
 
-        Map the supplied filter function onto each Parameter (with an
-        optional filter function) and return the resulting dictionary.
+        Map the supplied function onto each Parameter (with an optional filter
+        function) and return the resulting dictionary.
         """
         return dict((n, func(p))
                     for n, p in six.iteritems(self.params) if filter_func(p))

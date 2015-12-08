@@ -44,6 +44,7 @@ from heat.engine import support
 from heat.engine import template
 from heat.objects import resource as resource_objects
 from heat.objects import resource_data as resource_data_objects
+from heat.objects import stack as stack_objects
 from heat.rpc import client as rpc_client
 
 cfg.CONF.import_opt('action_retry_limit', 'heat.common.config')
@@ -112,6 +113,9 @@ class Resource(object):
     # Default name to use for calls to self.client()
     default_client_name = None
 
+    # Required service extension for this resource
+    required_service_extension = None
+
     # no signal actions
     no_signal_actions = (SUSPEND, DELETE)
 
@@ -120,7 +124,7 @@ class Resource(object):
     signal_needs_metadata_updates = True
 
     def __new__(cls, name, definition, stack):
-        '''Create a new Resource of the appropriate class for its type.'''
+        """Create a new Resource of the appropriate class for its type."""
 
         assert isinstance(definition, rsrc_defn.ResourceDefinition)
 
@@ -135,7 +139,7 @@ class Resource(object):
                 ResourceClass = registry.get_class(definition.resource_type,
                                                    resource_name=name,
                                                    files=stack.t.files)
-            except exception.TemplateNotFound:
+            except exception.NotFound:
                 ResourceClass = template_resource.TemplateResource
 
             assert issubclass(ResourceClass, Resource)
@@ -260,30 +264,32 @@ class Resource(object):
     def load(cls, context, resource_id, is_update, data):
         from heat.engine import stack as stack_mod
         db_res = resource_objects.Resource.get_obj(context, resource_id)
+        curr_stack = stack_mod.Stack.load(context, stack_id=db_res.stack_id,
+                                          cache_data=data)
 
-        @contextlib.contextmanager
-        def special_stack(tmpl, swap_template):
-            stk = stack_mod.Stack.load(context, db_res.stack_id,
-                                       cache_data=data)
+        resource_owning_stack = curr_stack
+        if db_res.current_template_id != curr_stack.t.id:
+            # load stack with template owning the resource
+            db_stack = stack_objects.Stack.get_by_id(context, db_res.stack_id)
+            db_stack.raw_template = None
+            db_stack.raw_template_id = db_res.current_template_id
+            resource_owning_stack = stack_mod.Stack.load(context,
+                                                         stack=db_stack)
 
-            # NOTE(sirushtim): Because on delete/cleanup operations, we simply
-            # update with another template, the stack object won't have the
-            # template of the previous stack-run.
-            if swap_template:
-                prev_tmpl = stk.t
-                stk.t = tmpl
-                stk.resources
-            yield stk
-            if swap_template:
-                stk.t = prev_tmpl
+        # Load only the resource in question; don't load all resources
+        # by invoking stack.resources. Maintain light-weight stack.
+        res_defn = resource_owning_stack.t.resource_definitions(
+            resource_owning_stack)[db_res.name]
+        resource = cls(db_res.name, res_defn, resource_owning_stack)
+        resource._load_data(db_res)
 
-        tmpl = template.Template.load(context, db_res.current_template_id)
-        with special_stack(tmpl, not is_update) as stack:
-            stack_res = tmpl.resource_definitions(stack)[db_res.name]
-            resource = cls(db_res.name, stack_res, stack)
-            resource._load_data(db_res)
+        # assign current stack to the resource for updates
+        if is_update:
+            resource.stack = curr_stack
 
-        return resource, stack
+        # return resource owning stack so that it is not GCed since it
+        # is the only stack instance with a weak-ref from resource
+        return resource, resource_owning_stack, curr_stack
 
     def make_replacement(self, new_tmpl_id):
         # 1. create the replacement with "replaces" = self.id
@@ -311,7 +317,7 @@ class Resource(object):
     def reparse(self):
         self.properties = self.t.properties(self.properties_schema,
                                             self.context)
-        self.translate_properties()
+        self.translate_properties(self.properties)
 
     def __eq__(self, other):
         """Allow == comparison of two resources."""
@@ -388,6 +394,19 @@ class Resource(object):
         # common resources have not nested, StackResource overrides it
         return False
 
+    def resource_class(self):
+        """Return the resource class.
+
+        This is used to compare old and new resources when updating, to ensure
+        that in-place updates are possible. This method shold return the
+        highest common class in the hierarchy whose subclasses are all capable
+        of converting to each other's types via handle_update().
+
+        This mechanism may disappear again in future, so third-party resource
+        types should not rely on it.
+        """
+        return type(self)
+
     def has_hook(self, hook):
         # Clear the cache to make sure the data is up to date:
         self._data = None
@@ -412,7 +431,7 @@ class Resource(object):
             return True
         ri = self.stack.env.get_resource_info(self.type(),
                                               self.name)
-        return ri.name == resource_type
+        return ri is not None and ri.name == resource_type
 
     def implementation_signature(self):
         """Return a tuple defining the implementation.
@@ -465,7 +484,7 @@ class Resource(object):
         return dict((k, after.get(k)) for k in changed_keys_set)
 
     def update_template_diff_properties(self, after_props, before_props):
-        """The changed Properties between the before and after properties.
+        """Return changed Properties between the before and after properties.
 
         If any property having immutable as True is updated, raises
         NotSupported error.
@@ -522,13 +541,12 @@ class Resource(object):
         deps += (self, None)
 
     def required_by(self):
-        """List of resources' names which require the resource as dependency.
+        """List of resources that require this one as a dependency.
 
-        Returns a list of resources' names which directly require this
-        resource as a dependency.
+        Returns a list of names of resources that depend on this resource
+        directly.
         """
-        return list(
-            [r.name for r in self.stack.dependencies.required_by(self)])
+        return [r.name for r in self.stack.dependencies.required_by(self)]
 
     def client(self, name=None):
         client_name = name or self.default_client_name
@@ -559,10 +577,16 @@ class Resource(object):
             # NOTE(kanagaraj-manickam): if one of the service_type does
             # exist in the keystone, then considered it as available.
             for service_type in service_types:
-                if client_plugin.does_endpoint_exist(
-                        service_type=service_type,
-                        service_name=cls.default_client_name):
-                    return True
+                endpoint_exists = client_plugin.does_endpoint_exist(
+                    service_type=service_type,
+                    service_name=cls.default_client_name)
+                if endpoint_exists:
+                    req_extension = cls.required_service_extension
+                    is_ext_available = (
+                        not req_extension or client_plugin.has_extension(
+                            req_extension))
+                    if is_ext_available:
+                        return True
         except Exception as ex:
             LOG.exception(ex)
 
@@ -820,13 +844,12 @@ class Resource(object):
         # save the resource metadata
         self.metadata_set(metadata)
 
-    def translation_rules(self):
+    def translation_rules(self, properties):
         """Return specified rules for resource."""
-        return None
 
-    def translate_properties(self):
+    def translate_properties(self, properties):
         """Translates old properties to new ones."""
-        rules = self.translation_rules() or []
+        rules = self.translation_rules(properties) or []
         for rule in rules:
             rule.execute_rule()
 
@@ -865,13 +888,13 @@ class Resource(object):
             return True
 
     def update_convergence(self, template_id, resource_data, engine_id,
-                           timeout):
-        """Updates the resource.
+                           timeout, new_stack):
+        """Update the resource synchronously.
 
-        Updates the resource by invoking the scheduler TaskRunner
-        and it persists the resource's current_template_id to template_id and
-        resource's requires to list of the required resource id from the
-        given resource_data and existing resource's requires.
+        Persist the resource's current_template_id to template_id and
+        resource's requires to list of the required resource ids from the given
+        resource_data and existing resource's requires, then updates the
+        resource by invoking the scheduler TaskRunner.
         """
         def update_tmpl_id_and_requires():
             self.current_template_id = template_id
@@ -882,7 +905,11 @@ class Resource(object):
 
         with self.lock(engine_id):
             new_temp = template.Template.load(self.context, template_id)
-            new_res_def = new_temp.resource_definitions(self.stack)[self.name]
+            new_res_def = new_temp.resource_definitions(new_stack)[self.name]
+            if self.stack.action == self.stack.ROLLBACK and \
+                    self.stack.status == self.stack.IN_PROGRESS \
+                    and self.replaced_by:
+                self.restore_prev_rsrc(convergence=True)
             runner = scheduler.TaskRunner(self.update, new_res_def)
             try:
                 runner(timeout=timeout)
@@ -893,7 +920,7 @@ class Resource(object):
 
     @scheduler.wrappertask
     def update(self, after, before=None, prev_resource=None):
-        """Update the resource.
+        """Return a task to update the resource.
 
         Subclasses should provide a handle_update() method to customise update,
         the base-class handle_update will fail by default.
@@ -911,6 +938,7 @@ class Resource(object):
         self.regenerate_info_schema(after)
         after_props = after.properties(self.properties_schema,
                                        self.context)
+        self.translate_properties(after_props)
 
         yield self._break_if_required(
             self.UPDATE, environment.HOOK_PRE_UPDATE)
@@ -919,7 +947,6 @@ class Resource(object):
             if not self._needs_update(after, before, after_props, before_props,
                                       prev_resource):
                 return
-
             if not cfg.CONF.convergence_engine:
                 if (self.action, self.status) in (
                         (self.CREATE, self.IN_PROGRESS),
@@ -946,13 +973,21 @@ class Resource(object):
                 self._update_stored_properties()
         except exception.UpdateReplace as ex:
             # catch all UpdateReplace expections
-            if (self.stack.action == 'ROLLBACK' and
-                    self.stack.status == 'IN_PROGRESS'):
-                # handle case, when it's rollback and we should restore
-                # old resource
-                self.restore_after_rollback()
-            else:
-                self.prepare_for_replace()
+            try:
+                if (self.stack.action == 'ROLLBACK' and
+                        self.stack.status == 'IN_PROGRESS' and
+                        not cfg.CONF.convergence_engine):
+                    # handle case, when it's rollback and we should restore
+                    # old resource
+                    self.restore_prev_rsrc()
+                else:
+                    self.prepare_for_replace()
+            except Exception as e:
+                # if any exception happen, we should set the resource to
+                # FAILED, then raise ResourceFailure
+                failure = exception.ResourceFailure(e, self, action)
+                self.state_set(action, self.FAILED, six.text_type(failure))
+                raise failure
             raise ex
 
     def prepare_for_replace(self):
@@ -964,7 +999,7 @@ class Resource(object):
         """
         pass
 
-    def restore_after_rollback(self):
+    def restore_prev_rsrc(self, convergence=False):
         """Restore resource after rollback.
 
         Some resources requires additional actions after rollback.
@@ -1007,7 +1042,7 @@ class Resource(object):
             raise exception.Error('; '.join(invalid_checks))
 
     def suspend(self):
-        """Suspend the resource.
+        """Return a task to suspend the resource.
 
         Subclasses should provide a handle_suspend() method to implement
         suspend.
@@ -1027,7 +1062,7 @@ class Resource(object):
         return self._do_action(action)
 
     def resume(self):
-        """Resume the resource.
+        """Return a task to resume the resource.
 
         Subclasses should provide a handle_resume() method to implement resume.
         """
@@ -1092,24 +1127,22 @@ class Resource(object):
         return name[0:2] + '-' + name[-postfix_length:]
 
     def validate(self):
-        '''
-        Validate the resource.
+        """Validate the resource.
 
         This may be overridden by resource plugins to add extra
         validation logic specific to the resource implementation.
-        '''
+        """
         LOG.info(_LI('Validating %s'), six.text_type(self))
         return self.validate_template()
 
     def validate_template(self):
-        '''
-        Validate strucural/syntax aspects of the resource definition.
+        """Validate structural/syntax aspects of the resource definition.
 
         Resource plugins should not override this, because this interface
         is expected to be called pre-create so things normally valid
         in an overridden validate() such as accessing properties
         may not work.
-        '''
+        """
         function.validate(self.t)
         self.validate_deletion_policy(self.t.deletion_policy())
         self.t.update_policy(self.update_policy_schema,
@@ -1205,7 +1238,7 @@ class Resource(object):
 
     @scheduler.wrappertask
     def delete(self):
-        """Delete the resource.
+        """A task to delete the resource.
 
         Subclasses should provide a handle_delete() method to customise
         deletion.
@@ -1219,6 +1252,13 @@ class Resource(object):
             return
 
         initial_state = self.state
+
+        # This method can be called when we replace a resource, too. In that
+        # case, a hook has already been dealt with in `Resource.update` so we
+        # shouldn't do it here again:
+        if self.stack.action == self.stack.DELETE:
+            yield self._break_if_required(
+                self.DELETE, environment.HOOK_PRE_DELETE)
 
         LOG.info(_LI('deleting %s'), six.text_type(self))
 
@@ -1243,7 +1283,7 @@ class Resource(object):
 
     @scheduler.wrappertask
     def destroy(self):
-        """Delete the resource and remove it from the database."""
+        """A task to delete the resource and remove it from the database."""
         yield self.delete()
 
         if self.id is None:
@@ -1378,8 +1418,12 @@ class Resource(object):
 
         if not updated_ok:
             ex = exception.UpdateInProgress(self.name)
-            LOG.exception('atomic:%s engine_id:%s/%s' % (
-                rs.atomic_key, rs.engine_id, engine_id))
+            LOG.error(_LE(
+                'Error acquiring lock for resource id:%(resource_id)s with '
+                'atomic_key:%(atomic_key)s, '
+                'engine_id:%(rs_engine_id)s/%(engine_id)s') % {
+                    'resource_id': rs.id, 'atomic_key': rs.atomic_key,
+                    'rs_engine_id': rs.engine_id, 'engine_id': engine_id})
             raise ex
 
     def _release(self, engine_id):
@@ -1510,7 +1554,7 @@ class Resource(object):
         if res_name is not None:
             return six.text_type(res_name)
         else:
-            return Resource.FnGetRefId(self)
+            return Resource.get_reference_id(self)
 
     def FnGetAtt(self, key, *path):
         """For the intrinsic function Fn::GetAtt.
@@ -1651,7 +1695,7 @@ class Resource(object):
 
     @classmethod
     def resource_to_template(cls, resource_type, template_type='cfn'):
-        """Template where resource's properties mapped as parameters.
+        """Generate a provider template that mirrors the resource.
 
         :param resource_type: The resource type to be displayed in the template
         :param template_type: the template type to generate, cfn or hot.
@@ -1699,7 +1743,7 @@ class Resource(object):
         return tmpl_dict
 
     def data(self):
-        """Resource data for this resource.
+        """Return the resource data for this resource.
 
         Use methods data_set and data_delete to modify the resource data
         for this resource.
@@ -1715,13 +1759,13 @@ class Resource(object):
         return self._data or {}
 
     def data_set(self, key, value, redact=False):
-        """Save resource's key/value pair to database."""
+        """Set a key in the resource data."""
         resource_data_objects.ResourceData.set(self, key, value, redact)
         # force fetch all resource data from the database again
         self._data = None
 
     def data_delete(self, key):
-        """Remove a resource_data element associated to a resource.
+        """Remove a key from the resource data.
 
         :returns: True if the key existed to delete.
         """

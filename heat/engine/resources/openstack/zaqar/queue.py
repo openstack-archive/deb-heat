@@ -54,11 +54,16 @@ class ZaqarQueue(resource.Resource):
             _("ID of the queue."),
             cache_mode=attributes.Schema.CACHE_NONE,
             support_status=support.SupportStatus(
-                status=support.DEPRECATED,
-                message=_("Use get_resource|Ref command instead. "
-                          "For example: { get_resource : <resource_name> }"),
-                version='2015.1',
-                previous_status=support.SupportStatus(version='2014.1')
+                status=support.HIDDEN,
+                version='6.0.0',
+                previous_status=support.SupportStatus(
+                    status=support.DEPRECATED,
+                    message=_("Use get_resource|Ref command instead. "
+                              "For example: { get_resource : "
+                              "<resource_name> }"),
+                    version='2015.1',
+                    previous_status=support.SupportStatus(version='2014.1')
+                )
             )
         ),
         HREF: attributes.Schema(
@@ -105,10 +110,8 @@ class ZaqarQueue(resource.Resource):
         """Delete a zaqar message queue."""
         if not self.resource_id:
             return
-        try:
+        with self.client_plugin().ignore_not_found:
             self.client().queue(self.resource_id, auto_create=False).delete()
-        except Exception as exc:
-            self.client_plugin().ignore_not_found(exc)
 
     def href(self):
         api_endpoint = self.client().api_url

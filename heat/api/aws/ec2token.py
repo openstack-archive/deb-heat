@@ -13,15 +13,14 @@
 
 import hashlib
 
-from keystoneclient import discover as ks_discover
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_serialization import jsonutils as json
-from oslo_utils import importutils
 import requests
 import webob
 
 from heat.api.aws import exception
+from heat.common import endpoint_utils
 from heat.common.i18n import _
 from heat.common.i18n import _LE
 from heat.common.i18n import _LI
@@ -79,19 +78,7 @@ class EC2Token(wsgi.Middleware):
         if auth_uri:
             return auth_uri.replace('v2.0', 'v3')
         else:
-            # First we check the [clients_keystone] section, and if it is not
-            # set we look in [keystone_authtoken]
-            if cfg.CONF.clients_keystone.auth_uri:
-                discover = ks_discover.Discover(
-                    auth_url=cfg.CONF.clients_keystone.auth_uri)
-                return discover.url_for('3.0')
-            else:
-                # Import auth_token to have keystone_authtoken settings setup.
-                # We can use the auth_uri from the keystone_authtoken section
-                importutils.import_module('keystonemiddleware.auth_token')
-                auth_uri = cfg.CONF.keystone_authtoken['auth_uri']
-                if auth_uri:
-                    return auth_uri.replace('v2.0', 'v3')
+            return endpoint_utils.get_auth_uri()
 
     @staticmethod
     def _conf_get_keystone_ec2_uri(auth_uri):
@@ -102,9 +89,11 @@ class EC2Token(wsgi.Middleware):
         return '%s/ec2tokens' % auth_uri
 
     def _get_signature(self, req):
-        """
-        Extract the signature from the request, this can be a get/post
-        variable or for v4 also in a header called 'Authorization'
+        """Extract the signature from the request.
+
+        This can be a get/post variable or for v4 also in a header called
+        'Authorization'.
+
         - params['Signature'] == version 0,1,2,3
         - params['X-Amz-Signature'] == version 4
         - header 'Authorization' == version 4
@@ -117,11 +106,11 @@ class EC2Token(wsgi.Middleware):
         return sig
 
     def _get_access(self, req):
-        """
-        Extract the access key identifier, for v 0/1/2/3 this is passed
-        as the AccessKeyId parameter, for version4 it is either and
-        X-Amz-Credential parameter or a Credential= field in the
-        'Authorization' header string
+        """Extract the access key identifier.
+
+        For v 0/1/2/3 this is passed as the AccessKeyId parameter,
+        for version4 it is either and X-Amz-Credential parameter or a
+        Credential= field in the 'Authorization' header string.
         """
         access = req.params.get('AWSAccessKeyId')
         if access is None:
@@ -214,7 +203,7 @@ class EC2Token(wsgi.Middleware):
                                     'verb': req.method,
                                     'path': req.path,
                                     'params': auth_params,
-                                    'headers': req.headers,
+                                    'headers': dict(req.headers),
                                     'body_hash': body_hash
                                     }}
         creds_json = json.dumps(creds)
@@ -266,9 +255,7 @@ class EC2Token(wsgi.Middleware):
 
 
 def EC2Token_filter_factory(global_conf, **local_conf):
-    """
-    Factory method for paste.deploy
-    """
+    """Factory method for paste.deploy."""
     conf = global_conf.copy()
     conf.update(local_conf)
 

@@ -12,6 +12,7 @@
 #    under the License.
 
 import collections
+import copy
 import functools
 
 import six
@@ -22,18 +23,20 @@ from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.openstack.heat import software_config as sc
 from heat.engine.resources.openstack.heat import software_deployment as sd
+from heat.engine import rsrc_defn
 from heat.engine import support
 
 
 class StructuredConfig(sc.SoftwareConfig):
-    '''
+    """A resource which has same logic with OS::Heat::SoftwareConfig.
+
     This resource is like OS::Heat::SoftwareConfig except that the config
     property is represented by a Map rather than a String.
 
     This is useful for configuration tools which use YAML or JSON as their
     configuration syntax. The resulting configuration is transferred,
     stored and returned by the software_configs API as parsed JSON.
-    '''
+    """
 
     support_status = support.SupportStatus(version='2014.1')
 
@@ -65,7 +68,8 @@ class StructuredConfig(sc.SoftwareConfig):
 
 
 class StructuredDeployment(sd.SoftwareDeployment):
-    '''
+    """A resource which has same logic with OS::Heat::SoftwareDeployment.
+
     A deployment resource like OS::Heat::SoftwareDeployment, but which
     performs input value substitution on the config defined by a
     OS::Heat::StructuredConfig resource.
@@ -78,7 +82,7 @@ class StructuredDeployment(sd.SoftwareDeployment):
     with the value of input_name in this resource's input_values. If get_input
     needs to be passed through to the substituted configuration then a
     different input_key property value can be specified.
-    '''
+    """
 
     support_status = support.SupportStatus(version='2014.1')
 
@@ -215,27 +219,21 @@ class StructuredDeploymentGroup(sd.SoftwareDeploymentGroup):
         StructuredDeployment.properties_schema[INPUT_VALUES_VALIDATE],
     }
 
-    def _build_resource_definition(self, include_all=False):
-        p = self.properties
-        return {
-            self.RESOURCE_DEF_TYPE: 'OS::Heat::StructuredDeployment',
-            self.RESOURCE_DEF_PROPERTIES: {
-                self.CONFIG: p[self.CONFIG],
-                self.INPUT_VALUES: p[self.INPUT_VALUES],
-                self.DEPLOY_ACTIONS: p[self.DEPLOY_ACTIONS],
-                self.SIGNAL_TRANSPORT: p[self.SIGNAL_TRANSPORT],
-                self.NAME: p[self.NAME],
-                self.INPUT_KEY: p[self.INPUT_KEY],
-                self.INPUT_VALUES_VALIDATE: p[self.INPUT_VALUES_VALIDATE],
-            }
-        }
+    def build_resource_definition(self, res_name, res_defn):
+        props = copy.deepcopy(res_defn)
+        servers = props.pop(self.SERVERS)
+        props[StructuredDeployment.SERVER] = servers.get(res_name)
+        return rsrc_defn.ResourceDefinition(res_name,
+                                            'OS::Heat::StructuredDeployment',
+                                            props, None)
 
 
 class StructuredDeployments(StructuredDeploymentGroup):
 
-    deprecation_msg = _('This resource is deprecated and use is discouraged. '
-                        'Please use resource '
-                        'OS::Heat:StructuredDeploymentGroup instead.')
+    deprecation_msg = _('The resource OS::Heat::StructuredDeployments is '
+                        'deprecated and usage is discouraged. Please use '
+                        'resource OS::Heat::StructuredDeploymentGroup '
+                        'instead.')
     support_status = support.SupportStatus(status=support.DEPRECATED,
                                            message=deprecation_msg,
                                            version='2014.2')

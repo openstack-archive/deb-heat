@@ -27,6 +27,7 @@ from heat.engine.clients import progress
 from heat.engine import constraints
 from heat.engine import function
 from heat.engine import properties
+from heat.engine.resources.openstack.neutron import port as neutron_port
 from heat.engine.resources.openstack.neutron import subnet
 from heat.engine.resources.openstack.nova import server_network_mixin
 from heat.engine.resources import scheduler_hints as sh
@@ -96,10 +97,10 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
 
     _NETWORK_KEYS = (
         NETWORK_UUID, NETWORK_ID, NETWORK_FIXED_IP, NETWORK_PORT,
-        NETWORK_SUBNET
+        NETWORK_SUBNET, NETWORK_PORT_EXTRA
     ) = (
         'uuid', 'network', 'fixed_ip', 'port',
-        'subnet'
+        'subnet', 'port_extra_properties'
     )
 
     _SOFTWARE_CONFIG_FORMATS = (
@@ -121,6 +122,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         'name', 'addresses', 'networks', 'first_address',
         'instance_name', 'accessIPv4', 'accessIPv6', 'console_urls',
     )
+
     properties_schema = {
         NAME: properties.Schema(
             properties.Schema.STRING,
@@ -364,6 +366,14 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                             constraints.CustomConstraint('neutron.port')
                         ]
                     ),
+                    NETWORK_PORT_EXTRA: properties.Schema(
+                        properties.Schema.MAP,
+                        _('Dict, which has expand properties for port. '
+                          'Used only if port property is not specified '
+                          'for creating port.'),
+                        schema=neutron_port.Port.extra_properties_schema,
+                        support_status=support.SupportStatus(version='6.0.0')
+                    ),
                     NETWORK_SUBNET: properties.Schema(
                         properties.Schema.STRING,
                         _('Subnet in which to allocate the IP address for '
@@ -415,6 +425,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
               'create a dedicated zaqar queue and post the metadata '
               'for polling.'),
             default=cfg.CONF.default_software_config_transport,
+            update_allowed=True,
             constraints=[
                 constraints.AllowedValues(_SOFTWARE_CONFIG_TRANSPORTS),
             ]
@@ -527,9 +538,9 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
 
     entity = 'servers'
 
-    def translation_rules(self):
+    def translation_rules(self, props):
         return [properties.TranslationRule(
-            self.properties,
+            props,
             properties.TranslationRule.REPLACE,
             source_path=[self.NETWORKS, self.NETWORK_ID],
             value_name=self.NETWORK_UUID)]
@@ -550,18 +561,29 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         # This method is overridden by the derived CloudServer resource
         return self.properties[self.CONFIG_DRIVE]
 
-    def _populate_deployments_metadata(self, meta):
+    def _populate_deployments_metadata(self, meta, props):
         meta['deployments'] = meta.get('deployments', [])
         meta['os-collect-config'] = meta.get('os-collect-config', {})
-        if self.transport_poll_server_heat():
-            meta['os-collect-config'].update({'heat': {
+        occ = meta['os-collect-config']
+        # set existing values to None to override any boot-time config
+        occ_keys = ('heat', 'zaqar', 'cfn', 'request')
+        for occ_key in occ_keys:
+            if occ_key not in occ:
+                continue
+            existing = occ[occ_key]
+            for k in existing:
+                existing[k] = None
+
+        if self.transport_poll_server_heat(props):
+            occ.update({'heat': {
                 'user_id': self._get_user_id(),
                 'password': self.password,
                 'auth_url': self.context.auth_url,
                 'project_id': self.stack.stack_user_project_id,
                 'stack_id': self.stack.identifier().stack_path(),
                 'resource_name': self.name}})
-        if self.transport_zaqar_message():
+
+        elif self.transport_zaqar_message(props):
             queue_id = self.physical_resource_name()
             self.data_set('metadata_queue_id', queue_id)
             zaqar_plugin = self.client_plugin('zaqar')
@@ -569,22 +591,26 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                 self.stack.stack_user_project_id)
             queue = zaqar.queue(queue_id)
             queue.post({'body': meta, 'ttl': zaqar_plugin.DEFAULT_TTL})
-            meta['os-collect-config'].update({'zaqar': {
+            occ.update({'zaqar': {
                 'user_id': self._get_user_id(),
                 'password': self.password,
                 'auth_url': self.context.auth_url,
                 'project_id': self.stack.stack_user_project_id,
                 'queue_id': queue_id}})
-        elif self.transport_poll_server_cfn():
-            meta['os-collect-config'].update({'cfn': {
+
+        elif self.transport_poll_server_cfn(props):
+            occ.update({'cfn': {
                 'metadata_url': '%s/v1/' % cfg.CONF.heat_metadata_server_url,
                 'access_key_id': self.access_key,
                 'secret_access_key': self.secret_key,
                 'stack_name': self.stack.name,
                 'path': '%s.Metadata' % self.name}})
-        elif self.transport_poll_temp_url():
+
+        elif self.transport_poll_temp_url(props):
             container = self.physical_resource_name()
-            object_name = str(uuid.uuid4())
+            object_name = self.data().get('metadata_object_name')
+            if not object_name:
+                object_name = str(uuid.uuid4())
 
             self.client('swift').put_container(container)
 
@@ -595,33 +621,32 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
             self.data_set('metadata_put_url', put_url)
             self.data_set('metadata_object_name', object_name)
 
-            meta['os-collect-config'].update({'request': {
+            occ.update({'request': {
                 'metadata_url': url}})
             self.client('swift').put_object(
                 container, object_name, jsonutils.dumps(meta))
+
         self.metadata_set(meta)
 
     def _register_access_key(self):
-        '''
-        Access is limited to this resource, which created the keypair
-        '''
+        """Access is limited to this resource, which created the keypair."""
         def access_allowed(resource_name):
             return resource_name == self.name
 
-        if self.transport_poll_server_cfn():
+        if self.access_key is not None:
             self.stack.register_access_allowed_handler(
                 self.access_key, access_allowed)
-        elif self.transport_poll_server_heat():
+        if self._get_user_id() is not None:
             self.stack.register_access_allowed_handler(
                 self._get_user_id(), access_allowed)
 
-    def _create_transport_credentials(self):
-        if self.transport_poll_server_cfn():
+    def _create_transport_credentials(self, props):
+        if self.transport_poll_server_cfn(props):
             self._create_user()
             self._create_keypair()
 
-        elif (self.transport_poll_server_heat() or
-              self.transport_zaqar_message()):
+        elif (self.transport_poll_server_heat(props) or
+              self.transport_zaqar_message(props)):
             self.password = uuid.uuid4().hex
             self._create_user()
 
@@ -653,20 +678,20 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         return self.properties[
             self.USER_DATA_FORMAT] == self.SOFTWARE_CONFIG
 
-    def transport_poll_server_cfn(self):
-        return self.properties[
+    def transport_poll_server_cfn(self, props):
+        return props[
             self.SOFTWARE_CONFIG_TRANSPORT] == self.POLL_SERVER_CFN
 
-    def transport_poll_server_heat(self):
-        return self.properties[
+    def transport_poll_server_heat(self, props):
+        return props[
             self.SOFTWARE_CONFIG_TRANSPORT] == self.POLL_SERVER_HEAT
 
-    def transport_poll_temp_url(self):
-        return self.properties[
+    def transport_poll_temp_url(self, props):
+        return props[
             self.SOFTWARE_CONFIG_TRANSPORT] == self.POLL_TEMP_URL
 
-    def transport_zaqar_message(self):
-        return self.properties.get(
+    def transport_zaqar_message(self, props):
+        return props.get(
             self.SOFTWARE_CONFIG_TRANSPORT) == self.ZAQAR_MESSAGE
 
     def get_software_config(self, ud_content):
@@ -691,8 +716,8 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         metadata = self.metadata_get(True) or {}
 
         if self.user_data_software_config():
-            self._create_transport_credentials()
-            self._populate_deployments_metadata(metadata)
+            self._create_transport_credentials(self.properties)
+            self._populate_deployments_metadata(metadata, self.properties)
 
         userdata = self.client_plugin().build_userdata(
             metadata,
@@ -887,7 +912,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         for key in list(nets.keys()):
             try:
                 net_id = self.client_plugin().get_net_id_by_label(key)
-            except (exception.NovaNetworkNotFound,
+            except (exception.EntityNotFound,
                     exception.PhysicalResourceNameAmbiguity):
                 net_id = None
             if net_id:
@@ -937,8 +962,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                     # assigned to the subnet as well and could have been
                     # created by this stack. Regardless, the server should
                     # still wait on the subnet.
-                    net_id = (net.get(self.NETWORK_ID) or
-                              net.get(self.NETWORK_UUID))
+                    net_id = net.get(self.NETWORK_ID)
                     if net_id and net_id == subnet_net:
                         deps += (self, res)
                         break
@@ -1071,13 +1095,43 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         if self.NETWORKS in prop_diff:
             updaters.extend(self._update_networks(server, prop_diff))
 
+        if self.SOFTWARE_CONFIG_TRANSPORT in prop_diff:
+            self._update_software_config_transport(prop_diff)
+
         # NOTE(pas-ha) optimization is possible (starting first task
         # right away), but we'd rather not, as this method already might
         # have called several APIs
         return updaters
 
+    def _update_software_config_transport(self, prop_diff):
+        if not self.user_data_software_config():
+            return
+        try:
+            metadata = self.metadata_get(True) or {}
+            self._create_transport_credentials(prop_diff)
+            self._populate_deployments_metadata(metadata, prop_diff)
+            # push new metadata to all sources by creating a dummy
+            # deployment
+            sc = self.rpc_client().create_software_config(
+                self.context, 'ignored', 'ignored', '')
+            sd = self.rpc_client().create_software_deployment(
+                self.context, self.resource_id, sc['id'])
+            self.rpc_client().delete_software_deployment(
+                self.context, sd['id'])
+            self.rpc_client().delete_software_config(
+                self.context, sc['id'])
+        except Exception as e:
+            # Updating the software config transport is on a best-effort
+            # basis as any raised exception here would result in the resource
+            # going into an ERROR state, which will be replaced on the next
+            # stack update. This is not desirable for a server. The old
+            # transport will continue to work, and the new transport may work
+            # despite exceptions in the above block.
+            LOG.error("Error while updating software config transport")
+            LOG.exception(e)
+
     def check_update_complete(self, updaters):
-        '''Push all updaters to completion in list order.'''
+        """Push all updaters to completion in list order."""
         for prg in updaters:
             if not prg.called:
                 handler = getattr(self.client_plugin(), prg.handler)
@@ -1095,9 +1149,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         return status
 
     def metadata_update(self, new_metadata=None):
-        '''
-        Refresh the metadata if new_metadata is None
-        '''
+        """Refresh the metadata if new_metadata is None."""
         if new_metadata is None:
             # Re-resolve the template metadata and merge it with the
             # current resource metadata.  This is necessary because the
@@ -1111,10 +1163,10 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
 
     @staticmethod
     def _check_maximum(count, maximum, msg):
-        '''
-        Check a count against a maximum, unless maximum is -1 which indicates
-        that there is no limit
-        '''
+        """Check a count against a maximum.
+
+        Unless maximum is -1 which indicates that there is no limit.
+        """
         if maximum != -1 and count > maximum:
             raise exception.StackValidationFailed(message=msg)
 
@@ -1243,15 +1295,13 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         object_name = self.data().get('metadata_object_name')
         if not object_name:
             return
-        try:
+        with self.client_plugin('swift').ignore_not_found:
             container = self.physical_resource_name()
             swift = self.client('swift')
             swift.delete_object(container, object_name)
             headers = swift.head_container(container)
             if int(headers['x-container-object-count']) == 0:
                 swift.delete_container(container)
-        except Exception as ex:
-            self.client_plugin('swift').ignore_not_found(ex)
 
     def _delete_queue(self):
         queue_id = self.data().get('metadata_queue_id')
@@ -1260,25 +1310,11 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         client_plugin = self.client_plugin('zaqar')
         zaqar = client_plugin.create_for_tenant(
             self.stack.stack_user_project_id)
-        try:
+        with client_plugin.ignore_not_found:
             zaqar.queue(queue_id).delete()
-        except Exception as ex:
-            client_plugin.ignore_not_found(ex)
         self.data_delete('metadata_queue_id')
 
-    def handle_snapshot_delete(self, state):
-        if state[0] != self.FAILED:
-            image_id = self.client().servers.create_image(
-                self.resource_id, self.physical_resource_name())
-            return progress.ServerDeleteProgress(
-                self.resource_id, image_id, False)
-        return self.handle_delete()
-
-    def handle_delete(self):
-
-        if self.resource_id is None:
-            return
-
+    def _delete(self):
         if self.user_data_software_config():
             self._delete_user()
             self._delete_temp_url()
@@ -1295,6 +1331,23 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
             return
         return progress.ServerDeleteProgress(self.resource_id)
 
+    def handle_snapshot_delete(self, state):
+        if self.resource_id is None:
+            return
+
+        if state[1] != self.FAILED:
+            image_id = self.client().servers.create_image(
+                self.resource_id, self.physical_resource_name())
+            return progress.ServerDeleteProgress(
+                self.resource_id, image_id, False)
+        return self._delete()
+
+    def handle_delete(self):
+        if self.resource_id is None:
+            return
+
+        return self._delete()
+
     def check_delete_complete(self, prg):
         if not prg:
             return True
@@ -1305,7 +1358,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                 raise exception.Error(image.status)
             elif image.status == 'ACTIVE':
                 prg.image_complete = True
-                if not self.handle_delete():
+                if not self._delete():
                     return True
             return False
 
@@ -1313,11 +1366,12 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
             prg.server_id)
 
     def handle_suspend(self):
-        '''
-        Suspend a server - note we do not wait for the SUSPENDED state,
-        this is polled for by check_suspend_complete in a similar way to the
-        create logic so we can take advantage of coroutines
-        '''
+        """Suspend a server.
+
+        Note we do not wait for the SUSPENDED state, this is polled for by
+        check_suspend_complete in a similar way to the create logic so we can
+        take advantage of coroutines.
+        """
         if self.resource_id is None:
             raise exception.Error(_('Cannot suspend %s, resource_id not set') %
                                   self.name)
@@ -1355,11 +1409,12 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
             raise exc
 
     def handle_resume(self):
-        '''
-        Resume a server - note we do not wait for the ACTIVE state,
-        this is polled for by check_resume_complete in a similar way to the
-        create logic so we can take advantage of coroutines
-        '''
+        """Resume a server.
+
+        Note we do not wait for the ACTIVE state, this is polled for by
+        check_resume_complete in a similar way to the create logic so we can
+        take advantage of coroutines.
+        """
         if self.resource_id is None:
             raise exception.Error(_('Cannot resume %s, resource_id not set') %
                                   self.name)
@@ -1400,10 +1455,8 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
 
     def handle_delete_snapshot(self, snapshot):
         image_id = snapshot['resource_data'].get('snapshot_image_id')
-        try:
+        with self.client_plugin().ignore_not_found:
             self.client().images.delete(image_id)
-        except Exception as e:
-            self.client_plugin().ignore_not_found(e)
 
     def handle_restore(self, defn, restore_data):
         image_id = restore_data['resource_data']['snapshot_image_id']
@@ -1414,8 +1467,8 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
     def prepare_for_replace(self):
         self.prepare_ports_for_replace()
 
-    def restore_after_rollback(self):
-        self.restore_ports_after_rollback()
+    def restore_prev_rsrc(self, convergence=False):
+        self.restore_ports_after_rollback(convergence=convergence)
 
 
 def resource_mapping():

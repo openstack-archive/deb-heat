@@ -38,10 +38,11 @@ LOG = logging.getLogger(__name__)
 
 
 class StackResource(resource.Resource):
-    '''
+    """Allows entire stack to be managed as a resource in a parent stack.
+
     An abstract Resource subclass that allows the management of an entire Stack
     as a resource in a parent stack.
-    '''
+    """
 
     # Assume True as this is evaluated before the stack is created
     # so there is no way to know for sure without subclass-specific
@@ -115,7 +116,7 @@ class StackResource(resource.Resource):
                     self.resource_id)
                 self.rpc_client().stack_cancel_update(
                     self.context,
-                    stack_identity,
+                    dict(stack_identity),
                     cancel_with_rollback=False)
 
     def has_nested(self):
@@ -125,13 +126,14 @@ class StackResource(resource.Resource):
         return False
 
     def nested(self, force_reload=False, show_deleted=False):
-        '''Return a Stack object representing the nested (child) stack.
-        if we catch NotFound exception when loading, return None.
+        """Return a Stack object representing the nested (child) stack.
+
+        If we catch NotFound exception when loading, return None.
 
         :param force_reload: Forces reloading from the DB instead of returning
                              the locally cached Stack object
         :param show_deleted: Returns the stack even if it's been deleted
-        '''
+        """
         if force_reload:
             self._nested = None
 
@@ -147,26 +149,23 @@ class StackResource(resource.Resource):
         return self._nested
 
     def child_template(self):
-        '''
-        Default implementation to get the child template.
+        """Default implementation to get the child template.
 
         Resources that inherit from StackResource should override this method
         with specific details about the template used by them.
-        '''
+        """
         raise NotImplementedError()
 
     def child_params(self):
-        '''
-        Default implementation to get the child params.
+        """Default implementation to get the child params.
 
         Resources that inherit from StackResource should override this method
         with specific details about the parameters used by them.
-        '''
+        """
         raise NotImplementedError()
 
     def preview(self):
-        '''
-        Preview a StackResource as resources within a Stack.
+        """Preview a StackResource as resources within a Stack.
 
         This method overrides the original Resource.preview to return a preview
         of all the resources contained in this Stack.  For this to be possible,
@@ -174,7 +173,7 @@ class StackResource(resource.Resource):
         ``child_params`` with specific information to allow the stack to be
         parsed correctly. If any of these methods is missing, the entire
         StackResource will be returned as if it were a regular Resource.
-        '''
+        """
         try:
             child_template = self.child_template()
             params = self.child_params()
@@ -284,7 +283,10 @@ class StackResource(resource.Resource):
             if 'environment' not in adopt_data:
                 adopt_data['environment'] = child_env.user_env_as_dict()
             if 'template' not in adopt_data:
-                adopt_data['template'] = child_template
+                if isinstance(child_template, template.Template):
+                    adopt_data['template'] = child_template.t
+                else:
+                    adopt_data['template'] = child_template
             adopt_data_str = json.dumps(adopt_data)
 
         args = {rpc_api.PARAM_TIMEOUT: timeout_mins,
@@ -390,19 +392,15 @@ class StackResource(resource.Resource):
             # if the create failed for some reason and the nested
             # stack was not created, we need to create an empty stack
             # here so that the update will work.
-            def _check_for_completion(creator_fn):
-                while not self.check_create_complete(creator_fn):
+            def _check_for_completion():
+                while not self.check_create_complete():
                     yield
 
             empty_temp = template_format.parse(
                 "heat_template_version: '2013-05-23'")
-            stack_creator = self.create_with_template(empty_temp, {})
-            checker = scheduler.TaskRunner(_check_for_completion,
-                                           stack_creator)
+            self.create_with_template(empty_temp, {})
+            checker = scheduler.TaskRunner(_check_for_completion)
             checker(timeout=self.stack.timeout_secs())
-
-            if stack_creator is not None:
-                stack_creator.run_to_completion()
             nested_stack = self.nested()
 
         if timeout_mins is None:
@@ -427,7 +425,7 @@ class StackResource(resource.Resource):
         try:
             self.rpc_client().update_stack(
                 self.context,
-                nested_stack.identifier(),
+                dict(nested_stack.identifier()),
                 parsed_template.t,
                 child_env.user_env_as_dict(),
                 parsed_template.files,
@@ -442,14 +440,12 @@ class StackResource(resource.Resource):
                                            cookie=cookie)
 
     def delete_nested(self):
-        '''
-        Delete the nested stack.
-        '''
+        """Delete the nested stack."""
         stack = self.nested()
         if stack is None:
             return
 
-        stack_identity = stack.identifier()
+        stack_identity = dict(stack.identifier())
 
         try:
             self.rpc_client().delete_stack(self.context, stack_identity)
@@ -472,7 +468,7 @@ class StackResource(resource.Resource):
             self.context.tenant_id,
             self.physical_resource_name(),
             self.resource_id)
-        self.rpc_client().stack_suspend(self.context, stack_identity)
+        self.rpc_client().stack_suspend(self.context, dict(stack_identity))
 
     def check_suspend_complete(self, cookie=None):
         return self._check_status_complete(resource.Resource.SUSPEND)
@@ -486,7 +482,7 @@ class StackResource(resource.Resource):
             self.context.tenant_id,
             self.physical_resource_name(),
             self.resource_id)
-        self.rpc_client().stack_resume(self.context, stack_identity)
+        self.rpc_client().stack_resume(self.context, dict(stack_identity))
 
     def check_resume_complete(self, cookie=None):
         return self._check_status_complete(resource.Resource.RESUME)
@@ -501,12 +497,13 @@ class StackResource(resource.Resource):
             self.context.tenant_id,
             self.physical_resource_name(),
             self.resource_id)
-        self.rpc_client().stack_check(self.context, stack_identity)
+        self.rpc_client().stack_check(self.context, dict(stack_identity))
 
     def check_check_complete(self, cookie=None):
         return self._check_status_complete(resource.Resource.CHECK)
 
     def prepare_abandon(self):
+        self.abandon_in_progress = True
         nested_stack = self.nested()
         if nested_stack:
             return self.nested().prepare_abandon()
@@ -514,12 +511,11 @@ class StackResource(resource.Resource):
         return {}
 
     def get_output(self, op):
-        '''
-        Return the specified Output value from the nested stack.
+        """Return the specified Output value from the nested stack.
 
         If the output key does not exist, raise an InvalidTemplateAttribute
         exception.
-        '''
+        """
         stack = self.nested()
         if stack is None:
             return None

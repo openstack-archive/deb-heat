@@ -135,10 +135,10 @@ class StackUpdate(object):
     @scheduler.wrappertask
     def _process_new_resource_update(self, new_res):
         res_name = new_res.name
-        res_type = new_res.type()
+        res_class = new_res.resource_class()
 
         if (res_name in self.existing_stack and
-                res_type == self.existing_stack[res_name].type()):
+                self.existing_stack[res_name].resource_class() is res_class):
             existing_res = self.existing_stack[res_name]
             try:
                 yield self._update_in_place(existing_res,
@@ -196,10 +196,11 @@ class StackUpdate(object):
             self.existing_stack.remove_resource(res_name)
 
     def dependencies(self):
-        """Return a Dependencies object.
+        """Return the Dependencies graph for the update.
 
-        Dependencies object representing the dependencies between update
-        operations to move from an existing stack definition to a new one.
+        Returns a Dependencies object representing the dependencies between
+        update operations to move from an existing stack definition to a new
+        one.
         """
         existing_deps = self.existing_stack.dependencies
         new_deps = self.new_stack.dependencies

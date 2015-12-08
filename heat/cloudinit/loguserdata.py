@@ -42,7 +42,7 @@ def chk_ci_version():
         raise Exception()
     # data[1] has such format: 'cloud-init 0.7.5\n', need to parse version
     v = re.split(' |\n', data[1])[1].split('.')
-    return tuple(v) >= tuple('0', '6', '0')
+    return tuple(v) >= tuple(['0', '6', '0'])
 
 
 def init_logging():
@@ -116,8 +116,5 @@ if __name__ == '__main__':
 
     provision_log = os.path.join(VAR_PATH, 'provision-finished')
     # touch the file so it is timestamped with when finished
-    pl = open(provision_log, 'a')
-    try:
+    with open(provision_log, 'a'):
         os.utime(provision_log, None)
-    finally:
-        pl.close()

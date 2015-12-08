@@ -11,8 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""
-A fake server that "responds" to API methods with pre-canned responses.
+"""A fake server that "responds" to API methods with pre-canned responses.
 
 All of these responses come from the spec, so if for some reason the spec's
 wrong the tests might raise AssertionError. I've indicated in comments the
@@ -28,9 +27,7 @@ from heat.common import context
 class FakeClient(object):
 
     def assert_called(self, method, url, body=None, pos=-1):
-        """
-        Assert than an API method was just called.
-        """
+        """Assert that an API method was just called."""
         expected = (method, url)
         called = self.client.callstack[pos][0:2]
 
@@ -44,9 +41,7 @@ class FakeClient(object):
             assert self.client.callstack[pos][2] == body
 
     def assert_called_anytime(self, method, url, body=None):
-        """
-        Assert than an API method was called anytime in the test.
-        """
+        """Assert that an API method was called anytime in the test."""
         expected = (method, url)
 
         assert self.client.callstack, ("Expected %s %s but no calls "
@@ -99,7 +94,7 @@ class FakeKeystoneClient(object):
     def __init__(self, username='test_username', password='password',
                  user_id='1234', access='4567', secret='8901',
                  credential_id='abcdxyz', auth_token='abcd1234',
-                 context=None):
+                 context=None, stack_domain_id='4321'):
         self.username = username
         self.password = password
         self.user_id = user_id
@@ -110,6 +105,7 @@ class FakeKeystoneClient(object):
         self.token = auth_token
         self.context = context
         self.v3_endpoint = 'http://localhost:5000/v3'
+        self.stack_domain_id = stack_domain_id
 
         class FakeCred(object):
             id = self.credential_id

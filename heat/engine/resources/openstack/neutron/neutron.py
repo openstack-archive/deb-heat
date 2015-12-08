@@ -10,14 +10,10 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-from oslo_utils import uuidutils
 import six
-
-import warnings
 
 from heat.common import exception
 from heat.common.i18n import _
-from heat.engine import properties as properties_module
 from heat.engine import resource
 
 
@@ -26,9 +22,7 @@ class NeutronResource(resource.Resource):
     default_client_name = 'neutron'
 
     def validate(self):
-        '''
-        Validate any of the provided params
-        '''
+        """Validate any of the provided params."""
         res = super(NeutronResource, self).validate()
         if res:
             return res
@@ -36,13 +30,14 @@ class NeutronResource(resource.Resource):
 
     @staticmethod
     def validate_properties(properties):
-        '''
-        Validates to ensure nothing in value_specs overwrites
-        any key that exists in the schema.
+        """Validate properties for the resource.
+
+        Validates to ensure nothing in value_specs overwrites any key that
+        exists in the schema.
 
         Also ensures that shared and tenant_id is not specified
         in value_specs.
-        '''
+        """
         if 'value_specs' in six.iterkeys(properties):
             vs = properties.get('value_specs')
             banned_keys = set(['shared', 'tenant_id']).union(
@@ -51,30 +46,15 @@ class NeutronResource(resource.Resource):
                 return '%s not allowed in value_specs' % k
 
     @staticmethod
-    def _validate_depr_property_required(properties, prop_key, depr_prop_key):
-        if isinstance(properties, properties_module.Properties):
-            prop_value = properties.data.get(prop_key)
-            depr_prop_value = properties.data.get(depr_prop_key)
-        else:
-            prop_value = properties.get(prop_key)
-            depr_prop_value = properties.get(depr_prop_key)
-
-        if prop_value and depr_prop_value:
-            raise exception.ResourcePropertyConflict(prop_key,
-                                                     depr_prop_key)
-        if not prop_value and not depr_prop_value:
-            raise exception.PropertyUnspecifiedError(prop_key,
-                                                     depr_prop_key)
-
-    @staticmethod
     def prepare_properties(properties, name):
-        '''
+        """Prepares the property values for correct Neutron create call.
+
         Prepares the property values so that they can be passed directly to
         the Neutron create call.
 
         Removes None values and value_specs, merges value_specs with the main
         values.
-        '''
+        """
         props = dict((k, v) for k, v in properties.items()
                      if v is not None and k != 'value_specs')
 
@@ -87,13 +67,14 @@ class NeutronResource(resource.Resource):
         return props
 
     def prepare_update_properties(self, definition):
-        '''
+        """Prepares the property values for correct Neutron update call.
+
         Prepares the property values so that they can be passed directly to
         the Neutron update call.
 
         Removes any properties which are not update_allowed, then processes
         as for prepare_properties.
-        '''
+        """
         p = definition.properties(self.properties_schema, self.context)
         update_props = dict((k, v) for k, v in p.items()
                             if p.props.get(k).schema.update_allowed)
@@ -124,45 +105,6 @@ class NeutronResource(resource.Resource):
 
     def get_reference_id(self):
         return six.text_type(self.resource_id)
-
-    @staticmethod
-    def get_secgroup_uuids(security_groups, client, tenant_id):
-        '''
-        Returns a list of security group UUIDs.
-        Args:
-            security_groups: List of security group names or UUIDs
-            client: reference to neutronclient
-            tenant_id: the tenant id to match the security_groups
-        '''
-        warnings.warn('neutron.NeutronResource.get_secgroup_uuids is '
-                      'deprecated. Use '
-                      'self.client_plugin("neutron").get_secgroup_uuids')
-        seclist = []
-        all_groups = None
-        for sg in security_groups:
-            if uuidutils.is_uuid_like(sg):
-                seclist.append(sg)
-            else:
-                if not all_groups:
-                    response = client.list_security_groups()
-                    all_groups = response['security_groups']
-                same_name_groups = [g for g in all_groups if g['name'] == sg]
-                groups = [g['id'] for g in same_name_groups]
-                if len(groups) == 0:
-                    raise exception.PhysicalResourceNotFound(resource_id=sg)
-                elif len(groups) == 1:
-                    seclist.append(groups[0])
-                else:
-                    # for admin roles, can get the other users'
-                    # securityGroups, so we should match the tenant_id with
-                    # the groups, and return the own one
-                    own_groups = [g['id'] for g in same_name_groups
-                                  if g['tenant_id'] == tenant_id]
-                    if len(own_groups) == 1:
-                        seclist.append(own_groups[0])
-                    else:
-                        raise exception.PhysicalResourceNameAmbiguity(name=sg)
-        return seclist
 
     def _not_found_in_call(self, func, *args, **kwargs):
         try:

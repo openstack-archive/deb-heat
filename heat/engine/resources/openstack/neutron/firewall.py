@@ -20,9 +20,9 @@ from heat.engine import support
 
 
 class Firewall(neutron.NeutronResource):
-    """
-    A resource for the Firewall resource in Neutron FWaaS.
-    """
+    """A resource for the Firewall resource in Neutron FWaaS."""
+
+    required_service_extension = 'fwaas'
 
     PROPERTIES = (
         NAME, DESCRIPTION, ADMIN_STATE_UP, FIREWALL_POLICY_ID,
@@ -143,9 +143,9 @@ class Firewall(neutron.NeutronResource):
 
 
 class FirewallPolicy(neutron.NeutronResource):
-    """
-    A resource for the FirewallPolicy resource in Neutron FWaaS.
-    """
+    """A resource for the FirewallPolicy resource in Neutron FWaaS."""
+
+    required_service_extension = 'fwaas'
 
     PROPERTIES = (
         NAME, DESCRIPTION, SHARED, AUDITED, FIREWALL_RULES,
@@ -250,9 +250,9 @@ class FirewallPolicy(neutron.NeutronResource):
 
 
 class FirewallRule(neutron.NeutronResource):
-    """
-    A resource for the FirewallRule resource in Neutron FWaaS.
-    """
+    """A resource for the FirewallRule resource in Neutron FWaaS."""
+
+    required_service_extension = 'fwaas'
 
     PROPERTIES = (
         NAME, DESCRIPTION, SHARED, PROTOCOL, IP_VERSION,

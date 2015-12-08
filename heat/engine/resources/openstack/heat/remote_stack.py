@@ -31,9 +31,9 @@ LOG = logging.getLogger(__name__)
 
 
 class RemoteStack(resource.Resource):
-    """
-    A Resource representing a stack which can be created using specified
-    context.
+    """A Resource representing a stack.
+
+    Stack can be created using specified context.
     """
     default_client_name = 'heat'
 
@@ -173,10 +173,8 @@ class RemoteStack(resource.Resource):
 
     def handle_delete(self):
         if self.resource_id is not None:
-            try:
+            with self.client_plugin().ignore_not_found:
                 self.heat().stacks.delete(stack_id=self.resource_id)
-            except Exception as e:
-                self.client_plugin().ignore_not_found(e)
 
     def handle_resume(self):
         if self.resource_id is None:
@@ -300,7 +298,7 @@ class RemoteStack(resource.Resource):
             return dict((output['output_key'], output['output_value'])
                         for output in outputs)
 
-    def FnGetRefId(self):
+    def get_reference_id(self):
         return self.resource_id
 
 

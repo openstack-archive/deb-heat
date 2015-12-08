@@ -30,9 +30,9 @@ class KeystoneEndpoint(resource.Resource):
     entity = 'endpoints'
 
     PROPERTIES = (
-        NAME, REGION, SERVICE, INTERFACE, SERVICE_URL
+        NAME, REGION, SERVICE, INTERFACE, SERVICE_URL, ENABLED,
     ) = (
-        'name', 'region', 'service', 'interface', 'url'
+        'name', 'region', 'service', 'interface', 'url', 'enabled',
     )
 
     properties_schema = {
@@ -44,7 +44,8 @@ class KeystoneEndpoint(resource.Resource):
         REGION: properties.Schema(
             properties.Schema.STRING,
             _('Name or Id of keystone region.'),
-            update_allowed=True
+            update_allowed=True,
+            constraints=[constraints.CustomConstraint('keystone.region')]
         ),
         SERVICE: properties.Schema(
             properties.Schema.STRING,
@@ -67,76 +68,55 @@ class KeystoneEndpoint(resource.Resource):
             _('URL of keystone service endpoint.'),
             update_allowed=True,
             required=True
+        ),
+        ENABLED: properties.Schema(
+            properties.Schema.BOOLEAN,
+            _('This endpoint is enabled or disabled.'),
+            default=True,
+            update_allowed=True,
+            support_status=support.SupportStatus(version='6.0.0')
         )
     }
 
     def client(self):
         return super(KeystoneEndpoint, self).client().client
 
-    def _create_endpoint(self,
-                         service,
-                         interface,
-                         url,
-                         region=None,
-                         name=None):
-        return self.client().endpoints.create(
-            region=region,
-            service=service,
-            interface=interface,
-            url=url,
-            name=name)
-
-    def _update_endpoint(self,
-                         endpoint_id,
-                         new_region=None,
-                         new_service=None,
-                         new_interface=None,
-                         new_url=None,
-                         new_name=None):
-        return self.client().endpoints.update(
-            endpoint=endpoint_id,
-            region=new_region,
-            service=new_service,
-            interface=new_interface,
-            url=new_url,
-            name=new_name)
-
     def handle_create(self):
-        region = self.properties.get(self.REGION)
-        service = self.properties.get(self.SERVICE)
-        interface = self.properties.get(self.INTERFACE)
-        url = self.properties.get(self.SERVICE_URL)
-        name = (self.properties.get(self.NAME) or
+        region = self.properties[self.REGION]
+        service = self.properties[self.SERVICE]
+        interface = self.properties[self.INTERFACE]
+        url = self.properties[self.SERVICE_URL]
+        name = (self.properties[self.NAME] or
                 self.physical_resource_name())
+        enabled = self.properties[self.ENABLED]
 
-        endpoint = self._create_endpoint(
+        endpoint = self.client().endpoints.create(
             region=region,
             service=service,
             interface=interface,
             url=url,
-            name=name
-        )
+            name=name,
+            enabled=enabled)
 
         self.resource_id_set(endpoint.id)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        region = prop_diff.get(self.REGION)
-        service = prop_diff.get(self.SERVICE)
-        interface = prop_diff.get(self.INTERFACE)
-        url = prop_diff.get(self.SERVICE_URL)
-        name = None
-        if self.NAME in prop_diff:
-            name = (prop_diff.get(self.NAME) or
-                    self.physical_resource_name())
+        if prop_diff:
+            region = prop_diff.get(self.REGION)
+            service = prop_diff.get(self.SERVICE)
+            interface = prop_diff.get(self.INTERFACE)
+            url = prop_diff.get(self.SERVICE_URL)
+            name = prop_diff.get(self.NAME) or self.physical_resource_name()
+            enabled = prop_diff.get(self.ENABLED)
 
-        self._update_endpoint(
-            endpoint_id=self.resource_id,
-            new_region=region,
-            new_interface=interface,
-            new_service=service,
-            new_url=url,
-            new_name=name
-        )
+            self.client().endpoints.update(
+                endpoint=self.resource_id,
+                region=region,
+                service=service,
+                interface=interface,
+                url=url,
+                name=name,
+                enabled=enabled)
 
 
 def resource_mapping():

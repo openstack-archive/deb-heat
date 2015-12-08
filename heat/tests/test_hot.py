@@ -52,6 +52,10 @@ hot_liberty_tpl_empty = template_format.parse('''
 heat_template_version: 2015-10-15
 ''')
 
+hot_mitaka_tpl_empty = template_format.parse('''
+heat_template_version: 2016-04-08
+''')
+
 hot_tpl_empty_sections = template_format.parse('''
 heat_template_version: 2013-05-23
 parameters:
@@ -61,6 +65,13 @@ outputs:
 
 hot_tpl_generic_resource = template_format.parse('''
 heat_template_version: 2013-05-23
+resources:
+  resource1:
+    type: GenericResourceType
+''')
+
+hot_tpl_generic_resource_20141016 = template_format.parse('''
+heat_template_version: 2014-10-16
 resources:
   resource1:
     type: GenericResourceType
@@ -82,6 +93,13 @@ resources:
 
 hot_tpl_complex_attrs = template_format.parse('''
 heat_template_version: 2013-05-23
+resources:
+  resource1:
+    type: ResourceWithComplexAttributesType
+''')
+
+hot_tpl_complex_attrs_20141016 = template_format.parse('''
+heat_template_version: 2014-10-16
 resources:
   resource1:
     type: ResourceWithComplexAttributesType
@@ -478,6 +496,17 @@ class HOTemplateTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test_stack', tmpl)
         snippet = {'list_join': ["\n", {'get_attr': ['rg', 'name']}]}
         self.assertEqual('', self.resolve(snippet, tmpl, stack))
+        # test list_join for liberty template
+        hot_tpl['heat_template_version'] = '2015-10-15'
+        tmpl = template.Template(hot_tpl)
+        stack = parser.Stack(utils.dummy_context(), 'test_stack', tmpl)
+        snippet = {'list_join': ["\n", {'get_attr': ['rg', 'name']}]}
+        self.assertEqual('', self.resolve(snippet, tmpl, stack))
+        # test list join again and update to multiple lists
+        snippet = {'list_join': ["\n",
+                                 {'get_attr': ['rg', 'name']},
+                                 {'get_attr': ['rg', 'name']}]}
+        self.assertEqual('', self.resolve(snippet, tmpl, stack))
 
     def test_str_replace(self):
         """Test str_replace function."""
@@ -533,8 +562,7 @@ class HOTemplateTest(common.HeatTestCase):
         self.assertEqual(snippet_resolved, self.resolve(snippet, tmpl))
 
     def test_str_replace_syntax(self):
-        """
-        Test str_replace function syntax.
+        """Test str_replace function syntax.
 
         Pass wrong syntax (array instead of dictionary) to function and
         validate that we get a TypeError.
@@ -548,8 +576,7 @@ class HOTemplateTest(common.HeatTestCase):
         self.assertRaises(TypeError, self.resolve, snippet, tmpl)
 
     def test_str_replace_invalid_param_keys(self):
-        """
-        Test str_replace function parameter keys.
+        """Test str_replace function parameter keys.
 
         Pass wrong parameters to function and verify that we get
         a KeyError.
@@ -568,8 +595,7 @@ class HOTemplateTest(common.HeatTestCase):
         self.assertRaises(KeyError, self.resolve, snippet, tmpl)
 
     def test_str_replace_invalid_param_types(self):
-        """
-        Test str_replace function parameter values.
+        """Test str_replace function parameter values.
 
         Pass parameter values of wrong type to function and verify that we get
         a TypeError.
@@ -654,25 +680,41 @@ class HOTemplateTest(common.HeatTestCase):
         tmpl = template.Template(hot_liberty_tpl_empty)
         self.assertEqual(snippet_resolved, self.resolve(snippet, tmpl))
 
+    def test_list_join_empty_list(self):
+        snippet = {'list_join': [',', []]}
+        snippet_resolved = ''
+        k_tmpl = template.Template(hot_kilo_tpl_empty)
+        self.assertEqual(snippet_resolved, self.resolve(snippet, k_tmpl))
+        l_tmpl = template.Template(hot_liberty_tpl_empty)
+        self.assertEqual(snippet_resolved, self.resolve(snippet, l_tmpl))
+
     def test_join_json(self):
         snippet = {'list_join': [',', [{'foo': 'json'}, {'foo2': 'json2'}]]}
         snippet_resolved = '{"foo": "json"},{"foo2": "json2"}'
-        tmpl = template.Template(hot_liberty_tpl_empty)
-        self.assertEqual(snippet_resolved, self.resolve(snippet, tmpl))
+        l_tmpl = template.Template(hot_liberty_tpl_empty)
+        self.assertEqual(snippet_resolved, self.resolve(snippet, l_tmpl))
+        # old versions before liberty don't support to join json
+        k_tmpl = template.Template(hot_kilo_tpl_empty)
+        exc = self.assertRaises(TypeError, self.resolve, snippet, k_tmpl)
+        self.assertEqual("Items to join must be strings not {'foo': 'json'}",
+                         six.text_type(exc))
 
-    def test_join_type_fail(self):
+    def test_join_object_type_fail(self):
         not_serializable = object
         snippet = {'list_join': [',', [not_serializable]]}
-        tmpl = template.Template(hot_liberty_tpl_empty)
-        exc = self.assertRaises(TypeError, self.resolve, snippet, tmpl)
+        l_tmpl = template.Template(hot_liberty_tpl_empty)
+        exc = self.assertRaises(TypeError, self.resolve, snippet, l_tmpl)
         self.assertIn('Items to join must be string, map or list not',
                       six.text_type(exc))
+        k_tmpl = template.Template(hot_kilo_tpl_empty)
+        exc = self.assertRaises(TypeError, self.resolve, snippet, k_tmpl)
+        self.assertIn("Items to join must be strings", six.text_type(exc))
 
     def test_join_json_fail(self):
         not_serializable = object
         snippet = {'list_join': [',', [{'foo': not_serializable}]]}
-        tmpl = template.Template(hot_liberty_tpl_empty)
-        exc = self.assertRaises(TypeError, self.resolve, snippet, tmpl)
+        l_tmpl = template.Template(hot_liberty_tpl_empty)
+        exc = self.assertRaises(TypeError, self.resolve, snippet, l_tmpl)
         self.assertIn('Items to join must be string, map or list',
                       six.text_type(exc))
         self.assertIn("failed json serialization",
@@ -680,22 +722,68 @@ class HOTemplateTest(common.HeatTestCase):
 
     def test_join_invalid(self):
         snippet = {'list_join': 'bad'}
-        tmpl = template.Template(hot_liberty_tpl_empty)
-        exc = self.assertRaises(TypeError, self.resolve, snippet, tmpl)
+        l_tmpl = template.Template(hot_liberty_tpl_empty)
+        exc = self.assertRaises(TypeError, self.resolve, snippet, l_tmpl)
         self.assertIn('Incorrect arguments', six.text_type(exc))
+
+        k_tmpl = template.Template(hot_kilo_tpl_empty)
+        exc1 = self.assertRaises(TypeError, self.resolve, snippet, k_tmpl)
+        self.assertIn('Incorrect arguments', six.text_type(exc1))
+
+    def test_join_int_invalid(self):
+        snippet = {'list_join': 5}
+        l_tmpl = template.Template(hot_liberty_tpl_empty)
+        exc = self.assertRaises(TypeError, self.resolve, snippet, l_tmpl)
+        self.assertIn('Incorrect arguments', six.text_type(exc))
+
+        k_tmpl = template.Template(hot_kilo_tpl_empty)
+        exc1 = self.assertRaises(TypeError, self.resolve, snippet, k_tmpl)
+        self.assertIn('Incorrect arguments', six.text_type(exc1))
 
     def test_join_invalid_value(self):
         snippet = {'list_join': [',']}
-        tmpl = template.Template(hot_liberty_tpl_empty)
-
-        exc = self.assertRaises(ValueError, self.resolve, snippet, tmpl)
+        l_tmpl = template.Template(hot_liberty_tpl_empty)
+        exc = self.assertRaises(ValueError, self.resolve, snippet, l_tmpl)
         self.assertIn('Incorrect arguments', six.text_type(exc))
+
+        k_tmpl = template.Template(hot_kilo_tpl_empty)
+        exc1 = self.assertRaises(ValueError, self.resolve, snippet, k_tmpl)
+        self.assertIn('Incorrect arguments', six.text_type(exc1))
 
     def test_join_invalid_multiple(self):
         snippet = {'list_join': [',', 'bad', ['foo']]}
         tmpl = template.Template(hot_liberty_tpl_empty)
         exc = self.assertRaises(TypeError, self.resolve, snippet, tmpl)
+        self.assertIn('must operate on a list', six.text_type(exc))
+
+    def test_merge(self):
+        snippet = {'map_merge': [{'f1': 'b1', 'f2': 'b2'}, {'f1': 'b2'}]}
+        tmpl = template.Template(hot_mitaka_tpl_empty)
+        resolved = self.resolve(snippet, tmpl)
+        self.assertEqual('b2', resolved['f1'])
+        self.assertEqual('b2', resolved['f2'])
+
+    def test_merge_none(self):
+        snippet = {'map_merge': [{'f1': 'b1', 'f2': 'b2'}, None]}
+        tmpl = template.Template(hot_mitaka_tpl_empty)
+        resolved = self.resolve(snippet, tmpl)
+        self.assertEqual('b1', resolved['f1'])
+        self.assertEqual('b2', resolved['f2'])
+
+    def test_merge_invalid(self):
+        snippet = {'map_merge': [{'f1': 'b1', 'f2': 'b2'}, ['f1', 'b2']]}
+        tmpl = template.Template(hot_mitaka_tpl_empty)
+        exc = self.assertRaises(TypeError, self.resolve, snippet, tmpl)
         self.assertIn('Incorrect arguments', six.text_type(exc))
+
+    def test_merge_containing_repeat(self):
+        snippet = {'map_merge': {'repeat': {'template': {'ROLE': 'ROLE'},
+                   'for_each': {'ROLE': ['role1', 'role2']}}}}
+        tmpl = template.Template(hot_mitaka_tpl_empty)
+        resolved = self.resolve(snippet, tmpl)
+
+        self.assertEqual('role1', resolved['role1'])
+        self.assertEqual('role2', resolved['role2'])
 
     def test_repeat(self):
         """Test repeat function."""
@@ -755,9 +843,10 @@ class HOTemplateTest(common.HeatTestCase):
             self.assertIn(item, snippet_resolved)
 
     def test_repeat_bad_args(self):
-        """
-        Test that the repeat function reports a proper error when missing
-        or invalid arguments.
+        """Tests reporting error by repeat function.
+
+        Test that the repeat function reports a proper error when missing or
+        invalid arguments.
         """
         tmpl = template.Template(hot_kilo_tpl_empty)
 
@@ -871,7 +960,8 @@ class HOTemplateTest(common.HeatTestCase):
                       six.text_type(exc))
 
     def test_prevent_parameters_access(self):
-        """
+        """Check parameters section inaccessible using the template as a dict.
+
         Test that the parameters section can't be accessed using the template
         as a dictionary.
         """
@@ -898,7 +988,8 @@ class HOTemplateTest(common.HeatTestCase):
         self.assertIn(err_str, six.text_type(keyError))
 
     def test_parameters_section_not_iterable(self):
-        """
+        """Check parameters section is not returned using the template as iter.
+
         Test that the parameters section is not returned when the template is
         used as an iterable.
         """
@@ -912,8 +1003,7 @@ class HOTemplateTest(common.HeatTestCase):
         self.assertNotIn('parameters', six.iterkeys(tmpl))
 
     def test_invalid_hot_version(self):
-        """
-        Test HOT version check.
+        """Test HOT version check.
 
         Pass an invalid HOT version to template.Template.__new__() and
         validate that we get a ValueError.
@@ -925,8 +1015,7 @@ class HOTemplateTest(common.HeatTestCase):
                           template.Template, hot_tmpl)
 
     def test_valid_hot_version(self):
-        """
-        Test HOT version check.
+        """Test HOT version check.
 
         Pass a valid HOT version to template.Template.__new__() and
         validate that we get back a parsed template.
@@ -1283,9 +1372,8 @@ class HotStackTest(common.HeatTestCase):
 
 
 class StackAttributesTest(common.HeatTestCase):
-    """
-    Test stack get_attr function when stack was created from HOT template.
-    """
+    """Test get_attr function when stack was created from HOT template."""
+
     def setUp(self):
         super(StackAttributesTest, self).setUp()
 
@@ -1294,6 +1382,7 @@ class StackAttributesTest(common.HeatTestCase):
         self.m.ReplayAll()
 
     scenarios = [
+        # for hot template 2013-05-23, get_attr: hot_funcs.GetAttThenSelect
         ('get_flat_attr',
          dict(hot_tpl=hot_tpl_generic_resource,
               snippet={'Value': {'get_attr': ['resource1', 'foo']}},
@@ -1344,6 +1433,59 @@ class StackAttributesTest(common.HeatTestCase):
                                               'none',
                                               'who_cares']}},
               resource_name='resource1',
+              expected={'Value': None})),
+        # for hot template version 2014-10-16 and 2015-04-30,
+        # get_attr: hot_funcs.GetAtt
+        ('get_flat_attr',
+         dict(hot_tpl=hot_tpl_generic_resource_20141016,
+              snippet={'Value': {'get_attr': ['resource1', 'foo']}},
+              resource_name='resource1',
+              expected={'Value': 'resource1'})),
+        ('get_list_attr',
+         dict(hot_tpl=hot_tpl_complex_attrs_20141016,
+              snippet={'Value': {'get_attr': ['resource1', 'list', 0]}},
+              resource_name='resource1',
+              expected={
+                  'Value':
+                  generic_rsrc.ResourceWithComplexAttributes.list[0]})),
+        ('get_flat_dict_attr',
+         dict(hot_tpl=hot_tpl_complex_attrs_20141016,
+              snippet={'Value': {'get_attr': ['resource1',
+                                              'flat_dict',
+                                              'key2']}},
+              resource_name='resource1',
+              expected={
+                  'Value':
+                  generic_rsrc.ResourceWithComplexAttributes.
+                  flat_dict['key2']})),
+        ('get_nested_attr_list',
+         dict(hot_tpl=hot_tpl_complex_attrs_20141016,
+              snippet={'Value': {'get_attr': ['resource1',
+                                              'nested_dict',
+                                              'list',
+                                              0]}},
+              resource_name='resource1',
+              expected={
+                  'Value':
+                  generic_rsrc.ResourceWithComplexAttributes.
+                  nested_dict['list'][0]})),
+        ('get_nested_attr_dict',
+         dict(hot_tpl=hot_tpl_complex_attrs_20141016,
+              snippet={'Value': {'get_attr': ['resource1',
+                                              'nested_dict',
+                                              'dict',
+                                              'a']}},
+              resource_name='resource1',
+              expected={
+                  'Value':
+                  generic_rsrc.ResourceWithComplexAttributes.
+                  nested_dict['dict']['a']})),
+        ('get_attr_none',
+         dict(hot_tpl=hot_tpl_complex_attrs_20141016,
+              snippet={'Value': {'get_attr': ['resource1',
+                                              'none',
+                                              'who_cares']}},
+              resource_name='resource1',
               expected={'Value': None}))
     ]
 
@@ -1363,8 +1505,16 @@ class StackAttributesTest(common.HeatTestCase):
                 (rsrc.CREATE, rsrc.COMPLETE),
                 (rsrc.RESUME, rsrc.IN_PROGRESS),
                 (rsrc.RESUME, rsrc.COMPLETE),
+                (rsrc.SUSPEND, rsrc.IN_PROGRESS),
+                (rsrc.SUSPEND, rsrc.COMPLETE),
                 (rsrc.UPDATE, rsrc.IN_PROGRESS),
-                (rsrc.UPDATE, rsrc.COMPLETE)):
+                (rsrc.UPDATE, rsrc.COMPLETE),
+                (rsrc.SNAPSHOT, rsrc.IN_PROGRESS),
+                (rsrc.SNAPSHOT, rsrc.COMPLETE),
+                (rsrc.CHECK, rsrc.IN_PROGRESS),
+                (rsrc.CHECK, rsrc.COMPLETE),
+                (rsrc.ADOPT, rsrc.IN_PROGRESS),
+                (rsrc.ADOPT, rsrc.COMPLETE)):
             rsrc.state_set(action, status)
 
             resolved = function.resolve(self.stack.t.parse(self.stack,
@@ -1414,9 +1564,7 @@ class StackGetAttrValidationTest(common.HeatTestCase):
 
 
 class StackParametersTest(common.HeatTestCase):
-    """
-    Test stack get_param function when stack was created from HOT template.
-    """
+    """Test get_param function when stack was created from HOT template."""
 
     scenarios = [
         ('Ref_string',
@@ -2006,8 +2154,16 @@ class TestGetAttAllAttributes(common.HeatTestCase):
                 (rsrc.CREATE, rsrc.COMPLETE),
                 (rsrc.RESUME, rsrc.IN_PROGRESS),
                 (rsrc.RESUME, rsrc.COMPLETE),
+                (rsrc.SUSPEND, rsrc.IN_PROGRESS),
+                (rsrc.SUSPEND, rsrc.COMPLETE),
                 (rsrc.UPDATE, rsrc.IN_PROGRESS),
-                (rsrc.UPDATE, rsrc.COMPLETE)):
+                (rsrc.UPDATE, rsrc.COMPLETE),
+                (rsrc.SNAPSHOT, rsrc.IN_PROGRESS),
+                (rsrc.SNAPSHOT, rsrc.COMPLETE),
+                (rsrc.CHECK, rsrc.IN_PROGRESS),
+                (rsrc.CHECK, rsrc.COMPLETE),
+                (rsrc.ADOPT, rsrc.IN_PROGRESS),
+                (rsrc.ADOPT, rsrc.COMPLETE)):
             rsrc.state_set(action, status)
 
             if self.raises is not None:
@@ -2017,3 +2173,18 @@ class TestGetAttAllAttributes(common.HeatTestCase):
             else:
                 self.assertEqual(self.expected,
                                  self.resolve(self.snippet, tmpl, stack))
+
+    def test_stack_validate_outputs_get_all_attribute(self):
+        hot_liberty_tpl = template_format.parse('''
+heat_template_version: 2015-10-15
+resources:
+  resource1:
+    type: GenericResourceType
+outputs:
+  all_attr:
+    value: {get_attr: [resource1]}
+''')
+
+        stack = parser.Stack(utils.dummy_context(), 'test_outputs_get_all',
+                             template.Template(hot_liberty_tpl))
+        stack.validate()

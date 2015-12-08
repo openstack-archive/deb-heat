@@ -14,8 +14,10 @@
 # limitations under the License.
 
 import mock
+from oslo_config import cfg
 
 from heat.common import exception
+from heat.engine import dependencies
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import stack
@@ -105,6 +107,7 @@ class CheckWorkflowUpdateTest(common.HeatTestCase):
     def setUp(self):
         super(CheckWorkflowUpdateTest, self).setUp()
         thread_group_mgr = mock.Mock()
+        cfg.CONF.set_default('convergence_engine', True)
         self.worker = worker.WorkerService('host-1',
                                            'topic-1',
                                            'engine_id',
@@ -177,7 +180,7 @@ class CheckWorkflowUpdateTest(common.HeatTestCase):
         mock_cru.assert_called_once_with(self.resource,
                                          self.resource.stack.t.id,
                                          {}, self.worker.engine_id,
-                                         tr())
+                                         mock.ANY)
         self.assertTrue(mock_mr.called)
         self.assertFalse(mock_crc.called)
         self.assertFalse(mock_pcr.called)
@@ -198,7 +201,7 @@ class CheckWorkflowUpdateTest(common.HeatTestCase):
         mock_cru.assert_called_once_with(self.resource,
                                          self.resource.stack.t.id,
                                          {}, self.worker.engine_id,
-                                         tr())
+                                         mock.ANY)
         self.assertFalse(mock_crc.called)
         self.assertFalse(mock_pcr.called)
         self.assertFalse(mock_csc.called)
@@ -393,22 +396,34 @@ class CheckWorkflowUpdateTest(common.HeatTestCase):
     @mock.patch.object(sync_point, 'sync')
     def test_retrigger_check_resource(self, mock_sync, mock_cru, mock_crc,
                                       mock_pcr, mock_csc, mock_cid):
-        self.is_update = True
         resC = self.stack['C']
-        expected_graph_key = (resC.id, self.is_update)
         # A, B are predecessors to C when is_update is True
         expected_predecessors = {(self.stack['A'].id, True),
                                  (self.stack['B'].id, True)}
         self.worker._retrigger_check_resource(self.ctx, self.is_update,
                                               resC.id, self.stack)
-        mock_sync.assert_called_once_with(self.ctx, resC.id,
-                                          self.stack.current_traversal,
-                                          self.is_update, mock.ANY,
-                                          mock.ANY,
-                                          {expected_graph_key: None})
-        call_args, call_kwargs = mock_sync.call_args
-        actual_predecessors = call_args[5]
+        mock_pcr.assert_called_once_with(self.ctx, mock.ANY, resC.id,
+                                         self.stack.current_traversal,
+                                         mock.ANY, (resC.id, True), None,
+                                         True, None)
+        call_args, call_kwargs = mock_pcr.call_args
+        actual_predecessors = call_args[4]
         self.assertItemsEqual(expected_predecessors, actual_predecessors)
+
+    def test_retrigger_check_resource_new_traversal_delete_rsrc(
+            self, mock_cru, mock_crc, mock_pcr, mock_csc, mock_cid):
+        # mock dependencies to indicate a rsrc with id 2 is not present
+        # in latest traversal
+        self.stack._convg_deps = dependencies.Dependencies([
+            [(1, False), (1, True)], [(2, False), None]])
+        # simulate rsrc 2 completing its update for old traversal
+        # and calling rcr
+        self.worker._retrigger_check_resource(self.ctx, True, 2, self.stack)
+        # Ensure that pcr was called with proper delete traversal
+        mock_pcr.assert_called_once_with(self.ctx, mock.ANY, 2,
+                                         self.stack.current_traversal,
+                                         mock.ANY, (2, False), None,
+                                         False, None)
 
     @mock.patch.object(stack.Stack, 'purge_db')
     def test_handle_failure(self, mock_purgedb, mock_cru, mock_crc, mock_pcr,
@@ -417,12 +432,56 @@ class CheckWorkflowUpdateTest(common.HeatTestCase):
         mock_purgedb.assert_called_once_with()
         self.assertEqual('dummy-reason', self.stack.status_reason)
 
-        # test with rollback
+    def test_handle_failure_rollback(self, mock_cru, mock_crc, mock_pcr,
+                                     mock_csc, mock_cid):
         self.worker._trigger_rollback = mock.Mock()
         self.stack.disable_rollback = False
         self.stack.state_set(self.stack.UPDATE, self.stack.IN_PROGRESS, '')
         self.worker._handle_failure(self.ctx, self.stack, 'dummy-reason')
         self.worker._trigger_rollback.assert_called_once_with(self.stack)
+
+    @mock.patch.object(stack.Stack, 'purge_db')
+    @mock.patch.object(stack.Stack, 'state_set')
+    @mock.patch.object(worker.WorkerService, '_retrigger_check_resource')
+    def test_handle_rsrc_failure_when_update_fails(
+            self, mock_rcr, mock_ss, mock_pdb, mock_cru, mock_crc, mock_pcr,
+            mock_csc, mock_cid):
+        self.worker._trigger_rollback = mock.Mock()
+        # Emulate failure
+        mock_ss.return_value = False
+        self.worker._handle_resource_failure(self.ctx, self.is_update,
+                                             self.resource.id, self.stack,
+                                             'dummy-reason')
+        self.assertTrue(mock_ss.called)
+        self.assertFalse(mock_rcr.called)
+        self.assertFalse(mock_pdb.called)
+        self.assertFalse(self.worker._trigger_rollback.called)
+
+    @mock.patch.object(stack.Stack, 'purge_db')
+    @mock.patch.object(stack.Stack, 'state_set')
+    @mock.patch.object(worker.WorkerService, '_retrigger_check_resource')
+    def test_handle_rsrc_failure_when_update_fails_different_traversal(
+            self, mock_rcr, mock_ss, mock_pdb, mock_cru, mock_crc,
+            mock_pcr, mock_csc, mock_cid):
+        self.worker._trigger_rollback = mock.Mock()
+        # Emulate failure
+        mock_ss.return_value = False
+
+        # Emulate new traversal
+        new_stack = tools.get_stack('check_workflow_create_stack', self.ctx,
+                                    template=tools.string_template_five,
+                                    convergence=True)
+        new_stack.current_traversal = 'new_traversal'
+        stack.Stack.load = mock.Mock(return_value=new_stack)
+
+        self.worker._handle_resource_failure(self.ctx, self.is_update,
+                                             self.resource.id,
+                                             self.stack, 'dummy-reason')
+        # Ensure retrigger called
+        self.assertTrue(mock_rcr.called)
+        self.assertTrue(mock_ss.called)
+        self.assertFalse(mock_pdb.called)
+        self.assertFalse(self.worker._trigger_rollback.called)
 
     def test_handle_stack_timeout(self, mock_cru, mock_crc, mock_pcr,
                                   mock_csc, mock_cid):
@@ -527,6 +586,7 @@ class CheckWorkflowCleanupTest(common.HeatTestCase):
 class MiscMethodsTest(common.HeatTestCase):
     def setUp(self):
         super(MiscMethodsTest, self).setUp()
+        cfg.CONF.set_default('convergence_engine', True)
         self.ctx = utils.dummy_context()
         self.stack = tools.get_stack(
             'check_workflow_create_stack', self.ctx,
@@ -545,7 +605,8 @@ class MiscMethodsTest(common.HeatTestCase):
                                'uuid': mock.ANY,
                                'action': mock.ANY,
                                'status': mock.ANY}
-        actual_input_data = worker.construct_input_data(self.resource)
+        actual_input_data = worker.construct_input_data(self.resource,
+                                                        self.stack)
         self.assertEqual(expected_input_data, actual_input_data)
 
     def test_construct_input_data_exception(self):
@@ -559,7 +620,8 @@ class MiscMethodsTest(common.HeatTestCase):
         self.resource.FnGetAtt = mock.Mock(
             side_effect=exception.InvalidTemplateAttribute(resource='A',
                                                            key='value'))
-        actual_input_data = worker.construct_input_data(self.resource)
+        actual_input_data = worker.construct_input_data(self.resource,
+                                                        self.stack)
         self.assertEqual(expected_input_data, actual_input_data)
 
     @mock.patch.object(sync_point, 'sync')
@@ -580,6 +642,17 @@ class MiscMethodsTest(common.HeatTestCase):
             True)
         self.assertFalse(mock_sync.called)
 
+    @mock.patch.object(dependencies.Dependencies, 'roots')
+    @mock.patch.object(stack.Stack, '_persist_state')
+    def test_check_stack_complete_persist_called(self, mock_persist_state,
+                                                 mock_dep_roots):
+        mock_dep_roots.return_value = [(1, True)]
+        worker.check_stack_complete(
+            self.ctx, self.stack, self.stack.current_traversal,
+            1, self.stack.convergence_dependencies,
+            True)
+        self.assertTrue(mock_persist_state.called)
+
     @mock.patch.object(sync_point, 'sync')
     def test_propagate_check_resource(self, mock_sync):
         worker.propagate_check_resource(
@@ -594,7 +667,7 @@ class MiscMethodsTest(common.HeatTestCase):
         self.resource.action = 'INIT'
         worker.check_resource_update(self.resource, self.resource.stack.t.id,
                                      {}, 'engine-id',
-                                     self.stack.timeout_secs())
+                                     self.stack)
         self.assertTrue(mock_create.called)
         self.assertFalse(mock_update.called)
 
@@ -605,7 +678,7 @@ class MiscMethodsTest(common.HeatTestCase):
         self.resource.action = 'CREATE'
         worker.check_resource_update(self.resource, self.resource.stack.t.id,
                                      {}, 'engine-id',
-                                     self.stack.timeout_secs())
+                                     self.stack)
         self.assertFalse(mock_create.called)
         self.assertTrue(mock_update.called)
 
@@ -616,7 +689,7 @@ class MiscMethodsTest(common.HeatTestCase):
         self.resource.action = 'UPDATE'
         worker.check_resource_update(self.resource, self.resource.stack.t.id,
                                      {}, 'engine-id',
-                                     self.stack.timeout_secs())
+                                     self.stack)
         self.assertFalse(mock_create.called)
         self.assertTrue(mock_update.called)
 

@@ -157,14 +157,14 @@ class GetAtt(GetAttThenSelect):
         r = self._resource()
         if (r.status in (r.IN_PROGRESS, r.COMPLETE) and
                 r.action in (r.CREATE, r.ADOPT, r.SUSPEND, r.RESUME,
-                             r.UPDATE)):
+                             r.UPDATE, r.CHECK, r.SNAPSHOT)):
             return r.FnGetAtt(attribute, *path_components)
         else:
             return None
 
 
 class GetAttAllAttributes(GetAtt):
-    """A  function for resolving resource attributes.
+    """A function for resolving resource attributes.
 
     Takes the form::
 
@@ -218,6 +218,9 @@ class GetAttAllAttributes(GetAtt):
         else:
             return super(GetAttAllAttributes, self).result()
 
+    def _allow_without_attribute_name(self):
+        return True
+
 
 class Replace(cfn_funcs.Replace):
     """A function for performing string substitutions.
@@ -260,13 +263,12 @@ class Replace(cfn_funcs.Replace):
 
 
 class ReplaceJson(Replace):
-    '''
-    A function for performing string substitutions.
+    """A function for performing string substitutions.
 
     Behaves the same as Replace, but tolerates non-string parameter
     values, e.g map/list - these are serialized as json before doing
     the string substitution.
-    '''
+    """
 
     def result(self):
         template = function.resolve(self._string)
@@ -355,7 +357,7 @@ class Join(cfn_funcs.Join):
 
 
 class JoinMultiple(function.Function):
-    """A function for joining strings.
+    """A function for joining one or more lists of strings.
 
     Takes the form::
 
@@ -374,31 +376,31 @@ class JoinMultiple(function.Function):
         fmt_data = {'fn_name': fn_name,
                     'example': example}
 
-        if isinstance(args, (six.string_types, collections.Mapping)):
+        if not isinstance(args, list):
             raise TypeError(_('Incorrect arguments to "%(fn_name)s" '
                               'should be: %(example)s') % fmt_data)
 
         try:
-            self._delim = args.pop(0)
-            self._joinlist = args.pop(0)
-        except IndexError:
+            self._delim = args[0]
+            self._joinlists = args[1:]
+            if len(self._joinlists) < 1:
+                raise ValueError
+        except (IndexError, ValueError):
             raise ValueError(_('Incorrect arguments to "%(fn_name)s" '
                                'should be: %(example)s') % fmt_data)
-        # Optionally allow additional lists, which are appended
-        for l in args:
-            try:
-                self._joinlist += l
-            except (AttributeError, TypeError):
-                raise TypeError(_('Incorrect arguments to "%(fn_name)s" '
-                                'should be: %(example)s') % fmt_data)
 
     def result(self):
-        strings = function.resolve(self._joinlist)
-        if strings is None:
-            strings = []
-        if (isinstance(strings, six.string_types) or
-                not isinstance(strings, collections.Sequence)):
-            raise TypeError(_('"%s" must operate on a list') % self.fn_name)
+        r_joinlists = function.resolve(self._joinlists)
+
+        strings = []
+        for jl in r_joinlists:
+            if jl:
+                if (isinstance(jl, six.string_types) or
+                        not isinstance(jl, collections.Sequence)):
+                    raise TypeError(_('"%s" must operate on '
+                                      'a list') % self.fn_name)
+
+                strings += jl
 
         delim = function.resolve(self._delim)
         if not isinstance(delim, six.string_types):
@@ -419,12 +421,51 @@ class JoinMultiple(function.Function):
                     msg = _('Items to join must be string, map or list. '
                             '%s failed json serialization'
                             ) % (repr(s)[:200])
-            else:
-                msg = _('Items to join must be string, map or list not %s'
-                        ) % (repr(s)[:200])
+
             raise TypeError(msg)
 
         return delim.join(ensure_string(s) for s in strings)
+
+
+class MapMerge(function.Function):
+    """A function for merging maps.
+
+    Takes the form::
+
+        { "map_merge" : [{'k1': 'v1', 'k2': 'v2'}, {'k1': 'v2'}] }
+
+    And resolves to::
+
+        {'k1': 'v2', 'k2': 'v2'}
+
+    """
+
+    def __init__(self, stack, fn_name, args):
+        super(MapMerge, self).__init__(stack, fn_name, args)
+        example = (_('"%s" : [ { "key1": "val1" }, { "key2": "val2" } ]')
+                   % fn_name)
+        self.fmt_data = {'fn_name': fn_name, 'example': example}
+
+    def result(self):
+        args = function.resolve(self.args)
+
+        if not isinstance(args, collections.Sequence):
+            raise TypeError(_('Incorrect arguments to "%(fn_name)s" '
+                              'should be: %(example)s') % self.fmt_data)
+
+        def ensure_map(m):
+            if m is None:
+                return {}
+            elif isinstance(m, collections.Mapping):
+                return m
+            else:
+                msg = _('Incorrect arguments: Items to merge must be maps.')
+                raise TypeError(msg)
+
+        ret_map = {}
+        for m in args:
+            ret_map.update(ensure_map(m))
+        return ret_map
 
 
 class ResourceFacade(cfn_funcs.ResourceFacade):

@@ -20,6 +20,7 @@ from novaclient import exceptions as nova_exceptions
 import six
 
 from heat.common import exception
+from heat.common import short_id
 from heat.common import template_format
 from heat.engine.clients.os import nova
 from heat.engine.resources.aws.ec2 import eip
@@ -28,7 +29,7 @@ from heat.engine import scheduler
 from heat.engine import stack as parser
 from heat.engine import template as tmpl
 from heat.tests import common
-from heat.tests.nova import fakes as fakes_nova
+from heat.tests.openstack.nova import fakes as fakes_nova
 from heat.tests import utils
 
 
@@ -866,6 +867,57 @@ class AllocTest(common.HeatTestCase):
 
         self.m.VerifyAll()
 
+    def test_update_association_needs_update_InstanceId(self):
+        server = self.fc.servers.list()[0]
+        self._mock_server_get(mock_server=server, multiple=True)
+
+        server_update = self.fc.servers.list()[1]
+        self._mock_server_get(server='5678',
+                              mock_server=server_update,
+                              multiple=True,
+                              mock_again=True)
+
+        self.m.ReplayAll()
+
+        t = template_format.parse(eip_template_ipassoc)
+        stack = utils.parse_stack(t)
+        self.create_eip(t, stack, 'IPAddress')
+        before_props = {'InstanceId': {'Ref': 'WebServer'},
+                        'EIP': '11.0.0.1'}
+        after_props = {'InstanceId': {'Ref': 'WebServer2'},
+                       'EIP': '11.0.0.1'}
+        before = self.create_association(t, stack, 'IPAssoc')
+        after = rsrc_defn.ResourceDefinition(before.name, before.type(),
+                                             after_props)
+        self.assertTrue(exception.UpdateReplace,
+                        before._needs_update(after, before, after_props,
+                                             before_props, None))
+
+    def test_update_association_needs_update_InstanceId_EIP(self):
+        server = self.fc.servers.list()[0]
+        self._mock_server_get(mock_server=server, multiple=True)
+
+        server_update = self.fc.servers.list()[1]
+        self._mock_server_get(server='5678',
+                              mock_server=server_update,
+                              multiple=True,
+                              mock_again=True)
+
+        self.m.ReplayAll()
+
+        t = template_format.parse(eip_template_ipassoc)
+        stack = utils.parse_stack(t)
+        self.create_eip(t, stack, 'IPAddress')
+        before_props = {'InstanceId': {'Ref': 'WebServer'},
+                        'EIP': '11.0.0.1'}
+        after_props = {'InstanceId': {'Ref': 'WebServer2'},
+                       'EIP': '11.0.0.2'}
+        before = self.create_association(t, stack, 'IPAssoc')
+        after = rsrc_defn.ResourceDefinition(before.name, before.type(),
+                                             after_props)
+        self.assertRaises(exception.UpdateReplace, before._needs_update,
+                          after, before, after_props, before_props, None)
+
     def test_update_association_with_NetworkInterfaceId_or_InstanceId(self):
         self.mock_create_floatingip()
         self.mock_list_ports()
@@ -918,3 +970,35 @@ class AllocTest(common.HeatTestCase):
         self.assertEqual((ass.UPDATE, ass.COMPLETE), ass.state)
 
         self.m.VerifyAll()
+
+    def test_eip_allocation_refid_resource_name(self):
+        t = template_format.parse(eip_template_ipassoc)
+        stack = utils.parse_stack(t)
+        rsrc = stack['IPAssoc']
+        rsrc.id = '123'
+        rsrc.uuid = '9bfb9456-3fe8-41f4-b318-9dba18eeef74'
+        rsrc.action = 'CREATE'
+        expected = '%s-%s-%s' % (rsrc.stack.name,
+                                 rsrc.name,
+                                 short_id.get_id(rsrc.uuid))
+        self.assertEqual(expected, rsrc.FnGetRefId())
+
+    def test_eip_allocation_refid_resource_id(self):
+        t = template_format.parse(eip_template_ipassoc)
+        stack = utils.parse_stack(t)
+        rsrc = stack['IPAssoc']
+        rsrc.resource_id = 'phy-rsrc-id'
+        self.assertEqual('phy-rsrc-id', rsrc.FnGetRefId())
+
+    def test_eip_allocation_refid_convergence_cache_data(self):
+        t = template_format.parse(eip_template_ipassoc)
+        cache_data = {'IPAssoc': {
+            'uuid': mock.ANY,
+            'id': mock.ANY,
+            'action': 'CREATE',
+            'status': 'COMPLETE',
+            'reference_id': 'convg_xyz'
+        }}
+        stack = utils.parse_stack(t, cache_data=cache_data)
+        rsrc = stack['IPAssoc']
+        self.assertEqual('convg_xyz', rsrc.FnGetRefId())

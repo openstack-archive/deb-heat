@@ -12,7 +12,9 @@
 #    under the License.
 
 import abc
+import functools
 import sys
+import weakref
 
 from keystoneclient import auth
 from keystoneclient.auth.identity import v2
@@ -22,8 +24,64 @@ from keystoneclient import session
 from oslo_config import cfg
 import six
 
-from heat.common import context
 from heat.common.i18n import _
+
+
+class ExceptionFilter(object):
+    """A context manager that prevents some exceptions from being raised.
+
+    For backwards compatibility, these objects can also be called with the
+    exception value as an argument - any non-matching exception will be
+    re-raised from this call. We attempt but cannot guarantee to keep the same
+    traceback; the context manager method is preferred for this reason except
+    in cases where the ignored exception affects control flow.
+
+    Use this class as a decorator for a function that returns whether a given
+    exception should be ignored. e.g.
+
+    >>> @ExceptionFilter
+    >>> def ignore_assertions(ex):
+    ...     return isinstance(ex, AssertionError)
+
+    and then use it as a context manager:
+
+    >>> with ignore_assertions:
+    ...     assert False
+
+    or call it:
+
+    >>> try:
+    ...     assert False
+    ... except Exception as ex:
+    ...     ignore_assertions(ex)
+    """
+
+    def __init__(self, should_ignore_ex):
+        self._should_ignore_ex = should_ignore_ex
+        functools.update_wrapper(self, should_ignore_ex)
+
+    def __get__(self, obj, owner=None):
+        return type(self)(six.create_bound_method(self._should_ignore_ex, obj))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_val is not None:
+            return self._should_ignore_ex(exc_val)
+
+    def __call__(self, ex):
+        """Re-raise any exception value not being filtered out.
+
+        If the exception was the last to be raised, it will be re-raised with
+        its original traceback.
+        """
+        if not self._should_ignore_ex(ex):
+            exc_type, exc_val, traceback = sys.exc_info()
+            if exc_val is ex:
+                six.reraise(exc_type, exc_val, traceback)
+            else:
+                raise ex
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -38,10 +96,20 @@ class ClientPlugin(object):
     service_types = []
 
     def __init__(self, context):
-        self.context = context
-        self.clients = context.clients
+        self._context = weakref.ref(context)
+        self._clients = weakref.ref(context.clients)
         self._client = None
         self._keystone_session_obj = None
+
+    @property
+    def context(self):
+        ctxt = self._context()
+        assert ctxt is not None, "Need a reference to the context"
+        return ctxt
+
+    @property
+    def clients(self):
+        return self._clients()
 
     @property
     def _keystone_session(self):
@@ -59,8 +127,20 @@ class ClientPlugin(object):
 
         return self._keystone_session_obj
 
+    def invalidate(self):
+        """Invalidate/clear any cached client."""
+        self._client = None
+
     def client(self):
         if not self._client:
+            self._client = self._create()
+        elif (cfg.CONF.reauthentication_auth_method == 'trusts'
+                and self.context.auth_plugin.auth_ref.will_expire_soon(
+                    cfg.CONF.stale_token_duration)):
+            # If the token is near expiry, force creating a new client,
+            # which will get a new token via another call to auth_token
+            # We also have to invalidate all other cached clients
+            self.clients.invalidate_plugins()
             self._client = self._create()
         return self._client
 
@@ -91,7 +171,7 @@ class ClientPlugin(object):
 
         reg = self.context.region_name or cfg.CONF.region_name_for_services
         kwargs.setdefault('region_name', reg)
-
+        url = None
         try:
             url = get_endpoint()
         except exceptions.EmptyCatalog:
@@ -118,10 +198,9 @@ class ClientPlugin(object):
             auth_ref = token_obj.get_auth_ref(self._keystone_session)
 
             if catalog_key in auth_ref:
-                cxt = self.context.to_dict()
-                access_info = cxt['auth_token_info'][access_key]
+                access_info = self.context.auth_token_info[access_key]
                 access_info[catalog_key] = auth_ref[catalog_key]
-                self.context = context.RequestContext.from_dict(cxt)
+                self.context.reload_auth_plugin()
                 url = get_endpoint()
 
         # NOTE(jamielennox): raising exception maintains compatibility with
@@ -171,19 +250,15 @@ class ClientPlugin(object):
         """Returns True if the exception is a conflict."""
         return False
 
+    @ExceptionFilter
     def ignore_not_found(self, ex):
         """Raises the exception unless it is a not-found."""
-        if not self.is_not_found(ex):
-            exc_info = sys.exc_info()
-            six.reraise(*exc_info)
+        return self.is_not_found(ex)
 
+    @ExceptionFilter
     def ignore_conflict_and_not_found(self, ex):
         """Raises the exception unless it is a conflict or not-found."""
-        if self.is_conflict(ex) or self.is_not_found(ex):
-            return
-        else:
-            exc_info = sys.exc_info()
-            six.reraise(*exc_info)
+        return self.is_conflict(ex) or self.is_not_found(ex)
 
     def _get_client_args(self,
                          service_name,

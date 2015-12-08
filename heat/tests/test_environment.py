@@ -289,8 +289,12 @@ class GlobalEnvLoadingTest(common.HeatTestCase):
         m_ldir.assert_called_once_with(env_dir + '/*')
 
     def test_continue_on_ioerror(self):
-        """assert we get all files processed even if there are
-        processing exceptions.
+        """Assert we get all files processed.
+
+        Assert we get all files processed even if there are processing
+        exceptions.
+
+        Test uses IOError as side effect of mock open.
         """
         with mock.patch('glob.glob') as m_ldir:
             m_ldir.return_value = ['/etc_etc/heat/environment.d/a.yaml',
@@ -312,8 +316,12 @@ class GlobalEnvLoadingTest(common.HeatTestCase):
         self.assertEqual(expected, m_open.call_args_list)
 
     def test_continue_on_parse_error(self):
-        """assert we get all files processed even if there are
-        processing exceptions.
+        """Assert we get all files processed.
+
+        Assert we get all files processed even if there are processing
+        exceptions.
+
+        Test checks case when env content is incorrect.
         """
         with mock.patch('glob.glob') as m_ldir:
             m_ldir.return_value = ['/etc_etc/heat/environment.d/a.yaml',
@@ -727,7 +735,8 @@ class ResourceRegistryTest(common.HeatTestCase):
 
         registry = environment.ResourceRegistry(None, {})
         msg = ('Invalid hook type "invalid-type" for resource breakpoint, '
-               'acceptable hook types are: (\'pre-create\', \'pre-update\')')
+               'acceptable hook types are: (\'pre-create\', \'pre-update\', '
+               '\'pre-delete\')')
         ex = self.assertRaises(exception.InvalidBreakPointHook,
                                registry.load, {'resources': resources})
         self.assertEqual(msg, six.text_type(ex))
@@ -872,8 +881,11 @@ class HookMatchTest(common.HeatTestCase):
             u'pre_update': {
                 u'hooks': 'pre-update',
             },
-            u'both': {
-                u'hooks': ['pre-create', 'pre-update'],
+            u'pre_delete': {
+                u'hooks': 'pre-delete',
+            },
+            u'all': {
+                u'hooks': ['pre-create', 'pre-update', 'pre-delete'],
             },
         }
         registry = environment.ResourceRegistry(None, {})
@@ -883,13 +895,26 @@ class HookMatchTest(common.HeatTestCase):
             'pre_create', environment.HOOK_PRE_CREATE))
         self.assertFalse(registry.matches_hook(
             'pre_create', environment.HOOK_PRE_UPDATE))
+        self.assertFalse(registry.matches_hook(
+            'pre_create', environment.HOOK_PRE_DELETE))
 
         self.assertTrue(registry.matches_hook(
             'pre_update', environment.HOOK_PRE_UPDATE))
         self.assertFalse(registry.matches_hook(
             'pre_update', environment.HOOK_PRE_CREATE))
+        self.assertFalse(registry.matches_hook(
+            'pre_update', environment.HOOK_PRE_DELETE))
 
         self.assertTrue(registry.matches_hook(
-            'both', environment.HOOK_PRE_CREATE))
+            'pre_delete', environment.HOOK_PRE_DELETE))
+        self.assertFalse(registry.matches_hook(
+            'pre_delete', environment.HOOK_PRE_CREATE))
+        self.assertFalse(registry.matches_hook(
+            'pre_delete', environment.HOOK_PRE_UPDATE))
+
         self.assertTrue(registry.matches_hook(
-            'both', environment.HOOK_PRE_UPDATE))
+            'all', environment.HOOK_PRE_CREATE))
+        self.assertTrue(registry.matches_hook(
+            'all', environment.HOOK_PRE_UPDATE))
+        self.assertTrue(registry.matches_hook(
+            'all', environment.HOOK_PRE_DELETE))

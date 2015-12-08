@@ -20,8 +20,8 @@ Unit Tests for heat.rpc.client
 import copy
 
 import mock
+from mox import stubout
 from oslo_messaging._drivers import common as rpc_common
-import stubout
 
 from heat.common import exception
 from heat.common import identifier
@@ -41,8 +41,7 @@ class EngineRpcAPITestCase(common.HeatTestCase):
         self.rpcapi = rpc_client.EngineClient()
 
     def _to_remote_error(self, error):
-        """Converts the given exception to the one with the _Remote suffix.
-        """
+        """Converts the given exception to the one with the _Remote suffix."""
         exc_info = (type(error), error, None)
         serialized = rpc_common.serialize_remote_exception(exc_info)
         remote_error = rpc_common.deserialize_remote_exception(
@@ -365,3 +364,14 @@ class EngineRpcAPITestCase(common.HeatTestCase):
 
     def test_list_services(self):
         self._test_engine_api('list_services', 'call', version='1.4')
+
+    def test_stack_list_outputs(self):
+        self._test_engine_api(
+            'list_outputs', 'call', stack_identity=self.identity,
+            version='1.19'
+        )
+
+    def test_stack_show_output(self):
+        self._test_engine_api(
+            'show_output', 'call', stack_identity=self.identity,
+            output_key='test', version='1.19')

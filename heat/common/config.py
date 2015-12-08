@@ -11,9 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""
-Routines for configuring Heat
-"""
+"""Routines for configuring Heat."""
 import logging as sys_logging
 import os
 
@@ -100,6 +98,16 @@ engine_opts = [
                default='trusts',
                help=_('Select deferred auth method, '
                       'stored password or trusts.')),
+    cfg.StrOpt('reauthentication_auth_method',
+               choices=['', 'trusts'],
+               default='',
+               help=_('Allow reauthentication on token expiry, such that'
+                      ' long-running tasks may complete. Note this defeats'
+                      ' the expiry of any provided user tokens.')),
+    cfg.IntOpt('stale_token_duration',
+               default=30,
+               help=_('Gap, in seconds, to determine whether the given token '
+                      'is about to expire.'),),
     cfg.ListOpt('trusts_delegated_roles',
                 default=[],
                 help=_('Subset of trustor roles to be delegated to heat.'
@@ -237,7 +245,9 @@ profiler_opts = [
     cfg.BoolOpt("profiler_enabled", default=False,
                 help=_('If False fully disable profiling feature.')),
     cfg.BoolOpt("trace_sqlalchemy", default=False,
-                help=_("If False do not trace SQL requests."))
+                help=_("If False do not trace SQL requests.")),
+    cfg.StrOpt("hmac_keys", default="SECRET_KEY",
+               help=_("Secret key to use to sign tracing messages."))
 ]
 
 auth_password_group = cfg.OptGroup('auth_password')
@@ -373,18 +383,18 @@ for group, opts in list_opts():
 
 
 def _get_deployment_flavor():
-    """
-    Retrieve the paste_deploy.flavor config item, formatted appropriately
-    for appending to the application name.
+    """Retrieves the paste_deploy.flavor config item.
+
+    Item formatted appropriately for appending to the application name.
     """
     flavor = cfg.CONF.paste_deploy.flavor
     return '' if not flavor else ('-' + flavor)
 
 
 def _get_deployment_config_file():
-    """
-    Retrieve the deployment_config_file config item, formatted as an
-    absolute pathname.
+    """Retrieves the deployment_config_file config item.
+
+    Item formatted as an absolute pathname.
     """
     config_path = cfg.CONF.find_file(
         cfg.CONF.paste_deploy['api_paste_config'])
@@ -395,8 +405,7 @@ def _get_deployment_config_file():
 
 
 def load_paste_app(app_name=None):
-    """
-    Builds and returns a WSGI app from a paste config file.
+    """Builds and returns a WSGI app from a paste config file.
 
     We assume the last config file specified in the supplied ConfigOpts
     object is the paste config file.
@@ -415,7 +424,8 @@ def load_paste_app(app_name=None):
 
     conf_file = _get_deployment_config_file()
     if conf_file is None:
-        raise RuntimeError(_("Unable to locate config file"))
+        raise RuntimeError(_("Unable to locate config file [%s]") %
+                           cfg.CONF.paste_deploy['api_paste_config'])
 
     try:
         app = wsgi.paste_deploy_app(conf_file, app_name, cfg.CONF)

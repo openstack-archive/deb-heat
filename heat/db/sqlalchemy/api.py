@@ -56,8 +56,13 @@ def get_facade():
 
     return _facade
 
-get_engine = lambda: get_facade().get_engine()
-get_session = lambda: get_facade().get_session()
+
+def get_engine():
+    return get_facade().get_engine()
+
+
+def get_session():
+    return get_facade().get_session()
 
 
 def get_backend():
@@ -1015,7 +1020,7 @@ def service_delete(context, service_id, soft_delete=True):
 def service_get(context, service_id):
     result = model_query(context, models.Service).get(service_id)
     if result is None:
-        raise exception.ServiceNotFound(service_id=service_id)
+        raise exception.EntityNotFound(entity='Service', name=service_id)
     return result
 
 
@@ -1050,7 +1055,7 @@ def purge_deleted(age, granularity='days'):
     elif granularity == 'minutes':
         age = age * 60
 
-    time_line = datetime.datetime.now() - datetime.timedelta(seconds=age)
+    time_line = timeutils.utcnow() - datetime.timedelta(seconds=age)
     engine = get_engine()
     meta = sqlalchemy.MetaData()
     meta.bind = engine
@@ -1091,8 +1096,15 @@ def purge_deleted(age, granularity='days'):
     stack_del = stack.delete().where(stack.c.deleted_at < time_line)
     engine.execute(stack_del)
     # delete orphaned raw templates
-    stack_templ_sel = sqlalchemy.select([stack.c.raw_template_id])
-    raw_templ_sel = sqlalchemy.not_(raw_template.c.id.in_(stack_templ_sel))
+    raw_templ_sel = raw_template.c.id.in_(
+        sqlalchemy.select([raw_template.c.id]).select_from(
+            sqlalchemy.join(
+                raw_template,
+                stack,
+                sqlalchemy.or_(
+                    stack.c.prev_raw_template_id == raw_template.c.id,
+                    stack.c.raw_template_id == raw_template.c.id),
+                isouter=True)).where(stack.c.id == None))  # noqa
     raw_templ_del = raw_template.delete().where(raw_templ_sel)
     engine.execute(raw_templ_del)
     # purge any user creds that are no longer referenced

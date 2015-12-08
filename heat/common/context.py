@@ -16,7 +16,6 @@ from keystoneclient import auth
 from keystoneclient.auth.identity import access as access_plugin
 from keystoneclient.auth.identity import v3
 from keystoneclient.auth import token_endpoint
-from keystoneclient import discover as ks_discover
 from oslo_config import cfg
 from oslo_context import context
 from oslo_log import log as logging
@@ -25,6 +24,7 @@ from oslo_middleware import request_id as oslo_request_id
 from oslo_utils import importutils
 import six
 
+from heat.common import endpoint_utils
 from heat.common import exception
 from heat.common.i18n import _LE, _LW
 from heat.common import policy
@@ -39,9 +39,10 @@ auth.register_conf_options(cfg.CONF, TRUSTEE_CONF_GROUP)
 
 
 class RequestContext(context.RequestContext):
-    """
-    Stores information about the security context under which the user
-    accesses the system, as well as additional request information.
+    """Stores information about the security context.
+
+    Under the security context the user accesses the system, as well as
+    additional request information.
     """
 
     def __init__(self, auth_token=None, username=None, password=None,
@@ -51,7 +52,8 @@ class RequestContext(context.RequestContext):
                  overwrite=True, trust_id=None, trustor_user_id=None,
                  request_id=None, auth_token_info=None, region_name=None,
                  auth_plugin=None, trusts_auth_plugin=None, **kwargs):
-        """
+        """Initialisation of the request context.
+
         :param overwrite: Set to False to ensure that the greenthread local
             copy of the index is not overwritten.
 
@@ -129,27 +131,16 @@ class RequestContext(context.RequestContext):
     @property
     def keystone_v3_endpoint(self):
         if self.auth_url:
-            auth_uri = self.auth_url.replace('v2.0', 'v3')
+            return self.auth_url.replace('v2.0', 'v3')
         else:
-            # Look for the keystone auth_uri in the configuration. First we
-            # check the [clients_keystone] section, and if it is not set we
-            # look in [keystone_authtoken]
-            if cfg.CONF.clients_keystone.auth_uri:
-                discover = ks_discover.Discover(
-                    auth_url=cfg.CONF.clients_keystone.auth_uri)
-                auth_uri = discover.url_for('3.0')
+            auth_uri = endpoint_utils.get_auth_uri()
+            if auth_uri:
+                return auth_uri
             else:
-                # Import auth_token to have keystone_authtoken settings setup.
-                importutils.import_module('keystonemiddleware.auth_token')
-                if cfg.CONF.keystone_authtoken.auth_uri:
-                    auth_uri = cfg.CONF.keystone_authtoken.auth_uri.replace(
-                        'v2.0', 'v3')
-                else:
-                    LOG.error('Keystone API endpoint not provided. Set '
-                              'auth_uri in section [clients_keystone] '
-                              'of the configuration file.')
-                    raise exception.AuthorizationFailure()
-        return auth_uri
+                LOG.error('Keystone API endpoint not provided. Set '
+                          'auth_uri in section [clients_keystone] '
+                          'of the configuration file.')
+                raise exception.AuthorizationFailure()
 
     @property
     def trusts_auth_plugin(self):
@@ -205,6 +196,9 @@ class RequestContext(context.RequestContext):
                       "trust or auth_token!"))
         raise exception.AuthorizationFailure()
 
+    def reload_auth_plugin(self):
+        self._auth_plugin = None
+
     @property
     def auth_plugin(self):
         if not self._auth_plugin:
@@ -231,15 +225,14 @@ class ContextMiddleware(wsgi.Middleware):
         super(ContextMiddleware, self).__init__(app)
 
     def make_context(self, *args, **kwargs):
-        """
-        Create a context with the given arguments.
-        """
+        """Create a context with the given arguments."""
         return self.ctxcls(*args, **kwargs)
 
     def process_request(self, req):
-        """
-        Extract any authentication information in the request and
-        construct an appropriate context from it.
+        """Constructs an appropriate context from extracted auth information.
+
+        Extract any authentication information in the request and construct an
+        appropriate context from it.
         """
         headers = req.headers
         environ = req.environ
@@ -286,9 +279,7 @@ class ContextMiddleware(wsgi.Middleware):
 
 
 def ContextMiddleware_filter_factory(global_conf, **local_conf):
-    """
-    Factory method for paste.deploy
-    """
+    """Factory method for paste.deploy."""
     conf = global_conf.copy()
     conf.update(local_conf)
 

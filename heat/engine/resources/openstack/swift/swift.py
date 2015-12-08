@@ -123,10 +123,10 @@ class SwiftContainer(resource.Resource):
 
     @staticmethod
     def _build_meta_headers(obj_type, meta_props):
-        '''
-        Returns a new dict where each key is prepended with:
-        X-Container-Meta-
-        '''
+        """Returns a new dict.
+
+        Each key of new dict is prepended with "X-Container-Meta-".
+        """
         if meta_props is None:
             return {}
         return dict(
@@ -177,10 +177,9 @@ class SwiftContainer(resource.Resource):
             args.append(obj['name'])
         else:
             deleter = self.client().delete_container
-        try:
+
+        with self.client_plugin().ignore_not_found:
             deleter(*args)
-        except Exception as ex:
-            self.client_plugin().ignore_not_found(ex)
 
     def handle_delete(self):
         if self.resource_id is None:
@@ -220,7 +219,7 @@ class SwiftContainer(resource.Resource):
     def handle_check(self):
         self.client().get_container(self.resource_id)
 
-    def FnGetRefId(self):
+    def get_reference_id(self):
         return six.text_type(self.resource_id)
 
     def _resolve_attribute(self, key):

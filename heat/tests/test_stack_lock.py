@@ -31,8 +31,8 @@ class StackLockTest(common.HeatTestCase):
         stack.id = self.stack_id
         stack.name = "test_stack"
         stack.action = "CREATE"
-        self.patchobject(stack_object.Stack, 'get_by_id',
-                         return_value=stack)
+        self.mock_get_by_id = self.patchobject(
+            stack_object.Stack, 'get_by_id', return_value=stack)
 
     class TestThreadLockException(Exception):
             pass
@@ -57,6 +57,11 @@ class StackLockTest(common.HeatTestCase):
                                      self.engine_id)
 
         self.assertRaises(exception.ActionInProgress, slock.acquire)
+        self.mock_get_by_id.assert_called_once_with(
+            self.context,
+            self.stack_id,
+            tenant_safe=False,
+            show_deleted=True)
         mock_create.assert_called_once_with(self.stack_id, self.engine_id)
 
     def test_successful_acquire_existing_lock_engine_dead(self):
@@ -85,6 +90,11 @@ class StackLockTest(common.HeatTestCase):
                                      self.engine_id)
         self.patchobject(slock, 'engine_alive', return_value=True)
         self.assertRaises(exception.ActionInProgress, slock.acquire)
+        self.mock_get_by_id.assert_called_once_with(
+            self.context,
+            self.stack_id,
+            tenant_safe=False,
+            show_deleted=True)
 
         mock_create.assert_called_once_with(self.stack_id, self.engine_id)
 
@@ -100,6 +110,11 @@ class StackLockTest(common.HeatTestCase):
                                      self.engine_id)
         self.patchobject(slock, 'engine_alive', return_value=False)
         self.assertRaises(exception.ActionInProgress, slock.acquire)
+        self.mock_get_by_id.assert_called_once_with(
+            self.context,
+            self.stack_id,
+            tenant_safe=False,
+            show_deleted=True)
 
         mock_create.assert_called_once_with(self.stack_id, self.engine_id)
         mock_steal.assert_called_once_with(self.stack_id, 'fake-engine-id',
@@ -135,6 +150,11 @@ class StackLockTest(common.HeatTestCase):
                                      self.engine_id)
         self.patchobject(slock, 'engine_alive', return_value=False)
         self.assertRaises(exception.ActionInProgress, slock.acquire)
+        self.mock_get_by_id.assert_called_with(
+            self.context,
+            self.stack_id,
+            tenant_safe=False,
+            show_deleted=True)
 
         mock_create.assert_has_calls(
             [mock.call(self.stack_id, self.engine_id)] * 2)
@@ -168,7 +188,7 @@ class StackLockTest(common.HeatTestCase):
                                  stack_lock_object.StackLock.create.call_count)
                 raise exception.ActionInProgress
         self.assertRaises(exception.ActionInProgress, check_thread_lock)
-        assert not stack_lock_object.StackLock.release.called
+        self.assertFalse(stack_lock_object.StackLock.release.called)
 
     def test_thread_lock_context_mgr_no_exception(self):
         stack_lock_object.StackLock.create = mock.Mock(return_value=None)
@@ -177,7 +197,7 @@ class StackLockTest(common.HeatTestCase):
                                      self.engine_id)
         with slock.thread_lock():
             self.assertEqual(1, stack_lock_object.StackLock.create.call_count)
-        assert not stack_lock_object.StackLock.release.called
+        self.assertFalse(stack_lock_object.StackLock.release.called)
 
     def test_try_thread_lock_context_mgr_exception(self):
         stack_lock_object.StackLock.create = mock.Mock(return_value=None)
@@ -200,7 +220,7 @@ class StackLockTest(common.HeatTestCase):
                                      self.engine_id)
         with slock.try_thread_lock():
             self.assertEqual(1, stack_lock_object.StackLock.create.call_count)
-        assert not stack_lock_object.StackLock.release.called
+        self.assertFalse(stack_lock_object.StackLock.release.called)
 
     def test_try_thread_lock_context_mgr_existing_lock(self):
         stack_lock_object.StackLock.create = mock.Mock(return_value=1234)
@@ -214,4 +234,4 @@ class StackLockTest(common.HeatTestCase):
                                  stack_lock_object.StackLock.create.call_count)
                 raise self.TestThreadLockException
         self.assertRaises(self.TestThreadLockException, check_thread_lock)
-        assert not stack_lock_object.StackLock.release.called
+        self.assertFalse(stack_lock_object.StackLock.release.called)

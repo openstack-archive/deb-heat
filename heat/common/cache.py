@@ -14,17 +14,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""The code related to integration between oslo.cache module and heat."""
+
 from oslo_cache import core
 from oslo_config import cfg
 
 from heat.common.i18n import _
 
-"""The module contains the code related to integration between oslo.cache
-module and heat."""
-
 
 def register_cache_configurations(conf):
-    """Register all configurations required for oslo.cache
+    """Register all configurations required for oslo.cache.
 
     The procedure registers all configurations required for oslo.cache.
     It should be called before configuring of cache region
@@ -54,6 +53,24 @@ def register_cache_configurations(conf):
     ]
     conf.register_group(constraint_cache_group)
     conf.register_opts(constraint_cache_opts, group=constraint_cache_group)
+
+    extension_cache_group = cfg.OptGroup('service_extension_cache')
+    extension_cache_opts = [
+        cfg.IntOpt('expiration_time', default=3600,
+                   help=_(
+                       'TTL, in seconds, for any cached item in the '
+                       'dogpile.cache region used for caching of service '
+                       'extensions.')),
+        cfg.BoolOpt('caching', default=True,
+                    help=_(
+                        'Toggle to enable/disable caching when Orchestration '
+                        'Engine retrieves extensions from other OpenStack '
+                        'services. Please note that the global toggle for '
+                        'oslo.cache(enabled=True in [cache] group) must be '
+                        'enabled to use this feature.'))
+    ]
+    conf.register_group(extension_cache_group)
+    conf.register_opts(extension_cache_opts, group=extension_cache_group)
 
     return conf
 

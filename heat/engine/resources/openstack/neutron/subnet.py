@@ -81,6 +81,7 @@ class Subnet(neutron.NeutronResource):
         NETWORK: properties.Schema(
             properties.Schema.STRING,
             _('The ID of the attached network.'),
+            required=True,
             constraints=[
                 constraints.CustomConstraint('neutron.network')
             ],
@@ -153,7 +154,8 @@ class Subnet(neutron.NeutronResource):
                         ]
                     ),
                 },
-            )
+            ),
+            update_allowed=True
         ),
         TENANT_ID: properties.Schema(
             properties.Schema.STRING,
@@ -167,7 +169,10 @@ class Subnet(neutron.NeutronResource):
                 schema={
                     ROUTE_DESTINATION: properties.Schema(
                         properties.Schema.STRING,
-                        required=True
+                        required=True,
+                        constraints=[
+                            constraints.CustomConstraint('net_cidr')
+                        ]
                     ),
                     ROUTE_NEXTHOP: properties.Schema(
                         properties.Schema.STRING,
@@ -245,9 +250,9 @@ class Subnet(neutron.NeutronResource):
         ),
     }
 
-    def translation_rules(self):
+    def translation_rules(self, props):
         return [
-            properties.TranslationRule(self.properties,
+            properties.TranslationRule(props,
                                        properties.TranslationRule.REPLACE,
                                        [self.NETWORK],
                                        value_path=[self.NETWORK_ID])
@@ -267,8 +272,6 @@ class Subnet(neutron.NeutronResource):
 
     def validate(self):
         super(Subnet, self).validate()
-        self._validate_depr_property_required(self.properties,
-                                              self.NETWORK, self.NETWORK_ID)
         ra_mode = self.properties[self.IPV6_RA_MODE]
         address_mode = self.properties[self.IPV6_ADDRESS_MODE]
         if (self.properties[self.IP_VERSION] == 4) and (
@@ -311,6 +314,9 @@ class Subnet(neutron.NeutronResource):
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         props = self.prepare_update_properties(json_snippet)
+        if (self.ALLOCATION_POOLS in prop_diff and
+                self.ALLOCATION_POOLS not in props):
+            props[self.ALLOCATION_POOLS] = []
         self.client().update_subnet(
             self.resource_id, {'subnet': props})
 

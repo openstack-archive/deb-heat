@@ -27,9 +27,7 @@ from heat.common import wsgi
 
 class API(wsgi.Router):
 
-    """
-    WSGI router for Heat v1 REST API requests.
-    """
+    """WSGI router for Heat v1 REST API requests."""
 
     def __init__(self, conf, **local_conf):
         self.conf = conf
@@ -38,7 +36,8 @@ class API(wsgi.Router):
                                          wsgi.JSONRequestDeserializer())
 
         def connect(controller, path_prefix, routes):
-            """
+            """Connects list of routes to given controller with path_prefix.
+
             This function connects the list of routes to the given
             controller, prepending the given path_prefix. Then for each URL it
             finds which request methods aren't handled and configures those
@@ -266,6 +265,21 @@ class API(wsgi.Router):
                                '{snapshot_id}/restore',
                         'action': 'restore_snapshot',
                         'method': 'POST'
+                    },
+
+                    # Stack outputs
+                    {
+                        'name': 'stack_output_list',
+                        'url': '/stacks/{stack_name}/{stack_id}/outputs',
+                        'action': 'list_outputs',
+                        'method': 'GET'
+                    },
+                    {
+                        'name': 'stack_output_show',
+                        'url': '/stacks/{stack_name}/{stack_id}/outputs/'
+                               '{output_key}',
+                        'action': 'show_output',
+                        'method': 'GET'
                     }
                 ])
 

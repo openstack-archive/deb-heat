@@ -150,15 +150,11 @@ class ElasticIp(resource.Resource):
 
         # deallocate the eip
         if self.properties[self.DOMAIN]:
-            try:
+            with self.client_plugin('neutron').ignore_not_found:
                 self.neutron().delete_floatingip(self.resource_id)
-            except Exception as ex:
-                self.client_plugin('neutron').ignore_not_found(ex)
         else:
-            try:
+            with self.client_plugin('nova').ignore_not_found:
                 self.client().floating_ips.delete(self.resource_id)
-            except Exception as e:
-                self.client_plugin('nova').ignore_not_found(e)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
@@ -227,13 +223,11 @@ class ElasticIpAssociation(resource.Resource):
 
     default_client_name = 'nova'
 
-    def FnGetRefId(self):
+    def get_reference_id(self):
         return self.physical_resource_name_or_FnGetRefId()
 
     def validate(self):
-        '''
-        Validate any of the provided parameters
-        '''
+        """Validate any of the provided parameters."""
         super(ElasticIpAssociation, self).validate()
         eip = self.properties[self.EIP]
         allocation_id = self.properties[self.ALLOCATION_ID]
@@ -367,27 +361,6 @@ class ElasticIpAssociation(resource.Resource):
             self._neutron_add_gateway_router(allocation_id, network_id)
             self._neutron_update_floating_ip(allocation_id, port_id)
 
-    def _validate_update_properties(self, prop_diff):
-        # according to aws doc, when update allocation_id or eip,
-        # if you also change the InstanceId or NetworkInterfaceId,
-        # should go to Replacement flow
-        if self.ALLOCATION_ID in prop_diff or self.EIP in prop_diff:
-            instance_id = prop_diff.get(self.INSTANCE_ID)
-            ni_id = prop_diff.get(self.NETWORK_INTERFACE_ID)
-
-            if instance_id or ni_id:
-                raise exception.UpdateReplace(self.name)
-
-        # according to aws doc, when update the instance_id or
-        # network_interface_id, if you also change the EIP or
-        # ALLOCATION_ID, should go to Replacement flow
-        if (self.INSTANCE_ID in prop_diff or
-                self.NETWORK_INTERFACE_ID in prop_diff):
-            eip = prop_diff.get(self.EIP)
-            allocation_id = prop_diff.get(self.ALLOCATION_ID)
-            if eip or allocation_id:
-                raise exception.UpdateReplace(self.name)
-
     def handle_create(self):
         """Add a floating IP address to a server."""
         if self.properties[self.EIP]:
@@ -432,9 +405,29 @@ class ElasticIpAssociation(resource.Resource):
                                              port_id=None,
                                              ignore_not_found=True)
 
+    def _needs_update(self, after, before, after_props, before_props,
+                      prev_resource, check_init_complete=True):
+        result = super(ElasticIpAssociation, self)._needs_update(
+            after, before, after_props, before_props, prev_resource,
+            check_init_complete=check_init_complete)
+
+        prop_diff = self.update_template_diff_properties(after_props,
+                                                         before_props)
+
+        # according to aws doc, when update allocation_id or eip,
+        # if you also change the InstanceId or NetworkInterfaceId,
+        # should go to Replacement flow
+        if self.ALLOCATION_ID in prop_diff or self.EIP in prop_diff:
+            instance_id = prop_diff.get(self.INSTANCE_ID)
+            ni_id = prop_diff.get(self.NETWORK_INTERFACE_ID)
+
+            if instance_id or ni_id:
+                raise exception.UpdateReplace(self.name)
+
+        return result
+
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
-            self._validate_update_properties(prop_diff)
             if self.ALLOCATION_ID in prop_diff or self.EIP in prop_diff:
                 self._handle_update_eipInfo(prop_diff)
             elif (self.INSTANCE_ID in prop_diff or

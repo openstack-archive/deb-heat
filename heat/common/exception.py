@@ -20,7 +20,6 @@ import sys
 
 from oslo_log import log as logging
 import six
-from six.moves.urllib import parse as urlparse
 from six import reraise as raise_
 
 from heat.common.i18n import _
@@ -32,36 +31,25 @@ _FATAL_EXCEPTION_FORMAT_ERRORS = False
 LOG = logging.getLogger(__name__)
 
 
-class RedirectException(Exception):
-    def __init__(self, url):
-        self.url = urlparse.urlparse(url)
-
-
-class KeystoneError(Exception):
-    def __init__(self, code, message):
-        self.code = code
-        self.message = message
-
-    def __str__(self):
-        return "Code: %s, message: %s" % (self.code, self.message)
-
-
 @six.python_2_unicode_compatible
 class HeatException(Exception):
-    """Base Heat Exception
+    """Base Heat Exception.
 
-    To correctly use this class, inherit from it and define
-    a 'msg_fmt' property. That msg_fmt will get printf'd
-    with the keyword arguments provided to the constructor.
-
+    To correctly use this class, inherit from it and define a 'msg_fmt'
+    property. That msg_fmt will get printf'd with the keyword arguments
+    provided to the constructor.
     """
     message = _("An unknown exception occurred.")
+    error_code = None
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
 
         try:
             self.message = self.msg_fmt % kwargs
+
+            if self.error_code:
+                self.message = 'HEAT-E%s %s' % (self.error_code, self.message)
         except KeyError:
             exc_info = sys.exc_info()
             # kwargs doesn't match a variable in the message
@@ -83,19 +71,6 @@ class HeatException(Exception):
 
 class MissingCredentialError(HeatException):
     msg_fmt = _("Missing required credential: %(required)s")
-
-
-class BadAuthStrategy(HeatException):
-    msg_fmt = _('Incorrect auth strategy, expected "%(expected)s" but '
-                'received "%(received)s"')
-
-
-class AuthBadRequest(HeatException):
-    msg_fmt = _("Connect error/bad request to Auth service at URL %(url)s.")
-
-
-class AuthUrlNotFound(HeatException):
-    msg_fmt = _("Auth service at URL %(url)s not found.")
 
 
 class AuthorizationFailure(HeatException):
@@ -120,28 +95,6 @@ class NotAuthorized(Forbidden):
 
 class Invalid(HeatException):
     msg_fmt = _("Data supplied was not valid: %(reason)s")
-
-
-class AuthorizationRedirect(HeatException):
-    msg_fmt = _("Redirecting to %(uri)s for authorization.")
-
-
-class RequestUriTooLong(HeatException):
-    msg_fmt = _("The URI was too long.")
-
-
-class MaxRedirectsExceeded(HeatException):
-    msg_fmt = _("Maximum redirects (%(redirects)s) was exceeded.")
-
-
-class InvalidRedirect(HeatException):
-    msg_fmt = _("Received invalid HTTP redirect.")
-
-
-class RegionAmbiguity(HeatException):
-    msg_fmt = _("Multiple 'image' service matches for region %(region)s. This "
-                "generally means that a region is required and you have not "
-                "supplied one.")
 
 
 class UserParameterMissing(HeatException):
@@ -174,20 +127,8 @@ class InvalidTemplateReference(HeatException):
                 ' is incorrect.')
 
 
-class UserKeyPairMissing(HeatException):
-    msg_fmt = _("The Key (%(key_name)s) could not be found.")
-
-
-class FlavorMissing(HeatException):
-    msg_fmt = _("The Flavor ID (%(flavor_id)s) could not be found.")
-
-
 class EntityNotFound(HeatException):
     msg_fmt = _("The %(entity)s (%(name)s) could not be found.")
-
-
-class NovaNetworkNotFound(HeatException):
-    msg_fmt = _("The Nova network (%(network)s) could not be found.")
 
 
 class PhysicalResourceNameAmbiguity(HeatException):
@@ -198,10 +139,6 @@ class PhysicalResourceNameAmbiguity(HeatException):
 class InvalidTenant(HeatException):
     msg_fmt = _("Searching Tenant %(target)s "
                 "from Tenant %(actual)s forbidden.")
-
-
-class StackNotFound(HeatException):
-    msg_fmt = _("The Stack (%(stack_name)s) could not be found.")
 
 
 class StackExists(HeatException):
@@ -264,16 +201,9 @@ class SnapshotNotFound(HeatException):
                 "could not be found.")
 
 
-class TemplateNotFound(HeatException):
-    msg_fmt = _("%(message)s")
-
-
-class ResourceTypeNotFound(HeatException):
-    msg_fmt = _("The Resource Type (%(type_name)s) could not be found.")
-
-
-class InvalidResourceType(HeatException):
-    msg_fmt = _("%(message)s")
+class InvalidGlobalResource(HeatException):
+    msg_fmt = _("There was an error loading the definition of the global "
+                "resource type %(type_name)s.")
 
 
 class InvalidBreakPointHook(HeatException):
@@ -284,11 +214,8 @@ class ResourceNotAvailable(HeatException):
     msg_fmt = _("The Resource (%(resource_name)s) is not available.")
 
 
-class PhysicalResourceNotFound(HeatException):
-    msg_fmt = _("The Resource (%(resource_id)s) could not be found.")
-
-
 class WatchRuleNotFound(HeatException):
+    '''Keep this for AWS compatiblility.'''
     msg_fmt = _("The Watch Rule (%(watch_name)s) could not be found.")
 
 
@@ -389,7 +316,7 @@ class PropertyUnspecifiedError(HeatException):
 
 
 class UpdateReplace(Exception):
-    '''Raised when resource update requires replacement.'''
+    """Raised when resource update requires replacement."""
     def __init__(self, resource_name='Unknown'):
         msg = _("The Resource %s requires replacement.") % resource_name
         super(Exception, self).__init__(six.text_type(msg))
@@ -421,8 +348,9 @@ class UpdateInProgress(Exception):
 
 
 class HTTPExceptionDisguise(Exception):
-    """Disguises HTTP exceptions so they can be handled by the webob fault
-    application in the wsgi pipeline.
+    """Disguises HTTP exceptions.
+
+    They can be handled by the webob fault application in the wsgi pipeline.
     """
 
     def __init__(self, exception):
@@ -473,10 +401,6 @@ class StopActionFailed(HeatException):
 class EventSendFailed(HeatException):
     msg_fmt = _("Failed to send message to stack (%(stack_name)s) "
                 "on other engine (%(engine_id)s)")
-
-
-class ServiceNotFound(HeatException):
-    msg_fmt = _("Service %(service_id)s not found")
 
 
 class UnsupportedObjectError(HeatException):

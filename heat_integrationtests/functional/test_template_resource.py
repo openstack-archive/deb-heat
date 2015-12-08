@@ -195,9 +195,12 @@ outputs:
         self.assertIn('arn:openstack:heat:', test_ref)
 
     def test_transparent_ref(self):
-        """With the addition of OS::stack_id we can now use the nested resource
+        """Test using nested resource more transparently.
+
+        With the addition of OS::stack_id we can now use the nested resource
         more transparently.
         """
+
         nested_templ = '''
 heat_template_version: 2014-10-16
 resources:
@@ -243,6 +246,42 @@ outputs:
 
         self.assertEqual(old_way, test_attr1)
         self.assertEqual(old_way, test_attr2)
+
+
+class TemplateResourceFacadeTest(functional_base.FunctionalTestsBase):
+    """Prove that we can use ResourceFacade in a HOT template."""
+
+    main_template = '''
+heat_template_version: 2013-05-23
+resources:
+  the_nested:
+    type: the.yaml
+    metadata:
+      foo: bar
+outputs:
+  value:
+    value: {get_attr: [the_nested, output]}
+'''
+
+    nested_templ = '''
+heat_template_version: 2013-05-23
+resources:
+  test:
+    type: OS::Heat::TestResource
+    properties:
+      value: {"Fn::Select": [foo, {resource_facade: metadata}]}
+outputs:
+  output:
+    value: {get_attr: [test, output]}
+    '''
+
+    def test_metadata(self):
+        stack_identifier = self.stack_create(
+            template=self.main_template,
+            files={'the.yaml': self.nested_templ})
+        stack = self.client.stacks.get(stack_identifier)
+        value = self._stack_output(stack, 'value')
+        self.assertEqual('bar', value)
 
 
 class TemplateResourceUpdateTest(functional_base.FunctionalTestsBase):
@@ -484,6 +523,7 @@ Outputs:
 
 class TemplateResourceUpdateFailedTest(functional_base.FunctionalTestsBase):
     """Prove that we can do updates on a nested stack to fix a stack."""
+
     main_template = '''
 HeatTemplateFormatVersion: '2012-12-12'
 Resources:
@@ -576,6 +616,9 @@ Outputs:
                          info['template'])
         self.assertEqual(self._yaml_to_json(self.nested_templ),
                          info['resources']['the_nested']['template'])
+        # TODO(james combs): Implement separate test cases for export
+        # once export REST API is available.  Also test reverse order
+        # of invocation: export -> abandon AND abandon -> export
 
     def test_adopt(self):
         data = {
@@ -652,6 +695,7 @@ Outputs:
 
 class TemplateResourceErrorMessageTest(functional_base.FunctionalTestsBase):
     """Prove that nested stack errors don't suck."""
+
     template = '''
 HeatTemplateFormatVersion: '2012-12-12'
 Resources:
@@ -707,7 +751,7 @@ resources:
         super(TemplateResourceSuspendResumeTest, self).setUp()
 
     def test_suspend_resume(self):
-        """Basic test for template resource suspend resume"""
+        """Basic test for template resource suspend resume."""
         stack_identifier = self.stack_create(
             template=self.main_template,
             files={'the.yaml': self.nested_templ}
@@ -719,6 +763,7 @@ resources:
 
 class ValidateFacadeTest(test.HeatIntegrationTest):
     """Prove that nested stack errors don't suck."""
+
     template = '''
 heat_template_version: 2015-10-15
 resources:

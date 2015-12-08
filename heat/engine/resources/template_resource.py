@@ -42,13 +42,12 @@ def generate_class(name, template_name, env, files=None):
 
 
 class TemplateResource(stack_resource.StackResource):
-    '''
-    A resource implemented by a nested stack.
+    """A resource implemented by a nested stack.
 
     This implementation passes resource properties as parameters to the nested
     stack. Outputs of the nested stack are exposed as attributes of this
     resource.
-    '''
+    """
 
     def __init__(self, name, json_snippet, stack):
         self._parsed_nested = None
@@ -65,6 +64,11 @@ class TemplateResource(stack_resource.StackResource):
         self.resource_info = tri
         if self.validation_exception is None:
             self._generate_schema(self.t)
+
+    def resource_class(self):
+        # All TemplateResource subclasses can be converted to each other with
+        # a stack update, so allow them to cross-update in place.
+        return TemplateResource
 
     def _get_resource_info(self, rsrc_defn):
         tri = self.stack.env.get_resource_info(
@@ -94,7 +98,7 @@ class TemplateResource(stack_resource.StackResource):
             args = {'name': template_name, 'exc': six.text_type(r_exc)}
             msg = _('Could not fetch remote template '
                     '"%(name)s": %(exc)s') % args
-            raise exception.TemplateNotFound(message=msg)
+            raise exception.NotFound(msg_fmt=msg)
 
     @staticmethod
     def get_schemas(tmpl, param_defaults):
@@ -107,7 +111,7 @@ class TemplateResource(stack_resource.StackResource):
         self._parsed_nested = None
         try:
             tmpl = template.Template(self.child_template())
-        except (exception.TemplateNotFound, ValueError) as download_error:
+        except (exception.NotFound, ValueError) as download_error:
             self.validation_exception = download_error
             tmpl = template.Template(
                 {"HeatTemplateFormatVersion": "2012-12-12"})
@@ -124,9 +128,10 @@ class TemplateResource(stack_resource.StackResource):
                                                 self._resolve_all_attributes)
 
     def child_params(self):
-        '''
+        """Override method of child_params for the resource.
+
         :return: parameter values for our nested stack based on our properties
-        '''
+        """
         params = {}
         for pname, pval in iter(self.properties.props.items()):
             if not pval.implemented():
@@ -194,7 +199,7 @@ class TemplateResource(stack_resource.StackResource):
             try:
                 t_data = self.get_template_file(self.template_name,
                                                 self.allowed_schemes)
-            except exception.TemplateNotFound as err:
+            except exception.NotFound as err:
                 if self.action == self.UPDATE:
                     raise
                 reported_excp = err
@@ -284,9 +289,7 @@ class TemplateResource(stack_resource.StackResource):
                                          self.child_params())
 
     def metadata_update(self, new_metadata=None):
-        '''
-        Refresh the metadata if new_metadata is None
-        '''
+        """Refresh the metadata if new_metadata is None."""
         if new_metadata is None:
             self.metadata_set(self.t.metadata())
 

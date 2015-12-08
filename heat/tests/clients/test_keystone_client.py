@@ -28,15 +28,15 @@ class KeystoneRoleConstraintTest(common.HeatTestCase):
                          client.KeystoneRoleConstraint.expected_exceptions,
                          "KeystoneRoleConstraint expected exceptions error")
 
-    def test_constrain(self):
-        constrain = client.KeystoneRoleConstraint()
+    def test_constraint(self):
+        constraint = client.KeystoneRoleConstraint()
         client_mock = mock.MagicMock()
         client_plugin_mock = mock.MagicMock()
         client_plugin_mock.get_role_id.return_value = None
         client_mock.client_plugin.return_value = client_plugin_mock
 
-        self.assertIsNone(constrain.validate_with_client(client_mock,
-                                                         'role_1'))
+        self.assertIsNone(constraint.validate_with_client(client_mock,
+                                                          'role_1'))
 
         client_plugin_mock.get_role_id.assert_called_once_with('role_1')
 
@@ -48,15 +48,15 @@ class KeystoneProjectConstraintTest(common.HeatTestCase):
                          client.KeystoneProjectConstraint.expected_exceptions,
                          "KeystoneProjectConstraint expected exceptions error")
 
-    def test_constrain(self):
-        constrain = client.KeystoneProjectConstraint()
+    def test_constraint(self):
+        constraint = client.KeystoneProjectConstraint()
         client_mock = mock.MagicMock()
         client_plugin_mock = mock.MagicMock()
         client_plugin_mock.get_project_id.return_value = None
         client_mock.client_plugin.return_value = client_plugin_mock
 
-        self.assertIsNone(constrain.validate_with_client(client_mock,
-                                                         'project_1'))
+        self.assertIsNone(constraint.validate_with_client(client_mock,
+                                                          'project_1'))
 
         client_plugin_mock.get_project_id.assert_called_once_with('project_1')
 
@@ -68,15 +68,15 @@ class KeystoneGroupConstraintTest(common.HeatTestCase):
                          client.KeystoneGroupConstraint.expected_exceptions,
                          "KeystoneGroupConstraint expected exceptions error")
 
-    def test_constrain(self):
-        constrain = client.KeystoneGroupConstraint()
+    def test_constraint(self):
+        constraint = client.KeystoneGroupConstraint()
         client_mock = mock.MagicMock()
         client_plugin_mock = mock.MagicMock()
         client_plugin_mock.get_group_id.return_value = None
         client_mock.client_plugin.return_value = client_plugin_mock
 
-        self.assertIsNone(constrain.validate_with_client(client_mock,
-                                                         'group_1'))
+        self.assertIsNone(constraint.validate_with_client(client_mock,
+                                                          'group_1'))
 
         client_plugin_mock.get_group_id.assert_called_once_with('group_1')
 
@@ -88,15 +88,15 @@ class KeystoneDomainConstraintTest(common.HeatTestCase):
                          client.KeystoneDomainConstraint.expected_exceptions,
                          "KeystoneDomainConstraint expected exceptions error")
 
-    def test_constrain(self):
-        constrain = client.KeystoneDomainConstraint()
+    def test_constraint(self):
+        constraint = client.KeystoneDomainConstraint()
         client_mock = mock.MagicMock()
         client_plugin_mock = mock.MagicMock()
         client_plugin_mock.get_domain_id.return_value = None
         client_mock.client_plugin.return_value = client_plugin_mock
 
-        self.assertIsNone(constrain.validate_with_client(client_mock,
-                                                         'domain_1'))
+        self.assertIsNone(constraint.validate_with_client(client_mock,
+                                                          'domain_1'))
 
         client_plugin_mock.get_domain_id.assert_called_once_with('domain_1')
 
@@ -111,15 +111,15 @@ class KeystoneServiceConstraintTest(common.HeatTestCase):
                          client.KeystoneServiceConstraint.expected_exceptions,
                          "KeystoneServiceConstraint expected exceptions error")
 
-    def test_constrain(self):
-        constrain = client.KeystoneServiceConstraint()
+    def test_constraint(self):
+        constraint = client.KeystoneServiceConstraint()
         client_mock = mock.MagicMock()
         client_plugin_mock = mock.MagicMock()
         client_plugin_mock.get_service_id.return_value = self.sample_uuid
         client_mock.client_plugin.return_value = client_plugin_mock
 
-        self.assertIsNone(constrain.validate_with_client(client_mock,
-                                                         self.sample_uuid))
+        self.assertIsNone(constraint.validate_with_client(client_mock,
+                                                          self.sample_uuid))
 
         client_plugin_mock.get_service_id.assert_called_once_with(
             self.sample_uuid
@@ -133,16 +133,41 @@ class KeystoneUserConstraintTest(common.HeatTestCase):
                          client.KeystoneUserConstraint.expected_exceptions,
                          "KeystoneUserConstraint expected exceptions error")
 
-    def test_constrain(self):
-        constrain = client.KeystoneUserConstraint()
+    def test_constraint(self):
+        constraint = client.KeystoneUserConstraint()
         client_mock = mock.MagicMock()
         client_plugin_mock = mock.MagicMock()
         client_plugin_mock.get_user_id.return_value = None
         client_mock.client_plugin.return_value = client_plugin_mock
 
-        self.assertIsNone(constrain.validate_with_client(client_mock, 'admin'))
+        self.assertIsNone(constraint.validate_with_client(client_mock,
+                                                          'admin'))
 
         client_plugin_mock.get_user_id.assert_called_once_with('admin')
+
+
+class KeystoneRegionConstraintTest(common.HeatTestCase):
+
+    sample_uuid = '477e8273-60a7-4c41-b683-fdb0bc7cd151'
+
+    def test_expected_exceptions(self):
+        self.assertEqual((exception.EntityNotFound,),
+                         client.KeystoneRegionConstraint.expected_exceptions,
+                         "KeystoneRegionConstraint expected exceptions error")
+
+    def test_constraint(self):
+        constraint = client.KeystoneRegionConstraint()
+        client_mock = mock.MagicMock()
+        client_plugin_mock = mock.MagicMock()
+        client_plugin_mock.get_region_id.return_value = self.sample_uuid
+        client_mock.client_plugin.return_value = client_plugin_mock
+
+        self.assertIsNone(constraint.validate_with_client(client_mock,
+                                                          self.sample_uuid))
+
+        client_plugin_mock.get_region_id.assert_called_once_with(
+            self.sample_uuid
+        )
 
 
 class KeystoneClientPluginServiceTest(common.HeatTestCase):
@@ -625,3 +650,49 @@ class KeystoneClientPluginUserTest(common.HeatTestCase):
                           self.sample_name)
         self._client.client.users.list.assert_called_once_with(
             name=self.sample_name)
+
+
+class KeystoneClientPluginRegionTest(common.HeatTestCase):
+
+    sample_uuid = '477e8273-60a7-4c41-b683-fdb0bc7cd152'
+    sample_name = 'sample_region'
+
+    def _get_mock_region(self):
+        region = mock.MagicMock()
+        region.id = self.sample_uuid
+        region.name = self.sample_name
+        return region
+
+    def setUp(self):
+        super(KeystoneClientPluginRegionTest, self).setUp()
+        self._client = mock.MagicMock()
+
+    @mock.patch.object(client.KeystoneClientPlugin, 'client')
+    def test_get_region_id(self, client_keystone):
+        self._client.client.regions.get.return_value = self._get_mock_region()
+
+        client_keystone.return_value = self._client
+        client_plugin = client.KeystoneClientPlugin(
+            context=mock.MagicMock()
+        )
+
+        self.assertEqual(self.sample_uuid,
+                         client_plugin.get_region_id(self.sample_uuid))
+        self._client.client.regions.get.assert_called_once_with(
+            self.sample_uuid)
+
+    @mock.patch.object(client.KeystoneClientPlugin, 'client')
+    def test_get_region_id_not_found(self, client_keystone):
+        self._client.client.regions.get.side_effect = (keystone_exceptions
+                                                       .NotFound)
+        client_keystone.return_value = self._client
+        client_plugin = client.KeystoneClientPlugin(
+            context=mock.MagicMock()
+        )
+
+        ex = self.assertRaises(exception.EntityNotFound,
+                               client_plugin.get_region_id,
+                               self.sample_name)
+        msg = ('The KeystoneRegion (%(name)s) could not be found.' %
+               {'name': self.sample_name})
+        self.assertEqual(msg, six.text_type(ex))
