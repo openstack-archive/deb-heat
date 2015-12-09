@@ -6,3 +6,6 @@ etc/heat/api-paste.ini
 etc/heat/environment.d/default.yaml
 etc/heat/policy.json
 etc/heat/templates
+/usr/bin/heat-wsgi-api
+/usr/bin/heat-wsgi-api-cloudwatch
+/usr/bin/heat-wsgi-api-cfn

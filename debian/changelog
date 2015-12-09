@@ -3,6 +3,7 @@ heat (1:6.0.0~b1-1) experimental; urgency=medium
   * New upstream release.
   * Fixed (build-)depends for this release.
   * Removed the patch for allowing routes 2.0.
+  * Also package new /usr/bin/heat-wsgi-api{,-cloudwatch,-cfn}
 
  -- Thomas Goirand <zigo@debian.org>  Tue, 08 Dec 2015 14:16:00 +0100
 
