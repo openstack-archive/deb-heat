@@ -1,11 +1,7 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: heat
-Upstream-Contact:
+Upstream-Contact: OpenStack Devel <openstack-dev@lists.openstack.org>
 Source: https://github.com/openstack/heat
-
-Files: debian/*
-Copyright: 2012 Thomas Goirand <zigo@debian.org>
-License: Apache-2
 
 Files: *
 Copyright: Angus Salkeld <asalkeld@redhat.com>
@@ -28,6 +24,10 @@ Copyright: Angus Salkeld <asalkeld@redhat.com>
 	Monty Taylor <mordred@inaugust.com>
 	Jesse Andrews <anotherjesse@gmail.com>
 	Jeremy Stanley <fungi@yuggoth.org>
+License: Apache-2
+
+Files: debian/*
+Copyright: (c) 2012-2016, Thomas Goirand <zigo@debian.org>
 License: Apache-2
 
 License: Apache-2

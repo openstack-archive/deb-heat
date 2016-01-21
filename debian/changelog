@@ -4,6 +4,7 @@ heat (1:6.0.0~b2-1) experimental; urgency=medium
   * Fixed (build-)depends for this release.
   * Removed the patch for allowing routes 2.0.
   * Also package new /usr/bin/heat-wsgi-api{,-cloudwatch,-cfn}
+  * Fixed debian/copyright ordering.
 
  -- Thomas Goirand <zigo@debian.org>  Tue, 08 Dec 2015 14:16:00 +0100
 
