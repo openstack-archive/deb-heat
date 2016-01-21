@@ -36,22 +36,25 @@ override_dh_install:
 	mkdir -p $(CURDIR)/debian/heat-common/usr/share/heat-common
 	oslo-config-generator \
 		--namespace heat.common.config \
+                --namespace heat.common.context \
 		--namespace heat.common.crypt \
 		--namespace heat.common.heat_keystoneclient \
 		--namespace heat.common.wsgi \
 		--namespace heat.engine.clients \
 		--namespace heat.engine.notification \
 		--namespace heat.engine.resources \
-		--namespace heat.openstack.common.eventlet_backdoor \
-		--namespace heat.openstack.common.log \
-		--namespace heat.openstack.common.policy \
-		--namespace heat.api.middleware.ssl \
+                --namespace heat.api.middleware.ssl \
 		--namespace heat.api.aws.ec2token \
 		--namespace keystonemiddleware.auth_token \
 		--namespace oslo.messaging \
+                --namespace oslo.middleware \
 		--namespace oslo.db \
 		--namespace oslo.log \
-		--wrap-width 120 \
+                --namespace oslo.policy \
+                --namespace oslo.service.service \
+                --namespace oslo.service.periodic_task \
+                --namespace oslo.service.sslutil \
+		--wrap-width 140 \
 		--output-file $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
 	sed -i 's|^[# \t]*connection[\t #]*=.*|connection=sqlite:////var/lib/heat/heatdb|' $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
 	sed -i 's|^[# \t]*auth_protocol[\t #]*=.*|auth_protocol = http|' $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
