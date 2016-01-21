@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
-
 from oslo_utils import uuidutils
 from saharaclient.api import base as sahara_base
 from saharaclient import client as sahara_client
@@ -25,7 +23,7 @@ from heat.common.i18n import _
 from heat.engine.clients import client_plugin
 from heat.engine import constraints
 
-LOG = logging.getLogger(__name__)
+CLIENT_NAME = 'sahara'
 
 
 class SaharaClientPlugin(client_plugin.ClientPlugin):
@@ -36,7 +34,7 @@ class SaharaClientPlugin(client_plugin.ClientPlugin):
 
     def _create(self):
         con = self.context
-        endpoint_type = self._get_client_option('sahara', 'endpoint_type')
+        endpoint_type = self._get_client_option(CLIENT_NAME, 'endpoint_type')
         endpoint = self.url_for(service_type=self.DATA_PROCESSING,
                                 endpoint_type=endpoint_type)
         args = {
@@ -45,8 +43,8 @@ class SaharaClientPlugin(client_plugin.ClientPlugin):
             'auth_url': con.auth_url,
             'project_name': con.tenant,
             'sahara_url': endpoint,
-            'insecure': self._get_client_option('sahara', 'insecure'),
-            'cacert': self._get_client_option('sahara', 'ca_file')
+            'insecure': self._get_client_option(CLIENT_NAME, 'insecure'),
+            'cacert': self._get_client_option(CLIENT_NAME, 'ca_file')
         }
         client = sahara_client.Client('1.1', **args)
         return client
@@ -136,18 +134,17 @@ class SaharaClientPlugin(client_plugin.ClientPlugin):
                                            name=plugin_name)
 
 
-class ImageConstraint(constraints.BaseCustomConstraint):
+class SaharaBaseConstraint(constraints.BaseCustomConstraint):
+    resource_client_name = CLIENT_NAME
+
+
+class ImageConstraint(SaharaBaseConstraint):
 
     expected_exceptions = (exception.EntityNotFound,
                            exception.PhysicalResourceNameAmbiguity,)
-
-    def validate_with_client(self, client, value):
-        client.client_plugin('sahara').get_image_id(value)
+    resource_getter_name = 'get_image_id'
 
 
-class PluginConstraint(constraints.BaseCustomConstraint):
+class PluginConstraint(SaharaBaseConstraint):
 
-    expected_exceptions = (exception.EntityNotFound,)
-
-    def validate_with_client(self, client, value):
-        client.client_plugin('sahara').get_plugin_id(value)
+    resource_getter_name = 'get_plugin_id'

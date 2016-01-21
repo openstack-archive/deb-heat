@@ -24,6 +24,8 @@ class MonascaNotification(resource.Resource):
 
     This plug-in requires python-monascaclient>=1.0.22. So to enable this
     plug-in, install this client library and restart the heat-engine.
+
+    A resource which is used to notificate if there is some alarm.
     """
 
     support_status = support.SupportStatus(
@@ -82,10 +84,7 @@ class MonascaNotification(resource.Resource):
         notification = self.client().notifications.create(**args)
         self.resource_id_set(notification['id'])
 
-    def handle_update(self,
-                      prop_diff,
-                      json_snippet=None,
-                      tmpl_diff=None):
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         args = dict(notification_id=self.resource_id)
 
         args['name'] = (prop_diff.get(self.NAME) or

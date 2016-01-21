@@ -48,6 +48,7 @@ from heat.objects import stack as stack_objects
 from heat.rpc import client as rpc_client
 
 cfg.CONF.import_opt('action_retry_limit', 'heat.common.config')
+cfg.CONF.import_opt('observe_on_update', 'heat.common.config')
 
 LOG = logging.getLogger(__name__)
 
@@ -132,15 +133,10 @@ class Resource(object):
             # Call is already for a subclass, so pass it through
             ResourceClass = cls
         else:
-            from heat.engine.resources import template_resource
-
             registry = stack.env.registry
-            try:
-                ResourceClass = registry.get_class(definition.resource_type,
-                                                   resource_name=name,
-                                                   files=stack.t.files)
-            except exception.NotFound:
-                ResourceClass = template_resource.TemplateResource
+            ResourceClass = registry.get_class_to_instantiate(
+                definition.resource_type,
+                resource_name=name)
 
             assert issubclass(ResourceClass, Resource)
 
@@ -180,6 +176,8 @@ class Resource(object):
         self.name = name
         self.t = definition
         self.reparse()
+        self.update_policy = self.t.update_policy(self.update_policy_schema,
+                                                  self.context)
         self.attributes_schema.update(self.base_attributes_schema)
         self.attributes = self._init_attributes()
 
@@ -394,19 +392,6 @@ class Resource(object):
         # common resources have not nested, StackResource overrides it
         return False
 
-    def resource_class(self):
-        """Return the resource class.
-
-        This is used to compare old and new resources when updating, to ensure
-        that in-place updates are possible. This method shold return the
-        highest common class in the hierarchy whose subclasses are all capable
-        of converting to each other's types via handle_update().
-
-        This mechanism may disappear again in future, so third-party resource
-        types should not rely on it.
-        """
-        return type(self)
-
     def has_hook(self, hook):
         # Clear the cache to make sure the data is up to date:
         self._data = None
@@ -429,9 +414,14 @@ class Resource(object):
         """
         if self.type() == resource_type:
             return True
-        ri = self.stack.env.get_resource_info(self.type(),
-                                              self.name)
-        return ri is not None and ri.name == resource_type
+
+        try:
+            ri = self.stack.env.get_resource_info(self.type(),
+                                                  self.name)
+        except exception.EntityNotFound:
+            return False
+        else:
+            return ri.name == resource_type
 
     def implementation_signature(self):
         """Return a tuple defining the implementation.
@@ -654,7 +644,7 @@ class Resource(object):
         else:
             self.state_set(action, self.COMPLETE)
 
-    def action_handler_task(self, action, args=[], action_prefix=None):
+    def action_handler_task(self, action, args=None, action_prefix=None):
         """A task to call the Resource subclass's handler methods for action.
 
         Calls the handle_<ACTION>() method for the given action and then calls
@@ -666,6 +656,7 @@ class Resource(object):
         If a prefix is supplied, the handler method handle_<PREFIX>_<ACTION>()
         is called instead.
         """
+        args = args or []
         handler_action = action.lower()
         check = getattr(self, 'check_%s_complete' % handler_action, None)
 
@@ -934,6 +925,19 @@ class Resource(object):
 
         before_props = before.properties(self.properties_schema,
                                          self.context)
+
+        if cfg.CONF.observe_on_update:
+            try:
+                resource_reality = self.get_live_state(before_props)
+                self._update_properties_with_live_state(before_props,
+                                                        resource_reality)
+            except ValueError as ex:
+                LOG.warning(_LW("Resource cannot be updated with it's live "
+                                "state in case of "
+                                "error: %s"), six.text_type(ex))
+            except exception.EntityNotFound:
+                raise exception.UpdateReplace(self)
+
         # Regenerate the schema, else validation would fail
         self.regenerate_info_schema(after)
         after_props = after.properties(self.properties_schema,
@@ -971,7 +975,7 @@ class Resource(object):
                 self.t = after
                 self.reparse()
                 self._update_stored_properties()
-        except exception.UpdateReplace as ex:
+        except exception.UpdateReplace:
             # catch all UpdateReplace expections
             try:
                 if (self.stack.action == 'ROLLBACK' and
@@ -988,7 +992,7 @@ class Resource(object):
                 failure = exception.ResourceFailure(e, self, action)
                 self.state_set(action, self.FAILED, six.text_type(failure))
                 raise failure
-            raise ex
+            raise
 
     def prepare_for_replace(self):
         """Prepare resource for replacing.
@@ -1305,7 +1309,7 @@ class Resource(object):
                 rs = resource_objects.Resource.get_obj(self.context, self.id)
                 rs.update_and_save({'nova_instance': self.resource_id})
             except Exception as ex:
-                LOG.warn(_LW('db error %s'), ex)
+                LOG.warning(_LW('db error %s'), ex)
 
     def _store(self, metadata=None):
         """Create the resource in the database."""
@@ -1348,6 +1352,7 @@ class Resource(object):
                          self.name, self.type())
 
         ev.store()
+        self.stack.dispatch_event(ev)
 
     def _store_or_update(self, action, status, reason):
         prev_action = self.action
@@ -1442,7 +1447,7 @@ class Resource(object):
             atomic_key=atomic_key)
 
         if not updated_ok:
-            LOG.warn(_LW('Failed to unlock resource %s'), self.name)
+            LOG.warning(_LW('Failed to unlock resource %s'), self.name)
 
     def _resolve_all_attributes(self, attr):
         """Method for resolving all attributes.
@@ -1483,8 +1488,34 @@ class Resource(object):
                 resource = obj.get(self.resource_id)
                 return resource.to_dict()
             except AttributeError as ex:
-                LOG.warn(_LW("Resolving 'show' attribute has failed : %s"), ex)
+                LOG.warning(_LW("Resolving 'show' attribute has failed : %s"),
+                            ex)
                 return None
+
+    def get_live_state(self, resource_properties=None):
+        """Default implementation; should be overridden by resources.
+
+        :returns: dict of resource's real state of properties.
+        """
+        if not self.resource_id:
+            raise exception.EntityNotFound(entity='Resource', name=self.name)
+
+        return {}
+
+    def _update_properties_with_live_state(self, resource_properties,
+                                           live_properties):
+        """Update resource properties data with live state properties.
+
+        Note, that live_properties can contains None values, so there's next
+        situation: property equals to some value, but live state has no such
+        property, i.e. property equals to None, so during update property
+        should be updated with None.
+        """
+        for key in resource_properties:
+            if key in live_properties:
+                if resource_properties.get(key) != live_properties.get(key):
+                    resource_properties.data.update(
+                        {key: live_properties.get(key)})
 
     def _resolve_attribute(self, name):
         """Default implementation of resolving resource's attributes.
@@ -1683,15 +1714,15 @@ class Resource(object):
             return
         self._handle_signal(details)
 
-    def handle_update(self, json_snippet=None, tmpl_diff=None, prop_diff=None):
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
             raise exception.UpdateReplace(self.name)
 
     def metadata_update(self, new_metadata=None):
         """No-op for resources which don't explicitly override this method."""
         if new_metadata:
-            LOG.warn(_LW("Resource %s does not implement metadata update"),
-                     self.name)
+            LOG.warning(_LW("Resource %s does not implement metadata update"),
+                        self.name)
 
     @classmethod
     def resource_to_template(cls, resource_type, template_type='cfn'):

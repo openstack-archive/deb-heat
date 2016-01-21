@@ -36,7 +36,7 @@ class HeatException(Exception):
     """Base Heat Exception.
 
     To correctly use this class, inherit from it and define a 'msg_fmt'
-    property. That msg_fmt will get printf'd with the keyword arguments
+    property. That msg_fmt will get formatted with the keyword arguments
     provided to the constructor.
     """
     message = _("An unknown exception occurred.")
@@ -191,12 +191,12 @@ class InvalidSchemaError(HeatException):
     msg_fmt = _("%(message)s")
 
 
-class ResourceNotFound(HeatException):
+class ResourceNotFound(EntityNotFound):
     msg_fmt = _("The Resource (%(resource_name)s) could not be found "
                 "in Stack %(stack_name)s.")
 
 
-class SnapshotNotFound(HeatException):
+class SnapshotNotFound(EntityNotFound):
     msg_fmt = _("The Snapshot (%(snapshot)s) for Stack (%(stack)s) "
                 "could not be found.")
 
@@ -214,8 +214,8 @@ class ResourceNotAvailable(HeatException):
     msg_fmt = _("The Resource (%(resource_name)s) is not available.")
 
 
-class WatchRuleNotFound(HeatException):
-    '''Keep this for AWS compatiblility.'''
+class WatchRuleNotFound(EntityNotFound):
+    """Keep this for AWS compatiblility."""
     msg_fmt = _("The Watch Rule (%(watch_name)s) could not be found.")
 
 

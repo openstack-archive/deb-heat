@@ -123,6 +123,23 @@ resources:
         - network: 4321
 """
 
+server_with_sw_config_personality = """
+heat_template_version: 2014-10-16
+resources:
+  swconfig:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      config: |
+        #!/bin/bash
+        echo -e "test"
+  server:
+    type: OS::Nova::Server
+    properties:
+      image: F17-x86_64-gold
+      flavor: m1.small
+      personality: { /tmp/test: { get_attr: [swconfig, config]}}
+"""
+
 
 class ServersTest(common.HeatTestCase):
     def setUp(self):
@@ -441,7 +458,7 @@ class ServersTest(common.HeatTestCase):
         stack_name = 'img_name_err'
         (tmpl, stack) = self._setup_test_stack(stack_name)
 
-        # create an server with non exist image name
+        # create a server with non exist image name
         tmpl['Resources']['WebServer']['Properties']['image'] = 'Slackware'
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('WebServer',
@@ -469,7 +486,7 @@ class ServersTest(common.HeatTestCase):
         stack_name = 'img_dup_err'
         (tmpl, stack) = self._setup_test_stack(stack_name)
 
-        # create an server with a non unique image name
+        # create a server with a non unique image name
         tmpl['Resources']['WebServer']['Properties']['image'] = 'CentOS 5.2'
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('WebServer',
@@ -496,7 +513,7 @@ class ServersTest(common.HeatTestCase):
         stack_name = 'img_id_err'
         (tmpl, stack) = self._setup_test_stack(stack_name)
 
-        # create an server with non exist image Id
+        # create a server with non exist image Id
         tmpl['Resources']['WebServer']['Properties']['image'] = '1'
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('WebServer',
@@ -1166,7 +1183,7 @@ class ServersTest(common.HeatTestCase):
         stack_name = 'srv_val_bootvol'
         (tmpl, stack) = self._setup_test_stack(stack_name)
 
-        # create an server with bootable volume
+        # create a server with bootable volume
         web_server = tmpl.t['Resources']['WebServer']
         del web_server['Properties']['image']
 
@@ -1297,7 +1314,7 @@ class ServersTest(common.HeatTestCase):
         (tmpl, stack) = self._setup_test_stack(stack_name)
 
         network_name = 'public'
-        # create an server with 'uuid' and 'network' properties
+        # create a server with 'uuid' and 'network' properties
         tmpl['Resources']['WebServer']['Properties']['networks'] = (
             [{'uuid': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
               'network': network_name}])
@@ -1332,7 +1349,7 @@ class ServersTest(common.HeatTestCase):
     def test_server_validate_with_only_fixed_ip(self):
         stack_name = 'srv_net'
         (tmpl, stack) = self._setup_test_stack(stack_name)
-        # create an server with 'uuid' and 'network' properties
+        # create a server with 'uuid' and 'network' properties
         tmpl['Resources']['WebServer']['Properties']['networks'] = (
             [{'fixed_ip': '10.0.0.99'}])
 
@@ -1681,6 +1698,10 @@ class ServersTest(common.HeatTestCase):
         update_template = copy.deepcopy(server.t)
         update_template['Properties'][
             'software_config_transport'] = 'POLL_TEMP_URL'
+
+        self.rpc_client = mock.MagicMock()
+        server._rpc_client = self.rpc_client
+        self.rpc_client.create_software_config.return_value = None
 
         self.m.ReplayAll()
         scheduler.TaskRunner(server.update, update_template)()
@@ -2996,6 +3017,24 @@ class ServersTest(common.HeatTestCase):
                          'file size (10240 bytes).', six.text_type(exc))
         self.m.VerifyAll()
 
+    def test_server_validate_personality_get_attr_return_none(self):
+        stack_name = 'srv_val'
+        (tmpl, stack) = self._setup_test_stack(
+            stack_name, server_with_sw_config_personality)
+        resource_defns = tmpl.resource_definitions(stack)
+        server = servers.Server('server_create_image_err',
+                                resource_defns['server'], stack)
+        self.m.StubOutWithMock(self.fc.limits, 'get')
+        self.fc.limits.get().MultipleTimes().AndReturn(self.limits)
+
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
+        self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self.m.ReplayAll()
+
+        self.assertIsNone(server.validate())
+        self.m.VerifyAll()
+
     def test_resolve_attribute_server_not_found(self):
         return_server = self.fc.servers.list()[1]
         server = self._create_test_server(return_server,
@@ -3253,7 +3292,6 @@ class ServersTest(common.HeatTestCase):
             {'port': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
              'network': None,
              'fixed_ip': None,
-             'uuid': None,
              'subnet': None,
              'port_extra_properties': None,
              'uuid': None},

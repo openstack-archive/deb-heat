@@ -34,8 +34,26 @@ from heat.engine import clients
 
 LOG = logging.getLogger(__name__)
 
+
+# Note, we yield the options via list_opts to enable generation of the
+# sample heat.conf, but we don't register these options directly via
+# cfg.CONF.register*, it's done via auth.register_conf_options
+# Note, only auth_plugin = v3password is expected to work, example config:
+# [trustee]
+# auth_plugin = password
+# auth_url = http://192.168.1.2:35357
+# username = heat
+# password = password
+# user_domain_id = default
+V3_PASSWORD_PLUGIN = 'v3password'
 TRUSTEE_CONF_GROUP = 'trustee'
 auth.register_conf_options(cfg.CONF, TRUSTEE_CONF_GROUP)
+
+
+def list_opts():
+    trustee_opts = auth.conf.get_common_conf_options()
+    trustee_opts.extend(auth.conf.get_plugin_options(V3_PASSWORD_PLUGIN))
+    yield TRUSTEE_CONF_GROUP, trustee_opts
 
 
 class RequestContext(context.RequestContext):
@@ -51,7 +69,8 @@ class RequestContext(context.RequestContext):
                  read_only=False, show_deleted=False,
                  overwrite=True, trust_id=None, trustor_user_id=None,
                  request_id=None, auth_token_info=None, region_name=None,
-                 auth_plugin=None, trusts_auth_plugin=None, **kwargs):
+                 auth_plugin=None, trusts_auth_plugin=None,
+                 user_domain_id=None, project_domain_id=None, **kwargs):
         """Initialisation of the request context.
 
         :param overwrite: Set to False to ensure that the greenthread local
@@ -65,7 +84,9 @@ class RequestContext(context.RequestContext):
                                              is_admin=is_admin,
                                              read_only=read_only,
                                              show_deleted=show_deleted,
-                                             request_id=request_id)
+                                             request_id=request_id,
+                                             user_domain=user_domain_id,
+                                             project_domain=project_domain_id)
 
         self.username = username
         self.user_id = user_id
@@ -122,7 +143,9 @@ class RequestContext(context.RequestContext):
                 'request_id': self.request_id,
                 'show_deleted': self.show_deleted,
                 'region_name': self.region_name,
-                'user_identity': user_idt}
+                'user_identity': user_idt,
+                'user_domain_id': self.user_domain,
+                'project_domain_id': self.project_domain}
 
     @classmethod
     def from_dict(cls, values):
@@ -153,18 +176,22 @@ class RequestContext(context.RequestContext):
         if self._trusts_auth_plugin:
             return self._trusts_auth_plugin
 
-        LOG.warn(_LW('Using the keystone_authtoken user as the heat '
-                     'trustee user directly is deprecated. Please add the '
-                     'trustee credentials you need to the %s section of '
-                     'your heat.conf file.') % TRUSTEE_CONF_GROUP)
+        LOG.warning(_LW('Using the keystone_authtoken user as the heat '
+                        'trustee user directly is deprecated. Please add the '
+                        'trustee credentials you need to the %s section of '
+                        'your heat.conf file.') % TRUSTEE_CONF_GROUP)
 
         cfg.CONF.import_group('keystone_authtoken',
                               'keystonemiddleware.auth_token')
 
+        trustee_user_domain = 'default'
+        if 'user_domain_id' in cfg.CONF.keystone_authtoken:
+            trustee_user_domain = cfg.CONF.keystone_authtoken.user_domain_id
+
         self._trusts_auth_plugin = v3.Password(
             username=cfg.CONF.keystone_authtoken.admin_user,
             password=cfg.CONF.keystone_authtoken.admin_password,
-            user_domain_id='default',
+            user_domain_id=trustee_user_domain,
             auth_url=self.keystone_v3_endpoint,
             trust_id=self.trust_id)
         return self._trusts_auth_plugin
@@ -189,7 +216,7 @@ class RequestContext(context.RequestContext):
             return v3.Password(username=self.username,
                                password=self.password,
                                project_id=self.tenant_id,
-                               user_domain_id='default',
+                               user_domain_id=self.user_domain,
                                auth_url=self.keystone_v3_endpoint)
 
         LOG.error(_LE("Keystone v3 API connection failed, no password "
@@ -249,11 +276,14 @@ class ContextMiddleware(wsgi.Middleware):
                 aws_creds = headers.get('X-Auth-EC2-Creds')
 
             user_id = headers.get('X-User-Id')
+            user_domain_id = headers.get('X_User_Domain_Id')
             token = headers.get('X-Auth-Token')
             tenant = headers.get('X-Project-Name')
             tenant_id = headers.get('X-Project-Id')
+            project_domain_id = headers.get('X_Project_Domain_Id')
             region_name = headers.get('X-Region-Name')
             auth_url = headers.get('X-Auth-Url')
+
             roles = headers.get('X-Roles')
             if roles is not None:
                 roles = roles.split(',')
@@ -264,18 +294,21 @@ class ContextMiddleware(wsgi.Middleware):
         except Exception:
             raise exception.NotAuthenticated()
 
-        req.context = self.make_context(auth_token=token,
-                                        tenant=tenant, tenant_id=tenant_id,
-                                        aws_creds=aws_creds,
-                                        username=username,
-                                        user_id=user_id,
-                                        password=password,
-                                        auth_url=auth_url,
-                                        roles=roles,
-                                        request_id=req_id,
-                                        auth_token_info=token_info,
-                                        region_name=region_name,
-                                        auth_plugin=auth_plugin)
+        req.context = self.make_context(
+            auth_token=token,
+            tenant=tenant, tenant_id=tenant_id,
+            aws_creds=aws_creds,
+            username=username,
+            user_id=user_id,
+            password=password,
+            auth_url=auth_url,
+            roles=roles,
+            request_id=req_id,
+            auth_token_info=token_info,
+            region_name=region_name,
+            auth_plugin=auth_plugin,
+            user_domain_id=user_domain_id,
+            project_domain_id=project_domain_id)
 
 
 def ContextMiddleware_filter_factory(global_conf, **local_conf):

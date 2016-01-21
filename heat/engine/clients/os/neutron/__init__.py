@@ -69,8 +69,13 @@ class NeutronClientPlugin(client_plugin.ClientPlugin):
         return isinstance(ex, exceptions.NeutronClientNoUniqueMatch)
 
     def find_neutron_resource(self, props, key, key_type):
+        return self.find_resourceid_by_name_or_id(
+            key_type, props.get(key))
+
+    def find_resourceid_by_name_or_id(self, resource, name_or_id,
+                                      cmd_resource=None):
         return neutronV20.find_resourceid_by_name_or_id(
-            self.client(), key_type, props.get(key))
+            self.client(), resource, name_or_id, cmd_resource=cmd_resource)
 
     @os_client.MEMOIZE
     def _list_extensions(self):
@@ -103,6 +108,15 @@ class NeutronClientPlugin(client_plugin.ClientPlugin):
     def network_id_from_subnet_id(self, subnet_id):
         subnet_info = self.client().show_subnet(subnet_id)
         return subnet_info['subnet']['network_id']
+
+    def get_qos_policy_id(self, policy):
+        """Returns the id of QoS policy.
+
+        Args:
+        policy: ID or name of the policy.
+        """
+        return self.find_resourceid_by_name_or_id(
+            'policy', policy, cmd_resource='qos_policy')
 
     def get_secgroup_uuids(self, security_groups):
         '''Returns a list of security group UUIDs.

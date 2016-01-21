@@ -189,14 +189,22 @@ def format_stack_output(stack, outputs, k, resolve_value=True):
     }
 
     if resolve_value:
-        result.update({rpc_api.OUTPUT_VALUE: stack.output(k)})
+        try:
+            value = stack.output(k)
+        except Exception as ex:
+            # We don't need error raising, just adding output_error to
+            # resulting dict.
+            value = None
+            result.update({rpc_api.OUTPUT_ERROR: six.text_type(ex)})
+        finally:
+            result.update({rpc_api.OUTPUT_VALUE: value})
 
     if outputs[k].get('error_msg'):
         result.update({rpc_api.OUTPUT_ERROR: outputs[k].get('error_msg')})
     return result
 
 
-def format_stack(stack, preview=False):
+def format_stack(stack, preview=False, resolve_outputs=True):
     """Return a representation of the given stack.
 
     Return a representation of the given stack that matches the API output
@@ -210,7 +218,7 @@ def format_stack(stack, preview=False):
         rpc_api.STACK_CREATION_TIME: created_time.isoformat(),
         rpc_api.STACK_UPDATED_TIME: updated_time,
         rpc_api.STACK_NOTIFICATION_TOPICS: [],  # TODO(?) Not implemented yet
-        rpc_api.STACK_PARAMETERS: stack.parameters.map(str),
+        rpc_api.STACK_PARAMETERS: stack.parameters.map(six.text_type),
         rpc_api.STACK_DESCRIPTION: stack.t[stack.t.DESCRIPTION],
         rpc_api.STACK_TMPL_DESCRIPTION: stack.t[stack.t.DESCRIPTION],
         rpc_api.STACK_CAPABILITIES: [],   # TODO(?) Not implemented yet
@@ -231,7 +239,8 @@ def format_stack(stack, preview=False):
         info.update(update_info)
 
     # allow users to view the outputs of stacks
-    if stack.action != stack.DELETE and stack.status != stack.IN_PROGRESS:
+    if (stack.action != stack.DELETE and stack.status != stack.IN_PROGRESS
+            and resolve_outputs):
         info[rpc_api.STACK_OUTPUTS] = format_stack_outputs(stack,
                                                            stack.outputs,
                                                            resolve_value=True)
@@ -372,6 +381,10 @@ def format_notification_body(stack):
     result = {
         rpc_api.NOTIFY_TENANT_ID: stack.context.tenant_id,
         rpc_api.NOTIFY_USER_ID: stack.context.user,
+        # deprecated: please use rpc_api.NOTIFY_USERID for user id or
+        # rpc_api.NOTIFY_USERNAME for user name.
+        rpc_api.NOTIFY_USERID: stack.context.user_id,
+        rpc_api.NOTIFY_USERNAME: stack.context.user,
         rpc_api.NOTIFY_STACK_ID: stack.id,
         rpc_api.NOTIFY_STACK_NAME: stack.name,
         rpc_api.NOTIFY_STATE: state,

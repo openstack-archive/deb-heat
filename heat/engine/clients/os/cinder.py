@@ -11,11 +11,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import logging
-
 from cinderclient import client as cc
 from cinderclient import exceptions
 from keystoneclient import exceptions as ks_exceptions
+from oslo_log import log as logging
 
 from heat.common import exception
 from heat.common.i18n import _
@@ -25,6 +24,8 @@ from heat.engine import constraints
 
 
 LOG = logging.getLogger(__name__)
+
+CLIENT_NAME = 'cinder'
 
 
 class CinderClientPlugin(client_plugin.ClientPlugin):
@@ -36,7 +37,7 @@ class CinderClientPlugin(client_plugin.ClientPlugin):
     def get_volume_api_version(self):
         '''Returns the most recent API version.'''
 
-        endpoint_type = self._get_client_option('cinder', 'endpoint_type')
+        endpoint_type = self._get_client_option(CLIENT_NAME, 'endpoint_type')
         try:
             self.url_for(service_type=self.VOLUME_V2,
                          endpoint_type=endpoint_type)
@@ -65,7 +66,7 @@ class CinderClientPlugin(client_plugin.ClientPlugin):
         LOG.info(_LI('Creating Cinder client with volume API version %d.'),
                  volume_api_version)
 
-        endpoint_type = self._get_client_option('cinder', 'endpoint_type')
+        endpoint_type = self._get_client_option(CLIENT_NAME, 'endpoint_type')
         args = {
             'service_type': service_type,
             'auth_url': con.auth_url or '',
@@ -73,10 +74,10 @@ class CinderClientPlugin(client_plugin.ClientPlugin):
             'username': None,
             'api_key': None,
             'endpoint_type': endpoint_type,
-            'http_log_debug': self._get_client_option('cinder',
+            'http_log_debug': self._get_client_option(CLIENT_NAME,
                                                       'http_log_debug'),
-            'cacert': self._get_client_option('cinder', 'ca_file'),
-            'insecure': self._get_client_option('cinder', 'insecure')
+            'cacert': self._get_client_option(CLIENT_NAME, 'ca_file'),
+            'insecure': self._get_client_option(CLIENT_NAME, 'insecure')
         }
 
         client = cc.Client(client_version, **args)
@@ -179,33 +180,26 @@ class CinderClientPlugin(client_plugin.ClientPlugin):
         return True
 
 
-class VolumeConstraint(constraints.BaseCustomConstraint):
+class BaseCinderConstraint(constraints.BaseCustomConstraint):
 
-    expected_exceptions = (exception.EntityNotFound,)
-
-    def validate_with_client(self, client, volume):
-        client.client_plugin('cinder').get_volume(volume)
+    resource_client_name = CLIENT_NAME
 
 
-class VolumeSnapshotConstraint(constraints.BaseCustomConstraint):
+class VolumeConstraint(BaseCinderConstraint):
 
-    expected_exceptions = (exception.EntityNotFound,)
-
-    def validate_with_client(self, client, snapshot):
-        client.client_plugin('cinder').get_volume_snapshot(snapshot)
+    resource_getter_name = 'get_volume'
 
 
-class VolumeTypeConstraint(constraints.BaseCustomConstraint):
+class VolumeSnapshotConstraint(BaseCinderConstraint):
 
-    expected_exceptions = (exception.EntityNotFound,)
-
-    def validate_with_client(self, client, volume_type):
-        client.client_plugin('cinder').get_volume_type(volume_type)
+    resource_getter_name = 'get_volume_snapshot'
 
 
-class VolumeBackupConstraint(constraints.BaseCustomConstraint):
+class VolumeTypeConstraint(BaseCinderConstraint):
 
-    expected_exceptions = (exception.EntityNotFound,)
+    resource_getter_name = 'get_volume_type'
 
-    def validate_with_client(self, client, backup):
-        client.client_plugin('cinder').get_volume_backup(backup)
+
+class VolumeBackupConstraint(BaseCinderConstraint):
+
+    resource_getter_name = 'get_volume_backup'

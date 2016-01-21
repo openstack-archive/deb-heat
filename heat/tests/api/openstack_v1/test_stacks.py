@@ -135,6 +135,7 @@ blarg: wibble
         body = {'parameters': params,
                 'encrypted_param_names': [],
                 'parameter_defaults': {},
+                'event_sinks': [],
                 'resource_registry': {}}
         data = stacks.InstantiationData(body)
         self.assertEqual(body, data.environment())
@@ -152,6 +153,7 @@ blarg: wibble
                                  'foo': 'bar'},
                   'encrypted_param_names': [],
                   'parameter_defaults': {},
+                  'event_sinks': [],
                   'resource_registry': {}}
         data = stacks.InstantiationData(body)
         self.assertEqual(expect, data.environment())
@@ -168,6 +170,7 @@ blarg: wibble
                                  'tester': 'Yes'},
                   'encrypted_param_names': [],
                   'parameter_defaults': {},
+                  'event_sinks': [],
                   'resource_registry': {}}
         data = stacks.InstantiationData(body)
         self.assertEqual(expect, data.environment())
@@ -183,7 +186,8 @@ blarg: wibble
         body = {'not the environment': env}
         data = stacks.InstantiationData(body)
         self.assertEqual({'parameters': {}, 'encrypted_param_names': [],
-                          'parameter_defaults': {}, 'resource_registry': {}},
+                          'parameter_defaults': {}, 'resource_registry': {},
+                          'event_sinks': []},
                          data.environment())
 
     def test_args(self):
@@ -650,6 +654,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30},
@@ -695,6 +700,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30, 'tags': ['tag1', 'tag2']},
@@ -757,6 +763,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30,
@@ -846,6 +853,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {'my.yaml': 'This is the file contents.'},
               'args': {'timeout_mins': 30},
@@ -891,6 +899,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30},
@@ -909,6 +918,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30},
@@ -927,6 +937,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30},
@@ -985,6 +996,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30},
@@ -1069,6 +1081,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30},
@@ -1153,6 +1166,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30, 'tags': ['tag1', 'tag2']}})
@@ -1187,6 +1201,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30}}),
@@ -1227,6 +1242,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {rpc_api.PARAM_EXISTING: True,
@@ -1383,8 +1399,8 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
     def test_show(self, mock_enforce):
         self._mock_enforce_setup(mock_enforce, 'show', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
-
-        req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity)
+        req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity,
+                        params={'resolve_outputs': True})
 
         parameters = {u'DBUsername': u'admin',
                       u'LinuxDistribution': u'F17',
@@ -1417,10 +1433,11 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
         self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
         rpc_client.EngineClient.call(
             req.context,
-            ('show_stack', {'stack_identity': dict(identity)})
+            ('show_stack', {'stack_identity': dict(identity),
+                            'resolve_outputs': True}),
+            version='1.20'
         ).AndReturn(engine_resp)
         self.m.ReplayAll()
-
         response = self.controller.show(req,
                                         tenant_id=identity.tenant,
                                         stack_name=identity.stack_name,
@@ -1448,17 +1465,82 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
         self.assertEqual(expected, response)
         self.m.VerifyAll()
 
+    def test_show_without_resolve_outputs(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show', True)
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
+        req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity,
+                        params={'resolve_outputs': False})
+
+        parameters = {u'DBUsername': u'admin',
+                      u'LinuxDistribution': u'F17',
+                      u'InstanceType': u'm1.large',
+                      u'DBRootPassword': u'admin',
+                      u'DBPassword': u'admin',
+                      u'DBName': u'wordpress'}
+
+        engine_resp = [
+            {
+                u'stack_identity': dict(identity),
+                u'updated_time': u'2012-07-09T09:13:11Z',
+                u'parameters': parameters,
+                u'stack_status_reason': u'Stack successfully created',
+                u'creation_time': u'2012-07-09T09:12:45Z',
+                u'stack_name': identity.stack_name,
+                u'notification_topics': [],
+                u'stack_action': u'CREATE',
+                u'stack_status': u'COMPLETE',
+                u'description': u'blah',
+                u'disable_rollback': True,
+                u'timeout_mins':60,
+                u'capabilities': [],
+            }
+        ]
+        self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
+        rpc_client.EngineClient.call(
+            req.context,
+            ('show_stack', {'stack_identity': dict(identity),
+                            'resolve_outputs': False}),
+            version='1.20'
+        ).AndReturn(engine_resp)
+        self.m.ReplayAll()
+        response = self.controller.show(req,
+                                        tenant_id=identity.tenant,
+                                        stack_name=identity.stack_name,
+                                        stack_id=identity.stack_id)
+
+        expected = {
+            'stack': {
+                'links': [{"href": self._url(identity),
+                           "rel": "self"}],
+                'id': '6',
+                u'updated_time': u'2012-07-09T09:13:11Z',
+                u'parameters': parameters,
+                u'description': u'blah',
+                u'stack_status_reason': u'Stack successfully created',
+                u'creation_time': u'2012-07-09T09:12:45Z',
+                u'stack_name': identity.stack_name,
+                u'stack_status': u'CREATE_COMPLETE',
+                u'capabilities': [],
+                u'notification_topics': [],
+                u'disable_rollback': True,
+                u'timeout_mins': 60,
+            }
+        }
+        self.assertEqual(expected, response)
+        self.m.VerifyAll()
+
     def test_show_notfound(self, mock_enforce):
         self._mock_enforce_setup(mock_enforce, 'show', True)
         identity = identifier.HeatIdentifier(self.tenant, 'wibble', '6')
-
         req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity)
 
         error = heat_exc.EntityNotFound(entity='Stack', name='a')
         self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
         rpc_client.EngineClient.call(
             req.context,
-            ('show_stack', {'stack_identity': dict(identity)})
+            ('show_stack', {'stack_identity': dict(identity),
+                            'resolve_outputs': True}),
+            version='1.20'
         ).AndRaise(tools.to_remote_error(error))
         self.m.ReplayAll()
 
@@ -1587,6 +1669,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30}})
@@ -1624,6 +1707,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30, 'tags': ['tag1', 'tag2']}})
@@ -1661,6 +1745,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {u'parameters': parameters,
                          u'encrypted_param_names': [],
                          u'parameter_defaults': {},
+                         u'event_sinks': [],
                          u'resource_registry': {}},
               'files': {},
               'args': {'timeout_mins': 30}})
@@ -1745,6 +1830,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': {},
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {rpc_api.PARAM_EXISTING: True,
@@ -1781,6 +1867,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': {},
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {rpc_api.PARAM_EXISTING: True,
@@ -1818,6 +1905,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': {},
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {rpc_api.PARAM_EXISTING: True,
@@ -1856,6 +1944,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {rpc_api.PARAM_EXISTING: True,
@@ -1919,6 +2008,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': {},
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {rpc_api.PARAM_EXISTING: True,
@@ -1960,6 +2050,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': parameters,
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'args': {rpc_api.PARAM_EXISTING: True,
@@ -2099,6 +2190,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': {},
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'show_nested': False}),
@@ -2127,6 +2219,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'params': {'parameters': {},
                          'encrypted_param_names': [],
                          'parameter_defaults': {},
+                         'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
               'show_nested': False}),
@@ -2216,6 +2309,55 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
 
         self.assertEqual(403, resp.status_int)
         self.assertIn('403 Forbidden', six.text_type(resp))
+
+    def test_list_outputs(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'list_outputs', True)
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
+        req = self._get('/stacks/%(stack_name)s/%(stack_id)s' % identity)
+        outputs = [
+            {'output_key': 'key1', 'description': 'description'},
+            {'output_key': 'key2', 'description': 'description1'}
+        ]
+
+        self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
+        rpc_client.EngineClient.call(
+            req.context,
+            ('list_outputs', {'stack_identity': dict(identity)}),
+            version='1.19'
+        ).AndReturn(outputs)
+        self.m.ReplayAll()
+
+        response = self.controller.list_outputs(req, tenant_id=identity.tenant,
+                                                stack_name=identity.stack_name,
+                                                stack_id=identity.stack_id)
+
+        self.assertEqual({'outputs': outputs}, response)
+        self.m.VerifyAll()
+
+    def test_show_output(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'show_output', True)
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
+        req = self._get('/stacks/%(stack_name)s/%(stack_id)s/key' % identity)
+        output = {'output_key': 'key',
+                  'output_value': 'val',
+                  'description': 'description'}
+
+        self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
+        rpc_client.EngineClient.call(
+            req.context,
+            ('show_output', {'output_key': 'key',
+                             'stack_identity': dict(identity)}),
+            version='1.19'
+        ).AndReturn(output)
+        self.m.ReplayAll()
+
+        response = self.controller.show_output(req, tenant_id=identity.tenant,
+                                               stack_name=identity.stack_name,
+                                               stack_id=identity.stack_id,
+                                               output_key='key')
+
+        self.assertEqual({'output': output}, response)
+        self.m.VerifyAll()
 
     def test_list_template_versions(self, mock_enforce):
         self._mock_enforce_setup(mock_enforce, 'list_template_versions', True)

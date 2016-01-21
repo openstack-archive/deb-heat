@@ -145,7 +145,7 @@ class TroveCluster(resource.Resource):
         instances = []
         for instance in self.properties[self.INSTANCES]:
             instances.append({
-                'flavorRef': self.client_plugin().get_flavor_id(
+                'flavorRef': self.client_plugin().find_flavor_by_name_or_id(
                     instance[self.FLAVOR]),
                 'volume': {'size': instance[self.VOLUME_SIZE]}
             })
@@ -166,12 +166,12 @@ class TroveCluster(resource.Resource):
             return cluster
         except Exception as exc:
             if self.client_plugin().is_over_limit(exc):
-                LOG.warn(_LW("Stack %(name)s (%(id)s) received an "
-                             "OverLimit response during clusters.get():"
-                             " %(exception)s"),
-                         {'name': self.stack.name,
-                          'id': self.stack.id,
-                          'exception': exc})
+                LOG.warning(_LW("Stack %(name)s (%(id)s) received an "
+                                "OverLimit response during clusters.get():"
+                                " %(exception)s"),
+                            {'name': self.stack.name,
+                             'id': self.stack.id,
+                             'exception': exc})
                 return None
             else:
                 raise

@@ -14,38 +14,28 @@
 #
 #    Copyright 2015 IBM Corp.
 
-from neutronclient.common import exceptions
-from neutronclient.neutron import v2_0 as neutronV20
+from heat.engine.clients.os.neutron import neutron_constraints as nc
 
-from heat.engine import constraints
-
-
-class LoadbalancerConstraint(constraints.BaseCustomConstraint):
-
-    expected_exceptions = (exceptions.NeutronClientException,)
-
-    def validate_with_client(self, client, value):
-        neutron_client = client.client('neutron')
-        neutronV20.find_resourceid_by_name_or_id(
-            neutron_client, 'loadbalancer', value)
+CLIENT_NAME = 'neutron'
 
 
-class ListenerConstraint(constraints.BaseCustomConstraint):
-
-    expected_exceptions = (exceptions.NeutronClientException,)
-
-    def validate_with_client(self, client, value):
-        neutron_client = client.client('neutron')
-        neutronV20.find_resourceid_by_name_or_id(
-            neutron_client, 'listener', value)
+class LoadbalancerConstraint(nc.NeutronConstraint):
+    resource_name = 'loadbalancer'
+    cmd_resource = 'lbaas_loadbalancer'
+    extension = 'lbaasv2'
 
 
-class PoolConstraint(constraints.BaseCustomConstraint):
+class ListenerConstraint(nc.NeutronConstraint):
+    resource_name = 'listener'
+    extension = 'lbaasv2'
 
-    expected_exceptions = (exceptions.NeutronClientException,)
 
-    def validate_with_client(self, client, value):
-        neutron_client = client.client('neutron')
-        # v2 pool is called lbaas_pool to differentiate from v1 pool
-        neutronV20.find_resourceid_by_name_or_id(
-            neutron_client, 'lbaas_pool', value)
+class PoolConstraint(nc.NeutronConstraint):
+    # Pool constraint for lbaas v2
+    resource_name = 'pool'
+    cmd_resource = 'lbaas_pool'
+    extension = 'lbaasv2'
+
+
+class LBaasV2ProviderConstraint(nc.ProviderConstraint):
+    service_type = 'LOADBALANCERV2'

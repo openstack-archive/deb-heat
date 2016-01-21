@@ -13,6 +13,7 @@
 
 from heat.common.i18n import _
 from heat.engine import attributes
+from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.openstack.neutron import neutron
 from heat.engine import support
@@ -21,18 +22,18 @@ from heat.engine import support
 class Net(neutron.NeutronResource):
     PROPERTIES = (
         NAME, VALUE_SPECS, ADMIN_STATE_UP, TENANT_ID, SHARED,
-        DHCP_AGENT_IDS, PORT_SECURITY_ENABLED,
+        DHCP_AGENT_IDS, PORT_SECURITY_ENABLED, QOS_POLICY,
     ) = (
         'name', 'value_specs', 'admin_state_up', 'tenant_id', 'shared',
-        'dhcp_agent_ids', 'port_security_enabled',
+        'dhcp_agent_ids', 'port_security_enabled', 'qos_policy',
     )
 
     ATTRIBUTES = (
         STATUS, NAME_ATTR, SUBNETS, ADMIN_STATE_UP_ATTR, TENANT_ID_ATTR,
-        PORT_SECURITY_ENABLED_ATTR, MTU_ATTR,
+        PORT_SECURITY_ENABLED_ATTR, MTU_ATTR, QOS_POLICY_ATTR,
     ) = (
         "status", "name", "subnets", "admin_state_up", "tenant_id",
-        "port_security_enabled", "mtu",
+        "port_security_enabled", "mtu", 'qos_policy_id',
     )
 
     properties_schema = {
@@ -44,9 +45,8 @@ class Net(neutron.NeutronResource):
         ),
         VALUE_SPECS: properties.Schema(
             properties.Schema.MAP,
-            _('Extra parameters to include in the "network" object in the '
-              'creation request. Parameters are often specific to installed '
-              'hardware or extensions.'),
+            _('Extra parameters to include in the request. Parameters are '
+              'often specific to installed hardware or extensions.'),
             default={},
             update_allowed=True
         ),
@@ -86,6 +86,15 @@ class Net(neutron.NeutronResource):
             update_allowed=True,
             support_status=support.SupportStatus(version='5.0.0')
         ),
+        QOS_POLICY: properties.Schema(
+            properties.Schema.STRING,
+            _('The name or ID of QoS policy to attach to this network.'),
+            constraints=[
+                constraints.CustomConstraint('neutron.qos_policy')
+            ],
+            update_allowed=True,
+            support_status=support.SupportStatus(version='6.0.0')
+        ),
     }
 
     attributes_schema = {
@@ -119,6 +128,11 @@ class Net(neutron.NeutronResource):
             support_status=support.SupportStatus(version='5.0.0'),
             type=attributes.Schema.INTEGER
         ),
+        QOS_POLICY_ATTR: attributes.Schema(
+            _("The QoS policy ID attached to this network."),
+            type=attributes.Schema.STRING,
+            support_status=support.SupportStatus(version='6.0.0'),
+        ),
     }
 
     def handle_create(self):
@@ -127,6 +141,10 @@ class Net(neutron.NeutronResource):
             self.physical_resource_name())
 
         dhcp_agent_ids = props.pop(self.DHCP_AGENT_IDS, None)
+        qos_policy = props.pop(self.QOS_POLICY, None)
+        if qos_policy:
+            props['qos_policy_id'] = self.client_plugin().get_qos_policy_id(
+                qos_policy)
 
         net = self.client().create_network({'network': props})['network']
         self.resource_id_set(net['id'])
@@ -151,18 +169,24 @@ class Net(neutron.NeutronResource):
             return True
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        props = self.prepare_update_properties(json_snippet)
-
-        dhcp_agent_ids = props.pop(self.DHCP_AGENT_IDS, None)
-
-        if self.DHCP_AGENT_IDS in prop_diff:
-            if dhcp_agent_ids is not None:
+        if prop_diff:
+            if self.DHCP_AGENT_IDS in prop_diff:
+                dhcp_agent_ids = prop_diff.pop(self.DHCP_AGENT_IDS, [])
                 self._replace_dhcp_agents(dhcp_agent_ids)
-            del prop_diff[self.DHCP_AGENT_IDS]
+            if self.QOS_POLICY in prop_diff:
+                qos_policy = prop_diff.pop(self.QOS_POLICY)
+                prop_diff[
+                    'qos_policy_id'] = self.client_plugin().get_qos_policy_id(
+                    qos_policy) if qos_policy else None
+            if self.VALUE_SPECS in prop_diff:
+                self.merge_value_specs(prop_diff)
+            if (self.NAME in prop_diff and
+                    prop_diff[self.NAME] is None):
+                prop_diff[self.NAME] = self.physical_resource_name()
 
-        if len(prop_diff) > 0:
-            self.client().update_network(
-                self.resource_id, {'network': props})
+        if prop_diff:
+            self.client().update_network(self.resource_id,
+                                         {'network': prop_diff})
 
     def check_update_complete(self, *args):
         attributes = self._show_resource()

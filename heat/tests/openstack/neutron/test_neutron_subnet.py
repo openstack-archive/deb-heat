@@ -11,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import mox
 from neutronclient.common import exceptions as qe
 from neutronclient.neutron import v2_0 as neutronV20
@@ -120,21 +121,26 @@ class NeutronSubnetTest(common.HeatTestCase):
             'enable_dhcp': True,
             'host_routes': [{'destination': '192.168.1.0/24',
                              'nexthop': '194.168.1.2'}],
-            "allocation_pools": [
-                {"start": "10.0.3.20", "end": "10.0.3.100"},
-                {"start": "10.0.3.110", "end": "10.0.3.200"}]}}
+            'gateway_ip': '10.0.3.105',
+            'allocation_pools': [
+                {'start': '10.0.3.20', 'end': '10.0.3.100'},
+                {'start': '10.0.3.110', 'end': '10.0.3.200'}]}}
 
         t = self._test_subnet(u_props=update_props)
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'None'
+            'None',
+            cmd_resource=None,
         ).AndReturn('None')
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'router',
-            'None'
+            'None',
+            cmd_resource=None,
         ).AndReturn('None')
+        neutronclient.Client.update_subnet(
+            '91e47a57-7508-46fe-afc9-fc454e8580e1', update_props)
         stack = utils.parse_stack(t)
         rsrc = self.create_subnet(t, stack, 'sub_net')
         self.m.ReplayAll()
@@ -153,30 +159,180 @@ class NeutronSubnetTest(common.HeatTestCase):
 
         self.assertIn(stack['port'], stack.dependencies[stack['sub_net']])
         self.assertIn(stack['port2'], stack.dependencies[stack['sub_net']])
-        props = {
-            "name": 'mysubnet',
-            "network_id": cfn_funcs.ResourceRef(stack, "get_resource", "net"),
-            "tenant_id": "c1210485b2424d48804aad5d39c61b8f",
-            "ip_version": 4,
-            "cidr": "10.0.3.0/24",
-            "allocation_pools": [
-                {"start": "10.0.3.20", "end": "10.0.3.100"},
-                {"start": "10.0.3.110", "end": "10.0.3.200"}],
-            "dns_nameservers": ["8.8.8.8", "192.168.1.254"],
-            "host_routes": [
-                {"destination": "192.168.1.0/24", "nexthop": "194.168.1.2"}
-            ]
-
-
-        }
         update_snippet = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(),
-                                                      props)
-#        rsrc.handle_update(update_snippet, {}, {})
-        scheduler.TaskRunner(rsrc.update, update_snippet)()
+                                                      update_props['subnet'])
+        rsrc.handle_update(update_snippet, {}, update_props['subnet'])
+
+        # with name None
+        del update_props['subnet']['name']
+        rsrc.handle_update(update_snippet, {}, update_props['subnet'])
+
+        # with no prop_diff
+        rsrc.handle_update(update_snippet, {}, {})
 
         self.assertIsNone(scheduler.TaskRunner(rsrc.delete)())
         rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE, 'to delete again')
         self.assertIsNone(scheduler.TaskRunner(rsrc.delete)())
+        self.m.VerifyAll()
+
+    def test_update_subnet_with_value_specs(self):
+        update_props = {'subnet': {
+            'name': 'mysubnet',
+            'value_specs': {
+                'enable_dhcp': True,
+                }
+        }}
+        update_props_merged = copy.deepcopy(update_props)
+        update_props_merged['subnet']['enable_dhcp'] = True
+        del update_props_merged['subnet']['value_specs']
+
+        t = self._test_subnet(u_props=update_props_merged)
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'None',
+            cmd_resource=None,
+        ).AndReturn('None')
+        stack = utils.parse_stack(t)
+        rsrc = self.create_subnet(t, stack, 'sub_net')
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        rsrc.validate()
+        ref_id = rsrc.FnGetRefId()
+        self.assertEqual('91e47a57-7508-46fe-afc9-fc454e8580e1', ref_id)
+        self.assertIsNone(rsrc.FnGetAtt('network_id'))
+        self.assertEqual('fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+                         rsrc.FnGetAtt('network_id'))
+        self.assertEqual('8.8.8.8', rsrc.FnGetAtt('dns_nameservers')[0])
+
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(),
+                                                      update_props['subnet'])
+        rsrc.handle_update(update_snippet, {}, update_props['subnet'])
+
+        self.assertIsNone(scheduler.TaskRunner(rsrc.delete)())
+        rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE, 'to delete again')
+        self.assertIsNone(scheduler.TaskRunner(rsrc.delete)())
+        self.m.VerifyAll()
+
+    def test_update_subnet_with_no_name(self):
+        update_props = {'subnet': {
+            'name': None,
+        }}
+        update_props_name = {'subnet': {
+            'name': utils.PhysName('test_stack', 'test_subnet'),
+        }}
+        t = self._test_subnet(u_props=update_props_name)
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'None',
+            cmd_resource=None,
+        ).AndReturn('None')
+
+        stack = utils.parse_stack(t)
+        rsrc = self.create_subnet(t, stack, 'sub_net')
+        self.m.ReplayAll()
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        rsrc.validate()
+        ref_id = rsrc.FnGetRefId()
+        self.assertEqual('91e47a57-7508-46fe-afc9-fc454e8580e1', ref_id)
+        self.assertIsNone(rsrc.FnGetAtt('network_id'))
+        self.assertEqual('fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+                         rsrc.FnGetAtt('network_id'))
+        self.assertEqual('8.8.8.8', rsrc.FnGetAtt('dns_nameservers')[0])
+
+        update_snippet = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(),
+                                                      update_props['subnet'])
+        rsrc.handle_update(update_snippet, {}, update_props['subnet'])
+
+        self.assertIsNone(scheduler.TaskRunner(rsrc.delete)())
+        rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE, 'to delete again')
+        self.assertIsNone(scheduler.TaskRunner(rsrc.delete)())
+        self.m.VerifyAll()
+
+    def test_subnet_with_subnetpool(self):
+        subnet_dict = {
+            "subnet": {
+                "allocation_pools": [
+                    {"start": "10.0.3.20", "end": "10.0.3.150"}],
+                "host_routes": [
+                    {"destination": "10.0.4.0/24", "nexthop": "10.0.3.20"}],
+                "subnetpool_id": "None",
+                "prefixlen": 24,
+                "dns_nameservers": ["8.8.8.8"],
+                "enable_dhcp": True,
+                "gateway_ip": "10.0.3.1",
+                "id": "91e47a57-7508-46fe-afc9-fc454e8580e1",
+                "ip_version": 4,
+                "name": "name",
+                "network_id": "None",
+                "tenant_id": "c1210485b2424d48804aad5d39c61b8f"
+            }
+        }
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnetpool',
+            'None',
+            cmd_resource=None,
+        ).AndReturn('None')
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'None',
+            cmd_resource=None,
+        ).AndReturn('None')
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnetpool',
+            'None',
+            cmd_resource=None,
+        ).AndReturn('None')
+        neutronclient.Client.create_subnet({
+            'subnet': {
+                'network_id': u'None',
+                'name': 'mysubnet',
+                'subnetpool_id': 'None',
+                'prefixlen': 24,
+                'dns_nameservers': [u'8.8.8.8'],
+                'allocation_pools': [
+                    {'start': u'10.0.3.20', 'end': u'10.0.3.150'}],
+                'host_routes': [
+                    {'destination': u'10.0.4.0/24', 'nexthop': u'10.0.3.20'}],
+                'ip_version': 4,
+                'enable_dhcp': True,
+                'tenant_id': 'c1210485b2424d48804aad5d39c61b8f'
+            }
+        }).AndReturn(subnet_dict)
+
+        neutronclient.Client.show_subnet(
+            '91e47a57-7508-46fe-afc9-fc454e8580e1').AndReturn(subnet_dict)
+
+        neutronclient.Client.delete_subnet(
+            '91e47a57-7508-46fe-afc9-fc454e8580e1'
+        ).AndReturn(None)
+
+        neutronclient.Client.show_subnet(
+            '91e47a57-7508-46fe-afc9-fc454e8580e1'
+        ).AndRaise(qe.NeutronClientException(status_code=404))
+
+        self.m.ReplayAll()
+        t = template_format.parse(neutron_template)
+        del t['resources']['sub_net']['properties']['cidr']
+        t['resources']['sub_net']['properties'][
+            'subnetpool'] = 'None'
+        t['resources']['sub_net']['properties'][
+            'prefixlen'] = 24
+        t['resources']['sub_net']['properties'][
+            'name'] = 'mysubnet'
+        stack = utils.parse_stack(t)
+        rsrc = self.create_subnet(t, stack, 'sub_net')
+        scheduler.TaskRunner(rsrc.create)()
+        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
+        ref_id = rsrc.FnGetRefId()
+        self.assertEqual('91e47a57-7508-46fe-afc9-fc454e8580e1', ref_id)
+        scheduler.TaskRunner(rsrc.delete)()
         self.m.VerifyAll()
 
     def test_subnet_deprecated(self):
@@ -187,12 +343,14 @@ class NeutronSubnetTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'None'
+            'None',
+            cmd_resource=None,
         ).AndReturn('None')
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'router',
-            'None'
+            'None',
+            cmd_resource=None,
         ).AndReturn('None')
         self.m.ReplayAll()
         scheduler.TaskRunner(rsrc.create)()
@@ -309,7 +467,8 @@ class NeutronSubnetTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'None'
+            'None',
+            cmd_resource=None,
         ).AndReturn('None')
         neutronclient.Client.create_subnet({
             'subnet': {
@@ -433,7 +592,8 @@ class NeutronSubnetTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'None'
+            'None',
+            cmd_resource=None,
         ).AndReturn('None')
         neutronclient.Client.create_subnet({
             'subnet': {
@@ -523,6 +683,42 @@ class NeutronSubnetTest(common.HeatTestCase):
                                rsrc.validate)
         self.assertEqual("ipv6_ra_mode and ipv6_address_mode are not "
                          "supported for ipv4.", six.text_type(ex))
+
+    def test_validate_both_subnetpool_cidr(self):
+        t = template_format.parse(neutron_template)
+        props = t['resources']['sub_net']['properties']
+        props['subnetpool'] = 'new_pool'
+        stack = utils.parse_stack(t)
+        rsrc = stack['sub_net']
+        ex = self.assertRaises(exception.ResourcePropertyConflict,
+                               rsrc.validate)
+        msg = ("Cannot define the following properties at the same time: "
+               "subnetpool, cidr.")
+        self.assertEqual(msg, six.text_type(ex))
+
+    def test_validate_none_subnetpool_cidr(self):
+        t = template_format.parse(neutron_template)
+        props = t['resources']['sub_net']['properties']
+        del props['cidr']
+        stack = utils.parse_stack(t)
+        rsrc = stack['sub_net']
+        ex = self.assertRaises(exception.PropertyUnspecifiedError,
+                               rsrc.validate)
+        msg = ("At least one of the following properties must be specified: "
+               "subnetpool, cidr")
+        self.assertEqual(msg, six.text_type(ex))
+
+    def test_validate_both_prefixlen_cidr(self):
+        t = template_format.parse(neutron_template)
+        props = t['resources']['sub_net']['properties']
+        props['prefixlen'] = '24'
+        stack = utils.parse_stack(t)
+        rsrc = stack['sub_net']
+        ex = self.assertRaises(exception.ResourcePropertyConflict,
+                               rsrc.validate)
+        msg = ("Cannot define the following properties at the same time: "
+               "prefixlen, cidr.")
+        self.assertEqual(msg, six.text_type(ex))
 
     def test_deprecated_network_id(self):
         template = """

@@ -28,7 +28,13 @@ from heat.engine import support
 class RandomString(resource.Resource):
     """A resource which generates a random string.
 
-    This is useful for configuring passwords and secrets on services.
+    This is useful for configuring passwords and secrets on services. Random
+    string can be generated from specified character sequences, which means
+    that all characters will be randomly chosen from specified sequences, or
+    with some classes, e.g. letterdigits, which means that all character will
+    be randomly chosen from union of ascii letters and digits. Output string
+    will be randomly generated string with specified length (or with length of
+    32, if length property doesn't specified).
     """
 
     support_status = support.SupportStatus(version='2014.1')
@@ -148,7 +154,7 @@ class RandomString(resource.Resource):
         SALT: properties.Schema(
             properties.Schema.STRING,
             _('Value which can be set or changed on stack update to trigger '
-              'the resource for replacement with a new random string . The '
+              'the resource for replacement with a new random string. The '
               'salt value itself is ignored by the random generator.')
         ),
     }

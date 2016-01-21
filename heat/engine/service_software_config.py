@@ -11,6 +11,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import uuid
+
 from oslo_db import api as oslo_db_api
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
@@ -21,6 +23,7 @@ import requests
 import six
 from six.moves.urllib import parse as urlparse
 
+from heat.common import crypt
 from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LI
@@ -109,8 +112,10 @@ class SoftwareConfigService(service.Service):
             json_md = jsonutils.dumps(md)
             requests.put(metadata_put_url, json_md)
         if metadata_queue_id:
+            project = sd.stack_user_project_id
+            token = self._get_user_token(cnxt, rs, project)
             zaqar_plugin = cnxt.clients.client_plugin('zaqar')
-            zaqar = zaqar_plugin.create_for_tenant(sd.stack_user_project_id)
+            zaqar = zaqar_plugin.create_for_tenant(project, token)
             queue = zaqar.queue(metadata_queue_id)
             queue.post({'body': md, 'ttl': zaqar_plugin.DEFAULT_TTL})
 
@@ -128,7 +133,7 @@ class SoftwareConfigService(service.Service):
                 LOG.info(_LI('Signal object not found: %(c)s %(o)s'), {
                     'c': container, 'o': object_name})
                 return sd
-            raise ex
+            raise
 
         lm = headers.get('last-modified')
 
@@ -151,7 +156,7 @@ class SoftwareConfigService(service.Service):
                     'Signal object not found: %(c)s %(o)s'), {
                         'c': container, 'o': object_name})
                 return sd
-            raise ex
+            raise
         if obj:
             self.signal_software_deployment(
                 cnxt, sd.id, jsonutils.loads(obj),
@@ -160,9 +165,23 @@ class SoftwareConfigService(service.Service):
         return software_deployment_object.SoftwareDeployment.get_by_id(
             cnxt, sd.id)
 
+    def _get_user_token(self, cnxt, rs, project):
+        user = password = None
+        for rd in rs.data:
+            if rd.key == 'password':
+                password = crypt.decrypt(rd.decrypt_method, rd.value)
+            if rd.key == 'user_id':
+                user = rd.value
+        keystone = cnxt.clients.client('keystone')
+        return keystone.stack_domain_user_token(
+            user_id=user, project_id=project, password=password)
+
     def _refresh_zaqar_software_deployment(self, cnxt, sd, deploy_queue_id):
+        rs = db_api.resource_get_by_physical_resource_id(cnxt, sd.server_id)
+        project = sd.stack_user_project_id
+        token = self._get_user_token(cnxt, rs, project)
         zaqar_plugin = cnxt.clients.client_plugin('zaqar')
-        zaqar = zaqar_plugin.create_for_tenant(sd.stack_user_project_id)
+        zaqar = zaqar_plugin.create_for_tenant(project, token)
         queue = zaqar.queue(deploy_queue_id)
 
         messages = list(queue.pop())
@@ -190,9 +209,13 @@ class SoftwareConfigService(service.Service):
 
     def create_software_deployment(self, cnxt, server_id, config_id,
                                    input_values, action, status,
-                                   status_reason, stack_user_project_id):
+                                   status_reason, stack_user_project_id,
+                                   deployment_id=None):
 
+        if deployment_id is None:
+            deployment_id = str(uuid.uuid4())
         sd = software_deployment_object.SoftwareDeployment.create(cnxt, {
+            'id': deployment_id,
             'config_id': config_id,
             'server_id': server_id,
             'input_values': input_values,

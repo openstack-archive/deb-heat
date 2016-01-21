@@ -11,12 +11,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from heat.common import exception as heat_exception
 from heat.engine.clients import client_plugin
 from heat.engine import constraints
 from manilaclient import client as manila_client
 from manilaclient import exceptions
 
 MANILACLIENT_VERSION = "1"
+CLIENT_NAME = 'manila'
 
 
 class ManilaClientPlugin(client_plugin.ClientPlugin):
@@ -26,7 +28,7 @@ class ManilaClientPlugin(client_plugin.ClientPlugin):
     service_types = [SHARE] = ['share']
 
     def _create(self):
-        endpoint_type = self._get_client_option('manila', 'endpoint_type')
+        endpoint_type = self._get_client_option(CLIENT_NAME, 'endpoint_type')
         endpoint = self.url_for(service_type=self.SHARE,
                                 endpoint_type=endpoint_type)
 
@@ -60,7 +62,7 @@ class ManilaClientPlugin(client_plugin.ClientPlugin):
         :param resource_list: list of resources
         :param resource_type_name: name of resource type that will be used
                                    for exceptions
-        :raises NotFound, NoUniqueMatch
+        :raises EntityNotFound, NoUniqueMatch
         :return: resource or generate an exception otherwise
         """
         search_result_by_id = [res for res in resource_list
@@ -80,10 +82,8 @@ class ManilaClientPlugin(client_plugin.ClientPlugin):
             elif match_count == 1:
                 return search_result_by_name[0]
             else:
-                message = ("{0} '{1}' was not found in Manila. Please "
-                           "use the identity of existing {0} in Heat "
-                           "template.").format(resource_type_name, id_or_name)
-                raise exceptions.NotFound(message=message)
+                raise heat_exception.EntityNotFound(entity=resource_type_name,
+                                                    name=id_or_name)
 
     def get_share_type(self, share_type_identity):
         return self._find_resource_by_id_or_name(
@@ -115,22 +115,24 @@ class ManilaClientPlugin(client_plugin.ClientPlugin):
 
 
 class ManilaShareBaseConstraint(constraints.BaseCustomConstraint):
+
     # check that exceptions module has been loaded. Without this check
     # doc tests on gates will fail
-    expected_exceptions = (exceptions.NotFound, exceptions.NoUniqueMatch)
-
-    def validate_with_client(self, client, resource_id):
-        getattr(client.client_plugin("manila"), self.resource_getter_name)(
-            resource_id)
+    expected_exceptions = (heat_exception.EntityNotFound,
+                           exceptions.NoUniqueMatch)
+    resource_client_name = CLIENT_NAME
 
 
 class ManilaShareNetworkConstraint(ManilaShareBaseConstraint):
+
     resource_getter_name = 'get_share_network'
 
 
 class ManilaShareTypeConstraint(ManilaShareBaseConstraint):
+
     resource_getter_name = 'get_share_type'
 
 
 class ManilaShareSnapshotConstraint(ManilaShareBaseConstraint):
+
     resource_getter_name = 'get_share_snapshot'

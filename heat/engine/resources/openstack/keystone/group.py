@@ -21,7 +21,12 @@ from heat.engine import support
 
 class KeystoneGroup(resource.Resource,
                     role_assignments.KeystoneRoleAssignmentMixin):
-    """Heat Template Resource for Keystone Group."""
+    """Heat Template Resource for Keystone Group.
+
+    Groups are a container representing a collection of users. A group itself
+    must be owned by a specific domain, and hence all group names are not
+    globally unique, but only unique to their domain.
+    """
 
     support_status = support.SupportStatus(
         version='2015.1',
@@ -103,7 +108,7 @@ class KeystoneGroup(resource.Resource,
 
     def handle_delete(self):
         if self.resource_id is not None:
-            with self.client_plugin.ignore_not_found:
+            with self.client_plugin().ignore_not_found:
                 self.client().groups.delete(self.resource_id)
 
 

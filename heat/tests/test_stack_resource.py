@@ -388,7 +388,7 @@ class StackResourceTest(StackResourceBaseTest):
 
     def _test_validate_unknown_resource_type(self, stack_name, tmpl,
                                              resource_name):
-        raise_exc_msg = ('Unknown resource Type : idontexist')
+        raise_exc_msg = 'The Resource Type (idontexist) could not be found.'
         stack = parser.Stack(utils.dummy_context(), stack_name, tmpl)
         rsrc = stack[resource_name]
 
@@ -819,6 +819,7 @@ class WithTemplateTest(StackResourceBaseTest):
 
     def test_create_with_template(self):
         child_env = {'parameter_defaults': {},
+                     'event_sinks': [],
                      'parameters': self.params,
                      'resource_registry': {'resources': {}},
                      'encrypted_param_names': []}
@@ -855,6 +856,7 @@ class WithTemplateTest(StackResourceBaseTest):
         self.parent_resource._nested = nested
 
         child_env = {'parameter_defaults': {},
+                     'event_sinks': [],
                      'parameters': self.params,
                      'resource_registry': {'resources': {}},
                      'encrypted_param_names': []}

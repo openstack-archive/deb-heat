@@ -12,11 +12,9 @@
 #    under the License.
 
 """Routines for configuring Heat."""
-import logging as sys_logging
 import os
 
 from eventlet.green import socket
-from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_log import log as logging
 
@@ -82,7 +80,6 @@ service_opts = [
                default=5,
                help=_('Maximum depth allowed when using nested stacks.')),
     cfg.IntOpt('num_engine_workers',
-               default=processutils.get_worker_count(),
                help=_('Number of heat-engine processes to fork and run.'))]
 
 engine_opts = [
@@ -162,7 +159,12 @@ engine_opts = [
                 default=False,
                 help=_('Enables engine with convergence architecture. All '
                        'stacks with this option will be created using '
-                       'convergence engine .')),
+                       'convergence engine.')),
+    cfg.BoolOpt('observe_on_update',
+                default=False,
+                help=_('On update, enables heat to collect existing resource '
+                       'properties from reality and converge to '
+                       'updated template.')),
     cfg.StrOpt('default_software_config_transport',
                choices=['POLL_SERVER_CFN',
                         'POLL_SERVER_HEAT',
@@ -331,8 +333,8 @@ def startup_sanity_check():
             not cfg.CONF.stack_user_domain_name):
         # FIXME(shardy): Legacy fallback for folks using old heat.conf
         # files which lack domain configuration
-        LOG.warn(_LW('stack_user_domain_id or stack_user_domain_name not '
-                     'set in heat.conf falling back to using default'))
+        LOG.warning(_LW('stack_user_domain_id or stack_user_domain_name not '
+                        'set in heat.conf falling back to using default'))
     else:
         domain_admin_user = cfg.CONF.stack_domain_admin
         domain_admin_password = cfg.CONF.stack_domain_admin_password
@@ -344,7 +346,7 @@ def startup_sanity_check():
                                     '"stack_domain_admin_password"'))
     auth_key_len = len(cfg.CONF.auth_encryption_key)
     if auth_key_len in (16, 24):
-        LOG.warn(
+        LOG.warning(
             _LW('Please update auth_encryption_key to be 32 characters.'))
     elif auth_key_len != 32:
         raise exception.Error(_('heat.conf misconfigured, auth_encryption_key '
@@ -433,7 +435,7 @@ def load_paste_app(app_name=None):
         # Log the options used when starting if we're in debug mode...
         if cfg.CONF.debug:
             cfg.CONF.log_opt_values(logging.getLogger(app_name),
-                                    sys_logging.DEBUG)
+                                    logging.DEBUG)
 
         return app
     except (LookupError, ImportError) as e:

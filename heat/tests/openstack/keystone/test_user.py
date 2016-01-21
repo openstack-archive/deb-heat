@@ -235,6 +235,39 @@ class KeystoneUserTest(common.HeatTestCase):
                 self.test_user.resource_id,
                 group)
 
+        # validate the role assignment isn't updated
+        self.roles = self.keystoneclient.roles
+        self.roles.revoke.assert_not_called()
+        self.roles.grant.assert_not_called()
+
+    def test_user_handle_update_password_only(self):
+        self.test_user.resource_id = '477e8273-60a7-4c41-b683-fdb0bc7cd151'
+
+        # Make the existing groups as group1 and group2
+        self.test_user._stored_properties_data = {
+            'groups': ['group1', 'group2'],
+            'domain': 'default'
+        }
+
+        # Update the password only
+        prop_diff = {user.KeystoneUser.PASSWORD: 'passWORD'}
+
+        self.test_user.handle_update(json_snippet=None,
+                                     tmpl_diff=None,
+                                     prop_diff=prop_diff)
+
+        # Validate user update
+        self.users.update.assert_called_once_with(
+            user=self.test_user.resource_id,
+            domain=self.test_user._stored_properties_data[
+                user.KeystoneUser.DOMAIN],
+            password=prop_diff[user.KeystoneUser.PASSWORD]
+        )
+
+        # Validate that there is no change in groups
+        self.users.add_to_group.assert_not_called()
+        self.users.remove_from_group.assert_not_called()
+
     def test_user_handle_delete(self):
         self.test_user.resource_id = '477e8273-60a7-4c41-b683-fdb0bc7cd151'
         self.test_user._stored_properties_data = {

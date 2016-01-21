@@ -11,14 +11,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
-import logging
 import os
 import sys
 
 import fixtures
 import mox
 from oslo_config import cfg
+from oslo_log import log as logging
 from oslotest import mockpatch
 import testscenarios
 import testtools
@@ -60,7 +59,8 @@ class FakeLogMixin(object):
         self.LOG = self.useFixture(
             fixtures.FakeLogger(level=default_level, format=_LOG_FORMAT))
         base_list = set([nlog.split('.')[0]
-                         for nlog in logging.Logger.manager.loggerDict])
+                         for nlog in logging.logging.Logger.manager.loggerDict]
+                        )
         for base in base_list:
             if base in TEST_DEFAULT_LOGLEVELS:
                 self.useFixture(fixtures.FakeLogger(
@@ -265,8 +265,20 @@ class HeatTestCase(testscenarios.WithScenarios,
         validate = self.patchobject(neutron.SubnetConstraint, 'validate')
         validate.return_value = True
 
+    def stub_AddressScopeConstraint_validate(self):
+        validate = self.patchobject(neutron.AddressScopeConstraint, 'validate')
+        validate.return_value = True
+
+    def stub_SubnetPoolConstraint_validate(self):
+        validate = self.patchobject(neutron.SubnetPoolConstraint, 'validate')
+        validate.return_value = True
+
     def stub_RouterConstraint_validate(self):
         validate = self.patchobject(neutron.RouterConstraint, 'validate')
+        validate.return_value = True
+
+    def stub_QoSPolicyConstraint_validate(self):
+        validate = self.patchobject(neutron.QoSPolicyConstraint, 'validate')
         validate.return_value = True
 
     def stub_NovaNetworkConstraint(self):
@@ -280,4 +292,8 @@ class HeatTestCase(testscenarios.WithScenarios,
 
     def stub_SaharaPluginConstraint(self):
         validate = self.patchobject(sahara.PluginConstraint, 'validate')
+        validate.return_value = True
+
+    def stub_ProviderConstraint_validate(self):
+        validate = self.patchobject(neutron.ProviderConstraint, 'validate')
         validate.return_value = True

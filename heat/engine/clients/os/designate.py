@@ -20,6 +20,8 @@ from heat.common import exception as heat_exception
 from heat.engine.clients import client_plugin
 from heat.engine import constraints
 
+CLIENT_NAME = 'designate'
+
 
 class DesignateClientPlugin(client_plugin.ClientPlugin):
 
@@ -28,7 +30,7 @@ class DesignateClientPlugin(client_plugin.ClientPlugin):
     service_types = [DNS] = ['dns']
 
     def _create(self):
-        args = self._get_client_args(service_name='designate',
+        args = self._get_client_args(service_name=CLIENT_NAME,
                                      service_type=self.DNS)
 
         return client.Client(auth_url=args['auth_url'],
@@ -85,10 +87,13 @@ class DesignateClientPlugin(client_plugin.ClientPlugin):
         return self.client().records.delete(domain_id,
                                             kwargs.pop('id'))
 
+    def record_show(self, **kwargs):
+        domain_id = self.get_domain_id(kwargs.pop('domain'))
+        return self.client().records.get(domain_id,
+                                         kwargs.pop('id'))
+
 
 class DesignateDomainConstraint(constraints.BaseCustomConstraint):
 
-    expected_exceptions = (heat_exception.EntityNotFound,)
-
-    def validate_with_client(self, client, domain):
-        client.client_plugin('designate').get_domain_id(domain)
+    resource_client_name = CLIENT_NAME
+    resource_getter_name = 'get_domain_id'

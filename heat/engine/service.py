@@ -178,11 +178,13 @@ class ThreadGroupManager(object):
             releasing the lock to avoid race condtitions.
             """
             if stack is not None and stack.action not in (
-                    stack.DELETE, stack.ROLLBACK):
+                    stack.DELETE, stack.ROLLBACK, stack.UPDATE):
                 stack.persist_state_and_release_lock(lock.engine_id)
             else:
                 lock.release()
 
+        # Link to self to allow the stack to run tasks
+        stack.thread_group_mgr = self
         th = self.start(stack.id, func, *args, **kwargs)
         th.link(release)
         return th
@@ -291,7 +293,7 @@ class EngineService(service.Service):
     by the RPC caller.
     """
 
-    RPC_API_VERSION = '1.19'
+    RPC_API_VERSION = '1.21'
 
     def __init__(self, host, topic):
         super(EngineService, self).__init__()
@@ -466,20 +468,24 @@ class EngineService(service.Service):
         return s
 
     @context.request_context
-    def show_stack(self, cnxt, stack_identity):
+    def show_stack(self, cnxt, stack_identity, resolve_outputs=True):
         """Return detailed information about one or all stacks.
 
         :param cnxt: RPC context.
         :param stack_identity: Name of the stack you want to show, or None
             to show all
+        :param resolve_outputs: If True, outputs for given stack/stacks will
+            be resolved
         """
         if stack_identity is not None:
             db_stack = self._get_stack(cnxt, stack_identity, show_deleted=True)
-            stacks = [parser.Stack.load(cnxt, stack=db_stack)]
+            stacks = [parser.Stack.load(cnxt, stack=db_stack,
+                                        resolve_data=resolve_outputs)]
         else:
-            stacks = parser.Stack.load_all(cnxt)
+            stacks = parser.Stack.load_all(cnxt, resolve_data=resolve_outputs)
 
-        return [api.format_stack(stack) for stack in stacks]
+        return [api.format_stack(
+            stack, resolve_outputs=resolve_outputs) for stack in stacks]
 
     def get_revision(self, cnxt):
         return cfg.CONF.revision['heat_revision']
@@ -550,7 +556,7 @@ class EngineService(service.Service):
             multiple tags using the boolean AND expression
         :param not_tags_any: count stacks not containing these tags, combine
             multiple tags using the boolean OR expression
-        :returns: a integer representing the number of matched stacks
+        :returns: an integer representing the number of matched stacks
         """
         return stack_object.Stack.count_all(
             cnxt,
@@ -797,9 +803,9 @@ class EngineService(service.Service):
                 else:
                     # Nothing we can do, the failed update happened before
                     # we started storing prev_raw_template_id
-                    LOG.error("PATCH update to FAILED stack only possible if "
-                              "convergence enabled or previous template "
-                              "stored")
+                    LOG.error(_LE('PATCH update to FAILED stack only '
+                                  'possible if convergence enabled or '
+                                  'previous template stored'))
                     msg = _('PATCH update to non-COMPLETE stack')
                     raise exception.NotSupported(feature=msg)
         else:
@@ -1279,9 +1285,6 @@ class EngineService(service.Service):
         self.resource_enforcer.enforce(cnxt, type_name)
         try:
             resource_class = resources.global_env().get_class(type_name)
-        except exception.StackValidationFailed:
-            raise exception.EntityNotFound(entity='Resource Type',
-                                           name=type_name)
         except exception.NotFound:
             LOG.exception(_LE('Error loading resource type %s '
                               'from global environment.'),
@@ -1328,18 +1331,16 @@ class EngineService(service.Service):
         self.resource_enforcer.enforce(cnxt, type_name)
         try:
             resource_class = resources.global_env().get_class(type_name)
-            if resource_class.support_status.status == support.HIDDEN:
-                raise exception.NotSupported(type_name)
-            return resource_class.resource_to_template(type_name,
-                                                       template_type)
-        except exception.StackValidationFailed:
-            raise exception.EntityNotFound(entity='Resource Type',
-                                           name=type_name)
         except exception.NotFound:
             LOG.exception(_LE('Error loading resource type %s '
                               'from global environment.'),
                           type_name)
             raise exception.InvalidGlobalResource(type_name=type_name)
+        else:
+            if resource_class.support_status.status == support.HIDDEN:
+                raise exception.NotSupported(type_name)
+            return resource_class.resource_to_template(type_name,
+                                                       template_type)
 
     @context.request_context
     def list_events(self, cnxt, stack_identity, filters=None, limit=None,
@@ -1429,7 +1430,7 @@ class EngineService(service.Service):
 
         if cfg.CONF.heat_stack_user_role in cnxt.roles:
             if not self._authorize_stack_user(cnxt, stack, resource_name):
-                LOG.warn(_LW("Access denied to resource %s"), resource_name)
+                LOG.warning(_LW("Access denied to resource %s"), resource_name)
                 raise exception.Forbidden()
 
         if resource_name not in stack:
@@ -1691,7 +1692,7 @@ class EngineService(service.Service):
             try:
                 wrn = [w.name for w in watch_rule.WatchRule.get_all(cnxt)]
             except Exception as ex:
-                LOG.warn(_LW('show_watch (all) db error %s'), ex)
+                LOG.warning(_LW('show_watch (all) db error %s'), ex)
                 return
 
         wrs = [watchrule.WatchRule.load(cnxt, w) for w in wrn]
@@ -1719,7 +1720,7 @@ class EngineService(service.Service):
         try:
             wds = watch_data.WatchData.get_all(cnxt)
         except Exception as ex:
-            LOG.warn(_LW('show_metric (all) db error %s'), ex)
+            LOG.warning(_LW('show_metric (all) db error %s'), ex)
             return
 
         result = [api.format_watch_data(w) for w in wds]
@@ -1793,10 +1794,12 @@ class EngineService(service.Service):
     @context.request_context
     def create_software_deployment(self, cnxt, server_id, config_id,
                                    input_values, action, status,
-                                   status_reason, stack_user_project_id):
+                                   status_reason, stack_user_project_id,
+                                   deployment_id=None):
         return self.software_config.create_software_deployment(
             cnxt, server_id=server_id,
             config_id=config_id,
+            deployment_id=deployment_id,
             input_values=input_values,
             action=action,
             status=status,

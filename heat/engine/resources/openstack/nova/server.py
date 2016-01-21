@@ -22,6 +22,7 @@ import six
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LE
 from heat.engine import attributes
 from heat.engine.clients import progress
 from heat.engine import constraints
@@ -483,7 +484,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
               '{"public": [ip1, ip2...], "private": [ip3, ip4], '
               '"public_uuid": [ip1, ip2...], "private_uuid": [ip3, ip4]}. '
               'Each network will have two keys in dict, they are network '
-              'name and network id. '),
+              'name and network id.'),
             type=attributes.Schema.MAP
         ),
         FIRST_ADDRESS: attributes.Schema(
@@ -588,7 +589,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
             self.data_set('metadata_queue_id', queue_id)
             zaqar_plugin = self.client_plugin('zaqar')
             zaqar = zaqar_plugin.create_for_tenant(
-                self.stack.stack_user_project_id)
+                self.stack.stack_user_project_id, self._user_token())
             queue = zaqar.queue(queue_id)
             queue.post({'body': meta, 'ttl': zaqar_plugin.DEFAULT_TTL})
             occ.update({'zaqar': {
@@ -732,7 +733,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         if image:
             image = self.client_plugin('glance').get_image_id(image)
 
-        flavor_id = self.client_plugin().get_flavor_id(flavor)
+        flavor_id = self.client_plugin().find_flavor_by_name_or_id(flavor)
 
         instance_meta = self.properties[self.METADATA]
         if instance_meta is not None:
@@ -969,7 +970,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
 
     def _update_flavor(self, prop_diff):
         flavor = prop_diff[self.FLAVOR]
-        flavor_id = self.client_plugin().get_flavor_id(flavor)
+        flavor_id = self.client_plugin().find_flavor_by_name_or_id(flavor)
         handler_args = {'args': (flavor_id,)}
         checker_args = {'args': (flavor_id, flavor)}
 
@@ -1127,7 +1128,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
             # stack update. This is not desirable for a server. The old
             # transport will continue to work, and the new transport may work
             # despite exceptions in the above block.
-            LOG.error("Error while updating software config transport")
+            LOG.error(_LE('Error while updating software config transport'))
             LOG.exception(e)
 
     def check_update_complete(self, updaters):
@@ -1288,7 +1289,8 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                          "file size (%(max_size)s bytes).") %
                        {'path': path,
                         'max_size': limits['maxPersonalitySize']})
-                self._check_maximum(len(bytes(contents.encode('utf-8'))),
+                self._check_maximum(len(bytes(contents.encode('utf-8'))
+                                        ) if contents is not None else 0,
                                     limits['maxPersonalitySize'], msg)
 
     def _delete_temp_url(self):
@@ -1309,16 +1311,16 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
             return
         client_plugin = self.client_plugin('zaqar')
         zaqar = client_plugin.create_for_tenant(
-            self.stack.stack_user_project_id)
+            self.stack.stack_user_project_id, self._user_token())
         with client_plugin.ignore_not_found:
             zaqar.queue(queue_id).delete()
         self.data_delete('metadata_queue_id')
 
     def _delete(self):
         if self.user_data_software_config():
+            self._delete_queue()
             self._delete_user()
             self._delete_temp_url()
-            self._delete_queue()
 
         # remove internal and external ports
         self._delete_internal_ports()

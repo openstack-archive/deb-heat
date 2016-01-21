@@ -13,6 +13,7 @@
 
 import copy
 import six
+import uuid
 
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -149,6 +150,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             _('Name of the derived config associated with this deployment. '
               'This is used to apply a sort order to the list of '
               'configurations currently deployed to a server.'),
+            update_allowed=True
         ),
         SIGNAL_TRANSPORT: properties.Schema(
             properties.Schema.STRING,
@@ -247,9 +249,13 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         else:
             config = {}
 
-        if (action not in self.properties[self.DEPLOY_ACTIONS]
-                and not config.get(
-                    rpc_api.SOFTWARE_CONFIG_GROUP) == 'component'):
+        if config.get(rpc_api.SOFTWARE_CONFIG_GROUP) == 'component':
+            valid_actions = set()
+            for conf in config['config']['configs']:
+                valid_actions.update(conf['actions'])
+            if action not in valid_actions:
+                return
+        elif action not in self.properties[self.DEPLOY_ACTIONS]:
             return
 
         props = self._build_properties(
@@ -258,12 +264,14 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             action)
 
         if self.resource_id is None:
+            resource_id = str(uuid.uuid4())
+            self.resource_id_set(resource_id)
             sd = self.rpc_client().create_software_deployment(
                 self.context,
+                deployment_id=resource_id,
                 server_id=self.properties[SoftwareDeployment.SERVER],
                 stack_user_project_id=self.stack.stack_user_project_id,
                 **props)
-            self.resource_id_set(sd[rpc_api.SOFTWARE_DEPLOYMENT_ID])
         else:
             sd = self.rpc_client().show_software_deployment(
                 self.context, self.resource_id)

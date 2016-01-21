@@ -27,12 +27,20 @@ from heat.engine.resources import stack_resource
 from heat.engine import template
 
 
+REMOTE_SCHEMES = ('http', 'https')
+LOCAL_SCHEMES = ('file',)
+
+
 def generate_class(name, template_name, env, files=None):
     data = None
     if files is not None:
         data = files.get(template_name)
     if data is None:
-        data = TemplateResource.get_template_file(template_name, ('file',))
+        data = TemplateResource.get_template_file(template_name, LOCAL_SCHEMES)
+    return generate_class_from_template(name, data, env)
+
+
+def generate_class_from_template(name, data, env):
     tmpl = template.Template(template_format.parse(data))
     props, attrs = TemplateResource.get_schemas(tmpl, env.param_defaults)
     cls = type(name, (TemplateResource,),
@@ -65,17 +73,13 @@ class TemplateResource(stack_resource.StackResource):
         if self.validation_exception is None:
             self._generate_schema(self.t)
 
-    def resource_class(self):
-        # All TemplateResource subclasses can be converted to each other with
-        # a stack update, so allow them to cross-update in place.
-        return TemplateResource
-
     def _get_resource_info(self, rsrc_defn):
-        tri = self.stack.env.get_resource_info(
-            rsrc_defn.resource_type,
-            resource_name=rsrc_defn.name,
-            registry_type=environment.TemplateResourceInfo)
-        if tri is None:
+        try:
+            tri = self.stack.env.get_resource_info(
+                rsrc_defn.resource_type,
+                resource_name=rsrc_defn.name,
+                registry_type=environment.TemplateResourceInfo)
+        except exception.EntityNotFound:
             self.validation_exception = ValueError(_(
                 'Only Templates with an extension of .yaml or '
                 '.template are supported'))
@@ -84,11 +88,11 @@ class TemplateResource(stack_resource.StackResource):
             self.resource_type = tri.name
             self.resource_path = tri.path
             if tri.user_resource:
-                self.allowed_schemes = ('http', 'https')
+                self.allowed_schemes = REMOTE_SCHEMES
             else:
-                self.allowed_schemes = ('http', 'https', 'file')
+                self.allowed_schemes = REMOTE_SCHEMES + LOCAL_SCHEMES
 
-        return tri
+            return tri
 
     @staticmethod
     def get_template_file(template_name, allowed_schemes):
@@ -266,14 +270,17 @@ class TemplateResource(stack_resource.StackResource):
         except ValueError as ex:
             msg = _("Failed to retrieve template data: %s") % ex
             raise exception.StackValidationFailed(message=msg)
-        fri = self.stack.env.get_resource_info(
-            self.type(),
-            resource_name=self.name,
-            ignore=self.resource_info)
 
         # If we're using an existing resource type as a facade for this
         # template, check for compatibility between the interfaces.
-        if fri is not None:
+        try:
+            fri = self.stack.env.get_resource_info(
+                self.type(),
+                resource_name=self.name,
+                ignore=self.resource_info)
+        except exception.EntityNotFound:
+            pass
+        else:
             facade_cls = fri.get_class(files=self.stack.t.files)
             self._validate_against_facade(facade_cls)
 

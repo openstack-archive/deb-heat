@@ -41,10 +41,11 @@ class Port(neutron.NeutronResource):
 
     EXTRA_PROPERTIES = (
         VALUE_SPECS, ADMIN_STATE_UP, MAC_ADDRESS,
-        ALLOWED_ADDRESS_PAIRS, VNIC_TYPE, PORT_SECURITY_ENABLED,
+        ALLOWED_ADDRESS_PAIRS, VNIC_TYPE, QOS_POLICY,
+        PORT_SECURITY_ENABLED,
     ) = (
         'value_specs', 'admin_state_up', 'mac_address',
-        'allowed_address_pairs', 'binding:vnic_type',
+        'allowed_address_pairs', 'binding:vnic_type', 'qos_policy',
         'port_security_enabled',
     )
 
@@ -64,12 +65,12 @@ class Port(neutron.NeutronResource):
         ADMIN_STATE_UP_ATTR, DEVICE_ID_ATTR, DEVICE_OWNER_ATTR, FIXED_IPS_ATTR,
         MAC_ADDRESS_ATTR, NAME_ATTR, NETWORK_ID_ATTR, SECURITY_GROUPS_ATTR,
         STATUS, TENANT_ID, ALLOWED_ADDRESS_PAIRS_ATTR, SUBNETS_ATTR,
-        PORT_SECURITY_ENABLED_ATTR,
+        PORT_SECURITY_ENABLED_ATTR, QOS_POLICY_ATTR,
     ) = (
         'admin_state_up', 'device_id', 'device_owner', 'fixed_ips',
         'mac_address', 'name', 'network_id', 'security_groups',
         'status', 'tenant_id', 'allowed_address_pairs', 'subnets',
-        'port_security_enabled',
+        'port_security_enabled', 'qos_policy_id',
     )
 
     properties_schema = {
@@ -92,19 +93,22 @@ class Port(neutron.NeutronResource):
             constraints=[
                 constraints.CustomConstraint('neutron.network')
             ],
+            update_allowed=True,
         ),
 
         NETWORK: properties.Schema(
             properties.Schema.STRING,
             _('Network this port belongs to. If you plan to use current port '
               'to assign Floating IP, you should specify %(fixed_ips)s '
-              'with %(subnet)s') % {'fixed_ips': FIXED_IPS,
-                                    'subnet': FIXED_IP_SUBNET},
+              'with %(subnet)s.  Note if this changes to a different network '
+              'update, the port will be replaced') %
+            {'fixed_ips': FIXED_IPS, 'subnet': FIXED_IP_SUBNET},
             support_status=support.SupportStatus(version='2014.2'),
             required=True,
             constraints=[
                 constraints.CustomConstraint('neutron.network')
             ],
+            update_allowed=True,
         ),
         DEVICE_ID: properties.Schema(
             properties.Schema.STRING,
@@ -249,6 +253,15 @@ class Port(neutron.NeutronResource):
             update_allowed=True,
             support_status=support.SupportStatus(version='5.0.0')
         ),
+        QOS_POLICY: properties.Schema(
+            properties.Schema.STRING,
+            _('The name or ID of QoS policy to attach to this port.'),
+            constraints=[
+                constraints.CustomConstraint('neutron.qos_policy')
+            ],
+            update_allowed=True,
+            support_status=support.SupportStatus(version='6.0.0')
+        ),
     }
 
     attributes_schema = {
@@ -306,7 +319,16 @@ class Port(neutron.NeutronResource):
             support_status=support.SupportStatus(version='5.0.0'),
             type=attributes.Schema.BOOLEAN
         ),
+        QOS_POLICY_ATTR: attributes.Schema(
+            _("The QoS policy ID attached to this port."),
+            type=attributes.Schema.STRING,
+            support_status=support.SupportStatus(version='6.0.0'),
+        ),
     }
+
+    # The network property can be updated, but only to switch between
+    # a name and ID for the same network, which is handled in _needs_update
+    update_exclude_properties = [NETWORK, NETWORK_ID]
 
     def __init__(self, name, definition, stack):
         """Overloaded init in case of merging two schemas to one."""
@@ -349,6 +371,10 @@ class Port(neutron.NeutronResource):
             self.physical_resource_name())
         self.client_plugin().resolve_network(props, self.NETWORK, 'network_id')
         self._prepare_port_properties(props)
+        qos_policy = props.pop(self.QOS_POLICY, None)
+        if qos_policy:
+            props['qos_policy_id'] = self.client_plugin().get_qos_policy_id(
+                qos_policy)
 
         port = self.client().create_port({'port': props})['port']
         self.resource_id_set(port['id'])
@@ -413,7 +439,7 @@ class Port(neutron.NeutronResource):
                         subnets.append(self.client().show_subnet(
                             subnet_id)['subnet'])
             except Exception as ex:
-                LOG.warn(_LW("Failed to fetch resource attributes: %s"), ex)
+                LOG.warning(_LW("Failed to fetch resource attributes: %s"), ex)
                 return
             return subnets
         return super(Port, self)._resolve_attribute(name)
@@ -424,6 +450,17 @@ class Port(neutron.NeutronResource):
         if after_props.get(self.REPLACEMENT_POLICY) == 'REPLACE_ALWAYS':
             raise exception.UpdateReplace(self.name)
 
+        if after_props != before_props:
+            # Switching between name and ID is OK, provided the value resolves
+            # to the same network.  If the network changes, port is replaced.
+            # Support NETWORK and NETWORK_ID, as switching between those is OK.
+            before_id = self.client_plugin().find_neutron_resource(
+                before_props, self.NETWORK, 'network')
+            after_id = self.client_plugin().find_neutron_resource(
+                after_props, self.NETWORK, 'network')
+            if before_id != after_id:
+                raise exception.UpdateReplace(self.name)
+
         return super(Port, self)._needs_update(
             after, before, after_props, before_props, prev_resource,
             check_init_complete)
@@ -432,6 +469,11 @@ class Port(neutron.NeutronResource):
         props = self.prepare_update_properties(json_snippet)
 
         self._prepare_port_properties(props, prepare_for_update=True)
+        qos_policy = props.pop(self.QOS_POLICY, None)
+        if self.QOS_POLICY in prop_diff:
+            props['qos_policy_id'] = self.client_plugin().get_qos_policy_id(
+                qos_policy) if qos_policy else None
+
         LOG.debug('updating port with %s' % props)
         self.client().update_port(self.resource_id, {'port': props})
 

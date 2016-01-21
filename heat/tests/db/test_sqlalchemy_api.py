@@ -1914,7 +1914,8 @@ class DBAPIStackTest(common.HeatTestCase):
                               ctx, stacks[s].id)
             for r in stacks[s].resources:
                 self.assertRaises(exception.NotFound,
-                                  db_api.resource_data_get_all(r))
+                                  db_api.resource_data_get_all(r.context,
+                                                               r.id))
             self.assertEqual([],
                              db_api.event_get_all_by_stack(ctx,
                                                            stacks[s].id))
@@ -1938,6 +1939,8 @@ class DBAPIStackTest(common.HeatTestCase):
             self.ctx, root.id))
         self.assertEqual(root.id, db_api.stack_get_root_id(
             self.ctx, child_1.id))
+        self.assertIsNone(db_api.stack_get_root_id(
+            self.ctx, 'non existent stack'))
 
     def test_stack_count_total_resources(self):
 
@@ -2181,13 +2184,14 @@ class DBAPIResourceDataTest(common.HeatTestCase):
         self.assertEqual('test_value', val)
 
         # get all by querying for data
-        vals = db_api.resource_data_get_all(self.resource)
+        vals = db_api.resource_data_get_all(self.resource.context,
+                                            self.resource.id)
         self.assertEqual(2, len(vals))
         self.assertEqual('foo', vals.get('test_resource_key'))
         self.assertEqual('test_value', vals.get('encryped_resource_key'))
 
         # get all by using associated resource data
-        vals = db_api.resource_data_get_all(None, self.resource.data)
+        vals = db_api.resource_data_get_all(None, None, self.resource.data)
         self.assertEqual(2, len(vals))
         self.assertEqual('foo', vals.get('test_resource_key'))
         self.assertEqual('test_value', vals.get('encryped_resource_key'))
@@ -2203,6 +2207,10 @@ class DBAPIResourceDataTest(common.HeatTestCase):
         self.assertRaises(exception.NotFound, db_api.resource_data_get_by_key,
                           self.ctx, self.resource.id, 'test_resource_key')
         self.assertIsNotNone(res_data)
+
+        self.assertRaises(exception.NotFound, db_api.resource_data_get_all,
+                          self.resource.context,
+                          self.resource.id)
 
 
 class DBAPIEventTest(common.HeatTestCase):

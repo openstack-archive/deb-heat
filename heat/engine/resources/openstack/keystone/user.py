@@ -21,7 +21,12 @@ from heat.engine import support
 
 class KeystoneUser(resource.Resource,
                    role_assignments.KeystoneRoleAssignmentMixin):
-    """Heat Template Resource for Keystone User."""
+    """Heat Template Resource for Keystone User.
+
+    Users represent an individual API consumer. A user itself must be owned by
+    a specific domain, and hence all user names are not globally unique, but
+    only unique to their domain.
+    """
 
     support_status = support.SupportStatus(
         version='2015.1',
@@ -159,8 +164,8 @@ class KeystoneUser(resource.Resource,
 
         removed_group_ids = [self.client_plugin().get_group_id(group)
                              for group in
-                             (set(stored_prps or [])
-                              - set(updated_prps or []))]
+                             (set(stored_prps or []) -
+                              set(updated_prps or []))]
 
         return new_group_ids, removed_group_ids
 
@@ -194,7 +199,11 @@ class KeystoneUser(resource.Resource,
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
-            name = prop_diff.get(self.NAME) or self.physical_resource_name()
+            name = None
+            # Don't update the name if no change
+            if self.NAME in prop_diff:
+                name = prop_diff[self.NAME] or self.physical_resource_name()
+
             description = prop_diff.get(self.DESCRIPTION)
             enabled = prop_diff.get(self.ENABLED)
             email = prop_diff.get(self.EMAIL)
@@ -203,11 +212,6 @@ class KeystoneUser(resource.Resource,
                       self._stored_properties_data.get(self.DOMAIN))
 
             default_project = prop_diff.get(self.DEFAULT_PROJECT)
-
-            (new_group_ids,
-             removed_group_ids) = self._find_diff(
-                prop_diff.get(self.GROUPS),
-                self._stored_properties_data.get(self.GROUPS))
 
             self._update_user(
                 user_id=self.resource_id,
@@ -220,12 +224,16 @@ class KeystoneUser(resource.Resource,
                 new_password=password
             )
 
-            if len(new_group_ids) > 0:
-                self._add_user_to_groups(self.resource_id, new_group_ids)
+            if self.GROUPS in prop_diff:
+                (new_group_ids, removed_group_ids) = self._find_diff(
+                    prop_diff[self.GROUPS],
+                    self._stored_properties_data.get(self.GROUPS))
+                if new_group_ids:
+                    self._add_user_to_groups(self.resource_id, new_group_ids)
 
-            if len(removed_group_ids) > 0:
-                self._remove_user_from_groups(self.resource_id,
-                                              removed_group_ids)
+                if removed_group_ids:
+                    self._remove_user_from_groups(self.resource_id,
+                                                  removed_group_ids)
 
             self.update_assignment(prop_diff=prop_diff,
                                    user_id=self.resource_id)

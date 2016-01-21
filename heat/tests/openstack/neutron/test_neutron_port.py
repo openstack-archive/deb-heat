@@ -21,6 +21,7 @@ from oslo_serialization import jsonutils
 
 from heat.common import exception
 from heat.common import template_format
+from heat.engine.clients.os import neutron
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.tests import common
@@ -82,7 +83,8 @@ class NeutronPortTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'net1234'
+            'net1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('net1234')
         neutronclient.Client.create_port({'port': {
             'network_id': u'net1234',
@@ -118,12 +120,14 @@ class NeutronPortTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'net1234'
+            'net1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('net1234')
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
-            'sub1234'
+            'sub1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('sub1234')
 
         neutronclient.Client.create_port({'port': {
@@ -159,7 +163,8 @@ class NeutronPortTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'net1234'
+            'net1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('net1234')
         neutronclient.Client.create_port({'port': {
             'network_id': u'net1234',
@@ -195,7 +200,8 @@ class NeutronPortTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'abcd1234'
+            'abcd1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('abcd1234')
         neutronclient.Client.create_port({'port': {
             'network_id': u'abcd1234',
@@ -229,7 +235,8 @@ class NeutronPortTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'abcd1234'
+            'abcd1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('abcd1234')
 
         neutronclient.Client.create_port({'port': {
@@ -262,7 +269,8 @@ class NeutronPortTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'abcd1234'
+            'abcd1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('abcd1234')
         neutronclient.Client.create_port({'port': {
             'network_id': u'abcd1234',
@@ -298,7 +306,8 @@ class NeutronPortTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'abcd1234'
+            'abcd1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('abcd1234')
         neutronclient.Client.create_port({'port': {
             'network_id': u'abcd1234',
@@ -334,12 +343,14 @@ class NeutronPortTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'net1234'
+            'net1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('net1234')
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
-            'sub1234'
+            'sub1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('sub1234')
         neutronclient.Client.create_port({'port': port_prop}).AndReturn(
             {'port': {
@@ -388,7 +399,8 @@ class NeutronPortTest(common.HeatTestCase):
             ],
             'name': utils.PhysName('test_stack', 'port'),
             'admin_state_up': True,
-            'device_owner': u'network:dhcp'}
+            'device_owner': u'network:dhcp'
+        }
 
         self._mock_create_with_security_groups(port_prop)
 
@@ -406,23 +418,31 @@ class NeutronPortTest(common.HeatTestCase):
                  'name': utils.PhysName('test_stack', 'port'),
                  'admin_state_up': True,
                  'device_owner': u'network:dhcp'}
+        policy_id = '8a2f582a-e1cd-480f-b85d-b02631c10656'
         new_props = props.copy()
         new_props['name'] = "new_name"
         new_props['security_groups'] = [
             '8a2f582a-e1cd-480f-b85d-b02631c10656']
+        new_props['device_id'] = 'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        new_props['device_owner'] = 'network:router_interface'
         new_props_update = new_props.copy()
         new_props_update.pop('network_id')
+        new_props_update['qos_policy_id'] = policy_id
+        new_props['qos_policy'] = policy_id
 
         new_props1 = new_props.copy()
         new_props1.pop('security_groups')
+        new_props1['qos_policy'] = None
         new_props_update1 = new_props_update.copy()
         new_props_update1['security_groups'] = [
             '0389f747-7785-4757-b7bb-2ab07e4b09c3']
+        new_props_update1['qos_policy_id'] = None
 
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'net1234'
+            'net1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('net1234')
         neutronclient.Client.create_port(
             {'port': props}
@@ -441,6 +461,10 @@ class NeutronPortTest(common.HeatTestCase):
                 "ip_address": "10.0.0.2"
             }
         }})
+
+        self.patchobject(neutron.NeutronClientPlugin, 'get_qos_policy_id')
+        neutron.NeutronClientPlugin.get_qos_policy_id.return_value = policy_id
+        self.stub_QoSPolicyConstraint_validate()
         neutronclient.Client.update_port(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
             {'port': new_props_update}
@@ -479,7 +503,9 @@ class NeutronPortTest(common.HeatTestCase):
         update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
                                                       new_props)
         scheduler.TaskRunner(port.update, update_snippet)()
+
         # update again to test port without security group
+        # and without qos_policy
         update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
                                                       new_props1)
         scheduler.TaskRunner(port.update, update_snippet)()
@@ -495,7 +521,8 @@ class NeutronPortTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'net1234'
+            'net1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('net1234')
         neutronclient.Client.create_port(
             {'port': props}
@@ -528,11 +555,12 @@ class NeutronPortTest(common.HeatTestCase):
 
         # test always replace
         new_props['replacement_policy'] = 'REPLACE_ALWAYS'
+        new_props['network'] = new_props.pop('network_id')
         update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
                                                       new_props)
         self.assertRaises(exception.UpdateReplace, port._needs_update,
                           update_snippet, port.frozen_definition(),
-                          new_props, props, None)
+                          new_props, port.properties, None)
 
         # test deferring to Resource._needs_update
         new_props['replacement_policy'] = 'AUTO'
@@ -540,7 +568,98 @@ class NeutronPortTest(common.HeatTestCase):
                                                       new_props)
         self.assertTrue(port._needs_update(update_snippet,
                                            port.frozen_definition(),
-                                           new_props, props, None))
+                                           new_props, port.properties, None))
+
+        self.m.VerifyAll()
+
+    def test_port_needs_update_network(self):
+        props = {'network_id': u'net1234',
+                 'name': utils.PhysName('test_stack', 'port'),
+                 'admin_state_up': True,
+                 'device_owner': u'network:dhcp'}
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'net1234',
+            cmd_resource=None,
+        ).AndReturn('net1234')
+        create_props = props.copy()
+        neutronclient.Client.create_port(
+            {'port': create_props}
+        ).AndReturn({'port': {
+            "status": "BUILD",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+        }})
+        neutronclient.Client.show_port(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
+        ).AndReturn({'port': {
+            "status": "ACTIVE",
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766",
+            "fixed_ips": {
+                "subnet_id": "d0e971a6-a6b4-4f4c-8c88-b75e9c120b7e",
+                "ip_address": "10.0.0.2"
+            }
+        }})
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'net1234',
+            cmd_resource=None,
+        ).MultipleTimes().AndReturn('net1234')
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'old_network',
+            cmd_resource=None,
+        ).AndReturn('net1234')
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'net1234',
+            cmd_resource=None,
+        ).MultipleTimes().AndReturn('net1234')
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'new_network',
+            cmd_resource=None,
+        ).AndReturn('net5678')
+
+        self.m.ReplayAll()
+
+        # create port
+        t = template_format.parse(neutron_port_template)
+        t['resources']['port']['properties'].pop('fixed_ips')
+        stack = utils.parse_stack(t)
+
+        port = stack['port']
+        scheduler.TaskRunner(port.create)()
+
+        # Switch from network_id=ID to network=ID (no replace)
+        new_props = props.copy()
+        new_props['network'] = new_props.pop('network_id')
+        new_props['network_id'] = None
+        update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
+                                                      new_props)
+        self.assertTrue(port._needs_update(update_snippet,
+                                           port.frozen_definition(),
+                                           new_props, port.properties, None))
+
+        # Switch from network=ID to network=NAME (no replace)
+        new_props['network'] = 'old_network'
+        update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
+                                                      new_props)
+        self.assertTrue(port._needs_update(update_snippet,
+                                           port.frozen_definition(),
+                                           new_props, port.properties, None))
+
+        # Switch to a different network (replace)
+        new_props['network'] = 'new_network'
+        update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
+                                                      new_props)
+        self.assertRaises(exception.UpdateReplace, port._needs_update,
+                          update_snippet, port.frozen_definition(),
+                          new_props, port.properties, None)
 
         self.m.VerifyAll()
 
@@ -557,7 +676,8 @@ class NeutronPortTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'net1234'
+            'net1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('net1234')
         neutronclient.Client.create_port({'port': {
             'network_id': u'net1234',
@@ -619,7 +739,8 @@ class NeutronPortTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'net1234'
+            'net1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('net1234')
         neutronclient.Client.create_port({'port': {
             'network_id': u'net1234',
@@ -688,12 +809,14 @@ class NeutronPortTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
-            'net1234'
-        ).AndReturn('net1234')
+            'net1234',
+            cmd_resource=None,
+        ).MultipleTimes().AndReturn('net1234')
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
-            'sub1234'
+            'sub1234',
+            cmd_resource=None,
         ).MultipleTimes().AndReturn('sub1234')
         neutronclient.Client.create_port({'port': port_prop}).AndReturn(
             {'port': {

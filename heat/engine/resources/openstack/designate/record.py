@@ -11,6 +11,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import six
+
 from heat.common.i18n import _
 from heat.engine import constraints
 from heat.engine import properties
@@ -19,7 +21,12 @@ from heat.engine import support
 
 
 class DesignateRecord(resource.Resource):
-    """Heat Template Resource for Designate Record."""
+    """Heat Template Resource for Designate Record.
+
+    Designate provides DNS-as-a-Service services for OpenStack. Record is
+    storage unit in DNS. So, DNS name server is a server that stores the DNS
+    records for a domain. Each record has a type and type-specific data.
+    """
 
     support_status = support.SupportStatus(
         version='5.0.0')
@@ -48,12 +55,12 @@ class DesignateRecord(resource.Resource):
             required=True,
             constraints=[constraints.Length(max=255)]
         ),
-        # Based on RFC 1035, range for ttl is set to 0 to signed 32 bit number
+        # Based on RFC 1035, range for ttl is set to 1 to signed 32 bit number
         TTL: properties.Schema(
             properties.Schema.INTEGER,
             _('Time To Live (Seconds).'),
             update_allowed=True,
-            constraints=[constraints.Range(min=0,
+            constraints=[constraints.Range(min=1,
                                            max=2147483647)]
         ),
         # designate mandates to the max length of 160 for description
@@ -156,7 +163,9 @@ class DesignateRecord(resource.Resource):
     # FIXME(kanagaraj-manickam) Remove this method once designate defect
     # 1485552 is fixed.
     def _show_resource(self):
-        return dict(self.client().records.get(self.resource_id).items())
+        kwargs = dict(domain=self.properties[self.DOMAIN],
+                      id=self.resource_id)
+        return dict(six.iteritems(self.client_plugin().record_show(**kwargs)))
 
 
 def resource_mapping():

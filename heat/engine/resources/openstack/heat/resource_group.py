@@ -255,11 +255,6 @@ class ResourceGroup(stack_resource.StackResource):
         )
     }
 
-    def __init__(self, name, json_snippet, stack):
-        super(ResourceGroup, self).__init__(name, json_snippet, stack)
-        self.update_policy = self.t.update_policy(self.update_policy_schema,
-                                                  self.context)
-
     def get_size(self):
         return self.properties.get(self.COUNT)
 
@@ -274,11 +269,7 @@ class ResourceGroup(stack_resource.StackResource):
         res_def = next(six.itervalues(
             test_tmpl.resource_definitions(self.stack)))
         # make sure we can resolve the nested resource type
-        try:
-            self.stack.env.get_class(res_def.resource_type)
-        except exception.NotFound:
-            # its a template resource
-            pass
+        self.stack.env.get_class_to_instantiate(res_def.resource_type)
 
         try:
             name = "%s-%s" % (self.stack.name, self.name)
@@ -352,14 +343,13 @@ class ResourceGroup(stack_resource.StackResource):
             max_batch_size = batch_create[self.MAX_BATCH_SIZE]
             pause_sec = batch_create[self.PAUSE_TIME]
             checkers = self._replace(0, max_batch_size, pause_sec)
+            checkers[0].start()
+            return checkers
         else:
             names = self._resource_names()
-            checkers = [(scheduler.TaskRunner(
-                self._run_to_completion,
-                self._assemble_nested(names),
-                self.stack.timeout_secs()))]
-        checkers[0].start()
-        return checkers
+            self.create_with_template(self._assemble_nested(names),
+                                      self.child_params(),
+                                      self.stack.timeout_secs())
 
     def check_create_complete(self, checkers=None):
         if checkers is None:

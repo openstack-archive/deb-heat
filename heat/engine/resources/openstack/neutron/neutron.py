@@ -21,6 +21,11 @@ class NeutronResource(resource.Resource):
 
     default_client_name = 'neutron'
 
+    # Subclasses provide a list of properties which, although
+    # update_allowed in the schema, should be excluded from the
+    # call to neutron, because they are handled in _needs_update
+    update_exclude_properties = []
+
     def validate(self):
         """Validate any of the provided params."""
         res = super(NeutronResource, self).validate()
@@ -56,15 +61,19 @@ class NeutronResource(resource.Resource):
         values.
         """
         props = dict((k, v) for k, v in properties.items()
-                     if v is not None and k != 'value_specs')
+                     if v is not None)
 
         if 'name' in six.iterkeys(properties):
             props.setdefault('name', name)
 
-        if 'value_specs' in six.iterkeys(properties):
-            props.update(properties.get('value_specs'))
-
+        if 'value_specs' in props:
+            NeutronResource.merge_value_specs(props)
         return props
+
+    @staticmethod
+    def merge_value_specs(props):
+        value_spec_props = props.pop('value_specs')
+        props.update(value_spec_props)
 
     def prepare_update_properties(self, definition):
         """Prepares the property values for correct Neutron update call.
@@ -77,7 +86,8 @@ class NeutronResource(resource.Resource):
         """
         p = definition.properties(self.properties_schema, self.context)
         update_props = dict((k, v) for k, v in p.items()
-                            if p.props.get(k).schema.update_allowed)
+                            if p.props.get(k).schema.update_allowed and
+                            k not in self.update_exclude_properties)
 
         props = self.prepare_properties(
             update_props,

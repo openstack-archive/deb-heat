@@ -25,13 +25,15 @@ from heat.engine import support
 class Subnet(neutron.NeutronResource):
 
     PROPERTIES = (
-        NETWORK_ID, NETWORK, CIDR, VALUE_SPECS, NAME, IP_VERSION,
-        DNS_NAMESERVERS, GATEWAY_IP, ENABLE_DHCP, ALLOCATION_POOLS,
-        TENANT_ID, HOST_ROUTES, IPV6_RA_MODE, IPV6_ADDRESS_MODE,
+        NETWORK_ID, NETWORK, SUBNETPOOL, PREFIXLEN, CIDR,
+        VALUE_SPECS, NAME, IP_VERSION, DNS_NAMESERVERS, GATEWAY_IP,
+        ENABLE_DHCP, ALLOCATION_POOLS, TENANT_ID, HOST_ROUTES,
+        IPV6_RA_MODE, IPV6_ADDRESS_MODE,
     ) = (
-        'network_id', 'network', 'cidr', 'value_specs', 'name', 'ip_version',
-        'dns_nameservers', 'gateway_ip', 'enable_dhcp', 'allocation_pools',
-        'tenant_id', 'host_routes', 'ipv6_ra_mode', 'ipv6_address_mode',
+        'network_id', 'network', 'subnetpool', 'prefixlen', 'cidr',
+        'value_specs', 'name', 'ip_version', 'dns_nameservers', 'gateway_ip',
+        'enable_dhcp', 'allocation_pools', 'tenant_id', 'host_routes',
+        'ipv6_ra_mode', 'ipv6_address_mode',
     )
 
     _ALLOCATION_POOL_KEYS = (
@@ -87,17 +89,30 @@ class Subnet(neutron.NeutronResource):
             ],
             support_status=support.SupportStatus(version='2014.2')
         ),
+        SUBNETPOOL: properties.Schema(
+            properties.Schema.STRING,
+            _('The name or ID of the subnet pool.'),
+            constraints=[
+                constraints.CustomConstraint('neutron.subnetpool')
+            ],
+            support_status=support.SupportStatus(version='6.0.0'),
+        ),
+        PREFIXLEN: properties.Schema(
+            properties.Schema.INTEGER,
+            _('Prefix length for subnet allocation from subnet pool.'),
+            constraints=[constraints.Range(min=0)],
+            support_status=support.SupportStatus(version='6.0.0'),
+        ),
         CIDR: properties.Schema(
             properties.Schema.STRING,
             _('The CIDR.'),
-            required=True,
             constraints=[
                 constraints.CustomConstraint('net_cidr')
             ]
         ),
         VALUE_SPECS: properties.Schema(
             properties.Schema.MAP,
-            _('Extra parameters to include in the creation request.'),
+            _('Extra parameters to include in the request.'),
             default={},
             update_allowed=True
         ),
@@ -122,9 +137,12 @@ class Subnet(neutron.NeutronResource):
         ),
         GATEWAY_IP: properties.Schema(
             properties.Schema.STRING,
-            _('The gateway IP address. Set to any of [ null | ~ | "" ] to '
-              'create the subnet without a gateway. If omitted, the first IP '
-              'address within the subnet is assigned to the gateway.'),
+            _('The gateway IP address. Set to any of [ null | ~ | "" ] '
+              'to create/update a subnet without a gateway. '
+              'If omitted when creation, neutron will assign the first '
+              'free IP address within the subnet to the gateway '
+              'automatically. If remove this from template when update, '
+              'the old gateway IP address will be detached.'),
             update_allowed=True
         ),
         ENABLE_DHCP: properties.Schema(
@@ -272,8 +290,21 @@ class Subnet(neutron.NeutronResource):
 
     def validate(self):
         super(Subnet, self).validate()
+        subnetpool = self.properties[self.SUBNETPOOL]
+        prefixlen = self.properties[self.PREFIXLEN]
+        cidr = self.properties[self.CIDR]
+        if subnetpool and cidr:
+            raise exception.ResourcePropertyConflict(self.SUBNETPOOL,
+                                                     self.CIDR)
+        if not subnetpool and not cidr:
+            raise exception.PropertyUnspecifiedError(self.SUBNETPOOL,
+                                                     self.CIDR)
+        if prefixlen and cidr:
+            raise exception.ResourcePropertyConflict(self.PREFIXLEN,
+                                                     self.CIDR)
         ra_mode = self.properties[self.IPV6_RA_MODE]
         address_mode = self.properties[self.IPV6_ADDRESS_MODE]
+
         if (self.properties[self.IP_VERSION] == 4) and (
                 ra_mode or address_mode):
             msg = _('ipv6_ra_mode and ipv6_address_mode are not supported '
@@ -295,9 +326,13 @@ class Subnet(neutron.NeutronResource):
         props = self.prepare_properties(
             self.properties,
             self.physical_resource_name())
-        self.client_plugin().resolve_network(props, self.NETWORK, 'network_id')
+        self.client_plugin().resolve_network(props, self.NETWORK,
+                                             'network_id')
+        if self.SUBNETPOOL in props and props[self.SUBNETPOOL]:
+            props['subnetpool_id'] = self.client_plugin(
+                ).find_resourceid_by_name_or_id(
+                'subnetpool', props.pop('subnetpool'))
         self._null_gateway_ip(props)
-
         subnet = self.client().create_subnet({'subnet': props})['subnet']
         self.resource_id_set(subnet['id'])
 
@@ -313,12 +348,21 @@ class Subnet(neutron.NeutronResource):
         return self.client().show_subnet(self.resource_id)['subnet']
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        props = self.prepare_update_properties(json_snippet)
-        if (self.ALLOCATION_POOLS in prop_diff and
-                self.ALLOCATION_POOLS not in props):
-            props[self.ALLOCATION_POOLS] = []
-        self.client().update_subnet(
-            self.resource_id, {'subnet': props})
+        if prop_diff:
+            if self.VALUE_SPECS in prop_diff:
+                self.merge_value_specs(prop_diff)
+            if (self.ALLOCATION_POOLS in prop_diff and
+                    prop_diff[self.ALLOCATION_POOLS] is None):
+                prop_diff[self.ALLOCATION_POOLS] = []
+            if (self.NAME in prop_diff and
+                    prop_diff[self.NAME] is None):
+                prop_diff[self.NAME] = self.physical_resource_name()
+
+            # If the new value is '', set to None
+            self._null_gateway_ip(prop_diff)
+
+            self.client().update_subnet(
+                self.resource_id, {'subnet': prop_diff})
 
 
 def resource_mapping():

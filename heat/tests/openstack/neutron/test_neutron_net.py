@@ -11,7 +11,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import copy
 import mox
 
 from neutronclient.common import exceptions as qe
@@ -106,7 +105,8 @@ class NeutronNetTest(common.HeatTestCase):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'router',
-            'None'
+            'None',
+            cmd_resource=None,
         ).AndReturn('None')
 
         # Create script
@@ -229,13 +229,34 @@ class NeutronNetTest(common.HeatTestCase):
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
         ).AndReturn(None)
 
+        # Update script
         neutronclient.Client.update_network(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
             {'network': {
-                'shared': True,
                 'name': 'mynet',
-                'admin_state_up': True,
-                'port_security_enabled': False
+                'qos_policy_id': '0389f747-7785-4757-b7bb-2ab07e4b09c3'
+            }}).AndReturn(None)
+        # update again to detach qos_policy
+        neutronclient.Client.update_network(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+            {'network': {
+                'name': 'mynet',
+                'qos_policy_id': None
+            }}).AndReturn(None)
+
+        neutronclient.Client.update_network(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+            {'network': {
+                'name': 'mynet',
+                'port_security_enabled': True,
+                'qos_policy_id': None
+            }}).AndReturn(None)
+
+        # update with name = None
+        neutronclient.Client.update_network(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+            {'network': {
+                'name': utils.PhysName('test_stack', 'test_net'),
             }}).AndReturn(None)
 
         # Delete script
@@ -250,6 +271,9 @@ class NeutronNetTest(common.HeatTestCase):
         neutronclient.Client.delete_network(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
         ).AndRaise(qe.NetworkNotFoundClient(status_code=404))
+
+        self.patchobject(neutron.NeutronClientPlugin, 'get_qos_policy_id',
+                         return_value='0389f747-7785-4757-b7bb-2ab07e4b09c3')
 
         self.m.ReplayAll()
         t = template_format.parse(neutron_template)
@@ -278,13 +302,26 @@ class NeutronNetTest(common.HeatTestCase):
             "name": "mynet",
             "dhcp_agent_ids": [
                 "bb09cfcd-5277-473d-8336-d4ed8628ae68"
-            ]
+            ],
+            'qos_policy': '0389f747-7785-4757-b7bb-2ab07e4b09c3'
         }
-        props = copy.copy(rsrc.properties.data)
-        props.update(prop_diff)
         update_snippet = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(),
-                                                      props)
+                                                      prop_diff)
         rsrc.handle_update(update_snippet, {}, prop_diff)
+
+        # Update with None qos_policy
+        prop_diff['qos_policy'] = None
+        rsrc.handle_update(update_snippet, {}, prop_diff)
+
+        # Update with value_specs
+        prop_diff['value_specs'] = {"port_security_enabled": True}
+        rsrc.handle_update(update_snippet, {}, prop_diff)
+
+        # Update with name = None
+        rsrc.handle_update(update_snippet, {}, {'name': None})
+
+        # Update with empty prop_diff
+        rsrc.handle_update(update_snippet, {}, {})
 
         scheduler.TaskRunner(rsrc.delete)()
         rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE, 'to delete again')

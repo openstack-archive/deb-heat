@@ -15,7 +15,6 @@ import collections
 import email
 from email.mime import multipart
 from email.mime import text
-import logging
 import os
 import pkgutil
 import string
@@ -23,6 +22,7 @@ import string
 from novaclient import client as nc
 from novaclient import exceptions
 from oslo_config import cfg
+from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import uuidutils
 import six
@@ -40,6 +40,7 @@ LOG = logging.getLogger(__name__)
 
 
 NOVACLIENT_VERSION = "2"
+CLIENT_NAME = 'nova'
 
 
 class NovaClientPlugin(client_plugin.ClientPlugin):
@@ -60,7 +61,7 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
     service_types = [COMPUTE] = ['compute']
 
     def _create(self):
-        endpoint_type = self._get_client_option('nova', 'endpoint_type')
+        endpoint_type = self._get_client_option(CLIENT_NAME, 'endpoint_type')
         management_url = self.url_for(service_type=self.COMPUTE,
                                       endpoint_type=endpoint_type)
         extensions = nc.discover_extensions(NOVACLIENT_VERSION)
@@ -74,10 +75,10 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
             'api_key': None,
             'extensions': extensions,
             'endpoint_type': endpoint_type,
-            'http_log_debug': self._get_client_option('nova',
+            'http_log_debug': self._get_client_option(CLIENT_NAME,
                                                       'http_log_debug'),
-            'cacert': self._get_client_option('nova', 'ca_file'),
-            'insecure': self._get_client_option('nova', 'insecure')
+            'cacert': self._get_client_option(CLIENT_NAME, 'ca_file'),
+            'insecure': self._get_client_option(CLIENT_NAME, 'insecure')
         }
 
         client = nc.Client(NOVACLIENT_VERSION, **args)
@@ -126,17 +127,17 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
         try:
             server = self.client().servers.get(server_id)
         except exceptions.OverLimit as exc:
-            LOG.warn(_LW("Received an OverLimit response when "
-                         "fetching server (%(id)s) : %(exception)s"),
-                     {'id': server_id,
-                      'exception': exc})
+            LOG.warning(_LW("Received an OverLimit response when "
+                            "fetching server (%(id)s) : %(exception)s"),
+                        {'id': server_id,
+                         'exception': exc})
         except exceptions.ClientException as exc:
             if ((getattr(exc, 'http_status', getattr(exc, 'code', None)) in
                  (500, 503))):
-                LOG.warn(_LW("Received the following exception when "
-                         "fetching server (%(id)s) : %(exception)s"),
-                         {'id': server_id,
-                          'exception': exc})
+                LOG.warning(_LW("Received the following exception when "
+                            "fetching server (%(id)s) : %(exception)s"),
+                            {'id': server_id,
+                             'exception': exc})
             else:
                 raise
         return server
@@ -149,20 +150,20 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
         try:
             server.get()
         except exceptions.OverLimit as exc:
-            LOG.warn(_LW("Server %(name)s (%(id)s) received an OverLimit "
-                         "response during server.get(): %(exception)s"),
-                     {'name': server.name,
-                      'id': server.id,
-                      'exception': exc})
+            LOG.warning(_LW("Server %(name)s (%(id)s) received an OverLimit "
+                            "response during server.get(): %(exception)s"),
+                        {'name': server.name,
+                         'id': server.id,
+                         'exception': exc})
         except exceptions.ClientException as exc:
             if ((getattr(exc, 'http_status', getattr(exc, 'code', None)) in
                  (500, 503))):
-                LOG.warn(_LW('Server "%(name)s" (%(id)s) received the '
-                             'following exception during server.get(): '
-                             '%(exception)s'),
-                         {'name': server.name,
-                          'id': server.id,
-                          'exception': exc})
+                LOG.warning(_LW('Server "%(name)s" (%(id)s) received the '
+                                'following exception during server.get(): '
+                                '%(exception)s'),
+                            {'name': server.name,
+                             'id': server.id,
+                             'exception': exc})
             else:
                 raise
 
@@ -223,27 +224,16 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
                 resource_status=server.status,
                 result=_('%s is not active') % res_name)
 
-    def get_flavor_id(self, flavor):
-        """Get the id for the specified flavor name.
-
-        If the specified value is flavor id, just return it.
+    def find_flavor_by_name_or_id(self, flavor):
+        """Find the specified flavor by name or id.
 
         :param flavor: the name of the flavor to find
         :returns: the id of :flavor:
-        :raises: exception.EntityNotFound
         """
-        flavor_id = None
-        flavor_list = self.client().flavors.list()
-        for o in flavor_list:
-            if o.name == flavor:
-                flavor_id = o.id
-                break
-            if o.id == flavor:
-                flavor_id = o.id
-                break
-        if flavor_id is None:
-            raise exception.EntityNotFound(entity='Flavor', name=flavor)
-        return flavor_id
+        try:
+            return self.client().flavors.get(flavor).id
+        except exceptions.NotFound:
+            return self.client().flavors.find(name=flavor).id
 
     def get_host(self, host_name):
         """Get the host id specified by name.
@@ -533,8 +523,8 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
         try:
             server = self.client().servers.get(server)
         except exceptions.NotFound as ex:
-            LOG.warn(_LW('Instance (%(server)s) not found: %(ex)s'),
-                     {'server': server, 'ex': ex})
+            LOG.warning(_LW('Instance (%(server)s) not found: %(ex)s'),
+                        {'server': server, 'ex': ex})
         else:
             for n in sorted(server.networks, reverse=True):
                 if len(server.networks[n]) > 0:
@@ -680,46 +670,43 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
         return alias in self._list_extensions()
 
 
-class ServerConstraint(constraints.BaseCustomConstraint):
+class NovaBaseConstraint(constraints.BaseCustomConstraint):
 
-    expected_exceptions = (exception.EntityNotFound,)
-
-    def validate_with_client(self, client, server):
-        client.client_plugin('nova').get_server(server)
+    resource_client_name = CLIENT_NAME
 
 
-class KeypairConstraint(constraints.BaseCustomConstraint):
+class ServerConstraint(NovaBaseConstraint):
 
-    expected_exceptions = (exception.EntityNotFound,)
+    resource_getter_name = 'get_server'
+
+
+class KeypairConstraint(NovaBaseConstraint):
+
+    resource_getter_name = 'get_keypair'
 
     def validate_with_client(self, client, key_name):
         if not key_name:
             # Don't validate empty key, which can happen when you
             # use a KeyPair resource
             return True
-        client.client_plugin('nova').get_keypair(key_name)
+        super(KeypairConstraint, self).validate_with_client(client, key_name)
 
 
-class FlavorConstraint(constraints.BaseCustomConstraint):
+class FlavorConstraint(NovaBaseConstraint):
 
-    expected_exceptions = (exception.EntityNotFound,)
+    expected_exceptions = (exceptions.NotFound,)
 
-    def validate_with_client(self, client, flavor):
-        client.client_plugin('nova').get_flavor_id(flavor)
+    resource_getter_name = 'find_flavor_by_name_or_id'
 
 
-class NetworkConstraint(constraints.BaseCustomConstraint):
+class NetworkConstraint(NovaBaseConstraint):
 
     expected_exceptions = (exception.EntityNotFound,
                            exception.PhysicalResourceNameAmbiguity)
 
-    def validate_with_client(self, client, network):
-        client.client_plugin('nova').get_nova_network_id(network)
+    resource_getter_name = 'get_nova_network_id'
 
 
-class HostConstraint(constraints.BaseCustomConstraint):
+class HostConstraint(NovaBaseConstraint):
 
-    expected_exceptions = (exception.EntityNotFound,)
-
-    def validate_with_client(self, client, host_name):
-        client.client_plugin('nova').get_host(host_name)
+    resource_getter_name = 'get_host'

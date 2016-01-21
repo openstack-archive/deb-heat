@@ -122,6 +122,12 @@ class ResourceInfo(object):
     def matches(self, resource_type):
         return False
 
+    def get_class(self):
+        raise NotImplemented
+
+    def get_class_to_instantiate(self):
+        return self.get_class()
+
     def __str__(self):
         return '[%s](User:%s) %s -> %s' % (self.description,
                                            self.user_resource,
@@ -155,6 +161,10 @@ class TemplateResourceInfo(ResourceInfo):
                                                 self.template_name,
                                                 env, files=files)
 
+    def get_class_to_instantiate(self):
+        from heat.engine.resources import template_resource
+        return template_resource.TemplateResource
+
 
 class MapResourceInfo(ResourceInfo):
     """Store the mapping of one resource type to another.
@@ -174,16 +184,30 @@ class GlobResourceInfo(MapResourceInfo):
     """Store the mapping (with wild cards) of one resource type to another.
 
     like: OS::Networking::* -> OS::Neutron::*
+
+    Also supports many-to-one mapping (mostly useful together with special
+    "OS::Heat::None" resource)
+
+    like: OS::* -> OS::Heat::None
     """
     description = 'Wildcard Mapping'
 
     def get_resource_info(self, resource_type=None, resource_name=None):
+        # NOTE(pas-ha) we end up here only when self.name already
+        # ends with * so truncate it
         orig_prefix = self.name[:-1]
-        new_type = self.value[:-1] + resource_type[len(orig_prefix):]
+        if self.value.endswith('*'):
+            new_type = self.value[:-1] + resource_type[len(orig_prefix):]
+        else:
+            new_type = self.value
+
         return self.registry.get_resource_info(new_type, resource_name)
 
     def matches(self, resource_type):
-        return resource_type.startswith(self.name[:-1])
+        # prevent self-recursion in case of many-to-one mapping
+        match = (resource_type != self.value and
+                 resource_type.startswith(self.name[:-1]))
+        return match
 
 
 class ResourceRegistry(object):
@@ -244,13 +268,13 @@ class ResourceRegistry(object):
                 for res_name in list(six.iterkeys(registry)):
                     if (isinstance(registry[res_name], ResourceInfo) and
                             res_name.startswith(name[:-1])):
-                        LOG.warn(_LW('Removing %(item)s from %(path)s'), {
+                        LOG.warning(_LW('Removing %(item)s from %(path)s'), {
                             'item': res_name,
                             'path': descriptive_path})
                         del registry[res_name]
             else:
                 # delete this entry.
-                LOG.warn(_LW('Removing %(item)s from %(path)s'), {
+                LOG.warning(_LW('Removing %(item)s from %(path)s'), {
                     'item': name,
                     'path': descriptive_path})
                 registry.pop(name, None)
@@ -263,8 +287,8 @@ class ResourceRegistry(object):
                 'path': descriptive_path,
                 'was': str(registry[name].value),
                 'now': str(info.value)}
-            LOG.warn(_LW('Changing %(path)s from %(was)s to %(now)s'),
-                     details)
+            LOG.warning(_LW('Changing %(path)s from %(was)s to %(now)s'),
+                        details)
 
         if isinstance(info, ClassResourceInfo):
             if info.value.support_status.status != support.SUPPORTED:
@@ -404,8 +428,12 @@ class ResourceRegistry(object):
                                   giter)
 
         for info in sorted(matches):
-            match = info.get_resource_info(resource_type,
-                                           resource_name)
+            try:
+                match = info.get_resource_info(resource_type,
+                                               resource_name)
+            except exception.EntityNotFound:
+                continue
+
             if registry_type is None or isinstance(match, registry_type):
                 if ignore is not None and match == ignore:
                     continue
@@ -420,7 +448,15 @@ class ResourceRegistry(object):
                     self._register_info([resource_type], info)
                 return match
 
+        raise exception.EntityNotFound(entity='Resource Type',
+                                       name=resource_type)
+
     def get_class(self, resource_type, resource_name=None, files=None):
+        info = self.get_resource_info(resource_type,
+                                      resource_name=resource_name)
+        return info.get_class(files=files)
+
+    def get_class_to_instantiate(self, resource_type, resource_name=None):
         if resource_type == "":
             msg = _('Resource "%s" has no type') % resource_name
             raise exception.StackValidationFailed(message=msg)
@@ -432,12 +468,13 @@ class ResourceRegistry(object):
             msg = _('Resource "%s" type is not a string') % resource_name
             raise exception.StackValidationFailed(message=msg)
 
-        info = self.get_resource_info(resource_type,
-                                      resource_name=resource_name)
-        if info is None:
-            msg = _("Unknown resource Type : %s") % resource_type
-            raise exception.StackValidationFailed(message=msg)
-        return info.get_class(files=files)
+        try:
+            info = self.get_resource_info(resource_type,
+                                          resource_name=resource_name)
+        except exception.EntityNotFound as exc:
+            raise exception.StackValidationFailed(message=six.text_type(exc))
+
+        return info.get_class_to_instantiate()
 
     def as_dict(self):
         """Return user resources in a dict format."""
@@ -534,17 +571,17 @@ class Environment(object):
             env = {}
         if user_env:
             from heat.engine import resources
-            global_registry = resources.global_env().registry
+            global_env = resources.global_env()
+            global_registry = global_env.registry
+            event_sink_classes = global_env.event_sink_classes
         else:
             global_registry = None
+            event_sink_classes = {}
 
         self.registry = ResourceRegistry(global_registry, self)
         self.registry.load(env.get(env_fmt.RESOURCE_REGISTRY, {}))
 
-        if env_fmt.PARAMETER_DEFAULTS in env:
-            self.param_defaults = env[env_fmt.PARAMETER_DEFAULTS]
-        else:
-            self.param_defaults = {}
+        self.param_defaults = env.get(env_fmt.PARAMETER_DEFAULTS, {})
 
         self.encrypted_param_names = env.get(env_fmt.ENCRYPTED_PARAM_NAMES, [])
 
@@ -553,7 +590,13 @@ class Environment(object):
         else:
             self.params = dict((k, v) for (k, v) in six.iteritems(env)
                                if k not in (env_fmt.PARAMETER_DEFAULTS,
+                                            env_fmt.ENCRYPTED_PARAM_NAMES,
+                                            env_fmt.EVENT_SINKS,
                                             env_fmt.RESOURCE_REGISTRY))
+        self.event_sink_classes = event_sink_classes
+        self._event_sinks = []
+        self._built_event_sinks = []
+        self._update_event_sinks(env.get(env_fmt.EVENT_SINKS, []))
         self.constraints = {}
         self.stack_lifecycle_plugins = []
 
@@ -562,13 +605,15 @@ class Environment(object):
         self.params.update(env_snippet.get(env_fmt.PARAMETERS, {}))
         self.param_defaults.update(
             env_snippet.get(env_fmt.PARAMETER_DEFAULTS, {}))
+        self._update_event_sinks(env_snippet.get(env_fmt.EVENT_SINKS, []))
 
     def user_env_as_dict(self):
         """Get the environment as a dict, ready for storing in the db."""
         return {env_fmt.RESOURCE_REGISTRY: self.registry.as_dict(),
                 env_fmt.PARAMETERS: self.params,
                 env_fmt.PARAMETER_DEFAULTS: self.param_defaults,
-                env_fmt.ENCRYPTED_PARAM_NAMES: self.encrypted_param_names}
+                env_fmt.ENCRYPTED_PARAM_NAMES: self.encrypted_param_names,
+                env_fmt.EVENT_SINKS: self._event_sinks}
 
     def register_class(self, resource_type, resource_class, path=None):
         self.registry.register_class(resource_type, resource_class, path=path)
@@ -581,9 +626,16 @@ class Environment(object):
         self.stack_lifecycle_plugins.append((stack_lifecycle_name,
                                              stack_lifecycle_class))
 
+    def register_event_sink(self, event_sink_name, event_sink_class):
+        self.event_sink_classes[event_sink_name] = event_sink_class
+
     def get_class(self, resource_type, resource_name=None, files=None):
         return self.registry.get_class(resource_type, resource_name,
                                        files=files)
+
+    def get_class_to_instantiate(self, resource_type, resource_name=None):
+        return self.registry.get_class_to_instantiate(resource_type,
+                                                      resource_name)
 
     def get_types(self,
                   cnxt=None,
@@ -605,6 +657,17 @@ class Environment(object):
 
     def get_stack_lifecycle_plugins(self):
         return self.stack_lifecycle_plugins
+
+    def _update_event_sinks(self, sinks):
+        self._event_sinks.extend(sinks)
+        for sink in sinks:
+            sink = sink.copy()
+            sink_class = sink.pop('type')
+            sink_class = self.event_sink_classes[sink_class]
+            self._built_event_sinks.append(sink_class(**sink))
+
+    def get_event_sinks(self):
+        return self._built_event_sinks
 
 
 def get_child_environment(parent_env, child_params, item_to_remove=None,

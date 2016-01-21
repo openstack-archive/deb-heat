@@ -37,11 +37,11 @@ def task_description(task):
     The description is used to identify the task when logging its status.
     """
     name = task.__name__ if hasattr(task, '__name__') else None
-    if isinstance(task, types.MethodType):
-        if name is not None and hasattr(task, '__self__'):
+    if name is not None and isinstance(task, (types.MethodType,
+                                              types.FunctionType)):
+        if getattr(task, '__self__', None) is not None:
             return '%s from %s' % (name, task.__self__)
-    elif isinstance(task, types.FunctionType):
-        if name is not None:
+        else:
             return six.text_type(name)
     return repr(task)
 
@@ -299,9 +299,9 @@ def wrappertask(task):
                     while subtask_running:
                         try:
                             yield step
-                        except GeneratorExit as ex:
+                        except GeneratorExit:
                             subtask.close()
-                            raise ex
+                            raise
                         except:  # noqa
                             try:
                                 step = subtask.throw(*sys.exc_info())
@@ -314,9 +314,9 @@ def wrappertask(task):
                                 subtask_running = False
                 else:
                     yield
-            except GeneratorExit as ex:
+            except GeneratorExit:
                 parent.close()
-                raise ex
+                raise
             except:  # noqa
                 subtask = parent.throw(*sys.exc_info())
             else:
@@ -351,7 +351,8 @@ class DependencyTaskGroup(object):
         of the error will be cancelled). Once all chains are complete, any
         errors will be rolled up into an ExceptionGroup exception.
         """
-        self._runners = dict((o, TaskRunner(task, o)) for o in dependencies)
+        self._keys = list(dependencies)
+        self._runners = dict((o, TaskRunner(task, o)) for o in self._keys)
         self._graph = dependencies.graph(reverse=reverse)
         self.error_wait_time = error_wait_time
         self.aggregate_exceptions = aggregate_exceptions
@@ -374,6 +375,8 @@ class DependencyTaskGroup(object):
             try:
                 for k, r in self._ready():
                     r.start()
+                    if not r:
+                        del self._graph[k]
 
                 yield
 
@@ -417,8 +420,8 @@ class DependencyTaskGroup(object):
         Ready subtasks are subtasks whose dependencies have all been satisfied,
         but which have not yet been started.
         """
-        for k, n in six.iteritems(self._graph):
-            if not n:
+        for k in self._keys:
+            if not self._graph.get(k, True):
                 runner = self._runners[k]
                 if runner and not runner.started():
                     yield k, runner

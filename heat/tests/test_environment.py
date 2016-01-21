@@ -43,6 +43,7 @@ class EnvironmentTest(common.HeatTestCase):
         expected = {u'parameters': old,
                     u'encrypted_param_names': [],
                     u'parameter_defaults': {},
+                    u'event_sinks': [],
                     u'resource_registry': {u'resources': {}}}
         env = environment.Environment(old)
         self.assertEqual(expected, env.user_env_as_dict())
@@ -51,6 +52,7 @@ class EnvironmentTest(common.HeatTestCase):
         new_env = {u'parameters': {u'a': u'ff', u'b': u'ss'},
                    u'encrypted_param_names': [],
                    u'parameter_defaults': {u'ff': 'new_def'},
+                   u'event_sinks': [],
                    u'resource_registry': {u'OS::Food': u'fruity.yaml',
                                           u'resources': {}}}
         env = environment.Environment(new_env)
@@ -64,6 +66,22 @@ class EnvironmentTest(common.HeatTestCase):
         env = environment.Environment(new_env)
         self.assertEqual('CloudX::Nova::Server',
                          env.get_resource_info('OS::Nova::Server',
+                                               'my_db_server').name)
+
+    def test_global_registry_many_to_one(self):
+        new_env = {u'parameters': {u'a': u'ff', u'b': u'ss'},
+                   u'resource_registry': {u'OS::Nova::*': 'OS::Heat::None'}}
+        env = environment.Environment(new_env)
+        self.assertEqual('OS::Heat::None',
+                         env.get_resource_info('OS::Nova::Server',
+                                               'my_db_server').name)
+
+    def test_global_registry_many_to_one_no_recurse(self):
+        new_env = {u'parameters': {u'a': u'ff', u'b': u'ss'},
+                   u'resource_registry': {u'OS::*': 'OS::Heat::None'}}
+        env = environment.Environment(new_env)
+        self.assertEqual('OS::Heat::None',
+                         env.get_resource_info('OS::Some::Name',
                                                'my_db_server').name)
 
     def test_map_one_resource_type(self):
@@ -105,8 +123,9 @@ class EnvironmentTest(common.HeatTestCase):
             u'OS::Networking::FloatingIP': 'ip.yaml'}}}}
 
         env = environment.Environment()
-        self.assertIsNone(env.get_resource_info('OS::Networking::FloatingIP',
-                                                'my_fip'))
+        self.assertRaises(exception.EntityNotFound,
+                          env.get_resource_info,
+                          'OS::Networking::FloatingIP', 'my_fip')
 
         env.load(new_env)
         self.assertEqual('ip.yaml',
@@ -195,6 +214,23 @@ def constraint_mapping():
                          env.get_constraint("nova.flavor").__name__)
         self.assertIs(None, env.get_constraint("no_constraint"))
 
+    def test_event_sinks(self):
+        env = environment.Environment(
+            {"event_sinks": [{"type": "zaqar-queue", "target": "myqueue"}]})
+        self.assertEqual([{"type": "zaqar-queue", "target": "myqueue"}],
+                         env.user_env_as_dict()["event_sinks"])
+        sinks = env.get_event_sinks()
+        self.assertEqual(1, len(sinks))
+        self.assertEqual("myqueue", sinks[0]._target)
+
+    def test_event_sinks_load(self):
+        env = environment.Environment()
+        self.assertEqual([], env.get_event_sinks())
+        env.load(
+            {"event_sinks": [{"type": "zaqar-queue", "target": "myqueue"}]})
+        self.assertEqual([{"type": "zaqar-queue", "target": "myqueue"}],
+                         env.user_env_as_dict()["event_sinks"])
+
 
 class EnvironmentDuplicateTest(common.HeatTestCase):
 
@@ -203,7 +239,7 @@ class EnvironmentDuplicateTest(common.HeatTestCase):
                       expected_equal=True)),
         ('diff_temp', dict(resource_type='not.yaml',
                            expected_equal=False)),
-        ('diff_map', dict(resource_type='OS::SomethingElse',
+        ('diff_map', dict(resource_type='OS::Nova::Server',
                           expected_equal=False)),
         ('diff_path', dict(resource_type='a/test.yaml',
                            expected_equal=False)),
@@ -385,7 +421,8 @@ class GlobalEnvLoadingTest(common.HeatTestCase):
         resources._load_global_environment(g_env)
 
         # 3. assert our resource is in now gone.
-        self.assertIsNone(g_env.get_resource_info('OS::Nova::Server'))
+        self.assertRaises(exception.EntityNotFound,
+                          g_env.get_resource_info, 'OS::Nova::Server')
 
         # 4. make sure we haven't removed something we shouldn't have
         self.assertEqual(instance.Instance,
@@ -410,7 +447,8 @@ class GlobalEnvLoadingTest(common.HeatTestCase):
         resources._load_global_environment(g_env)
 
         # 3. assert our resources are now gone.
-        self.assertIsNone(g_env.get_resource_info('AWS::EC2::Instance'))
+        self.assertRaises(exception.EntityNotFound,
+                          g_env.get_resource_info, 'AWS::EC2::Instance')
 
         # 4. make sure we haven't removed something we shouldn't have
         self.assertEqual(server.Server,
@@ -472,6 +510,7 @@ class ChildEnvTest(common.HeatTestCase):
         expected = {'parameters': new_params,
                     'encrypted_param_names': [],
                     'parameter_defaults': {},
+                    'event_sinks': [],
                     'resource_registry': {'resources': {}}}
         cenv = environment.get_child_environment(penv, new_params)
         self.assertEqual(expected, cenv.user_env_as_dict())
@@ -481,6 +520,7 @@ class ChildEnvTest(common.HeatTestCase):
         penv = environment.Environment()
         expected = {'parameter_defaults': {},
                     'encrypted_param_names': [],
+                    'event_sinks': [],
                     'resource_registry': {'resources': {}}}
         expected.update(new_params)
         cenv = environment.get_child_environment(penv, new_params)
@@ -492,6 +532,7 @@ class ChildEnvTest(common.HeatTestCase):
         penv = environment.Environment(env=parent_params)
         expected = {'parameter_defaults': {},
                     'encrypted_param_names': [],
+                    'event_sinks': [],
                     'resource_registry': {'resources': {}}}
         expected.update(new_params)
         cenv = environment.get_child_environment(penv, new_params)
@@ -521,11 +562,12 @@ class ChildEnvTest(common.HeatTestCase):
         self.assertIsNotNone(victim)
         cenv = environment.get_child_environment(penv, None,
                                                  item_to_remove=victim)
-        res = cenv.get_resource_info('OS::Food', resource_name='abc')
-        self.assertIsNone(res)
+        self.assertRaises(exception.EntityNotFound,
+                          cenv.get_resource_info,
+                          'OS::Food', resource_name='abc')
         self.assertNotIn('OS::Food',
                          cenv.user_env_as_dict()['resource_registry'])
-        # make sure the parent env is uneffected
+        # make sure the parent env is unaffected
         innocent = penv.get_resource_info('OS::Food', resource_name='abc')
         self.assertIsNotNone(innocent)
 
@@ -586,8 +628,9 @@ class ChildEnvTest(common.HeatTestCase):
         self.assertIn('hooks', resources['nested_res'])
         self.assertIsNotNone(
             cenv.get_resource_info('OS::Food', resource_name='abc'))
-        self.assertIsNone(
-            cenv.get_resource_info('OS::Fruit', resource_name='a'))
+        self.assertRaises(exception.EntityNotFound,
+                          cenv.get_resource_info,
+                          'OS::Fruit', resource_name='a')
         res = cenv.get_resource_info('OS::Fruit', resource_name='b')
         self.assertIsNotNone(res)
         self.assertEqual(u'carrots.yaml', res.value)

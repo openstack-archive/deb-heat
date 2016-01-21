@@ -38,6 +38,8 @@ class EngineClient(object):
         1.17 - Add files to validate_template
         1.18 - Add show_nested to validate_template
         1.19 - Add show_output and list_outputs for returning stack outputs
+        1.20 - Add resolve_outputs to stack show
+        1.21 - Add deployment_id to create_software_deployment
     """
 
     BASE_RPC_API_VERSION = '1.0'
@@ -158,7 +160,7 @@ class EngineClient(object):
             multiple tags using the boolean AND expression
         :param not_tags_any: count stacks not containing these tags, combine
             multiple tags using the boolean OR expression
-        :returns: a integer representing the number of matched stacks
+        :returns: an integer representing the number of matched stacks
         """
         return self.call(ctxt, self.make_msg('count_stacks',
                                              filters=filters,
@@ -172,15 +174,18 @@ class EngineClient(object):
                                              not_tags_any=not_tags_any),
                          version='1.8')
 
-    def show_stack(self, ctxt, stack_identity):
+    def show_stack(self, ctxt, stack_identity, resolve_outputs=True):
         """Returns detailed information about one or all stacks.
 
         :param ctxt: RPC context.
         :param stack_identity: Name of the stack you want to show, or None to
         show all
+        :param resolve_outputs: If True, stack outputs will be resolved
         """
         return self.call(ctxt, self.make_msg('show_stack',
-                                             stack_identity=stack_identity))
+                                             stack_identity=stack_identity,
+                                             resolve_outputs=resolve_outputs),
+                         version='1.20')
 
     def preview_stack(self, ctxt, stack_name, template, params, files, args):
         """Simulates a new stack using the provided template.
@@ -619,12 +624,14 @@ class EngineClient(object):
     def create_software_deployment(self, cnxt, server_id, config_id=None,
                                    input_values=None, action='INIT',
                                    status='COMPLETE', status_reason='',
-                                   stack_user_project_id=None):
+                                   stack_user_project_id=None,
+                                   deployment_id=None):
         input_values = input_values or {}
         return self.call(cnxt, self.make_msg(
             'create_software_deployment',
             server_id=server_id,
             config_id=config_id,
+            deployment_id=deployment_id,
             input_values=input_values,
             action=action,
             status=status,

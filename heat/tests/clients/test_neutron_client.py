@@ -11,6 +11,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import six
+
 import mock
 from neutronclient.common import exceptions as qe
 
@@ -47,7 +49,8 @@ class NeutronClientPluginTests(NeutronClientPluginTestCase):
                                                         'network')
         self.assertEqual(42, res)
         self.mock_find.assert_called_once_with(self.neutron_client, 'network',
-                                               'test_network')
+                                               'test_network',
+                                               cmd_resource=None)
 
     def test_resolve_network(self):
         props = {'net': 'test_network'}
@@ -55,7 +58,8 @@ class NeutronClientPluginTests(NeutronClientPluginTestCase):
         res = self.neutron_plugin.resolve_network(props, 'net', 'net_id')
         self.assertEqual(42, res)
         self.mock_find.assert_called_once_with(self.neutron_client, 'network',
-                                               'test_network')
+                                               'test_network',
+                                               cmd_resource=None)
 
         # check resolve if was send id instead of name
         props = {'net_id': 77}
@@ -63,7 +67,8 @@ class NeutronClientPluginTests(NeutronClientPluginTestCase):
         self.assertEqual(77, res)
         # in this case find_resourceid_by_name_or_id is not called
         self.mock_find.assert_called_once_with(self.neutron_client, 'network',
-                                               'test_network')
+                                               'test_network',
+                                               cmd_resource=None)
 
     def test_resolve_subnet(self):
         props = {'snet': 'test_subnet'}
@@ -71,7 +76,8 @@ class NeutronClientPluginTests(NeutronClientPluginTestCase):
         res = self.neutron_plugin.resolve_subnet(props, 'snet', 'snet_id')
         self.assertEqual(42, res)
         self.mock_find.assert_called_once_with(self.neutron_client, 'subnet',
-                                               'test_subnet')
+                                               'test_subnet',
+                                               cmd_resource=None)
 
         # check resolve if was send id instead of name
         props = {'snet_id': 77}
@@ -79,7 +85,8 @@ class NeutronClientPluginTests(NeutronClientPluginTestCase):
         self.assertEqual(77, res)
         # in this case find_resourceid_by_name_or_id is not called
         self.mock_find.assert_called_once_with(self.neutron_client, 'subnet',
-                                               'test_subnet')
+                                               'test_subnet',
+                                               cmd_resource=None)
 
     def test_get_secgroup_uuids(self):
         # test get from uuids
@@ -157,45 +164,108 @@ class NeutronConstraintsValidate(common.HeatTestCase):
     scenarios = [
         ('validate_network',
             dict(constraint_class=nc.NetworkConstraint,
-                 resource_type='network')),
+                 resource_type='network',
+                 cmd_resource=None)),
         ('validate_port',
             dict(constraint_class=nc.PortConstraint,
-                 resource_type='port')),
+                 resource_type='port',
+                 cmd_resource=None)),
         ('validate_router',
             dict(constraint_class=nc.RouterConstraint,
-                 resource_type='router')),
+                 resource_type='router',
+                 cmd_resource=None)),
         ('validate_subnet',
             dict(constraint_class=nc.SubnetConstraint,
-                 resource_type='subnet')),
+                 resource_type='subnet',
+                 cmd_resource=None)),
         ('validate_subnetpool',
             dict(constraint_class=nc.SubnetPoolConstraint,
-                 resource_type='subnetpool')),
+                 resource_type='subnetpool',
+                 cmd_resource=None)),
+        ('validate_address_scope',
+            dict(constraint_class=nc.AddressScopeConstraint,
+                 resource_type='address_scope',
+                 cmd_resource=None)),
         ('validate_loadbalancer',
             dict(constraint_class=lc.LoadbalancerConstraint,
-                 resource_type='loadbalancer')),
+                 resource_type='loadbalancer',
+                 cmd_resource='lbaas_loadbalancer')),
         ('validate_listener',
             dict(constraint_class=lc.ListenerConstraint,
-                 resource_type='listener')),
+                 resource_type='listener',
+                 cmd_resource=None)),
         ('validate_pool',
             dict(constraint_class=lc.PoolConstraint,
-                 resource_type='lbaas_pool'))
+                 resource_type='pool',
+                 cmd_resource='lbaas_pool')),
+        ('validate_qos_policy',
+            dict(constraint_class=nc.QoSPolicyConstraint,
+                 resource_type='policy',
+                 cmd_resource='qos_policy'))
     ]
 
     def test_validate(self):
+        mock_extension = self.patchobject(
+            neutron.NeutronClientPlugin, 'has_extension', return_value=True)
         nc = mock.Mock()
         mock_create = self.patchobject(neutron.NeutronClientPlugin, '_create')
         mock_create.return_value = nc
-        mock_find = self.patchobject(neutron.neutronV20,
+        mock_find = self.patchobject(neutron.NeutronClientPlugin,
                                      'find_resourceid_by_name_or_id')
-        mock_find.side_effect = ['foo',
-                                 qe.NeutronClientException(status_code=404)]
+        mock_find.side_effect = [
+            'foo',
+            qe.NeutronClientException(status_code=404)
+        ]
 
         constraint = self.constraint_class()
         ctx = utils.dummy_context()
+        if hasattr(constraint, 'extension') and constraint.extension:
+            mock_extension.side_effect = [
+                False,
+                True,
+                True,
+            ]
+            ex = self.assertRaises(
+                exception.EntityNotFound,
+                constraint.validate_with_client, ctx.clients, "foo"
+            )
+            expected = ("The neutron extension (%s) could not be found." %
+                        constraint.extension)
+            self.assertEqual(expected, six.text_type(ex))
         self.assertTrue(constraint.validate("foo", ctx))
         self.assertFalse(constraint.validate("bar", ctx))
-        mock_find.assert_has_calls([mock.call(nc, self.resource_type, 'foo'),
-                                    mock.call(nc, self.resource_type, 'bar')])
+        mock_find.assert_has_calls(
+            [mock.call(self.resource_type, 'foo',
+                       cmd_resource=self.cmd_resource),
+             mock.call(self.resource_type, 'bar',
+                       cmd_resource=self.cmd_resource)])
+
+
+class NeutronProviderConstraintsValidate(common.HeatTestCase):
+    scenarios = [
+        ('validate_lbaasv1',
+            dict(constraint_class=nc.LBaasV1ProviderConstraint,
+                 service_type='LOADBALANCER')),
+        ('validate_lbaasv2',
+            dict(constraint_class=lc.LBaasV2ProviderConstraint,
+                 service_type='LOADBALANCERV2'))
+    ]
+
+    def test_provider_validate(self):
+        nc = mock.Mock()
+        mock_create = self.patchobject(neutron.NeutronClientPlugin, '_create')
+        mock_create.return_value = nc
+        providers = {
+            'service_providers': [
+                {'service_type': 'LOADBANALCERV2', 'name': 'haproxy'},
+                {'service_type': 'LOADBANALCER', 'name': 'haproxy'}
+            ]
+        }
+        nc.list_service_providers.return_value = providers
+        constraint = self.constraint_class()
+        ctx = utils.dummy_context()
+        self.assertTrue(constraint.validate('haproxy', ctx))
+        self.assertFalse(constraint.validate("bar", ctx))
 
 
 class NeutronClientPluginExtensionsTests(NeutronClientPluginTestCase):

@@ -12,9 +12,12 @@
 #    under the License.
 
 from heat.engine.clients import client_plugin
+from heat.engine import constraints
 
 from senlinclient import client
 from senlinclient.common import exc
+
+CLIENT_NAME = 'senlin'
 
 
 class SenlinClientPlugin(client_plugin.ClientPlugin):
@@ -28,8 +31,18 @@ class SenlinClientPlugin(client_plugin.ClientPlugin):
             'auth_url': con.auth_url,
             'project_id': con.tenant_id,
             'token': self.auth_token,
+            'user_id': con.user_id,
+            'auth_plugin': 'token',
         }
         return client.Client(self.VERSION, **args)
 
     def is_not_found(self, ex):
         return isinstance(ex, exc.HTTPNotFound)
+
+
+class ProfileConstraint(constraints.BaseCustomConstraint):
+
+    expected_exceptions = (exc.HTTPNotFound,)
+
+    def validate_with_client(self, client, profile):
+        client.client(CLIENT_NAME).get_profile(profile)

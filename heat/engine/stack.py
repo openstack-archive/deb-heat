@@ -14,6 +14,7 @@
 import collections
 import copy
 import datetime
+import functools
 import itertools
 import re
 
@@ -84,9 +85,11 @@ def reset_state_on_error(func):
                 LOG.error(_LE('Unexpected exception in %(func)s: %(msg)s'),
                           {'func': func.__name__, 'msg': errmsg})
         finally:
-            if stack.state == stack.IN_PROGRESS:
-                stack.set_state(stack.action, stack.FAILED, errmsg)
-                assert errmsg is not None, "Returned while IN_PROGRESS"
+            if stack.status == stack.IN_PROGRESS:
+                msg = _("Unexpected returning while IN_PROGRESS.")
+                stack.state_set(stack.action, stack.FAILED,
+                                errmsg if errmsg is not None else msg)
+                assert errmsg is not None, "Returned while IN_PROGRESS."
 
     return handle_exceptions
 
@@ -131,10 +134,14 @@ class Stack(collections.Mapping):
         """
 
         def _validate_stack_name(name):
-            if not re.match("[a-zA-Z][a-zA-Z0-9_.-]*$", name):
-                message = _('Invalid stack name %s must contain '
-                            'only alphanumeric or \"_-.\" characters, '
-                            'must start with alpha') % name
+            try:
+                if not re.match("[a-zA-Z][a-zA-Z0-9_.-]*$", name):
+                    message = _('Invalid stack name %s must contain '
+                                'only alphanumeric or \"_-.\" characters, '
+                                'must start with alpha') % name
+                    raise exception.StackValidationFailed(message=message)
+            except TypeError:
+                message = _('Invalid stack name %s, must be a string') % name
                 raise exception.StackValidationFailed(message=message)
 
         if owner_id is None:
@@ -171,6 +178,7 @@ class Stack(collections.Mapping):
         self.cache_data = cache_data
         self._worker_client = None
         self._convg_deps = None
+        self.thread_group_mgr = None
 
         # strict_validate can be used to disable value validation
         # in the resource properties schema, this is useful when
@@ -187,6 +195,8 @@ class Stack(collections.Mapping):
 
         if use_stored_context:
             self.context = self.stored_context()
+            self.context.roles = self.context.clients.client(
+                'keystone').auth_ref.role_names
 
         self.clients = self.context.clients
 
@@ -355,7 +365,7 @@ class Stack(collections.Mapping):
         parameter.
         """
         if not self.parameters.set_stack_id(self.identifier()):
-            LOG.warn(_LW("Unable to set parameters StackId identifier"))
+            LOG.warning(_LW("Unable to set parameters StackId identifier"))
 
     @staticmethod
     def get_dep_attrs(resources, outputs, resource_name):
@@ -693,7 +703,7 @@ class Stack(collections.Mapping):
                     result = res.validate_template()
             except exception.HeatException as ex:
                 LOG.debug('%s', ex)
-                raise ex
+                raise
             except AssertionError:
                 raise
             except Exception as ex:
@@ -747,6 +757,20 @@ class Stack(collections.Mapping):
                          self.name, 'OS::Heat::Stack')
 
         ev.store()
+        self.dispatch_event(ev)
+
+    def dispatch_event(self, ev):
+        def _dispatch(ctx, sinks, ev):
+            try:
+                for sink in sinks:
+                    sink.consume(ctx, ev)
+            except Exception as e:
+                LOG.debug('Got error sending events %s' % e)
+        if self.thread_group_mgr is not None:
+            self.thread_group_mgr.start(self.id, _dispatch,
+                                        self.context,
+                                        self.env.get_event_sinks(),
+                                        ev.as_dict())
 
     @profiler.trace('Stack.state_set', hide_args=False)
     def state_set(self, action, status, reason):
@@ -768,19 +792,19 @@ class Stack(collections.Mapping):
             updated = self._persist_state()
             if not updated:
                 # Possibly failed concurrent update
-                LOG.warn(_LW("Failed to set state of stack %(name)s with"
-                             " traversal ID %(trvsl_id)s, to"
-                             " %(action)s_%(status)s"),
-                         {'name': self.name,
-                          'trvsl_id': self.current_traversal,
-                          'action': action, 'status': status})
+                LOG.warning(_LW("Failed to set state of stack %(name)s with"
+                                " traversal ID %(trvsl_id)s, to"
+                                " %(action)s_%(status)s"),
+                            {'name': self.name,
+                             'trvsl_id': self.current_traversal,
+                             'action': action, 'status': status})
             return updated
 
         # Persist state to db only if status == IN_PROGRESS
-        # or action == self.DELETE/self.ROLLBACK. Else, it would
+        # or action == UPDATE/DELETE/ROLLBACK. Else, it would
         # be done before releasing the stack lock.
         if status == self.IN_PROGRESS or action in (
-                self.DELETE, self.ROLLBACK):
+                self.UPDATE, self.DELETE, self.ROLLBACK):
             self._persist_state()
 
     def _persist_state(self):
@@ -907,15 +931,18 @@ class Stack(collections.Mapping):
         stack_status = self.COMPLETE
         reason = 'Stack %s completed successfully' % action
 
+        action_method = action.lower()
+        # If a local _$action_kwargs function exists, call it to get the
+        # action specific argument list, otherwise an empty arg list
+        handle_kwargs = getattr(self,
+                                '_%s_kwargs' % action_method,
+                                lambda x: {})
+
+        @functools.wraps(getattr(resource.Resource, action_method))
         def resource_action(r):
             # Find e.g resource.create and call it
-            action_l = action.lower()
-            handle = getattr(r, '%s' % action_l)
+            handle = getattr(r, action_method)
 
-            # If a local _$action_kwargs function exists, call it to get the
-            # action specific argument list, otherwise an empty arg list
-            handle_kwargs = getattr(self,
-                                    '_%s_kwargs' % action_l, lambda x: {})
             return handle(**handle_kwargs(r))
 
         action_task = scheduler.DependencyTaskGroup(
@@ -1080,10 +1107,10 @@ class Stack(collections.Mapping):
         # we expect to update the stack having previous traversal ID
         stack_id = self.store(exp_trvsl=previous_traversal)
         if stack_id is None:
-            LOG.warn(_LW("Failed to store stack %(name)s with traversal ID"
-                         " %(trvsl_id)s, aborting stack %(action)s"),
-                     {'name': self.name, 'trvsl_id': previous_traversal,
-                      'action': self.action})
+            LOG.warning(_LW("Failed to store stack %(name)s with traversal "
+                            "ID %(trvsl_id)s, aborting stack %(action)s"),
+                        {'name': self.name, 'trvsl_id': previous_traversal,
+                         'action': self.action})
             return
         self._send_notification_and_add_event()
 
@@ -1106,10 +1133,10 @@ class Stack(collections.Mapping):
         stack_id = self.store()
         if stack_id is None:
             # Failed concurrent update
-            LOG.warn(_LW("Failed to store stack %(name)s with traversal ID"
-                         " %(trvsl_id)s, aborting stack %(action)s"),
-                     {'name': self.name, 'trvsl_id': self.current_traversal,
-                      'action': self.action})
+            LOG.warning(_LW("Failed to store stack %(name)s with traversal "
+                            "ID %(trvsl_id)s, aborting stack %(action)s"),
+                        {'name': self.name, 'trvsl_id': self.current_traversal,
+                         'action': self.action})
             return
 
         LOG.info(_LI('convergence_dependencies: %s'),
@@ -1151,10 +1178,10 @@ class Stack(collections.Mapping):
             stack_id = self.store()
             if stack_id is None:
                 # Failed concurrent update
-                LOG.warn(_LW("Failed to store stack %(name)s with traversal ID"
-                             " %(trvsl_id)s, not trigerring rollback."),
-                         {'name': self.name,
-                          'trvsl_id': self.current_traversal})
+                LOG.warning(_LW("Failed to store stack %(name)s with traversal"
+                                " ID %(trvsl_id)s, not trigerring rollback."),
+                            {'name': self.name,
+                             'trvsl_id': self.current_traversal})
                 return
 
         self.converge_stack(rollback_tmpl, action=self.ROLLBACK)
@@ -1556,11 +1583,8 @@ class Stack(collections.Mapping):
                                'Failed stack pre-ops: %s' % six.text_type(e))
                 return
 
-        def destroy_resource(stack_resource):
-            return stack_resource.destroy()
-
         action_task = scheduler.DependencyTaskGroup(self.dependencies,
-                                                    destroy_resource,
+                                                    resource.Resource.destroy,
                                                     reverse=True)
         try:
             scheduler.TaskRunner(action_task)(timeout=self.timeout_secs())
@@ -1663,7 +1687,6 @@ class Stack(collections.Mapping):
         sus_task(timeout=self.timeout_secs())
 
     @profiler.trace('Stack.delete_snapshot', hide_args=False)
-    @reset_state_on_error
     def delete_snapshot(self, snapshot):
         """Remove a snapshot from the backends."""
         for name, rsrc in six.iteritems(self.resources):
@@ -1848,10 +1871,10 @@ class Stack(collections.Mapping):
             stack_id = self.store()
             if stack_id is None:
                 # Failed concurrent update
-                LOG.warn(_LW("Failed to store stack %(name)s with traversal ID"
-                             " %(trvsl_id)s, aborting stack purge"),
-                         {'name': self.name,
-                          'trvsl_id': self.current_traversal})
+                LOG.warning(_LW("Failed to store stack %(name)s with traversal"
+                                " ID %(trvsl_id)s, aborting stack purge"),
+                            {'name': self.name,
+                             'trvsl_id': self.current_traversal})
                 return
             raw_template_object.RawTemplate.delete(self.context, prev_tmpl_id)
 

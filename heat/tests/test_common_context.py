@@ -46,7 +46,9 @@ class TestRequestContext(common.HeatTestCase):
                     'auth_url': 'http://xyz',
                     'aws_creds': 'blah',
                     'region_name': 'RegionOne',
-                    'user_identity': 'fooUser 456tenant'}
+                    'user_identity': 'fooUser 456tenant',
+                    'user_domain_id': None,
+                    'project_domain_id': None}
 
         super(TestRequestContext, self).setUp()
 
@@ -67,7 +69,9 @@ class TestRequestContext(common.HeatTestCase):
             trustor_user_id=self.ctx.get('trustor_user_id'),
             trust_id=self.ctx.get('trust_id'),
             user=self.ctx.get('user'),
-            region_name=self.ctx.get('region_name'))
+            region_name=self.ctx.get('region_name'),
+            user_domain_id=self.ctx.get('user_domain'),
+            project_domain_id=self.ctx.get('project_domain'))
         ctx_dict = ctx.to_dict()
         del(ctx_dict['request_id'])
         self.assertEqual(self.ctx, ctx_dict)
@@ -82,7 +86,9 @@ class TestRequestContext(common.HeatTestCase):
         ctx = context.RequestContext.from_dict(self.ctx)
 
         for k in self.ctx:
-            if k == 'user_identity':
+            if (k == 'user_identity' or
+                    k == 'user_domain_id' or
+                    k == 'project_domain_id'):
                 continue
             self.assertEqual(self.ctx.get(k), ctx.to_dict().get(k))
             override = '%s_override' % k
@@ -176,6 +182,28 @@ class TestRequestContext(common.HeatTestCase):
             ctx = context.RequestContext(auth_url=None)
             self.assertRaises(exception.AuthorizationFailure, getattr, ctx,
                               'keystone_v3_endpoint')
+
+    def test_create_trusts_auth_plugin_with_correct_user_domain_id(self):
+        importutils.import_module('keystonemiddleware.auth_token')
+        cfg.CONF.set_override('auth_uri', 'http://abc/v2.0',
+                              group='keystone_authtoken')
+        cfg.CONF.set_override('admin_user', 'heat',
+                              group='keystone_authtoken')
+        cfg.CONF.set_override('admin_password', 'password',
+                              group='keystone_authtoken')
+        policy_check = 'heat.common.policy.Enforcer.check_is_admin'
+        with mock.patch(policy_check) as pc:
+            pc.return_value = False
+            ctx = context.RequestContext(auth_url=None,
+                                         user_domain_id='non-default',
+                                         username='test')
+            with mock.patch('keystoneclient.auth.identity.v3.Password') as ps:
+                ctx.trusts_auth_plugin
+                ps.assert_called_once_with(username='heat',
+                                           password='password',
+                                           user_domain_id='default',
+                                           auth_url='http://abc/v3',
+                                           trust_id=None)
 
 
 class RequestContextMiddlewareTest(common.HeatTestCase):

@@ -13,7 +13,6 @@
 
 from glanceclient import client as gc
 from glanceclient import exc
-from oslo_log import log as logging
 from oslo_utils import uuidutils
 
 from heat.common import exception
@@ -21,7 +20,7 @@ from heat.common.i18n import _
 from heat.engine.clients import client_plugin
 from heat.engine import constraints
 
-LOG = logging.getLogger(__name__)
+CLIENT_NAME = 'glance'
 
 
 class GlanceClientPlugin(client_plugin.ClientPlugin):
@@ -33,7 +32,7 @@ class GlanceClientPlugin(client_plugin.ClientPlugin):
     def _create(self):
 
         con = self.context
-        endpoint_type = self._get_client_option('glance', 'endpoint_type')
+        endpoint_type = self._get_client_option(CLIENT_NAME, 'endpoint_type')
         endpoint = self.url_for(service_type=self.IMAGE,
                                 endpoint_type=endpoint_type)
         args = {
@@ -42,10 +41,10 @@ class GlanceClientPlugin(client_plugin.ClientPlugin):
             'project_id': con.tenant_id,
             'token': self.auth_token,
             'endpoint_type': endpoint_type,
-            'cacert': self._get_client_option('glance', 'ca_file'),
-            'cert_file': self._get_client_option('glance', 'cert_file'),
-            'key_file': self._get_client_option('glance', 'key_file'),
-            'insecure': self._get_client_option('glance', 'insecure')
+            'cacert': self._get_client_option(CLIENT_NAME, 'ca_file'),
+            'cert_file': self._get_client_option(CLIENT_NAME, 'cert_file'),
+            'key_file': self._get_client_option(CLIENT_NAME, 'key_file'),
+            'insecure': self._get_client_option(CLIENT_NAME, 'insecure')
         }
 
         return gc.Client('1', endpoint, **args)
@@ -102,8 +101,5 @@ class GlanceClientPlugin(client_plugin.ClientPlugin):
 
 
 class ImageConstraint(constraints.BaseCustomConstraint):
-
-    expected_exceptions = (exception.EntityNotFound,)
-
-    def validate_with_client(self, client, value):
-        client.client_plugin('glance').get_image_id(value)
+    resource_client_name = CLIENT_NAME
+    resource_getter_name = 'get_image_id'
