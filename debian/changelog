@@ -3,6 +3,7 @@ heat (1:6.0.0~b3-1) experimental; urgency=medium
   [ Thomas Goirand ]
   * New upstream release.
   * Avoid option -S of dpkg-parsechangelog which is incompatible with Trusty.
+  * Fixed (build-)depends for this release.
 
   [ Ondřej Nový ]
   * Fixed VCS URLs (https).
