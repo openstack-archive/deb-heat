@@ -411,8 +411,8 @@ class TestMistralWorkflow(common.HeatTestCase):
 
     def test_attributes(self):
         wf = self._create_resource('workflow', self.rsrc_defn, self.stack)
-        self.mistral.workflows.get.return_value = \
-            FakeWorkflow('test_stack-workflow-b5fiekfci3yc')
+        self.mistral.workflows.get.return_value = (
+            FakeWorkflow('test_stack-workflow-b5fiekfci3yc'))
         self.assertEqual({'name': 'test_stack-workflow-b5fiekfci3yc',
                           'input': None}, wf.FnGetAtt('data'))
         self.assertEqual([], wf.FnGetAtt('executions'))
@@ -536,12 +536,6 @@ class TestMistralWorkflow(common.HeatTestCase):
         self.assertEqual(2, self.mistral.executions.delete.call_count)
         data_delete.assert_called_once_with('executions')
 
-    def test_resource_mapping(self):
-        mapping = workflow.resource_mapping()
-        self.assertEqual(1, len(mapping))
-        self.assertEqual(workflow.Workflow,
-                         mapping['OS::Mistral::Workflow'])
-
     def test_signal_failed(self):
         tmpl = template_format.parse(workflow_template_full)
         stack = utils.parse_stack(tmpl)
@@ -620,8 +614,9 @@ class TestMistralWorkflow(common.HeatTestCase):
         scheduler.TaskRunner(wf.signal, details)()
         call_args = self.mistral.executions.create.call_args
         args, _ = call_args
-        expected_args = '{"image": "31d8eeaf-686e-4e95-bb27-765014b9f20b", ' \
-                        '"name": "create_test_server", "flavor": "3"}'
+        expected_args = (
+            '{"image": "31d8eeaf-686e-4e95-bb27-765014b9f20b", '
+            '"name": "create_test_server", "flavor": "3"}')
         self.validate_json_inputs(args[1], expected_args)
         self.assertEqual({'executions': '12345'}, wf.data())
         # Updating the workflow changing "use_request_body_as_input" to
@@ -644,8 +639,9 @@ class TestMistralWorkflow(common.HeatTestCase):
         scheduler.TaskRunner(wf.signal, details)()
         call_args = self.mistral.executions.create.call_args
         args, _ = call_args
-        expected_args = '{"image": "31d8eeaf-686e-4e95-bb27-765014b9f20b", ' \
-                        '"name": "create_test_server", "flavor": "4"}'
+        expected_args = (
+            '{"image": "31d8eeaf-686e-4e95-bb27-765014b9f20b", '
+            '"name": "create_test_server", "flavor": "4"}')
         self.validate_json_inputs(args[1], expected_args)
         self.assertEqual({'executions': '54321,12345', 'name':
                          'test_stack-workflow-b5fiekdsa355'}, wf.data())
@@ -740,7 +736,7 @@ class TestMistralWorkflow(common.HeatTestCase):
         return execution
 
     def verify_create_params(self, wf_yaml):
-        wf = yaml.load(wf_yaml)["create_vm"]
+        wf = yaml.safe_load(wf_yaml)["create_vm"]
         self.assertEqual(['on_error'], wf["task-defaults"]["on-error"])
 
         tasks = wf['tasks']

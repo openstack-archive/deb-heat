@@ -36,6 +36,9 @@ class AutoScalingPolicy(signal_responder.SignalResponder,
     **Note** while it may incidentally support
     `AWS::AutoScaling::AutoScalingGroup` for now, please don't use it for that
     purpose and use `AWS::AutoScaling::ScalingPolicy` instead.
+
+    Resource to manage scaling for `OS::Heat::AutoScalingGroup`, i.e. define
+    which metric should be scaled and scaling adjustment, set cooldown etc.
     """
     PROPERTIES = (
         AUTO_SCALING_GROUP_NAME, SCALING_ADJUSTMENT, ADJUSTMENT_TYPE,
@@ -190,6 +193,8 @@ class AutoScalingPolicy(signal_responder.SignalResponder,
                 self.properties[self.SCALING_ADJUSTMENT]))
 
     def _resolve_attribute(self, name):
+        if self.resource_id is None:
+            return
         if name == self.ALARM_URL:
             return six.text_type(self._get_ec2_signed_url())
         elif name == self.SIGNAL_URL:

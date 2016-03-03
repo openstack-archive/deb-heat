@@ -35,17 +35,6 @@ class ResourceChain(stack_resource.StackResource):
     The ``concurrent`` property controls if the resources will be created
     concurrently. If omitted or set to false, each resource will be treated
     as having a dependency on the resource before it in the list.
-
-    Example::
-
-      resources:
-        MyChainResource:
-          type: OS::Heat::ResourceChain
-          properties:
-            resources: <list> # resource types to add to the chain's stack
-            concurrent: <boolean>  # optional; default is false
-            resource_properties:
-              # properties to pass each template in the chain
     """
 
     support_status = support.SupportStatus(version='6.0.0')
@@ -120,8 +109,8 @@ class ResourceChain(stack_resource.StackResource):
             # nested_stack.strict_validate = False
             nested_stack.validate()
         except Exception as ex:
-            msg = _('Failed to validate nested template: %s') % \
-                six.text_type(ex)
+            msg = (_('Failed to validate nested template: %s')
+                   % six.text_type(ex))
             raise exception.StackValidationFailed(message=msg)
 
     def handle_create(self):
@@ -151,7 +140,7 @@ class ResourceChain(stack_resource.StackResource):
     def child_params(self):
         return {}
 
-    def FnGetAtt(self, key, *path):
+    def get_attribute(self, key, *path):
         if key.startswith('resource.'):
             return grouputils.get_nested_attrs(self, key, False, *path)
 
@@ -188,7 +177,7 @@ class ResourceChain(stack_resource.StackResource):
         :type resource_type: str
         :param depends_on: if specified, the new resource will depend on the
                resource name specified
-        :type  depends_on: str
+        :type depends_on: str
         :return: resource definition suitable for adding to a template
         :rtype: heat.engine.rsrc_defn.ResourceDefinition
         """

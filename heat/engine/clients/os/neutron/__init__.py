@@ -68,16 +68,21 @@ class NeutronClientPlugin(client_plugin.ClientPlugin):
     def is_no_unique(self, ex):
         return isinstance(ex, exceptions.NeutronClientNoUniqueMatch)
 
-    def find_neutron_resource(self, props, key, key_type):
-        return self.find_resourceid_by_name_or_id(
-            key_type, props.get(key))
-
     def find_resourceid_by_name_or_id(self, resource, name_or_id,
                                       cmd_resource=None):
+        return self._find_resource_id(self.context.tenant_id,
+                                      resource, name_or_id,
+                                      cmd_resource)
+
+    @os_client.MEMOIZE_FINDER
+    def _find_resource_id(self, tenant_id,
+                          resource, name_or_id, cmd_resource):
+        # tenant id in the signature is used for the memoization key,
+        # that would differentiate similar resource names across tenants.
         return neutronV20.find_resourceid_by_name_or_id(
             self.client(), resource, name_or_id, cmd_resource=cmd_resource)
 
-    @os_client.MEMOIZE
+    @os_client.MEMOIZE_EXTENSIONS
     def _list_extensions(self):
         extensions = self.client().list_extensions().get('extensions')
         return set(extension.get('alias') for extension in extensions)
@@ -88,10 +93,22 @@ class NeutronClientPlugin(client_plugin.ClientPlugin):
 
     def _resolve(self, props, key, id_key, key_type):
         if props.get(key):
-            props[id_key] = self.find_neutron_resource(
-                props, key, key_type)
-            props.pop(key)
+            props[id_key] = self.find_resourceid_by_name_or_id(key_type,
+                                                               props.pop(key))
         return props[id_key]
+
+    def resolve_loadbalancer(self, props, lb_key, lb_id_key):
+        return self._resolve(props, lb_key, lb_id_key, 'loadbalancer')
+
+    def resolve_listener(self, props, listener_key, listener_id_key):
+        return self._resolve(props, listener_key, listener_id_key, 'listener')
+
+    def resolve_pool(self, props, pool_key, pool_id_key):
+        if props.get(pool_key):
+            props[pool_id_key] = self.find_resourceid_by_name_or_id(
+                'pool', props.get(pool_key), cmd_resource='lbaas_pool')
+            props.pop(pool_key)
+        return props[pool_id_key]
 
     def resolve_network(self, props, net_key, net_id_key):
         return self._resolve(props, net_key, net_id_key, 'network')
@@ -108,6 +125,13 @@ class NeutronClientPlugin(client_plugin.ClientPlugin):
     def network_id_from_subnet_id(self, subnet_id):
         subnet_info = self.client().show_subnet(subnet_id)
         return subnet_info['subnet']['network_id']
+
+    def check_lb_status(self, lb_id):
+        lb = self.client().show_loadbalancer(lb_id)['loadbalancer']
+        status = lb['provisioning_status']
+        if status == 'ERROR':
+            raise exception.ResourceInError(resource_status=status)
+        return status == 'ACTIVE'
 
     def get_qos_policy_id(self, policy):
         """Returns the id of QoS policy.

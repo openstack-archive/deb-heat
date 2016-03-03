@@ -34,6 +34,7 @@ from heat.engine.resources.openstack.nova import server_network_mixin
 from heat.engine.resources import scheduler_hints as sh
 from heat.engine.resources import stack_user
 from heat.engine import support
+from heat.engine import translation
 from heat.rpc import api as rpc_api
 
 cfg.CONF.import_opt('default_software_config_transport', 'heat.common.config')
@@ -43,6 +44,11 @@ LOG = logging.getLogger(__name__)
 
 class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
              server_network_mixin.ServerNetworkMixin):
+    """A resource for managing Nova instances.
+
+    A Server resource manages the running virtual machine instance within an
+    OpenStack cloud.
+    """
 
     PROPERTIES = (
         NAME, IMAGE, BLOCK_DEVICE_MAPPING, BLOCK_DEVICE_MAPPING_V2,
@@ -98,10 +104,10 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
 
     _NETWORK_KEYS = (
         NETWORK_UUID, NETWORK_ID, NETWORK_FIXED_IP, NETWORK_PORT,
-        NETWORK_SUBNET, NETWORK_PORT_EXTRA
+        NETWORK_SUBNET, NETWORK_PORT_EXTRA, NETWORK_FLOATING_IP
     ) = (
         'uuid', 'network', 'fixed_ip', 'port',
-        'subnet', 'port_extra_properties'
+        'subnet', 'port_extra_properties', 'floating_ip'
     )
 
     _SOFTWARE_CONFIG_FORMATS = (
@@ -123,6 +129,9 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         'name', 'addresses', 'networks', 'first_address',
         'instance_name', 'accessIPv4', 'accessIPv6', 'console_urls',
     )
+
+    # valid image Status
+    IMAGE_STATUS_ACTIVE = 'active'
 
     properties_schema = {
         NAME: properties.Schema(
@@ -223,8 +232,8 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                     ),
                     BLOCK_DEVICE_MAPPING_DEVICE_TYPE: properties.Schema(
                         properties.Schema.STRING,
-                        _('Device type: at the moment we can make distinction'
-                          ' only between disk and cdrom.'),
+                        _('Device type: at the moment we can make distinction '
+                          'only between disk and cdrom.'),
                         constraints=[
                             constraints.AllowedValues(['cdrom', 'disk']),
                         ],
@@ -279,7 +288,8 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         IMAGE_UPDATE_POLICY: properties.Schema(
             properties.Schema.STRING,
             _('Policy on how to apply an image-id update; either by '
-              'requesting a server rebuild or by replacing the entire server'),
+              'requesting a server rebuild or by replacing '
+              'the entire server.'),
             default='REBUILD',
             constraints=[
                 constraints.AllowedValues(['REBUILD', 'REPLACE',
@@ -382,6 +392,11 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                           'properties. If subnet is specified, network '
                           'property becomes optional.'),
                         support_status=support.SupportStatus(version='5.0.0')
+                    ),
+                    NETWORK_FLOATING_IP: properties.Schema(
+                        properties.Schema.STRING,
+                        _('ID of the floating IP to associate.'),
+                        support_status=support.SupportStatus(version='6.0.0')
                     )
                 },
             ),
@@ -395,7 +410,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         METADATA: properties.Schema(
             properties.Schema.MAP,
             _('Arbitrary key/value metadata to store for this server. Both '
-              'keys and values must be 255 characters or less.  Non-string '
+              'keys and values must be 255 characters or less. Non-string '
               'values will be serialized to JSON (and the serialized '
               'string must be 255 characters or less).'),
             update_allowed=True
@@ -540,9 +555,9 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
     entity = 'servers'
 
     def translation_rules(self, props):
-        return [properties.TranslationRule(
+        return [translation.TranslationRule(
             props,
-            properties.TranslationRule.REPLACE,
+            translation.TranslationRule.REPLACE,
             source_path=[self.NETWORKS, self.NETWORK_ID],
             value_name=self.NETWORK_UUID)]
 
@@ -566,6 +581,9 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         meta['deployments'] = meta.get('deployments', [])
         meta['os-collect-config'] = meta.get('os-collect-config', {})
         occ = meta['os-collect-config']
+        collectors = ['ec2']
+        occ['collectors'] = collectors
+
         # set existing values to None to override any boot-time config
         occ_keys = ('heat', 'zaqar', 'cfn', 'request')
         for occ_key in occ_keys:
@@ -583,29 +601,29 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                 'project_id': self.stack.stack_user_project_id,
                 'stack_id': self.stack.identifier().stack_path(),
                 'resource_name': self.name}})
+            collectors.append('heat')
 
         elif self.transport_zaqar_message(props):
             queue_id = self.physical_resource_name()
             self.data_set('metadata_queue_id', queue_id)
-            zaqar_plugin = self.client_plugin('zaqar')
-            zaqar = zaqar_plugin.create_for_tenant(
-                self.stack.stack_user_project_id, self._user_token())
-            queue = zaqar.queue(queue_id)
-            queue.post({'body': meta, 'ttl': zaqar_plugin.DEFAULT_TTL})
             occ.update({'zaqar': {
                 'user_id': self._get_user_id(),
                 'password': self.password,
                 'auth_url': self.context.auth_url,
                 'project_id': self.stack.stack_user_project_id,
                 'queue_id': queue_id}})
+            collectors.append('zaqar')
 
         elif self.transport_poll_server_cfn(props):
+            heat_client_plugin = self.stack.clients.client_plugin('heat')
+            config_url = heat_client_plugin.get_cfn_metadata_server_url()
             occ.update({'cfn': {
-                'metadata_url': '%s/v1/' % cfg.CONF.heat_metadata_server_url,
+                'metadata_url': config_url,
                 'access_key_id': self.access_key,
                 'secret_access_key': self.secret_key,
                 'stack_name': self.stack.name,
                 'path': '%s.Metadata' % self.name}})
+            collectors.append('cfn')
 
         elif self.transport_poll_temp_url(props):
             container = self.physical_resource_name()
@@ -622,12 +640,27 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
             self.data_set('metadata_put_url', put_url)
             self.data_set('metadata_object_name', object_name)
 
+            collectors.append('request')
             occ.update({'request': {
                 'metadata_url': url}})
+
+        collectors.append('local')
+        self.metadata_set(meta)
+
+        # push replacement polling config to any existing push-based sources
+        queue_id = self.data().get('metadata_queue_id')
+        if queue_id:
+            zaqar_plugin = self.client_plugin('zaqar')
+            zaqar = zaqar_plugin.create_for_tenant(
+                self.stack.stack_user_project_id, self._user_token())
+            queue = zaqar.queue(queue_id)
+            queue.post({'body': meta, 'ttl': zaqar_plugin.DEFAULT_TTL})
+
+        object_name = self.data().get('metadata_object_name')
+        if object_name:
+            container = self.physical_resource_name()
             self.client('swift').put_object(
                 container, object_name, jsonutils.dumps(meta))
-
-        self.metadata_set(meta)
 
     def _register_access_key(self):
         """Access is limited to this resource, which created the keypair."""
@@ -731,7 +764,8 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
 
         image = self.properties[self.IMAGE]
         if image:
-            image = self.client_plugin('glance').get_image_id(image)
+            image = self.client_plugin(
+                'glance').find_image_by_name_or_id(image)
 
         flavor_id = self.client_plugin().find_flavor_by_name_or_id(flavor)
 
@@ -786,7 +820,19 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         check = self.client_plugin()._check_active(server_id)
         if check:
             self.store_external_ports()
+            # Addresses binds to server not immediately, so we need to wait
+            # until server is created and after that associate floating ip.
+            self.floating_ips_nova_associate()
         return check
+
+    def floating_ips_nova_associate(self):
+        # If there is no neutron used, floating_ip still unassociated,
+        # so need associate it with nova.
+        if not self.is_using_neutron():
+            for net in self.properties.get(self.NETWORKS) or []:
+                if net.get(self.NETWORK_FLOATING_IP):
+                    self._floating_ip_nova_associate(
+                        net.get(self.NETWORK_FLOATING_IP))
 
     def handle_check(self):
         server = self.client().servers.get(self.resource_id)
@@ -987,7 +1033,8 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
             prop_diff.get(self.IMAGE_UPDATE_POLICY) or
             self.properties[self.IMAGE_UPDATE_POLICY])
         image = prop_diff[self.IMAGE]
-        image_id = self.client_plugin('glance').get_image_id(image)
+        image_id = self.client_plugin(
+            'glance').find_image_by_name_or_id(image)
         preserve_ephemeral = (
             image_update_policy == 'REBUILD_PRESERVE_EPHEMERAL')
         password = (prop_diff.get(self.ADMIN_PASS) or
@@ -1029,30 +1076,22 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
 
         return updaters
 
-    def _needs_update(self, after, before, after_props, before_props,
-                      prev_resource, check_init_complete=True):
-        result = super(Server, self)._needs_update(
-            after, before, after_props, before_props, prev_resource,
-            check_init_complete=check_init_complete)
-
-        prop_diff = self.update_template_diff_properties(after_props,
-                                                         before_props)
-
-        if self.FLAVOR in prop_diff:
+    def needs_replace_with_prop_diff(self, changed_properties_set,
+                                     after_props, before_props):
+        """Needs replace based on prop_diff."""
+        if self.FLAVOR in changed_properties_set:
             flavor_update_policy = (
-                prop_diff.get(self.FLAVOR_UPDATE_POLICY) or
-                self.properties[self.FLAVOR_UPDATE_POLICY])
+                after_props.get(self.FLAVOR_UPDATE_POLICY) or
+                before_props.get(self.FLAVOR_UPDATE_POLICY))
             if flavor_update_policy == 'REPLACE':
-                raise exception.UpdateReplace(self.name)
+                return True
 
-        if self.IMAGE in prop_diff:
+        if self.IMAGE in changed_properties_set:
             image_update_policy = (
-                prop_diff.get(self.IMAGE_UPDATE_POLICY) or
-                self.properties[self.IMAGE_UPDATE_POLICY])
+                after_props.get(self.IMAGE_UPDATE_POLICY) or
+                before_props.get(self.IMAGE_UPDATE_POLICY))
             if image_update_policy == 'REPLACE':
-                raise exception.UpdateReplace(self.name)
-
-        return result
+                return True
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if 'Metadata' in tmpl_diff:
@@ -1074,7 +1113,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         server = None
 
         if self.METADATA in prop_diff:
-            server = self.client().servers.get(self.resource_id)
+            server = self.client_plugin().get_server(self.resource_id)
             self.client_plugin().meta_update(server,
                                              prop_diff[self.METADATA])
 
@@ -1085,12 +1124,12 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
             updaters.append(self._update_image(prop_diff))
         elif self.ADMIN_PASS in prop_diff:
             if not server:
-                server = self.client().servers.get(self.resource_id)
+                server = self.client_plugin().get_server(self.resource_id)
             server.change_password(prop_diff[self.ADMIN_PASS])
 
         if self.NAME in prop_diff:
             if not server:
-                server = self.client().servers.get(self.resource_id)
+                server = self.client_plugin().get_server(self.resource_id)
             self.client_plugin().rename(server, prop_diff[self.NAME])
 
         if self.NETWORKS in prop_diff:
@@ -1242,6 +1281,36 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                     ' instance %s') % self.name
             raise exception.StackValidationFailed(message=msg)
 
+        if image:
+            image_obj = self.client_plugin('glance').get_image(image)
+
+            # validate image status
+            if image_obj.status.lower() != self.IMAGE_STATUS_ACTIVE:
+                msg = _('Image status is required to be %(cstatus)s not '
+                        '%(wstatus)s.') % {
+                    'cstatus': self.IMAGE_STATUS_ACTIVE,
+                    'wstatus': image_obj.status}
+                raise exception.StackValidationFailed(message=msg)
+
+            # validate image/flavor combination
+            flavor = self.properties[self.FLAVOR]
+            flavor_obj = self.client_plugin().get_flavor(flavor)
+            if flavor_obj.ram < image_obj.min_ram:
+                msg = _('Image %(image)s requires %(imram)s minimum ram. '
+                        'Flavor %(flavor)s has only %(flram)s.') % {
+                    'image': image, 'imram': image_obj.min_ram,
+                    'flavor': flavor, 'flram': flavor_obj.ram}
+                raise exception.StackValidationFailed(message=msg)
+
+            # validate image/flavor disk compatibility
+            if flavor_obj.disk < image_obj.min_disk:
+                msg = _('Image %(image)s requires %(imsz)s GB minimum '
+                        'disk space. Flavor %(flavor)s has only '
+                        '%(flsz)s GB.') % {
+                    'image': image, 'imsz': image_obj.min_disk,
+                    'flavor': flavor, 'flsz': flavor_obj.disk}
+                raise exception.StackValidationFailed(message=msg)
+
         # network properties 'uuid' and 'network' shouldn't be used
         # both at once for all networks
         networks = self.properties[self.NETWORKS] or []
@@ -1326,6 +1395,11 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         self._delete_internal_ports()
         self.data_delete('external_ports')
 
+        if self.resource_id is None:
+            return
+
+        self._floating_ips_disassociate()
+
         try:
             self.client().servers.delete(self.resource_id)
         except Exception as e:
@@ -1334,10 +1408,8 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         return progress.ServerDeleteProgress(self.resource_id)
 
     def handle_snapshot_delete(self, state):
-        if self.resource_id is None:
-            return
 
-        if state[1] != self.FAILED:
+        if state[1] != self.FAILED and self.resource_id:
             image_id = self.client().servers.create_image(
                 self.resource_id, self.physical_resource_name())
             return progress.ServerDeleteProgress(
@@ -1345,8 +1417,6 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         return self._delete()
 
     def handle_delete(self):
-        if self.resource_id is None:
-            return
 
         return self._delete()
 

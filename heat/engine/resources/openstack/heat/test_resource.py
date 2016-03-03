@@ -16,9 +16,9 @@ import eventlet
 from oslo_utils import timeutils
 import six
 
-from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import attributes
+from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine import support
@@ -44,11 +44,13 @@ class TestResource(resource.Resource):
     PROPERTIES = (
         VALUE, UPDATE_REPLACE, FAIL,
         CLIENT_NAME, ENTITY_NAME,
-        WAIT_SECS, ACTION_WAIT_SECS
+        WAIT_SECS, ACTION_WAIT_SECS, ATTR_WAIT_SECS,
+        CONSTRAINT_PROP_SECS,
     ) = (
         'value', 'update_replace', 'fail',
         'client_name', 'entity_name',
-        'wait_secs', 'action_wait_secs'
+        'wait_secs', 'action_wait_secs', 'attr_wait_secs',
+        'constraint_prop_secs',
     )
 
     ATTRIBUTES = (
@@ -58,6 +60,23 @@ class TestResource(resource.Resource):
     )
 
     properties_schema = {
+        CONSTRAINT_PROP_SECS: properties.Schema(
+            properties.Schema.NUMBER,
+            _('Number value for delay during resolve constraint.'),
+            default=0,
+            update_allowed=True,
+            constraints=[
+                constraints.CustomConstraint('test_constr')
+            ],
+            support_status=support.SupportStatus(version='6.0.0')
+        ),
+        ATTR_WAIT_SECS: properties.Schema(
+            properties.Schema.NUMBER,
+            _('Number value for timeout during resolving output value.'),
+            default=0,
+            update_allowed=True,
+            support_status=support.SupportStatus(version='6.0.0')
+        ),
         VALUE: properties.Schema(
             properties.Schema.STRING,
             _('The input string to be stored.'),
@@ -74,13 +93,13 @@ class TestResource(resource.Resource):
         UPDATE_REPLACE: properties.Schema(
             properties.Schema.BOOLEAN,
             _('Value which can be set to trigger update replace for '
-              'the particular resource'),
+              'the particular resource.'),
             update_allowed=True,
             default=False
         ),
         WAIT_SECS: properties.Schema(
             properties.Schema.NUMBER,
-            _('Seconds to wait after an action (-1 is infinite)'),
+            _('Seconds to wait after an action (-1 is infinite).'),
             update_allowed=True,
             default=0,
         ),
@@ -92,19 +111,19 @@ class TestResource(resource.Resource):
                 CREATE_WAIT_SECS: properties.Schema(
                     properties.Schema.NUMBER,
                     _('Seconds to wait after a create. '
-                      'Defaults to the global wait_secs'),
+                      'Defaults to the global wait_secs.'),
                     update_allowed=True,
                 ),
                 UPDATE_WAIT_SECS: properties.Schema(
                     properties.Schema.NUMBER,
                     _('Seconds to wait after an update. '
-                      'Defaults to the global wait_secs'),
+                      'Defaults to the global wait_secs.'),
                     update_allowed=True,
                 ),
                 DELETE_WAIT_SECS: properties.Schema(
                     properties.Schema.NUMBER,
                     _('Seconds to wait after a delete. '
-                      'Defaults to the global wait_secs'),
+                      'Defaults to the global wait_secs.'),
                     update_allowed=True,
                 ),
             }
@@ -150,21 +169,10 @@ class TestResource(resource.Resource):
 
         return timeutils.utcnow(), self._wait_secs()
 
-    def _needs_update(self, after, before, after_props, before_props,
-                      prev_resource, check_init_complete=True):
-        result = super(TestResource, self)._needs_update(
-            after, before, after_props, before_props, prev_resource,
-            check_init_complete=check_init_complete)
-
-        prop_diff = self.update_template_diff_properties(after_props,
-                                                         before_props)
-
-        if self.UPDATE_REPLACE in prop_diff:
-            update_replace = prop_diff.get(self.UPDATE_REPLACE)
-            if update_replace:
-                raise exception.UpdateReplace(self.name)
-
-        return result
+    def needs_replace_with_prop_diff(self, changed_properties_set,
+                                     after_props, before_props):
+        if self.UPDATE_REPLACE in changed_properties_set:
+            return bool(after_props.get(self.UPDATE_REPLACE))
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         self.properties = json_snippet.properties(self.properties_schema,
@@ -227,6 +235,7 @@ class TestResource(resource.Resource):
         return False
 
     def _resolve_attribute(self, name):
+        eventlet.sleep(self.properties[self.ATTR_WAIT_SECS])
         if name == self.OUTPUT:
             return self.data().get('value')
 

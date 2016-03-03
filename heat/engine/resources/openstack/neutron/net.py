@@ -20,6 +20,12 @@ from heat.engine import support
 
 
 class Net(neutron.NeutronResource):
+    """A resource for managing Neutron net.
+
+    A network is a virtual isolated layer-2 broadcast domain which is typically
+    reserved to the tenant who created it, unless the network has been
+    explicitly configured to be shared.
+    """
     PROPERTIES = (
         NAME, VALUE_SPECS, ADMIN_STATE_UP, TENANT_ID, SHARED,
         DHCP_AGENT_IDS, PORT_SECURITY_ENABLED, QOS_POLICY,
@@ -82,7 +88,7 @@ class Net(neutron.NeutronResource):
             properties.Schema.BOOLEAN,
             _('Flag to enable/disable port security on the network. It '
               'provides the default value for the attribute of the ports '
-              'created on this network'),
+              'created on this network.'),
             update_allowed=True,
             support_status=support.SupportStatus(version='5.0.0')
         ),
@@ -170,6 +176,7 @@ class Net(neutron.NeutronResource):
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
+            self.prepare_update_properties(prop_diff)
             if self.DHCP_AGENT_IDS in prop_diff:
                 dhcp_agent_ids = prop_diff.pop(self.DHCP_AGENT_IDS, [])
                 self._replace_dhcp_agents(dhcp_agent_ids)
@@ -178,12 +185,6 @@ class Net(neutron.NeutronResource):
                 prop_diff[
                     'qos_policy_id'] = self.client_plugin().get_qos_policy_id(
                     qos_policy) if qos_policy else None
-            if self.VALUE_SPECS in prop_diff:
-                self.merge_value_specs(prop_diff)
-            if (self.NAME in prop_diff and
-                    prop_diff[self.NAME] is None):
-                prop_diff[self.NAME] = self.physical_resource_name()
-
         if prop_diff:
             self.client().update_network(self.resource_id,
                                          {'network': prop_diff})

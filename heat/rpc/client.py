@@ -40,6 +40,11 @@ class EngineClient(object):
         1.19 - Add show_output and list_outputs for returning stack outputs
         1.20 - Add resolve_outputs to stack show
         1.21 - Add deployment_id to create_software_deployment
+        1.22 - Add support for stack export
+        1.23 - Add environment_files to create/update/preview/validate
+        1.24 - Adds ignorable_errors to validate_template
+        1.25 - list_stack_resource filter update
+        1.26 - Add mark_unhealthy
     """
 
     BASE_RPC_API_VERSION = '1.0'
@@ -187,7 +192,8 @@ class EngineClient(object):
                                              resolve_outputs=resolve_outputs),
                          version='1.20')
 
-    def preview_stack(self, ctxt, stack_name, template, params, files, args):
+    def preview_stack(self, ctxt, stack_name, template, params, files,
+                      args, environment_files=None):
         """Simulates a new stack using the provided template.
 
         Note that at this stage the template has already been fetched from the
@@ -199,13 +205,20 @@ class EngineClient(object):
         :param params: Stack Input Params/Environment
         :param files: files referenced from the environment.
         :param args: Request parameters/args passed from API
+        :param environment_files: optional ordered list of environment file
+               names included in the files dict
+        :type  environment_files: list or None
         """
         return self.call(ctxt,
                          self.make_msg('preview_stack', stack_name=stack_name,
                                        template=template,
-                                       params=params, files=files, args=args))
+                                       params=params, files=files,
+                                       environment_files=environment_files,
+                                       args=args),
+                         version='1.23')
 
-    def create_stack(self, ctxt, stack_name, template, params, files, args):
+    def create_stack(self, ctxt, stack_name, template, params, files,
+                     args, environment_files=None):
         """Creates a new stack using the template provided.
 
         Note that at this stage the template has already been fetched from the
@@ -217,11 +230,15 @@ class EngineClient(object):
         :param params: Stack Input Params/Environment
         :param files: files referenced from the environment.
         :param args: Request parameters/args passed from API
+        :param environment_files: optional ordered list of environment file
+               names included in the files dict
+        :type  environment_files: list or None
         """
         return self._create_stack(ctxt, stack_name, template, params, files,
-                                  args)
+                                  args, environment_files=environment_files)
 
-    def _create_stack(self, ctxt, stack_name, template, params, files, args,
+    def _create_stack(self, ctxt, stack_name, template, params, files,
+                      args, environment_files=None,
                       owner_id=None, nested_depth=0, user_creds_id=None,
                       stack_user_project_id=None, parent_resource_name=None):
         """Internal interface for engine-to-engine communication via RPC.
@@ -238,16 +255,17 @@ class EngineClient(object):
         return self.call(
             ctxt, self.make_msg('create_stack', stack_name=stack_name,
                                 template=template,
-                                params=params, files=files, args=args,
-                                owner_id=owner_id,
+                                params=params, files=files,
+                                environment_files=environment_files,
+                                args=args, owner_id=owner_id,
                                 nested_depth=nested_depth,
                                 user_creds_id=user_creds_id,
                                 stack_user_project_id=stack_user_project_id,
                                 parent_resource_name=parent_resource_name),
-            version='1.8')
+            version='1.23')
 
     def update_stack(self, ctxt, stack_identity, template, params,
-                     files, args):
+                     files, args, environment_files=None):
         """Updates an existing stack based on the provided template and params.
 
         Note that at this stage the template has already been fetched from the
@@ -259,16 +277,22 @@ class EngineClient(object):
         :param params: Stack Input Params/Environment
         :param files: files referenced from the environment.
         :param args: Request parameters/args passed from API
+        :param environment_files: optional ordered list of environment file
+               names included in the files dict
+        :type  environment_files: list or None
         """
-        return self.call(ctxt, self.make_msg('update_stack',
-                                             stack_identity=stack_identity,
-                                             template=template,
-                                             params=params,
-                                             files=files,
-                                             args=args))
+        return self.call(ctxt,
+                         self.make_msg('update_stack',
+                                       stack_identity=stack_identity,
+                                       template=template,
+                                       params=params,
+                                       files=files,
+                                       environment_files=environment_files,
+                                       args=args),
+                         version='1.23')
 
     def preview_update_stack(self, ctxt, stack_identity, template, params,
-                             files, args):
+                             files, args, environment_files=None):
         """Returns the resources that would be changed in an update.
 
         Based on the provided template and parameters.
@@ -281,6 +305,9 @@ class EngineClient(object):
         :param params: Stack Input Params/Environment
         :param files: files referenced from the environment.
         :param args: Request parameters/args passed from API
+        :param environment_files: optional ordered list of environment file
+               names included in the files dict
+        :type  environment_files: list or None
         """
         return self.call(ctxt,
                          self.make_msg('preview_update_stack',
@@ -288,26 +315,35 @@ class EngineClient(object):
                                        template=template,
                                        params=params,
                                        files=files,
+                                       environment_files=environment_files,
                                        args=args,
                                        ),
-                         version='1.15')
+                         version='1.23')
 
     def validate_template(self, ctxt, template, params=None, files=None,
-                          show_nested=False):
+                          environment_files=None, show_nested=False,
+                          ignorable_errors=None):
         """Uses the stack parser to check the validity of a template.
 
         :param ctxt: RPC context.
         :param template: Template of stack you want to create.
         :param params: Stack Input Params/Environment
         :param files: files referenced from the environment/template.
+        :param environment_files: ordered list of environment file names
+               included in the files dict
         :param show_nested: if True nested templates will be validated
+        :param ignorable_errors: List of error_code to be ignored as part of
+        validation
         """
-        return self.call(ctxt, self.make_msg('validate_template',
-                                             template=template,
-                                             params=params,
-                                             files=files,
-                                             show_nested=show_nested),
-                         version='1.18')
+        return self.call(ctxt, self.make_msg(
+            'validate_template',
+            template=template,
+            params=params,
+            files=files,
+            show_nested=show_nested,
+            environment_files=environment_files,
+            ignorable_errors=ignorable_errors),
+            version='1.24')
 
     def authenticated_to_backend(self, ctxt):
         """Validate the credentials in the RPC context.
@@ -432,7 +468,7 @@ class EngineClient(object):
                                              sort_dir=sort_dir))
 
     def describe_stack_resource(self, ctxt, stack_identity, resource_name,
-                                with_attr=None):
+                                with_attr=False):
         """Get detailed resource information about a particular resource.
 
         :param ctxt: RPC context.
@@ -469,20 +505,23 @@ class EngineClient(object):
                                              resource_name=resource_name))
 
     def list_stack_resources(self, ctxt, stack_identity,
-                             nested_depth=0, with_detail=False):
+                             nested_depth=0, with_detail=False,
+                             filters=None):
         """List the resources belonging to a stack.
 
         :param ctxt: RPC context.
         :param stack_identity: Name of the stack.
         :param nested_depth: Levels of nested stacks of which list resources.
-        :param with_detail: show detail for resoruces in list.
+        :param with_detail: show detail for resources in list.
+        :param filters: a dict with attribute:value to search the resources
         """
         return self.call(ctxt,
                          self.make_msg('list_stack_resources',
                                        stack_identity=stack_identity,
                                        nested_depth=nested_depth,
-                                       with_detail=with_detail),
-                         version='1.12')
+                                       with_detail=with_detail,
+                                       filters=filters),
+                         version='1.25')
 
     def stack_suspend(self, ctxt, stack_identity):
         return self.call(ctxt, self.make_msg('stack_suspend',
@@ -521,6 +560,25 @@ class EngineClient(object):
                                              sync_call=sync_call),
 
                          version='1.3')
+
+    def resource_mark_unhealthy(self, ctxt, stack_identity, resource_name,
+                                mark_unhealthy, resource_status_reason=None):
+        """Mark the resource as unhealthy or healthy.
+
+        :param ctxt: RPC context.
+        :param stack_identity: Name of the stack.
+        :param resource_name: the Resource.
+        :param mark_unhealthy: indicates whether the resource is unhealthy.
+        :param resource_status_reason: reason for health change.
+        """
+        return self.call(
+            ctxt,
+            self.make_msg('resource_mark_unhealthy',
+                          stack_identity=stack_identity,
+                          resource_name=resource_name,
+                          mark_unhealthy=mark_unhealthy,
+                          resource_status_reason=resource_status_reason),
+            version='1.26')
 
     def create_watch_data(self, ctxt, watch_name, stats_data):
         """Creates data for CloudWatch and WaitConditions.
@@ -705,3 +763,14 @@ class EngineClient(object):
                                              stack_identity=stack_identity,
                                              output_key=output_key),
                          version='1.19')
+
+    def export_stack(self, ctxt, stack_identity):
+        """Exports the stack data in JSON format.
+
+        :param ctxt: RPC context.
+        :param stack_identity: Name of the stack you want to export.
+        """
+        return self.call(ctxt,
+                         self.make_msg('export_stack',
+                                       stack_identity=stack_identity),
+                         version='1.22')

@@ -59,9 +59,7 @@ class FaultWrapper(wsgi.Middleware):
         'EntityNotFound': webob.exc.HTTPNotFound,
         'NotFound': webob.exc.HTTPNotFound,
         'ResourceActionNotSupported': webob.exc.HTTPBadRequest,
-        'ResourceNotFound': webob.exc.HTTPNotFound,
         'InvalidGlobalResource': webob.exc.HTTPInternalServerError,
-        'SnapshotNotFound': webob.exc.HTTPNotFound,
         'ResourceNotAvailable': webob.exc.HTTPNotFound,
         'PhysicalResourceNameAmbiguity': webob.exc.HTTPBadRequest,
         'InvalidTenant': webob.exc.HTTPForbidden,
@@ -93,6 +91,7 @@ class FaultWrapper(wsgi.Middleware):
         'UnsupportedObjectError': webob.exc.HTTPBadRequest,
         'ResourceTypeUnavailable': webob.exc.HTTPBadRequest,
         'InvalidBreakPointHook': webob.exc.HTTPBadRequest,
+        'ImmutableParameterModified': webob.exc.HTTPBadRequest
     }
 
     def _map_exception_to_error(self, class_exception):

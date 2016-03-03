@@ -20,14 +20,14 @@ PARAM_KEYS = (
     PARAM_CLEAR_PARAMETERS, PARAM_GLOBAL_TENANT, PARAM_LIMIT,
     PARAM_NESTED_DEPTH, PARAM_TAGS, PARAM_SHOW_HIDDEN, PARAM_TAGS_ANY,
     PARAM_NOT_TAGS, PARAM_NOT_TAGS_ANY, TEMPLATE_TYPE, PARAM_WITH_DETAIL,
-    RESOLVE_OUTPUTS
+    RESOLVE_OUTPUTS, PARAM_IGNORE_ERRORS
 ) = (
     'timeout_mins', 'disable_rollback', 'adopt_stack_data',
     'show_deleted', 'show_nested', 'existing',
     'clear_parameters', 'global_tenant', 'limit',
     'nested_depth', 'tags', 'show_hidden', 'tags_any',
     'not_tags', 'not_tags_any', 'template_type', 'with_detail',
-    'resolve_outputs',
+    'resolve_outputs', 'ignore_errors'
 )
 
 STACK_KEYS = (
@@ -66,14 +66,14 @@ RES_KEYS = (
     RES_ACTION, RES_STATUS, RES_STATUS_DATA,
     RES_TYPE, RES_ID, RES_STACK_ID, RES_STACK_NAME,
     RES_REQUIRED_BY, RES_NESTED_STACK_ID, RES_NESTED_RESOURCES,
-    RES_PARENT_RESOURCE,
+    RES_PARENT_RESOURCE, RES_PROPERTIES, RES_ATTRIBUTES,
 ) = (
     'description', 'creation_time', 'updated_time',
     'resource_name', 'physical_resource_id', 'metadata',
     'resource_action', 'resource_status', 'resource_status_reason',
     'resource_type', 'resource_identity', STACK_ID, STACK_NAME,
     'required_by', 'nested_stack_id', 'nested_resources',
-    'parent_resource',
+    'parent_resource', 'properties', 'attributes',
 )
 
 RES_SCHEMA_KEYS = (

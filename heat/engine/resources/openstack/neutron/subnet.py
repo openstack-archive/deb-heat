@@ -20,9 +20,17 @@ from heat.engine import constraints
 from heat.engine import properties
 from heat.engine.resources.openstack.neutron import neutron
 from heat.engine import support
+from heat.engine import translation
 
 
 class Subnet(neutron.NeutronResource):
+    """A resource for managing Neutron subnets.
+
+    A subnet represents an IP address block that can be used for assigning IP
+    addresses to virtual instances. Each subnet must have a CIDR and must be
+    associated with a network. IPs can be either selected from the whole subnet
+    CIDR, or from "allocation pools" that can be specified by the user.
+    """
 
     PROPERTIES = (
         NETWORK_ID, NETWORK, SUBNETPOOL, PREFIXLEN, CIDR,
@@ -159,6 +167,7 @@ class Subnet(neutron.NeutronResource):
                 schema={
                     ALLOCATION_POOL_START: properties.Schema(
                         properties.Schema.STRING,
+                        _('Start address for the allocation pool.'),
                         required=True,
                         constraints=[
                             constraints.CustomConstraint('ip_addr')
@@ -166,6 +175,7 @@ class Subnet(neutron.NeutronResource):
                     ),
                     ALLOCATION_POOL_END: properties.Schema(
                         properties.Schema.STRING,
+                        _('End address for the allocation pool.'),
                         required=True,
                         constraints=[
                             constraints.CustomConstraint('ip_addr')
@@ -177,16 +187,18 @@ class Subnet(neutron.NeutronResource):
         ),
         TENANT_ID: properties.Schema(
             properties.Schema.STRING,
-            _('The ID of the tenant who owns the network. Only administrative'
-              ' users can specify a tenant ID other than their own.')
+            _('The ID of the tenant who owns the network. Only administrative '
+              'users can specify a tenant ID other than their own.')
         ),
         HOST_ROUTES: properties.Schema(
             properties.Schema.LIST,
+            _('A list of host route dictionaries for the subnet.'),
             schema=properties.Schema(
                 properties.Schema.MAP,
                 schema={
                     ROUTE_DESTINATION: properties.Schema(
                         properties.Schema.STRING,
+                        _('The destination for static route.'),
                         required=True,
                         constraints=[
                             constraints.CustomConstraint('net_cidr')
@@ -194,6 +206,7 @@ class Subnet(neutron.NeutronResource):
                     ),
                     ROUTE_NEXTHOP: properties.Schema(
                         properties.Schema.STRING,
+                        _('The next hop for the destination.'),
                         required=True,
                         constraints=[
                             constraints.CustomConstraint('ip_addr')
@@ -205,8 +218,7 @@ class Subnet(neutron.NeutronResource):
         ),
         IPV6_RA_MODE: properties.Schema(
             properties.Schema.STRING,
-            _('IPv6 RA (Router Advertisement) mode.'
-              ' dhcpv6-stateful, dhcpv6-stateless, or slaac.'),
+            _('IPv6 RA (Router Advertisement) mode.'),
             constraints=[
                 constraints.AllowedValues([DHCPV6_STATEFUL, DHCPV6_STATELESS,
                                            SLAAC]),
@@ -215,8 +227,7 @@ class Subnet(neutron.NeutronResource):
         ),
         IPV6_ADDRESS_MODE: properties.Schema(
             properties.Schema.STRING,
-            _('IPv6 address mode.'
-              ' dhcpv6-stateful, dhcpv6-stateless, or slaac.'),
+            _('IPv6 address mode.'),
             constraints=[
                 constraints.AllowedValues([DHCPV6_STATEFUL, DHCPV6_STATELESS,
                                            SLAAC]),
@@ -270,10 +281,10 @@ class Subnet(neutron.NeutronResource):
 
     def translation_rules(self, props):
         return [
-            properties.TranslationRule(props,
-                                       properties.TranslationRule.REPLACE,
-                                       [self.NETWORK],
-                                       value_path=[self.NETWORK_ID])
+            translation.TranslationRule(props,
+                                        translation.TranslationRule.REPLACE,
+                                        [self.NETWORK],
+                                        value_path=[self.NETWORK_ID])
         ]
 
     @classmethod
@@ -349,14 +360,10 @@ class Subnet(neutron.NeutronResource):
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
-            if self.VALUE_SPECS in prop_diff:
-                self.merge_value_specs(prop_diff)
+            self.prepare_update_properties(prop_diff)
             if (self.ALLOCATION_POOLS in prop_diff and
                     prop_diff[self.ALLOCATION_POOLS] is None):
                 prop_diff[self.ALLOCATION_POOLS] = []
-            if (self.NAME in prop_diff and
-                    prop_diff[self.NAME] is None):
-                prop_diff[self.NAME] = self.physical_resource_name()
 
             # If the new value is '', set to None
             self._null_gateway_ip(prop_diff)

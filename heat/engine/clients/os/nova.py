@@ -25,6 +25,7 @@ from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import uuidutils
+from retrying import retry
 import six
 from six.moves.urllib import parse as urlparse
 
@@ -105,6 +106,8 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
         return (isinstance(ex, exceptions.ClientException) and
                 http_status == 422)
 
+    @retry(stop_max_attempt_number=max(cfg.CONF.client_retry_limit + 1, 0),
+           retry_on_exception=client_plugin.retry_if_connection_err)
     def get_server(self, server):
         """Return fresh server object.
 
@@ -230,10 +233,27 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
         :param flavor: the name of the flavor to find
         :returns: the id of :flavor:
         """
+        return self._find_flavor_id(self.context.tenant_id,
+                                    flavor)
+
+    @os_client.MEMOIZE_FINDER
+    def _find_flavor_id(self, tenant_id, flavor):
+        # tenant id in the signature is used for the memoization key,
+        # that would differentiate similar resource names across tenants.
+        return self.get_flavor(flavor).id
+
+    def get_flavor(self, flavor_identifier):
+        """Get the flavor object for the specified flavor name or id.
+
+        :param flavor_identifier: the name or id of the flavor to find
+        :returns: a flavor object with name or id :flavor:
+        """
         try:
-            return self.client().flavors.get(flavor).id
+            flavor = self.client().flavors.get(flavor_identifier)
         except exceptions.NotFound:
-            return self.client().flavors.find(name=flavor).id
+            flavor = self.client().flavors.find(name=flavor_identifier)
+
+        return flavor
 
     def get_host(self, host_name):
         """Get the host id specified by name.
@@ -356,12 +376,14 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
                             'cfn-watch-server', 'x-cfninitdata'))
 
         if is_cfntools:
-            attachments.append((cfg.CONF.heat_metadata_server_url,
+            heat_client_plugin = self.context.clients.client_plugin('heat')
+            cfn_md_url = heat_client_plugin.get_cfn_metadata_server_url()
+            attachments.append((cfn_md_url,
                                 'cfn-metadata-server', 'x-cfninitdata'))
 
             # Create a boto config which the cfntools on the host use to know
             # where the cfn and cw API's are to be accessed
-            cfn_url = urlparse.urlparse(cfg.CONF.heat_metadata_server_url)
+            cfn_url = urlparse.urlparse(cfn_md_url)
             cw_url = urlparse.urlparse(cfg.CONF.heat_watch_server_url)
             is_secure = cfg.CONF.instance_connection_is_secure
             vcerts = cfg.CONF.instance_connection_https_validate_certificates
@@ -530,6 +552,8 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
                 if len(server.networks[n]) > 0:
                     return server.networks[n][0]
 
+    @retry(stop_max_attempt_number=max(cfg.CONF.client_retry_limit + 1, 0),
+           retry_on_exception=client_plugin.retry_if_connection_err)
     def absolute_limits(self):
         """Return the absolute limits as a dictionary."""
         limits = self.client().limits.get()
@@ -660,7 +684,7 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
         else:
             return False
 
-    @os_client.MEMOIZE
+    @os_client.MEMOIZE_EXTENSIONS
     def _list_extensions(self):
         extensions = self.client().list_extensions.show_all()
         return set(extension.alias for extension in extensions)

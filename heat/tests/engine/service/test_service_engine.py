@@ -40,7 +40,7 @@ class ServiceEngineTest(common.HeatTestCase):
 
     def test_make_sure_rpc_version(self):
         self.assertEqual(
-            '1.21',
+            '1.26',
             service.EngineService.RPC_API_VERSION,
             ('RPC version is changed, please update this test to new version '
              'and make sure additional test cases are added for RPC APIs '
@@ -230,8 +230,10 @@ class ServiceEngineTest(common.HeatTestCase):
                 return_value=mock.Mock())
     @mock.patch('oslo_service.threadgroup.ThreadGroup',
                 return_value=mock.Mock())
+    @mock.patch.object(service.EngineService, '_configure_db_conn_pool_size')
     def test_engine_service_start_in_non_convergence_mode(
             self,
+            configure_db_conn_pool_size,
             thread_group_class,
             engine_listener_class,
             thread_group_manager_class,
@@ -267,8 +269,10 @@ class ServiceEngineTest(common.HeatTestCase):
                 return_value=mock.Mock())
     @mock.patch('oslo_service.threadgroup.ThreadGroup',
                 return_value=mock.Mock())
+    @mock.patch.object(service.EngineService, '_configure_db_conn_pool_size')
     def test_engine_service_start_in_convergence_mode(
             self,
+            configure_db_conn_pool_size,
             thread_group_class,
             worker_service_class,
             engine_listener_class,
@@ -380,3 +384,77 @@ class ServiceEngineTest(common.HeatTestCase):
     def test_engine_service_reset(self, setup_logging_mock):
         self.eng.reset()
         setup_logging_mock.assert_called_once_with(cfg.CONF, 'heat')
+
+    @mock.patch('oslo_messaging.Target',
+                return_value=mock.Mock())
+    @mock.patch('heat.common.messaging.get_rpc_client',
+                return_value=mock.Mock())
+    @mock.patch('heat.engine.stack_lock.StackLock.generate_engine_id',
+                return_value=mock.Mock())
+    @mock.patch('heat.engine.service.ThreadGroupManager',
+                return_value=mock.Mock())
+    @mock.patch('heat.engine.service.EngineListener',
+                return_value=mock.Mock())
+    @mock.patch('heat.engine.worker.WorkerService',
+                return_value=mock.Mock())
+    @mock.patch('oslo_service.threadgroup.ThreadGroup',
+                return_value=mock.Mock())
+    def test_engine_service_configures_connection_pool(
+            self,
+            thread_group_class,
+            worker_service_class,
+            engine_listener_class,
+            thread_group_manager_class,
+            sample_uuid_method,
+            rpc_client_class,
+            target_class):
+        self.eng.start()
+        self.assertEqual(cfg.CONF.executor_thread_pool_size,
+                         cfg.CONF.database.max_overflow)
+
+    def test_merge_environments(self):
+        # Setup
+        params = {'parameters': {
+            'p0': 'CORRECT',
+            'p1': 'INCORRECT',
+            'p2': 'INCORRECT'}
+        }
+        env_1 = '''
+        {'parameters' : {
+            'p1': 'CORRECT',
+            'p2': 'INCORRECT-ENV-1',
+        }}'''
+        env_2 = '''
+        {'parameters': {
+            'p2': 'CORRECT'
+        }}'''
+
+        files = {'env_1': env_1, 'env_2': env_2}
+        environment_files = ['env_1', 'env_2']
+
+        # Test
+        self.eng._merge_environments(environment_files, files, params)
+
+        # Verify
+        expected = {'parameters': {
+            'p0': 'CORRECT',
+            'p1': 'CORRECT',
+            'p2': 'CORRECT',
+        }}
+        self.assertEqual(expected, params)
+
+    def test_merge_environments_no_env_files(self):
+        params = {'parameters': {'p0': 'CORRECT'}}
+        env_1 = '''
+        {'parameters' : {
+            'p0': 'INCORRECT',
+        }}'''
+
+        files = {'env_1': env_1}
+
+        # Test - Should ignore env_1 in files
+        self.eng._merge_environments(None, files, params)
+
+        # Verify
+        expected = {'parameters': {'p0': 'CORRECT'}}
+        self.assertEqual(expected, params)

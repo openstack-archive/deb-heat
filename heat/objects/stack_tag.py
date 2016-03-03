@@ -18,11 +18,14 @@ from oslo_versionedobjects import base
 from oslo_versionedobjects import fields
 
 from heat.db import api as db_api
+from heat.objects import base as heat_base
 
 
-class StackTag(base.VersionedObject,
-               base.VersionedObjectDictCompat,
-               base.ComparableVersionedObject):
+class StackTag(
+        heat_base.HeatObject,
+        base.VersionedObjectDictCompat,
+        base.ComparableVersionedObject,
+):
     fields = {
         'id': fields.IntegerField(),
         'tag': fields.StringField(nullable=True),
@@ -49,8 +52,10 @@ class StackTag(base.VersionedObject,
         return cls._from_db_object(cls(context), tag)
 
 
-class StackTagList(base.VersionedObject,
-                   base.ObjectListBase):
+class StackTagList(
+        heat_base.HeatObject,
+        base.ObjectListBase,
+):
 
     fields = {
         'objects': fields.ListOfObjectsField('StackTag'),
@@ -75,3 +80,8 @@ class StackTagList(base.VersionedObject,
     @classmethod
     def delete(cls, context, stack_id):
         db_api.stack_tags_delete(context, stack_id)
+
+    @classmethod
+    def from_db_object(cls, context, db_tags):
+        if db_tags is not None:
+            return base.obj_make_list(context, cls(), StackTag, db_tags)

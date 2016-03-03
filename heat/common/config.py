@@ -17,6 +17,7 @@ import os
 from eventlet.green import socket
 from oslo_config import cfg
 from oslo_log import log as logging
+from osprofiler import opts as profiler
 
 from heat.common import exception
 from heat.common.i18n import _
@@ -38,8 +39,10 @@ service_opts = [
                default=60,
                help=_('Seconds between running periodic tasks.')),
     cfg.StrOpt('heat_metadata_server_url',
-               default="",
-               help=_('URL of the Heat metadata server.')),
+               help=_('URL of the Heat metadata server. '
+                      'NOTE: Setting this is only needed if you require '
+                      'instances to use a different endpoint than in the '
+                      'keystone catalog')),
     cfg.StrOpt('heat_waitcondition_server_url',
                help=_('URL of the Heat waitcondition server.')),
     cfg.StrOpt('heat_watch_server_url',
@@ -122,6 +125,11 @@ engine_opts = [
                default=5,
                help=_('Number of times to retry to bring a '
                       'resource to a non-error state. Set to 0 to disable '
+                      'retries.')),
+    cfg.IntOpt('client_retry_limit',
+               default=2,
+               help=_('Number of times to retry when a client encounters an '
+                      'expected intermittent error. Set to 0 to disable '
                       'retries.')),
     cfg.IntOpt('event_purge_batch_size',
                default=10,
@@ -242,16 +250,6 @@ rpc_opts = [
                       'It is not necessarily a hostname, FQDN, '
                       'or IP address.'))]
 
-profiler_group = cfg.OptGroup('profiler')
-profiler_opts = [
-    cfg.BoolOpt("profiler_enabled", default=False,
-                help=_('If False fully disable profiling feature.')),
-    cfg.BoolOpt("trace_sqlalchemy", default=False,
-                help=_("If False do not trace SQL requests.")),
-    cfg.StrOpt("hmac_keys", default="SECRET_KEY",
-               help=_("Secret key to use to sign tracing messages."))
-]
-
 auth_password_group = cfg.OptGroup('auth_password')
 auth_password_opts = [
     cfg.BoolOpt('multi_cloud',
@@ -360,7 +358,7 @@ def list_opts():
     yield paste_deploy_group.name, paste_deploy_opts
     yield auth_password_group.name, auth_password_opts
     yield revision_group.name, revision_opts
-    yield profiler_group.name, profiler_opts
+    yield profiler.list_opts()[0]
     yield 'clients', default_clients_opts
 
     for client in ('nova', 'swift', 'neutron', 'cinder',
@@ -378,7 +376,7 @@ def list_opts():
 cfg.CONF.register_group(paste_deploy_group)
 cfg.CONF.register_group(auth_password_group)
 cfg.CONF.register_group(revision_group)
-cfg.CONF.register_group(profiler_group)
+profiler.set_defaults(cfg.CONF)
 
 for group, opts in list_opts():
     cfg.CONF.register_opts(opts, group=group)
@@ -444,3 +442,20 @@ def load_paste_app(app_name=None):
                              "\nGot: %(e)r") % {'app_name': app_name,
                                                 'conf_file': conf_file,
                                                 'e': e})
+
+
+def get_client_option(client, option):
+    # look for the option in the [clients_${client}] section
+    # unknown options raise cfg.NoSuchOptError
+    try:
+        group_name = 'clients_' + client
+        cfg.CONF.import_opt(option, 'heat.common.config',
+                            group=group_name)
+        v = getattr(getattr(cfg.CONF, group_name), option)
+        if v is not None:
+            return v
+    except cfg.NoSuchGroupError:
+        pass  # do not error if the client is unknown
+    # look for the option in the generic [clients] section
+    cfg.CONF.import_opt(option, 'heat.common.config', group='clients')
+    return getattr(cfg.CONF.clients, option)

@@ -11,10 +11,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from glanceclient import exc as glance_exceptions
 import mock
 from oslo_messaging.rpc import dispatcher
 import six
+import webob
 
 from heat.common import exception
 from heat.common.i18n import _
@@ -915,13 +915,16 @@ class ValidateTest(common.HeatTestCase):
         self.engine = service.EngineService('a', 't')
 
     def _mock_get_image_id_success(self, imageId_input, imageId):
-        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image_id')
-        glance.GlanceClientPlugin.get_image_id(
+        self.m.StubOutWithMock(glance.GlanceClientPlugin,
+                               'find_image_by_name_or_id')
+        glance.GlanceClientPlugin.find_image_by_name_or_id(
             imageId_input).MultipleTimes().AndReturn(imageId)
 
     def _mock_get_image_id_fail(self, image_id, exp):
-        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image_id')
-        glance.GlanceClientPlugin.get_image_id(image_id).AndRaise(exp)
+        self.m.StubOutWithMock(glance.GlanceClientPlugin,
+                               'find_image_by_name_or_id')
+        glance.GlanceClientPlugin.find_image_by_name_or_id(
+            image_id).AndRaise(exp)
 
     def test_validate_volumeattach_valid(self):
         t = template_format.parse(test_template_volumeattach % 'vdq')
@@ -1422,10 +1425,8 @@ class ValidateTest(common.HeatTestCase):
         t = template_format.parse(test_template_glance_client_exception)
         template = tmpl.Template(t)
         stack = parser.Stack(self.ctx, 'test_stack', template)
-
-        self.m.StubOutWithMock(self.gc.images, 'list')
-        self.gc.images.list().AndRaise(
-            glance_exceptions.ClientException(500))
+        self.m.StubOutWithMock(self.gc.images, 'get')
+        self.gc.images.get('image_name').AndRaise(glance.exc.HTTPNotFound())
         self.m.StubOutWithMock(glance.GlanceClientPlugin, '_create')
         glance.GlanceClientPlugin._create().AndReturn(self.gc)
         self.stub_FlavorConstraint_validate()
@@ -1668,3 +1669,38 @@ class ValidateTest(common.HeatTestCase):
                                t,
                                {})
         self.assertEqual(exception.ResourceTypeUnavailable, ex.exc_info[0])
+
+    def test_validate_with_ignorable_errors(self):
+        t = template_format.parse(
+            """
+            heat_template_version: 2015-10-15
+            resources:
+              my_instance:
+                type: AWS::EC2::Instance
+            """)
+        engine = service.EngineService('a', 't')
+        self.mock_is_service_available.return_value = False
+
+        res = dict(engine.validate_template(
+            self.ctx,
+            t,
+            {},
+            ignorable_errors=[exception.ResourceTypeUnavailable.error_code]))
+        expected = {'Description': 'No description', 'Parameters': {}}
+        self.assertEqual(expected, res)
+
+    def test_validate_with_ignorable_errors_invalid_error_code(self):
+        engine = service.EngineService('a', 't')
+
+        invalide_error_code = '123456'
+        invalid_codes = ['99001', invalide_error_code]
+        res = engine.validate_template(
+            self.ctx,
+            mock.MagicMock(),
+            {},
+            ignorable_errors=invalid_codes)
+
+        msg = _("Invalid codes in ignore_errors : %s") % [invalide_error_code]
+        ex = webob.exc.HTTPBadRequest(explanation=msg)
+        self.assertIsInstance(res, webob.exc.HTTPBadRequest)
+        self.assertEqual(ex.explanation, res.explanation)

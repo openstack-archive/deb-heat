@@ -20,7 +20,12 @@ from heat.engine import support
 
 
 class Firewall(neutron.NeutronResource):
-    """A resource for the Firewall resource in Neutron FWaaS."""
+    """A resource for the Firewall resource in Neutron FWaaS.
+
+    Resource for using the Neutron firewall implementation. Firewall is a
+    network security system that monitors and controls the incoming and
+    outgoing network traffic based on predetermined security rules.
+    """
 
     required_service_extension = 'fwaas'
 
@@ -79,9 +84,14 @@ class Firewall(neutron.NeutronResource):
             _('Whether this firewall should be shared across all tenants. '
               'NOTE: The default policy setting in Neutron restricts usage '
               'of this property to administrative users only.'),
-            default=False,
             update_allowed=True,
-            support_status=support.SupportStatus(version='2015.1'),
+            support_status=support.SupportStatus(
+                status=support.UNSUPPORTED,
+                message=_('There is no such option during 5.0.0, so need to '
+                          'make this property unsupported while it not used.'),
+                version='6.0.0',
+                previous_status=support.SupportStatus(version='2015.1')
+            )
         ),
     }
 
@@ -105,6 +115,13 @@ class Firewall(neutron.NeutronResource):
         ),
         SHARED_ATTR: attributes.Schema(
             _('Shared status of this firewall.'),
+            support_status=support.SupportStatus(
+                status=support.UNSUPPORTED,
+                message=_('There is no such option during 5.0.0, so need to '
+                          'make this attribute unsupported, otherwise error '
+                          'will raised.'),
+                version='6.0.0'
+            ),
             type=attributes.Schema.STRING
         ),
         STATUS: attributes.Schema(
@@ -130,8 +147,7 @@ class Firewall(neutron.NeutronResource):
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
-            if self.VALUE_SPECS in prop_diff:
-                self.merge_value_specs(prop_diff)
+            self.prepare_update_properties(prop_diff)
             self.client().update_firewall(
                 self.resource_id, {'firewall': prop_diff})
 
@@ -143,9 +159,19 @@ class Firewall(neutron.NeutronResource):
         else:
             return True
 
+    def _resolve_attribute(self, name):
+        if name == self.SHARED_ATTR:
+            return ('This attribute is currently unsupported in neutron '
+                    'firewall resource.')
+        return super(Firewall, self)._resolve_attribute(name)
+
 
 class FirewallPolicy(neutron.NeutronResource):
-    """A resource for the FirewallPolicy resource in Neutron FWaaS."""
+    """A resource for the FirewallPolicy resource in Neutron FWaaS.
+
+    FirewallPolicy resource is an ordered collection of firewall rules. A
+    firewall policy can be shared across tenants.
+    """
 
     required_service_extension = 'fwaas'
 
@@ -252,7 +278,12 @@ class FirewallPolicy(neutron.NeutronResource):
 
 
 class FirewallRule(neutron.NeutronResource):
-    """A resource for the FirewallRule resource in Neutron FWaaS."""
+    """A resource for the FirewallRule resource in Neutron FWaaS.
+
+    FirewallRule represents a collection of attributes like ports,
+    ip addresses etc. which define match criteria and action (allow, or deny)
+    that needs to be taken on the matched data traffic.
+    """
 
     required_service_extension = 'fwaas'
 

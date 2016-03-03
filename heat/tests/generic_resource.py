@@ -69,7 +69,21 @@ class ResWithShowAttr(GenericResource):
                 'Another': self.name}
 
 
-class ResWithComplexPropsAndAttrs(GenericResource):
+class ResWithStringPropAndAttr(GenericResource):
+
+    properties_schema = {
+        'a_string': properties.Schema(properties.Schema.STRING)}
+
+    attributes_schema = {'string': attributes.Schema('A string')}
+
+    def _resolve_attribute(self, name):
+        try:
+            return self.properties["a_%s" % name]
+        except KeyError:
+            return None
+
+
+class ResWithComplexPropsAndAttrs(ResWithStringPropAndAttr):
 
     properties_schema = {
         'a_string': properties.Schema(properties.Schema.STRING),
@@ -241,12 +255,12 @@ class ResourceWithDefaultClientNameExt(resource.Resource):
 
 
 class ResourceWithFnGetAttType(GenericResource):
-    def FnGetAtt(self, name):
+    def get_attribute(self, name):
         pass
 
 
 class ResourceWithFnGetRefIdType(ResourceWithProps):
-    def FnGetRefId(self):
+    def get_reference_id(self):
         return 'ID-%s' % self.name
 
 

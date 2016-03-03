@@ -148,6 +148,7 @@ class EngineRpcAPITestCase(common.HeatTestCase):
                               template={u'Foo': u'bar'},
                               params={u'InstanceType': u'm1.xlarge'},
                               files={u'a_file': u'the contents'},
+                              environment_files=['foo.yaml'],
                               args={'timeout_mins': u'30'})
 
     def test_create_stack(self):
@@ -155,6 +156,7 @@ class EngineRpcAPITestCase(common.HeatTestCase):
                       template={u'Foo': u'bar'},
                       params={u'InstanceType': u'm1.xlarge'},
                       files={u'a_file': u'the contents'},
+                      environment_files=['foo.yaml'],
                       args={'timeout_mins': u'30'})
         call_kwargs = copy.deepcopy(kwargs)
         call_kwargs['owner_id'] = None
@@ -172,6 +174,7 @@ class EngineRpcAPITestCase(common.HeatTestCase):
                               template={u'Foo': u'bar'},
                               params={u'InstanceType': u'm1.xlarge'},
                               files={},
+                              environment_files=['foo.yaml'],
                               args=mock.ANY)
 
     def test_preview_update_stack(self):
@@ -180,6 +183,7 @@ class EngineRpcAPITestCase(common.HeatTestCase):
                               template={u'Foo': u'bar'},
                               params={u'InstanceType': u'm1.xlarge'},
                               files={},
+                              environment_files=['foo.yaml'],
                               args=mock.ANY)
 
     def test_get_template(self):
@@ -199,7 +203,10 @@ class EngineRpcAPITestCase(common.HeatTestCase):
                               template={u'Foo': u'bar'},
                               params={u'Egg': u'spam'},
                               files=None,
-                              show_nested=False)
+                              environment_files=['foo.yaml'],
+                              ignorable_errors=None,
+                              show_nested=False,
+                              version='1.24')
 
     def test_list_resource_types(self):
         self._test_engine_api('list_resource_types',
@@ -244,7 +251,9 @@ class EngineRpcAPITestCase(common.HeatTestCase):
         self._test_engine_api('list_stack_resources', 'call',
                               stack_identity=self.identity,
                               nested_depth=0,
-                              with_detail=False)
+                              with_detail=False,
+                              filters=None,
+                              version=1.25)
 
     def test_stack_suspend(self):
         self._test_engine_api('stack_suspend', 'call',
@@ -376,3 +385,17 @@ class EngineRpcAPITestCase(common.HeatTestCase):
         self._test_engine_api(
             'show_output', 'call', stack_identity=self.identity,
             output_key='test', version='1.19')
+
+    def test_export_stack(self):
+        self._test_engine_api('export_stack',
+                              'call',
+                              stack_identity=self.identity,
+                              version='1.22')
+
+    def test_resource_mark_unhealthy(self):
+        self._test_engine_api('resource_mark_unhealthy', 'call',
+                              stack_identity=self.identity,
+                              resource_name='LogicalResourceId',
+                              mark_unhealthy=True,
+                              resource_status_reason="Any reason",
+                              version='1.26')

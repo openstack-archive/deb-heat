@@ -180,7 +180,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             type=attributes.Schema.STRING
         ),
         STATUS_CODE: attributes.Schema(
-            _("Returned status code from the configuration execution"),
+            _("Returned status code from the configuration execution."),
             type=attributes.Schema.STRING
         ),
     }
@@ -295,11 +295,9 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             return True
         elif status == SoftwareDeployment.FAILED:
             status_reason = sd[rpc_api.SOFTWARE_DEPLOYMENT_STATUS_REASON]
-            message = _("Deployment to server "
-                        "failed: %s") % status_reason
-            LOG.error(message)
-            exc = exception.Error(message)
-            raise exc
+            message = _("Deployment to server failed: %s") % status_reason
+            LOG.info(message)
+            raise exception.Error(message)
 
     def empty_config(self):
         return ''
@@ -513,7 +511,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             self.context, self.resource_id, details,
             timeutils.utcnow().isoformat())
 
-    def FnGetAtt(self, key, *path):
+    def get_attribute(self, key, *path):
         """Resource attributes map to deployment outputs values."""
         sd = self.rpc_client().show_software_deployment(
             self.context, self.resource_id)
@@ -616,7 +614,7 @@ class SoftwareDeploymentGroup(resource_group.ResourceGroup):
         ),
         STATUS_CODES: attributes.Schema(
             _("A map of Nova names and returned status code from the "
-              "configuration execution"),
+              "configuration execution."),
             type=attributes.Schema.MAP
         ),
     }
@@ -640,7 +638,7 @@ class SoftwareDeploymentGroup(resource_group.ResourceGroup):
                                             'OS::Heat::SoftwareDeployment',
                                             props, None)
 
-    def FnGetAtt(self, key, *path):
+    def get_attribute(self, key, *path):
         rg = super(SoftwareDeploymentGroup, self)
         if key == self.STDOUTS:
             n_attr = SoftwareDeployment.STDOUT
@@ -653,7 +651,7 @@ class SoftwareDeploymentGroup(resource_group.ResourceGroup):
             # including arbitrary outputs, so we can't validate here
             n_attr = key
 
-        rg_attr = rg.FnGetAtt(rg.ATTR_ATTRIBUTES, n_attr)
+        rg_attr = rg.get_attribute(rg.ATTR_ATTRIBUTES, n_attr)
         return attributes.select_from_attribute(rg_attr, path)
 
 

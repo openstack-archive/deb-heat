@@ -75,8 +75,9 @@ class ResourceControllerTest(tools.ControllerTest, common.HeatTestCase):
             ('list_stack_resources', {'stack_identity': stack_identity,
                                       'nested_depth': 0,
                                       'with_detail': False,
+                                      'filters': {}
                                       }),
-            version='1.12'
+            version='1.25'
         ).AndReturn(engine_resp)
         self.m.ReplayAll()
 
@@ -114,8 +115,9 @@ class ResourceControllerTest(tools.ControllerTest, common.HeatTestCase):
             req.context,
             ('list_stack_resources', {'stack_identity': stack_identity,
                                       'nested_depth': 0,
-                                      'with_detail': False}),
-            version='1.12'
+                                      'with_detail': False,
+                                      'filters': {}}),
+            version='1.25'
         ).AndRaise(tools.to_remote_error(error))
         self.m.ReplayAll()
 
@@ -143,8 +145,9 @@ class ResourceControllerTest(tools.ControllerTest, common.HeatTestCase):
             req.context,
             ('list_stack_resources', {'stack_identity': stack_identity,
                                       'nested_depth': 99,
-                                      'with_detail': False}),
-            version='1.12'
+                                      'with_detail': False,
+                                      'filters': {}}),
+            version='1.25'
         ).AndReturn([])
         self.m.ReplayAll()
 
@@ -238,8 +241,9 @@ class ResourceControllerTest(tools.ControllerTest, common.HeatTestCase):
             req.context,
             ('list_stack_resources', {'stack_identity': stack_identity,
                                       'nested_depth': 0,
-                                      'with_detail': True}),
-            version='1.12'
+                                      'with_detail': True,
+                                      'filters': {}}),
+            version='1.25'
         ).AndReturn(engine_resp)
         self.m.ReplayAll()
 
@@ -291,6 +295,7 @@ class ResourceControllerTest(tools.ControllerTest, common.HeatTestCase):
             u'physical_resource_id':
             u'a3455d8c-9f88-404d-a85b-5315293e67de',
             u'resource_type': u'AWS::EC2::Instance',
+            u'attributes': {u'foo': 'bar'},
             u'metadata': {u'ensureRunning': u'true'}
         }
         self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
@@ -323,6 +328,7 @@ class ResourceControllerTest(tools.ControllerTest, common.HeatTestCase):
                 u'physical_resource_id':
                 u'a3455d8c-9f88-404d-a85b-5315293e67de',
                 u'resource_type': u'AWS::EC2::Instance',
+                u'attributes': {u'foo': 'bar'},
             }
         }
 
@@ -354,6 +360,7 @@ class ResourceControllerTest(tools.ControllerTest, common.HeatTestCase):
             u'physical_resource_id':
             u'a3455d8c-9f88-404d-a85b-5315293e67de',
             u'resource_type': u'AWS::EC2::Instance',
+            u'attributes': {u'foo': 'bar'},
             u'metadata': {u'ensureRunning': u'true'},
             u'nested_stack_id': dict(nested_stack_identity)
         }
@@ -572,7 +579,7 @@ class ResourceControllerTest(tools.ControllerTest, common.HeatTestCase):
             req.context,
             ('describe_stack_resource',
              {'stack_identity': stack_identity, 'resource_name': res_name,
-              'with_attr': None}),
+              'with_attr': False}),
             version='1.2'
         ).AndReturn(engine_resp)
         self.m.ReplayAll()
@@ -603,7 +610,7 @@ class ResourceControllerTest(tools.ControllerTest, common.HeatTestCase):
             req.context,
             ('describe_stack_resource',
              {'stack_identity': stack_identity, 'resource_name': res_name,
-              'with_attr': None}),
+              'with_attr': False}),
             version='1.2'
         ).AndRaise(tools.to_remote_error(error))
         self.m.ReplayAll()
@@ -636,7 +643,7 @@ class ResourceControllerTest(tools.ControllerTest, common.HeatTestCase):
             req.context,
             ('describe_stack_resource',
              {'stack_identity': stack_identity, 'resource_name': res_name,
-              'with_attr': None}),
+              'with_attr': False}),
             version='1.2'
         ).AndRaise(tools.to_remote_error(error))
         self.m.ReplayAll()
@@ -700,3 +707,140 @@ class ResourceControllerTest(tools.ControllerTest, common.HeatTestCase):
 
         self.assertIsNone(result)
         self.m.VerifyAll()
+
+    def test_mark_unhealthy_valid_request(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'mark_unhealthy', True)
+        res_name = 'WebServer'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+
+        req = self._get(stack_identity._tenant_path())
+
+        self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
+        body = {'mark_unhealthy': True,
+                rpc_api.RES_STATUS_DATA: 'Anything'}
+        params = {'stack_identity': stack_identity,
+                  'resource_name': res_name}
+        params.update(body)
+
+        rpc_client.EngineClient.call(
+            req.context,
+            ('resource_mark_unhealthy', params),
+            version='1.26')
+        self.m.ReplayAll()
+
+        result = self.controller.mark_unhealthy(
+            req, tenant_id=self.tenant,
+            stack_name=stack_identity.stack_name,
+            stack_id=stack_identity.stack_id,
+            resource_name=res_name,
+            body=body)
+
+        self.assertIsNone(result)
+        self.m.VerifyAll()
+
+    def test_mark_unhealthy_without_reason(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'mark_unhealthy', True)
+        res_name = 'WebServer'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+
+        req = self._get(stack_identity._tenant_path())
+
+        self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
+        body = {'mark_unhealthy': True, rpc_api.RES_STATUS_DATA: ''}
+        params = {'stack_identity': stack_identity,
+                  'resource_name': res_name}
+        params.update(body)
+
+        rpc_client.EngineClient.call(
+            req.context,
+            ('resource_mark_unhealthy', params),
+            version='1.26')
+        self.m.ReplayAll()
+
+        del body[rpc_api.RES_STATUS_DATA]
+
+        result = self.controller.mark_unhealthy(
+            req, tenant_id=self.tenant,
+            stack_name=stack_identity.stack_name,
+            stack_id=stack_identity.stack_id,
+            resource_name=res_name,
+            body=body)
+
+        self.assertIsNone(result)
+        self.m.VerifyAll()
+
+    def test_mark_unhealthy_with_invalid_keys(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'mark_unhealthy', True)
+        res_name = 'WebServer'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+
+        req = self._get(stack_identity._tenant_path())
+
+        self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
+        body = {'mark_unhealthy': True,
+                rpc_api.RES_STATUS_DATA: 'Any',
+                'invalid_key1': 1, 'invalid_key2': 2}
+        expected = "Invalid keys in resource mark unhealthy"
+        actual = self.assertRaises(webob.exc.HTTPBadRequest,
+                                   self.controller.mark_unhealthy, req,
+                                   tenant_id=self.tenant,
+                                   stack_name=stack_identity.stack_name,
+                                   stack_id=stack_identity.stack_id,
+                                   resource_name=res_name,
+                                   body=body)
+
+        self.assertIn(expected, six.text_type(actual))
+        self.assertIn('invalid_key1', six.text_type(actual))
+        self.assertIn('invalid_key2', six.text_type(actual))
+
+    def test_mark_unhealthy_with_invalid_value(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'mark_unhealthy', True)
+        res_name = 'WebServer'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+
+        req = self._get(stack_identity._tenant_path())
+
+        self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
+        body = {'mark_unhealthy': 'XYZ',
+                rpc_api.RES_STATUS_DATA: 'Any'}
+
+        expected = ('Unrecognized value "XYZ" for "mark_unhealthy", '
+                    'acceptable values are: true, false')
+
+        actual = self.assertRaises(webob.exc.HTTPBadRequest,
+                                   self.controller.mark_unhealthy, req,
+                                   tenant_id=self.tenant,
+                                   stack_name=stack_identity.stack_name,
+                                   stack_id=stack_identity.stack_id,
+                                   resource_name=res_name,
+                                   body=body)
+
+        self.assertIn(expected, six.text_type(actual))
+
+    def test_mark_unhealthy_without_mark_unhealthy_key(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'mark_unhealthy', True)
+        res_name = 'WebServer'
+        stack_identity = identifier.HeatIdentifier(self.tenant,
+                                                   'wordpress', '1')
+
+        req = self._get(stack_identity._tenant_path())
+
+        self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
+        body = {rpc_api.RES_STATUS_DATA: 'Any'}
+
+        expected = ("Missing mandatory (%s) key from "
+                    "mark unhealthy request" % 'mark_unhealthy')
+
+        actual = self.assertRaises(webob.exc.HTTPBadRequest,
+                                   self.controller.mark_unhealthy, req,
+                                   tenant_id=self.tenant,
+                                   stack_name=stack_identity.stack_name,
+                                   stack_id=stack_identity.stack_id,
+                                   resource_name=res_name,
+                                   body=body)
+
+        self.assertIn(expected, six.text_type(actual))

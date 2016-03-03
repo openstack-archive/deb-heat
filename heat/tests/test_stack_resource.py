@@ -19,7 +19,6 @@ from oslo_config import cfg
 from oslo_messaging import exceptions as msg_exceptions
 from oslo_serialization import jsonutils
 import six
-import testtools
 
 from heat.common import exception
 from heat.common import template_format
@@ -207,20 +206,6 @@ class StackResourceTest(StackResourceBaseTest):
 
         self.assertEqual(0, delete_nested.call_count)
 
-    @testtools.skipIf(six.PY3, "needs a separate change")
-    def test_implementation_signature(self):
-        self.parent_resource.child_template = mock.Mock(
-            return_value=self.simple_template)
-        sig1, sig2 = self.parent_resource.implementation_signature()
-        self.assertEqual('7b0eaabb5b82b9e90804d42e0bb739035588cb797'
-                         '82427770646686ca2235028', sig1)
-        self.assertEqual('8fa647d036b8f36909386e1e1004539dfae7a8e88'
-                         'c24aac0d85399e881421301', sig2)
-        self.parent_stack.t.files["foo"] = "bar"
-        sig1a, sig2a = self.parent_resource.implementation_signature()
-        self.assertEqual(sig1, sig1a)
-        self.assertNotEqual(sig2, sig2a)
-
     def test_propagated_files(self):
         """Test passing of the files map in the top level to the child.
 
@@ -341,6 +326,23 @@ class StackResourceTest(StackResourceBaseTest):
         self.assertRaises(exception.RequestLimitExceeded,
                           stk_resource.preview)
 
+    def test_parent_stack_existing_of_nested_stack(self):
+        parent_t = self.parent_stack.t
+        resource_defns = parent_t.resource_definitions(self.parent_stack)
+        stk_resource = MyImplementedStackResource(
+            'test',
+            resource_defns[self.ws_resname],
+            self.parent_stack)
+        stk_resource.child_params = mock.Mock(return_value={})
+        stk_resource.child_template = mock.Mock(
+            return_value=templatem.Template(self.simple_template,
+                                            stk_resource.child_params))
+        stk_resource._validate_nested_resources = mock.Mock()
+        nest_stack = stk_resource._parse_nested_stack(
+            "test_nest_stack", stk_resource.child_template(),
+            stk_resource.child_params())
+        self.assertEqual(nest_stack._parent_stack, self.parent_stack)
+
     def test_preview_dict_validates_nested_resources(self):
         parent_t = self.parent_stack.t
         resource_defns = parent_t.resource_definitions(self.parent_stack)
@@ -427,6 +429,28 @@ class StackResourceTest(StackResourceBaseTest):
         tmpl = templatem.Template(t, files=files)
         self._test_validate_unknown_resource_type(stack_name, tmpl,
                                                   'my_autoscaling_group')
+
+    def test_get_attribute_autoscaling(self):
+        t = template_format.parse(heat_autoscaling_group_template)
+        tmpl = templatem.Template(t)
+        stack = parser.Stack(utils.dummy_context(), 'test_att', tmpl)
+        rsrc = stack['my_autoscaling_group']
+        self.assertEqual(0, rsrc.FnGetAtt(rsrc.CURRENT_SIZE))
+
+    def test_get_attribute_autoscaling_convg(self):
+        t = template_format.parse(heat_autoscaling_group_template)
+        tmpl = templatem.Template(t)
+        cache_data = {'my_autoscaling_group': {
+            'uuid': mock.ANY,
+            'id': mock.ANY,
+            'action': 'CREATE',
+            'status': 'COMPLETE',
+            'attrs': {'current_size': 4}
+        }}
+        stack = parser.Stack(utils.dummy_context(), 'test_att', tmpl,
+                             cache_data=cache_data)
+        rsrc = stack['my_autoscaling_group']
+        self.assertEqual(4, rsrc.FnGetAtt(rsrc.CURRENT_SIZE))
 
     def test__validate_nested_resources_checks_num_of_resources(self):
         stack_resource.cfg.CONF.set_override('max_resources_per_stack', 2)
@@ -565,6 +589,27 @@ class StackResourceTest(StackResourceBaseTest):
         self.parent_resource.state_set(self.parent_resource.INIT,
                                        self.parent_resource.COMPLETE)
         self.parent_resource._nested = None
+        self.assertRaises(exception.UpdateReplace,
+                          self.parent_resource._needs_update,
+                          self.parent_resource.t,
+                          self.parent_resource.t,
+                          self.parent_resource.properties,
+                          self.parent_resource.properties,
+                          self.parent_resource)
+
+    def test_need_update_in_check_failed_state_for_nested_resource(self):
+        """Test the resource should need replacement.
+
+        The resource in check_failed state should need update with
+        UpdateReplace.
+        """
+        self.parent_resource.state_set(self.parent_resource.CHECK,
+                                       self.parent_resource.FAILED)
+        self.nested = mock.MagicMock()
+        self.nested.name = 'nested-stack'
+        self.parent_resource.nested = mock.MagicMock(return_value=self.nested)
+        self.parent_resource._nested = self.nested
+
         self.assertRaises(exception.UpdateReplace,
                           self.parent_resource._needs_update,
                           self.parent_resource.t,
@@ -836,10 +881,15 @@ class WithTemplateTest(StackResourceBaseTest):
         if self.adopt_data:
             adopt_data_str = json.dumps(self.adopt_data)
         rpcc.return_value._create_stack.assert_called_once_with(
-            self.ctx, res_name, self.empty_temp.t, child_env, {},
-            {'disable_rollback': True,
-             'adopt_stack_data': adopt_data_str,
-             'timeout_mins': self.timeout_mins},
+            self.ctx,
+            stack_name=res_name,
+            template=self.empty_temp.t,
+            params=child_env,
+            files={},
+            args={'disable_rollback': True,
+                  'adopt_stack_data': adopt_data_str,
+                  'timeout_mins': self.timeout_mins},
+            environment_files=None,
             stack_user_project_id='aprojectid',
             parent_resource_name='test',
             user_creds_id='uc123',
@@ -869,9 +919,12 @@ class WithTemplateTest(StackResourceBaseTest):
             self.empty_temp, user_params=self.params,
             timeout_mins=self.timeout_mins)
         rpcc.return_value.update_stack.assert_called_once_with(
-            self.ctx, {'stack_identifier': 'stack-identifier'},
-            self.empty_temp.t, child_env, {},
-            {'timeout_mins': self.timeout_mins})
+            self.ctx,
+            stack_identity={'stack_identifier': 'stack-identifier'},
+            template=self.empty_temp.t,
+            params=child_env,
+            files={},
+            args={'timeout_mins': self.timeout_mins})
 
 
 class RaiseLocalException(StackResourceBaseTest):

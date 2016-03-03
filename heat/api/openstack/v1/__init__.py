@@ -234,6 +234,12 @@ class API(wsgi.Router):
                         'method': 'DELETE'
                     },
                     {
+                        'name': 'stack_export',
+                        'url': '/stacks/{stack_name}/{stack_id}/export',
+                        'action': 'export',
+                        'method': 'GET'
+                    },
+                    {
                         'name': 'stack_snapshot',
                         'url': '/stacks/{stack_name}/{stack_id}/snapshots',
                         'action': 'snapshot',
@@ -314,6 +320,12 @@ class API(wsgi.Router):
                         'url': '/resources/{resource_name}/signal',
                         'action': 'signal',
                         'method': 'POST'
+                    },
+                    {
+                        'name': 'resource_mark_unhealthy',
+                        'url': '/resources/{resource_name}',
+                        'action': 'mark_unhealthy',
+                        'method': 'PATCH'
                     }
                 ])
 

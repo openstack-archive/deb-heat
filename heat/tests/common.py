@@ -25,6 +25,7 @@ import testtools
 from heat.common import context
 from heat.common import messaging
 from heat.common import policy
+from heat.engine.clients.os import barbican
 from heat.engine.clients.os import cinder
 from heat.engine.clients.os import glance
 from heat.engine.clients.os import keystone
@@ -164,6 +165,8 @@ class HeatTestCase(testscenarios.WithScenarios,
             generic_rsrc.ResourceWithRequiredPropsAndEmptyAttrs)
         resource._register_class('ResourceWithPropsAndAttrs',
                                  generic_rsrc.ResourceWithPropsAndAttrs)
+        resource._register_class('ResWithStringPropAndAttr',
+                                 generic_rsrc.ResWithStringPropAndAttr),
         resource._register_class('ResWithComplexPropsAndAttrs',
                                  generic_rsrc.ResWithComplexPropsAndAttrs)
         resource._register_class('ResourceWithCustomConstraint',
@@ -296,4 +299,8 @@ class HeatTestCase(testscenarios.WithScenarios,
 
     def stub_ProviderConstraint_validate(self):
         validate = self.patchobject(neutron.ProviderConstraint, 'validate')
+        validate.return_value = True
+
+    def stub_SecretConstraint_validate(self):
+        validate = self.patchobject(barbican.SecretConstraint, 'validate')
         validate.return_value = True

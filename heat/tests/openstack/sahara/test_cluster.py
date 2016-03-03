@@ -63,11 +63,13 @@ class SaharaClusterTest(common.HeatTestCase):
         super(SaharaClusterTest, self).setUp()
         self.patchobject(sc.constraints.CustomConstraint, '_is_valid'
                          ).return_value = True
-        self.patchobject(glance.GlanceClientPlugin, 'get_image_id'
+        self.patchobject(glance.GlanceClientPlugin,
+                         'find_image_by_name_or_id'
                          ).return_value = 'some_image_id'
         self.patchobject(neutron.NeutronClientPlugin, '_create')
-        self.patchobject(neutron.NeutronClientPlugin, 'find_neutron_resource'
-                         ).return_value = 'some_network_id'
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id',
+                         return_value='some_network_id')
         self.sahara_mock = mock.MagicMock()
         self.patchobject(sahara.SaharaClientPlugin, '_create'
                          ).return_value = self.sahara_mock
@@ -156,14 +158,6 @@ class SaharaClusterTest(common.HeatTestCase):
         self.assertEqual({"cluster": "info"}, cluster.FnGetAtt('show'))
         self.assertEqual(3, self.cl_mgr.get.call_count)
 
-    def test_cluster_resource_mapping(self):
-        cluster = self._init_cluster(self.t)
-        mapping = sc.resource_mapping()
-        self.assertEqual(1, len(mapping))
-        self.assertEqual(sc.SaharaCluster,
-                         mapping['OS::Sahara::Cluster'])
-        self.assertIsInstance(cluster, sc.SaharaCluster)
-
     def test_cluster_create_no_image_anywhere_fails(self):
         self.t['resources']['super-cluster']['properties'].pop(
             'default_image_id')
@@ -173,7 +167,7 @@ class SaharaClusterTest(common.HeatTestCase):
         ex = self.assertRaises(exception.ResourceFailure,
                                scheduler.TaskRunner(cluster.create))
         self.assertIsInstance(ex.exc, exception.StackValidationFailed)
-        self.assertIn("image must be provided: "
+        self.assertIn("default_image_id must be provided: "
                       "Referenced cluster template some_cluster_template_id "
                       "has no default_image_id defined.",
                       six.text_type(ex.message))

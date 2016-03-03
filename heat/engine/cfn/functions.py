@@ -190,7 +190,7 @@ class GetAtt(function.Function):
 
         attr = function.resolve(self._attribute)
         from heat.engine import resource
-        if (type(res).FnGetAtt == resource.Resource.FnGetAtt and
+        if (type(res).get_attribute == resource.Resource.get_attribute and
                 attr not in six.iterkeys(res.attributes_schema)):
             raise exception.InvalidTemplateAttribute(
                 resource=self._resource_name, key=attr)
@@ -401,8 +401,8 @@ class Replace(function.Function):
         super(Replace, self).__init__(stack, fn_name, args)
 
         self._mapping, self._string = self._parse_args()
-
-        if not isinstance(self._mapping, collections.Mapping):
+        if not isinstance(self._mapping,
+                          (collections.Mapping, function.Function)):
             raise TypeError(_('"%s" parameters must be a mapping') %
                             self.fn_name)
 

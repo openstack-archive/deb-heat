@@ -16,8 +16,8 @@ from oslo_serialization import jsonutils
 from heat.common import identifier
 from heat.common import template_format
 from heat.engine import environment
-from heat.engine.resources.aws.cfn.wait_condition_handle \
-    import WaitConditionHandle
+from heat.engine.resources.aws.cfn.wait_condition_handle import (
+    WaitConditionHandle)
 from heat.engine.resources.aws.ec2 import instance
 from heat.engine.resources.openstack.nova.server import Server
 from heat.engine.scheduler import TaskRunner
@@ -127,7 +127,7 @@ heat_template_version: 2013-05-23
 resources:
   instance1:
     type: OS::Nova::Server
-    metadata: {"template_data": {get_attr: [instance2, first_address]}}
+    metadata: {"template_data": {get_attr: [instance2, networks]}}
     properties:
       image: cirros-0.3.2-x86_64-disk
       flavor: m1.small
@@ -142,7 +142,7 @@ resources:
 '''
 
 
-class MetadataRefreshTests(common.HeatTestCase):
+class MetadataRefreshTest(common.HeatTestCase):
 
     @mock.patch.object(instance.Instance, 'handle_create')
     @mock.patch.object(instance.Instance, 'check_create_complete')
@@ -201,10 +201,10 @@ class MetadataRefreshTests(common.HeatTestCase):
         return tmp['/tmp/random_file']['content']
 
 
-class WaitConditionMetadataUpdateTests(common.HeatTestCase):
+class WaitConditionMetadataUpdateTest(common.HeatTestCase):
 
     def setUp(self):
-        super(WaitConditionMetadataUpdateTests, self).setUp()
+        super(WaitConditionMetadataUpdateTest, self).setUp()
         self.man = service.EngineService('a-host', 'a-topic')
         self.man.create_periodic_tasks()
 
@@ -286,7 +286,7 @@ class WaitConditionMetadataUpdateTests(common.HeatTestCase):
         self.assertEqual(2, mock_check.call_count)
 
 
-class MetadataRefreshServerTests(common.HeatTestCase):
+class MetadataRefreshServerTest(common.HeatTestCase):
 
     @mock.patch.object(Server, 'handle_create')
     @mock.patch.object(Server, 'check_create_complete')
@@ -327,7 +327,7 @@ class MetadataRefreshServerTests(common.HeatTestCase):
 
         # Verify outgoing calls
         mock_get.assert_has_calls([
-            mock.call('first_address'),
-            mock.call('first_address')])
+            mock.call('networks'),
+            mock.call('networks')])
         self.assertEqual(2, mock_handle.call_count)
         self.assertEqual(2, mock_check.call_count)

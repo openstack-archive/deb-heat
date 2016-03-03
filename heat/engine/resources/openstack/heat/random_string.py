@@ -23,6 +23,7 @@ from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine import support
+from heat.engine import translation
 
 
 class RandomString(resource.Resource):
@@ -123,7 +124,11 @@ class RandomString(resource.Resource):
                         ]
                     )
                 }
-            )
+            ),
+            # add defaults for backward compatibility
+            default=[{CHARACTER_CLASSES_CLASS: 'lettersdigits',
+                      CHARACTER_CLASSES_MIN: 1}]
+
         ),
         CHARACTER_SEQUENCES: properties.Schema(
             properties.Schema.LIST,
@@ -181,24 +186,19 @@ class RandomString(resource.Resource):
     def translation_rules(self, props):
         if props.get(self.SEQUENCE):
             return [
-                properties.TranslationRule(
+                translation.TranslationRule(
                     props,
-                    properties.TranslationRule.ADD,
+                    translation.TranslationRule.ADD,
                     [self.CHARACTER_CLASSES],
                     [{self.CHARACTER_CLASSES_CLASS: props.get(
                         self.SEQUENCE),
                         self.CHARACTER_CLASSES_MIN: 1}]),
-                properties.TranslationRule(
+                translation.TranslationRule(
                     props,
-                    properties.TranslationRule.DELETE,
+                    translation.TranslationRule.DELETE,
                     [self.SEQUENCE]
                 )
             ]
-
-    @staticmethod
-    def _deprecated_random_string(sequence, length):
-        rand = random.SystemRandom()
-        return ''.join(rand.choice(sequence) for x in six.moves.xrange(length))
 
     def _generate_random_string(self, char_sequences, char_classes, length):
         random_string = ""
@@ -255,17 +255,8 @@ class RandomString(resource.Resource):
 
     def validate(self):
         super(RandomString, self).validate()
-        sequence = self.properties[self.SEQUENCE]
         char_sequences = self.properties[self.CHARACTER_SEQUENCES]
         char_classes = self.properties[self.CHARACTER_CLASSES]
-
-        if sequence and (char_sequences or char_classes):
-            msg = (_("Cannot use deprecated '%(seq)s' property along with "
-                     "'%(char_seqs)s' or '%(char_classes)s' properties")
-                   % {'seq': self.SEQUENCE,
-                      'char_seqs': self.CHARACTER_SEQUENCES,
-                      'char_classes': self.CHARACTER_CLASSES})
-            raise exception.StackValidationFailed(message=msg)
 
         def char_min(char_dicts, min_prop):
             if char_dicts:
@@ -285,18 +276,9 @@ class RandomString(resource.Resource):
         char_classes = self.properties[self.CHARACTER_CLASSES]
         length = self.properties[self.LENGTH]
 
-        if char_sequences or char_classes:
-            random_string = self._generate_random_string(char_sequences,
-                                                         char_classes,
-                                                         length)
-        else:
-            sequence = self.properties[self.SEQUENCE]
-            if not sequence:  # Deprecated property not provided, use a default
-                sequence = "lettersdigits"
-
-            char_seq = self._sequences[sequence]
-            random_string = self._deprecated_random_string(char_seq, length)
-
+        random_string = self._generate_random_string(char_sequences,
+                                                     char_classes,
+                                                     length)
         self.data_set('value', random_string, redact=True)
         self.resource_id_set(self.physical_resource_name())
 

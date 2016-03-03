@@ -120,7 +120,8 @@ class Stack(collections.Mapping):
                  use_stored_context=False, username=None,
                  nested_depth=0, strict_validate=True, convergence=False,
                  current_traversal=None, tags=None, prev_raw_template_id=None,
-                 current_deps=None, cache_data=None, resource_validate=True):
+                 current_deps=None, cache_data=None, resource_validate=True,
+                 service_check_defer=False):
 
         """Initialise the Stack.
 
@@ -135,10 +136,11 @@ class Stack(collections.Mapping):
 
         def _validate_stack_name(name):
             try:
-                if not re.match("[a-zA-Z][a-zA-Z0-9_.-]*$", name):
+                if not re.match("[a-zA-Z][a-zA-Z0-9_.-]{0,254}$", name):
                     message = _('Invalid stack name %s must contain '
                                 'only alphanumeric or \"_-.\" characters, '
-                                'must start with alpha') % name
+                                'must start with alpha and must be 255 '
+                                'characters or less.') % name
                     raise exception.StackValidationFailed(message=message)
             except TypeError:
                 message = _('Invalid stack name %s, must be a string') % name
@@ -192,6 +194,12 @@ class Stack(collections.Mapping):
         # at all, thus we can't yet reference property values such as is
         # commonly done in plugin validate() methods
         self.resource_validate = resource_validate
+
+        # service_check_defer can be used to defer the validation of service
+        # availability for a given resource, which helps to create the resource
+        # dependency tree completely when respective service is not available,
+        # especially during template_validate
+        self.service_check_defer = service_check_defer
 
         if use_stored_context:
             self.context = self.stored_context()
@@ -249,6 +257,9 @@ class Stack(collections.Mapping):
 
         return self._parent_stack[self.parent_resource_name]
 
+    def set_parent_stack(self, parent_stack):
+        self._parent_stack = parent_stack
+
     def stored_context(self):
         if self.user_creds_id:
             creds_obj = ucreds_object.UserCreds.get_by_id(self.user_creds_id)
@@ -267,21 +278,40 @@ class Stack(collections.Mapping):
 
     @property
     def resources(self):
+        return self._find_resources()
+
+    def _find_resources(self, filters=None):
         if self._resources is None:
-            self._resources = dict((name, resource.Resource(name, data, self))
-                                   for (name, data) in
-                                   self.t.resource_definitions(self).items())
+            res_defns = self.t.resource_definitions(self)
+
+            if not filters:
+                self._resources = dict((name,
+                                        resource.Resource(name, data, self))
+                                       for (name, data) in res_defns.items())
+            else:
+                self._resources = dict()
+                self._db_resources = dict()
+                for rsc in six.itervalues(
+                        resource_objects.Resource.get_all_by_stack(
+                            self.context, self.id, True, filters)):
+                    self._db_resources[rsc.name] = rsc
+                    res = resource.Resource(rsc.name,
+                                            res_defns[rsc.name],
+                                            self)
+                    self._resources[rsc.name] = res
+
             # There is no need to continue storing the db resources
             # after resource creation
             self._db_resources = None
+
         return self._resources
 
-    def iter_resources(self, nested_depth=0):
+    def iter_resources(self, nested_depth=0, filters=None):
         """Iterates over all the resources in a stack.
 
         Iterating includes nested stacks up to `nested_depth` levels below.
         """
-        for res in six.itervalues(self):
+        for res in six.itervalues(self._find_resources(filters)):
             yield res
 
             if not res.has_nested() or nested_depth == 0:
@@ -386,7 +416,10 @@ class Stack(collections.Mapping):
         """Return the dependency graph for a list of resources."""
         deps = dependencies.Dependencies()
         for res in resources:
-            res.add_dependencies(deps)
+            try:
+                res.add_dependencies(deps)
+            except ValueError:
+                pass
 
         return deps
 
@@ -668,7 +701,7 @@ class Stack(collections.Mapping):
         return handler and handler(resource_name)
 
     @profiler.trace('Stack.validate', hide_args=False)
-    def validate(self):
+    def validate(self, ignorable_errors=None):
         """Validates the stack."""
         # TODO(sdake) Should return line number of invalid reference
 
@@ -703,7 +736,10 @@ class Stack(collections.Mapping):
                     result = res.validate_template()
             except exception.HeatException as ex:
                 LOG.debug('%s', ex)
-                raise
+                if ignorable_errors and ex.error_code in ignorable_errors:
+                    result = None
+                else:
+                    raise ex
             except AssertionError:
                 raise
             except Exception as ex:
@@ -1200,6 +1236,12 @@ class Stack(collections.Mapping):
                         self.prev_raw_template_id):
                     # Current resource is otherwise a good candidate
                     candidate = ext_rsrc
+                elif candidate is None:
+                    # In multiple concurrent updates, if candidate is not
+                    # found in current/previous template, it could be found
+                    # in old tmpl.
+                    candidate = ext_rsrc
+
         return candidate
 
     def _update_or_store_resources(self):
@@ -1309,6 +1351,7 @@ class Stack(collections.Mapping):
         existing_params = environment.Environment({env_fmt.PARAMETERS:
                                                   self.t.env.params})
         previous_template_id = None
+        should_rollback = False
         try:
             update_task = update.StackUpdate(
                 self, newstack, backup_stack,
@@ -1349,14 +1392,17 @@ class Stack(collections.Mapping):
         except scheduler.Timeout:
             self.status = self.FAILED
             self.status_reason = 'Timed out'
-        except (ForcedCancel, exception.ResourceFailure) as e:
+        except (ForcedCancel, Exception) as e:
             # If rollback is enabled when resource failure occurred,
             # we do another update, with the existing template,
             # so we roll back to the original state
-            if self._update_exception_handler(
-                    exc=e, action=action, update_task=update_task):
+            should_rollback = self._update_exception_handler(e, action,
+                                                             update_task)
+            if should_rollback:
                 yield self.update_task(oldstack, action=self.ROLLBACK)
-                return
+        except BaseException as e:
+            with excutils.save_and_reraise_exception():
+                self._update_exception_handler(e, action, update_task)
         else:
             LOG.debug('Deleting backup stack')
             backup_stack.delete(backup=True)
@@ -1366,29 +1412,33 @@ class Stack(collections.Mapping):
             self.t = newstack.t
             template_outputs = self.t[self.t.OUTPUTS]
             self.outputs = self.resolve_static_data(template_outputs)
+        finally:
+            if should_rollback:
+                # Already handled in rollback task
+                return
 
-        # Don't use state_set to do only one update query and avoid race
-        # condition with the COMPLETE status
-        self.action = action
+            # Don't use state_set to do only one update query and avoid race
+            # condition with the COMPLETE status
+            self.action = action
 
-        self._send_notification_and_add_event()
-        if self.status == self.FAILED:
-            # Since template was incrementally updated based on existing and
-            # new stack resources, we should have user params of both.
-            existing_params.load(newstack.t.env.user_env_as_dict())
-            self.t.env = existing_params
-            self.t.store(self.context)
-            backup_stack.t.env = existing_params
-            backup_stack.t.store(self.context)
-        self.store()
+            self._send_notification_and_add_event()
+            if self.status == self.FAILED:
+                # Since template was incrementally updated based on existing
+                # and new stack resources, we should have user params of both.
+                existing_params.load(newstack.t.env.user_env_as_dict())
+                self.t.env = existing_params
+                self.t.store(self.context)
+                backup_stack.t.env = existing_params
+                backup_stack.t.store(self.context)
+            self.store()
 
-        if previous_template_id is not None:
-            raw_template_object.RawTemplate.delete(self.context,
-                                                   previous_template_id)
+            if previous_template_id is not None:
+                raw_template_object.RawTemplate.delete(self.context,
+                                                       previous_template_id)
 
-        lifecycle_plugin_utils.do_post_ops(self.context, self,
-                                           newstack, action,
-                                           (self.status == self.FAILED))
+            lifecycle_plugin_utils.do_post_ops(self.context, self,
+                                               newstack, action,
+                                               (self.status == self.FAILED))
 
     def _update_exception_handler(self, exc, action, update_task):
         """Handle exceptions in update_task.
@@ -1406,8 +1456,10 @@ class Stack(collections.Mapping):
         if isinstance(exc, ForcedCancel):
             update_task.updater.cancel_all()
             return exc.with_rollback or not self.disable_rollback
-
-        return not self.disable_rollback
+        elif isinstance(exc, exception.ResourceFailure):
+            return not self.disable_rollback
+        else:
+            return False
 
     def _message_parser(self, message):
         if message == rpc_api.THREAD_CANCEL:

@@ -130,6 +130,20 @@ blarg: wibble
         data = stacks.InstantiationData(body)
         self.assertRaises(webob.exc.HTTPBadRequest, data.template)
 
+    def test_template_exceeds_max_template_size(self):
+        cfg.CONF.set_override('max_template_size', 10)
+        template = json.dumps(['a'] * cfg.CONF.max_template_size)
+        body = {'template': template}
+        data = stacks.InstantiationData(body)
+        error = self.assertRaises(heat_exc.RequestLimitExceeded,
+                                  data.template)
+
+        msg = ('Request limit exceeded: Template size (%(actual_len)s '
+               'bytes) exceeds maximum allowed size (%(limit)s bytes).') % {
+                   'actual_len': len(str(template)),
+                   'limit': cfg.CONF.max_template_size}
+        self.assertEqual(msg, six.text_type(error))
+
     def test_parameters(self):
         params = {'foo': 'bar', 'blarg': 'wibble'}
         body = {'parameters': params,
@@ -641,6 +655,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
         body = {'template': template,
                 'stack_name': identity.stack_name,
                 'parameters': parameters,
+                'environment_files': ['foo.yaml'],
                 'timeout_mins': 30}
 
         req = self._post('/stacks', json.dumps(body))
@@ -657,13 +672,14 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': ['foo.yaml'],
               'args': {'timeout_mins': 30},
               'owner_id': None,
               'nested_depth': 0,
               'user_creds_id': None,
               'parent_resource_name': None,
               'stack_user_project_id': None}),
-            version='1.8'
+            version='1.23'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -703,13 +719,14 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {'timeout_mins': 30, 'tags': ['tag1', 'tag2']},
               'owner_id': None,
               'nested_depth': 0,
               'user_creds_id': None,
               'parent_resource_name': None,
               'stack_user_project_id': None}),
-            version='1.8'
+            version='1.23'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -766,6 +783,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {'timeout_mins': 30,
                        'adopt_stack_data': str(adopt_data)},
               'owner_id': None,
@@ -773,7 +791,7 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
               'user_creds_id': None,
               'parent_resource_name': None,
               'stack_user_project_id': None}),
-            version='1.8'
+            version='1.23'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -856,13 +874,14 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {'my.yaml': 'This is the file contents.'},
+              'environment_files': None,
               'args': {'timeout_mins': 30},
               'owner_id': None,
               'nested_depth': 0,
               'user_creds_id': None,
               'parent_resource_name': None,
               'stack_user_project_id': None}),
-            version='1.8'
+            version='1.23'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -902,13 +921,14 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {'timeout_mins': 30},
               'owner_id': None,
               'nested_depth': 0,
               'user_creds_id': None,
               'parent_resource_name': None,
               'stack_user_project_id': None}),
-            version='1.8'
+            version='1.23'
         ).AndRaise(tools.to_remote_error(AttributeError()))
         rpc_client.EngineClient.call(
             req.context,
@@ -921,13 +941,14 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {'timeout_mins': 30},
               'owner_id': None,
               'nested_depth': 0,
               'user_creds_id': None,
               'parent_resource_name': None,
               'stack_user_project_id': None}),
-            version='1.8'
+            version='1.23'
         ).AndRaise(tools.to_remote_error(unknown_parameter))
         rpc_client.EngineClient.call(
             req.context,
@@ -940,13 +961,14 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {'timeout_mins': 30},
               'owner_id': None,
               'nested_depth': 0,
               'user_creds_id': None,
               'parent_resource_name': None,
               'stack_user_project_id': None}),
-            version='1.8'
+            version='1.23'
         ).AndRaise(tools.to_remote_error(missing_parameter))
         self.m.ReplayAll()
         resp = tools.request_with_middleware(fault.FaultWrapper,
@@ -999,13 +1021,14 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {'timeout_mins': 30},
               'owner_id': None,
               'nested_depth': 0,
               'user_creds_id': None,
               'parent_resource_name': None,
               'stack_user_project_id': None}),
-            version='1.8'
+            version='1.23'
         ).AndRaise(tools.to_remote_error(error))
         self.m.ReplayAll()
 
@@ -1084,13 +1107,14 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {'timeout_mins': 30},
               'owner_id': None,
               'nested_depth': 0,
               'user_creds_id': None,
               'parent_resource_name': None,
               'stack_user_project_id': None}),
-            version='1.8'
+            version='1.23'
         ).AndRaise(tools.to_remote_error(error))
         self.m.ReplayAll()
 
@@ -1098,7 +1122,6 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                                              self.controller.create,
                                              req, tenant_id=self.tenant,
                                              body=body)
-
         self.assertEqual(400, resp.json['code'])
         self.assertEqual('StackValidationFailed', resp.json['error']['type'])
         self.m.VerifyAll()
@@ -1169,7 +1192,9 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
-              'args': {'timeout_mins': 30, 'tags': ['tag1', 'tag2']}})
+              'environment_files': None,
+              'args': {'timeout_mins': 30, 'tags': ['tag1', 'tag2']}}),
+            version='1.23'
         )
 
         self.assertEqual({'stack': 'formatted_stack_preview'}, response)
@@ -1204,8 +1229,9 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {'timeout_mins': 30}}),
-            version='1.15'
+            version='1.23'
         ).AndReturn(resource_changes)
         self.m.ReplayAll()
 
@@ -1245,9 +1271,10 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {rpc_api.PARAM_EXISTING: True,
                        'timeout_mins': 30}}),
-            version='1.15'
+            version='1.23'
         ).AndReturn(resource_changes)
         self.m.ReplayAll()
 
@@ -1255,6 +1282,53 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
             req, tenant_id=identity.tenant, stack_name=identity.stack_name,
             stack_id=identity.stack_id, body=body)
         self.assertEqual({'resource_changes': resource_changes}, result)
+        self.m.VerifyAll()
+
+    @mock.patch.object(rpc_client.EngineClient, 'call')
+    def test_update_immutable_parameter(self, mock_call, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'update', True)
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
+        template = {u'Foo': u'bar'}
+        parameters = {u'param1': u'bar'}
+        body = {'template': template,
+                'parameters': parameters,
+                'files': {},
+                'timeout_mins': 30}
+
+        req = self._put('/stacks/%(stack_name)s/%(stack_id)s' %
+                        identity, json.dumps(body))
+
+        error = heat_exc.ImmutableParameterModified(keys='param1')
+        self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
+        rpc_client.EngineClient.call(
+            req.context,
+            ('update_stack',
+             {'stack_identity': dict(identity),
+              'template': template,
+              'params': {u'parameters': parameters,
+                         u'encrypted_param_names': [],
+                         u'parameter_defaults': {},
+                         u'event_sinks': [],
+                         u'resource_registry': {}},
+              'files': {},
+              'environment_files': None,
+              'args': {'timeout_mins': 30}}),
+            version='1.23'
+        ).AndRaise(tools.to_remote_error(error))
+        self.m.ReplayAll()
+
+        resp = tools.request_with_middleware(fault.FaultWrapper,
+                                             self.controller.update,
+                                             req, tenant_id=identity.tenant,
+                                             stack_name=identity.stack_name,
+                                             stack_id=identity.stack_id,
+                                             body=body)
+
+        self.assertEqual(400, resp.json['code'])
+        self.assertEqual('ImmutableParameterModified',
+                         resp.json['error']['type'])
+        self.assertIn("The following parameters are immutable",
+                      six.text_type(resp.json['error']['message']))
         self.m.VerifyAll()
 
     def test_lookup(self, mock_enforce):
@@ -1672,7 +1746,9 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
-              'args': {'timeout_mins': 30}})
+              'environment_files': None,
+              'args': {'timeout_mins': 30}}),
+            version='1.23'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -1710,7 +1786,9 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
-              'args': {'timeout_mins': 30, 'tags': ['tag1', 'tag2']}})
+              'environment_files': None,
+              'args': {'timeout_mins': 30, 'tags': ['tag1', 'tag2']}}),
+            version='1.23'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -1748,7 +1826,9 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          u'event_sinks': [],
                          u'resource_registry': {}},
               'files': {},
-              'args': {'timeout_mins': 30}})
+              'environment_files': None,
+              'args': {'timeout_mins': 30}}),
+            version='1.23'
         ).AndRaise(tools.to_remote_error(error))
         self.m.ReplayAll()
 
@@ -1833,8 +1913,10 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {rpc_api.PARAM_EXISTING: True,
-                       'timeout_mins': 30}})
+                       'timeout_mins': 30}}),
+            version='1.23'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -1870,8 +1952,10 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {rpc_api.PARAM_EXISTING: True,
-                       'timeout_mins': 30}})
+                       'timeout_mins': 30}}),
+            version='1.23'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -1908,9 +1992,11 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {rpc_api.PARAM_EXISTING: True,
                        'timeout_mins': 30,
-                       'tags': ['tag1', 'tag2']}})
+                       'tags': ['tag1', 'tag2']}}),
+            version='1.23'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -1947,8 +2033,10 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {rpc_api.PARAM_EXISTING: True,
-                       'timeout_mins': 30}})
+                       'timeout_mins': 30}}),
+            version='1.23'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -2011,9 +2099,11 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {rpc_api.PARAM_EXISTING: True,
                        'clear_parameters': clear_params,
-                       'timeout_mins': 30}})
+                       'timeout_mins': 30}}),
+            version='1.23'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -2053,9 +2143,11 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
+              'environment_files': None,
               'args': {rpc_api.PARAM_EXISTING: True,
                        'clear_parameters': clear_params,
-                       'timeout_mins': 30}})
+                       'timeout_mins': 30}}),
+            version='1.23'
         ).AndReturn(dict(identity))
         self.m.ReplayAll()
 
@@ -2102,6 +2194,29 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
 
         self.assertEqual(403, resp.status_int)
         self.assertIn('403 Forbidden', six.text_type(resp))
+
+    def test_export(self, mock_enforce):
+        self._mock_enforce_setup(mock_enforce, 'export', True)
+        identity = identifier.HeatIdentifier(self.tenant, 'wordpress', '6')
+        req = self._get('/stacks/%(stack_name)s/%(stack_id)s/export' %
+                        identity)
+
+        self.m.StubOutWithMock(rpc_client.EngineClient, 'call')
+        # Engine returns json data
+        expected = {"name": "test", "id": "123"}
+        rpc_client.EngineClient.call(
+            req.context,
+            ('export_stack', {'stack_identity': dict(identity)}),
+            version='1.22'
+        ).AndReturn(expected)
+        self.m.ReplayAll()
+
+        ret = self.controller.export(req,
+                                     tenant_id=identity.tenant,
+                                     stack_name=identity.stack_name,
+                                     stack_id=identity.stack_id)
+        self.assertEqual(expected, ret)
+        self.m.VerifyAll()
 
     def test_abandon(self, mock_enforce):
         self._mock_enforce_setup(mock_enforce, 'abandon', True)
@@ -2193,8 +2308,10 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
-              'show_nested': False}),
-            version='1.18'
+              'environment_files': None,
+              'show_nested': False,
+              'ignorable_errors': None}),
+            version='1.24'
         ).AndReturn(engine_response)
         self.m.ReplayAll()
 
@@ -2222,8 +2339,10 @@ class StackControllerTest(tools.ControllerTest, common.HeatTestCase):
                          'event_sinks': [],
                          'resource_registry': {}},
               'files': {},
-              'show_nested': False}),
-            version='1.18'
+              'environment_files': None,
+              'show_nested': False,
+              'ignorable_errors': None}),
+            version='1.24'
         ).AndReturn({'Error': 'fubar'})
         self.m.ReplayAll()
 

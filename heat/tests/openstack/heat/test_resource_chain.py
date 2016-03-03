@@ -15,6 +15,7 @@ import copy
 import mock
 
 from heat.common.exception import StackValidationFailed
+from heat.common import grouputils
 from heat.engine.resources.openstack.heat import resource_chain
 from heat.tests import common
 from heat.tests import utils
@@ -39,10 +40,10 @@ TEMPLATE = {
 }
 
 
-class ResourceChainTests(common.HeatTestCase):
+class ResourceChainTest(common.HeatTestCase):
 
     def setUp(self):
-        super(ResourceChainTests, self).setUp()
+        super(ResourceChainTest, self).setUp()
 
         self.stack = None  # hold on to stack to prevent weakref cleanup
 
@@ -132,8 +133,8 @@ class ResourceChainTests(common.HeatTestCase):
 
         # Setup
         tmpl_def = copy.deepcopy(TEMPLATE)
-        res_list = \
-            tmpl_def['resources']['test-chain']['properties']['resources']
+        tmpl_res_prop = tmpl_def['resources']['test-chain']['properties']
+        res_list = tmpl_res_prop['resources']
         res_list.append('OS::Heat::RandomString')
 
         # Test
@@ -148,8 +149,8 @@ class ResourceChainTests(common.HeatTestCase):
     def test_validate_fake_resource_type(self):
         # Setup
         tmpl_def = copy.deepcopy(TEMPLATE)
-        res_list = \
-            tmpl_def['resources']['test-chain']['properties']['resources']
+        tmpl_res_prop = tmpl_def['resources']['test-chain']['properties']
+        res_list = tmpl_res_prop['resources']
         res_list.append('foo')
 
         # Test
@@ -196,12 +197,27 @@ class ResourceChainTests(common.HeatTestCase):
         chain = self._create_chain(TEMPLATE)
         self.assertEqual({}, chain.child_params())
 
-    def test_resource_mapping(self):
-        found = resource_chain.resource_mapping()['OS::Heat::ResourceChain']
-        self.assertEqual(found, resource_chain.ResourceChain)
-
     def _create_chain(self, t):
         self.stack = utils.parse_stack(t)
         snip = self.stack.t.resource_definitions(self.stack)['test-chain']
         chain = resource_chain.ResourceChain('test', snip, self.stack)
         return chain
+
+    @mock.patch.object(grouputils, 'get_rsrc_id')
+    def test_get_attribute(self, mock_get_rsrc_id):
+        stack = utils.parse_stack(TEMPLATE)
+        mock_get_rsrc_id.side_effect = ['0', '1']
+        rsrc = stack['test-chain']
+        self.assertEqual(['0', '1'], rsrc.FnGetAtt(rsrc.REFS))
+
+    def test_get_attribute_convg(self):
+        cache_data = {'test-chain': {
+            'uuid': mock.ANY,
+            'id': mock.ANY,
+            'action': 'CREATE',
+            'status': 'COMPLETE',
+            'attrs': {'refs': ['rsrc1', 'rsrc2']}
+        }}
+        stack = utils.parse_stack(TEMPLATE, cache_data=cache_data)
+        rsrc = stack['test-chain']
+        self.assertEqual(['rsrc1', 'rsrc2'], rsrc.FnGetAtt(rsrc.REFS))

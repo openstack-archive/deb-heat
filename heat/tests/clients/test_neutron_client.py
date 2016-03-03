@@ -35,22 +35,12 @@ class NeutronClientPluginTestCase(common.HeatTestCase):
         self.neutron_plugin._client = self.neutron_client
 
 
-class NeutronClientPluginTests(NeutronClientPluginTestCase):
+class NeutronClientPluginTest(NeutronClientPluginTestCase):
     def setUp(self):
-        super(NeutronClientPluginTests, self).setUp()
+        super(NeutronClientPluginTest, self).setUp()
         self.mock_find = self.patchobject(neutron.neutronV20,
                                           'find_resourceid_by_name_or_id')
         self.mock_find.return_value = 42
-
-    def test_find_neutron_resource(self):
-        props = {'net': 'test_network'}
-
-        res = self.neutron_plugin.find_neutron_resource(props, 'net',
-                                                        'network')
-        self.assertEqual(42, res)
-        self.mock_find.assert_called_once_with(self.neutron_client, 'network',
-                                               'test_network',
-                                               cmd_resource=None)
 
     def test_resolve_network(self):
         props = {'net': 'test_network'}
@@ -158,6 +148,19 @@ class NeutronClientPluginTests(NeutronClientPluginTestCase):
         self.assertRaises(exception.PhysicalResourceNameAmbiguity,
                           self.neutron_plugin.get_secgroup_uuids,
                           sgs_non_uuid)
+
+    def test_check_lb_status(self):
+        self.neutron_client.show_loadbalancer.side_effect = [
+            {'loadbalancer': {'provisioning_status': 'ACTIVE'}},
+            {'loadbalancer': {'provisioning_status': 'PENDING_CREATE'}},
+            {'loadbalancer': {'provisioning_status': 'ERROR'}}
+        ]
+
+        self.assertTrue(self.neutron_plugin.check_lb_status('1234'))
+        self.assertFalse(self.neutron_plugin.check_lb_status('1234'))
+        self.assertRaises(exception.ResourceInError,
+                          self.neutron_plugin.check_lb_status,
+                          '1234')
 
 
 class NeutronConstraintsValidate(common.HeatTestCase):
@@ -268,7 +271,7 @@ class NeutronProviderConstraintsValidate(common.HeatTestCase):
         self.assertFalse(constraint.validate("bar", ctx))
 
 
-class NeutronClientPluginExtensionsTests(NeutronClientPluginTestCase):
+class NeutronClientPluginExtensionsTest(NeutronClientPluginTestCase):
     """Tests for extensions in neutronclient."""
 
     def test_has_no_extension(self):

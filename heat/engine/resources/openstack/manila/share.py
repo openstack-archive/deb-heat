@@ -12,6 +12,7 @@
 #    under the License.
 
 from oslo_log import log as logging
+from oslo_utils import encodeutils
 import six
 
 from heat.common import exception
@@ -86,8 +87,8 @@ class ManilaShare(resource.Resource):
         ),
         SHARE_SNAPSHOT: properties.Schema(
             properties.Schema.STRING,
-            _('Name or ID of shared file system snapshot that will be restored'
-              ' and created as a new share.'),
+            _('Name or ID of shared file system snapshot that '
+              'will be restored and created as a new share.'),
             constraints=[constraints.CustomConstraint('manila.share_snapshot')]
         ),
         NAME: properties.Schema(
@@ -245,10 +246,11 @@ class ManilaShare(resource.Resource):
                             access_level=rule.get(self.ACCESS_LEVEL))
                 return True
             except Exception as ex:
+                err_msg = encodeutils.exception_to_unicode(ex)
                 reason = _(
                     'Error during applying access rules to share "{0}". '
                     'The root cause of the problem is the following: {1}.'
-                ).format(self.resource_id, ex.message)
+                ).format(self.resource_id, err_msg)
                 raise exception.ResourceInError(status_reason=reason)
         elif share_status == self.STATUS_ERROR:
             reason = _('Error during creation of share "{0}"').format(

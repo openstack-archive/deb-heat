@@ -60,6 +60,12 @@ Which will respond::
     | (uuid)                               | teststack | CREATE_IN_PROGRESS | (timestamp)          |
     +--------------------------------------+-----------+--------------------+----------------------+
 
+
+.. note::
+   Link on Heat template presented in command above should reference on RAW
+   template. In case if it be a "html" page with template, Heat will return
+   an error.
+
 List stacks
 ~~~~~~~~~~~
 List the stacks in your tenant::
@@ -99,7 +105,7 @@ Note: The list operation will show no running stack.::
     $ heat stack-delete teststack
     $ heat stack-list
 
-You can explore other heat commands by refering to the
+You can explore other heat commands by referring to the
 `Heat chapter
 <http://docs.openstack.org/cli-reference/heat.html>`_
 of the `OpenStack Command-Line Interface Reference

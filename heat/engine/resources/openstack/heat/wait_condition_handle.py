@@ -27,6 +27,13 @@ from heat.engine import support
 
 
 class HeatWaitConditionHandle(wc_base.BaseWaitConditionHandle):
+    """Resource for managing instance signals.
+
+    The main points of this resource are:
+      - have no dependencies (so the instance can reference it).
+      - create credentials to allow for signalling from the instance.
+      - handle signals from the instance, validate and store result.
+    """
 
     support_status = support.SupportStatus(version='2014.2')
 
@@ -96,8 +103,8 @@ class HeatWaitConditionHandle(wc_base.BaseWaitConditionHandle):
         CURL_CLI: attributes.Schema(
             _('Convenience attribute, provides curl CLI command '
               'prefix, which can be used for signalling handle completion or '
-              'failure when signal_transport is set to TOKEN_SIGNAL.  You '
-              ' can signal success by adding '
+              'failure when signal_transport is set to TOKEN_SIGNAL. You '
+              'can signal success by adding '
               '--data-binary \'{"status": "SUCCESS"}\' '
               ', or signal failure by adding '
               '--data-binary \'{"status": "FAILURE"}\'. '

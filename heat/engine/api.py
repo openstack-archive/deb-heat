@@ -239,8 +239,7 @@ def format_stack(stack, preview=False, resolve_outputs=True):
         info.update(update_info)
 
     # allow users to view the outputs of stacks
-    if (stack.action != stack.DELETE and stack.status != stack.IN_PROGRESS
-            and resolve_outputs):
+    if stack.action != stack.DELETE and resolve_outputs:
         info[rpc_api.STACK_OUTPUTS] = format_stack_outputs(stack,
                                                            stack.outputs,
                                                            resolve_value=True)
@@ -325,11 +324,12 @@ def format_stack_resource(resource, detail=True, with_props=False,
     if detail:
         res[rpc_api.RES_DESCRIPTION] = resource.t.description
         res[rpc_api.RES_METADATA] = resource.metadata_get()
-        res[rpc_api.RES_SCHEMA_ATTRIBUTES] = format_resource_attributes(
-            resource, with_attr)
+        if with_attr is not False:
+            res[rpc_api.RES_ATTRIBUTES] = format_resource_attributes(
+                resource, with_attr)
 
     if with_props:
-        res[rpc_api.RES_SCHEMA_PROPERTIES] = format_resource_properties(
+        res[rpc_api.RES_PROPERTIES] = format_resource_properties(
             resource)
 
     return res

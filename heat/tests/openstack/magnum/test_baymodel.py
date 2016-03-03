@@ -90,11 +90,6 @@ class TestMagnumBayModel(common.HeatTestCase):
         self.assertEqual((bm.CREATE, bm.COMPLETE), bm.state)
         self.client.baymodels.create.assert_called_once_with(**self.expected)
 
-    def test_resource_mapping(self):
-        mapping = baymodel.resource_mapping()
-        self.assertEqual(1, len(mapping))
-        self.assertEqual(baymodel.BayModel, mapping[RESOURCE_TYPE])
-
 
 class TestMagnumBayModelWithAddedProperties(TestMagnumBayModel):
     magnum_template = '''
@@ -113,13 +108,15 @@ class TestMagnumBayModelWithAddedProperties(TestMagnumBayModel):
           dns_nameserver: 8.8.8.8
           docker_volume_size: 5
           ssh_authorized_key: ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAB
-          coe: 'swarm'
+          coe: 'mesos'
           network_driver: 'flannel'
           http_proxy: 'http://proxy.com:123'
           https_proxy: 'https://proxy.com:123'
           no_proxy: '192.168.0.1'
           labels: {'flannel_cidr': ['10.101.0.0/16', '10.102.0.0/16']}
           tls_disabled: True
+          public: True
+          registry_enabled: True
     '''
     expected = {
         'name': 'test_bay_model',
@@ -132,11 +129,13 @@ class TestMagnumBayModelWithAddedProperties(TestMagnumBayModel):
         'dns_nameserver': '8.8.8.8',
         'docker_volume_size': 5,
         'ssh_authorized_key': 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAB',
-        'coe': 'swarm',
+        'coe': 'mesos',
         'network_driver': 'flannel',
         'http_proxy': 'http://proxy.com:123',
         'https_proxy': 'https://proxy.com:123',
         'no_proxy': '192.168.0.1',
         'labels': {'flannel_cidr': ['10.101.0.0/16', '10.102.0.0/16']},
-        'tls_disabled': True
+        'tls_disabled': True,
+        'public': True,
+        'registry_enabled': True
     }

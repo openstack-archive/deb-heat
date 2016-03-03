@@ -21,6 +21,11 @@ from heat.engine import support
 
 
 class ProviderNet(net.Net):
+    """A resource for managing Neutron provider networks.
+
+    Provider networks specify details of physical realisation of the existing
+    network.
+    """
 
     required_service_extension = 'provider'
 
@@ -29,9 +34,11 @@ class ProviderNet(net.Net):
     PROPERTIES = (
         NAME, PROVIDER_NETWORK_TYPE, PROVIDER_PHYSICAL_NETWORK,
         PROVIDER_SEGMENTATION_ID, ADMIN_STATE_UP, SHARED,
+        ROUTER_EXTERNAL,
     ) = (
         'name', 'network_type', 'physical_network',
         'segmentation_id', 'admin_state_up', 'shared',
+        'router_external',
     )
 
     ATTRIBUTES = (
@@ -45,7 +52,7 @@ class ProviderNet(net.Net):
         PROVIDER_NETWORK_TYPE: properties.Schema(
             properties.Schema.STRING,
             _('A string specifying the provider network type for the '
-                'network.'),
+              'network.'),
             update_allowed=True,
             required=True,
             constraints=[
@@ -55,14 +62,14 @@ class ProviderNet(net.Net):
         PROVIDER_PHYSICAL_NETWORK: properties.Schema(
             properties.Schema.STRING,
             _('A string specifying physical network mapping for the '
-                'network.'),
+              'network.'),
             update_allowed=True,
             required=True,
         ),
         PROVIDER_SEGMENTATION_ID: properties.Schema(
             properties.Schema.STRING,
             _('A string specifying the segmentation id for the '
-                'network.'),
+              'network.'),
             update_allowed=True
         ),
         ADMIN_STATE_UP: net.Net.properties_schema[ADMIN_STATE_UP],
@@ -71,6 +78,13 @@ class ProviderNet(net.Net):
             _('Whether this network should be shared across all tenants.'),
             default=True,
             update_allowed=True
+        ),
+        ROUTER_EXTERNAL: properties.Schema(
+            properties.Schema.BOOLEAN,
+            _('Whether the network contains an external router.'),
+            default=False,
+            update_allowed=True,
+            support_status=support.SupportStatus(version='6.0.0')
         ),
     }
 
@@ -117,6 +131,9 @@ class ProviderNet(net.Net):
                 props,
                 ProviderNet.PROVIDER_SEGMENTATION_ID)
 
+        if ProviderNet.ROUTER_EXTERNAL in props:
+            props['router:external'] = props.pop(ProviderNet.ROUTER_EXTERNAL)
+
     def handle_create(self):
         """Creates the resource with provided properties.
 
@@ -138,9 +155,7 @@ class ProviderNet(net.Net):
         """
         if prop_diff:
             ProviderNet.prepare_provider_properties(prop_diff)
-            if (self.NAME in prop_diff and
-                    prop_diff[self.NAME] is None):
-                prop_diff[self.NAME] = self.physical_resource_name()
+            self.prepare_update_properties(prop_diff)
             self.client().update_network(self.resource_id,
                                          {'network': prop_diff})
 

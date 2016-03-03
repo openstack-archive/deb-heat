@@ -117,7 +117,7 @@ class StructuredDeployment(sd.SoftwareDeployment):
         NAME: _sd_ps[NAME],
         INPUT_KEY: properties.Schema(
             properties.Schema.STRING,
-            _('Name of key to use for substituting inputs during deployment'),
+            _('Name of key to use for substituting inputs during deployment.'),
             default='get_input',
         ),
         INPUT_VALUES_VALIDATE: properties.Schema(
@@ -184,6 +184,11 @@ class StructuredDeployment(sd.SoftwareDeployment):
 
 
 class StructuredDeploymentGroup(sd.SoftwareDeploymentGroup):
+    """This resource associates a group of servers with some configuration.
+
+    This resource works similar as OS::Heat::SoftwareDeploymentGroup, but for
+    structured resources.
+    """
 
     PROPERTIES = (
         SERVERS,

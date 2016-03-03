@@ -50,6 +50,11 @@ class SwiftSignalTimeout(exception.Error):
 
 
 class SwiftSignalHandle(resource.Resource):
+    """Resource for managing signals from Swift resources.
+
+    This resource is same as WaitConditionHandle, but designed for using by
+    Swift resources.
+    """
 
     support_status = support.SupportStatus(version='2014.2')
     default_client_name = "swift"
@@ -68,24 +73,24 @@ class SwiftSignalHandle(resource.Resource):
 
     attributes_schema = {
         TOKEN: attributes.Schema(
-            _('Tokens are not needed for Swift TempURLs.  This attribute is '
+            _('Tokens are not needed for Swift TempURLs. This attribute is '
               'being kept for compatibility with the '
-              'OS::Heat::WaitConditionHandle resource'),
+              'OS::Heat::WaitConditionHandle resource.'),
             cache_mode=attributes.Schema.CACHE_NONE,
             type=attributes.Schema.STRING
         ),
         ENDPOINT: attributes.Schema(
-            _('Endpoint/url which can be used for signalling handle'),
+            _('Endpoint/url which can be used for signalling handle.'),
             cache_mode=attributes.Schema.CACHE_NONE,
             type=attributes.Schema.STRING
         ),
         CURL_CLI: attributes.Schema(
             _('Convenience attribute, provides curl CLI command '
               'prefix, which can be used for signalling handle completion or '
-              'failure.  You can signal success by adding '
+              'failure. You can signal success by adding '
               '--data-binary \'{"status": "SUCCESS"}\' '
               ', or signal failure by adding '
-              '--data-binary \'{"status": "FAILURE"}\''),
+              '--data-binary \'{"status": "FAILURE"}\'.'),
             cache_mode=attributes.Schema.CACHE_NONE,
             type=attributes.Schema.STRING
         ),
@@ -137,6 +142,11 @@ class SwiftSignalHandle(resource.Resource):
 
 
 class SwiftSignal(resource.Resource):
+    """Resource for handling signals received by SwiftSignalHandle.
+
+    This resource handles signals received by SwiftSignalHandle and
+    is same as WaitCondition resource.
+    """
 
     support_status = support.SupportStatus(version='2014.2')
     default_client_name = "swift"
@@ -153,7 +163,7 @@ class SwiftSignal(resource.Resource):
         TIMEOUT: properties.Schema(
             properties.Schema.NUMBER,
             description=_('The maximum number of seconds to wait for the '
-                          'resource to signal completion.  Once the timeout '
+                          'resource to signal completion. Once the timeout '
                           'is reached, creation of the signal resource will '
                           'fail.'),
             required=True,

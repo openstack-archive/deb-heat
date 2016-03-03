@@ -31,6 +31,13 @@ _FATAL_EXCEPTION_FORMAT_ERRORS = False
 LOG = logging.getLogger(__name__)
 
 
+# TODO(kanagaraj-manickam): Expose this to user via REST API
+ERROR_CODE_MAP = {
+    '99001': _("Service %(service_name)s is not available for resource "
+               "type %(resource_type)s, reason: %(reason)s")
+}
+
+
 @six.python_2_unicode_compatible
 class HeatException(Exception):
     """Base Heat Exception.
@@ -40,12 +47,21 @@ class HeatException(Exception):
     provided to the constructor.
     """
     message = _("An unknown exception occurred.")
+    # error_code helps to provide an unique number for a given exception
+    # and is encoded in XXYYY format.
+    # Here, XX - For each of the entity type like stack, resource, etc
+    # an unique number will be provided. All exceptions for a entity will
+    # have same XX code.
+    # YYY - Specific error code for a given exception.
     error_code = None
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
 
         try:
+            if self.error_code in ERROR_CODE_MAP:
+                self.msg_fmt = ERROR_CODE_MAP[self.error_code]
+
             self.message = self.msg_fmt % kwargs
 
             if self.error_code:
@@ -117,6 +133,16 @@ class InvalidTemplateParameter(HeatException):
     msg_fmt = _("The Parameter (%(key)s) has no attributes.")
 
 
+class ImmutableParameterModified(HeatException):
+    msg_fmt = _("The following parameters are immutable and may not be "
+                "updated: %(keys)s")
+
+    def __init__(self, *args, **kwargs):
+        if args:
+            kwargs.update({'keys': ", ".join(args)})
+        super(ImmutableParameterModified, self).__init__(**kwargs)
+
+
 class InvalidTemplateAttribute(HeatException):
     msg_fmt = _("The Referenced Attribute (%(resource)s %(key)s)"
                 " is incorrect.")
@@ -129,6 +155,12 @@ class InvalidTemplateReference(HeatException):
 
 class EntityNotFound(HeatException):
     msg_fmt = _("The %(entity)s (%(name)s) could not be found.")
+
+    def __init__(self, entity=None, name=None, **kwargs):
+        self.entity = entity
+        self.name = name
+        super(EntityNotFound, self).__init__(entity=entity, name=name,
+                                             **kwargs)
 
 
 class PhysicalResourceNameAmbiguity(HeatException):
@@ -206,12 +238,24 @@ class InvalidGlobalResource(HeatException):
                 "resource type %(type_name)s.")
 
 
+class ResourceTypeUnavailable(HeatException):
+    error_code = '99001'
+
+
 class InvalidBreakPointHook(HeatException):
+    msg_fmt = _("%(message)s")
+
+
+class InvalidRestrictedAction(HeatException):
     msg_fmt = _("%(message)s")
 
 
 class ResourceNotAvailable(HeatException):
     msg_fmt = _("The Resource (%(resource_name)s) is not available.")
+
+
+class ClientNotAvailable(HeatException):
+    msg_fmt = _("The client (%(client_name)s) is not available.")
 
 
 class WatchRuleNotFound(EntityNotFound):
@@ -284,6 +328,10 @@ class NotSupported(HeatException):
 
 class ResourceActionNotSupported(HeatException):
     msg_fmt = _("%(action)s is not supported for resource.")
+
+
+class ResourceActionRestricted(HeatException):
+    msg_fmt = _("%(action)s is restricted for resource.")
 
 
 class ResourcePropertyConflict(HeatException):
@@ -438,11 +486,6 @@ class KeystoneServiceNameConflict(HeatException):
 
 class SIGHUPInterrupt(HeatException):
     msg_fmt = _("System SIGHUP signal received.")
-
-
-class ResourceTypeUnavailable(HeatException):
-    msg_fmt = _("Service %(service_name)s does not have required endpoint in "
-                "service catalog for the resource type %(resource_type)s")
 
 
 class NoActionRequired(Exception):

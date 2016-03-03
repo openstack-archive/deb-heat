@@ -17,6 +17,7 @@ import six
 from webob import exc
 
 from heat.api.openstack.v1 import util
+from heat.common.i18n import _
 from heat.common import identifier
 from heat.common import param_utils
 from heat.common import serializers
@@ -94,6 +95,16 @@ class ResourceController(object):
     @util.identified_stack
     def index(self, req, identity):
         """Lists information for all resources."""
+
+        whitelist = {
+            'type': 'mixed',
+            'status': 'mixed',
+            'name': 'mixed',
+            'action': 'mixed',
+            'id': 'mixed',
+            'physical_resource_id': 'mixed'
+        }
+
         nested_depth = self._extract_to_param(req,
                                               rpc_api.PARAM_NESTED_DEPTH,
                                               param_utils.extract_int,
@@ -103,10 +114,13 @@ class ResourceController(object):
                                              param_utils.extract_bool,
                                              default=False)
 
+        params = util.get_allowed_params(req.params, whitelist)
+
         res_list = self.rpc_client.list_stack_resources(req.context,
                                                         identity,
                                                         nested_depth,
-                                                        with_detail)
+                                                        with_detail,
+                                                        filters=params)
 
         return {'resources': [format_resource(req, res) for res in res_list]}
 
@@ -114,8 +128,10 @@ class ResourceController(object):
     def show(self, req, identity, resource_name):
         """Gets detailed information for a resource."""
 
-        whitelist = {'with_attr': 'multi'}
+        whitelist = {'with_attr': util.PARAM_TYPE_MULTI}
         params = util.get_allowed_params(req.params, whitelist)
+        if 'with_attr' not in params:
+            params['with_attr'] = None
         res = self.rpc_client.describe_stack_resource(req.context,
                                                       identity,
                                                       resource_name,
@@ -139,6 +155,36 @@ class ResourceController(object):
                                         stack_identity=identity,
                                         resource_name=resource_name,
                                         details=body)
+
+    @util.identified_stack
+    def mark_unhealthy(self, req, identity, resource_name, body):
+        """Mark a resource as healthy or unhealthy."""
+        data = dict()
+        VALID_KEYS = (RES_UPDATE_MARK_UNHEALTHY, RES_UPDATE_STATUS_REASON) = (
+            'mark_unhealthy', rpc_api.RES_STATUS_DATA)
+
+        invalid_keys = set(body) - set(VALID_KEYS)
+        if invalid_keys:
+            raise exc.HTTPBadRequest(_("Invalid keys in resource "
+                                       "mark unhealthy %s") % invalid_keys)
+
+        if RES_UPDATE_MARK_UNHEALTHY not in body:
+            raise exc.HTTPBadRequest(
+                _("Missing mandatory (%s) key from mark unhealthy "
+                  "request") % RES_UPDATE_MARK_UNHEALTHY)
+
+        try:
+            data[RES_UPDATE_MARK_UNHEALTHY] = param_utils.extract_bool(
+                RES_UPDATE_MARK_UNHEALTHY,
+                body[RES_UPDATE_MARK_UNHEALTHY])
+        except ValueError as e:
+            raise exc.HTTPBadRequest(six.text_type(e))
+
+        data[RES_UPDATE_STATUS_REASON] = body.get(RES_UPDATE_STATUS_REASON, "")
+        self.rpc_client.resource_mark_unhealthy(req.context,
+                                                stack_identity=identity,
+                                                resource_name=resource_name,
+                                                **data)
 
 
 def create_resource(options):

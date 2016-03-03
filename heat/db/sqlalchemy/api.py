@@ -16,13 +16,16 @@ import datetime
 import sys
 
 from oslo_config import cfg
+from oslo_db import api as oslo_db_api
 from oslo_db.sqlalchemy import session as db_session
 from oslo_db.sqlalchemy import utils
 from oslo_serialization import jsonutils
+from oslo_utils import encodeutils
 from oslo_utils import timeutils
 import osprofiler.sqlalchemy
 import six
 import sqlalchemy
+from sqlalchemy import func
 from sqlalchemy import orm
 from sqlalchemy.orm import aliased as orm_aliased
 from sqlalchemy.orm import session as orm_session
@@ -48,7 +51,7 @@ def get_facade():
 
     if not _facade:
         _facade = db_session.EngineFacade.from_config(CONF)
-        if CONF.profiler.profiler_enabled:
+        if CONF.profiler.enabled:
             if CONF.profiler.trace_sqlalchemy:
                 osprofiler.sqlalchemy.add_tracing(sqlalchemy,
                                                   _facade.get_engine(),
@@ -305,12 +308,15 @@ def resource_create(context, values):
     return resource_ref
 
 
-def resource_get_all_by_stack(context, stack_id, key_id=False):
-    results = model_query(
+def resource_get_all_by_stack(context, stack_id, key_id=False, filters=None):
+    query = model_query(
         context, models.Resource
     ).filter_by(
         stack_id=stack_id
-    ).options(orm.joinedload("data")).all()
+    ).options(orm.joinedload("data"))
+
+    query = db_filters.exact_filter(query, models.Resource, filters)
+    results = query.all()
 
     if not results:
         raise exception.NotFound(_("no resources for stack_id %s were found")
@@ -398,7 +404,8 @@ def _paginate_query(context, query, model, limit=None, sort_keys=None,
         query = utils.paginate_query(query, model, limit, sort_keys,
                                      model_marker, sort_dir)
     except utils.InvalidSortKey as exc:
-        raise exception.Invalid(reason=exc.message)
+        err_msg = encodeutils.exception_to_unicode(exc)
+        raise exception.Invalid(reason=err_msg)
     return query
 
 
@@ -519,13 +526,14 @@ def stack_update(context, stack_id, values, exp_trvsl=None):
         return False
 
     session = _session(context)
-    rows_updated = (session.query(models.Stack)
-                    .filter(models.Stack.id == stack.id)
-                    .filter(models.Stack.current_traversal
-                            == stack.current_traversal)
-                    .update(values, synchronize_session=False))
-    session.expire_all()
 
+    with session.begin():
+        rows_updated = (session.query(models.Stack)
+                        .filter(models.Stack.id == stack.id)
+                        .filter(models.Stack.current_traversal
+                                == stack.current_traversal)
+                        .update(values, synchronize_session=False))
+    session.expire_all()
     return (rows_updated is not None and rows_updated > 0)
 
 
@@ -545,6 +553,8 @@ def stack_delete(context, stack_id):
     session.flush()
 
 
+@oslo_db_api.wrap_db_retry(max_retries=3, retry_on_deadlock=True,
+                           retry_interval=0.5, inc_retry_interval=True)
 def stack_lock_create(stack_id, engine_id):
     session = get_session()
     with session.begin():
@@ -736,7 +746,8 @@ def _events_paginate_query(context, query, model, limit=None, sort_keys=None,
         query = utils.paginate_query(query, model, limit, sort_keys,
                                      model_marker, sort_dir)
     except utils.InvalidSortKey as exc:
-        raise exception.Invalid(reason=exc.message)
+        err_msg = encodeutils.exception_to_unicode(exc)
+        raise exception.Invalid(reason=err_msg)
 
     return query
 
@@ -759,7 +770,8 @@ def _events_filter_and_page_query(context, query,
 
 
 def event_count_all_by_stack(context, stack_id):
-    return _query_all_by_stack(context, stack_id).count()
+    query = model_query(context, func.count(models.Event.id))
+    return query.filter_by(stack_id=stack_id).scalar()
 
 
 def _delete_event_rows(context, stack_id, limit):
@@ -1148,6 +1160,8 @@ def sync_point_delete_all_by_stack_and_traversal(context, stack_id,
     return rows_deleted
 
 
+@oslo_db_api.wrap_db_retry(max_retries=3, retry_on_deadlock=True,
+                           retry_interval=0.5, inc_retry_interval=True)
 def sync_point_create(context, values):
     values['entity_id'] = str(values['entity_id'])
     sync_point_ref = models.SyncPoint()

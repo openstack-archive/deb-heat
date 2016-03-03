@@ -21,9 +21,19 @@ from heat.engine.resources.openstack.neutron import neutron
 from heat.engine.resources.openstack.neutron import port
 from heat.engine.resources.openstack.neutron import router
 from heat.engine import support
+from heat.engine import translation
 
 
 class FloatingIP(neutron.NeutronResource):
+    """A resource for managing Neutron floating ips.
+
+    Floating IP addresses can change their association between routers by
+    action of the user. One of the most common use cases for floating IPs is
+    to provide public IP addresses to a private cloud, where there are a
+    limited number of IP addresses available. Another is for a public cloud
+    user to have a "static" IP address that can be reassigned when an instance
+    is upgraded or moved.
+    """
     PROPERTIES = (
         FLOATING_NETWORK_ID, FLOATING_NETWORK, VALUE_SPECS,
         PORT_ID, FIXED_IP_ADDRESS, FLOATING_IP_ADDRESS,
@@ -131,9 +141,9 @@ class FloatingIP(neutron.NeutronResource):
 
     def translation_rules(self, props):
         return [
-            properties.TranslationRule(
+            translation.TranslationRule(
                 props,
-                properties.TranslationRule.REPLACE,
+                translation.TranslationRule.REPLACE,
                 [self.FLOATING_NETWORK],
                 value_path=[self.FLOATING_NETWORK_ID]
             )
@@ -165,7 +175,7 @@ class FloatingIP(neutron.NeutronResource):
                     if not fixed_ips:
                         p_net = (resource.properties.get(port.Port.NETWORK) or
                                  resource.properties.get(port.Port.NETWORK_ID))
-                        if p_net and p_net != 'None':
+                        if p_net:
                             subnets = self.client().show_network(p_net)[
                                 'network']['subnets']
                             return subnet in subnets
@@ -183,8 +193,8 @@ class FloatingIP(neutron.NeutronResource):
                     resource.properties.get(router.RouterInterface.SUBNET) or
                     resource.properties.get(router.RouterInterface.SUBNET_ID))
                 # during create we have only unresolved value for functions, so
-                # cat not use None value for building correct dependencies
-                if interface_subnet != 'None':
+                # can not use None value for building correct dependencies
+                if interface_subnet:
                     for d in deps.graph()[self]:
                         if port_on_subnet(d, interface_subnet):
                             deps += (self, resource)
@@ -245,6 +255,11 @@ class FloatingIP(neutron.NeutronResource):
 
 
 class FloatingIPAssociation(neutron.NeutronResource):
+    """A resource for associating floating ips and ports.
+
+    This resource allows associating a floating IP to a port with at least one
+    IP address to associate with this floating IP.
+    """
     PROPERTIES = (
         FLOATINGIP_ID, PORT_ID, FIXED_IP_ADDRESS,
     ) = (

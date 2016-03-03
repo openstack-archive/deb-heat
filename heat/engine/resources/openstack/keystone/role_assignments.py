@@ -70,20 +70,20 @@ class KeystoneRoleAssignmentMixin(object):
                 schema={
                     ROLE: properties.Schema(
                         properties.Schema.STRING,
-                        _('Keystone role'),
+                        _('Keystone role.'),
                         required=True,
                         constraints=([constraints.
                                      CustomConstraint('keystone.role')])
                     ),
                     PROJECT: properties.Schema(
                         properties.Schema.STRING,
-                        _('Keystone project'),
+                        _('Keystone project.'),
                         constraints=([constraints.
                                      CustomConstraint('keystone.project')])
                     ),
                     DOMAIN: properties.Schema(
                         properties.Schema.STRING,
-                        _('Keystone domain'),
+                        _('Keystone domain.'),
                         constraints=([constraints.
                                      CustomConstraint('keystone.domain')])
                     ),
@@ -312,7 +312,10 @@ class KeystoneRoleAssignmentMixin(object):
 
 class KeystoneUserRoleAssignment(resource.Resource,
                                  KeystoneRoleAssignmentMixin):
-    """Resource for granting roles to a user."""
+    """Resource for granting roles to a user.
+
+    Resource for specifying users and their's roles.
+    """
 
     support_status = support.SupportStatus(
         version='5.0.0',
@@ -363,7 +366,10 @@ class KeystoneUserRoleAssignment(resource.Resource,
 
 class KeystoneGroupRoleAssignment(resource.Resource,
                                   KeystoneRoleAssignmentMixin):
-    """Resource for granting roles to a group."""
+    """Resource for granting roles to a group.
+
+    Resource for specifying groups and their's roles.
+    """
 
     support_status = support.SupportStatus(
         version='5.0.0',

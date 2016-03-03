@@ -114,8 +114,9 @@ class SaharaNodeGroupTemplateTest(common.HeatTestCase):
         self.patchobject(nova.NovaClientPlugin, 'find_flavor_by_name_or_id'
                          ).return_value = 'someflavorid'
         self.patchobject(neutron.NeutronClientPlugin, '_create')
-        self.patchobject(neutron.NeutronClientPlugin, 'find_neutron_resource'
-                         ).return_value = 'some_pool_id'
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id',
+                         return_value='some_pool_id')
         sahara_mock = mock.MagicMock()
         self.ngt_mgr = sahara_mock.node_group_templates
         self.plugin_mgr = sahara_mock.plugins
@@ -130,14 +131,6 @@ class SaharaNodeGroupTemplateTest(common.HeatTestCase):
     def _init_ngt(self, template):
         self.stack = utils.parse_stack(template)
         return self.stack['node-group']
-
-    def test_ngt_resource_mapping(self):
-        ngt = self._init_ngt(self.t)
-        mapping = st.resource_mapping()
-        self.assertEqual(st.SaharaNodeGroupTemplate,
-                         mapping['OS::Sahara::NodeGroupTemplate'])
-        self.assertIsInstance(ngt,
-                              st.SaharaNodeGroupTemplate)
 
     def _create_ngt(self, template):
         ngt = self._init_ngt(template)
@@ -180,7 +173,8 @@ class SaharaNodeGroupTemplateTest(common.HeatTestCase):
         self.patchobject(ngt, 'is_using_neutron').return_value = True
 
         self.patchobject(
-            neutron.NeutronClientPlugin, 'find_neutron_resource'
+            neutron.NeutronClientPlugin,
+            'find_resourceid_by_name_or_id'
         ).side_effect = [
             neutron.exceptions.NeutronClientNoUniqueMatch(message='Too many'),
             neutron.exceptions.NeutronClientException(message='Not found',
@@ -202,7 +196,7 @@ class SaharaNodeGroupTemplateTest(common.HeatTestCase):
         self.patchobject(nova.NovaClientPlugin,
                          '_create').return_value = nova_mock
         ex = self.assertRaises(exception.StackValidationFailed, ngt.validate)
-        self.assertEqual('Not found', six.text_type(ex))
+        self.assertEqual('Not found (HTTP 404)', six.text_type(ex))
 
     def test_validate_flavor_constraint_return_false(self):
         self.t['resources']['node-group']['properties'].pop('floating_ip_pool')
@@ -293,8 +287,9 @@ class SaharaClusterTemplateTest(common.HeatTestCase):
         self.patchobject(st.constraints.CustomConstraint, '_is_valid'
                          ).return_value = True
         self.patchobject(neutron.NeutronClientPlugin, '_create')
-        self.patchobject(neutron.NeutronClientPlugin, 'find_neutron_resource'
-                         ).return_value = 'some_network_id'
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id',
+                         return_value='some_network_id')
         sahara_mock = mock.MagicMock()
         self.ct_mgr = sahara_mock.cluster_templates
         self.patchobject(sahara.SaharaClientPlugin,
@@ -308,14 +303,6 @@ class SaharaClusterTemplateTest(common.HeatTestCase):
     def _init_ct(self, template):
         self.stack = utils.parse_stack(template)
         return self.stack['cluster-template']
-
-    def test_ct_resource_mapping(self):
-        ct = self._init_ct(self.t)
-        mapping = st.resource_mapping()
-        self.assertEqual(st.SaharaClusterTemplate,
-                         mapping['OS::Sahara::ClusterTemplate'])
-        self.assertIsInstance(ct,
-                              st.SaharaClusterTemplate)
 
     def _create_ct(self, template):
         ct = self._init_ct(template)

@@ -23,13 +23,14 @@ from oslo_versionedobjects import fields
 from heat.common import exception
 from heat.common.i18n import _
 from heat.db import api as db_api
+from heat.objects import base as heat_base
 from heat.objects import fields as heat_fields
 from heat.objects import raw_template
 from heat.objects import stack_tag
 
 
 class Stack(
-    base.VersionedObject,
+    heat_base.HeatObject,
     base.VersionedObjectDictCompat,
     base.ComparableVersionedObject,
 ):
@@ -70,11 +71,8 @@ class Stack(
                     raw_template.RawTemplate.get_by_id(
                         context, db_stack['raw_template_id']))
             elif field == 'tags':
-                if db_stack.get(field) is not None:
-                    stack['tags'] = stack_tag.StackTagList.get(
-                        context, db_stack['id'])
-                else:
-                    stack['tags'] = None
+                stack['tags'] = stack_tag.StackTagList.from_db_object(
+                    context, db_stack.get(field))
             else:
                 stack[field] = db_stack.__dict__.get(field)
         stack._context = context
@@ -116,16 +114,20 @@ class Stack(
     @classmethod
     def get_all(cls, context, *args, **kwargs):
         db_stacks = db_api.stack_get_all(context, *args, **kwargs)
-        stacks = [cls._from_db_object(context, cls(context), db_stack)
-                  for db_stack in db_stacks]
-        return stacks
+        for db_stack in db_stacks:
+            try:
+                yield cls._from_db_object(context, cls(context), db_stack)
+            except exception.NotFound:
+                pass
 
     @classmethod
     def get_all_by_owner_id(cls, context, owner_id):
         db_stacks = db_api.stack_get_all_by_owner_id(context, owner_id)
-        stacks = [cls._from_db_object(context, cls(context), db_stack)
-                  for db_stack in db_stacks]
-        return stacks
+        for db_stack in db_stacks:
+            try:
+                yield cls._from_db_object(context, cls(context), db_stack)
+            except exception.NotFound:
+                pass
 
     @classmethod
     def count_all(cls, context, **kwargs):
@@ -194,7 +196,6 @@ class Stack(
         if db_stack is None:
             message = _('No stack exists with id "%s"') % str(self.id)
             raise exception.NotFound(message)
-        db_stack.refresh()
         return self.__class__._from_db_object(
             self._context,
             self,

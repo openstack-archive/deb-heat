@@ -81,14 +81,19 @@ class SoftwareConfigService(service.Service):
             raise ValueError(_('server_id must be specified'))
         all_sd = software_deployment_object.SoftwareDeployment.get_all(
             cnxt, server_id)
+
+        # filter out the sds with None config
+        flt_sd = six.moves.filterfalse(lambda sd: sd.config is None,
+                                       all_sd)
         # sort the configs by config name, to give the list of metadata a
         # deterministic and controllable order.
-        all_sd_s = sorted(all_sd, key=lambda sd: sd.config.name)
-        result = [api.format_software_config(sd.config) for sd in all_sd_s]
+        flt_sd_s = sorted(flt_sd, key=lambda sd: sd.config.name)
+        result = [api.format_software_config(sd.config) for sd in flt_sd_s]
         return result
 
     @oslo_db_api.wrap_db_retry(max_retries=10, retry_on_request=True)
-    def _push_metadata_software_deployments(self, cnxt, server_id, sd):
+    def _push_metadata_software_deployments(
+            self, cnxt, server_id, stack_user_project_id):
         rs = db_api.resource_get_by_physical_resource_id(cnxt, server_id)
         if not rs:
             return
@@ -112,7 +117,7 @@ class SoftwareConfigService(service.Service):
             json_md = jsonutils.dumps(md)
             requests.put(metadata_put_url, json_md)
         if metadata_queue_id:
-            project = sd.stack_user_project_id
+            project = stack_user_project_id
             token = self._get_user_token(cnxt, rs, project)
             zaqar_plugin = cnxt.clients.client_plugin('zaqar')
             zaqar = zaqar_plugin.create_for_tenant(project, token)
@@ -224,7 +229,8 @@ class SoftwareConfigService(service.Service):
             'action': action,
             'status': status,
             'status_reason': status_reason})
-        self._push_metadata_software_deployments(cnxt, server_id, sd)
+        self._push_metadata_software_deployments(
+            cnxt, server_id, stack_user_project_id)
         return api.format_software_deployment(sd)
 
     def signal_software_deployment(self, cnxt, deployment_id, details,
@@ -315,10 +321,15 @@ class SoftwareConfigService(service.Service):
         # only push metadata if this update resulted in the config_id
         # changing, since metadata is just a list of configs
         if config_id:
-            self._push_metadata_software_deployments(cnxt, sd.server_id, sd)
+            self._push_metadata_software_deployments(
+                cnxt, sd.server_id, sd.stack_user_project_id)
 
         return api.format_software_deployment(sd)
 
     def delete_software_deployment(self, cnxt, deployment_id):
+        sd = software_deployment_object.SoftwareDeployment.get_by_id(
+            cnxt, deployment_id)
         software_deployment_object.SoftwareDeployment.delete(
             cnxt, deployment_id)
+        self._push_metadata_software_deployments(
+            cnxt, sd.server_id, sd.stack_user_project_id)

@@ -47,7 +47,8 @@ class SaharaImageTest(common.HeatTestCase):
         self.client = mock.Mock()
         self.patchobject(image.SaharaImageRegistry, 'client',
                          return_value=self.client)
-        self.patchobject(glance.GlanceClientPlugin, 'get_image_id',
+        self.patchobject(glance.GlanceClientPlugin,
+                         'find_image_by_name_or_id',
                          return_value='12345')
 
     def _create_resource(self, name, snippet, stack):
@@ -104,9 +105,3 @@ class SaharaImageTest(common.HeatTestCase):
         value.to_dict.return_value = {'img': 'info'}
         self.client.images.get.return_value = value
         self.assertEqual({'img': 'info'}, img.FnGetAtt('show'))
-
-    def test_resource_mapping(self):
-        mapping = image.resource_mapping()
-        self.assertEqual(1, len(mapping))
-        self.assertEqual(image.SaharaImageRegistry,
-                         mapping['OS::Sahara::ImageRegistry'])

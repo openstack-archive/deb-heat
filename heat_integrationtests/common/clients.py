@@ -12,14 +12,49 @@
 
 import os
 
-import ceilometerclient.client
-import cinderclient.client
-import heatclient.client
-import keystoneclient.exceptions
-import keystoneclient.v2_0.client
-import neutronclient.v2_0.client
-import novaclient.client
-import swiftclient
+from ceilometerclient import client as ceilometer_client
+from cinderclient import client as cinder_client
+from heatclient import client as heat_client
+from keystoneclient.auth.identity.generic import password
+from keystoneclient import exceptions as kc_exceptions
+from keystoneclient import session
+from neutronclient.v2_0 import client as neutron_client
+from novaclient import client as nova_client
+from swiftclient import client as swift_client
+
+
+class KeystoneWrapperClient(object):
+    """Wrapper object for keystone client
+
+    This wraps keystone client, so we can encpasulate certain
+    added properties like auth_token, project_id etc.
+    """
+    def __init__(self, auth_plugin, verify=True):
+        self.auth_plugin = auth_plugin
+        self.session = session.Session(
+            auth=auth_plugin,
+            verify=verify)
+
+    @property
+    def auth_token(self):
+        return self.auth_plugin.get_token(self.session)
+
+    @property
+    def auth_ref(self):
+        return self.auth_plugin.get_access(self.session)
+
+    @property
+    def project_id(self):
+        return self.auth_plugin.get_project_id(self.session)
+
+    def get_endpoint_url(self, service_type, region=None):
+        kwargs = {
+            'service_type': service_type,
+            'endpoint_type': 'publicURL'}
+        if region:
+            kwargs.update({'attr': 'region',
+                           'filter_value': region})
+        return self.auth_ref.service_catalog.url_for(**kwargs)
 
 
 class ClientManager(object):
@@ -36,6 +71,8 @@ class ClientManager(object):
 
     def __init__(self, conf):
         self.conf = conf
+        self.v2_auth_url = self.conf.auth_url.replace('/v3', '/v2.0')
+        self.auth_version = self.conf.auth_url.split('/v')[1]
         self.identity_client = self._get_identity_client()
         self.orchestration_client = self._get_orchestration_client()
         self.compute_client = self._get_compute_client()
@@ -45,24 +82,19 @@ class ClientManager(object):
         self.metering_client = self._get_metering_client()
 
     def _get_orchestration_client(self):
-        region = self.conf.region
         endpoint = os.environ.get('HEAT_URL')
         if os.environ.get('OS_NO_CLIENT_AUTH') == 'True':
             token = None
         else:
-            keystone = self._get_identity_client()
-            token = keystone.auth_token
+            token = self.identity_client.auth_token
         try:
             if endpoint is None:
-                endpoint = keystone.service_catalog.url_for(
-                    attr='region',
-                    filter_value=region,
-                    service_type='orchestration',
-                    endpoint_type='publicURL')
-        except keystoneclient.exceptions.EndpointNotFound:
+                endpoint = self.identity_client.get_endpoint_url(
+                    'orchestration', self.conf.region)
+        except kc_exceptions.EndpointNotFound:
             return None
         else:
-            return heatclient.client.Client(
+            return heat_client.Client(
                 self.HEATCLIENT_VERSION,
                 endpoint,
                 token=token,
@@ -70,12 +102,22 @@ class ClientManager(object):
                 password=self.conf.password)
 
     def _get_identity_client(self):
-        return keystoneclient.v2_0.client.Client(
-            username=self.conf.username,
-            password=self.conf.password,
-            tenant_name=self.conf.tenant_name,
-            auth_url=self.conf.auth_url,
-            insecure=self.conf.disable_ssl_certificate_validation)
+        domain = self.conf.domain_name
+        kwargs = {
+            'username': self.conf.username,
+            'password': self.conf.password,
+            'tenant_name': self.conf.tenant_name,
+            'auth_url': self.conf.auth_url
+        }
+        # keystone v2 can't ignore domain details
+        if self.auth_version == '3':
+            kwargs.update({
+                'project_domain_name': domain,
+                'user_domain_name': domain})
+        auth = password.Password(**kwargs)
+        return KeystoneWrapperClient(
+            auth,
+            not self.conf.disable_ssl_certificate_validation)
 
     def _get_compute_client(self):
 
@@ -86,11 +128,12 @@ class ClientManager(object):
             self.conf.username,
             self.conf.password,
             self.conf.tenant_name,
-            self.conf.auth_url
+            # novaclient can not use v3 url
+            self.v2_auth_url
         )
 
         # Create our default Nova client to use in testing
-        return novaclient.client.Client(
+        return nova_client.Client(
             self.NOVACLIENT_VERSION,
             *client_args,
             service_type='compute',
@@ -101,28 +144,28 @@ class ClientManager(object):
             http_log_debug=True)
 
     def _get_network_client(self):
-        auth_url = self.conf.auth_url
         dscv = self.conf.disable_ssl_certificate_validation
 
-        return neutronclient.v2_0.client.Client(
+        return neutron_client.Client(
             username=self.conf.username,
             password=self.conf.password,
             tenant_name=self.conf.tenant_name,
             endpoint_type='publicURL',
-            auth_url=auth_url,
+            # neutronclient can not use v3 url
+            auth_url=self.v2_auth_url,
             insecure=dscv)
 
     def _get_volume_client(self):
-        auth_url = self.conf.auth_url
         region = self.conf.region
         endpoint_type = 'publicURL'
         dscv = self.conf.disable_ssl_certificate_validation
-        return cinderclient.client.Client(
+        return cinder_client.Client(
             self.CINDERCLIENT_VERSION,
             self.conf.username,
             self.conf.password,
             self.conf.tenant_name,
-            auth_url,
+            # cinderclient can not use v3 url
+            self.v2_auth_url,
             region_name=region,
             endpoint_type=endpoint_type,
             insecure=dscv,
@@ -131,7 +174,7 @@ class ClientManager(object):
     def _get_object_client(self):
         dscv = self.conf.disable_ssl_certificate_validation
         args = {
-            'auth_version': '2.0',
+            'auth_version': self.auth_version,
             'tenant_name': self.conf.tenant_name,
             'user': self.conf.username,
             'key': self.conf.password,
@@ -139,20 +182,15 @@ class ClientManager(object):
             'os_options': {'endpoint_type': 'publicURL'},
             'insecure': dscv,
         }
-        return swiftclient.client.Connection(**args)
+        return swift_client.Connection(**args)
 
     def _get_metering_client(self):
         dscv = self.conf.disable_ssl_certificate_validation
-
-        keystone = self._get_identity_client()
+        domain = self.conf.domain_name
         try:
-            endpoint = keystone.service_catalog.url_for(
-                attr='region',
-                filter_value=self.conf.region,
-                service_type='metering',
-                endpoint_type='publicURL')
-
-        except keystoneclient.exceptions.EndpointNotFound:
+            endpoint = self.identity_client.get_endpoint_url('metering',
+                                                             self.conf.region)
+        except kc_exceptions.EndpointNotFound:
             return None
         else:
             args = {
@@ -165,6 +203,12 @@ class ClientManager(object):
                 'endpoint_type': 'publicURL',
                 'service_type': 'metering',
             }
+            # ceilometerclient can't ignore domain details for
+            # v2 auth_url
+            if self.auth_version == '3':
+                args.update(
+                    {'user_domain_name': domain,
+                     'project_domain_name': domain})
 
-            return ceilometerclient.client.Client(self.CEILOMETER_VERSION,
-                                                  endpoint, **args)
+            return ceilometer_client.Client(self.CEILOMETER_VERSION,
+                                            endpoint, **args)

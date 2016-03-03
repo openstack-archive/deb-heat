@@ -23,6 +23,7 @@ from heat.common.i18n import _
 from heat.common import timeutils
 from heat.engine import attributes
 from heat.engine import constraints
+from heat.engine import function
 from heat.engine.hot import template
 from heat.engine import properties
 from heat.engine.resources import stack_resource
@@ -37,7 +38,7 @@ class ResourceGroup(stack_resource.StackResource):
     """Creates one or more identically configured nested resources.
 
     In addition to the `refs` attribute, this resource implements synthetic
-    attributes that mirror those of the resources in the group.  When
+    attributes that mirror those of the resources in the group. When
     getting an attribute from this resource, however, a list of attribute
     values for each resource in the group is returned. To get attribute values
     for a single resource in the group, synthetic attributes of the form
@@ -143,16 +144,16 @@ class ResourceGroup(stack_resource.StackResource):
             schema={
                 RESOURCE_DEF_TYPE: properties.Schema(
                     properties.Schema.STRING,
-                    _('The type of the resources in the group'),
+                    _('The type of the resources in the group.'),
                     required=True
                 ),
                 RESOURCE_DEF_PROPERTIES: properties.Schema(
                     properties.Schema.MAP,
-                    _('Property values for the resources in the group')
+                    _('Property values for the resources in the group.')
                 ),
                 RESOURCE_DEF_METADATA: properties.Schema(
                     properties.Schema.MAP,
-                    _('Supplied metadata for the resources in the group'),
+                    _('Supplied metadata for the resources in the group.'),
                     support_status=support.SupportStatus(version='5.0.0')
                 ),
 
@@ -162,7 +163,7 @@ class ResourceGroup(stack_resource.StackResource):
         ),
         REMOVAL_POLICIES: properties.Schema(
             properties.Schema.LIST,
-            _('Policies for removal of resources on update'),
+            _('Policies for removal of resources on update.'),
             schema=properties.Schema(
                 properties.Schema.MAP,
                 _('Policy to be processed when doing an update which '
@@ -177,11 +178,11 @@ class ResourceGroup(stack_resource.StackResource):
                           "(1) The resource name, as in the nested stack, "
                           "(2) The resource reference returned from "
                           "get_resource in a template, as available via "
-                          "the 'refs' attribute "
+                          "the 'refs' attribute. "
                           "Note this is destructive on update when specified; "
                           "even if the count is not being reduced, and once "
                           "a resource name is removed, it's name is never "
-                          "reused in subsequent updates"
+                          "reused in subsequent updates."
                           ),
                         default=[]
                     ),
@@ -195,12 +196,12 @@ class ResourceGroup(stack_resource.StackResource):
 
     attributes_schema = {
         REFS: attributes.Schema(
-            _("A list of resource IDs for the resources in the group"),
+            _("A list of resource IDs for the resources in the group."),
             type=attributes.Schema.LIST
         ),
         ATTR_ATTRIBUTES: attributes.Schema(
             _("A map of resource names to the specified attribute of each "
-              "individual resource.  "
+              "individual resource. "
               "Requires heat_template_version: 2014-10-16."),
             support_status=support.SupportStatus(version='2014.2'),
             type=attributes.Schema.MAP
@@ -333,7 +334,7 @@ class ResourceGroup(stack_resource.StackResource):
                                 size)
 
     def _count_black_listed(self):
-        """Return the number of current resource names that are blacklisted"""
+        """Return the number of current resource names that are blacklisted."""
         existing_members = grouputils.get_member_names(self)
         return len(self._name_blacklist() & set(existing_members))
 
@@ -408,7 +409,7 @@ class ResourceGroup(stack_resource.StackResource):
         checkers[0].start()
         return checkers
 
-    def FnGetAtt(self, key, *path):
+    def get_attribute(self, key, *path):
         if key.startswith("resource."):
             return grouputils.get_nested_attrs(self, key, False, *path)
 
@@ -437,6 +438,36 @@ class ResourceGroup(stack_resource.StackResource):
                                                                   res_def)
 
     def get_resource_def(self, include_all=False):
+        """Returns the resource definition portion of the group.
+
+        :param include_all: if False, only properties for the resource
+               definition that are not empty will be included
+        :type include_all: bool
+        :return: resource definition for the group
+        :rtype: dict
+        """
+
+        # At this stage, we don't mind if all of the parameters have values
+        # assigned. Pass in a custom resolver to the properties to not
+        # error when a parameter does not have a user entered value.
+        def ignore_param_resolve(snippet):
+            while isinstance(snippet, function.Function):
+                try:
+                    snippet = snippet.result()
+                except exception.UserParameterMissing:
+                    return None
+
+            if isinstance(snippet, collections.Mapping):
+                return dict((k, ignore_param_resolve(v))
+                            for k, v in snippet.items())
+            elif (not isinstance(snippet, six.string_types) and
+                  isinstance(snippet, collections.Iterable)):
+                return [ignore_param_resolve(v) for v in snippet]
+
+            return snippet
+
+        self.properties.resolve = ignore_param_resolve
+
         res_def = self.properties[self.RESOURCE_DEF]
         if not include_all:
             return self._clean_props(res_def)

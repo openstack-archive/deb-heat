@@ -20,6 +20,8 @@ from novaclient import client as nc
 from novaclient import exceptions as nova_exceptions
 from oslo_config import cfg
 from oslo_serialization import jsonutils as json
+from oslo_utils import encodeutils
+import requests
 import six
 
 from heat.common import exception
@@ -39,7 +41,7 @@ class NovaClientPluginTestCase(common.HeatTestCase):
         self.nova_plugin._client = self.nova_client
 
 
-class NovaClientPluginTests(NovaClientPluginTestCase):
+class NovaClientPluginTest(NovaClientPluginTestCase):
     """Basic tests for :module:'heat.engine.clients.os.nova'."""
 
     def test_create(self):
@@ -214,8 +216,46 @@ class NovaClientPluginTests(NovaClientPluginTestCase):
         observed = self.nova_plugin.get_status(server)
         self.assertEqual('ACTIVE', observed)
 
+    def _absolute_limits(self):
+        max_personality = self.m.CreateMockAnything()
+        max_personality.name = 'maxPersonality'
+        max_personality.value = 5
+        max_personality_size = self.m.CreateMockAnything()
+        max_personality_size.name = 'maxPersonalitySize'
+        max_personality_size.value = 10240
+        max_server_meta = self.m.CreateMockAnything()
+        max_server_meta.name = 'maxServerMeta'
+        max_server_meta.value = 3
+        yield max_personality
+        yield max_personality_size
+        yield max_server_meta
 
-class NovaClientPluginRefreshServerTests(NovaClientPluginTestCase):
+    def test_absolute_limits_success(self):
+        limits = mock.Mock()
+        limits.absolute = self._absolute_limits()
+        self.nova_client.limits.get.return_value = limits
+        self.nova_plugin.absolute_limits()
+
+    def test_absolute_limits_retry(self):
+        limits = mock.Mock()
+        limits.absolute = self._absolute_limits()
+        self.nova_client.limits.get.side_effect = [
+            requests.ConnectionError, requests.ConnectionError,
+            limits]
+        self.nova_plugin.absolute_limits()
+        self.assertEqual(3, self.nova_client.limits.get.call_count)
+
+    def test_absolute_limits_failure(self):
+        limits = mock.Mock()
+        limits.absolute = self._absolute_limits()
+        self.nova_client.limits.get.side_effect = [
+            requests.ConnectionError, requests.ConnectionError,
+            requests.ConnectionError]
+        self.assertRaises(requests.ConnectionError,
+                          self.nova_plugin.absolute_limits)
+
+
+class NovaClientPluginRefreshServerTest(NovaClientPluginTestCase):
     msg = ("ClientException: The server has either erred or is "
            "incapable of performing the requested operation.")
 
@@ -248,7 +288,7 @@ class NovaClientPluginRefreshServerTests(NovaClientPluginTestCase):
         server.get.assert_called_once_with()
 
 
-class NovaClientPluginFetchServerTests(NovaClientPluginTestCase):
+class NovaClientPluginFetchServerTest(NovaClientPluginTestCase):
 
     server = mock.Mock()
     # set explicitly as id and name has internal meaning in mock.Mock
@@ -288,7 +328,7 @@ class NovaClientPluginFetchServerTests(NovaClientPluginTestCase):
         self.nova_client.servers.get.assert_called_once_with(self.server.id)
 
 
-class NovaClientPluginCheckActiveTests(NovaClientPluginTestCase):
+class NovaClientPluginCheckActiveTest(NovaClientPluginTestCase):
 
     scenarios = [
         ('active', dict(
@@ -306,7 +346,7 @@ class NovaClientPluginCheckActiveTests(NovaClientPluginTestCase):
     ]
 
     def setUp(self):
-        super(NovaClientPluginCheckActiveTests, self).setUp()
+        super(NovaClientPluginCheckActiveTest, self).setUp()
         self.server = mock.Mock()
         self.server.id = '1234'
         self.server.status = self.status
@@ -347,7 +387,7 @@ class NovaClientPluginCheckActiveTests(NovaClientPluginTestCase):
         self.assertEqual(0, self.r_mock.call_count)
 
 
-class NovaClientPluginUserdataTests(NovaClientPluginTestCase):
+class NovaClientPluginUserdataTest(NovaClientPluginTestCase):
 
     def test_build_userdata(self):
         """Tests the build_userdata function."""
@@ -392,7 +432,7 @@ class NovaClientPluginUserdataTests(NovaClientPluginTestCase):
         self.assertIn('ec2-user', data)
 
 
-class NovaClientPluginMetadataTests(NovaClientPluginTestCase):
+class NovaClientPluginMetadataTest(NovaClientPluginTestCase):
 
     def test_serialize_string(self):
         original = {'test_key': 'simple string value'}
@@ -624,7 +664,7 @@ class ConsoleUrlsTest(common.HeatTestCase):
 
         urls = self.nova_plugin.get_console_urls(self.server)
         e = self.assertRaises(exc, urls.__getitem__, self.console_type)
-        self.assertIn('spam', e.message)
+        self.assertIn('spam', encodeutils.exception_to_unicode(e))
         self.console_method.assert_called_once_with(self.console_type)
 
     def test_get_console_urls_reraises_other(self):
@@ -637,7 +677,7 @@ class ConsoleUrlsTest(common.HeatTestCase):
         self.console_method.assert_called_once_with(self.console_type)
 
 
-class NovaClientPluginExtensionsTests(NovaClientPluginTestCase):
+class NovaClientPluginExtensionsTest(NovaClientPluginTestCase):
     """Tests for extensions in novaclient."""
 
     def test_has_no_extensions(self):

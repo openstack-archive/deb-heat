@@ -75,9 +75,9 @@ outputs:
 
         if not self.temp_def:
             # remove the default from the parameter in the nested template.
-            ntempl = yaml.load(self.nested_template)
+            ntempl = yaml.safe_load(self.nested_template)
             del ntempl['parameters']['length']['default']
-            nested_template = yaml.dump(ntempl)
+            nested_template = yaml.safe_dump(ntempl)
         else:
             nested_template = self.nested_template
 

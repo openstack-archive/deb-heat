@@ -76,15 +76,15 @@ class CloudServersTest(common.HeatTestCase):
         resource._register_class("OS::Nova::Server",
                                  cloud_server.CloudServer)
 
-    def _mock_get_image_id_success(self, imageId):
+    def _mock_find_image_by_name_or_id_success(self, imageId):
         self.mock_get_image = mock.Mock()
         self.ctx.clients.client_plugin(
-            'glance').get_image_id = self.mock_get_image
+            'glance').find_image_by_name_or_id = self.mock_get_image
         self.mock_get_image.return_value = imageId
 
     def _stub_server_validate(self, server, imageId_input, image_id):
         # stub glance image validate
-        self._mock_get_image_id_success(image_id)
+        self._mock_find_image_by_name_or_id_success(image_id)
 
     def _setup_test_stack(self, stack_name):
         t = template_format.parse(wp_template)
@@ -456,7 +456,8 @@ class CloudServersTest(common.HeatTestCase):
                          'Unknown Rackspace Cloud automation status: FOO',
                          six.text_type(exc))
 
-    def _test_server_config_drive(self, user_data, config_drive, result):
+    def _test_server_config_drive(self, user_data, config_drive, result,
+                                  ud_format='RAW'):
         return_server = self.fc.servers.list()[1]
         return_server.metadata = {'rax_service_level_automation': 'Complete'}
         stack_name = 'no_user_data'
@@ -464,15 +465,18 @@ class CloudServersTest(common.HeatTestCase):
         properties = tmpl.t['Resources']['WebServer']['Properties']
         properties['user_data'] = user_data
         properties['config_drive'] = config_drive
+        properties['user_data_format'] = ud_format
+        properties['software_config_transport'] = "POLL_TEMP_URL"
         resource_defns = tmpl.resource_definitions(stack)
         server = cloud_server.CloudServer('WebServer',
                                           resource_defns['WebServer'], stack)
         server.metadata = {'rax_service_level_automation': 'Complete'}
         self.patchobject(server, 'store_external_ports')
+        self.patchobject(server, "_populate_deployments_metadata")
         mock_servers_create = mock.Mock(return_value=return_server)
         self.fc.servers.create = mock_servers_create
         image_id = mock.ANY
-        self._mock_get_image_id_success(image_id)
+        self._mock_find_image_by_name_or_id_success(image_id)
         self.m.StubOutWithMock(self.fc.servers, 'get')
         self.fc.servers.get(return_server.id).MultipleTimes(
         ).AndReturn(return_server)
@@ -508,3 +512,7 @@ class CloudServersTest(common.HeatTestCase):
 
     def test_server_no_user_data_no_config_drive(self):
         self._test_server_config_drive(None, False, False)
+
+    def test_server_no_user_data_software_config(self):
+        self._test_server_config_drive(None, False, True,
+                                       ud_format="SOFTWARE_CONFIG")

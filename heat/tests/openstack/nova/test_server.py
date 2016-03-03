@@ -21,6 +21,7 @@ from neutronclient.v2_0 import client as neutronclient
 from novaclient import exceptions as nova_exceptions
 from oslo_serialization import jsonutils
 from oslo_utils import uuidutils
+import requests
 import six
 from six.moves.urllib import parse as urlparse
 
@@ -28,6 +29,7 @@ from heat.common import exception
 from heat.common.i18n import _
 from heat.common import template_format
 from heat.engine.clients.os import glance
+from heat.engine.clients.os import heat_plugin
 from heat.engine.clients.os import neutron
 from heat.engine.clients.os import nova
 from heat.engine.clients.os import swift
@@ -136,7 +138,7 @@ resources:
     type: OS::Nova::Server
     properties:
       image: F17-x86_64-gold
-      flavor: m1.small
+      flavor: m1.large
       personality: { /tmp/test: { get_attr: [swconfig, config]}}
 """
 
@@ -147,6 +149,8 @@ class ServersTest(common.HeatTestCase):
         self.fc = fakes_nova.FakeClient()
         self.limits = self.m.CreateMockAnything()
         self.limits.absolute = self._limits_absolute()
+        self.mock_flavor = mock.Mock(ram=4, disk=4)
+        self.mock_image = mock.Mock(min_ram=1, min_disk=1, status='active')
 
     def _limits_absolute(self):
         max_personality = self.m.CreateMockAnything()
@@ -230,6 +234,7 @@ class ServersTest(common.HeatTestCase):
         self.patchobject(server, 'store_external_ports')
 
         self._mock_get_image_id_success(image_id or 'CentOS 5.2', 1)
+        self.stub_FlavorConstraint_validate()
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
@@ -281,13 +286,16 @@ class ServersTest(common.HeatTestCase):
         return fake_interface(port, mac, ip)
 
     def _mock_get_image_id_success(self, imageId_input, imageId):
-        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image_id')
-        glance.GlanceClientPlugin.get_image_id(
+        self.m.StubOutWithMock(glance.GlanceClientPlugin,
+                               'find_image_by_name_or_id')
+        glance.GlanceClientPlugin.find_image_by_name_or_id(
             imageId_input).MultipleTimes().AndReturn(imageId)
 
     def _mock_get_image_id_fail(self, image_id, exp):
-        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image_id')
-        glance.GlanceClientPlugin.get_image_id(image_id).AndRaise(exp)
+        self.m.StubOutWithMock(glance.GlanceClientPlugin,
+                               'find_image_by_name_or_id')
+        glance.GlanceClientPlugin.find_image_by_name_or_id(
+            image_id).AndRaise(exp)
 
     def _mock_get_keypair_success(self, keypair_input, keypair):
         self.m.StubOutWithMock(nova.NovaClientPlugin, 'get_keypair')
@@ -299,6 +307,15 @@ class ServersTest(common.HeatTestCase):
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
         self.stub_VolumeConstraint_validate()
+
+    def _mock_validate_flavor_image_success(self, image='F17-x86_64-gold',
+                                            flavor='m1.large'):
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image')
+        glance.GlanceClientPlugin.get_image(
+            image).AndReturn(self.mock_image)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, 'get_flavor')
+        nova.NovaClientPlugin.get_flavor(flavor).MultipleTimes().AndReturn(
+            self.mock_flavor)
 
     def test_subnet_dependency(self):
         template, stack = self._setup_test_stack('subnet-test',
@@ -360,8 +377,6 @@ class ServersTest(common.HeatTestCase):
                          server.FnGetAtt('addresses')['private'][0]['addr'])
         self.assertEqual(private_ip,
                          server.FnGetAtt('networks')['private'][0])
-        self.assertIn(
-            server.FnGetAtt('first_address'), (private_ip, public_ip))
 
         self.assertEqual(return_server._info, server.FnGetAtt('show'))
         self.assertEqual('sample-server2', server.FnGetAtt('instance_name'))
@@ -447,8 +462,6 @@ class ServersTest(common.HeatTestCase):
                          server.FnGetAtt('addresses')['private'][0]['addr'])
         self.assertEqual(private_ip,
                          server.FnGetAtt('networks')['private'][0])
-        self.assertIn(
-            server.FnGetAtt('first_address'), (private_ip, public_ip))
 
         self.assertEqual(server_name, server.FnGetAtt('name'))
 
@@ -465,9 +478,7 @@ class ServersTest(common.HeatTestCase):
                                 resource_defns['WebServer'], stack)
 
         self._mock_get_image_id_fail('Slackware',
-                                     exception.EntityNotFound(
-                                         entity='Image',
-                                         name='Slackware'))
+                                     glance.exceptions.NotFound())
         self.stub_FlavorConstraint_validate()
         self.stub_KeypairConstraint_validate()
         self.m.ReplayAll()
@@ -477,7 +488,7 @@ class ServersTest(common.HeatTestCase):
         self.assertEqual(
             "StackValidationFailed: resources.WebServer: Property error: "
             "WebServer.Properties.image: Error validating value 'Slackware': "
-            "The Image (Slackware) could not be found.",
+            "Not Found (HTTP 404)",
             six.text_type(error))
 
         self.m.VerifyAll()
@@ -493,8 +504,7 @@ class ServersTest(common.HeatTestCase):
                                 resource_defns['WebServer'], stack)
 
         self._mock_get_image_id_fail('CentOS 5.2',
-                                     exception.PhysicalResourceNameAmbiguity(
-                                         name='CentOS 5.2'))
+                                     glance.exceptions.NoUniqueMatch())
         self.stub_FlavorConstraint_validate()
         self.stub_KeypairConstraint_validate()
         self.m.ReplayAll()
@@ -502,9 +512,9 @@ class ServersTest(common.HeatTestCase):
         create = scheduler.TaskRunner(server.create)
         error = self.assertRaises(exception.ResourceFailure, create)
         self.assertEqual(
-            'StackValidationFailed: resources.WebServer: Property error: '
-            'WebServer.Properties.image: Multiple physical '
-            'resources were found with name (CentOS 5.2).',
+            "StackValidationFailed: resources.WebServer: Property error: "
+            "WebServer.Properties.image: "
+            "Error validating value 'CentOS 5.2': ",
             six.text_type(error))
 
         self.m.VerifyAll()
@@ -520,8 +530,7 @@ class ServersTest(common.HeatTestCase):
                                 resource_defns['WebServer'], stack)
 
         self._mock_get_image_id_fail('1',
-                                     exception.EntityNotFound(
-                                         entity='Image', name='1'))
+                                     glance.exceptions.NotFound())
         self.stub_KeypairConstraint_validate()
         self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
@@ -531,7 +540,7 @@ class ServersTest(common.HeatTestCase):
         self.assertEqual(
             "StackValidationFailed: resources.WebServer: Property error: "
             "WebServer.Properties.image: Error validating value '1': "
-            "The Image (1) could not be found.",
+            "Not Found (HTTP 404)",
             six.text_type(error))
 
         self.m.VerifyAll()
@@ -747,35 +756,41 @@ class ServersTest(common.HeatTestCase):
         else:
             return server
 
-    def test_server_create_software_config(self):
+    @mock.patch.object(heat_plugin.HeatClientPlugin, 'url_for')
+    def test_server_create_software_config(self, fake_url):
+        fake_url.return_value = 'the-cfn-url'
         server = self._server_create_software_config()
 
         self.assertEqual({
             'os-collect-config': {
                 'cfn': {
                     'access_key_id': '4567',
-                    'metadata_url': '/v1/',
+                    'metadata_url': 'the-cfn-url/v1/',
                     'path': 'WebServer.Metadata',
                     'secret_access_key': '8901',
                     'stack_name': 'software_config_s'
-                }
+                },
+                'collectors': ['ec2', 'cfn', 'local']
             },
             'deployments': []
         }, server.metadata_get())
 
-    def test_server_create_software_config_metadata(self):
+    @mock.patch.object(heat_plugin.HeatClientPlugin, 'url_for')
+    def test_server_create_software_config_metadata(self, fake_url):
         md = {'os-collect-config': {'polling_interval': 10}}
+        fake_url.return_value = 'the-cfn-url'
         server = self._server_create_software_config(md=md)
 
         self.assertEqual({
             'os-collect-config': {
                 'cfn': {
                     'access_key_id': '4567',
-                    'metadata_url': '/v1/',
+                    'metadata_url': 'the-cfn-url/v1/',
                     'path': 'WebServer.Metadata',
                     'secret_access_key': '8901',
                     'stack_name': 'software_config_s'
                 },
+                'collectors': ['ec2', 'cfn', 'local'],
                 'polling_interval': 10
             },
             'deployments': []
@@ -837,7 +852,8 @@ class ServersTest(common.HeatTestCase):
                     'resource_name': 'WebServer',
                     'stack_id': 'software_config_s/%s' % stack.id,
                     'user_id': '1234'
-                }
+                },
+                'collectors': ['ec2', 'heat', 'local']
             },
             'deployments': []
         }, server.metadata_get())
@@ -856,6 +872,7 @@ class ServersTest(common.HeatTestCase):
                     'stack_id': 'software_config_s/%s' % stack.id,
                     'user_id': '1234'
                 },
+                'collectors': ['ec2', 'heat', 'local'],
                 'polling_interval': 10
             },
             'deployments': []
@@ -917,6 +934,8 @@ class ServersTest(common.HeatTestCase):
             server.physical_resource_name(), object_name)
         self.assertEqual(test_path, urlparse.urlparse(metadata_put_url).path)
         self.assertEqual(test_path, urlparse.urlparse(metadata_url).path)
+        sc.put_object.assert_called_once_with(
+            container_name, object_name, jsonutils.dumps(md))
 
         sc.head_container.return_value = {'x-container-object-count': '0'}
         server._delete_temp_url()
@@ -928,28 +947,30 @@ class ServersTest(common.HeatTestCase):
         return metadata_url, server
 
     def test_server_create_software_config_poll_temp_url(self):
-        metadata_url, server = \
-            self._server_create_software_config_poll_temp_url()
-
-        self.assertEqual({
-            'os-collect-config': {
-                'request': {
-                    'metadata_url': metadata_url
-                }
-            },
-            'deployments': []
-        }, server.metadata_get())
-
-    def test_server_create_software_config_poll_temp_url_metadata(self):
-        md = {'os-collect-config': {'polling_interval': 10}}
-        metadata_url, server = \
-            self._server_create_software_config_poll_temp_url(md=md)
+        metadata_url, server = (
+            self._server_create_software_config_poll_temp_url())
 
         self.assertEqual({
             'os-collect-config': {
                 'request': {
                     'metadata_url': metadata_url
                 },
+                'collectors': ['ec2', 'request', 'local']
+            },
+            'deployments': []
+        }, server.metadata_get())
+
+    def test_server_create_software_config_poll_temp_url_metadata(self):
+        md = {'os-collect-config': {'polling_interval': 10}}
+        metadata_url, server = (
+            self._server_create_software_config_poll_temp_url(md=md))
+
+        self.assertEqual({
+            'os-collect-config': {
+                'request': {
+                    'metadata_url': metadata_url
+                },
+                'collectors': ['ec2', 'request', 'local'],
                 'polling_interval': 10
             },
             'deployments': []
@@ -1025,7 +1046,8 @@ class ServersTest(common.HeatTestCase):
                     'auth_url': 'http://server.test:5000/v2.0',
                     'project_id': '8888',
                     'queue_id': queue_id
-                }
+                },
+                'collectors': ['ec2', 'zaqar', 'local']
             },
             'deployments': []
         }, server.metadata_get())
@@ -1042,6 +1064,7 @@ class ServersTest(common.HeatTestCase):
                     'project_id': '8888',
                     'queue_id': queue_id
                 },
+                'collectors': ['ec2', 'zaqar', 'local'],
                 'polling_interval': 10
             },
             'deployments': []
@@ -1173,6 +1196,8 @@ class ServersTest(common.HeatTestCase):
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('1', 1)
 
+        self._mock_validate_flavor_image_success(image='1')
+
         self.m.ReplayAll()
 
         self.assertIsNone(server.validate())
@@ -1189,6 +1214,7 @@ class ServersTest(common.HeatTestCase):
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
+
         self.stub_VolumeConstraint_validate()
         self.m.ReplayAll()
 
@@ -1252,6 +1278,7 @@ class ServersTest(common.HeatTestCase):
                                 resource_defns['WebServer'], stack)
         self.stub_ImageConstraint_validate()
         self.stub_FlavorConstraint_validate()
+        self._mock_validate_flavor_image_success()
 
         self.m.ReplayAll()
 
@@ -1275,6 +1302,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self.stub_ImageConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         error = self.assertRaises(exception.StackValidationFailed,
@@ -1300,6 +1328,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self.stub_ImageConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         error = self.assertRaises(exception.StackValidationFailed,
@@ -1340,6 +1369,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
         self.stub_NetworkConstraint_validate()
         self.m.ReplayAll()
 
@@ -1360,13 +1390,14 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
         self.stub_NetworkConstraint_validate()
         self.m.ReplayAll()
 
         ex = self.assertRaises(exception.StackValidationFailed,
                                server.validate)
-        self.assertIn(_('One of the properties "network", "port", "uuid" or '
-                        '"subnet" should be set for the specified network of '
+        self.assertIn(_('One of the properties "network", "port" or "subnet" '
+                        'should be set for the specified network of '
                         'server "%s".') % server.name,
                       six.text_type(ex))
         self.m.VerifyAll()
@@ -1384,12 +1415,42 @@ class ServersTest(common.HeatTestCase):
 
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
-        self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self.stub_ImageConstraint_validate()
+        self._mock_validate_flavor_image_success()
         self.stub_NetworkConstraint_validate()
         self.stub_PortConstraint_validate()
         self.m.ReplayAll()
 
-        self.assertIsNone(server.validate())
+        error = self.assertRaises(exception.ResourcePropertyConflict,
+                                  server.validate)
+        self.assertEqual("Cannot define the following properties at the same "
+                         "time: networks/fixed_ip, networks/port.",
+                         six.text_type(error))
+        self.m.VerifyAll()
+
+    def test_server_validate_with_port_not_using_neutron(self):
+        stack_name = 'with_port_in_nova_network'
+        (tmpl, stack) = self._setup_test_stack(stack_name)
+        tmpl['Resources']['WebServer']['Properties']['networks'] = (
+            [{'port': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}])
+
+        resource_defns = tmpl.resource_definitions(stack)
+        server = servers.Server('validate_port_in_nova_network',
+                                resource_defns['WebServer'], stack)
+
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
+        self._mock_validate_flavor_image_success()
+        self.stub_ImageConstraint_validate()
+        self.stub_NetworkConstraint_validate()
+        self.stub_PortConstraint_validate()
+        self.patchobject(server, 'is_using_neutron', return_value=False)
+        self.m.ReplayAll()
+
+        error = self.assertRaises(exception.StackValidationFailed,
+                                  server.validate)
+        self.assertEqual('Property "port" is supported only for Neutron.',
+                         six.text_type(error))
         self.m.VerifyAll()
 
     def test_server_validate_with_uuid_fixed_ip(self):
@@ -1406,6 +1467,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
         self.stub_NetworkConstraint_validate()
 
         self.m.ReplayAll()
@@ -1427,6 +1489,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
         self.stub_NetworkConstraint_validate()
 
         self.m.ReplayAll()
@@ -1453,6 +1516,7 @@ class ServersTest(common.HeatTestCase):
         nova.NovaClientPlugin._create().AndReturn(self.fc)
 
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
         self.stub_PortConstraint_validate()
         self.m.ReplayAll()
 
@@ -1599,7 +1663,9 @@ class ServersTest(common.HeatTestCase):
         self.assertEqual({'test': 456}, server.metadata_get())
         self.m.VerifyAll()
 
-    def test_server_update_metadata_software_config(self):
+    @mock.patch.object(heat_plugin.HeatClientPlugin, 'url_for')
+    def test_server_update_metadata_software_config(self, fake_url):
+        fake_url.return_value = 'the-cfn-url'
         server, ud_tmpl = self._server_create_software_config(
             stack_name='update_meta_sc', ret_tmpl=True)
 
@@ -1607,11 +1673,12 @@ class ServersTest(common.HeatTestCase):
             'os-collect-config': {
                 'cfn': {
                     'access_key_id': '4567',
-                    'metadata_url': '/v1/',
+                    'metadata_url': 'the-cfn-url/v1/',
                     'path': 'WebServer.Metadata',
                     'secret_access_key': '8901',
                     'stack_name': 'update_meta_sc'
-                }
+                },
+                'collectors': ['ec2', 'cfn', 'local']
             },
             'deployments': []}
         self.assertEqual(expected_md, server.metadata_get())
@@ -1630,8 +1697,10 @@ class ServersTest(common.HeatTestCase):
         self.assertEqual(expected_md, server.metadata_get())
         self.m.VerifyAll()
 
-    def test_server_update_metadata_software_config_merge(self):
+    @mock.patch.object(heat_plugin.HeatClientPlugin, 'url_for')
+    def test_server_update_metadata_software_config_merge(self, fake_url):
         md = {'os-collect-config': {'polling_interval': 10}}
+        fake_url.return_value = 'the-cfn-url'
         server, ud_tmpl = self._server_create_software_config(
             stack_name='update_meta_sc', ret_tmpl=True,
             md=md)
@@ -1640,11 +1709,12 @@ class ServersTest(common.HeatTestCase):
             'os-collect-config': {
                 'cfn': {
                     'access_key_id': '4567',
-                    'metadata_url': '/v1/',
+                    'metadata_url': 'the-cfn-url/v1/',
                     'path': 'WebServer.Metadata',
                     'secret_access_key': '8901',
                     'stack_name': 'update_meta_sc'
                 },
+                'collectors': ['ec2', 'cfn', 'local'],
                 'polling_interval': 10
             },
             'deployments': []}
@@ -1664,8 +1734,10 @@ class ServersTest(common.HeatTestCase):
         self.assertEqual(expected_md, server.metadata_get())
         self.m.VerifyAll()
 
-    def test_server_update_software_config_transport(self):
+    @mock.patch.object(heat_plugin.HeatClientPlugin, 'url_for')
+    def test_server_update_software_config_transport(self, fake_url):
         md = {'os-collect-config': {'polling_interval': 10}}
+        fake_url.return_value = 'the-cfn-url'
         server = self._server_create_software_config(
             stack_name='update_meta_sc', md=md)
 
@@ -1673,11 +1745,12 @@ class ServersTest(common.HeatTestCase):
             'os-collect-config': {
                 'cfn': {
                     'access_key_id': '4567',
-                    'metadata_url': '/v1/',
+                    'metadata_url': 'the-cfn-url/v1/',
                     'path': 'WebServer.Metadata',
                     'secret_access_key': '8901',
                     'stack_name': 'update_meta_sc'
                 },
+                'collectors': ['ec2', 'cfn', 'local'],
                 'polling_interval': 10
             },
             'deployments': []}
@@ -1724,6 +1797,7 @@ class ServersTest(common.HeatTestCase):
                 'request': {
                     'metadata_url': 'the_url',
                 },
+                'collectors': ['ec2', 'request', 'local'],
                 'polling_interval': 10
             },
             'deployments': []}
@@ -2492,17 +2566,19 @@ class ServersTest(common.HeatTestCase):
                           {'v4-fixed-ip': '192.0.2.0', 'net-id': None}],
                          server._build_nics([{'port': 'aaaabbbb'},
                                              {'fixed_ip': '192.0.2.0'}]))
-
+        self.assertEqual([{'port-id': 'aaaabbbb', 'net-id': None},
+                          {'port-id': 'aaaabbbb', 'net-id': None}],
+                         server._build_nics([{'port': 'aaaabbbb',
+                                              'fixed_ip': '192.0.2.0'},
+                                             {'port': 'aaaabbbb',
+                                              'fixed_ip': '2002::2'}]))
         self.assertEqual([{'port-id': 'aaaabbbb', 'net-id': None},
                           {'v6-fixed-ip': '2002::2', 'net-id': None}],
                          server._build_nics([{'port': 'aaaabbbb'},
                                              {'fixed_ip': '2002::2'}]))
-        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
-                         return_value='1234abcd')
-        self.assertEqual([{'net-id': '1234abcd'}],
-                         server._build_nics([{'uuid': '1234abcd'}]))
 
-        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id',
                          return_value='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
         self.assertEqual([{'net-id': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}],
                          server._build_nics(
@@ -2541,7 +2617,6 @@ class ServersTest(common.HeatTestCase):
 
         self.assertEqual({'empty_net': []}, server.FnGetAtt('addresses'))
         self.assertEqual({'empty_net': []}, server.FnGetAtt('networks'))
-        self.assertEqual('', server.FnGetAtt('first_address'))
         self.m.VerifyAll()
 
     def test_build_block_device_mapping(self):
@@ -2579,10 +2654,12 @@ class ServersTest(common.HeatTestCase):
                 'volume_size': 10}]
         wsp = tmpl.t['Resources']['WebServer']['Properties']
         wsp['block_device_mapping'] = bdm
+
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('server_create_image_err',
                                 resource_defns['WebServer'], stack)
 
+        self._mock_validate_flavor_image_success()
         self._server_validate_mock(server)
         self.m.ReplayAll()
 
@@ -2600,6 +2677,7 @@ class ServersTest(common.HeatTestCase):
         server = servers.Server('server_create_image_err',
                                 resource_defns['WebServer'], stack)
 
+        self._mock_validate_flavor_image_success()
         self._server_validate_mock(server)
 
         self.m.ReplayAll()
@@ -2644,6 +2722,7 @@ class ServersTest(common.HeatTestCase):
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
         self.stub_VolumeConstraint_validate()
         self.stub_SnapshotConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         self.assertRaises(exception.ResourcePropertyConflict, server.validate)
@@ -2663,6 +2742,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         ex = self.assertRaises(exception.StackValidationFailed,
@@ -2680,6 +2760,7 @@ class ServersTest(common.HeatTestCase):
                 'volume_size': '10'}]
         wsp = tmpl.t['Resources']['WebServer']['Properties']
         wsp['block_device_mapping'] = bdm
+
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('server_create_image_err',
                                 resource_defns['WebServer'], stack)
@@ -2687,6 +2768,8 @@ class ServersTest(common.HeatTestCase):
         self.stub_VolumeConstraint_validate()
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
+
         self.m.ReplayAll()
 
         self.assertIsNone(server.validate())
@@ -2706,6 +2789,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self.stub_VolumeConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         ex = self.assertRaises(exception.StackValidationFailed,
@@ -2714,6 +2798,86 @@ class ServersTest(common.HeatTestCase):
                'for instance %s' % server.name)
         self.assertEqual(msg, six.text_type(ex))
 
+        self.m.VerifyAll()
+
+    def test_validate_invalid_image_status(self):
+        stack_name = 'test_stack'
+        tmpl, stack = self._setup_test_stack(stack_name)
+
+        resource_defns = tmpl.resource_definitions(stack)
+        server = servers.Server('server_inactive_image',
+                                resource_defns['WebServer'], stack)
+
+        self._server_validate_mock(server)
+        image = tmpl['Resources']['WebServer']['Properties']['image']
+        mock_image = mock.Mock(min_ram=2, status='sdfsdf')
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image')
+        glance.GlanceClientPlugin.get_image(
+            image).AndReturn(mock_image)
+        self.stub_FlavorConstraint_validate()
+
+        self.m.ReplayAll()
+        error = self.assertRaises(exception.StackValidationFailed,
+                                  server.validate)
+        self.assertEqual(
+            'Image status is required to be active not sdfsdf.',
+            six.text_type(error))
+        self.m.VerifyAll()
+
+    def test_validate_insufficient_ram_flavor(self):
+        stack_name = 'test_stack'
+        tmpl, stack = self._setup_test_stack(stack_name)
+
+        resource_defns = tmpl.resource_definitions(stack)
+        server = servers.Server('server_insufficient_ram_flavor',
+                                resource_defns['WebServer'], stack)
+
+        self._server_validate_mock(server)
+        image = tmpl['Resources']['WebServer']['Properties']['image']
+        flavor = tmpl['Resources']['WebServer']['Properties']['flavor']
+        mock_image = mock.Mock(min_ram=100, status='active')
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image')
+        glance.GlanceClientPlugin.get_image(
+            image).AndReturn(mock_image)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, 'get_flavor')
+        nova.NovaClientPlugin.get_flavor(flavor).MultipleTimes().AndReturn(
+            self.mock_flavor)
+
+        self.m.ReplayAll()
+        error = self.assertRaises(exception.StackValidationFailed,
+                                  server.validate)
+        self.assertEqual(
+            'Image F17-x86_64-gold requires 100 minimum ram. Flavor m1.large '
+            'has only 4.',
+            six.text_type(error))
+        self.m.VerifyAll()
+
+    def test_validate_insufficient_disk_flavor(self):
+        stack_name = 'test_stack'
+        tmpl, stack = self._setup_test_stack(stack_name)
+
+        resource_defns = tmpl.resource_definitions(stack)
+        server = servers.Server('server_insufficient_disk_flavor',
+                                resource_defns['WebServer'], stack)
+
+        self._server_validate_mock(server)
+        image = tmpl['Resources']['WebServer']['Properties']['image']
+        flavor = tmpl['Resources']['WebServer']['Properties']['flavor']
+        mock_image = mock.Mock(min_ram=1, status='active', min_disk=100)
+        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image')
+        glance.GlanceClientPlugin.get_image(
+            image).AndReturn(mock_image)
+        self.m.StubOutWithMock(nova.NovaClientPlugin, 'get_flavor')
+        nova.NovaClientPlugin.get_flavor(flavor).MultipleTimes().AndReturn(
+            self.mock_flavor)
+
+        self.m.ReplayAll()
+        error = self.assertRaises(exception.StackValidationFailed,
+                                  server.validate)
+        self.assertEqual(
+            'Image F17-x86_64-gold requires 100 GB minimum disk space. '
+            'Flavor m1.large has only 4 GB.',
+            six.text_type(error))
         self.m.VerifyAll()
 
     def test_build_block_device_mapping_v2(self):
@@ -2773,6 +2937,7 @@ class ServersTest(common.HeatTestCase):
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
         self.stub_VolumeConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         exc = self.assertRaises(exception.ResourcePropertyConflict,
@@ -2797,6 +2962,7 @@ class ServersTest(common.HeatTestCase):
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
         self.stub_VolumeConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.stub_SnapshotConstraint_validate()
         self.m.ReplayAll()
 
@@ -2816,6 +2982,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         exc = self.assertRaises(exception.StackValidationFailed,
@@ -2833,13 +3000,13 @@ class ServersTest(common.HeatTestCase):
         bdm_v2 = [{'volume_id': '1'}]
         wsp = tmpl.t['Resources']['WebServer']['Properties']
         wsp['block_device_mapping_v2'] = bdm_v2
+
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('server_create_image_err',
                                 resource_defns['WebServer'], stack)
-        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
-        nova.NovaClientPlugin._create().AndReturn(self.fc)
-        self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
-        self.stub_VolumeConstraint_validate()
+
+        self._mock_validate_flavor_image_success()
+        self._server_validate_mock(server)
         self.m.ReplayAll()
 
         self.assertIsNone(server.validate())
@@ -2860,6 +3027,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self.stub_VolumeConstraint_validate()
+        self.stub_FlavorConstraint_validate()
         self.m.ReplayAll()
 
         exc = self.assertRaises(exception.StackValidationFailed,
@@ -2878,6 +3046,7 @@ class ServersTest(common.HeatTestCase):
                                                                       'b': 2,
                                                                       'c': 3,
                                                                       'd': 4}
+
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('server_create_image_err',
                                 resource_defns['WebServer'], stack)
@@ -2888,6 +3057,8 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
+
         self.m.ReplayAll()
 
         ex = self.assertRaises(exception.StackValidationFailed,
@@ -2903,6 +3074,7 @@ class ServersTest(common.HeatTestCase):
         tmpl.t['Resources']['WebServer']['Properties']['metadata'] = {'a': 1,
                                                                       'b': 2,
                                                                       'c': 3}
+
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('server_create_image_err',
                                 resource_defns['WebServer'], stack)
@@ -2913,6 +3085,8 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
+
         self.m.ReplayAll()
         self.assertIsNone(server.validate())
         self.m.VerifyAll()
@@ -2938,6 +3112,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
         self.m.ReplayAll()
 
         exc = self.assertRaises(exception.StackValidationFailed,
@@ -2966,6 +3141,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
         self.m.ReplayAll()
 
         self.assertIsNone(server.validate())
@@ -2987,6 +3163,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
         self.m.ReplayAll()
 
         self.assertIsNone(server.validate())
@@ -3008,6 +3185,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
         self.m.ReplayAll()
 
         exc = self.assertRaises(exception.StackValidationFailed,
@@ -3030,6 +3208,7 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
         self.m.ReplayAll()
 
         self.assertIsNone(server.validate())
@@ -3110,9 +3289,9 @@ class ServersTest(common.HeatTestCase):
 
     def create_old_net(self, port=None, net=None,
                        ip=None, uuid=None, subnet=None,
-                       port_extra_properties=None):
+                       port_extra_properties=None, floating_ip=None):
         return {'port': port, 'network': net, 'fixed_ip': ip, 'uuid': uuid,
-                'subnet': subnet,
+                'subnet': subnet, 'floating_ip': floating_ip,
                 'port_extra_properties': port_extra_properties}
 
     def create_fake_iface(self, port, net, ip):
@@ -3136,14 +3315,16 @@ class ServersTest(common.HeatTestCase):
 
         net = {'network': 'f3ef5d2f-d7ba-4b27-af66-58ca0b81e032',
                'fixed_ip': '1.2.3.4'}
-        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id',
                          return_value='f3ef5d2f-d7ba-4b27-af66-58ca0b81e032')
         net_id = server._get_network_id(net)
         self.assertEqual('f3ef5d2f-d7ba-4b27-af66-58ca0b81e032', net_id)
 
         net = {'network': 'private_net',
                'fixed_ip': '1.2.3.4'}
-        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id',
                          return_value='f3ef5d2f-d7ba-4b27-af66-58ca0b81e032')
         net_id = server._get_network_id(net)
         self.assertEqual('f3ef5d2f-d7ba-4b27-af66-58ca0b81e032', net_id)
@@ -3197,7 +3378,7 @@ class ServersTest(common.HeatTestCase):
             old_nets_copy = copy.deepcopy(old_nets)
             for net in new_nets_copy:
                 for key in ('port', 'network', 'fixed_ip', 'uuid', 'subnet',
-                            'port_extra_properties'):
+                            'port_extra_properties', 'floating_ip'):
                     net.setdefault(key)
 
             matched_nets = server._exclude_not_updated_networks(old_nets,
@@ -3228,7 +3409,7 @@ class ServersTest(common.HeatTestCase):
         old_nets_copy = copy.deepcopy(old_nets)
         for net in new_nets_copy:
             for key in ('port', 'network', 'fixed_ip', 'uuid', 'subnet',
-                        'port_extra_properties'):
+                        'port_extra_properties', 'floating_ip'):
                 net.setdefault(key)
 
         matched_nets = server._exclude_not_updated_networks(old_nets, new_nets)
@@ -3244,15 +3425,15 @@ class ServersTest(common.HeatTestCase):
             self.create_old_net(
                 net='f3ef5d2f-d7ba-4b27-af66-58ca0b81e032',
                 ip='',
-                port='',
-                uuid='')]
+                port='')]
         new_nets = [
             {'network': 'f3ef5d2f-d7ba-4b27-af66-58ca0b81e032',
              'fixed_ip': None,
              'port': None,
-             'uuid': None,
              'subnet': None,
-             'port_extra_properties': None}]
+             'uuid': None,
+             'port_extra_properties': None,
+             'floating_ip': None}]
         new_nets_copy = copy.deepcopy(new_nets)
 
         matched_nets = server._exclude_not_updated_networks(old_nets, new_nets)
@@ -3286,13 +3467,14 @@ class ServersTest(common.HeatTestCase):
             self.create_fake_iface('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
                                    nets[1]['network'], nets[1]['fixed_ip']),
             self.create_fake_iface('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
-                                   nets[4]['uuid'], nets[4]['fixed_ip'])]
+                                   nets[4]['network'], nets[4]['fixed_ip'])]
         # all networks should get port id
         expected = [
             {'port': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
              'network': None,
              'fixed_ip': None,
              'subnet': None,
+             'floating_ip': None,
              'port_extra_properties': None,
              'uuid': None},
             {'port': 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
@@ -3300,29 +3482,33 @@ class ServersTest(common.HeatTestCase):
              'fixed_ip': '1.2.3.4',
              'subnet': None,
              'port_extra_properties': None,
+             'floating_ip': None,
              'uuid': None},
             {'port': 'cccccccc-cccc-cccc-cccc-cccccccccccc',
              'network': 'gggggggg-1111-1111-1111-gggggggggggg',
              'fixed_ip': None,
              'subnet': None,
              'port_extra_properties': None,
+             'floating_ip': None,
              'uuid': None},
             {'port': 'dddddddd-dddd-dddd-dddd-dddddddddddd',
              'network': None,
              'fixed_ip': None,
              'subnet': None,
              'port_extra_properties': None,
+             'floating_ip': None,
              'uuid': None},
             {'port': 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
              'uuid': 'gggggggg-1111-1111-1111-gggggggggggg',
              'fixed_ip': '5.6.7.8',
              'subnet': None,
              'port_extra_properties': None,
+             'floating_ip': None,
              'network': None}]
 
-        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id',
                          return_value='gggggggg-1111-1111-1111-gggggggggggg')
-
         server.update_networks_matching_iface_port(nets, interfaces)
         self.assertEqual(expected, nets)
 
@@ -3395,7 +3581,8 @@ class ServersTest(common.HeatTestCase):
         return_server.interface_attach(None, new_networks[0]['network'],
                                        new_networks[0]['fixed_ip']).AndReturn(
                                            None)
-        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id',
                          return_value='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
         self.stub_NetworkConstraint_validate()
         self.m.ReplayAll()
@@ -3431,7 +3618,8 @@ class ServersTest(common.HeatTestCase):
         return_server.interface_detach(
             'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa').AndReturn(None)
 
-        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id',
                          return_value=None)
 
         self.m.StubOutWithMock(return_server, 'interface_attach')
@@ -3498,7 +3686,8 @@ class ServersTest(common.HeatTestCase):
         return_server.interface_detach(
             poor_interfaces[3].port_id).InAnyOrder().AndReturn(None)
 
-        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id',
                          return_value='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
         self.m.StubOutWithMock(return_server, 'interface_attach')
         return_server.interface_attach(
@@ -3544,7 +3733,8 @@ class ServersTest(common.HeatTestCase):
                                    '31.32.33.34')
         ]
 
-        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id',
                          return_value='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
         return_server.interface_list().AndReturn(poor_interfaces)
 
@@ -3597,7 +3787,8 @@ class ServersTest(common.HeatTestCase):
                                    '31.32.33.34')
         ]
 
-        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id',
                          return_value='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
 
         return_server.interface_list().AndReturn(poor_interfaces)
@@ -3631,6 +3822,7 @@ class ServersTest(common.HeatTestCase):
         update_template['Properties']['image_update_policy'] = 'REPLACE'
 
         # update
+        self.stub_ImageConstraint_validate()
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(exception.UpdateReplace, updater)
 
@@ -3646,7 +3838,7 @@ class ServersTest(common.HeatTestCase):
 
         self.m.StubOutWithMock(glance.ImageConstraint, "validate")
         # verify that validate gets invoked exactly once for update
-        ex = exception.EntityNotFound(entity='Image', name='Update Image')
+        ex = glance.exceptions.NotFound()
         glance.ImageConstraint.validate('Update Image',
                                         mox.IgnoreArg()).AndRaise(ex)
         self.m.ReplayAll()
@@ -3659,8 +3851,7 @@ class ServersTest(common.HeatTestCase):
         err = self.assertRaises(exception.ResourceFailure, updater)
         self.assertEqual('StackValidationFailed: resources.my_server: '
                          'Property error: '
-                         'WebServer.Properties.image: The Image '
-                         '(Update Image) could not be found.',
+                         'WebServer.Properties.image: Not Found (HTTP 404)',
                          six.text_type(err))
         self.m.VerifyAll()
 
@@ -3717,12 +3908,62 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
         nova.NovaClientPlugin._create().AndReturn(self.fc)
         self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
         self.m.ReplayAll()
 
         # Assert here checks that server resource validates, but actually
         # this call is Act stage of this test. We calling server.validate()
         # to verify that no excessive calls to Nova are made during validation.
         self.assertIsNone(server.validate())
+
+        self.m.VerifyAll()
+
+    def test_server_validate_connection_error_retry_successful(self):
+        stack_name = 'srv_val'
+        (tmpl, stack) = self._setup_test_stack(stack_name)
+        tmpl.t['Resources']['WebServer']['Properties'][
+            'personality'] = {"/fake/path1": "a" * 10}
+
+        resource_defns = tmpl.resource_definitions(stack)
+        server = servers.Server('server_create_image_err',
+                                resource_defns['WebServer'], stack)
+
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
+        self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
+
+        self.m.StubOutWithMock(self.fc.limits, 'get')
+        self.fc.limits.get().AndRaise(requests.ConnectionError())
+        self.fc.limits.get().AndReturn(self.limits)
+        self.m.ReplayAll()
+
+        self.assertIsNone(server.validate())
+
+        self.m.VerifyAll()
+
+    def test_server_validate_connection_error_retry_failure(self):
+        stack_name = 'srv_val'
+        (tmpl, stack) = self._setup_test_stack(stack_name)
+        tmpl.t['Resources']['WebServer']['Properties'][
+            'personality'] = {"/fake/path1": "a" * 10}
+
+        resource_defns = tmpl.resource_definitions(stack)
+        server = servers.Server('server_create_image_err',
+                                resource_defns['WebServer'], stack)
+
+        self.m.StubOutWithMock(nova.NovaClientPlugin, '_create')
+        nova.NovaClientPlugin._create().AndReturn(self.fc)
+        self._mock_get_image_id_success('F17-x86_64-gold', 'image_id')
+        self._mock_validate_flavor_image_success()
+
+        self.m.StubOutWithMock(self.fc.limits, 'get')
+        self.fc.limits.get().AndRaise(requests.ConnectionError())
+        self.fc.limits.get().AndRaise(requests.ConnectionError())
+        self.fc.limits.get().AndRaise(requests.ConnectionError())
+        self.m.ReplayAll()
+
+        self.assertRaises(requests.ConnectionError, server.validate)
 
         self.m.VerifyAll()
 
@@ -3754,13 +3995,15 @@ class ServersTest(common.HeatTestCase):
         self.m.StubOutWithMock(self.fc.servers, 'get')
         self.fc.servers.get(return_server.id).AndReturn(return_server)
 
-        self.m.StubOutWithMock(glance.GlanceClientPlugin, 'get_image_id')
-        glance.GlanceClientPlugin.get_image_id(
+        self.m.StubOutWithMock(glance.GlanceClientPlugin,
+                               'find_image_by_name_or_id')
+        glance.GlanceClientPlugin.find_image_by_name_or_id(
             'F17-x86_64-gold').MultipleTimes().AndReturn(744)
-        glance.GlanceClientPlugin.get_image_id(
+        glance.GlanceClientPlugin.find_image_by_name_or_id(
             'CentOS 5.2').MultipleTimes().AndReturn(1)
 
-        self.patchobject(neutron.NeutronClientPlugin, 'resolve_network',
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id',
                          return_value='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
         self.stub_NetworkConstraint_validate()
         self.fc.servers.get(return_server.id).AndReturn(return_server)
@@ -3802,7 +4045,8 @@ class ServersTest(common.HeatTestCase):
         mock_plugin = self.patchobject(nova.NovaClientPlugin, '_create')
         mock_plugin.return_value = self.fc
 
-        get_image = self.patchobject(glance.GlanceClientPlugin, 'get_image_id')
+        get_image = self.patchobject(glance.GlanceClientPlugin,
+                                     'find_image_by_name_or_id')
         get_image.return_value = 744
 
         return_server = self.fc.servers.list()[1]
@@ -3847,7 +4091,8 @@ class ServersTest(common.HeatTestCase):
         mock_plugin = self.patchobject(nova.NovaClientPlugin, '_create')
         mock_plugin.return_value = self.fc
 
-        get_image = self.patchobject(glance.GlanceClientPlugin, 'get_image_id')
+        get_image = self.patchobject(glance.GlanceClientPlugin,
+                                     'find_image_by_name_or_id')
         get_image.return_value = 744
 
         return_server = self.fc.servers.list()[1]
@@ -3906,15 +4151,60 @@ class ServersTest(common.HeatTestCase):
         create_image = self.patchobject(self.fc.servers, 'create_image')
 
         # test resource_id is None
+        self.patchobject(servers.Server, 'user_data_software_config',
+                         return_value=True)
+        delete_internal_ports = self.patchobject(servers.Server,
+                                                 '_delete_internal_ports')
+        delete_queue = self.patchobject(servers.Server, '_delete_queue')
+        delete_user = self.patchobject(servers.Server, '_delete_user')
+        delete_swift_object = self.patchobject(servers.Server,
+                                               '_delete_temp_url')
         rsrc.handle_snapshot_delete((rsrc.CREATE, rsrc.FAILED))
+
         delete_server.assert_not_called()
         create_image.assert_not_called()
+        # attempt to delete queue/user/swift_object/internal_ports
+        # if no resource_id
+        delete_internal_ports.assert_called_once_with()
+        delete_queue.assert_called_once_with()
+        delete_user.assert_called_once_with()
+        delete_swift_object.assert_called_once_with()
 
         # test has resource_id but state is CREATE_FAILED
         rsrc.resource_id = '4567'
         rsrc.handle_snapshot_delete((rsrc.CREATE, rsrc.FAILED))
         delete_server.assert_called_once_with('4567')
         create_image.assert_not_called()
+        # attempt to delete internal_ports if has resource_id
+        self.assertEqual(2, delete_internal_ports.call_count)
+
+    def test_handle_delete_without_resource_id(self):
+        t = template_format.parse(wp_template)
+        tmpl = template.Template(t)
+        stack = parser.Stack(
+            utils.dummy_context(), 'without_resource_id', tmpl)
+        rsrc = stack['WebServer']
+
+        delete_server = self.patchobject(self.fc.servers, 'delete')
+
+        # test resource_id is None
+        self.patchobject(servers.Server, 'user_data_software_config',
+                         return_value=True)
+        delete_internal_ports = self.patchobject(servers.Server,
+                                                 '_delete_internal_ports')
+        delete_queue = self.patchobject(servers.Server, '_delete_queue')
+        delete_user = self.patchobject(servers.Server, '_delete_user')
+        delete_swift_object = self.patchobject(servers.Server,
+                                               '_delete_temp_url')
+        rsrc.handle_delete()
+
+        delete_server.assert_not_called()
+        # attempt to delete queue/user/swift_object/internal_ports
+        # if no resource_id
+        delete_internal_ports.assert_called_once_with()
+        delete_queue.assert_called_once_with()
+        delete_user.assert_called_once_with()
+        delete_swift_object.assert_called_once_with()
 
 
 class ServerInternalPortTest(common.HeatTestCase):
@@ -4018,7 +4308,7 @@ class ServerInternalPortTest(common.HeatTestCase):
         t, stack, server = self._return_template_stack_and_rsrc_defn('test',
                                                                      tmpl)
 
-        self.resolve.side_effect = ['4321', '1234']
+        self.resolve.side_effect = ['4321', '4321', '1234']
         self.patchobject(server, '_validate_belonging_subnet_to_net')
         self.port_create.return_value = {'port': {'id': '111222'}}
         data_set = self.patchobject(resource.Resource, 'data_set')
@@ -4206,6 +4496,208 @@ class ServerInternalPortTest(common.HeatTestCase):
         data_set.assert_has_calls((
             mock.call('internal_ports', '[]'),
             mock.call('internal_ports', '[{"id": "1122"}, {"id": "5566"}]')))
+
+    def test_calculate_networks_nova_with_fipa(self):
+        tmpl = """
+        heat_template_version: 2015-10-15
+        resources:
+          server:
+            type: OS::Nova::Server
+            properties:
+              flavor: m1.small
+              image: F17-x86_64-gold
+              networks:
+                - network: 4321
+                  subnet: 1234
+                  fixed_ip: 127.0.0.1
+                  floating_ip: 1199
+                - network: 8765
+                  subnet: 5678
+                  fixed_ip: 127.0.0.2
+        """
+
+        t, stack, server = self._return_template_stack_and_rsrc_defn('test',
+                                                                     tmpl)
+
+        # NOTE(prazumovsky): this method update old_net and new_net with
+        # interfaces' ports. Because of uselessness of checking this method,
+        # we can afford to give port as part of calculate_networks args.
+        self.patchobject(server, 'update_networks_matching_iface_port')
+        self.patchobject(server.client_plugin(), 'get_nova_network_id',
+                         side_effect=['4321', '8765'])
+
+        self.patchobject(server, 'is_using_neutron', return_value=False)
+        self.patchobject(resource.Resource, 'data_set')
+
+        FakeFIP = collections.namedtuple('FakeFip', ['ip'])
+        self.patchobject(server.client().floating_ips, 'get',
+                         side_effect=[FakeFIP('192.168.0.1'),
+                                      FakeFIP('192.168.0.2'),
+                                      FakeFIP('192.168.0.1')])
+        fipa = self.patchobject(server.client().servers, 'add_floating_ip')
+        fip_disa = self.patchobject(server.client().servers,
+                                    'remove_floating_ip')
+        server.resource_id = '1234567890'
+
+        old_net = [{'network': '4321',
+                    'subnet': '1234',
+                    'fixed_ip': '127.0.0.1',
+                    'floating_ip': '1199'},
+                   {'network': '8765',
+                    'subnet': '5678',
+                    'fixed_ip': '127.0.0.2'}]
+
+        new_net = [{'network': '8765',
+                    'subnet': '5678',
+                    'fixed_ip': '127.0.0.2',
+                    'floating_ip': '11910'},
+                   {'network': '0912',
+                    'subnet': '9021',
+                    'fixed_ip': '127.0.0.1',
+                    'floating_ip': '1199'}]
+
+        server.calculate_networks(old_net, new_net, [])
+
+        fip_disa.assert_called_once_with('1234567890',
+                                         '192.168.0.1')
+        fipa.assert_has_calls((
+            mock.call('1234567890', '192.168.0.2'),
+            mock.call('1234567890', '192.168.0.1')
+        ))
+
+    def test_calculate_networks_internal_ports_with_fipa(self):
+        tmpl = """
+        heat_template_version: 2015-10-15
+        resources:
+          server:
+            type: OS::Nova::Server
+            properties:
+              flavor: m1.small
+              image: F17-x86_64-gold
+              networks:
+                - network: 4321
+                  subnet: 1234
+                  fixed_ip: 127.0.0.1
+                  floating_ip: 1199
+                - network: 8765
+                  subnet: 5678
+                  fixed_ip: 127.0.0.2
+                  floating_ip: 9911
+        """
+
+        t, stack, server = self._return_template_stack_and_rsrc_defn('test',
+                                                                     tmpl)
+
+        # NOTE(prazumovsky): this method update old_net and new_net with
+        # interfaces' ports. Because of uselessness of checking this method,
+        # we can afford to give port as part of calculate_networks args.
+        self.patchobject(server, 'update_networks_matching_iface_port')
+
+        server._data = {'internal_ports': '[{"id": "1122"}]'}
+        self.port_create.return_value = {'port': {'id': '5566'}}
+        self.patchobject(resource.Resource, 'data_set')
+        self.resolve.side_effect = ['0912', '9021']
+
+        fipa = self.patchobject(neutronclient.Client, 'update_floatingip',
+                                side_effect=[neutronclient.exceptions.NotFound,
+                                             '9911',
+                                             '11910',
+                                             '1199'])
+
+        old_net = [{'network': '4321',
+                    'subnet': '1234',
+                    'fixed_ip': '127.0.0.1',
+                    'port': '1122',
+                    'floating_ip': '1199'},
+                   {'network': '8765',
+                    'subnet': '5678',
+                    'fixed_ip': '127.0.0.2',
+                    'port': '3344',
+                    'floating_ip': '9911'}]
+
+        new_net = [{'network': '8765',
+                    'subnet': '5678',
+                    'fixed_ip': '127.0.0.2',
+                    'port': '3344',
+                    'floating_ip': '11910'},
+                   {'network': '0912',
+                    'subnet': '9021',
+                    'fixed_ip': '127.0.0.1',
+                    'floating_ip': '1199',
+                    'port': '1122'}]
+
+        server.calculate_networks(old_net, new_net, [])
+
+        fipa.assert_has_calls((
+            mock.call('1199', {'floatingip': {'port_id': None}}),
+            mock.call('9911', {'floatingip': {'port_id': None}}),
+            mock.call('11910',
+                      {'floatingip': {'port_id': '3344',
+                                      'fixed_ip_address': '127.0.0.2'}}),
+            mock.call('1199',
+                      {'floatingip': {'port_id': '1122',
+                                      'fixed_ip_address': '127.0.0.1'}})
+        ))
+
+    def test_delete_fipa_with_exception_not_found_neutron(self):
+        tmpl = """
+        heat_template_version: 2015-10-15
+        resources:
+          server:
+            type: OS::Nova::Server
+            properties:
+              flavor: m1.small
+              image: F17-x86_64-gold
+              networks:
+                - network: 4321
+                  subnet: 1234
+                  fixed_ip: 127.0.0.1
+                  floating_ip: 1199
+                - network: 8765
+                  subnet: 5678
+                  fixed_ip: 127.0.0.2
+                  floating_ip: 9911
+        """
+
+        t, stack, server = self._return_template_stack_and_rsrc_defn('test',
+                                                                     tmpl)
+        delete_flip = mock.MagicMock(
+            side_effect=[neutron.exceptions.NotFound(404)])
+        server.client('neutron').update_floatingip = delete_flip
+
+        self.assertIsNone(server._floating_ip_disassociate('flip123'))
+        self.assertEqual(1, delete_flip.call_count)
+
+    def test_delete_fipa_with_exception_not_found_nova(self):
+        tmpl = """
+        heat_template_version: 2015-10-15
+        resources:
+          server:
+            type: OS::Nova::Server
+            properties:
+              flavor: m1.small
+              image: F17-x86_64-gold
+              networks:
+                - network: 4321
+                  subnet: 1234
+                  fixed_ip: 127.0.0.1
+                  floating_ip: 1199
+                - network: 8765
+                  subnet: 5678
+                  fixed_ip: 127.0.0.2
+                  floating_ip: 9911
+        """
+
+        t, stack, server = self._return_template_stack_and_rsrc_defn('test',
+                                                                     tmpl)
+        self.patchobject(server, 'is_using_neutron', return_value=False)
+        flip = mock.MagicMock()
+        flip.ip = 'flip123'
+        server.client().floating_ips = flip
+        server.client().servers.remove_floating_ip = mock.MagicMock(
+            side_effect=[nova_exceptions.NotFound(404)])
+
+        self.assertIsNone(server._floating_ip_disassociate('flip123'))
 
     def test_delete_internal_ports(self):
         t, stack, server = self._return_template_stack_and_rsrc_defn(

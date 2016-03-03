@@ -23,6 +23,7 @@ import six
 
 from heat.common import crypt
 from heat.db import api as db_api
+from heat.objects import base as heat_base
 from heat.objects import fields as heat_fields
 from heat.objects import resource_data
 from heat.objects import stack
@@ -31,7 +32,7 @@ cfg.CONF.import_opt('encrypt_parameters_and_properties', 'heat.common.config')
 
 
 class Resource(
-    base.VersionedObject,
+    heat_base.HeatObject,
     base.VersionedObjectDictCompat,
     base.ComparableVersionedObject,
 ):
@@ -124,9 +125,10 @@ class Resource(
             resource_id2)
 
     @classmethod
-    def get_all_by_stack(cls, context, stack_id, key_id=False):
+    def get_all_by_stack(cls, context, stack_id, key_id=False, filters=None):
         resources_db = db_api.resource_get_all_by_stack(context,
-                                                        stack_id, key_id)
+                                                        stack_id, key_id,
+                                                        filters)
         resources = [
             (
                 resource_key,
@@ -151,10 +153,14 @@ class Resource(
             physical_resource_id)
         return cls._from_db_object(cls(context), context, resource_db)
 
+    @classmethod
+    def update_by_id(cls, context, resource_id, values):
+        resource_db = db_api.resource_get(context, resource_id)
+        resource_db.update_and_save(values)
+
     def update_and_save(self, values):
         resource_db = db_api.resource_get(self._context, self.id)
         resource_db.update_and_save(values)
-        return self.refresh()
 
     def select_and_update(self, values, expected_engine_id=None,
                           atomic_key=0):

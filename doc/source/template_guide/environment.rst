@@ -137,15 +137,16 @@ template::
        my_db_server:
          "OS::DBInstance": file:///home/mine/all_my_cool_templates/db.yaml
 
-Pause stack creation or update on a given resource
---------------------------------------------------
-If you want to debug your stack as it's being created or updated, or if you want
-to run it in phases, you can set ``pre-create`` and ``pre-update`` hooks in the
-``resources`` section of ``resource_registry``.
+Pause stack creation, update or deletion on a given resource
+------------------------------------------------------------
+If you want to debug your stack as it's being created, updated or deleted, or
+if you want to run it in phases, you can set ``pre-create``, ``pre-update``,
+``pre-delete``, ``post-create``, ``post-update`` and ``post-delete`` hooks in
+the ``resources`` section of ``resource_registry``.
 
-To set a hook, add either ``hooks: pre-create`` or ``hooks: pre-update`` to the
-resource's dictionary. You can also use ``[pre-create, pre-update]`` to stop
-on both actions.
+To set a hook, add either ``hooks: $hook_name`` (for example ``hooks:
+pre-update``) to the resource's dictionary. You can also use a list (``hooks:
+[pre-create, pre-update]``) to stop on several actions.
 
 You can combine hooks with other ``resources`` properties such as provider
 templates or type mapping::
@@ -175,8 +176,8 @@ resource name. For example, the following entry pauses while creating
       "*_server":
         hooks: pre-create
 
-Clear hooks by signaling the resource with ``{unset_hook: pre-create}``
-or ``{unset_hook: pre-update}``.
+Clear hooks by signaling the resource with ``{unset_hook: $hook_name}`` (for
+example ``{unset_hook: pre-update}``).
 
 Retrieving events
 -----------------
@@ -191,3 +192,37 @@ You can specify endpoints using the ``event_sinks`` property::
     - type: zaqar-queue
       target: myqueue
       ttl: 1200
+
+Restrict update or replace of a given resource
+-----------------------------------------------
+If you want to restrict update or replace of a resource when your stack is
+being updated, you can set ``restricted_actions`` in the ``resources``
+section of ``resource_registry``.
+
+To restrict update or replace, add ``restricted_actions: update`` or
+``restricted_actions: replace`` to the resource dictionary. You can also
+use ``[update, replace]`` to restrict both actions.
+
+You can combine restrcited actions with other ``resources`` properties such
+as provider templates or type mapping or hooks::
+
+  resource_registry:
+    resources:
+      my_server:
+        "OS::DBInstance": file:///home/mine/all_my_cool_templates/db.yaml
+        restricted_actions: replace
+        hooks: pre-create
+      nested_stack:
+        nested_resource:
+          restricted_actions: update
+        another_resource:
+          restricted_actions: [update, replace]
+
+It is possible to perform a wild card match using an asterisk (`*`) in the
+resource name. For example, the following entry restricts replace for
+``app_server`` and ``database_server``, but not ``server`` or ``app_network``::
+
+  resource_registry:
+    resources:
+      "*_server":
+        restricted_actions: replace

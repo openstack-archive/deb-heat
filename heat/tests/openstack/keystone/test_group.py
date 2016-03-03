@@ -75,12 +75,6 @@ class KeystoneGroupTest(common.HeatTestCase):
 
         return value
 
-    def test_resource_mapping(self):
-        mapping = group.resource_mapping()
-        self.assertEqual(1, len(mapping))
-        self.assertEqual(group.KeystoneGroup, mapping[RESOURCE_TYPE])
-        self.assertIsInstance(self.test_group, group.KeystoneGroup)
-
     def test_properties_title(self):
         property_title_map = {
             group.KeystoneGroup.NAME: 'name',
@@ -269,8 +263,6 @@ class KeystoneGroupTest(common.HeatTestCase):
     def test_group_handle_update_default(self):
         self.test_group.resource_id = '477e8273-60a7-4c41-b683-fdb0bc7cd151'
         self.test_group._stored_properties_data = dict(domain='default')
-        self.test_group.physical_resource_name = mock.MagicMock()
-        self.test_group.physical_resource_name.return_value = 'foo'
 
         prop_diff = {group.KeystoneGroup.DESCRIPTION: 'Test Project updated'}
 
@@ -282,7 +274,7 @@ class KeystoneGroupTest(common.HeatTestCase):
         # domain is set from stored properties used during creation.
         self.groups.update.assert_called_once_with(
             group=self.test_group.resource_id,
-            name='foo',
+            name=None,
             description=prop_diff[group.KeystoneGroup.DESCRIPTION],
             domain_id='default'
         )

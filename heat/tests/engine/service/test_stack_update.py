@@ -96,6 +96,37 @@ class ServiceStackUpdateTest(common.HeatTestCase):
         mock_load.assert_called_once_with(self.ctx, stack=s)
         mock_validate.assert_called_once_with()
 
+    def test_stack_update_with_environment_files(self):
+        # Setup
+        stack_name = 'service_update_env_files_stack'
+        params = {}
+        template = '{ "Template": "data" }'
+        old_stack = tools.get_stack(stack_name, self.ctx)
+        sid = old_stack.store()
+        old_stack.set_stack_user_project_id('1234')
+        stack_object.Stack.get_by_id(self.ctx, sid)
+
+        stk = tools.get_stack(stack_name, self.ctx)
+
+        # prepare mocks
+        self.patchobject(stack, 'Stack', return_value=stk)
+        self.patchobject(stack.Stack, 'load', return_value=old_stack)
+        self.patchobject(templatem, 'Template', return_value=stk.t)
+        self.patchobject(environment, 'Environment', return_value=stk.env)
+        self.patchobject(stk, 'validate', return_value=None)
+        self.patchobject(grevent, 'Event', return_value=mock.Mock())
+
+        mock_merge = self.patchobject(self.man, '_merge_environments')
+
+        # Test
+        environment_files = ['env_1']
+        self.man.update_stack(self.ctx, old_stack.identifier(),
+                              template, params, None, {},
+                              environment_files=environment_files)
+
+        # Verify
+        mock_merge.assert_called_once_with(environment_files, None, params)
+
     def test_stack_update_existing_parameters(self):
         # Use a template with existing parameters, then update the stack
         # with a template containing additional parameters and ensure all
@@ -675,6 +706,112 @@ class ServiceStackUpdateTest(common.HeatTestCase):
         self.assertIn("PATCH update to non-COMPLETE stack",
                       six.text_type(ex.exc_info[1]))
 
+    def test_update_immutable_parameter_disallowed(self):
+
+        template = '''
+heat_template_version: 2014-10-16
+parameters:
+  param1:
+    type: string
+    immutable: true
+    default: foo
+'''
+
+        self.ctx = utils.dummy_context(password=None)
+        stack_name = 'test_update_immutable_parameters'
+        params = {}
+        old_stack = tools.get_stack(stack_name, self.ctx,
+                                    template=template)
+        sid = old_stack.store()
+        old_stack.set_stack_user_project_id('1234')
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
+
+        # prepare mocks
+        self.patchobject(self.man, '_get_stack', return_value=s)
+        self.patchobject(stack, 'Stack', return_value=old_stack)
+        self.patchobject(stack.Stack, 'load', return_value=old_stack)
+        self.patchobject(templatem, 'Template', return_value=old_stack.t)
+        self.patchobject(environment, 'Environment',
+                         return_value=old_stack.env)
+
+        params = {'param1': 'bar'}
+        exc = self.assertRaises(dispatcher.ExpectedException,
+                                self.man.update_stack,
+                                self.ctx, old_stack.identifier(),
+                                templatem.Template(template), params,
+                                None, {})
+        self.assertEqual(exception.ImmutableParameterModified, exc.exc_info[0])
+        self.assertEqual('The following parameters are immutable and may not '
+                         'be updated: param1', exc.exc_info[1].message)
+
+    def test_update_mutable_parameter_allowed(self):
+
+        template = '''
+heat_template_version: 2014-10-16
+parameters:
+  param1:
+    type: string
+    immutable: false
+    default: foo
+'''
+
+        self.ctx = utils.dummy_context(password=None)
+        stack_name = 'test_update_immutable_parameters'
+        params = {}
+        old_stack = tools.get_stack(stack_name, self.ctx,
+                                    template=template)
+        sid = old_stack.store()
+        old_stack.set_stack_user_project_id('1234')
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
+
+        # prepare mocks
+        self.patchobject(self.man, '_get_stack', return_value=s)
+        self.patchobject(stack, 'Stack', return_value=old_stack)
+        self.patchobject(stack.Stack, 'load', return_value=old_stack)
+        self.patchobject(templatem, 'Template', return_value=old_stack.t)
+        self.patchobject(environment, 'Environment',
+                         return_value=old_stack.env)
+
+        params = {'param1': 'bar'}
+        result = self.man.update_stack(self.ctx, old_stack.identifier(),
+                                       templatem.Template(template), params,
+                                       None, {})
+        self.assertEqual(s.id, result['stack_id'])
+
+    def test_update_immutable_parameter_same_value(self):
+
+        template = '''
+heat_template_version: 2014-10-16
+parameters:
+  param1:
+    type: string
+    immutable: true
+    default: foo
+'''
+
+        self.ctx = utils.dummy_context(password=None)
+        stack_name = 'test_update_immutable_parameters'
+        params = {}
+        old_stack = tools.get_stack(stack_name, self.ctx,
+                                    template=template)
+        sid = old_stack.store()
+        old_stack.set_stack_user_project_id('1234')
+        s = stack_object.Stack.get_by_id(self.ctx, sid)
+
+        # prepare mocks
+        self.patchobject(self.man, '_get_stack', return_value=s)
+        self.patchobject(stack, 'Stack', return_value=old_stack)
+        self.patchobject(stack.Stack, 'load', return_value=old_stack)
+        self.patchobject(templatem, 'Template', return_value=old_stack.t)
+        self.patchobject(environment, 'Environment',
+                         return_value=old_stack.env)
+
+        params = {'param1': 'foo'}
+        result = self.man.update_stack(self.ctx, old_stack.identifier(),
+                                       templatem.Template(template), params,
+                                       None, {})
+        self.assertEqual(s.id, result['stack_id'])
+
 
 class ServiceStackUpdatePreviewTest(common.HeatTestCase):
 
@@ -712,7 +849,8 @@ resources:
         self.man = service.EngineService('a-host', 'a-topic')
         self.man.thread_group_mgr = tools.DummyThreadGroupManager()
 
-    def _test_stack_update_preview(self, orig_template, new_template):
+    def _test_stack_update_preview(self, orig_template, new_template,
+                                   environment_files=None):
         stack_name = 'service_update_test_stack_preview'
         params = {'foo': 'bar'}
         old_stack = tools.get_stack(stack_name, self.ctx,
@@ -731,6 +869,7 @@ resources:
         mock_env = self.patchobject(environment, 'Environment',
                                     return_value=stk.env)
         mock_validate = self.patchobject(stk, 'validate', return_value=None)
+        mock_merge = self.patchobject(self.man, '_merge_environments')
 
         # Patch _resolve_all_attributes or it tries to call novaclient
         self.patchobject(resource.Resource, '_resolve_all_attributes',
@@ -738,10 +877,13 @@ resources:
 
         # do preview_update_stack
         api_args = {'timeout_mins': 60}
-        result = self.man.preview_update_stack(self.ctx,
-                                               old_stack.identifier(),
-                                               new_template, params, None,
-                                               api_args)
+        result = self.man.preview_update_stack(
+            self.ctx,
+            old_stack.identifier(),
+            new_template, params, None,
+            api_args,
+            environment_files=environment_files)
+
         # assertions
         mock_stack.assert_called_once_with(
             self.ctx, stk.name, stk.t, convergence=False,
@@ -756,6 +898,9 @@ resources:
                                           env=stk.env)
         mock_env.assert_called_once_with(params)
         mock_validate.assert_called_once_with()
+
+        if environment_files:
+            mock_merge.assert_called_once_with(environment_files, None, params)
 
         return result
 
@@ -776,6 +921,19 @@ resources:
     def test_stack_update_preview_replaced(self):
         # new template with a different key_name
         new_tmpl = self.old_tmpl.replace('test', 'test2')
+
+        result = self._test_stack_update_preview(self.old_tmpl, new_tmpl)
+
+        replaced = [x for x in result['replaced']][0]
+        self.assertEqual('web_server', replaced['resource_name'])
+        empty_sections = ('added', 'deleted', 'unchanged', 'updated')
+        for section in empty_sections:
+            section_contents = [x for x in result[section]]
+            self.assertEqual([], section_contents)
+
+    def test_stack_update_preview_replaced_type(self):
+        # new template with a different type for web_server
+        new_tmpl = self.old_tmpl.replace('OS::Nova::Server', 'OS::Heat::None')
 
         result = self._test_stack_update_preview(self.old_tmpl, new_tmpl)
 
@@ -811,3 +969,13 @@ resources:
         for section in empty_sections:
             section_contents = [x for x in result[section]]
             self.assertEqual([], section_contents)
+
+    def test_stack_update_preview_with_environment_files(self):
+        # Setup
+        environment_files = ['env_1']
+
+        # Test
+        self._test_stack_update_preview(self.old_tmpl, self.new_tmpl,
+                                        environment_files=environment_files)
+
+        # Assertions done in _test_stack_update_preview

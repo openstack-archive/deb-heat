@@ -13,11 +13,10 @@
 
 from glanceclient import client as gc
 from glanceclient import exc
-from oslo_utils import uuidutils
+from glanceclient.openstack.common.apiclient import exceptions
 
-from heat.common import exception
-from heat.common.i18n import _
 from heat.engine.clients import client_plugin
+from heat.engine.clients import os as os_client
 from heat.engine import constraints
 
 CLIENT_NAME = 'glance'
@@ -25,7 +24,7 @@ CLIENT_NAME = 'glance'
 
 class GlanceClientPlugin(client_plugin.ClientPlugin):
 
-    exceptions_module = exc
+    exceptions_module = [exceptions, exc]
 
     service_types = [IMAGE] = ['image']
 
@@ -49,57 +48,65 @@ class GlanceClientPlugin(client_plugin.ClientPlugin):
 
         return gc.Client('1', endpoint, **args)
 
+    def _find_with_attr(self, entity, **kwargs):
+        """Find a item for entity with attributes matching ``**kwargs``."""
+        matches = list(self._findall_with_attr(entity, **kwargs))
+        num_matches = len(matches)
+        if num_matches == 0:
+            msg = ("No %(name)s matching %(args)s.") % {
+                'name': entity,
+                'args': kwargs
+            }
+            raise exceptions.NotFound(msg)
+        elif num_matches > 1:
+            raise exceptions.NoUniqueMatch()
+        else:
+            return matches[0]
+
+    def _findall_with_attr(self, entity, **kwargs):
+        """Find all items for entity with attributes matching ``**kwargs``."""
+        func = getattr(self.client(), entity)
+        filters = {'filters': kwargs}
+        return func.list(**filters)
+
     def is_not_found(self, ex):
-        return isinstance(ex, exc.HTTPNotFound)
+        return isinstance(ex, (exceptions.NotFound, exc.HTTPNotFound))
 
     def is_over_limit(self, ex):
         return isinstance(ex, exc.HTTPOverLimit)
 
     def is_conflict(self, ex):
-        return isinstance(ex, exc.HTTPConflict)
+        return isinstance(ex, (exceptions.Conflict, exc.Conflict))
 
-    def get_image_id(self, image_identifier):
+    def find_image_by_name_or_id(self, image_identifier):
         """Return the ID for the specified image name or identifier.
 
         :param image_identifier: image name or a UUID-like identifier
         :returns: the id of the requested :image_identifier:
-        :raises: exception.EntityNotFound,
-                 exception.PhysicalResourceNameAmbiguity
         """
-        if uuidutils.is_uuid_like(image_identifier):
-            try:
-                image_id = self.client().images.get(image_identifier).id
-            except exc.HTTPNotFound:
-                image_id = self.get_image_id_by_name(image_identifier)
-        else:
-            image_id = self.get_image_id_by_name(image_identifier)
-        return image_id
+        return self._find_image_id(self.context.tenant_id,
+                                   image_identifier)
 
-    def get_image_id_by_name(self, image_identifier):
-        """Return the ID for the specified image name.
+    @os_client.MEMOIZE_FINDER
+    def _find_image_id(self, tenant_id, image_identifier):
+        # tenant id in the signature is used for the memoization key,
+        # that would differentiate similar resource names across tenants.
+        return self.get_image(image_identifier).id
+
+    def get_image(self, image_identifier):
+        """Return the image object for the specified image name/id.
 
         :param image_identifier: image name
-        :returns: the id of the requested :image_identifier:
-        :raises: exception.EntityNotFound,
-                 exception.PhysicalResourceNameAmbiguity
+        :returns: an image object with name/id :image_identifier:
         """
         try:
-            filters = {'name': image_identifier}
-            image_list = list(self.client().images.list(filters=filters))
-        except exc.ClientException as ex:
-            raise exception.Error(
-                _("Error retrieving image list from glance: %s") % ex)
-        num_matches = len(image_list)
-        if num_matches == 0:
-            raise exception.EntityNotFound(entity='Image',
-                                           name=image_identifier)
-        elif num_matches > 1:
-            raise exception.PhysicalResourceNameAmbiguity(
-                name=image_identifier)
-        else:
-            return image_list[0].id
+            return self.client().images.get(image_identifier)
+        except exc.HTTPNotFound:
+            return self._find_with_attr('images', name=image_identifier)
 
 
 class ImageConstraint(constraints.BaseCustomConstraint):
+    expected_exceptions = (exceptions.NotFound, exceptions.NoUniqueMatch)
+
     resource_client_name = CLIENT_NAME
-    resource_getter_name = 'get_image_id'
+    resource_getter_name = 'find_image_by_name_or_id'

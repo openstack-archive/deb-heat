@@ -84,7 +84,7 @@ class FormatTest(common.HeatTestCase):
         resource_details_keys = resource_keys.union(set((
             rpc_api.RES_DESCRIPTION,
             rpc_api.RES_METADATA,
-            rpc_api.RES_SCHEMA_ATTRIBUTES,
+            rpc_api.RES_ATTRIBUTES,
         )))
 
         formatted = api.format_stack_resource(res, True)
@@ -97,6 +97,12 @@ class FormatTest(common.HeatTestCase):
         self.assertEqual(self.stack.updated_time.isoformat(),
                          formatted[rpc_api.RES_UPDATED_TIME])
         self.assertEqual(res.INIT, formatted[rpc_api.RES_ACTION])
+
+    def test_format_stack_resource_no_attrs(self):
+        res = self.stack['generic1']
+        formatted = api.format_stack_resource(res, True, with_attr=False)
+        self.assertNotIn(rpc_api.RES_ATTRIBUTES, formatted)
+        self.assertIn(rpc_api.RES_METADATA, formatted)
 
     def test_format_stack_resource_has_been_deleted(self):
         # assume the stack and resource have been deleted,
@@ -123,7 +129,7 @@ class FormatTest(common.HeatTestCase):
         res = self.stack['generic1']
 
         formatted = api.format_stack_resource(res, True, with_props=True)
-        formatted_props = formatted[rpc_api.RES_SCHEMA_PROPERTIES]
+        formatted_props = formatted[rpc_api.RES_PROPERTIES]
         self.assertEqual('formatted_res_props', formatted_props)
 
     @mock.patch.object(api, 'format_resource_attributes')
@@ -132,7 +138,7 @@ class FormatTest(common.HeatTestCase):
         res = self.stack['generic1']
 
         formatted = api.format_stack_resource(res, True, with_attr=['a', 'b'])
-        formatted_attrs = formatted[rpc_api.RES_SCHEMA_ATTRIBUTES]
+        formatted_attrs = formatted[rpc_api.RES_ATTRIBUTES]
         self.assertEqual('formatted_resource_attrs', formatted_attrs)
 
     def test_format_resource_attributes(self):
@@ -352,6 +358,7 @@ class FormatTest(common.HeatTestCase):
             'stack_status': 'IN_PROGRESS',
             'stack_status_reason': '',
             'stack_user_project_id': None,
+            'outputs': [],
             'template_description': 'No description',
             'timeout_mins': None,
             'tags': None,

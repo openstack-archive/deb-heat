@@ -27,7 +27,6 @@ from heat.engine import stack as stackm
 from heat.tests import common
 from heat.tests import utils
 
-
 template = {
     "heat_template_version": "2013-05-23",
     "resources": {
@@ -308,6 +307,39 @@ class ResourceGroupTest(common.HeatTestCase):
         resg.build_resource_definition = mock.Mock(return_value=resource_def)
         self.assertEqual(expect, resg._assemble_for_rolling_update(2, 1).t)
 
+    def test_assemble_nested_missing_param(self):
+        # Setup
+
+        # Change the standard testing template to use a get_param lookup
+        # within the resource definition
+        templ = copy.deepcopy(template)
+        res_def = templ['resources']['group1']['properties']['resource_def']
+        res_def['properties']['Foo'] = {'get_param': 'bar'}
+
+        stack = utils.parse_stack(templ)
+        snip = stack.t.resource_definitions(stack)['group1']
+        resg = resource_group.ResourceGroup('test', snip, stack)
+
+        # Test - This should not raise a ValueError about "bar" not being
+        # provided
+        nested_tmpl = resg._assemble_nested(['0', '1'])
+
+        # Verify
+        expected = {
+            "heat_template_version": "2015-04-30",
+            "resources": {
+                "0": {
+                    "type": "OverwrittenFnGetRefIdType",
+                    "properties": {}
+                },
+                "1": {
+                    "type": "OverwrittenFnGetRefIdType",
+                    "properties": {}
+                }
+            }
+        }
+        self.assertEqual(expected, nested_tmpl.t)
+
     def test_index_var(self):
         stack = utils.parse_stack(template_repl)
         snip = stack.t.resource_definitions(stack)['group1']
@@ -347,8 +379,8 @@ class ResourceGroupTest(common.HeatTestCase):
         }
         nested = resg._assemble_nested(['0', '1', '2']).t
         for res in nested['resources']:
-            nested['resources'][res]['properties']['listprop'] = \
-                list(nested['resources'][res]['properties']['listprop'])
+            res_prop = nested['resources'][res]['properties']
+            res_prop['listprop'] = list(res_prop['listprop'])
         self.assertEqual(expect, nested)
 
     def test_custom_index_var(self):
@@ -372,8 +404,8 @@ class ResourceGroupTest(common.HeatTestCase):
             }
         }
         nested = resg._assemble_nested(['0']).t
-        nested['resources']['0']['properties']['listprop'] = \
-            list(nested['resources']['0']['properties']['listprop'])
+        res_prop = nested['resources']['0']['properties']
+        res_prop['listprop'] = list(res_prop['listprop'])
         self.assertEqual(expect, nested)
 
         res_def = snip['Properties']['resource_def']
@@ -397,8 +429,8 @@ class ResourceGroupTest(common.HeatTestCase):
             }
         }
         nested = resg._assemble_nested(['0']).t
-        nested['resources']['0']['properties']['listprop'] = \
-            list(nested['resources']['0']['properties']['listprop'])
+        res_prop = nested['resources']['0']['properties']
+        res_prop['listprop'] = list(res_prop['listprop'])
         self.assertEqual(expect, nested)
 
     def test_assemble_no_properties(self):
@@ -769,6 +801,25 @@ class ResourceGroupAttrTest(common.HeatTestCase):
         self.assertRaises(exception.InvalidTemplateAttribute, resg.FnGetAtt,
                           'resource.2')
 
+    @mock.patch.object(grouputils, 'get_rsrc_id')
+    def test_get_attribute(self, mock_get_rsrc_id):
+        stack = utils.parse_stack(template)
+        mock_get_rsrc_id.side_effect = ['0', '1']
+        rsrc = stack['group1']
+        self.assertEqual(['0', '1'], rsrc.FnGetAtt(rsrc.REFS))
+
+    def test_get_attribute_convg(self):
+        cache_data = {'group1': {
+            'uuid': mock.ANY,
+            'id': mock.ANY,
+            'action': 'CREATE',
+            'status': 'COMPLETE',
+            'attrs': {'refs': ['rsrc1', 'rsrc2']}
+        }}
+        stack = utils.parse_stack(template, cache_data=cache_data)
+        rsrc = stack['group1']
+        self.assertEqual(['rsrc1', 'rsrc2'], rsrc.FnGetAtt(rsrc.REFS))
+
     def _create_dummy_stack(self, template_data=template, expect_count=2,
                             expect_attrs=None):
         stack = utils.parse_stack(template_data)
@@ -779,6 +830,7 @@ class ResourceGroupAttrTest(common.HeatTestCase):
         for resc in range(expect_count):
             res = str(resc)
             fake_res[res] = mock.Mock()
+            fake_res[res].stack = stack
             fake_res[res].FnGetRefId.return_value = 'ID-%s' % res
             if res in expect_attrs:
                 fake_res[res].FnGetAtt.return_value = expect_attrs[res]

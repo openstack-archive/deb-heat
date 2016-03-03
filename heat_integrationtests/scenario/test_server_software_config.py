@@ -37,14 +37,11 @@ file {'output_result':
   mode    => 0644,
   content => "The file /tmp/$::bar contains $::foo for server \
 $::deploy_server_id during $::deploy_action",
-}'''
+}
+'''
 
 
 class SoftwareConfigIntegrationTest(scenario_base.ScenarioTestsBase):
-
-    def setUp(self):
-        super(SoftwareConfigIntegrationTest, self).setUp()
-        self.stack_name = self._stack_rand_name()
 
     def check_stack(self):
         sid = self.stack_identifier
@@ -160,7 +157,6 @@ class SoftwareConfigIntegrationTest(scenario_base.ScenarioTestsBase):
 
         # Launch stack
         self.stack_identifier = self.launch_stack(
-            stack_name=self.stack_name,
             template_name='test_server_software_config.yaml',
             parameters=parameters,
             files=dict(list(files.items()) + list(env_files.items())),

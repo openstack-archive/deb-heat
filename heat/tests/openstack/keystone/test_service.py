@@ -178,13 +178,23 @@ class KeystoneServiceTest(common.HeatTestCase):
             enabled=None
         )
 
-    def test_resource_mapping(self):
-        rsrc = self._setup_service_resource(
-            'test_resource_mapping')
-        mapping = service.resource_mapping()
-        self.assertEqual(1, len(mapping))
-        self.assertEqual(service.KeystoneService, mapping[RESOURCE_TYPE])
-        self.assertIsInstance(rsrc, service.KeystoneService)
+    def test_service_handle_update_only_enabled(self):
+        rsrc = self._setup_service_resource('test_update_enabled_only')
+        rsrc.resource_id = '477e8273-60a7-4c41-b683-fdb0bc7cd151'
+
+        prop_diff = {service.KeystoneService.ENABLED: False}
+
+        rsrc.handle_update(json_snippet=None,
+                           tmpl_diff=None,
+                           prop_diff=prop_diff)
+
+        self.services.update.assert_called_once_with(
+            service=rsrc.resource_id,
+            name=None,
+            description=None,
+            type=None,
+            enabled=prop_diff[service.KeystoneService.ENABLED]
+        )
 
     def test_properties_title(self):
         property_title_map = {

@@ -23,11 +23,21 @@ from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine import support
+from heat.engine import translation
 
 LOG = logging.getLogger(__name__)
 
 
 class SaharaCluster(resource.Resource):
+    """A resource for managing Sahara clusters.
+
+    The Cluster entity represents a collection of VM instances that all have
+    the same data processing framework installed. It is mainly characterized by
+    a VM image with a pre-installed framework which will be used for cluster
+    deployment. Users may choose one of the pre-configured Cluster Templates to
+    start a Cluster. To get access to VMs after a Cluster has started, the user
+    should specify a keypair.
+    """
 
     PROPERTIES = (
         NAME, PLUGIN_NAME, HADOOP_VERSION, CLUSTER_TEMPLATE_ID,
@@ -170,18 +180,12 @@ class SaharaCluster(resource.Resource):
     entity = 'clusters'
 
     def translation_rules(self, props):
-        return [properties.TranslationRule(
+        return [translation.TranslationRule(
             props,
-            properties.TranslationRule.REPLACE,
+            translation.TranslationRule.REPLACE,
             [self.IMAGE_ID],
             value_path=[self.IMAGE]
         )]
-
-    def _validate_depr_keys(self, properties, key, depr_key):
-        value = properties.get(key)
-        depr_value = properties.get(depr_key)
-        if value and depr_value:
-            raise exception.ResourcePropertyConflict(value, depr_value)
 
     def _cluster_name(self):
         name = self.properties[self.NAME]
@@ -193,10 +197,10 @@ class SaharaCluster(resource.Resource):
         plugin_name = self.properties[self.PLUGIN_NAME]
         hadoop_version = self.properties[self.HADOOP_VERSION]
         cluster_template_id = self.properties[self.CLUSTER_TEMPLATE_ID]
-        image_id = (self.properties[self.IMAGE_ID] or
-                    self.properties[self.IMAGE])
+        image_id = self.properties[self.IMAGE_ID]
         if image_id:
-            image_id = self.client_plugin('glance').get_image_id(image_id)
+            image_id = self.client_plugin(
+                'glance').find_image_by_name_or_id(image_id)
 
         # check that image is provided in case when
         # cluster template is missing one
@@ -205,15 +209,16 @@ class SaharaCluster(resource.Resource):
         if cluster_template.default_image_id is None and not image_id:
             msg = _("%(img)s must be provided: Referenced cluster template "
                     "%(tmpl)s has no default_image_id defined.") % {
-                        'img': self.IMAGE, 'tmpl': cluster_template_id}
+                        'img': self.IMAGE_ID, 'tmpl': cluster_template_id}
             raise exception.StackValidationFailed(message=msg)
 
         key_name = self.properties[self.KEY_NAME]
         net_id = self.properties[self.MANAGEMENT_NETWORK]
         if net_id:
             if self.is_using_neutron():
-                net_id = self.client_plugin('neutron').find_neutron_resource(
-                    self.properties, self.MANAGEMENT_NETWORK, 'network')
+                net_id = self.client_plugin(
+                    'neutron').find_resourceid_by_name_or_id('network',
+                                                             net_id)
             else:
                 net_id = self.client_plugin('nova').get_nova_network_id(
                     net_id)
@@ -271,7 +276,6 @@ class SaharaCluster(resource.Resource):
         if res:
             return res
 
-        self._validate_depr_keys(self.properties, self.IMAGE_ID, self.IMAGE)
         # check if running on neutron and MANAGEMENT_NETWORK missing
         if (self.is_using_neutron() and
                 not self.properties[self.MANAGEMENT_NETWORK]):

@@ -15,7 +15,6 @@ from oslo_log import log as logging
 from oslo_serialization import jsonutils
 import six
 
-from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LW
 from heat.engine import attributes
@@ -25,11 +24,21 @@ from heat.engine import resource
 from heat.engine.resources.openstack.neutron import neutron
 from heat.engine.resources.openstack.neutron import subnet
 from heat.engine import support
+from heat.engine import translation
 
 LOG = logging.getLogger(__name__)
 
 
 class Port(neutron.NeutronResource):
+    """A resource for managing Neutron ports.
+
+    A port represents a virtual switch port on a logical network switch.
+    Virtual instances attach their interfaces into ports. The logical port also
+    defines the MAC address and the IP address(es) to be assigned to the
+    interfaces plugged into them. When IP addresses are associated to a port,
+    this also implies the port is associated with a subnet, as the IP address
+    was taken from the allocation pool for a specific subnet.
+    """
 
     PROPERTIES = (
         NAME, NETWORK_ID, NETWORK, FIXED_IPS, SECURITY_GROUPS,
@@ -93,22 +102,20 @@ class Port(neutron.NeutronResource):
             constraints=[
                 constraints.CustomConstraint('neutron.network')
             ],
-            update_allowed=True,
         ),
 
         NETWORK: properties.Schema(
             properties.Schema.STRING,
             _('Network this port belongs to. If you plan to use current port '
               'to assign Floating IP, you should specify %(fixed_ips)s '
-              'with %(subnet)s.  Note if this changes to a different network '
-              'update, the port will be replaced') %
+              'with %(subnet)s. Note if this changes to a different network '
+              'update, the port will be replaced.') %
             {'fixed_ips': FIXED_IPS, 'subnet': FIXED_IP_SUBNET},
             support_status=support.SupportStatus(version='2014.2'),
             required=True,
             constraints=[
                 constraints.CustomConstraint('neutron.network')
             ],
-            update_allowed=True,
         ),
         DEVICE_ID: properties.Schema(
             properties.Schema.STRING,
@@ -119,13 +126,12 @@ class Port(neutron.NeutronResource):
             properties.Schema.STRING,
             _('Name of the network owning the port. '
               'The value is typically network:floatingip '
-              'or network:router_interface or network:dhcp'),
+              'or network:router_interface or network:dhcp.'),
             update_allowed=True
         ),
         FIXED_IPS: properties.Schema(
             properties.Schema.LIST,
             _('Desired IPs for this port.'),
-            default=[],
             schema=properties.Schema(
                 properties.Schema.MAP,
                 schema={
@@ -179,7 +185,14 @@ class Port(neutron.NeutronResource):
             constraints=[
                 constraints.AllowedValues(['REPLACE_ALWAYS', 'AUTO']),
             ],
-            update_allowed=True
+            update_allowed=True,
+            support_status=support.SupportStatus(
+                status=support.DEPRECATED,
+                version='6.0.0',
+                message=_('Replacement policy used to work around flawed '
+                          'nova/neutron port interaction which has been '
+                          'fixed since Liberty.'),
+                previous_status=support.SupportStatus(version='2014.2'))
         ),
     }
 
@@ -188,9 +201,9 @@ class Port(neutron.NeutronResource):
     extra_properties_schema = {
         VALUE_SPECS: properties.Schema(
             properties.Schema.MAP,
-            _('Extra parameters to include in the "port" object in the '
-              'creation request.'),
-            default={}
+            _('Extra parameters to include in the request.'),
+            default={},
+            update_allowed=True
         ),
         ADMIN_STATE_UP: properties.Schema(
             properties.Schema.BOOLEAN,
@@ -236,8 +249,8 @@ class Port(neutron.NeutronResource):
               'To support SR-IOV PCI passthrough networking, you can request '
               'that the neutron port to be realized as normal (virtual nic), '
               'direct (pci passthrough), or macvtap '
-              '(virtual interface with a tap-like software interface). Note'
-              ' that this only works for Neutron deployments that support '
+              '(virtual interface with a tap-like software interface). Note '
+              'that this only works for Neutron deployments that support '
               'the bindings extension.'),
             constraints=[
                 constraints.AllowedValues(['normal', 'direct', 'macvtap']),
@@ -263,6 +276,12 @@ class Port(neutron.NeutronResource):
             support_status=support.SupportStatus(version='6.0.0')
         ),
     }
+
+    # Need to update properties_schema with other properties before
+    # initialisation, because resource should contain all properties before
+    # creating. Also, documentation should correctly resolves resource
+    # properties schema.
+    properties_schema.update(extra_properties_schema)
 
     attributes_schema = {
         ADMIN_STATE_UP_ATTR: attributes.Schema(
@@ -326,26 +345,17 @@ class Port(neutron.NeutronResource):
         ),
     }
 
-    # The network property can be updated, but only to switch between
-    # a name and ID for the same network, which is handled in _needs_update
-    update_exclude_properties = [NETWORK, NETWORK_ID]
-
-    def __init__(self, name, definition, stack):
-        """Overloaded init in case of merging two schemas to one."""
-        self.properties_schema.update(self.extra_properties_schema)
-        super(Port, self).__init__(name, definition, stack)
-
     def translation_rules(self, props):
         return [
-            properties.TranslationRule(
+            translation.TranslationRule(
                 props,
-                properties.TranslationRule.REPLACE,
+                translation.TranslationRule.REPLACE,
                 [self.NETWORK],
                 value_path=[self.NETWORK_ID]
             ),
-            properties.TranslationRule(
+            translation.TranslationRule(
                 props,
-                properties.TranslationRule.REPLACE,
+                translation.TranslationRule.REPLACE,
                 [self.FIXED_IPS, self.FIXED_IP_SUBNET],
                 value_name=self.FIXED_IP_SUBNET_ID
             )
@@ -380,37 +390,52 @@ class Port(neutron.NeutronResource):
         self.resource_id_set(port['id'])
 
     def _prepare_port_properties(self, props, prepare_for_update=False):
-        for fixed_ip in props.get(self.FIXED_IPS, []):
-            for key, value in list(fixed_ip.items()):
-                if value is None:
-                    fixed_ip.pop(key)
-            if fixed_ip.get(self.FIXED_IP_SUBNET):
-                self.client_plugin().resolve_subnet(
-                    fixed_ip, self.FIXED_IP_SUBNET, 'subnet_id')
+        if self.FIXED_IPS in props:
+            fixed_ips = props[self.FIXED_IPS]
+            if fixed_ips:
+                for fixed_ip in fixed_ips:
+                    for key, value in list(fixed_ip.items()):
+                        if value is None:
+                            fixed_ip.pop(key)
+                    if fixed_ip.get(self.FIXED_IP_SUBNET):
+                        self.client_plugin().resolve_subnet(
+                            fixed_ip, self.FIXED_IP_SUBNET, 'subnet_id')
+            else:
+                # Passing empty list would have created a port without
+                # fixed_ips during CREATE and released the existing
+                # fixed_ips during UPDATE (default neutron behaviour).
+                # However, for backward compatibility we will let neutron
+                # assign ip for CREATE and leave the assigned ips during
+                # UPDATE by not passing it. ref bug #1538473.
+                del props[self.FIXED_IPS]
         # delete empty MAC addresses so that Neutron validation code
         # wouldn't fail as it not accepts Nones
-        for pair in props.get(self.ALLOWED_ADDRESS_PAIRS, []):
-            if (self.ALLOWED_ADDRESS_PAIR_MAC_ADDRESS in pair and
-                    pair[self.ALLOWED_ADDRESS_PAIR_MAC_ADDRESS] is None):
-                del pair[self.ALLOWED_ADDRESS_PAIR_MAC_ADDRESS]
-
+        if self.ALLOWED_ADDRESS_PAIRS in props:
+            address_pairs = props[self.ALLOWED_ADDRESS_PAIRS]
+            if address_pairs:
+                for pair in address_pairs:
+                    if (self.ALLOWED_ADDRESS_PAIR_MAC_ADDRESS in pair
+                        and pair[
+                            self.ALLOWED_ADDRESS_PAIR_MAC_ADDRESS] is None):
+                        del pair[self.ALLOWED_ADDRESS_PAIR_MAC_ADDRESS]
+            else:
+                props[self.ALLOWED_ADDRESS_PAIRS] = []
         # if without 'security_groups', don't set the 'security_groups'
         # property when creating, neutron will create the port with the
         # 'default' securityGroup. If has the 'security_groups' and the
         # value is [], which means to create the port without securityGroup.
-        if props.get(self.SECURITY_GROUPS) is not None:
-            props[self.SECURITY_GROUPS] = self.client_plugin(
-            ).get_secgroup_uuids(props.get(self.SECURITY_GROUPS))
-        else:
-            # And the update should has the same behavior.
-            if prepare_for_update:
+        if self.SECURITY_GROUPS in props:
+            if props.get(self.SECURITY_GROUPS) is not None:
                 props[self.SECURITY_GROUPS] = self.client_plugin(
-                ).get_secgroup_uuids(['default'])
+                ).get_secgroup_uuids(props.get(self.SECURITY_GROUPS))
+            else:
+                # And the update should has the same behavior.
+                if prepare_for_update:
+                    props[self.SECURITY_GROUPS] = self.client_plugin(
+                    ).get_secgroup_uuids(['default'])
 
-        if not props[self.FIXED_IPS]:
-            del(props[self.FIXED_IPS])
-
-        del(props[self.REPLACEMENT_POLICY])
+        if self.REPLACEMENT_POLICY in props:
+            del(props[self.REPLACEMENT_POLICY])
 
     def _show_resource(self):
         return self.client().show_port(
@@ -444,38 +469,35 @@ class Port(neutron.NeutronResource):
             return subnets
         return super(Port, self)._resolve_attribute(name)
 
-    def _needs_update(self, after, before, after_props, before_props,
-                      prev_resource, check_init_complete=True):
+    def needs_replace(self, after_props):
+        """Mandatory replace based on props."""
+        return after_props.get(self.REPLACEMENT_POLICY) == 'REPLACE_ALWAYS'
 
-        if after_props.get(self.REPLACEMENT_POLICY) == 'REPLACE_ALWAYS':
-            raise exception.UpdateReplace(self.name)
-
-        if after_props != before_props:
-            # Switching between name and ID is OK, provided the value resolves
-            # to the same network.  If the network changes, port is replaced.
-            # Support NETWORK and NETWORK_ID, as switching between those is OK.
-            before_id = self.client_plugin().find_neutron_resource(
-                before_props, self.NETWORK, 'network')
-            after_id = self.client_plugin().find_neutron_resource(
-                after_props, self.NETWORK, 'network')
-            if before_id != after_id:
-                raise exception.UpdateReplace(self.name)
-
-        return super(Port, self)._needs_update(
-            after, before, after_props, before_props, prev_resource,
-            check_init_complete)
+    def needs_replace_with_prop_diff(self, changed_properties_set,
+                                     after_props, before_props):
+        """Needs replace based on prop_diff."""
+        # Switching between name and ID is OK, provided the value resolves
+        # to the same network.  If the network changes, port is replaced.
+        if self.NETWORK in changed_properties_set:
+            before_id = self.client_plugin().find_resourceid_by_name_or_id(
+                'network',
+                before_props[self.NETWORK])
+            after_id = self.client_plugin().find_resourceid_by_name_or_id(
+                'network',
+                after_props[self.NETWORK])
+            changed_properties_set.remove(self.NETWORK)
+            return before_id != after_id
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        props = self.prepare_update_properties(json_snippet)
-
-        self._prepare_port_properties(props, prepare_for_update=True)
-        qos_policy = props.pop(self.QOS_POLICY, None)
-        if self.QOS_POLICY in prop_diff:
-            props['qos_policy_id'] = self.client_plugin().get_qos_policy_id(
-                qos_policy) if qos_policy else None
-
-        LOG.debug('updating port with %s' % props)
-        self.client().update_port(self.resource_id, {'port': props})
+        if prop_diff:
+            self.prepare_update_properties(prop_diff)
+            if self.QOS_POLICY in prop_diff:
+                qos_policy = prop_diff.pop(self.QOS_POLICY)
+                prop_diff['qos_policy_id'] = self.client_plugin(
+                    ).get_qos_policy_id(qos_policy) if qos_policy else None
+            self._prepare_port_properties(prop_diff, prepare_for_update=True)
+            LOG.debug('updating port with %s' % prop_diff)
+            self.client().update_port(self.resource_id, {'port': prop_diff})
 
     def check_update_complete(self, *args):
         attributes = self._show_resource()
@@ -495,8 +517,8 @@ class Port(neutron.NeutronResource):
     def restore_prev_rsrc(self, convergence=False):
         # In case of convergence, during rollback, the previous rsrc is
         # already selected and is being acted upon.
-        prev_port = self if convergence else \
-            self.stack._backup_stack().resources.get(self.name)
+        bakup_resources = self.stack._backup_stack().resources
+        prev_port = self if convergence else bakup_resources.get(self.name)
         fixed_ips = prev_port.data().get('port_fip', [])
 
         props = {'fixed_ips': []}

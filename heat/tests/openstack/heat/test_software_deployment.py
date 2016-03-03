@@ -160,12 +160,13 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         super(SoftwareDeploymentTest, self).setUp()
         self.ctx = utils.dummy_context()
 
-    def _create_stack(self, tmpl):
+    def _create_stack(self, tmpl, cache_data=None):
         self.stack = parser.Stack(
             self.ctx, 'software_deployment_test_stack',
             template.Template(tmpl),
             stack_id='42f6f66b-631a-44e7-8d01-e22fb54574a9',
-            stack_user_project_id='65728b74-cfe7-4f17-9c15-11d4f686e591'
+            stack_user_project_id='65728b74-cfe7-4f17-9c15-11d4f686e591',
+            cache_data=cache_data
         )
 
         self.patchobject(nova.NovaClientPlugin, 'get_server',
@@ -212,10 +213,6 @@ class SoftwareDeploymentTest(common.HeatTestCase):
                          "user_data_format should be set to "
                          "SOFTWARE_CONFIG since there are "
                          "software deployments on it.", six.text_type(err))
-
-    def test_resource_mapping(self):
-        self._create_stack(self.template)
-        self.assertIsInstance(self.deployment, sd.SoftwareDeployment)
 
     def mock_software_config(self):
         config = {
@@ -917,6 +914,17 @@ class SoftwareDeploymentTest(common.HeatTestCase):
                          self.deployment.FnGetAtt('deploy_stderr'))
         self.assertEqual(0, self.deployment.FnGetAtt('deploy_status_code'))
 
+    def test_fn_get_att_convg(self):
+        cache_data = {'deployment_mysql': {
+            'uuid': mock.ANY,
+            'id': mock.ANY,
+            'action': 'CREATE',
+            'status': 'COMPLETE',
+            'attrs': {'foo': 'bar'}
+        }}
+        self._create_stack(self.template, cache_data=cache_data)
+        self.assertEqual('bar', self.deployment.FnGetAtt('foo'))
+
     def test_fn_get_att_error(self):
         self._create_stack(self.template)
 
@@ -1128,11 +1136,6 @@ class SoftwareDeploymentTest(common.HeatTestCase):
     def test_get_zaqar_queue(self):
         dep_data = {}
 
-        zc = mock.MagicMock()
-        zcc = self.patch(
-            'heat.engine.clients.os.zaqar.ZaqarClientPlugin._create')
-        zcc.return_value = zc
-
         self._create_stack(self.template_zaqar_signal)
 
         def data_set(key, value, redact=False):
@@ -1146,16 +1149,16 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         self.deployment.action = self.deployment.CREATE
 
         queue_id = self.deployment._get_zaqar_signal_queue_id()
-        self.assertEqual(2, len(zc.queue.mock_calls))
-        self.assertEqual(queue_id, zc.queue.mock_calls[0][1][0])
         self.assertEqual(queue_id, dep_data['zaqar_signal_queue_id'])
 
         self.assertEqual(queue_id,
                          self.deployment._get_zaqar_signal_queue_id())
 
-    def test_delete_zaqar_queue(self):
+    @mock.patch.object(zaqar.ZaqarClientPlugin, 'create_for_tenant')
+    def test_delete_zaqar_queue(self, zcc):
         queue_id = str(uuid.uuid4())
         dep_data = {
+            'password': 'password',
             'zaqar_signal_queue_id': queue_id
         }
         self._create_stack(self.template_zaqar_signal)
@@ -1164,8 +1167,6 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         self.deployment.data = mock.Mock(return_value=dep_data)
 
         zc = mock.MagicMock()
-        zcc = self.patch(
-            'heat.engine.clients.os.zaqar.ZaqarClientPlugin._create')
         zcc.return_value = zc
 
         self.deployment.id = 23

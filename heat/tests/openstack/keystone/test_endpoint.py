@@ -193,12 +193,25 @@ class KeystoneEndpointTest(common.HeatTestCase):
             enabled=None
         )
 
-    def test_resource_mapping(self):
-        rsrc = self._setup_endpoint_resource('test_resource_mapping')
-        mapping = endpoint.resource_mapping()
-        self.assertEqual(1, len(mapping))
-        self.assertEqual(endpoint.KeystoneEndpoint, mapping[RESOURCE_TYPE])
-        self.assertIsInstance(rsrc, endpoint.KeystoneEndpoint)
+    def test_endpoint_handle_update_only_enabled(self):
+        rsrc = self._setup_endpoint_resource('test_endpoint_update_enabled')
+        rsrc.resource_id = '477e8273-60a7-4c41-b683-fdb0bc7cd151'
+
+        prop_diff = {endpoint.KeystoneEndpoint.ENABLED: True}
+
+        rsrc.handle_update(json_snippet=None,
+                           tmpl_diff=None,
+                           prop_diff=prop_diff)
+
+        self.endpoints.update.assert_called_once_with(
+            endpoint=rsrc.resource_id,
+            region=None,
+            interface=None,
+            service=None,
+            url=None,
+            name=None,
+            enabled=prop_diff[endpoint.KeystoneEndpoint.ENABLED]
+        )
 
     def test_properties_title(self):
         property_title_map = {

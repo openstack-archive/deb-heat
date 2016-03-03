@@ -15,7 +15,7 @@ import json
 import os
 
 import mock
-from oslo_config import cfg
+from oslo_config import fixture as config_fixture
 import six
 
 from heat.api.aws import exception
@@ -42,13 +42,8 @@ class CfnStackControllerTest(common.HeatTestCase):
     def setUp(self):
         super(CfnStackControllerTest, self).setUp()
 
-        self.opts = [
-            cfg.StrOpt('config_dir', default=policy_path),
-            cfg.StrOpt('config_file', default='foo'),
-            cfg.StrOpt('project', default='heat'),
-        ]
-        cfg.CONF.register_opts(self.opts)
-        cfg.CONF.set_default('host', 'host')
+        self.fixture = self.useFixture(config_fixture.Config())
+        self.fixture.conf(args=['--config-dir', policy_path])
         self.topic = rpc_api.ENGINE_TOPIC
         self.api_version = '1.0'
         self.template = {u'AWSTemplateFormatVersion': u'2010-09-09',
@@ -69,7 +64,6 @@ class CfnStackControllerTest(common.HeatTestCase):
 
     def tearDown(self):
         super(CfnStackControllerTest, self).tearDown()
-        cfg.CONF.unregister_opts(self.opts)
 
     def _dummy_GET_request(self, params=None):
         # Mangle the params dict into a query string
@@ -535,13 +529,14 @@ class CfnStackControllerTest(common.HeatTestCase):
               'template': self.template,
               'params': engine_parms,
               'files': {},
+              'environment_files': None,
               'args': engine_args,
               'owner_id': None,
               'nested_depth': 0,
               'user_creds_id': None,
               'parent_resource_name': None,
               'stack_user_project_id': None}),
-            version='1.8'
+            version='1.23'
         ).AndRaise(failure)
 
     def _stub_rpc_create_stack_call_success(self, stack_name, engine_parms,
@@ -563,13 +558,14 @@ class CfnStackControllerTest(common.HeatTestCase):
               'template': self.template,
               'params': engine_parms,
               'files': {},
+              'environment_files': None,
               'args': engine_args,
               'owner_id': None,
               'nested_depth': 0,
               'user_creds_id': None,
               'parent_resource_name': None,
               'stack_user_project_id': None}),
-            version='1.8'
+            version='1.23'
         ).AndReturn(engine_resp)
 
         self.m.ReplayAll()
@@ -877,7 +873,9 @@ class CfnStackControllerTest(common.HeatTestCase):
               'template': self.template,
               'params': engine_parms,
               'files': {},
-              'args': engine_args})
+              'environment_files': None,
+              'args': engine_args}),
+            version='1.23'
         ).AndReturn(identity)
 
         self.m.ReplayAll()
@@ -1095,8 +1093,10 @@ class CfnStackControllerTest(common.HeatTestCase):
         rpc_client.EngineClient.call(
             dummy_req.context,
             ('validate_template', {'template': json_template, 'params': None,
-                                   'files': None, 'show_nested': False}),
-            version='1.18'
+                                   'files': None, 'environment_files': None,
+                                   'show_nested': False,
+                                   'ignorable_errors': None}),
+            version='1.24'
         ).AndReturn(response)
         self.m.ReplayAll()
 
@@ -1326,7 +1326,7 @@ class CfnStackControllerTest(common.HeatTestCase):
         args = {
             'stack_identity': identity,
             'resource_name': dummy_req.params.get('LogicalResourceId'),
-            'with_attr': None,
+            'with_attr': False,
         }
         rpc_client.EngineClient.call(
             dummy_req.context, ('describe_stack_resource', args), version='1.2'
@@ -1391,7 +1391,7 @@ class CfnStackControllerTest(common.HeatTestCase):
         args = {
             'stack_identity': identity,
             'resource_name': dummy_req.params.get('LogicalResourceId'),
-            'with_attr': None,
+            'with_attr': False,
         }
         rpc_client.EngineClient.call(
             dummy_req.context, ('describe_stack_resource', args), version='1.2'
@@ -1629,8 +1629,9 @@ class CfnStackControllerTest(common.HeatTestCase):
             dummy_req.context,
             ('list_stack_resources', {'stack_identity': identity,
                                       'nested_depth': 0,
-                                      'with_detail': False}),
-            version='1.12'
+                                      'with_detail': False,
+                                      'filters': None}),
+            version='1.25'
         ).AndReturn(engine_resp)
 
         self.m.ReplayAll()

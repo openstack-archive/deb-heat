@@ -85,8 +85,8 @@ class SwiftTest(common.HeatTestCase):
     @mock.patch('swiftclient.client.Connection.put_container')
     def test_create_container_name(self, mock_put):
         # Setup
-        self.t['Resources']['SwiftContainer']['Properties']['name'] = \
-            'the_name'
+        res_prop = self.t['Resources']['SwiftContainer']['Properties']
+        res_prop['name'] = 'the_name'
         stack = utils.parse_stack(self.t)
 
         # Test
@@ -310,8 +310,8 @@ class SwiftTest(common.HeatTestCase):
                                       mock_delete_container):
         # Setup
         container_name = utils.PhysName('test_stack', 'test_resource')
-        self.t['Resources']['SwiftContainer']['Properties']['PurgeOnDelete'] \
-            = True
+        res_prop = self.t['Resources']['SwiftContainer']['Properties']
+        res_prop['PurgeOnDelete'] = True
         stack = utils.parse_stack(self.t)
 
         get_return_values = [
@@ -344,16 +344,16 @@ class SwiftTest(common.HeatTestCase):
                                                 mock_delete_container):
         # Setup
         container_name = utils.PhysName('test_stack', 'test_resource')
-        self.t['Resources']['SwiftContainer']['Properties']['PurgeOnDelete'] \
-            = True
+        res_prop = self.t['Resources']['SwiftContainer']['Properties']
+        res_prop['PurgeOnDelete'] = True
         stack = utils.parse_stack(self.t)
 
         mock_get.return_value = ({'name': container_name},
                                  [{'name': 'test_object'}])
-        mock_delete_object.side_effect =\
-            sc.ClientException('object-is-gone', http_status=404)
-        mock_delete_container.side_effect =\
-            sc.ClientException('container-is-gone', http_status=404)
+        mock_delete_object.side_effect = sc.ClientException('object-is-gone',
+                                                            http_status=404)
+        mock_delete_container.side_effect = sc.ClientException(
+            'container-is-gone', http_status=404)
 
         # Test
         container = self._create_container(stack)
@@ -376,14 +376,14 @@ class SwiftTest(common.HeatTestCase):
                                                   mock_delete_object):
         # Setup
         container_name = utils.PhysName('test_stack', 'test_resource')
-        self.t['Resources']['SwiftContainer']['Properties']['PurgeOnDelete'] \
-            = True
+        res_prop = self.t['Resources']['SwiftContainer']['Properties']
+        res_prop['PurgeOnDelete'] = True
         stack = utils.parse_stack(self.t)
 
         mock_get.return_value = ({'name': container_name},
                                  [{'name': 'test_object'}])
-        mock_delete_object.side_effect =\
-            sc.ClientException('object-delete-failure')
+        mock_delete_object.side_effect = (
+            sc.ClientException('object-delete-failure'))
 
         # Test
         container = self._create_container(stack)
@@ -419,8 +419,8 @@ class SwiftTest(common.HeatTestCase):
     @mock.patch('swiftclient.client.Connection.put_container')
     def test_check(self, mock_put, mock_get):
         # Setup
-        self.t['Resources']['SwiftContainer']['Properties']['PurgeOnDelete'] \
-            = True
+        res_prop = self.t['Resources']['SwiftContainer']['Properties']
+        res_prop['PurgeOnDelete'] = True
         stack = utils.parse_stack(self.t)
 
         # Test
@@ -434,8 +434,8 @@ class SwiftTest(common.HeatTestCase):
     @mock.patch('swiftclient.client.Connection.put_container')
     def test_check_fail(self, mock_put, mock_get):
         # Setup
-        self.t['Resources']['SwiftContainer']['Properties']['PurgeOnDelete'] \
-            = True
+        res_prop = self.t['Resources']['SwiftContainer']['Properties']
+        res_prop['PurgeOnDelete'] = True
         stack = utils.parse_stack(self.t)
 
         mock_get.side_effect = Exception('boom')
@@ -467,3 +467,24 @@ class SwiftTest(common.HeatTestCase):
         stack = utils.parse_stack(self.t, cache_data=cache_data)
         rsrc = stack['SwiftContainer']
         self.assertEqual('xyz_convg', rsrc.FnGetRefId())
+
+    @mock.patch('swiftclient.client.Connection.head_account')
+    @mock.patch('swiftclient.client.Connection.head_container')
+    @mock.patch('swiftclient.client.Connection.put_container')
+    def test_parse_live_resource_data(self, mock_put, mock_container,
+                                      mock_account):
+        stack = utils.parse_stack(self.t)
+        container = self._create_container(
+            stack, definition_name="SwiftContainerWebsite")
+        mock_container.return_value = {
+            'x-container-read': '.r:*',
+            'x-container-meta-web-index': 'index.html',
+            'x-container-meta-web-error': 'error.html',
+            'x-container-meta-login': 'login.html'
+        }
+        mock_account.return_value = {}
+        live_state = container.parse_live_resource_data(
+            container.properties, container.get_live_resource_data())
+        # live state properties values should be equal to current resource
+        # properties values
+        self.assertEqual(dict(container.properties.items()), live_state)

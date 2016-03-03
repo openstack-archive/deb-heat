@@ -19,7 +19,6 @@ from oslo_utils import netutils
 
 from heat.common import exception
 from heat.common.i18n import _
-from heat.common.i18n import _LI
 from heat.engine import resource
 
 from heat.engine.resources.openstack.neutron import port as neutron_port
@@ -30,42 +29,31 @@ LOG = logging.getLogger(__name__)
 class ServerNetworkMixin(object):
 
     def _validate_network(self, network):
-        net_uuid = network.get(self.NETWORK_UUID)
         net_id = network.get(self.NETWORK_ID)
         port = network.get(self.NETWORK_PORT)
         subnet = network.get(self.NETWORK_SUBNET)
+        fixed_ip = network.get(self.NETWORK_FIXED_IP)
 
-        if (net_id is None and port is None
-           and net_uuid is None and subnet is None):
-            msg = _('One of the properties "%(id)s", "%(port_id)s", '
-                    '"%(uuid)s" or "%(subnet)s" should be set for the '
+        if net_id is None and port is None and subnet is None:
+            msg = _('One of the properties "%(id)s", "%(port_id)s" '
+                    'or "%(subnet)s" should be set for the '
                     'specified network of server "%(server)s".'
                     '') % dict(id=self.NETWORK_ID,
                                port_id=self.NETWORK_PORT,
-                               uuid=self.NETWORK_UUID,
                                subnet=self.NETWORK_SUBNET,
                                server=self.name)
             raise exception.StackValidationFailed(message=msg)
 
-        if net_uuid and net_id:
-            msg = _('Properties "%(uuid)s" and "%(id)s" are both set '
-                    'to the network "%(network)s" for the server '
-                    '"%(server)s". The "%(uuid)s" property is deprecated. '
-                    'Use only "%(id)s" property.'
-                    '') % dict(uuid=self.NETWORK_UUID,
-                               id=self.NETWORK_ID,
-                               network=network[self.NETWORK_ID],
-                               server=self.name)
+        if port and not self.is_using_neutron():
+            msg = _('Property "%s" is supported only for '
+                    'Neutron.') % self.NETWORK_PORT
             raise exception.StackValidationFailed(message=msg)
-        elif net_uuid:
-            LOG.info(_LI('For the server "%(server)s" the "%(uuid)s" '
-                         'property is set to network "%(network)s". '
-                         '"%(uuid)s" property is deprecated. Use '
-                         '"%(id)s"  property instead.'),
-                     dict(uuid=self.NETWORK_UUID,
-                          id=self.NETWORK_ID,
-                          network=network[self.NETWORK_ID],
-                          server=self.name))
+
+        # Nova doesn't allow specify ip and port at the same time
+        if fixed_ip and port:
+            raise exception.ResourcePropertyConflict(
+                "/".join([self.NETWORKS, self.NETWORK_FIXED_IP]),
+                "/".join([self.NETWORKS, self.NETWORK_PORT]))
 
     def _validate_belonging_subnet_to_net(self, network):
         if network.get(self.NETWORK_PORT) is None and self.is_using_neutron():
@@ -76,7 +64,7 @@ class ServerNetworkMixin(object):
             if (subnet is not None and net is not None):
                 subnet_net = self.client_plugin(
                     'neutron').network_id_from_subnet_id(
-                    self._get_subnet_id(network))
+                    self._get_subnet_id(subnet))
                 if subnet_net != net:
                     msg = _('Specified subnet %(subnet)s does not belongs to '
                             'network %(network)s.') % {
@@ -107,7 +95,7 @@ class ServerNetworkMixin(object):
         if fixed_ip:
             body['ip_address'] = fixed_ip
         if subnet:
-            body['subnet_id'] = self._get_subnet_id(net_data)
+            body['subnet_id'] = self._get_subnet_id(subnet)
         # we should add fixed_ips only if subnet or ip were provided
         if body:
             kwargs.update({'fixed_ips': [body]})
@@ -136,8 +124,8 @@ class ServerNetworkMixin(object):
                             is None):
                         del pair[
                             neutron_port.Port.ALLOWED_ADDRESS_PAIR_MAC_ADDRESS]
-                kwargs[neutron_port.Port.ALLOWED_ADDRESS_PAIRS] = \
-                    allowed_address_pairs
+                port_address_pairs = neutron_port.Port.ALLOWED_ADDRESS_PAIRS
+                kwargs[port_address_pairs] = allowed_address_pairs
 
         return kwargs
 
@@ -216,18 +204,59 @@ class ServerNetworkMixin(object):
         for idx, net in enumerate(networks):
             self._validate_belonging_subnet_to_net(net)
             nic_info = {'net-id': self._get_network_id(net)}
-            if net.get(self.NETWORK_FIXED_IP):
-                ip = net[self.NETWORK_FIXED_IP]
-                if netutils.is_valid_ipv6(ip):
-                    nic_info['v6-fixed-ip'] = ip
-                else:
-                    nic_info['v4-fixed-ip'] = ip
             if net.get(self.NETWORK_PORT):
                 nic_info['port-id'] = net[self.NETWORK_PORT]
             elif self.is_using_neutron() and net.get(self.NETWORK_SUBNET):
                 nic_info['port-id'] = self._create_internal_port(net, idx)
+
+            # if nic_info including 'port-id', do not set ip for nic
+            if not nic_info.get('port-id'):
+                if net.get(self.NETWORK_FIXED_IP):
+                    ip = net[self.NETWORK_FIXED_IP]
+                    if netutils.is_valid_ipv6(ip):
+                        nic_info['v6-fixed-ip'] = ip
+                    else:
+                        nic_info['v4-fixed-ip'] = ip
+
+            if net.get(self.NETWORK_FLOATING_IP) and nic_info.get('port-id'):
+                floating_ip_data = {'port_id': nic_info['port-id']}
+                if net.get(self.NETWORK_FIXED_IP):
+                    floating_ip_data.update(
+                        {'fixed_ip_address':
+                            net.get(self.NETWORK_FIXED_IP)})
+                self._floating_ip_neutron_associate(
+                    net.get(self.NETWORK_FLOATING_IP), floating_ip_data)
+
             nics.append(nic_info)
         return nics
+
+    def _floating_ip_neutron_associate(self, floating_ip, floating_ip_data):
+        if self.is_using_neutron():
+            self.client('neutron').update_floatingip(
+                floating_ip, {'floatingip': floating_ip_data})
+
+    def _floating_ip_nova_associate(self, floating_ip):
+        fl_ip = self.client().floating_ips.get(floating_ip)
+        if fl_ip and self.resource_id:
+            self.client().servers.add_floating_ip(self.resource_id, fl_ip.ip)
+
+    def _floating_ips_disassociate(self):
+        networks = self.properties[self.NETWORKS] or []
+        for network in networks:
+            floating_ip = network.get(self.NETWORK_FLOATING_IP)
+            if floating_ip is not None:
+                self._floating_ip_disassociate(floating_ip)
+
+    def _floating_ip_disassociate(self, floating_ip):
+        if self.is_using_neutron():
+            with self.client_plugin('neutron').ignore_not_found:
+                self.client('neutron').update_floatingip(
+                    floating_ip, {'floatingip': {'port_id': None}})
+        else:
+            with self.client_plugin().ignore_conflict_and_not_found:
+                fl_ip = self.client().floating_ips.get(floating_ip)
+                self.client().servers.remove_floating_ip(self.resource_id,
+                                                         fl_ip.ip)
 
     def _exclude_not_updated_networks(self, old_nets, new_nets):
         # make networks similar by adding None vlues for not used keys
@@ -243,28 +272,24 @@ class ServerNetworkMixin(object):
         return not_updated_nets
 
     def _get_network_id(self, net):
-        # network and network_id properties can be used interchangeably
-        # if move the same value from one properties to another, it should
-        # not change anything, i.e. it will be the same port/interface
-        net_id = (net.get(self.NETWORK_UUID) or
-                  net.get(self.NETWORK_ID) or None)
-
+        net_id = net.get(self.NETWORK_ID) or None
+        subnet = net.get(self.NETWORK_SUBNET) or None
         if net_id:
             if self.is_using_neutron():
                 net_id = self.client_plugin(
-                    'neutron').resolve_network(
-                    net, self.NETWORK_ID, self.NETWORK_UUID)
+                    'neutron').find_resourceid_by_name_or_id('network',
+                                                             net_id)
             else:
                 net_id = self.client_plugin(
                     'nova').get_nova_network_id(net_id)
-        elif net.get(self.NETWORK_SUBNET):
+        elif subnet:
             net_id = self.client_plugin('neutron').network_id_from_subnet_id(
-                self._get_subnet_id(net))
+                self._get_subnet_id(subnet))
         return net_id
 
-    def _get_subnet_id(self, net):
-        return self.client_plugin('neutron').find_neutron_resource(
-            net, self.NETWORK_SUBNET, 'subnet')
+    def _get_subnet_id(self, subnet):
+        return self.client_plugin('neutron').find_resourceid_by_name_or_id(
+            'subnet', subnet)
 
     def update_networks_matching_iface_port(self, nets, interfaces):
 
@@ -335,6 +360,9 @@ class ServerNetworkMixin(object):
                         # if we have internal port with such id, remove it
                         # instantly.
                         self._delete_internal_port(net.get(self.NETWORK_PORT))
+                if net.get(self.NETWORK_FLOATING_IP):
+                    self._floating_ip_disassociate(
+                        net.get(self.NETWORK_FLOATING_IP))
 
         handler_kwargs = {'port_id': None, 'net_id': None, 'fip': None}
         # if new_nets is None, we should attach first free port,
@@ -345,19 +373,38 @@ class ServerNetworkMixin(object):
         # were mentioned above
         for idx, net in enumerate(new_nets):
             handler_kwargs = {'port_id': None,
-                              'net_id': self._get_network_id(net),
+                              'net_id': None,
                               'fip': None}
-            if handler_kwargs['net_id']:
-                handler_kwargs['fip'] = net.get('fixed_ip')
+
             if net.get(self.NETWORK_PORT):
                 handler_kwargs['port_id'] = net.get(self.NETWORK_PORT)
             elif self.is_using_neutron() and net.get(self.NETWORK_SUBNET):
                 handler_kwargs['port_id'] = self._create_internal_port(net,
                                                                        idx)
 
+            if not handler_kwargs['port_id']:
+                handler_kwargs['net_id'] = self._get_network_id(net)
+            if handler_kwargs['net_id']:
+                handler_kwargs['fip'] = net.get('fixed_ip')
+
+            floating_ip = net.get(self.NETWORK_FLOATING_IP)
+            if floating_ip:
+                flip_associate = {'port_id': handler_kwargs.get('port_id')}
+                if net.get('fixed_ip'):
+                    flip_associate['fixed_ip_address'] = net.get('fixed_ip')
+
+                self.update_floating_ip_association(floating_ip,
+                                                    flip_associate)
+
             add_nets.append(handler_kwargs)
 
         return remove_ports, add_nets
+
+    def update_floating_ip_association(self, floating_ip, flip_associate):
+        if self.is_using_neutron() and flip_associate.get('port_id'):
+            self._floating_ip_neutron_associate(floating_ip, flip_associate)
+        elif not self.is_using_neutron():
+            self._floating_ip_nova_associate(floating_ip)
 
     def prepare_ports_for_replace(self):
         if not self.is_using_neutron():
@@ -393,8 +440,8 @@ class ServerNetworkMixin(object):
 
         # In case of convergence, during rollback, the previous rsrc is
         # already selected and is being acted upon.
-        prev_server = self if convergence else \
-            self.stack._backup_stack().resources.get(self.name)
+        backup_res = self.stack._backup_stack().resources.get(self.name)
+        prev_server = self if convergence else backup_res
 
         if convergence:
             rsrc, rsrc_owning_stack, stack = resource.Resource.load(

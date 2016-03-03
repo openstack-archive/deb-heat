@@ -20,6 +20,14 @@ from heat.engine import support
 
 
 class SecurityGroup(neutron.NeutronResource):
+    """A resource for managing Neutron security groups.
+
+    Security groups are sets of IP filter rules that are applied to an
+    instance's networking. They are project specific, and project members can
+    edit the default rules for their group and add new rules sets. All projects
+    have a "default" security group, which is applied to instances that have no
+    other security group defined.
+    """
 
     required_service_extension = 'security-group'
 
@@ -143,6 +151,10 @@ class SecurityGroup(neutron.NeutronResource):
         {"direction": "egress", "ethertype": "IPv6"}
     ]
 
+    def _show_resource(self):
+        return self.client().show_security_group(
+            self.resource_id)['security_group']
+
     def validate(self):
         super(SecurityGroup, self).validate()
         if self.properties[self.NAME] == 'default':
@@ -221,7 +233,6 @@ class SecurityGroup(neutron.NeutronResource):
                         self.client_plugin().ignore_not_found(ex)
 
     def handle_delete(self):
-
         if self.resource_id is None:
             return
 
@@ -230,18 +241,20 @@ class SecurityGroup(neutron.NeutronResource):
             self.client().delete_security_group(self.resource_id)
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        props = self.prepare_update_properties(json_snippet)
-        rules = props.pop(self.RULES, [])
-
-        self.client().update_security_group(
-            self.resource_id, {'security_group': props})
-
         # handle rules changes by:
         # * deleting all rules
         # * restoring the default egress rules
         # * creating new rules
-        self._delete_rules()
-        self._create_rules(self.default_egress_rules)
+        rules = None
+        if self.RULES in prop_diff:
+            rules = prop_diff.pop(self.RULES)
+            self._delete_rules()
+            self._create_rules(self.default_egress_rules)
+
+        if prop_diff:
+            self.prepare_update_properties(prop_diff)
+            self.client().update_security_group(
+                self.resource_id, {'security_group': prop_diff})
         if rules:
             self._create_rules(rules)
 

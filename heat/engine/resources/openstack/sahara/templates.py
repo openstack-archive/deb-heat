@@ -17,6 +17,7 @@ import re
 import six
 
 from oslo_log import log as logging
+from oslo_utils import encodeutils
 
 from heat.common import exception
 from heat.common.i18n import _
@@ -35,6 +36,13 @@ SAHARA_NAME_REGEX = (r"^(([a-zA-Z]|[a-zA-Z][a-zA-Z0-9\-]"
 
 
 class SaharaNodeGroupTemplate(resource.Resource):
+    """A resource for managing Sahara node group templates.
+
+    A Node Group Template describes a group of nodes within cluster. It
+    contains a list of hadoop processes that will be launched on each instance
+    in a group. Also a Node Group Template may provide node scoped
+    configurations for those processes.
+    """
 
     support_status = support.SupportStatus(version='2014.2')
 
@@ -274,10 +282,12 @@ class SaharaNodeGroupTemplate(resource.Resource):
             'use_autoconfig': self.properties[self.USE_AUTOCONFIG],
             'shares': self.properties[self.SHARES]
         }
-        if props['floating_ip_pool'] and self.is_using_neutron():
+        floating_ip_pool = props['floating_ip_pool']
+        if floating_ip_pool and self.is_using_neutron():
             props['floating_ip_pool'] = self.client_plugin(
-                'neutron').find_neutron_resource(
-                    self.properties, self.FLOATING_IP_POOL, 'network')
+                'neutron').find_resourceid_by_name_or_id(
+                'network',
+                floating_ip_pool)
         return props
 
     def handle_create(self):
@@ -304,21 +314,23 @@ class SaharaNodeGroupTemplate(resource.Resource):
         if pool:
             if self.is_using_neutron():
                 try:
-                    self.client_plugin('neutron').find_neutron_resource(
-                        self.properties, self.FLOATING_IP_POOL, 'network')
+                    self.client_plugin(
+                        'neutron').find_resourceid_by_name_or_id('network',
+                                                                 pool)
                 except Exception as ex:
                     if (self.client_plugin('neutron').is_not_found(ex)
                             or self.client_plugin('neutron').is_no_unique(ex)):
-                        raise exception.StackValidationFailed(
-                            message=ex.message)
+                        err_msg = encodeutils.exception_to_unicode(ex)
+                        raise exception.StackValidationFailed(message=err_msg)
                     raise
+
             else:
                 try:
                     self.client('nova').floating_ip_pools.find(name=pool)
                 except Exception as ex:
                     if self.client_plugin('nova').is_not_found(ex):
-                        raise exception.StackValidationFailed(
-                            message=ex.message)
+                        err_msg = encodeutils.exception_to_unicode(ex)
+                        raise exception.StackValidationFailed(message=err_msg)
                     raise
 
         self.client_plugin().validate_hadoop_version(
@@ -352,6 +364,19 @@ class SaharaNodeGroupTemplate(resource.Resource):
 
 
 class SaharaClusterTemplate(resource.Resource):
+    """A resource for managing Sahara cluster templates.
+
+    A Cluster Template is designed to bring Node Group Templates together to
+    form a Cluster. A Cluster Template defines what Node Groups will be
+    included and how many instances will be created in each. Some data
+    processing framework configurations can not be applied to a single node,
+    but to a whole Cluster. A user can specify these kinds of configurations in
+    a Cluster Template. Sahara enables users to specify which processes should
+    be added to an anti-affinity group within a Cluster Template. If a process
+    is included into an anti-affinity group, it means that VMs where this
+    process is going to be launched should be scheduled to different hardware
+    hosts.
+    """
 
     support_status = support.SupportStatus(version='2014.2')
 
@@ -530,14 +555,15 @@ class SaharaClusterTemplate(resource.Resource):
             'use_autoconfig': self.properties[self.USE_AUTOCONFIG],
             'shares': self.properties[self.SHARES]
         }
-        if props['net_id']:
+        net_id = props['net_id']
+        if net_id:
             if self.is_using_neutron():
                 props['net_id'] = self.client_plugin(
-                    'neutron').find_neutron_resource(
-                    self.properties, self.MANAGEMENT_NETWORK, 'network')
+                    'neutron').find_resourceid_by_name_or_id('network',
+                                                             net_id)
             else:
                 props['net_id'] = self.client_plugin(
-                    'nova').get_nova_network_id(props['net_id'])
+                    'nova').get_nova_network_id(net_id)
         return props
 
     def handle_create(self):

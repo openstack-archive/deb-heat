@@ -97,10 +97,12 @@ class InstanceGroup(stack_resource.StackResource):
                 schema={
                     TAG_KEY: properties.Schema(
                         properties.Schema.STRING,
+                        _('Tag key.'),
                         required=True
                     ),
                     TAG_VALUE: properties.Schema(
                         properties.Schema.STRING,
+                        _('Tag value.'),
                         required=True
                     ),
                 },
@@ -249,7 +251,8 @@ class InstanceGroup(stack_resource.StackResource):
         Also see heat.scaling.template.member_definitions.
         """
         instance_definition = self._get_resource_definition()
-        old_resources = grouputils.get_member_definitions(self)
+        old_resources = grouputils.get_member_definitions(self,
+                                                          include_failed=True)
         definitions = template.member_definitions(
             old_resources, instance_definition, num_instances, num_replace,
             short_id.generate_id)
@@ -370,7 +373,7 @@ class InstanceGroup(stack_resource.StackResource):
     def _resolve_attribute(self, name):
         """Resolves the resource's attributes.
 
-        heat extension: "InstanceList" returns comma delimited list of server
+        Heat extension: "InstanceList" returns comma delimited list of server
         ip addresses.
         """
         if name == self.INSTANCE_LIST:

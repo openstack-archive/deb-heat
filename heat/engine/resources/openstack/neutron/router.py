@@ -21,6 +21,7 @@ from heat.engine import properties
 from heat.engine.resources.openstack.neutron import neutron
 from heat.engine.resources.openstack.neutron import subnet
 from heat.engine import support
+from heat.engine import translation
 
 
 class Router(neutron.NeutronResource):
@@ -42,8 +43,15 @@ class Router(neutron.NeutronResource):
 
     _EXTERNAL_GATEWAY_KEYS = (
         EXTERNAL_GATEWAY_NETWORK, EXTERNAL_GATEWAY_ENABLE_SNAT,
+        EXTERNAL_GATEWAY_FIXED_IPS,
     ) = (
-        'network', 'enable_snat',
+        'network', 'enable_snat', 'external_fixed_ips',
+    )
+
+    _EXTERNAL_GATEWAY_FIXED_IPS_KEYS = (
+        IP_ADDRESS, SUBNET
+    ) = (
+        'ip_address', 'subnet'
     )
 
     ATTRIBUTES = (
@@ -76,6 +84,32 @@ class Router(neutron.NeutronResource):
                       'default policy setting in Neutron restricts usage of '
                       'this property to administrative users only.'),
                     update_allowed=True
+                ),
+                EXTERNAL_GATEWAY_FIXED_IPS: properties.Schema(
+                    properties.Schema.LIST,
+                    _('External fixed IP addresses for the gateway.'),
+                    schema=properties.Schema(
+                        properties.Schema.MAP,
+                        schema={
+                            IP_ADDRESS: properties.Schema(
+                                properties.Schema.STRING,
+                                _('External fixed IP address.'),
+                                constraints=[
+                                    constraints.CustomConstraint('ip_addr'),
+                                ]
+                            ),
+                            SUBNET: properties.Schema(
+                                properties.Schema.STRING,
+                                _('Subnet of external fixed IP address.'),
+                                constraints=[
+                                    constraints.CustomConstraint(
+                                        'neutron.subnet')
+                                ]
+                            ),
+                        }
+                    ),
+                    update_allowed=True,
+                    support_status=support.SupportStatus(version='6.0.0')
                 ),
             },
             update_allowed=True
@@ -165,14 +199,14 @@ class Router(neutron.NeutronResource):
     def translation_rules(self, props):
         if props.get(self.L3_AGENT_ID):
             return [
-                properties.TranslationRule(
+                translation.TranslationRule(
                     props,
-                    properties.TranslationRule.ADD,
+                    translation.TranslationRule.ADD,
                     [self.L3_AGENT_IDS],
                     [props.get(self.L3_AGENT_ID)]),
-                properties.TranslationRule(
+                translation.TranslationRule(
                     props,
-                    properties.TranslationRule.DELETE,
+                    translation.TranslationRule.DELETE,
                     [self.L3_AGENT_ID]
                 )
             ]
@@ -209,14 +243,17 @@ class Router(neutron.NeutronResource):
                     if subnet_net == external_gw_net:
                         deps += (self, res)
 
-    def prepare_properties(self, properties, name):
-        props = super(Router, self).prepare_properties(properties, name)
+    def _resolve_gateway(self, props):
         gateway = props.get(self.EXTERNAL_GATEWAY)
         if gateway:
             self.client_plugin().resolve_network(
                 gateway, self.EXTERNAL_GATEWAY_NETWORK, 'network_id')
             if gateway[self.EXTERNAL_GATEWAY_ENABLE_SNAT] is None:
                 del gateway[self.EXTERNAL_GATEWAY_ENABLE_SNAT]
+            if gateway[self.EXTERNAL_GATEWAY_FIXED_IPS] is None:
+                del gateway[self.EXTERNAL_GATEWAY_FIXED_IPS]
+            else:
+                self._resolve_subnet(gateway)
         return props
 
     def _get_l3_agent_list(self, props):
@@ -227,11 +264,21 @@ class Router(neutron.NeutronResource):
 
         return l3_agent_ids
 
+    def _resolve_subnet(self, gateway):
+        external_gw_fixed_ips = gateway[self.EXTERNAL_GATEWAY_FIXED_IPS]
+        for fixed_ip in external_gw_fixed_ips:
+            for key, value in six.iteritems(fixed_ip):
+                if value is None:
+                    fixed_ip.pop(key)
+            if fixed_ip.get(self.SUBNET):
+                self.client_plugin().resolve_subnet(
+                    fixed_ip, self.SUBNET, 'subnet_id')
+
     def handle_create(self):
         props = self.prepare_properties(
             self.properties,
             self.physical_resource_name())
-
+        self._resolve_gateway(props)
         l3_agent_ids = self._get_l3_agent_list(props)
 
         router = self.client().create_router({'router': props})['router']
@@ -257,19 +304,17 @@ class Router(neutron.NeutronResource):
             return True
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        props = self.prepare_update_properties(json_snippet)
-        l3_agent_ids = self._get_l3_agent_list(props)
-        if l3_agent_ids:
+        if self.EXTERNAL_GATEWAY in prop_diff:
+            self._resolve_gateway(prop_diff)
+
+        if self.L3_AGENT_IDS in prop_diff or self.L3_AGENT_ID in prop_diff:
+            l3_agent_ids = self._get_l3_agent_list(prop_diff)
             self._replace_agent(l3_agent_ids)
 
-        if self.L3_AGENT_IDS in prop_diff:
-            del prop_diff[self.L3_AGENT_IDS]
-        if self.L3_AGENT_ID in prop_diff:
-            del prop_diff[self.L3_AGENT_ID]
-
-        if len(prop_diff) > 0:
+        if prop_diff:
+            self.prepare_update_properties(prop_diff)
             self.client().update_router(
-                self.resource_id, {'router': props})
+                self.resource_id, {'router': prop_diff})
 
     def _replace_agent(self, l3_agent_ids=None):
         ret = self.client().list_l3_agent_hosting_routers(
@@ -284,6 +329,10 @@ class Router(neutron.NeutronResource):
 
 
 class RouterInterface(neutron.NeutronResource):
+    """A resource for managing Neutron router interfaces.
+
+    Router interfaces associate routers with existing subnets or ports.
+    """
 
     required_service_extension = 'router'
 
@@ -371,21 +420,21 @@ class RouterInterface(neutron.NeutronResource):
 
     def translation_rules(self, props):
         return [
-            properties.TranslationRule(
+            translation.TranslationRule(
                 props,
-                properties.TranslationRule.REPLACE,
+                translation.TranslationRule.REPLACE,
                 [self.PORT],
                 value_path=[self.PORT_ID]
             ),
-            properties.TranslationRule(
+            translation.TranslationRule(
                 props,
-                properties.TranslationRule.REPLACE,
+                translation.TranslationRule.REPLACE,
                 [self.ROUTER],
                 value_path=[self.ROUTER_ID]
             ),
-            properties.TranslationRule(
+            translation.TranslationRule(
                 props,
-                properties.TranslationRule.REPLACE,
+                translation.TranslationRule.REPLACE,
                 [self.SUBNET],
                 value_path=[self.SUBNET_ID]
             )
@@ -485,9 +534,9 @@ class RouterGateway(neutron.NeutronResource):
 
     def translation_rules(self, props):
         return [
-            properties.TranslationRule(
+            translation.TranslationRule(
                 props,
-                properties.TranslationRule.REPLACE,
+                translation.TranslationRule.REPLACE,
                 [self.NETWORK],
                 value_path=[self.NETWORK_ID]
             )

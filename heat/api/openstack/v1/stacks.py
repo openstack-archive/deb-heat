@@ -49,6 +49,7 @@ class InstantiationData(object):
         PARAM_USER_PARAMS,
         PARAM_ENVIRONMENT,
         PARAM_FILES,
+        PARAM_ENVIRONMENT_FILES,
     ) = (
         'stack_name',
         'template',
@@ -56,6 +57,7 @@ class InstantiationData(object):
         'parameters',
         'environment',
         'files',
+        'environment_files',
     )
 
     def __init__(self, data, patch=False):
@@ -96,6 +98,8 @@ class InstantiationData(object):
             adopt_data = self.data[rpc_api.PARAM_ADOPT_STACK_DATA]
             try:
                 adopt_data = template_format.simple_parse(adopt_data)
+                template_format.validate_template_limit(
+                    six.text_type(adopt_data['template']))
                 return adopt_data['template']
             except (ValueError, KeyError) as ex:
                 err_reason = _('Invalid adopt data: %s') % ex
@@ -103,7 +107,10 @@ class InstantiationData(object):
         elif self.PARAM_TEMPLATE in self.data:
             template_data = self.data[self.PARAM_TEMPLATE]
             if isinstance(template_data, dict):
+                template_format.validate_template_limit(six.text_type(
+                    template_data))
                 return template_data
+
         elif self.PARAM_TEMPLATE_URL in self.data:
             url = self.data[self.PARAM_TEMPLATE_URL]
             LOG.debug('TemplateUrl %s' % url)
@@ -144,6 +151,9 @@ class InstantiationData(object):
 
     def files(self):
         return self.data.get(self.PARAM_FILES, {})
+
+    def environment_files(self):
+        return self.data.get(self.PARAM_ENVIRONMENT_FILES, None)
 
     def args(self):
         """Get any additional arguments supplied by the user."""
@@ -190,29 +200,29 @@ class StackController(object):
         filter_whitelist = {
             # usage of keys in this list are not encouraged, please use
             # rpc_api.STACK_KEYS instead
-            'id': 'mixed',
-            'status': 'mixed',
-            'name': 'mixed',
-            'action': 'mixed',
-            'tenant': 'mixed',
-            'username': 'mixed',
-            'owner_id': 'mixed',
+            'id': util.PARAM_TYPE_MIXED,
+            'status': util.PARAM_TYPE_MIXED,
+            'name': util.PARAM_TYPE_MIXED,
+            'action': util.PARAM_TYPE_MIXED,
+            'tenant': util.PARAM_TYPE_MIXED,
+            'username': util.PARAM_TYPE_MIXED,
+            'owner_id': util.PARAM_TYPE_MIXED,
         }
         whitelist = {
-            'limit': 'single',
-            'marker': 'single',
-            'sort_dir': 'single',
-            'sort_keys': 'multi',
-            'show_deleted': 'single',
-            'show_nested': 'single',
-            'show_hidden': 'single',
-            'tags': 'single',
-            'tags_any': 'single',
-            'not_tags': 'single',
-            'not_tags_any': 'single',
+            'limit': util.PARAM_TYPE_SINGLE,
+            'marker': util.PARAM_TYPE_SINGLE,
+            'sort_dir': util.PARAM_TYPE_SINGLE,
+            'sort_keys': util.PARAM_TYPE_MULTI,
+            'show_deleted': util.PARAM_TYPE_SINGLE,
+            'show_nested': util.PARAM_TYPE_SINGLE,
+            'show_hidden': util.PARAM_TYPE_SINGLE,
+            'tags': util.PARAM_TYPE_SINGLE,
+            'tags_any': util.PARAM_TYPE_SINGLE,
+            'not_tags': util.PARAM_TYPE_SINGLE,
+            'not_tags_any': util.PARAM_TYPE_SINGLE,
         }
         params = util.get_allowed_params(req.params, whitelist)
-        stack_keys = dict.fromkeys(rpc_api.STACK_KEYS, 'mixed')
+        stack_keys = dict.fromkeys(rpc_api.STACK_KEYS, util.PARAM_TYPE_MIXED)
         unsupported = (
             rpc_api.STACK_ID,  # not user visible
             rpc_api.STACK_CAPABILITIES,  # not supported
@@ -346,12 +356,15 @@ class StackController(object):
 
         data = InstantiationData(body)
         args = self.prepare_args(data)
-        result = self.rpc_client.preview_stack(req.context,
-                                               data.stack_name(),
-                                               data.template(),
-                                               data.environment(),
-                                               data.files(),
-                                               args)
+        result = self.rpc_client.preview_stack(
+            req.context,
+            data.stack_name(),
+            data.template(),
+            data.environment(),
+            data.files(),
+            args,
+            environment_files=data.environment_files()
+        )
 
         formatted_stack = stacks_view.format_stack(req, result)
         return {'stack': formatted_stack}
@@ -372,12 +385,14 @@ class StackController(object):
         data = InstantiationData(body)
 
         args = self.prepare_args(data)
-        result = self.rpc_client.create_stack(req.context,
-                                              data.stack_name(),
-                                              data.template(),
-                                              data.environment(),
-                                              data.files(),
-                                              args)
+        result = self.rpc_client.create_stack(
+            req.context,
+            data.stack_name(),
+            data.template(),
+            data.environment(),
+            data.files(),
+            args,
+            environment_files=data.environment_files())
 
         formatted_stack = stacks_view.format_stack(
             req,
@@ -444,12 +459,14 @@ class StackController(object):
         data = InstantiationData(body)
 
         args = self.prepare_args(data)
-        self.rpc_client.update_stack(req.context,
-                                     identity,
-                                     data.template(),
-                                     data.environment(),
-                                     data.files(),
-                                     args)
+        self.rpc_client.update_stack(
+            req.context,
+            identity,
+            data.template(),
+            data.environment(),
+            data.files(),
+            args,
+            environment_files=data.environment_files())
 
         raise exc.HTTPAccepted()
 
@@ -463,14 +480,24 @@ class StackController(object):
         data = InstantiationData(body, patch=True)
 
         args = self.prepare_args(data)
-        self.rpc_client.update_stack(req.context,
-                                     identity,
-                                     data.template(),
-                                     data.environment(),
-                                     data.files(),
-                                     args)
+        self.rpc_client.update_stack(
+            req.context,
+            identity,
+            data.template(),
+            data.environment(),
+            data.files(),
+            args,
+            environment_files=data.environment_files())
 
         raise exc.HTTPAccepted()
+
+    def _param_show_nested(self, req):
+        whitelist = {'show_nested': 'single'}
+        params = util.get_allowed_params(req.params, whitelist)
+
+        p_name = 'show_nested'
+        if p_name in params:
+            return self._extract_bool_param(p_name, params[p_name])
 
     @util.identified_stack
     def preview_update(self, req, identity, body):
@@ -478,13 +505,17 @@ class StackController(object):
         data = InstantiationData(body)
 
         args = self.prepare_args(data)
+        show_nested = self._param_show_nested(req)
+        if show_nested is not None:
+            args[rpc_api.PARAM_SHOW_NESTED] = show_nested
         changes = self.rpc_client.preview_update_stack(
             req.context,
             identity,
             data.template(),
             data.environment(),
             data.files(),
-            args)
+            args,
+            environment_files=data.environment_files())
 
         return {'resource_changes': changes}
 
@@ -494,13 +525,17 @@ class StackController(object):
         data = InstantiationData(body, patch=True)
 
         args = self.prepare_args(data)
+        show_nested = self._param_show_nested(req)
+        if show_nested is not None:
+            args['show_nested'] = show_nested
         changes = self.rpc_client.preview_update_stack(
             req.context,
             identity,
             data.template(),
             data.environment(),
             data.files(),
-            args)
+            args,
+            environment_files=data.environment_files())
 
         return {'resource_changes': changes}
 
@@ -527,6 +562,14 @@ class StackController(object):
         return self.rpc_client.abandon_stack(req.context,
                                              identity)
 
+    @util.identified_stack
+    def export(self, req, identity):
+        """Export specified stack.
+
+        Return stack data in JSON format.
+        """
+        return self.rpc_client.export_stack(req.context, identity)
+
     @util.policy_enforce
     def validate_template(self, req, body):
         """Implements the ValidateTemplate API action.
@@ -536,7 +579,8 @@ class StackController(object):
 
         data = InstantiationData(body)
 
-        whitelist = {'show_nested': 'single'}
+        whitelist = {'show_nested': util.PARAM_TYPE_SINGLE,
+                     'ignore_errors': util.PARAM_TYPE_SINGLE}
         params = util.get_allowed_params(req.params, whitelist)
 
         show_nested = False
@@ -545,11 +589,19 @@ class StackController(object):
             params[p_name] = self._extract_bool_param(p_name, params[p_name])
             show_nested = params[p_name]
 
-        result = self.rpc_client.validate_template(req.context,
-                                                   data.template(),
-                                                   data.environment(),
-                                                   files=data.files(),
-                                                   show_nested=show_nested)
+        if rpc_api.PARAM_IGNORE_ERRORS in params:
+            ignorable_errors = params[rpc_api.PARAM_IGNORE_ERRORS].split(',')
+        else:
+            ignorable_errors = None
+
+        result = self.rpc_client.validate_template(
+            req.context,
+            data.template(),
+            data.environment(),
+            files=data.files(),
+            environment_files=data.environment_files(),
+            show_nested=show_nested,
+            ignorable_errors=ignorable_errors)
 
         if 'Error' in result:
             raise exc.HTTPBadRequest(result['Error'])
