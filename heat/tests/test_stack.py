@@ -963,7 +963,6 @@ class StackTest(common.HeatTestCase):
         self.assertIn('AResource', self.stack)
         rsrc = self.stack['AResource']
         rsrc.resource_id_set('aaaa')
-        self.assertIsNotNone(resource)
 
         for action, status in (
                 (rsrc.INIT, rsrc.COMPLETE),
@@ -982,6 +981,42 @@ class StackTest(common.HeatTestCase):
             self.assertIsNone(self.stack.resource_by_refid('bbbb'))
         finally:
             rsrc.state_set(rsrc.CREATE, rsrc.COMPLETE)
+
+    def test_resource_name_ref_by_depends_on(self):
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Resources': {
+                    'AResource': {'Type': 'GenericResourceType'},
+                    'BResource': {'Type': 'ResourceWithPropsType',
+                                  'Properties': {'Foo': 'AResource'},
+                                  'DependsOn': 'AResource'}}}
+
+        self.stack = stack.Stack(self.ctx, 'resource_by_name_ref_stack',
+                                 template.Template(tmpl))
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((stack.Stack.CREATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+        self.assertIn('AResource', self.stack)
+        self.assertIn('BResource', self.stack)
+        rsrc = self.stack['AResource']
+        rsrc.resource_id_set('aaaa')
+        b_rsrc = self.stack['BResource']
+        b_rsrc.resource_id_set('bbbb')
+
+        b_foo_ref = b_rsrc.properties.get('Foo')
+
+        for action, status in (
+                (rsrc.INIT, rsrc.COMPLETE),
+                (rsrc.CREATE, rsrc.IN_PROGRESS),
+                (rsrc.CREATE, rsrc.COMPLETE),
+                (rsrc.RESUME, rsrc.IN_PROGRESS),
+                (rsrc.RESUME, rsrc.COMPLETE),
+                (rsrc.UPDATE, rsrc.IN_PROGRESS),
+                (rsrc.UPDATE, rsrc.COMPLETE)):
+            rsrc.state_set(action, status)
+            ref_rsrc = self.stack.resource_by_refid(b_foo_ref)
+            self.assertEqual(rsrc, ref_rsrc)
+            self.assertIn(b_rsrc.name, ref_rsrc.required_by())
 
     def test_create_failure_recovery(self):
         """Check that rollback still works with dynamic metadata.
@@ -1942,29 +1977,85 @@ class StackTest(common.HeatTestCase):
     def test_incorrect_deletion_policy(self):
         tmpl = template_format.parse("""
         HeatTemplateFormatVersion: '2012-12-12'
+        Parameters:
+          Deletion_Policy:
+            Type: String
+            Default: [1, 2]
         Resources:
           AResource:
             Type: ResourceWithPropsType
-            DeletionPolicy: wibble
+            DeletionPolicy: {Ref: Deletion_Policy}
             Properties:
               Foo: abc
         """)
+
         self.stack = stack.Stack(self.ctx, 'stack_bad_delpol',
                                  template.Template(tmpl))
 
         ex = self.assertRaises(exception.StackValidationFailed,
                                self.stack.validate)
 
-        self.assertIn('Invalid deletion policy "wibble"',
+        self.assertIn('Invalid deletion policy "[1, 2]"',
                       six.text_type(ex))
+
+    def test_deletion_policy_apply_ref(self):
+        tmpl = template_format.parse("""
+        HeatTemplateFormatVersion: '2012-12-12'
+        Parameters:
+          Deletion_Policy:
+            Type: String
+            Default: Delete
+        Resources:
+          AResource:
+            Type: ResourceWithPropsType
+            DeletionPolicy: wibble
+            Properties:
+              Foo: abc
+            DeletionPolicy: {Ref: Deletion_Policy}
+        """)
+
+        self.stack = stack.Stack(self.ctx, 'stack_delpol_get_param',
+                                 template.Template(tmpl))
+        self.stack.validate()
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
+                         self.stack.state)
+
+    def test_deletion_policy_apply_get_param(self):
+        tmpl = template_format.parse("""
+        heat_template_version: 2016-04-08
+        parameters:
+          deletion_policy:
+            type: string
+            default: Delete
+        resources:
+          AResource:
+            type: ResourceWithPropsType
+            deletion_policy: {get_param: deletion_policy}
+            properties:
+              Foo: abc
+        """)
+
+        self.stack = stack.Stack(self.ctx, 'stack_delpol_get_param',
+                                 template.Template(tmpl))
+        self.stack.validate()
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
+                         self.stack.state)
 
     def test_incorrect_deletion_policy_hot(self):
         tmpl = template_format.parse("""
         heat_template_version: 2013-05-23
+        parameters:
+          deletion_policy:
+            type: string
+            default: [1, 2]
         resources:
           AResource:
             type: ResourceWithPropsType
-            deletion_policy: wibble
+            deletion_policy: {get_param: deletion_policy}
             properties:
               Foo: abc
         """)
@@ -1974,7 +2065,7 @@ class StackTest(common.HeatTestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                self.stack.validate)
 
-        self.assertIn('Invalid deletion policy "wibble"',
+        self.assertIn('Invalid deletion policy "[1, 2]',
                       six.text_type(ex))
 
     def test_incorrect_outputs_hot_get_attr(self):

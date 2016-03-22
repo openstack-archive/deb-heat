@@ -43,6 +43,7 @@ from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.engine import stack as parser
 from heat.engine import template
+from heat.engine import translation
 from heat.objects import resource as resource_objects
 from heat.objects import resource_data as resource_data_object
 from heat.tests import common
@@ -162,6 +163,36 @@ class ResourceTest(common.HeatTestCase):
                                snippet, self.stack)
         self.assertEqual('Resource name may not contain "/"',
                          six.text_type(ex))
+
+    @mock.patch.object(translation.TranslationRule, '_exec_resolve')
+    @mock.patch.object(parser.Stack, 'db_resource_get')
+    @mock.patch.object(resource.Resource, '_load_data')
+    @mock.patch.object(resource.Resource, 'translate_properties')
+    def test_stack_resources(self, mock_translate, mock_load,
+                             mock_db_get, mock_resolve):
+        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
+               'Resources':
+                   {'A': {'Type': 'ResourceWithPropsType',
+                          'Properties': {'Foo': 'abc'}}}}
+
+        stack = parser.Stack(utils.dummy_context(),
+                             'test_stack',
+                             template.Template(tpl))
+        stack.store()
+        mock_db_get.return_value = None
+        self.assertEqual(1, len(stack.resources))
+        self.assertEqual(1, mock_translate.call_count)
+        self.assertEqual(0, mock_load.call_count)
+
+        # set stack._resources = None to reload the resources
+        # and set strict_validate = False
+        stack._resources = None
+        stack.strict_validate = False
+        mock_db_get.return_value = mock.Mock()
+        self.assertEqual(1, len(stack.resources))
+        self.assertEqual(1, mock_translate.call_count)
+        self.assertEqual(1, mock_load.call_count)
+        self.assertEqual(0, mock_resolve.call_count)
 
     def test_resource_new_stack_not_stored(self):
         snippet = rsrc_defn.ResourceDefinition('aresource',
@@ -2263,12 +2294,12 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['foo']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)
 
-    def test_hot_add_dep_error(self):
+    def test_hot_add_dep_error_create(self):
         tmpl = template.Template({
             'heat_template_version': '2013-05-23',
             'resources': {
@@ -2278,10 +2309,34 @@ class ResourceDependenciesTest(common.HeatTestCase):
         })
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
         res = stack['bar']
+
+        class TestException(Exception):
+            pass
+
+        self.patchobject(res, 'add_dependencies',
+                         side_effect=TestException)
+
+        def get_dependencies():
+            return stack.dependencies
+
+        self.assertRaises(TestException, get_dependencies)
+
+    def test_hot_add_dep_error_load(self):
+        tmpl = template.Template({
+            'heat_template_version': '2013-05-23',
+            'resources': {
+                'foo': {'type': 'GenericResourceType'},
+                'bar': {'type': 'ResourceWithPropsType'}
+            }
+        })
+        stack = parser.Stack(utils.dummy_context(), 'test_hot_add_dep_err',
+                             tmpl)
+        stack.store()
+        res = stack['bar']
         self.patchobject(res, 'add_dependencies',
                          side_effect=ValueError)
         graph = stack.dependencies.graph()
-        self.assertNotIn(res, graph)
+        self.assertIn(res, graph)
         self.assertIn(stack['foo'], graph)
 
     def test_ref(self):
@@ -2300,7 +2355,7 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['bar']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)
@@ -2323,7 +2378,7 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['bar']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)
@@ -2345,7 +2400,7 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['bar']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)
@@ -2367,7 +2422,7 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['bar']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)
@@ -2391,7 +2446,7 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['bar']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)
@@ -2415,7 +2470,7 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['bar']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)
@@ -2496,7 +2551,7 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['bar']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)
@@ -2518,7 +2573,7 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['bar']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)
@@ -2540,7 +2595,7 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['bar']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)
@@ -2562,7 +2617,7 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['bar']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)
@@ -2587,7 +2642,7 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['bar']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)
@@ -2612,7 +2667,7 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['bar']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)
@@ -2716,7 +2771,7 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['bar']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)
@@ -2736,7 +2791,7 @@ class ResourceDependenciesTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test', tmpl)
 
         res = stack['bar']
-        res.add_dependencies(self.deps)
+        res.add_explicit_dependencies(self.deps)
         graph = self.deps.graph()
 
         self.assertIn(res, graph)

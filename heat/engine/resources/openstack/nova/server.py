@@ -56,14 +56,14 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         ADMIN_USER, AVAILABILITY_ZONE, SECURITY_GROUPS, NETWORKS,
         SCHEDULER_HINTS, METADATA, USER_DATA_FORMAT, USER_DATA,
         RESERVATION_ID, CONFIG_DRIVE, DISK_CONFIG, PERSONALITY,
-        ADMIN_PASS, SOFTWARE_CONFIG_TRANSPORT
+        ADMIN_PASS, SOFTWARE_CONFIG_TRANSPORT, USER_DATA_UPDATE_POLICY
     ) = (
         'name', 'image', 'block_device_mapping', 'block_device_mapping_v2',
         'flavor', 'flavor_update_policy', 'image_update_policy', 'key_name',
         'admin_user', 'availability_zone', 'security_groups', 'networks',
         'scheduler_hints', 'metadata', 'user_data_format', 'user_data',
         'reservation_id', 'config_drive', 'diskConfig', 'personality',
-        'admin_pass', 'software_config_transport'
+        'admin_pass', 'software_config_transport', 'user_data_update_policy'
     )
 
     _BLOCK_DEVICE_MAPPING_KEYS = (
@@ -446,10 +446,22 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                 constraints.AllowedValues(_SOFTWARE_CONFIG_TRANSPORTS),
             ]
         ),
+        USER_DATA_UPDATE_POLICY: properties.Schema(
+            properties.Schema.STRING,
+            _('Policy on how to apply a user_data update; either by '
+              'ignorning it or by replacing the entire server.'),
+            default='REPLACE',
+            constraints=[
+                constraints.AllowedValues(['REPLACE', 'IGNORE']),
+            ],
+            support_status=support.SupportStatus(version='6.0.0'),
+            update_allowed=True
+        ),
         USER_DATA: properties.Schema(
             properties.Schema.STRING,
             _('User data script to be executed by cloud-init.'),
-            default=''
+            default='',
+            update_allowed=True
         ),
         RESERVATION_ID: properties.Schema(
             properties.Schema.STRING,
@@ -555,11 +567,57 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
     entity = 'servers'
 
     def translation_rules(self, props):
-        return [translation.TranslationRule(
-            props,
-            translation.TranslationRule.REPLACE,
-            source_path=[self.NETWORKS, self.NETWORK_ID],
-            value_name=self.NETWORK_UUID)]
+        rules = [
+            translation.TranslationRule(
+                props,
+                translation.TranslationRule.REPLACE,
+                source_path=[self.NETWORKS, self.NETWORK_ID],
+                value_name=self.NETWORK_UUID),
+            translation.TranslationRule(
+                props,
+                translation.TranslationRule.RESOLVE,
+                source_path=[self.FLAVOR],
+                client_plugin=self.client_plugin('nova'),
+                finder='find_flavor_by_name_or_id'),
+            translation.TranslationRule(
+                props,
+                translation.TranslationRule.RESOLVE,
+                source_path=[self.IMAGE],
+                client_plugin=self.client_plugin('glance'),
+                finder='find_image_by_name_or_id'),
+        ]
+        if self.is_using_neutron():
+            rules.extend([
+                translation.TranslationRule(
+                    props,
+                    translation.TranslationRule.RESOLVE,
+                    source_path=[self.NETWORKS, self.NETWORK_ID],
+                    client_plugin=self.client_plugin('neutron'),
+                    finder='find_resourceid_by_name_or_id',
+                    entity='network'),
+                translation.TranslationRule(
+                    props,
+                    translation.TranslationRule.RESOLVE,
+                    source_path=[self.NETWORKS, self.NETWORK_SUBNET],
+                    client_plugin=self.client_plugin('neutron'),
+                    finder='find_resourceid_by_name_or_id',
+                    entity='subnet'),
+                translation.TranslationRule(
+                    props,
+                    translation.TranslationRule.RESOLVE,
+                    source_path=[self.NETWORKS, self.NETWORK_PORT],
+                    client_plugin=self.client_plugin('neutron'),
+                    finder='find_resourceid_by_name_or_id',
+                    entity='port')])
+        else:
+            rules.extend([
+                translation.TranslationRule(
+                    props,
+                    translation.TranslationRule.RESOLVE,
+                    source_path=[self.NETWORKS, self.NETWORK_ID],
+                    client_plugin=self.client_plugin('nova'),
+                    finder='get_nova_network_id')])
+        return rules
 
     def __init__(self, name, json_snippet, stack):
         super(Server, self).__init__(name, json_snippet, stack)
@@ -759,16 +817,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
             instance_user=None,
             user_data_format=user_data_format)
 
-        flavor = self.properties[self.FLAVOR]
         availability_zone = self.properties[self.AVAILABILITY_ZONE]
-
-        image = self.properties[self.IMAGE]
-        if image:
-            image = self.client_plugin(
-                'glance').find_image_by_name_or_id(image)
-
-        flavor_id = self.client_plugin().find_flavor_by_name_or_id(flavor)
-
         instance_meta = self.properties[self.METADATA]
         if instance_meta is not None:
             instance_meta = self.client_plugin().meta_serialize(
@@ -787,13 +836,15 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         admin_pass = self.properties[self.ADMIN_PASS] or None
         personality_files = self.properties[self.PERSONALITY]
         key_name = self.properties[self.KEY_NAME]
+        flavor = self.properties[self.FLAVOR]
+        image = self.properties[self.IMAGE]
 
         server = None
         try:
             server = self.client().servers.create(
                 name=self._server_name(),
                 image=image,
-                flavor=flavor_id,
+                flavor=flavor,
                 key_name=key_name,
                 security_groups=security_groups,
                 userdata=userdata,
@@ -1016,10 +1067,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
 
     def _update_flavor(self, prop_diff):
         flavor = prop_diff[self.FLAVOR]
-        flavor_id = self.client_plugin().find_flavor_by_name_or_id(flavor)
-        handler_args = {'args': (flavor_id,)}
-        checker_args = {'args': (flavor_id, flavor)}
-
+        handler_args = checker_args = {'args': (flavor,)}
         prg_resize = progress.ServerUpdateProgress(self.resource_id,
                                                    'resize',
                                                    handler_extra=handler_args,
@@ -1033,8 +1081,6 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
             prop_diff.get(self.IMAGE_UPDATE_POLICY) or
             self.properties[self.IMAGE_UPDATE_POLICY])
         image = prop_diff[self.IMAGE]
-        image_id = self.client_plugin(
-            'glance').find_image_by_name_or_id(image)
         preserve_ephemeral = (
             image_update_policy == 'REBUILD_PRESERVE_EPHEMERAL')
         password = (prop_diff.get(self.ADMIN_PASS) or
@@ -1043,7 +1089,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                   'preserve_ephemeral': preserve_ephemeral}
         prg = progress.ServerUpdateProgress(self.resource_id,
                                             'rebuild',
-                                            handler_extra={'args': (image_id,),
+                                            handler_extra={'args': (image,),
                                                            'kwargs': kwargs})
         return prg
 
@@ -1092,6 +1138,12 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                 before_props.get(self.IMAGE_UPDATE_POLICY))
             if image_update_policy == 'REPLACE':
                 return True
+
+        if self.USER_DATA in changed_properties_set:
+            ud_update_policy = (
+                after_props.get(self.USER_DATA_UPDATE_POLICY) or
+                before_props.get(self.USER_DATA_UPDATE_POLICY))
+            return ud_update_policy == 'REPLACE'
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if 'Metadata' in tmpl_diff:
@@ -1262,6 +1314,42 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
 
         return bootable_vol
 
+    def _validate_image_flavor(self, image, flavor):
+        try:
+            image_obj = self.client_plugin('glance').get_image(image)
+            flavor_obj = self.client_plugin().get_flavor(flavor)
+        except Exception as ex:
+            # Flavor or image may not have been created in the backend
+            # yet when they are part of the same stack/template.
+            if (self.client_plugin().is_not_found(ex) or
+                    self.client_plugin('glance').is_not_found(ex)):
+                return
+            raise
+        else:
+            if image_obj.status.lower() != self.IMAGE_STATUS_ACTIVE:
+                msg = _('Image status is required to be %(cstatus)s not '
+                        '%(wstatus)s.') % {
+                    'cstatus': self.IMAGE_STATUS_ACTIVE,
+                    'wstatus': image_obj.status}
+                raise exception.StackValidationFailed(message=msg)
+
+            # validate image/flavor combination
+            if flavor_obj.ram < image_obj.min_ram:
+                msg = _('Image %(image)s requires %(imram)s minimum ram. '
+                        'Flavor %(flavor)s has only %(flram)s.') % {
+                    'image': image, 'imram': image_obj.min_ram,
+                    'flavor': flavor, 'flram': flavor_obj.ram}
+                raise exception.StackValidationFailed(message=msg)
+
+            # validate image/flavor disk compatibility
+            if flavor_obj.disk < image_obj.min_disk:
+                msg = _('Image %(image)s requires %(imsz)s GB minimum '
+                        'disk space. Flavor %(flavor)s has only '
+                        '%(flsz)s GB.') % {
+                    'image': image, 'imsz': image_obj.min_disk,
+                    'flavor': flavor, 'flsz': flavor_obj.disk}
+                raise exception.StackValidationFailed(message=msg)
+
     def validate(self):
         """Validate any of the provided params."""
         super(Server, self).validate()
@@ -1281,35 +1369,9 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                     ' instance %s') % self.name
             raise exception.StackValidationFailed(message=msg)
 
+        flavor = self.properties[self.FLAVOR]
         if image:
-            image_obj = self.client_plugin('glance').get_image(image)
-
-            # validate image status
-            if image_obj.status.lower() != self.IMAGE_STATUS_ACTIVE:
-                msg = _('Image status is required to be %(cstatus)s not '
-                        '%(wstatus)s.') % {
-                    'cstatus': self.IMAGE_STATUS_ACTIVE,
-                    'wstatus': image_obj.status}
-                raise exception.StackValidationFailed(message=msg)
-
-            # validate image/flavor combination
-            flavor = self.properties[self.FLAVOR]
-            flavor_obj = self.client_plugin().get_flavor(flavor)
-            if flavor_obj.ram < image_obj.min_ram:
-                msg = _('Image %(image)s requires %(imram)s minimum ram. '
-                        'Flavor %(flavor)s has only %(flram)s.') % {
-                    'image': image, 'imram': image_obj.min_ram,
-                    'flavor': flavor, 'flram': flavor_obj.ram}
-                raise exception.StackValidationFailed(message=msg)
-
-            # validate image/flavor disk compatibility
-            if flavor_obj.disk < image_obj.min_disk:
-                msg = _('Image %(image)s requires %(imsz)s GB minimum '
-                        'disk space. Flavor %(flavor)s has only '
-                        '%(flsz)s GB.') % {
-                    'image': image, 'imsz': image_obj.min_disk,
-                    'flavor': flavor, 'flsz': flavor_obj.disk}
-                raise exception.StackValidationFailed(message=msg)
+            self._validate_image_flavor(image, flavor)
 
         # network properties 'uuid' and 'network' shouldn't be used
         # both at once for all networks

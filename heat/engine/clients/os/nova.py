@@ -372,11 +372,14 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
             attachments.append((jsonutils.dumps(metadata),
                                 'cfn-init-data', 'x-cfninitdata'))
 
-        attachments.append((cfg.CONF.heat_watch_server_url,
-                            'cfn-watch-server', 'x-cfninitdata'))
+        heat_client_plugin = self.context.clients.client_plugin('heat')
+        watch_url = cfg.CONF.heat_watch_server_url
+        if not watch_url:
+            watch_url = heat_client_plugin.get_watch_server_url()
+
+        attachments.append((watch_url, 'cfn-watch-server', 'x-cfninitdata'))
 
         if is_cfntools:
-            heat_client_plugin = self.context.clients.client_plugin('heat')
             cfn_md_url = heat_client_plugin.get_cfn_metadata_server_url()
             attachments.append((cfn_md_url,
                                 'cfn-metadata-server', 'x-cfninitdata'))
@@ -384,7 +387,7 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
             # Create a boto config which the cfntools on the host use to know
             # where the cfn and cw API's are to be accessed
             cfn_url = urlparse.urlparse(cfn_md_url)
-            cw_url = urlparse.urlparse(cfg.CONF.heat_watch_server_url)
+            cw_url = urlparse.urlparse(watch_url)
             is_secure = cfg.CONF.instance_connection_is_secure
             vcerts = cfg.CONF.instance_connection_https_validate_certificates
             boto_cfg = "\n".join(["[Boto]",
@@ -447,7 +450,7 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
         else:
             return False
 
-    def check_resize(self, server_id, flavor_id, flavor):
+    def check_resize(self, server_id, flavor):
         """Verify that a resizing server is properly resized.
 
         If that's the case, confirm the resize, if not raise an error.
@@ -683,6 +686,30 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
             return True
         else:
             return False
+
+    @retry(stop_max_attempt_number=cfg.CONF.max_interface_check_attempts,
+           wait_fixed=500,
+           retry_on_result=client_plugin.retry_if_result_is_false)
+    def check_interface_detach(self, server_id, port_id):
+        server = self.fetch_server(server_id)
+        if server:
+            interfaces = server.interface_list()
+            for iface in interfaces:
+                if iface.port_id == port_id:
+                    return False
+        return True
+
+    @retry(stop_max_attempt_number=cfg.CONF.max_interface_check_attempts,
+           wait_fixed=500,
+           retry_on_result=client_plugin.retry_if_result_is_false)
+    def check_interface_attach(self, server_id, port_id):
+        server = self.fetch_server(server_id)
+        if server:
+            interfaces = server.interface_list()
+            for iface in interfaces:
+                if iface.port_id == port_id:
+                    return True
+        return False
 
     @os_client.MEMOIZE_EXTENSIONS
     def _list_extensions(self):

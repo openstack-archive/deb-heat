@@ -60,6 +60,10 @@ IntegrationTestGroup = [
     cfg.BoolOpt('disable_ssl_certificate_validation',
                 default=False,
                 help="Set to True if using self-signed SSL certificates."),
+    cfg.StrOpt('ca_file',
+               default=None,
+               help="CA certificate to pass for servers that have "
+                    "https endpoint."),
     cfg.IntOpt('build_interval',
                default=4,
                help="Time in seconds between build status checks."),
@@ -126,6 +130,11 @@ IntegrationTestGroup = [
                default=30,
                help="Timeout in seconds to wait for adding or removing child"
                     "process after receiving of sighup signal"),
+    cfg.IntOpt('sighup_config_edit_retries',
+               default=10,
+               help='Count of retries to edit config file during sighup. If '
+                    'another worker already edit config file, file can be '
+                    'busy, so need to wait and try edit file again.'),
     cfg.StrOpt('heat-config-notify-script',
                default=('heat-config-notify'),
                help="Path to the script heat-config-notify"),

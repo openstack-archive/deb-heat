@@ -17,6 +17,7 @@ import os
 from eventlet.green import socket
 from oslo_config import cfg
 from oslo_log import log as logging
+from oslo_middleware import cors
 from osprofiler import opts as profiler
 
 from heat.common import exception
@@ -131,6 +132,11 @@ engine_opts = [
                help=_('Number of times to retry when a client encounters an '
                       'expected intermittent error. Set to 0 to disable '
                       'retries.')),
+    cfg.IntOpt('max_interface_check_attempts',
+               min=1,
+               default=10,
+               help=_('Number of times to check whether an interface has '
+                      'been attached or detached.')),
     cfg.IntOpt('event_purge_batch_size',
                default=10,
                help=_("Controls how many events will be pruned whenever a "
@@ -459,3 +465,27 @@ def get_client_option(client, option):
     # look for the option in the generic [clients] section
     cfg.CONF.import_opt(option, 'heat.common.config', group='clients')
     return getattr(cfg.CONF.clients, option)
+
+
+def set_config_defaults():
+    """This method updates all configuration default values."""
+    # CORS Defaults
+    # TODO(krotscheck): Update with https://review.openstack.org/#/c/285368/
+    cfg.set_defaults(cors.CORS_OPTS,
+                     allow_headers=['X-Auth-Token',
+                                    'X-Identity-Status',
+                                    'X-Roles',
+                                    'X-Service-Catalog',
+                                    'X-User-Id',
+                                    'X-Tenant-Id',
+                                    'X-OpenStack-Request-ID'],
+                     expose_headers=['X-Auth-Token',
+                                     'X-Subject-Token',
+                                     'X-Service-Token',
+                                     'X-OpenStack-Request-ID'],
+                     allow_methods=['GET',
+                                    'PUT',
+                                    'POST',
+                                    'DELETE',
+                                    'PATCH']
+                     )

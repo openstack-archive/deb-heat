@@ -522,33 +522,39 @@ class Repeat(function.Function):
     def __init__(self, stack, fn_name, args):
         super(Repeat, self).__init__(stack, fn_name, args)
 
-        self._for_each, self._template = self._parse_args()
-
-    def _parse_args(self):
         if not isinstance(self.args, collections.Mapping):
             raise TypeError(_('Arguments to "%s" must be a map') %
                             self.fn_name)
 
+        # We don't check for invalid keys appearing here, which is wrong but
+        # it's probably too late to change
         try:
-            for_each = function.resolve(self.args['for_each'])
-            template = self.args['template']
-        except (KeyError, TypeError):
+            self._for_each = self.args['for_each']
+            self._template = self.args['template']
+        except KeyError:
             example = ('''repeat:
               template: This is %var%
               for_each:
                 %var%: ['a', 'b', 'c']''')
-            raise KeyError(_('"repeat" syntax should be %s') %
-                           example)
+            raise KeyError(_('"repeat" syntax should be %s') % example)
 
-        if not isinstance(for_each, collections.Mapping):
-            raise TypeError(_('The "for_each" argument to "%s" must contain '
-                              'a map') % self.fn_name)
-        for v in six.itervalues(for_each):
-            if not isinstance(v, list):
-                raise TypeError(_('The values of the "for_each" argument to '
-                                  '"%s" must be lists') % self.fn_name)
+    def validate(self):
+        super(Repeat, self).validate()
 
-        return for_each, template
+        if not isinstance(self._for_each, function.Function):
+            if not isinstance(self._for_each, collections.Mapping):
+                raise TypeError(_('The "for_each" argument to "%s" must '
+                                  'contain a map') % self.fn_name)
+
+            if not all(self._valid_list(v) for v in self._for_each.values()):
+                raise TypeError(_('The values of the "for_each" argument '
+                                  'to "%s" must be lists') % self.fn_name)
+
+    @staticmethod
+    def _valid_list(arg):
+        return (isinstance(arg, (collections.Sequence,
+                                 function.Function)) and
+                not isinstance(arg, six.string_types))
 
     def _do_replacement(self, keys, values, template):
         if isinstance(template, six.string_types):
@@ -564,11 +570,16 @@ class Repeat(function.Function):
                         for (k, v) in template.items())
 
     def result(self):
-        keys = list(six.iterkeys(self._for_each))
-        lists = [self._for_each[key] for key in keys]
+        for_each = function.resolve(self._for_each)
+        if not all(self._valid_list(l) for l in for_each.values()):
+            raise TypeError(_('The values of the "for_each" argument to '
+                              '"%s" must be lists') % self.fn_name)
+
         template = function.resolve(self._template)
-        return [self._do_replacement(keys, items, template)
-                for items in itertools.product(*lists)]
+
+        keys, lists = six.moves.zip(*for_each.items())
+        return [self._do_replacement(keys, replacements, template)
+                for replacements in itertools.product(*lists)]
 
 
 class Digest(function.Function):

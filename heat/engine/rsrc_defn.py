@@ -19,6 +19,7 @@ import six
 
 from heat.common import exception
 from heat.common.i18n import _LW
+from heat.common.i18n import repr_wraper
 from heat.engine import function
 from heat.engine import properties
 
@@ -27,6 +28,7 @@ LOG = log.getLogger(__name__)
 __all__ = ['ResourceDefinition']
 
 
+@repr_wraper
 class ResourceDefinitionCore(object):
     """A definition of a resource, independent of any template format."""
 
@@ -85,7 +87,7 @@ class ResourceDefinitionCore(object):
 
         if deletion_policy is not None:
             assert deletion_policy in self.DELETION_POLICIES
-            self._hash ^= hash(deletion_policy)
+            self._hash ^= _hash_data(deletion_policy)
 
         if update_policy is not None:
             assert isinstance(update_policy, (collections.Mapping,

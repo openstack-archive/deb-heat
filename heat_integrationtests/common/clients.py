@@ -14,6 +14,7 @@ import os
 
 from ceilometerclient import client as ceilometer_client
 from cinderclient import client as cinder_client
+from heat.common.i18n import _
 from heatclient import client as heat_client
 from keystoneclient.auth.identity.generic import password
 from keystoneclient import exceptions as kc_exceptions
@@ -71,8 +72,15 @@ class ClientManager(object):
 
     def __init__(self, conf):
         self.conf = conf
-        self.v2_auth_url = self.conf.auth_url.replace('/v3', '/v2.0')
-        self.auth_version = self.conf.auth_url.split('/v')[1]
+        if self.conf.auth_url.find('/v'):
+            self.v2_auth_url = self.conf.auth_url.replace('/v3', '/v2.0')
+            self.auth_version = self.conf.auth_url.split('/v')[1]
+        else:
+            raise ValueError(_('Incorrectly specified auth_url config: no '
+                               'version found.'))
+
+        self.insecure = self.conf.disable_ssl_certificate_validation
+        self.ca_file = self.conf.ca_file
         self.identity_client = self._get_identity_client()
         self.orchestration_client = self._get_orchestration_client()
         self.compute_client = self._get_compute_client()
@@ -115,13 +123,15 @@ class ClientManager(object):
                 'project_domain_name': domain,
                 'user_domain_name': domain})
         auth = password.Password(**kwargs)
-        return KeystoneWrapperClient(
-            auth,
-            not self.conf.disable_ssl_certificate_validation)
+        if self.insecure:
+            verify_cert = False
+        else:
+            verify_cert = self.ca_file or True
+
+        return KeystoneWrapperClient(auth, verify_cert)
 
     def _get_compute_client(self):
 
-        dscv = self.conf.disable_ssl_certificate_validation
         region = self.conf.region
 
         client_args = (
@@ -140,11 +150,11 @@ class ClientManager(object):
             endpoint_type='publicURL',
             region_name=region,
             no_cache=True,
-            insecure=dscv,
+            insecure=self.insecure,
+            cacert=self.ca_file,
             http_log_debug=True)
 
     def _get_network_client(self):
-        dscv = self.conf.disable_ssl_certificate_validation
 
         return neutron_client.Client(
             username=self.conf.username,
@@ -153,12 +163,12 @@ class ClientManager(object):
             endpoint_type='publicURL',
             # neutronclient can not use v3 url
             auth_url=self.v2_auth_url,
-            insecure=dscv)
+            insecure=self.insecure,
+            ca_cert=self.ca_file)
 
     def _get_volume_client(self):
         region = self.conf.region
         endpoint_type = 'publicURL'
-        dscv = self.conf.disable_ssl_certificate_validation
         return cinder_client.Client(
             self.CINDERCLIENT_VERSION,
             self.conf.username,
@@ -168,11 +178,11 @@ class ClientManager(object):
             self.v2_auth_url,
             region_name=region,
             endpoint_type=endpoint_type,
-            insecure=dscv,
+            insecure=self.insecure,
+            cacert=self.ca_file,
             http_log_debug=True)
 
     def _get_object_client(self):
-        dscv = self.conf.disable_ssl_certificate_validation
         args = {
             'auth_version': self.auth_version,
             'tenant_name': self.conf.tenant_name,
@@ -180,12 +190,12 @@ class ClientManager(object):
             'key': self.conf.password,
             'authurl': self.conf.auth_url,
             'os_options': {'endpoint_type': 'publicURL'},
-            'insecure': dscv,
+            'insecure': self.insecure,
+            'cacert': self.ca_file,
         }
         return swift_client.Connection(**args)
 
     def _get_metering_client(self):
-        dscv = self.conf.disable_ssl_certificate_validation
         domain = self.conf.domain_name
         try:
             endpoint = self.identity_client.get_endpoint_url('metering',
@@ -198,7 +208,8 @@ class ClientManager(object):
                 'password': self.conf.password,
                 'tenant_name': self.conf.tenant_name,
                 'auth_url': self.conf.auth_url,
-                'insecure': dscv,
+                'insecure': self.insecure,
+                'cacert': self.ca_file,
                 'region_name': self.conf.region,
                 'endpoint_type': 'publicURL',
                 'service_type': 'metering',

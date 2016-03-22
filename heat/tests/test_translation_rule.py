@@ -16,6 +16,7 @@ import six
 
 from heat.common import exception
 from heat.engine.cfn import functions as cfn_funcs
+from heat.engine import function
 from heat.engine.hot import functions as hot_funcs
 from heat.engine import parameters
 from heat.engine import properties
@@ -614,6 +615,35 @@ class TestTranslationRule(common.HeatTestCase):
         rule.execute_rule()
         self.assertEqual(data, props.data)
 
+    def test_resolve_rule_other_with_get_attr(self):
+        client_plugin, schema = self._test_resolve_rule()
+
+        class DummyStack(dict):
+            pass
+
+        class rsrc(object):
+            pass
+
+        stack = DummyStack(another_res=rsrc())
+        attr_func = cfn_funcs.GetAtt(stack, 'Fn::GetAtt',
+                                     ['another_res', 'name'])
+        data = {'far': attr_func}
+        props = properties.Properties(schema, data)
+        rule = translation.TranslationRule(
+            props,
+            translation.TranslationRule.RESOLVE,
+            ['far'],
+            client_plugin=client_plugin,
+            finder='find_name_id')
+        rule.execute_rule(client_resolve=False)
+        self.assertEqual(data, props.data)
+
+        mock_getatt = self.patchobject(attr_func, 'result',
+                                       return_value='rose')
+        rule.execute_rule()
+        self.assertEqual('pink', props.get('far'))
+        self.assertEqual(1, mock_getatt.call_count)
+
     def test_resolve_rule_other_with_entity(self):
         client_plugin, schema = self._test_resolve_rule()
         data = {'far': 'one'}
@@ -797,3 +827,40 @@ class TestTranslationRule(common.HeatTestCase):
         rule.execute_rule()
 
         self.assertEqual([param], props.data.get('far'))
+
+    def test_property_no_translation_if_user_parameter_missing(self):
+        """Test translation in the case of missing parameter"""
+        schema = {
+            'source': properties.Schema(
+                properties.Schema.STRING
+            ),
+            'destination': properties.Schema(
+                properties.Schema.STRING
+            )}
+
+        class DummyStack(dict):
+            @property
+            def parameters(self):
+                return mock.Mock()
+
+        param = hot_funcs.GetParam(DummyStack(),
+                                   'get_param',
+                                   'source_param')
+
+        param.parameters = {}
+
+        data = {'source': param, 'destination': ''}
+        props = properties.Properties(schema, data,
+                                      resolver=function.resolve)
+
+        rule = translation.TranslationRule(
+            props,
+            translation.TranslationRule.REPLACE,
+            ['destination'],
+            value_path=['source'])
+
+        rule.execute_rule()
+
+        # ensure that translation rule was not applied
+        self.assertEqual({'source': param, 'destination': ''},
+                         data)

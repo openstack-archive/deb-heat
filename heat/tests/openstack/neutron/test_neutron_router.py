@@ -198,6 +198,7 @@ class NeutronRouterTest(common.HeatTestCase):
                                 rsrc.validate)
         self.assertIn('distributed, l3_agent_id/l3_agent_ids',
                       six.text_type(exc))
+        self.m.VerifyAll()
 
     def test_router_validate_l3_agents(self):
         t = template_format.parse(neutron_template)
@@ -212,6 +213,7 @@ class NeutronRouterTest(common.HeatTestCase):
         self.assertIn('Non HA routers can only have one L3 agent',
                       six.text_type(exc))
         self.assertIsNone(rsrc.properties.get(rsrc.L3_AGENT_ID))
+        self.m.VerifyAll()
 
     def test_router_validate_ha_distribute(self):
         t = template_format.parse(neutron_template)
@@ -226,6 +228,7 @@ class NeutronRouterTest(common.HeatTestCase):
         exc = self.assertRaises(exception.ResourcePropertyConflict,
                                 rsrc.validate)
         self.assertIn('distributed, ha', six.text_type(exc))
+        self.m.VerifyAll()
 
     def test_router_validate_ha_l3_agents(self):
         t = template_format.parse(neutron_template)
@@ -239,18 +242,22 @@ class NeutronRouterTest(common.HeatTestCase):
                                 rsrc.validate)
         self.assertIn('Non HA routers can only have one L3 agent.',
                       six.text_type(exc))
+        self.m.VerifyAll()
 
     def test_router(self):
+        t = template_format.parse(neutron_template)
+        stack = utils.parse_stack(t)
+
         neutronclient.Client.create_router({
             'router': {
-                'name': utils.PhysName('test_stack', 'router'),
+                'name': utils.PhysName(stack.name, 'router'),
                 'admin_state_up': True,
             }
         }).AndReturn({
             "router": {
                 "status": "BUILD",
                 "external_gateway_info": None,
-                "name": utils.PhysName('test_stack', 'router'),
+                "name": utils.PhysName(stack.name, 'router'),
                 "admin_state_up": True,
                 "tenant_id": "3e21026f2dc94372b105808c0e721661",
                 "id": "3e46229d-8fce-4733-819a-b5fe630550f8",
@@ -268,7 +275,7 @@ class NeutronRouterTest(common.HeatTestCase):
                 "router": {
                     "status": "BUILD",
                     "external_gateway_info": None,
-                    "name": utils.PhysName('test_stack', 'router'),
+                    "name": utils.PhysName(stack.name, 'router'),
                     "admin_state_up": True,
                     "tenant_id": "3e21026f2dc94372b105808c0e721661",
                     "routes": [],
@@ -280,7 +287,7 @@ class NeutronRouterTest(common.HeatTestCase):
                 "router": {
                     "status": "ACTIVE",
                     "external_gateway_info": None,
-                    "name": utils.PhysName('test_stack', 'router'),
+                    "name": utils.PhysName(stack.name, 'router'),
                     "admin_state_up": True,
                     "tenant_id": "3e21026f2dc94372b105808c0e721661",
                     "routes": [],
@@ -295,7 +302,7 @@ class NeutronRouterTest(common.HeatTestCase):
                 "router": {
                     "status": "ACTIVE",
                     "external_gateway_info": None,
-                    "name": utils.PhysName('test_stack', 'router'),
+                    "name": utils.PhysName(stack.name, 'router'),
                     "admin_state_up": True,
                     "tenant_id": "3e21026f2dc94372b105808c0e721661",
                     "routes": [],
@@ -307,7 +314,7 @@ class NeutronRouterTest(common.HeatTestCase):
                 "router": {
                     "status": "ACTIVE",
                     "external_gateway_info": None,
-                    "name": utils.PhysName('test_stack', 'router'),
+                    "name": utils.PhysName(stack.name, 'router'),
                     "admin_state_up": True,
                     "tenant_id": "3e21026f2dc94372b105808c0e721661",
                     "routes": [],
@@ -412,8 +419,6 @@ class NeutronRouterTest(common.HeatTestCase):
         ).AndRaise(qe.NeutronClientException(status_code=404))
 
         self.m.ReplayAll()
-        t = template_format.parse(neutron_template)
-        stack = utils.parse_stack(t)
         rsrc = self.create_router(t, stack, 'router')
 
         rsrc.validate()
@@ -525,14 +530,14 @@ class NeutronRouterTest(common.HeatTestCase):
             'router',
             '3e46229d-8fce-4733-819a-b5fe630550f8',
             cmd_resource=None,
-        ).AndReturn('3e46229d-8fce-4733-819a-b5fe630550f8')
+        ).MultipleTimes().AndReturn('3e46229d-8fce-4733-819a-b5fe630550f8')
 
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
             '91e47a57-7508-46fe-afc9-fc454e8580e1',
             cmd_resource=None,
-        ).AndReturn('91e47a57-7508-46fe-afc9-fc454e8580e1')
+        ).MultipleTimes().AndReturn('91e47a57-7508-46fe-afc9-fc454e8580e1')
         neutronclient.Client.add_interface_router(
             '3e46229d-8fce-4733-819a-b5fe630550f8',
             {'subnet_id': '91e47a57-7508-46fe-afc9-fc454e8580e1'}
@@ -577,18 +582,16 @@ class NeutronRouterTest(common.HeatTestCase):
     def _test_router_interface_with_port(self, resolve_port=True):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
-            'router',
-            'ae478782-53c0-4434-ab16-49900c88016c',
-            cmd_resource=None,
-        ).AndReturn('ae478782-53c0-4434-ab16-49900c88016c')
-        port_key = 'port'
-        neutronV20.find_resourceid_by_name_or_id(
-            mox.IsA(neutronclient.Client),
             'port',
             '9577cafd-8e98-4059-a2e6-8a771b4d318e',
             cmd_resource=None,
-        ).AndReturn('9577cafd-8e98-4059-a2e6-8a771b4d318e')
-
+        ).MultipleTimes().AndReturn('9577cafd-8e98-4059-a2e6-8a771b4d318e')
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'router',
+            'ae478782-53c0-4434-ab16-49900c88016c',
+            cmd_resource=None,
+        ).MultipleTimes().AndReturn('ae478782-53c0-4434-ab16-49900c88016c')
         neutronclient.Client.add_interface_router(
             'ae478782-53c0-4434-ab16-49900c88016c',
             {'port_id': '9577cafd-8e98-4059-a2e6-8a771b4d318e'}
@@ -612,7 +615,7 @@ class NeutronRouterTest(common.HeatTestCase):
         rsrc = self.create_router_interface(
             t, stack, 'router_interface', properties={
                 'router': 'ae478782-53c0-4434-ab16-49900c88016c',
-                port_key: '9577cafd-8e98-4059-a2e6-8a771b4d318e'
+                'port': '9577cafd-8e98-4059-a2e6-8a771b4d318e'
             })
 
         # Ensure that properties correctly translates
@@ -627,6 +630,25 @@ class NeutronRouterTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_router_interface_validate(self):
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'port',
+            '9577cafd-8e98-4059-a2e6-8a771b4d318e',
+            cmd_resource=None,
+        ).MultipleTimes().AndReturn('9577cafd-8e98-4059-a2e6-8a771b4d318e')
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'router',
+            'ae478782-53c0-4434-ab16-49900c88016c',
+            cmd_resource=None,
+        ).MultipleTimes().AndReturn('ae478782-53c0-4434-ab16-49900c88016c')
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnet',
+            '9577cafd-8e98-4059-a2e6-8a771b4d318e',
+            cmd_resource=None,
+        ).MultipleTimes().AndReturn('9577cafd-8e98-4059-a2e6-8a771b4d318e')
+        self.m.ReplayAll()
         t = template_format.parse(neutron_template)
         json = t['resources']['router_interface']
         json['properties'] = {
@@ -669,6 +691,7 @@ class NeutronRouterTest(common.HeatTestCase):
         self.assertEqual("At least one of the following properties "
                          "must be specified: subnet, port",
                          six.text_type(ex))
+        self.m.VerifyAll()
 
     def test_gateway_router(self):
         neutronV20.find_resourceid_by_name_or_id(
@@ -710,14 +733,13 @@ class NeutronRouterTest(common.HeatTestCase):
             'network',
             'public',
             cmd_resource=None,
-        ).MultipleTimes().AndReturn('fc68ea2c-b60b-4b4f-bd82-94ec81110766')
+        ).AndReturn('fc68ea2c-b60b-4b4f-bd82-94ec81110766')
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'subnet',
             'sub1234',
             cmd_resource=None,
         ).MultipleTimes().AndReturn('sub1234')
-
         neutronclient.Client.create_router({
             "router": {
                 "name": "Test Router",
@@ -765,7 +787,6 @@ class NeutronRouterTest(common.HeatTestCase):
 
     def test_create_router_gateway_as_property(self):
         self._create_router_with_gateway()
-
         neutronclient.Client.show_router(
             '3e46229d-8fce-4733-819a-b5fe630550f8').AndReturn({
                 "router": {
@@ -790,12 +811,11 @@ class NeutronRouterTest(common.HeatTestCase):
         self.m.ReplayAll()
         t = template_format.parse(neutron_external_gateway_template)
         stack = utils.parse_stack(t)
-
-        router = stack['router']
-        scheduler.TaskRunner(router.create)()
-        self.assertEqual('3e46229d-8fce-4733-819a-b5fe630550f8',
-                         router.FnGetRefId())
-        gateway_info = router.FnGetAtt('external_gateway_info')
+        rsrc = self.create_router(t, stack, 'router')
+        rsrc.validate()
+        ref_id = rsrc.FnGetRefId()
+        self.assertEqual('3e46229d-8fce-4733-819a-b5fe630550f8', ref_id)
+        gateway_info = rsrc.FnGetAtt('external_gateway_info')
         self.assertEqual('fc68ea2c-b60b-4b4f-bd82-94ec81110766',
                          gateway_info.get('network_id'))
         self.assertTrue(gateway_info.get('enable_snat'))
@@ -811,7 +831,6 @@ class NeutronRouterTest(common.HeatTestCase):
             'public',
             cmd_resource=None,
         ).AndReturn('fc68ea2c-b60b-4b4f-bd82-94ec81110766')
-
         neutronclient.Client.create_router({
             "router": {
                 "name": "Test Router",
@@ -868,14 +887,30 @@ class NeutronRouterTest(common.HeatTestCase):
 
     def test_update_router_gateway_as_property(self):
         self._create_router_with_gateway()
-
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
             'other_public',
             cmd_resource=None,
         ).AndReturn('91e47a57-7508-46fe-afc9-fc454e8580e1')
-
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+            cmd_resource=None,
+        ).AndReturn('fc68ea2c-b60b-4b4f-bd82-94ec81110766')
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'subnet',
+            'sub1234',
+            cmd_resource=None,
+        ).AndReturn('sub1234')
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            '91e47a57-7508-46fe-afc9-fc454e8580e1',
+            cmd_resource=None,
+        ).AndReturn('91e47a57-7508-46fe-afc9-fc454e8580e1')
         neutronclient.Client.update_router(
             '3e46229d-8fce-4733-819a-b5fe630550f8',
             {'router': {

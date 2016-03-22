@@ -11,6 +11,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_utils import encodeutils
+
+from heat.common import exception
 from heat.common.i18n import _
 from heat.engine.cfn import functions as cfn_funcs
 from heat.engine import function
@@ -101,7 +104,7 @@ class TranslationRule(object):
             raise ValueError(_('client_plugin and finder should be specified '
                                'for Resolve rule'))
 
-    def execute_rule(self):
+    def execute_rule(self, client_resolve=True):
         try:
             (source_key, source_data) = self._get_data_from_source_path(
                 self.source_path)
@@ -130,7 +133,7 @@ class TranslationRule(object):
         elif self.rule == TranslationRule.REPLACE:
             self._exec_replace(source_key, source_data,
                                value_key, value_data, value)
-        elif self.rule == TranslationRule.RESOLVE:
+        elif self.rule == TranslationRule.RESOLVE and client_resolve:
             self._exec_resolve(source_key, source_data)
         elif self.rule == TranslationRule.DELETE:
             self._exec_delete(source_key, source_data, value)
@@ -154,7 +157,14 @@ class TranslationRule(object):
             if isinstance(param, hot_funcs.Removed):
                 raise AttributeError(_('Property uses removed function.'))
             if isinstance(param, (hot_funcs.GetParam, cfn_funcs.ParamRef)):
-                return function.resolve(param)
+                try:
+                    return function.resolve(param)
+                except exception.UserParameterMissing as ex:
+                    # We can't resolve parameter now. Abort translation.
+                    err_msg = encodeutils.exception_to_unicode(ex)
+                    raise AttributeError(
+                        _('Can not resolve parameter '
+                          'due to: %s') % err_msg)
             elif isinstance(param, list):
                 return [resolve_param(param_item) for param_item in param]
             else:

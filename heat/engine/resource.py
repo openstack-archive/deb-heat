@@ -19,6 +19,7 @@ import weakref
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import excutils
+from oslo_utils import reflection
 import six
 
 from heat.common import exception
@@ -191,7 +192,9 @@ class Resource(object):
         self.context = stack.context
         self.name = name
         self.t = definition
-        self.reparse()
+        # Only translate in cases where strict_validate is True
+        self.reparse(translate=self.stack.strict_validate,
+                     client_resolve=False)
         self.update_policy = self.t.update_policy(self.update_policy_schema,
                                                   self.context)
         self.attributes_schema.update(self.base_attributes_schema)
@@ -328,10 +331,17 @@ class Resource(object):
             {'status': self.COMPLETE, 'replaced_by': self.replaced_by})
         return new_rs.id
 
-    def reparse(self):
+    def reparse(self, translate=True, client_resolve=True):
+        """Reparse the resource properties.
+
+        Optional translate flag for property translation and
+        client_resolve flag for resolving properties by doing
+        client lookup.
+        """
         self.properties = self.t.properties(self.properties_schema,
                                             self.context)
-        self.translate_properties(self.properties)
+        if translate:
+            self.translate_properties(self.properties, client_resolve)
 
     def __eq__(self, other):
         """Allow == comparison of two resources."""
@@ -542,25 +552,46 @@ class Resource(object):
         return dict((k, after_props.get(k)) for k in changed_properties_set)
 
     def __str__(self):
+        class_name = reflection.get_class_name(self, fully_qualified=False)
         if self.stack.id:
             if self.resource_id:
-                text = '%s "%s" [%s] %s' % (self.__class__.__name__, self.name,
+                text = '%s "%s" [%s] %s' % (class_name, self.name,
                                             self.resource_id,
                                             six.text_type(self.stack))
             else:
-                text = '%s "%s" %s' % (self.__class__.__name__, self.name,
+                text = '%s "%s" %s' % (class_name, self.name,
                                        six.text_type(self.stack))
         else:
-            text = '%s "%s"' % (self.__class__.__name__, self.name)
+            text = '%s "%s"' % (class_name, self.name)
         return six.text_type(text)
 
     def dep_attrs(self, resource_name):
         return self.t.dep_attrs(resource_name)
 
-    def add_dependencies(self, deps):
+    def add_explicit_dependencies(self, deps):
+        """Add all dependencies explicitly specified in the template.
+
+        The deps parameter is a Dependencies object to which dependency pairs
+        are added.
+        """
         for dep in self.t.dependencies(self.stack):
             deps += (self, dep)
         deps += (self, None)
+
+    def add_dependencies(self, deps):
+        """Add implicit dependencies specific to the resource type.
+
+        Some resource types may have implicit dependencies on other resources
+        in the same stack that are not linked by a property value (that would
+        be set using get_resource or get_attr for example, thus creating an
+        explicit dependency). Such dependencies are opaque to the user and
+        should be avoided wherever possible, however in some circumstances they
+        are required due to magic in the underlying API.
+
+        The deps parameter is a Dependencies object to which dependency pairs
+        may be added.
+        """
+        return
 
     def required_by(self):
         """List of resources that require this one as a dependency.
@@ -779,7 +810,9 @@ class Resource(object):
         # Re-resolve the template, since if the resource Ref's
         # the StackId pseudo parameter, it will change after
         # the parser.Stack is stored (which is after the resources
-        # are __init__'d, but before they are create()'d)
+        # are __init__'d, but before they are create()'d). We also
+        # do client lookups for RESOLVE translation rules here.
+
         self.reparse()
         self._update_stored_properties()
 
@@ -874,11 +907,17 @@ class Resource(object):
     def translation_rules(self, properties):
         """Return specified rules for resource."""
 
-    def translate_properties(self, properties):
-        """Translates old properties to new ones."""
+    def translate_properties(self, properties,
+                             client_resolve=True):
+        """Translates properties with resource specific rules.
+
+        The properties parameter is a properties object and the
+        optional client_resolve flag is to specify whether to
+        do 'RESOLVE' translation with client lookup.
+        """
         rules = self.translation_rules(properties) or []
         for rule in rules:
-            rule.execute_rule()
+            rule.execute_rule(client_resolve)
 
     def _get_resource_info(self, resource_data):
         if not resource_data:
@@ -1095,7 +1134,6 @@ class Resource(object):
                 yield self.action_handler_task(action,
                                                args=[after, tmpl_diff,
                                                      prop_diff])
-
                 self.t = after
                 self.reparse()
                 self._update_stored_properties()

@@ -205,6 +205,10 @@ class Stack(collections.Mapping):
             self.context = self.stored_context()
             self.context.roles = self.context.clients.client(
                 'keystone').auth_ref.role_names
+            self.context.user_domain = self.context.clients.client(
+                'keystone').auth_ref.user_domain_id
+            self.context.project_domain = self.context.clients.client(
+                'keystone').auth_ref.project_domain_id
 
         self.clients = self.context.clients
 
@@ -340,7 +344,8 @@ class Stack(collections.Mapping):
     def dependencies(self):
         if self._dependencies is None:
             self._dependencies = self._get_dependencies(
-                six.itervalues(self.resources))
+                six.itervalues(self.resources),
+                ignore_errors=self.id is not None)
         return self._dependencies
 
     def reset_dependencies(self):
@@ -412,14 +417,22 @@ class Stack(collections.Mapping):
         return set(itertools.chain.from_iterable(attr_lists))
 
     @staticmethod
-    def _get_dependencies(resources):
+    def _get_dependencies(resources, ignore_errors=True):
         """Return the dependency graph for a list of resources."""
         deps = dependencies.Dependencies()
         for res in resources:
+            res.add_explicit_dependencies(deps)
+
             try:
                 res.add_dependencies(deps)
-            except ValueError:
-                pass
+            except Exception as exc:
+                if not ignore_errors:
+                    raise
+                else:
+                    LOG.warning(_LW('Ignoring error adding implicit '
+                                    'dependencies for %(res)s: %(err)s') %
+                                {'res': six.text_type(res),
+                                 'err': six.text_type(exc)})
 
         return deps
 
@@ -552,7 +565,7 @@ class Stack(collections.Mapping):
         If self.id is set, we update the existing stack.
         """
         s = self.get_kwargs_for_cloning(keep_status=True, only_db=True)
-        s['name'] = self._backup_name() if backup else self.name
+        s['name'] = self.name
         s['backup'] = backup
         s['updated_at'] = self.updated_time
         if self.t.id is None:
@@ -670,14 +683,17 @@ class Stack(collections.Mapping):
                   not found.
         """
         for r in six.itervalues(self):
-            if r.state in (
+            if (r.state in (
                     (r.INIT, r.COMPLETE),
                     (r.CREATE, r.IN_PROGRESS),
                     (r.CREATE, r.COMPLETE),
                     (r.RESUME, r.IN_PROGRESS),
                     (r.RESUME, r.COMPLETE),
+                    (r.SUSPEND, r.IN_PROGRESS),
+                    (r.SUSPEND, r.COMPLETE),
                     (r.UPDATE, r.IN_PROGRESS),
-                    (r.UPDATE, r.COMPLETE)) and r.FnGetRefId() == refid:
+                    (r.UPDATE, r.COMPLETE)) and
+                    (r.FnGetRefId() == refid or r.name == refid)):
                 return r
 
     def register_access_allowed_handler(self, credential_id, handler):
@@ -701,7 +717,7 @@ class Stack(collections.Mapping):
         return handler and handler(resource_name)
 
     @profiler.trace('Stack.validate', hide_args=False)
-    def validate(self, ignorable_errors=None):
+    def validate(self, ignorable_errors=None, validate_by_deps=True):
         """Validates the stack."""
         # TODO(sdake) Should return line number of invalid reference
 
@@ -728,7 +744,12 @@ class Stack(collections.Mapping):
             raise exception.StackValidationFailed(
                 message=_("Duplicate names %s") % dup_names)
 
-        for res in self.dependencies:
+        if validate_by_deps:
+            iter_rsc = self.dependencies
+        else:
+            iter_rsc = six.itervalues(self.resources)
+
+        for res in iter_rsc:
             try:
                 if self.resource_validate:
                     result = res.validate()
@@ -1058,7 +1079,8 @@ class Stack(collections.Mapping):
             kwargs = self.get_kwargs_for_cloning()
             kwargs['owner_id'] = self.id
             del(kwargs['prev_raw_template_id'])
-            prev = type(self)(self.context, self.name, copy.deepcopy(self.t),
+            prev = type(self)(self.context, self._backup_name(),
+                              copy.deepcopy(self.t),
                               **kwargs)
             prev.store(backup=True)
             LOG.debug('Created new backup stack')

@@ -12,15 +12,18 @@
 #    under the License.
 
 import mock
-import mox
 from oslo_config import cfg
 from oslo_utils import uuidutils
 import six
 
 from heat.common import exception
 from heat.common import template_format
+from heat.engine.clients.os import glance
+from heat.engine.clients.os import neutron
+from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import resource
+from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.engine import stack as parser
 from heat.engine import template
@@ -76,16 +79,6 @@ class CloudServersTest(common.HeatTestCase):
         resource._register_class("OS::Nova::Server",
                                  cloud_server.CloudServer)
 
-    def _mock_find_image_by_name_or_id_success(self, imageId):
-        self.mock_get_image = mock.Mock()
-        self.ctx.clients.client_plugin(
-            'glance').find_image_by_name_or_id = self.mock_get_image
-        self.mock_get_image.return_value = imageId
-
-    def _stub_server_validate(self, server, imageId_input, image_id):
-        # stub glance image validate
-        self._mock_find_image_by_name_or_id_success(image_id)
-
     def _setup_test_stack(self, stack_name):
         t = template_format.parse(wp_template)
         templ = template.Template(
@@ -96,7 +89,7 @@ class CloudServersTest(common.HeatTestCase):
         return (templ, self.stack)
 
     def _setup_test_server(self, return_server, name, image_id=None,
-                           override_name=False, stub_create=True, exit_code=0):
+                           override_name=False, stub_create=True):
         stack_name = '%s_s' % name
         (tmpl, stack) = self._setup_test_stack(stack_name)
 
@@ -104,7 +97,13 @@ class CloudServersTest(common.HeatTestCase):
             'image'] = image_id or 'CentOS 5.2'
         tmpl.t['Resources']['WebServer']['Properties'][
             'flavor'] = '256 MB Server'
-
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id',
+                         return_value='aaaaaa')
+        self.patchobject(nova.NovaClientPlugin, 'find_flavor_by_name_or_id',
+                         return_value=1)
+        self.patchobject(glance.GlanceClientPlugin, 'find_image_by_name_or_id',
+                         return_value=1)
         server_name = '%s' % name
         if override_name:
             tmpl.t['Resources']['WebServer']['Properties'][
@@ -114,41 +113,23 @@ class CloudServersTest(common.HeatTestCase):
         server = cloud_server.CloudServer(server_name,
                                           resource_defns['WebServer'],
                                           stack)
+        self.patchobject(nova.NovaClientPlugin, '_create',
+                         return_value=self.fc)
+
         self.patchobject(server, 'store_external_ports')
 
-        self._stub_server_validate(server, image_id or 'CentOS 5.2', 1)
         if stub_create:
-            self.m.StubOutWithMock(self.fc.servers, 'create')
-            self.fc.servers.create(
-                image=1,
-                flavor=1,
-                key_name='test',
-                name=override_name and server.name or utils.PhysName(
-                    stack_name, server.name),
-                security_groups=[],
-                userdata=mox.IgnoreArg(),
-                scheduler_hints=None,
-                meta=None,
-                nics=None,
-                availability_zone=None,
-                block_device_mapping=None,
-                block_device_mapping_v2=None,
-                config_drive=True,
-                disk_config=None,
-                reservation_id=None,
-                files=mox.IgnoreArg(),
-                admin_pass=None).AndReturn(return_server)
-
+            self.patchobject(self.fc.servers, 'create',
+                             return_value=return_server)
+            # mock check_create_complete innards
+            self.patchobject(self.fc.servers, 'get',
+                             return_value=return_server)
         return server
 
     def _create_test_server(self, return_server, name, override_name=False,
-                            stub_create=True, exit_code=0):
+                            stub_create=True):
         server = self._setup_test_server(return_server, name,
-                                         stub_create=stub_create,
-                                         exit_code=exit_code)
-        self.m.StubOutWithMock(self.fc.servers, 'get')
-        self.fc.servers.get(server.id).AndReturn(return_server)
-        self.m.ReplayAll()
+                                         stub_create=stub_create)
         scheduler.TaskRunner(server.create)()
         return server
 
@@ -165,14 +146,9 @@ class CloudServersTest(common.HeatTestCase):
         server = self._setup_test_server(return_server,
                                          'test_rackconnect_deployed')
         server.context.roles = ['rack_connect']
-        self.m.StubOutWithMock(self.fc.servers, 'get')
-        self.fc.servers.get(return_server.id).MultipleTimes(
-        ).AndReturn(return_server)
-        self.m.ReplayAll()
         scheduler.TaskRunner(server.create)()
         self.assertEqual('CREATE', server.action)
         self.assertEqual('COMPLETE', server.status)
-        self.m.VerifyAll()
 
     def test_rackconnect_failed(self):
         return_server = self.fc.servers.list()[1]
@@ -180,13 +156,9 @@ class CloudServersTest(common.HeatTestCase):
             'rackconnect_automation_status': 'FAILED',
             'rax_service_level_automation': 'Complete',
         }
-        self.m.StubOutWithMock(self.fc.servers, 'get')
-        self.fc.servers.get(return_server.id).MultipleTimes(
-        ).AndReturn(return_server)
         server = self._setup_test_server(return_server,
                                          'test_rackconnect_failed')
         server.context.roles = ['rack_connect']
-        self.m.ReplayAll()
         create = scheduler.TaskRunner(server.create)
         exc = self.assertRaises(exception.ResourceFailure, create)
         self.assertEqual('Error: resources.test_rackconnect_failed: '
@@ -200,17 +172,12 @@ class CloudServersTest(common.HeatTestCase):
             'rackconnect_unprocessable_reason': 'Fake reason',
             'rax_service_level_automation': 'Complete',
         }
-        self.m.StubOutWithMock(self.fc.servers, 'get')
-        self.fc.servers.get(return_server.id).MultipleTimes(
-        ).AndReturn(return_server)
         server = self._setup_test_server(return_server,
                                          'test_rackconnect_unprocessable')
         server.context.roles = ['rack_connect']
-        self.m.ReplayAll()
         scheduler.TaskRunner(server.create)()
         self.assertEqual('CREATE', server.action)
         self.assertEqual('COMPLETE', server.status)
-        self.m.VerifyAll()
 
     def test_rackconnect_unknown(self):
         return_server = self.fc.servers.list()[1]
@@ -218,13 +185,9 @@ class CloudServersTest(common.HeatTestCase):
             'rackconnect_automation_status': 'FOO',
             'rax_service_level_automation': 'Complete',
         }
-        self.m.StubOutWithMock(self.fc.servers, 'get')
-        self.fc.servers.get(return_server.id).MultipleTimes(
-        ).AndReturn(return_server)
         server = self._setup_test_server(return_server,
                                          'test_rackconnect_unknown')
         server.context.roles = ['rack_connect']
-        self.m.ReplayAll()
         create = scheduler.TaskRunner(server.create)
         exc = self.assertRaises(exception.ResourceFailure, create)
         self.assertEqual('Error: resources.test_rackconnect_unknown: '
@@ -256,12 +219,9 @@ class CloudServersTest(common.HeatTestCase):
             return return_server
         self.patchobject(self.fc.servers, 'get',
                          side_effect=activate_status)
-        self.m.ReplayAll()
 
         scheduler.TaskRunner(server.create)()
         self.assertEqual((server.CREATE, server.COMPLETE), server.state)
-
-        self.m.VerifyAll()
 
     def test_rackconnect_no_status(self):
         return_server = self.fc.servers.list()[0]
@@ -286,12 +246,8 @@ class CloudServersTest(common.HeatTestCase):
             return return_server
         self.patchobject(self.fc.servers, 'get',
                          side_effect=activate_status)
-        self.m.ReplayAll()
-
         scheduler.TaskRunner(server.create)()
         self.assertEqual((server.CREATE, server.COMPLETE), server.state)
-
-        self.m.VerifyAll()
 
     def test_rax_automation_lifecycle(self):
         return_server = self.fc.servers.list()[0]
@@ -321,12 +277,8 @@ class CloudServersTest(common.HeatTestCase):
             return return_server
         self.patchobject(self.fc.servers, 'get',
                          side_effect=activate_status)
-        self.m.ReplayAll()
-
         scheduler.TaskRunner(server.create)()
         self.assertEqual((server.CREATE, server.COMPLETE), server.state)
-
-        self.m.VerifyAll()
 
     def test_add_port_for_addresses(self):
         return_server = self.fc.servers.list()[1]
@@ -334,6 +286,10 @@ class CloudServersTest(common.HeatTestCase):
         stack_name = 'test_stack'
         (tmpl, stack) = self._setup_test_stack(stack_name)
         resource_defns = tmpl.resource_definitions(stack)
+        self.patchobject(nova.NovaClientPlugin, 'find_flavor_by_name_or_id',
+                         return_value=1)
+        self.patchobject(glance.GlanceClientPlugin, 'find_image_by_name_or_id',
+                         return_value=1)
         server = cloud_server.CloudServer('WebServer',
                                           resource_defns['WebServer'], stack)
         self.patchobject(server, 'store_external_ports')
@@ -431,10 +387,6 @@ class CloudServersTest(common.HeatTestCase):
                                   'Build Error'}
         server = self._setup_test_server(return_server,
                                          'test_managed_cloud_build_error')
-        self.m.StubOutWithMock(self.fc.servers, 'get')
-        self.fc.servers.get(return_server.id).MultipleTimes(
-        ).AndReturn(return_server)
-        self.m.ReplayAll()
         create = scheduler.TaskRunner(server.create)
         exc = self.assertRaises(exception.ResourceFailure, create)
         self.assertEqual('Error: resources.test_managed_cloud_build_error: '
@@ -446,10 +398,6 @@ class CloudServersTest(common.HeatTestCase):
         return_server.metadata = {'rax_service_level_automation': 'FOO'}
         server = self._setup_test_server(return_server,
                                          'test_managed_cloud_unknown')
-        self.m.StubOutWithMock(self.fc.servers, 'get')
-        self.fc.servers.get(return_server.id).MultipleTimes(
-        ).AndReturn(return_server)
-        self.m.ReplayAll()
         create = scheduler.TaskRunner(server.create)
         exc = self.assertRaises(exception.ResourceFailure, create)
         self.assertEqual('Error: resources.test_managed_cloud_unknown: '
@@ -461,6 +409,10 @@ class CloudServersTest(common.HeatTestCase):
         return_server = self.fc.servers.list()[1]
         return_server.metadata = {'rax_service_level_automation': 'Complete'}
         stack_name = 'no_user_data'
+        self.patchobject(nova.NovaClientPlugin, 'find_flavor_by_name_or_id',
+                         return_value=1)
+        self.patchobject(glance.GlanceClientPlugin, 'find_image_by_name_or_id',
+                         return_value=1)
         (tmpl, stack) = self._setup_test_stack(stack_name)
         properties = tmpl.t['Resources']['WebServer']['Properties']
         properties['user_data'] = user_data
@@ -475,15 +427,11 @@ class CloudServersTest(common.HeatTestCase):
         self.patchobject(server, "_populate_deployments_metadata")
         mock_servers_create = mock.Mock(return_value=return_server)
         self.fc.servers.create = mock_servers_create
-        image_id = mock.ANY
-        self._mock_find_image_by_name_or_id_success(image_id)
-        self.m.StubOutWithMock(self.fc.servers, 'get')
-        self.fc.servers.get(return_server.id).MultipleTimes(
-        ).AndReturn(return_server)
-        self.m.ReplayAll()
+        self.patchobject(self.fc.servers, 'get',
+                         return_value=return_server)
         scheduler.TaskRunner(server.create)()
         mock_servers_create.assert_called_with(
-            image=image_id,
+            image=mock.ANY,
             flavor=mock.ANY,
             key_name=mock.ANY,
             name=mock.ANY,
@@ -516,3 +464,139 @@ class CloudServersTest(common.HeatTestCase):
     def test_server_no_user_data_software_config(self):
         self._test_server_config_drive(None, False, True,
                                        ud_format="SOFTWARE_CONFIG")
+
+
+@mock.patch.object(resource.Resource, "client_plugin")
+@mock.patch.object(resource.Resource, "client")
+class CloudServersValidationTests(common.HeatTestCase):
+    def setUp(self):
+        super(CloudServersValidationTests, self).setUp()
+        resource._register_class("OS::Nova::Server", cloud_server.CloudServer)
+        properties_server = {
+            "image": "CentOS 5.2",
+            "flavor": "256 MB Server",
+            "key_name": "test",
+            "user_data": "wordpress",
+        }
+        self.mockstack = mock.Mock()
+        self.mockstack.has_cache_data.return_value = False
+        self.mockstack.db_resource_get.return_value = None
+        self.rsrcdef = rsrc_defn.ResourceDefinition(
+            "test", cloud_server.CloudServer, properties=properties_server)
+
+    def test_validate_no_image(self, mock_client, mock_plugin):
+        properties_server = {
+            "flavor": "256 MB Server",
+            "key_name": "test",
+            "user_data": "wordpress",
+        }
+
+        rsrcdef = rsrc_defn.ResourceDefinition(
+            "test", cloud_server.CloudServer, properties=properties_server)
+        mock_plugin().find_flavor_by_name_or_id.return_value = 1
+        server = cloud_server.CloudServer("test", rsrcdef, self.mockstack)
+        mock_boot_vol = self.patchobject(
+            server, '_validate_block_device_mapping')
+        mock_boot_vol.return_value = True
+        self.assertIsNone(server.validate())
+
+    def test_validate_no_image_bfv(self, mock_client, mock_plugin):
+        properties_server = {
+            "flavor": "256 MB Server",
+            "key_name": "test",
+            "user_data": "wordpress",
+        }
+        rsrcdef = rsrc_defn.ResourceDefinition(
+            "test", cloud_server.CloudServer, properties=properties_server)
+
+        mock_plugin().find_flavor_by_name_or_id.return_value = 1
+        server = cloud_server.CloudServer("test", rsrcdef, self.mockstack)
+
+        mock_boot_vol = self.patchobject(
+            server, '_validate_block_device_mapping')
+        mock_boot_vol.return_value = True
+
+        mock_flavor = mock.Mock(ram=4)
+        mock_flavor.to_dict.return_value = {
+            'OS-FLV-WITH-EXT-SPECS:extra_specs': {
+                'class': 'standard1',
+                },
+        }
+
+        mock_plugin().get_flavor.return_value = mock_flavor
+        error = self.assertRaises(
+            exception.StackValidationFailed, server.validate)
+        self.assertEqual(
+            'Flavor 256 MB Server cannot be booted from volume.',
+            six.text_type(error))
+
+    def test_validate_bfv_volume_only(self, mock_client, mock_plugin):
+        mock_plugin().find_flavor_by_name_or_id.return_value = 1
+        mock_plugin().find_image_by_name_or_id.return_value = 1
+        server = cloud_server.CloudServer("test", self.rsrcdef, self.mockstack)
+
+        mock_flavor = mock.Mock(ram=4, disk=4)
+        mock_flavor.to_dict.return_value = {
+            'OS-FLV-WITH-EXT-SPECS:extra_specs': {
+                'class': 'memory1',
+                },
+        }
+
+        mock_image = mock.Mock(status='ACTIVE', min_ram=2, min_disk=1)
+        mock_image.get.return_value = "memory1"
+
+        mock_plugin().get_flavor.return_value = mock_flavor
+        mock_plugin().get_image.return_value = mock_image
+
+        error = self.assertRaises(
+            exception.StackValidationFailed, server.validate)
+        self.assertEqual(
+            'Flavor 256 MB Server must be booted from volume, '
+            'but image CentOS 5.2 was also specified.',
+            six.text_type(error))
+
+    def test_validate_image_flavor_excluded_class(self, mock_client,
+                                                  mock_plugin):
+        mock_plugin().find_flavor_by_name_or_id.return_value = 1
+        mock_plugin().find_image_by_name_or_id.return_value = 1
+        server = cloud_server.CloudServer("test", self.rsrcdef, self.mockstack)
+
+        mock_image = mock.Mock(status='ACTIVE', min_ram=2, min_disk=1)
+        mock_image.get.return_value = "!standard1, *"
+
+        mock_flavor = mock.Mock(ram=4, disk=4)
+        mock_flavor.to_dict.return_value = {
+            'OS-FLV-WITH-EXT-SPECS:extra_specs': {
+                'class': 'standard1',
+                },
+        }
+
+        mock_plugin().get_flavor.return_value = mock_flavor
+        mock_plugin().get_image.return_value = mock_image
+
+        error = self.assertRaises(
+            exception.StackValidationFailed, server.validate)
+        self.assertEqual(
+            'Flavor 256 MB Server cannot be used with image CentOS 5.2.',
+            six.text_type(error))
+
+    def test_validate_image_flavor_ok(self, mock_client, mock_plugin):
+        mock_plugin().find_flavor_by_name_or_id.return_value = 1
+        mock_plugin().find_image_by_name_or_id.return_value = 1
+        server = cloud_server.CloudServer("test", self.rsrcdef, self.mockstack)
+
+        mock_image = mock.Mock(size=1, status='ACTIVE', min_ram=2, min_disk=2)
+        mock_image.get.return_value = "standard1"
+
+        mock_flavor = mock.Mock(ram=4, disk=4)
+        mock_flavor.to_dict.return_value = {
+            'OS-FLV-WITH-EXT-SPECS:extra_specs': {
+                'class': 'standard1',
+                'disk_io_index': 1,
+                },
+        }
+
+        mock_plugin().get_flavor.return_value = mock_flavor
+        mock_plugin().get_image.return_value = mock_image
+
+        self.assertIsNone(server.validate())
