@@ -2,6 +2,7 @@ heat (1:6.0.0~rc1-1) experimental; urgency=medium
 
   * New upstream release.
   * Added git as build-depends-indep.
+  * Fixed (build-)depends for this release.
 
  -- Thomas Goirand <zigo@debian.org>  Tue, 22 Mar 2016 13:25:50 +0100
 
