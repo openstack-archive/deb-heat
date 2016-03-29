@@ -47,7 +47,8 @@ _Description: Register Heat in the Keystone endpoint catalog?
  endpoint-create". This can be done automatically now.
  .
  Note that you will need to have an up and running Keystone server on which to
- connect using the Keystone authentication token.
+ connect using a known admin project name, admin username and password. The
+ admin auth token is not used anymore.
 
 Template: heat/keystone-ip
 Type: string
@@ -55,11 +56,25 @@ _Description: Keystone server IP address:
  Please enter the IP address of the Keystone server, so that heat-api can
  contact Keystone to do the Heat service and endpoint creation.
 
-Template: heat/keystone-auth-token
+Template: heat/keystone-admin-name
+Type: string
+Default: admin
+_Description: Keystone admin name:
+ To register the service endpoint, this package needs to know the Admin login,
+ name, project name, and password to the Keystone server.
+
+Template: heat/keystone-project-name
+Type: string
+Default: admin
+_Description: Keystone admin project name:
+ To register the service endpoint, this package needs to know the Admin login,
+ name, project name, and password to the Keystone server.
+
+Template: heat/keystone-admin-password
 Type: password
-_Description: Keystone authentication token:
- To configure its endpoint in Keystone, heat-api needs the Keystone
- authentication token.
+_Description: Keystone admin password:
+ To register the service endpoint, this package needs to know the Admin login,
+ name, project name, and password to the Keystone server.
 
 Template: heat/endpoint-ip
 Type: string

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: heat\n"
 "Report-Msgid-Bugs-To: heat@packages.debian.org\n"
-"POT-Creation-Date: 2013-09-27 00:04+0800\n"
+"POT-Creation-Date: 2016-03-29 13:17+0000\n"
 "PO-Revision-Date: 2015-06-19 21:48+0200\n"
 "Last-Translator: Frans Spiesschaert <Frans.Spiesschaert@yucom.be>\n"
 "Language-Team: Debian Dutch l10n Team <debian-l10n-dutch@lists.debian.org>\n"
@@ -108,9 +108,14 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../heat-common.templates:6001
+#, fuzzy
+#| msgid ""
+#| "Note that you will need to have an up and running Keystone server on "
+#| "which to connect using the Keystone authentication token."
 msgid ""
 "Note that you will need to have an up and running Keystone server on which "
-"to connect using the Keystone authentication token."
+"to connect using a known admin project name, admin username and password. "
+"The admin auth token is not used anymore."
 msgstr ""
 "Merk op dat u een volledig functionele Keystone-server nodig heeft waarmee u "
 "verbinding kunt maken met behulp van het authenticatiebewijs voor Keystone."
@@ -131,38 +136,55 @@ msgstr ""
 "Gelieve het IP-adres van de Keystone-server op te geven, zodat heat-api "
 "Keystone kan contacteren om de Heatdienst en het toegangspunt aan te maken."
 
-#. Type: password
+#. Type: string
 #. Description
 #: ../heat-common.templates:8001
-msgid "Keystone authentication token:"
+#, fuzzy
+#| msgid "Keystone authentication token:"
+msgid "Keystone admin name:"
 msgstr "Authenticatiebewijs voor Keystone:"
 
+#. Type: string
+#. Description
+#. Type: string
+#. Description
 #. Type: password
 #. Description
-#: ../heat-common.templates:8001
+#: ../heat-common.templates:8001 ../heat-common.templates:9001
+#: ../heat-common.templates:10001
 msgid ""
-"To configure its endpoint in Keystone, heat-api needs the Keystone "
-"authentication token."
+"To register the service endpoint, this package needs to know the Admin "
+"login, name, project name, and password to the Keystone server."
 msgstr ""
-"Om zijn toegangspunt in Keystone te kunnen aanmaken, heeft heat-api het "
-"authenticatiebewijs voor Keystone nodig."
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:9001
+msgid "Keystone admin project name:"
+msgstr ""
+
+#. Type: password
+#. Description
+#: ../heat-common.templates:10001
+msgid "Keystone admin password:"
+msgstr ""
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:11001
 msgid "Heat endpoint IP address:"
 msgstr "IP-adres van het toegangspunt van Heat:"
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:9001
+#: ../heat-common.templates:11001
 msgid "Please enter the IP address that will be used to contact Heat."
 msgstr ""
 "Geef op welk IP-adres gebruikt zal worden om contact te maken met Heat."
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:9001
+#: ../heat-common.templates:11001
 msgid ""
 "This IP address should be accessible from the clients that will use this "
 "service, so if you are installing a public cloud, this should be a public IP "
@@ -174,13 +196,13 @@ msgstr ""
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:10001
+#: ../heat-common.templates:12001
 msgid "Name of the region to register:"
 msgstr "Naam van de registratieregio:"
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:10001
+#: ../heat-common.templates:12001
 msgid ""
 "OpenStack supports using availability zones, with each region representing a "
 "location. Please enter the zone that you wish to use when registering the "
@@ -192,13 +214,13 @@ msgstr ""
 
 #. Type: boolean
 #. Description
-#: ../heat-common.templates:11001
+#: ../heat-common.templates:13001
 msgid "Set up a database for heat-common?"
 msgstr "Een database opzetten voor heat-common?"
 
 #. Type: boolean
 #. Description
-#: ../heat-common.templates:11001
+#: ../heat-common.templates:13001
 msgid ""
 "No database has been set up for heat-common to use. Before continuing, you "
 "should make sure you have the following information:"
@@ -209,7 +231,7 @@ msgstr ""
 
 #. Type: boolean
 #. Description
-#: ../heat-common.templates:11001
+#: ../heat-common.templates:13001
 msgid ""
 " * the type of database that you want to use;\n"
 " * the database server host name (that server must allow TCP connections "
@@ -225,7 +247,7 @@ msgstr ""
 
 #. Type: boolean
 #. Description
-#: ../heat-common.templates:11001
+#: ../heat-common.templates:13001
 msgid ""
 "If some of these requirements are missing, do not choose this option and run "
 "with regular SQLite support."
@@ -235,7 +257,7 @@ msgstr ""
 
 #. Type: boolean
 #. Description
-#: ../heat-common.templates:11001
+#: ../heat-common.templates:13001
 msgid ""
 "You can change this setting later on by running \"dpkg-reconfigure -plow "
 "heat-common\"."
@@ -245,7 +267,7 @@ msgstr ""
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:12001
+#: ../heat-common.templates:14001
 msgid "IP address of your RabbitMQ host:"
 msgstr "IP-adres van uw RabbitMQ-computer:"
 
@@ -255,8 +277,8 @@ msgstr "IP-adres van uw RabbitMQ-computer:"
 #. Description
 #. Type: password
 #. Description
-#: ../heat-common.templates:12001 ../heat-common.templates:13001
-#: ../heat-common.templates:14001
+#: ../heat-common.templates:14001 ../heat-common.templates:15001
+#: ../heat-common.templates:16001
 msgid ""
 "In order to interoperate with other components of OpenStack, this package "
 "needs to connect to a central RabbitMQ server."
@@ -266,19 +288,19 @@ msgstr ""
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:12001
+#: ../heat-common.templates:14001
 msgid "Please specify the IP address of that server."
 msgstr "Gelieve het IP-adres van die server op te geven."
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:13001
+#: ../heat-common.templates:15001
 msgid "Username for connection to the RabbitMQ server:"
 msgstr "Gebruikersnaam voor de verbinding met de RabbitMQ-server:"
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:13001
+#: ../heat-common.templates:15001
 msgid "Please specify the username used to connect to the RabbitMQ server."
 msgstr ""
 "Vermeld de gebruikersnaam waarmee verbinding gemaakt wordt met de RabbitMQ-"
@@ -286,14 +308,21 @@ msgstr ""
 
 #. Type: password
 #. Description
-#: ../heat-common.templates:14001
+#: ../heat-common.templates:16001
 msgid "Password for connection to the RabbitMQ server:"
 msgstr "Wachtwoord voor de verbinding met de RabbitMQ-server:"
 
 #. Type: password
 #. Description
-#: ../heat-common.templates:14001
+#: ../heat-common.templates:16001
 msgid "Please specify the password used to connect to the RabbitMQ server."
 msgstr ""
 "Geef op welk wachtwoord gebruikt wordt om verbinding te maken met de "
 "RabbitMQ-server."
+
+#~ msgid ""
+#~ "To configure its endpoint in Keystone, heat-api needs the Keystone "
+#~ "authentication token."
+#~ msgstr ""
+#~ "Om zijn toegangspunt in Keystone te kunnen aanmaken, heeft heat-api het "
+#~ "authenticatiebewijs voor Keystone nodig."

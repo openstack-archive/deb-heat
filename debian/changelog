@@ -1,3 +1,9 @@
+heat (1:6.0.0~rc1-2) experimental; urgency=medium
+
+  * Do not use Keystone admin auth token to setup API endpoints.
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 29 Mar 2016 13:17:04 +0000
+
 heat (1:6.0.0~rc1-1) experimental; urgency=medium
 
   * New upstream release.
