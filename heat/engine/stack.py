@@ -689,8 +689,6 @@ class Stack(collections.Mapping):
                     (r.CREATE, r.COMPLETE),
                     (r.RESUME, r.IN_PROGRESS),
                     (r.RESUME, r.COMPLETE),
-                    (r.SUSPEND, r.IN_PROGRESS),
-                    (r.SUSPEND, r.COMPLETE),
                     (r.UPDATE, r.IN_PROGRESS),
                     (r.UPDATE, r.COMPLETE)) and
                     (r.FnGetRefId() == refid or r.name == refid)):
@@ -881,7 +879,7 @@ class Stack(collections.Mapping):
                     exp_trvsl=self.current_traversal)
                 return updated
             else:
-                    stack.update_and_save(values)
+                stack.update_and_save(values)
 
     def _send_notification_and_add_event(self):
         notification.send(self)
@@ -1955,6 +1953,15 @@ class Stack(collections.Mapping):
         sync_point.delete_all(self.context, self.id, self.current_traversal)
 
         if (self.action, self.status) == (self.DELETE, self.COMPLETE):
+            if not self.owner_id:
+                status, reason = self._delete_credentials(
+                    self.status,
+                    self.status_reason,
+                    False)
+                if status == self.FAILED:
+                    # something wrong when delete credentials, set FAILED
+                    self.state_set(self.action, status, reason)
+                    return
             try:
                 stack_object.Stack.delete(self.context, self.id)
             except exception.NotFound:
