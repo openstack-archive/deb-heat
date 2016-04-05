@@ -1,5 +1,6 @@
-heat (1:6.0.0~rc1-3) unstable; urgency=medium
+heat (1:6.0.0~rc3-1) unstable; urgency=medium
 
+  * New upstream release.
   * Uploading to unstable.
   * Updated ja.po debconf translation (Closes: 819022).
 
