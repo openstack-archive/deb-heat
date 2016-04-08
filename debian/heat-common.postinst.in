@@ -29,7 +29,7 @@ if [ "$1" = "configure" ] || [ "$1" = "reconfigure" ] ; then
 	# This is the equivalent of db-sync:
 	db_get heat/configure_db
 	if [ "$RET" = "true" ] ; then
-		su heat -c "heat-manage db_sync"
+		su heat -s /bin/sh -c "heat-manage db_sync"
 	fi
 
         chown -R heat:adm /var/log/heat
