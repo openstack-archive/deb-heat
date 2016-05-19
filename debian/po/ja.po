@@ -8,8 +8,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: heat\n"
 "Report-Msgid-Bugs-To: heat@packages.debian.org\n"
-"POT-Creation-Date: 2013-09-27 00:04+0800\n"
-"PO-Revision-Date: 2016-03-16 09:43+0900\n"
+"POT-Creation-Date: 2016-03-29 13:17+0000\n"
+"PO-Revision-Date: 2016-04-07 13:01+0900\n"
 "Last-Translator: Takuma Yamada <tyamada@takumayamada.com>\n"
 "Language-Team: Japanese <debian-japanese@lists.debian.org>\n"
 "Language: ja\n"
@@ -89,7 +89,7 @@ msgstr "認証サーバで使用するパスワードを指定してください
 #. Description
 #: ../heat-common.templates:6001
 msgid "Register Heat in the Keystone endpoint catalog?"
-msgstr "Heat を Keystone のエンドポイントのカタログに登録しますか?"
+msgstr "Heat を Keystone のエンドポイントカタログに登録しますか?"
 
 #. Type: boolean
 #. Description
@@ -99,19 +99,24 @@ msgid ""
 "accessible. This is done using \"keystone service-create\" and \"keystone "
 "endpoint-create\". This can be done automatically now."
 msgstr ""
-"各 OpenStack のサービス (各 API) がアクセスできるようにするために登録する必要"
-"があります。これは「keystone service-create」と「keystone endpoint-create」を"
-"使って行われます。今これらのコマンドを実行したい場合に選択します。"
+"各 OpenStack サービス (各 API) は、アクセス可能にするために登録する必要があり"
+"ます。\"keystone service-create\" と \"keystone endpoint-create\" を使って登"
+"録することができます。ここで自動的に行うことができます。"
 
 #. Type: boolean
 #. Description
 #: ../heat-common.templates:6001
+#| msgid ""
+#| "Note that you will need to have an up and running Keystone server on "
+#| "which to connect using the Keystone authentication token."
 msgid ""
 "Note that you will need to have an up and running Keystone server on which "
-"to connect using the Keystone authentication token."
+"to connect using a known admin project name, admin username and password. "
+"The admin auth token is not used anymore."
 msgstr ""
-"Keystone 認証トークンを使って接続するには、Keystone サーバの起動および実行が"
-"必要になりますので注意してください。"
+"既知の管理プロジェクト名、管理者のユーザ名とパスワードを使用して接続するに"
+"は、Keystone サーバの起動および実行が必要になりますので注意してください。管理"
+"者認証トークンはもう使用されていません。"
 
 #. Type: string
 #. Description
@@ -126,58 +131,78 @@ msgid ""
 "Please enter the IP address of the Keystone server, so that heat-api can "
 "contact Keystone to do the Heat service and endpoint creation."
 msgstr ""
-"Keystone サーバの IP アドレスを入力してください。その後、heat-api は Heat "
-"サービスやエンドポイント作成を行うための Keystone への接続が可能になります。"
+"Keystone サーバの IP アドレスを入力してください。それにより heat-api は "
+"Keystone と通信し、Heat サービスやエンドポイントの作成ができるようになりま"
+"す。"
 
-#. Type: password
+#. Type: string
 #. Description
 #: ../heat-common.templates:8001
-msgid "Keystone authentication token:"
-msgstr "Keystone 認証トークン:"
+#| msgid "Keystone authentication token:"
+msgid "Keystone admin name:"
+msgstr "Keystone 管理者名:"
 
+#. Type: string
+#. Description
+#. Type: string
+#. Description
 #. Type: password
 #. Description
-#: ../heat-common.templates:8001
+#: ../heat-common.templates:8001 ../heat-common.templates:9001
+#: ../heat-common.templates:10001
 msgid ""
-"To configure its endpoint in Keystone, heat-api needs the Keystone "
-"authentication token."
+"To register the service endpoint, this package needs to know the Admin "
+"login, name, project name, and password to the Keystone server."
 msgstr ""
-"Keystone でエンドポイントを設定するには、heat-api は Keystone 認証トークンを"
-"必要とします。"
+"サービスのエンドポイントを登録するには、このパッケージが Keystone サーバへの"
+"管理者ログイン、名前、プロジェクト名、およびパスワードを知っている必要があり"
+"ます。"
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:9001
+msgid "Keystone admin project name:"
+msgstr "Keystone 管理プロジェクト名:"
+
+#. Type: password
+#. Description
+#: ../heat-common.templates:10001
+msgid "Keystone admin password:"
+msgstr "Keystone 管理者パスワード:"
+
+#. Type: string
+#. Description
+#: ../heat-common.templates:11001
 msgid "Heat endpoint IP address:"
 msgstr "Heat エンドポイントの IP アドレス:"
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:9001
+#: ../heat-common.templates:11001
 msgid "Please enter the IP address that will be used to contact Heat."
 msgstr "Heat への通信に使用される IP アドレスを入力してください。"
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:9001
+#: ../heat-common.templates:11001
 msgid ""
 "This IP address should be accessible from the clients that will use this "
 "service, so if you are installing a public cloud, this should be a public IP "
 "address."
 msgstr ""
 "この IP アドレスは、このサービスを利用するクライアントからアクセス可能でなけ"
-"ればならないので、パブリッククラウドをインストールしている場合、これはパブ"
-"リック IP アドレスでなければなりません。"
+"ればなりません。パブリッククラウドをインストールしている場合は、パブリック "
+"IP アドレスにする必要があります。"
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:10001
+#: ../heat-common.templates:12001
 msgid "Name of the region to register:"
 msgstr "登録するリージョンの名前:"
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:10001
+#: ../heat-common.templates:12001
 msgid ""
 "OpenStack supports using availability zones, with each region representing a "
 "location. Please enter the zone that you wish to use when registering the "
@@ -189,13 +214,13 @@ msgstr ""
 
 #. Type: boolean
 #. Description
-#: ../heat-common.templates:11001
+#: ../heat-common.templates:13001
 msgid "Set up a database for heat-common?"
 msgstr "heat-common 用のデータベースを設定しますか?"
 
 #. Type: boolean
 #. Description
-#: ../heat-common.templates:11001
+#: ../heat-common.templates:13001
 msgid ""
 "No database has been set up for heat-common to use. Before continuing, you "
 "should make sure you have the following information:"
@@ -205,7 +230,7 @@ msgstr ""
 
 #. Type: boolean
 #. Description
-#: ../heat-common.templates:11001
+#: ../heat-common.templates:13001
 msgid ""
 " * the type of database that you want to use;\n"
 " * the database server host name (that server must allow TCP connections "
@@ -214,13 +239,13 @@ msgid ""
 " * a username and password to access the database."
 msgstr ""
 " * 使用するデータベースの種類\n"
-" * データベースサーバのホスト名 (そのサーバはこのマシンからの\n"
-"   TCP 接続を許可する必要があります)\n"
+" * データベースサーバのホスト名 (そのサーバはこのマシンからの TCP 接続を\n"
+"   許可する必要があります)\n"
 " * データベースにアクセスするためのユーザ名とパスワード。"
 
 #. Type: boolean
 #. Description
-#: ../heat-common.templates:11001
+#: ../heat-common.templates:13001
 msgid ""
 "If some of these requirements are missing, do not choose this option and run "
 "with regular SQLite support."
@@ -230,17 +255,17 @@ msgstr ""
 
 #. Type: boolean
 #. Description
-#: ../heat-common.templates:11001
+#: ../heat-common.templates:13001
 msgid ""
 "You can change this setting later on by running \"dpkg-reconfigure -plow "
 "heat-common\"."
 msgstr ""
-"「dpkg-reconfigure -plow heat-common」の実行により、この設定を後で変更するこ"
-"とができます。"
+"この設定は、後で \"dpkg-reconfigure -plow heat-common\" を実行することで変更"
+"できます。"
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:12001
+#: ../heat-common.templates:14001
 msgid "IP address of your RabbitMQ host:"
 msgstr "RabbitMQ ホストの IP アドレス:"
 
@@ -250,8 +275,8 @@ msgstr "RabbitMQ ホストの IP アドレス:"
 #. Description
 #. Type: password
 #. Description
-#: ../heat-common.templates:12001 ../heat-common.templates:13001
-#: ../heat-common.templates:14001
+#: ../heat-common.templates:14001 ../heat-common.templates:15001
+#: ../heat-common.templates:16001
 msgid ""
 "In order to interoperate with other components of OpenStack, this package "
 "needs to connect to a central RabbitMQ server."
@@ -261,36 +286,40 @@ msgstr ""
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:12001
-#| msgid "Please specify the password to use with the authentication server."
+#: ../heat-common.templates:14001
 msgid "Please specify the IP address of that server."
 msgstr "そのサーバの IP アドレスを指定してください。"
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:13001
+#: ../heat-common.templates:15001
 msgid "Username for connection to the RabbitMQ server:"
-msgstr "RabbitMQ サーバ接続用のユーザ名"
+msgstr "RabbitMQ サーバ接続用のユーザ名:"
 
 #. Type: string
 #. Description
-#: ../heat-common.templates:13001
-#| msgid "Please specify the username to use with the authentication server."
+#: ../heat-common.templates:15001
 msgid "Please specify the username used to connect to the RabbitMQ server."
 msgstr "RabbitMQ サーバ接続の接続に使用するユーザ名を指定してください。"
 
 #. Type: password
 #. Description
-#: ../heat-common.templates:14001
+#: ../heat-common.templates:16001
 msgid "Password for connection to the RabbitMQ server:"
-msgstr "RabbitMQ サーバ接続用のパスワード"
+msgstr "RabbitMQ サーバ接続用のパスワード:"
 
 #. Type: password
 #. Description
-#: ../heat-common.templates:14001
-#| msgid "Please specify the password to use with the authentication server."
+#: ../heat-common.templates:16001
 msgid "Please specify the password used to connect to the RabbitMQ server."
 msgstr "RabbitMQ サーバの接続に使用するパスワードを指定してください。"
+
+#~ msgid ""
+#~ "To configure its endpoint in Keystone, heat-api needs the Keystone "
+#~ "authentication token."
+#~ msgstr ""
+#~ "Keystone でエンドポイントを設定するには、heat-api は Keystone 認証トークン"
+#~ "を必要とします。"
 
 #~ msgid "Auth server hostname:"
 #~ msgstr "認証サーバのホスト名:"
