@@ -1,4 +1,4 @@
-heat (1:6.0.0-2) UNRELEASED; urgency=medium
+heat (1:6.0.0-2) unstable; urgency=medium
 
   [ Ondřej Nový ]
   * Use /bin/sh as su shell in postinst script explicitly
@@ -9,7 +9,7 @@ heat (1:6.0.0-2) UNRELEASED; urgency=medium
   * Updated Japanese translation for debconf messages (Closes: #820763).
   * Updated Dutch translation for debconf messages (Closes: #822969).
 
- -- Thomas Goirand <zigo@debian.org>  Thu, 19 May 2016 11:09:57 +0200
+ -- Thomas Goirand <zigo@debian.org>  Fri, 20 May 2016 12:50:37 +0000
 
 heat (1:6.0.0-1) unstable; urgency=medium
 
