@@ -80,11 +80,9 @@ class TestSecret(common.HeatTestCase):
         mock_secret.status = 'test-status'
         self.barbican.secrets.get.return_value = mock_secret
         mock_secret.payload = 'foo'
-        mock_secret._get_formatted_entity.return_value = (('attr', ), ('v',))
 
         self.assertEqual('test-status', self.res.FnGetAtt('status'))
         self.assertEqual('foo', self.res.FnGetAtt('decrypted_payload'))
-        self.assertEqual({'attr': 'v'}, self.res.FnGetAtt('show'))
 
     def test_attributes_handles_exceptions(self):
         self.barbican.barbican_client.HTTPClientError = Exception
@@ -138,3 +136,65 @@ class TestSecret(common.HeatTestCase):
         self.assertRaises(exception.ResourceFailure,
                           self._create_resource, defn.name, defn,
                           self.stack)
+
+    def test_validate_content_type_without_payload(self):
+        props = {
+            'name': 'secret',
+            'payload_content_type': 'text/plain',
+        }
+        defn = rsrc_defn.ResourceDefinition('secret',
+                                            'OS::Barbican::Secret',
+                                            props)
+        res = self._create_resource(defn.name, defn, self.stack)
+        msg = "payload_content_type cannot be specified without payload."
+        self.assertRaisesRegexp(exception.ResourcePropertyDependency,
+                                msg, res.validate)
+
+    def test_validate_octet_stream_without_encoding(self):
+        props = {
+            'name': 'secret',
+            'payload': 'foobar',
+            'payload_content_type': 'application/octet-stream',
+        }
+        defn = rsrc_defn.ResourceDefinition('secret',
+                                            'OS::Barbican::Secret',
+                                            props)
+        res = self._create_resource(defn.name, defn, self.stack)
+        msg = ("Property unspecified. For 'application/octet-stream' value of "
+               "'payload_content_type' property, 'payload_content_encoding' "
+               "property must be specified.")
+        self.assertRaisesRegexp(exception.StackValidationFailed,
+                                msg, res.validate)
+
+    def test_validate_base64(self):
+        props = {
+            'name': 'secret',
+            'payload': 'foobar',
+            'payload_content_type': 'application/octet-stream',
+            'payload_content_encoding': 'base64'
+        }
+        defn = rsrc_defn.ResourceDefinition('secret',
+                                            'OS::Barbican::Secret',
+                                            props)
+        res = self._create_resource(defn.name, defn, self.stack)
+        msg = ("Invalid payload for specified 'base64' value of "
+               "'payload_content_encoding' property.")
+        self.assertRaisesRegexp(exception.StackValidationFailed,
+                                msg, res.validate)
+
+    def test_validate_encoding_dependency(self):
+        props = {
+            'name': 'secret',
+            'payload': 'foobar',
+            'payload_content_type': 'text/plain',
+            'payload_content_encoding': 'base64'
+        }
+        defn = rsrc_defn.ResourceDefinition('secret',
+                                            'OS::Barbican::Secret',
+                                            props)
+        res = self._create_resource(defn.name, defn, self.stack)
+        msg = ("payload_content_encoding property should only be specified "
+               "for payload_content_type with value "
+               "application/octet-stream.")
+        self.assertRaisesRegexp(exception.ResourcePropertyValueDependency,
+                                msg, res.validate)

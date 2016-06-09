@@ -33,7 +33,7 @@ from heat.tests import utils
 class StackConvergenceCreateUpdateDeleteTest(common.HeatTestCase):
     def setUp(self):
         super(StackConvergenceCreateUpdateDeleteTest, self).setUp()
-        cfg.CONF.set_override('convergence_engine', True)
+        cfg.CONF.set_override('convergence_engine', True, enforce_type=True)
         self.stack = None
 
     @mock.patch.object(parser.Stack, 'mark_complete')
@@ -369,6 +369,16 @@ class StackConvergenceCreateUpdateDeleteTest(common.HeatTestCase):
         stack.mark_complete()
         self.assertTrue(stack.purge_db.called)
 
+    def test_purge_db_sets_curr_trvsl_to_none_for_failed_stack(
+            self, mock_cr):
+        stack = tools.get_stack('test_stack', utils.dummy_context(),
+                                template=tools.string_template_five,
+                                convergence=True)
+        stack.status = stack.FAILED
+        stack.store()
+        stack.purge_db()
+        self.assertEqual('', stack.current_traversal)
+
     @mock.patch.object(raw_template_object.RawTemplate, 'delete')
     def test_purge_db_deletes_previous_template(self, mock_tmpl_delete,
                                                 mock_cr):
@@ -530,63 +540,89 @@ class StackConvergenceCreateUpdateDeleteTest(common.HeatTestCase):
 class TestConvgStackStateSet(common.HeatTestCase):
     def setUp(self):
         super(TestConvgStackStateSet, self).setUp()
-        cfg.CONF.set_override('convergence_engine', True)
+        cfg.CONF.set_override('convergence_engine', True, enforce_type=True)
         self.stack = tools.get_stack(
             'test_stack', utils.dummy_context(),
             template=tools.wp_template, convergence=True)
 
-    def test_state_set_create_adopt_update_delete_complete(self, mock_ps):
-        self.stack.state_set(self.stack.CREATE, self.stack.COMPLETE,
-                             'Create complete')
+    def test_state_set_create_adopt_update_delete_rollback_complete(self,
+                                                                    mock_ps):
+        mock_ps.return_value = 'updated'
+        ret_val = self.stack.state_set(self.stack.CREATE, self.stack.COMPLETE,
+                                       'Create complete')
         self.assertTrue(mock_ps.called)
+        # Ensure that state_set returns with value for convergence
+        self.assertEqual('updated', ret_val)
+
         mock_ps.reset_mock()
-        self.stack.state_set(self.stack.UPDATE, self.stack.COMPLETE,
-                             'Update complete')
+        ret_val = self.stack.state_set(self.stack.UPDATE, self.stack.COMPLETE,
+                                       'Update complete')
         self.assertTrue(mock_ps.called)
+        self.assertEqual('updated', ret_val)
+
         mock_ps.reset_mock()
-        self.stack.state_set(self.stack.DELETE, self.stack.COMPLETE,
-                             'Delete complete')
+        ret_val = self.stack.state_set(
+            self.stack.ROLLBACK, self.stack.COMPLETE, 'Rollback complete')
         self.assertTrue(mock_ps.called)
+        self.assertEqual('updated', ret_val)
+
         mock_ps.reset_mock()
-        self.stack.state_set(self.stack.ADOPT, self.stack.COMPLETE,
-                             'Adopt complete')
+        ret_val = self.stack.state_set(self.stack.DELETE, self.stack.COMPLETE,
+                                       'Delete complete')
         self.assertTrue(mock_ps.called)
+        self.assertEqual('updated', ret_val)
+
+        mock_ps.reset_mock()
+        ret_val = self.stack.state_set(self.stack.ADOPT, self.stack.COMPLETE,
+                                       'Adopt complete')
+        self.assertTrue(mock_ps.called)
+        self.assertEqual('updated', ret_val)
 
     def test_state_set_stack_suspend(self, mock_ps):
-        self.stack.state_set(self.stack.SUSPEND, self.stack.IN_PROGRESS,
-                             'Suspend started')
+        mock_ps.return_value = 'updated'
+        ret_val = self.stack.state_set(
+            self.stack.SUSPEND, self.stack.IN_PROGRESS, 'Suspend started')
         self.assertTrue(mock_ps.called)
+        # Ensure that state_set returns None for other actions in convergence
+        self.assertIsNone(ret_val)
         mock_ps.reset_mock()
-        self.stack.state_set(self.stack.SUSPEND, self.stack.COMPLETE,
-                             'Suspend complete')
+        ret_val = self.stack.state_set(
+            self.stack.SUSPEND, self.stack.COMPLETE, 'Suspend complete')
         self.assertFalse(mock_ps.called)
+        self.assertIsNone(ret_val)
 
     def test_state_set_stack_resume(self, mock_ps):
-        self.stack.state_set(self.stack.RESUME, self.stack.IN_PROGRESS,
-                             'Resume started')
+        ret_val = self.stack.state_set(
+            self.stack.RESUME, self.stack.IN_PROGRESS, 'Resume started')
         self.assertTrue(mock_ps.called)
+        self.assertIsNone(ret_val)
         mock_ps.reset_mock()
-        self.stack.state_set(self.stack.RESUME, self.stack.COMPLETE,
-                             'Resume complete')
+        ret_val = self.stack.state_set(self.stack.RESUME, self.stack.COMPLETE,
+                                       'Resume complete')
         self.assertFalse(mock_ps.called)
+        self.assertIsNone(ret_val)
 
     def test_state_set_stack_snapshot(self, mock_ps):
-        self.stack.state_set(self.stack.SNAPSHOT, self.stack.IN_PROGRESS,
-                             'Snapshot started')
+        ret_val = self.stack.state_set(
+            self.stack.SNAPSHOT, self.stack.IN_PROGRESS, 'Snapshot started')
         self.assertTrue(mock_ps.called)
+        self.assertIsNone(ret_val)
         mock_ps.reset_mock()
-        self.stack.state_set(self.stack.SNAPSHOT, self.stack.COMPLETE,
-                             'Snapshot complete')
+        ret_val = self.stack.state_set(
+            self.stack.SNAPSHOT, self.stack.COMPLETE, 'Snapshot complete')
         self.assertFalse(mock_ps.called)
+        self.assertIsNone(ret_val)
 
     def test_state_set_stack_restore(self, mock_ps):
-        self.stack.state_set(self.stack.RESTORE, self.stack.IN_PROGRESS,
-                             'Restore started')
+        ret_val = self.stack.state_set(
+            self.stack.RESTORE, self.stack.IN_PROGRESS, 'Restore started')
         self.assertTrue(mock_ps.called)
+        self.assertIsNone(ret_val)
         mock_ps.reset_mock()
-        self.stack.state_set(self.stack.RESTORE, self.stack.COMPLETE,
-                             'Restore complete')
+        ret_val = self.stack.state_set(
+            self.stack.RESTORE, self.stack.COMPLETE, 'Restore complete')
         self.assertFalse(mock_ps.called)
+        self.assertIsNone(ret_val)
 
 
 class TestConvgStackRollback(common.HeatTestCase):

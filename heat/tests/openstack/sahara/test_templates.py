@@ -127,6 +127,7 @@ class SaharaNodeGroupTemplateTest(common.HeatTestCase):
         self.fake_ngt = FakeNodeGroupTemplate()
 
         self.t = template_format.parse(node_group_template)
+        self.ngt_props = self.t['resources']['node-group']['properties']
 
     def _init_ngt(self, template):
         self.stack = utils.parse_stack(template)
@@ -249,34 +250,13 @@ class SaharaNodeGroupTemplateTest(common.HeatTestCase):
 
     def test_update(self):
         ngt = self._create_ngt(self.t)
-        rsrc_defn = self.stack.t.resource_definitions(self.stack)['node-group']
-        rsrc_defn['Properties']['node_processes'] = [
-            'tasktracker', 'datanode']
+        props = self.ngt_props.copy()
+        props['node_processes'] = ['tasktracker', 'datanode']
+        props['name'] = 'new-ng-template'
+        rsrc_defn = ngt.t.freeze(properties=props)
         scheduler.TaskRunner(ngt.update, rsrc_defn)()
-        args = {
-            'name': 'node-group-template',
-            'plugin_name': 'vanilla',
-            'hadoop_version': '2.3.0',
-            'flavor_id': 'someflavorid',
-            'description': "",
-            'volumes_per_node': None,
-            'volumes_size': None,
-            'volume_type': 'lvm',
-            'security_groups': None,
-            'auto_security_group': None,
-            'availability_zone': None,
-            'volumes_availability_zone': None,
-            'node_processes': ['tasktracker', 'datanode'],
-            'floating_ip_pool': 'some_pool_id',
-            'node_configs': None,
-            'image_id': None,
-            'is_proxy_gateway': True,
-            'volume_local_to_instance': None,
-            'use_autoconfig': None,
-            'shares': [{'id': 'e45eaabf-9300-42e2-b6eb-9ebc92081f46',
-                        'access_level': 'ro',
-                        'path': None}]
-        }
+        args = {'node_processes': ['tasktracker', 'datanode'],
+                'name': 'new-ng-template'}
         self.ngt_mgr.update.assert_called_once_with('some_ng_id', **args)
         self.assertEqual((ngt.UPDATE, ngt.COMPLETE), ngt.state)
 
@@ -362,23 +342,16 @@ class SaharaClusterTemplateTest(common.HeatTestCase):
         ct = self._create_ct(self.t)
         rsrc_defn = self.stack.t.resource_definitions(self.stack)[
             'cluster-template']
-        rsrc_defn['Properties']['plugin_name'] = 'hdp'
-        rsrc_defn['Properties']['hadoop_version'] = '1.3.2'
+        props = self.t['resources']['cluster-template']['properties'].copy()
+        props['plugin_name'] = 'hdp'
+        props['hadoop_version'] = '1.3.2'
+        props['name'] = 'new-cluster-template'
+        rsrc_defn = rsrc_defn.freeze(properties=props)
         scheduler.TaskRunner(ct.update, rsrc_defn)()
         args = {
-            'name': 'test-cluster-template',
             'plugin_name': 'hdp',
             'hadoop_version': '1.3.2',
-            'description': '',
-            'default_image_id': None,
-            'net_id': 'some_network_id',
-            'anti_affinity': None,
-            'node_groups': None,
-            'cluster_configs': None,
-            'use_autoconfig': None,
-            'shares': [{'id': 'e45eaabf-9300-42e2-b6eb-9ebc92081f46',
-                        'access_level': 'ro',
-                        'path': None}]
+            'name': 'new-cluster-template'
         }
         self.ct_mgr.update.assert_called_once_with('some_ct_id', **args)
         self.assertEqual((ct.UPDATE, ct.COMPLETE), ct.state)

@@ -18,24 +18,35 @@
 import copy
 
 from oslo_config import cfg
+from oslo_log import log as logging
 from oslo_versionedobjects import base
 from oslo_versionedobjects import fields
 
 from heat.common import crypt
 from heat.common import environment_format as env_fmt
+from heat.common.i18n import _LW
 from heat.db import api as db_api
 from heat.objects import base as heat_base
 from heat.objects import fields as heat_fields
 
+LOG = logging.getLogger(__name__)
 
+
+@heat_base.HeatObjectRegistry.register
 class RawTemplate(
     heat_base.HeatObject,
     base.VersionedObjectDictCompat,
     base.ComparableVersionedObject,
 ):
+    # Version 1.0: Initial version
+    # Version 1.1: Added files_id
+    VERSION = '1.1'
+
     fields = {
-        'id': fields.StringField(),
+        'id': fields.IntegerField(),
+        # TODO(cwolfe): remove deprecated files in future release
         'files': heat_fields.JsonField(nullable=True),
+        'files_id': fields.IntegerField(nullable=True),
         'template': heat_fields.JsonField(),
         'environment': heat_fields.JsonField(),
     }
@@ -54,9 +65,17 @@ class RawTemplate(
                 env_fmt.ENCRYPTED_PARAM_NAMES]
 
             for param_name in encrypted_param_names:
-                method, value = parameters[param_name]
-                decrypted_val = crypt.decrypt(method, value)
-                parameters[param_name] = decrypted_val
+                if (isinstance(parameters[param_name], (list, tuple)) and
+                        len(parameters[param_name]) == 2):
+                    method, enc_value = parameters[param_name]
+                    value = crypt.decrypt(method, enc_value)
+                else:
+                    value = parameters[param_name]
+                    LOG.warning(_LW(
+                        'Encountered already-decrypted data while attempting '
+                        'to decrypt parameter %s.  Please file a Heat bug so '
+                        'this can be fixed.'), param_name)
+                parameters[param_name] = value
             tpl.environment[env_fmt.PARAMETERS] = parameters
 
         tpl._context = context
@@ -86,6 +105,10 @@ class RawTemplate(
 
     @classmethod
     def update_by_id(cls, context, template_id, values):
+        # Only save template files in the new raw_template_files
+        # table, not in the old location of raw_template.files
+        if 'files_id' in values and values['files_id']:
+            values['files'] = None
         return cls._from_db_object(
             context, cls(),
             db_api.raw_template_update(context, template_id, values))

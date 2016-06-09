@@ -12,7 +12,7 @@
 #    under the License.
 from barbicanclient import client as barbican_client
 from barbicanclient import containers
-import six
+from barbicanclient import exceptions
 
 from heat.common import exception
 from heat.engine.clients import client_plugin
@@ -36,9 +36,8 @@ class BarbicanClientPlugin(client_plugin.ClientPlugin):
         return client
 
     def is_not_found(self, ex):
-        # This is the only exception the client raises
-        # Inspecting the message to see if it's a 'Not Found'
-        return 'Not Found' in six.text_type(ex)
+        return (isinstance(ex, exceptions.HTTPClientError) and
+                ex.status_code == 404)
 
     def create_generic_container(self, **props):
         return containers.Container(
@@ -54,17 +53,36 @@ class BarbicanClientPlugin(client_plugin.ClientPlugin):
 
     def get_secret_by_ref(self, secret_ref):
         try:
-            return self.client().secrets.get(
-                secret_ref)._get_formatted_entity()
+            secret = self.client().secrets.get(secret_ref)
+            # Force lazy loading. TODO(therve): replace with to_dict()
+            secret.name
+            return secret
         except Exception as ex:
             if self.is_not_found(ex):
                 raise exception.EntityNotFound(
                     entity="Secret",
                     name=secret_ref)
-            raise ex
+            raise
+
+    def get_container_by_ref(self, container_ref):
+        try:
+            # TODO(therve): replace with to_dict()
+            return self.client().containers.get(container_ref)
+        except Exception as ex:
+            if self.is_not_found(ex):
+                raise exception.EntityNotFound(
+                    entity="Container",
+                    name=container_ref)
+            raise
 
 
 class SecretConstraint(constraints.BaseCustomConstraint):
     resource_client_name = CLIENT_NAME
     resource_getter_name = 'get_secret_by_ref'
+    expected_exceptions = (exception.EntityNotFound,)
+
+
+class ContainerConstraint(constraints.BaseCustomConstraint):
+    resource_client_name = CLIENT_NAME
+    resource_getter_name = 'get_container_by_ref'
     expected_exceptions = (exception.EntityNotFound,)

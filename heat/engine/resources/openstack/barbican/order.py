@@ -134,6 +134,9 @@ class Order(resource.Resource):
             properties.Schema.STRING,
             _('The source of certificate request.'),
             support_status=support.SupportStatus(version='5.0.0'),
+            constraints=[
+                constraints.CustomConstraint('barbican.container')
+            ],
         ),
         CA_ID: properties.Schema(
             properties.Schema.STRING,
@@ -219,6 +222,12 @@ class Order(resource.Resource):
                             'bit_length': self.BIT_LENGTH,
                             'type': self.properties[self.TYPE]}
                 raise exception.StackValidationFailed(message=msg)
+        else:
+            if (self.properties[self.PROFILE] and
+                    not self.properties[self.CA_ID]):
+                raise exception.ResourcePropertyDependency(
+                    prop1=self.PROFILE, prop2=self.CA_ID
+                )
         declared_props = sorted([k for k, v in six.iteritems(
             self.properties) if k != self.TYPE and v is not None])
         allowed_props = sorted(self.ALLOWED_PROPERTIES_FOR_TYPE[
@@ -256,12 +265,6 @@ class Order(resource.Resource):
             return secret.payload
 
         return getattr(order, name)
-
-    # TODO(ochuprykov): remove this method when bug #1485619 will be fixed
-    def _show_resource(self):
-        order = self.client().orders.get(self.resource_id)
-        info = order._get_formatted_entity()
-        return dict(zip(info[0], info[1]))
 
 
 def resource_mapping():

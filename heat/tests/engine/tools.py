@@ -192,7 +192,7 @@ def setup_mocks(mocks, stack, mock_image_constraint=True,
     metadata = instance.metadata_get()
     if mock_image_constraint:
         setup_mock_for_image_constraint(mocks,
-                                        instance.t['Properties']['ImageId'])
+                                        instance.properties['ImageId'])
 
     if mock_keystone:
         setup_keystone_mocks(mocks, stack)
@@ -203,7 +203,7 @@ def setup_mocks(mocks, stack, mock_image_constraint=True,
     mocks.StubOutWithMock(nova.NovaClientPlugin, 'build_userdata')
     nova.NovaClientPlugin.build_userdata(
         metadata,
-        instance.t['Properties']['UserData'],
+        user_data,
         'ec2-user').AndReturn(server_userdata)
 
     mocks.StubOutWithMock(fc.servers, 'create')
@@ -305,13 +305,9 @@ class DummyThreadGroup(object):
     def stop_timers(self):
         pass
 
-    def add_thread(self, callback, *args, **kwargs):
-        # just to make _start_with_trace() easier to test:
-        # callback == _start_with_trace
-        # args[0] == trace_info
-        # args[1] == actual_callback
-        callback = args[1]
-        self.threads.append(callback)
+    def add_thread(self, callback, cnxt, trace, func, *args, **kwargs):
+        # callback here is _start_with_trace(); func is the 'real' callback
+        self.threads.append(func)
         return DummyThread()
 
     def stop(self, graceful=False):

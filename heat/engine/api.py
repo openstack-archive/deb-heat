@@ -133,7 +133,7 @@ def translate_filters(params):
         rpc_api.STACK_TIMEOUT: 'timeout',
         rpc_api.STACK_OWNER: 'username',
         rpc_api.STACK_PARENT: 'owner_id',
-        rpc_api.STACK_USER_PROJECT_ID: 'stack_user_project_id',
+        rpc_api.STACK_USER_PROJECT_ID: 'stack_user_project_id'
     }
 
     for key, field in key_map.items():
@@ -217,7 +217,7 @@ def format_stack(stack, preview=False, resolve_outputs=True):
         rpc_api.STACK_ID: dict(stack.identifier()),
         rpc_api.STACK_CREATION_TIME: created_time.isoformat(),
         rpc_api.STACK_UPDATED_TIME: updated_time,
-        rpc_api.STACK_NOTIFICATION_TOPICS: [],  # TODO(?) Not implemented yet
+        rpc_api.STACK_NOTIFICATION_TOPICS: [],  # TODO(therve) Not implemented
         rpc_api.STACK_PARAMETERS: stack.parameters.map(six.text_type),
         rpc_api.STACK_DESCRIPTION: stack.t[stack.t.DESCRIPTION],
         rpc_api.STACK_TMPL_DESCRIPTION: stack.t[stack.t.DESCRIPTION],
@@ -243,6 +243,35 @@ def format_stack(stack, preview=False, resolve_outputs=True):
         info[rpc_api.STACK_OUTPUTS] = format_stack_outputs(stack,
                                                            stack.outputs,
                                                            resolve_value=True)
+
+    return info
+
+
+def format_stack_db_object(stack):
+    """Return a summary representation of the given stack.
+
+    Given a stack versioned db object, return a representation of the given
+    stack for a stack listing.
+    """
+    updated_time = stack.updated_at and stack.updated_at.isoformat()
+    created_time = stack.created_at
+    tags = None
+    if stack.tags:
+        tags = [t.tag for t in stack.tags]
+    info = {
+        rpc_api.STACK_ID: dict(stack.identifier()),
+        rpc_api.STACK_NAME: stack.name,
+        rpc_api.STACK_DESCRIPTION: '',
+        rpc_api.STACK_ACTION: stack.action,
+        rpc_api.STACK_STATUS: stack.status,
+        rpc_api.STACK_STATUS_DATA: stack.status_reason,
+        rpc_api.STACK_CREATION_TIME: created_time.isoformat(),
+        rpc_api.STACK_UPDATED_TIME: updated_time,
+        rpc_api.STACK_OWNER: stack.username,
+        rpc_api.STACK_PARENT: stack.owner_id,
+        rpc_api.STACK_USER_PROJECT_ID: stack.stack_user_project_id,
+        rpc_api.STACK_TAGS: tags,
+    }
 
     return info
 
@@ -314,9 +343,11 @@ def format_stack_resource(resource, detail=True, with_props=False,
         rpc_api.RES_REQUIRED_BY: resource.required_by(),
     }
 
-    if resource.has_nested():
+    try:
         res[rpc_api.RES_NESTED_STACK_ID] = dict(
-            resource.nested().identifier())
+            resource.nested_identifier())
+    except (AttributeError, TypeError):
+        pass
 
     if resource.stack.parent_resource_name:
         res[rpc_api.RES_PARENT_RESOURCE] = resource.stack.parent_resource_name
@@ -573,3 +604,10 @@ def format_snapshot(snapshot):
         rpc_api.SNAPSHOT_CREATION_TIME: snapshot.created_at.isoformat(),
     }
     return result
+
+
+def build_resource_description(docstring):
+    if docstring is not None:
+        return '\n'.join(map(lambda x: x.strip(), docstring.split('\n')))
+    else:
+        return _('No description given')

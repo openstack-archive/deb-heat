@@ -11,11 +11,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from keystoneclient import access
-from keystoneclient import auth
-from keystoneclient.auth.identity import access as access_plugin
-from keystoneclient.auth.identity import v3
-from keystoneclient.auth import token_endpoint
+from keystoneauth1 import access
+from keystoneauth1.identity import access as access_plugin
+from keystoneauth1.identity import v3
+from keystoneauth1 import loading as ks_loading
+from keystoneauth1 import token_endpoint
 from oslo_config import cfg
 from oslo_context import context
 from oslo_log import log as logging
@@ -37,22 +37,23 @@ LOG = logging.getLogger(__name__)
 
 # Note, we yield the options via list_opts to enable generation of the
 # sample heat.conf, but we don't register these options directly via
-# cfg.CONF.register*, it's done via auth.register_conf_options
-# Note, only auth_plugin = v3password is expected to work, example config:
+# cfg.CONF.register*, it's done via ks_loading.register_auth_conf_options
+# Note, only auth_type = v3password is expected to work, example config:
 # [trustee]
-# auth_plugin = password
+# auth_type = v3password
 # auth_url = http://192.168.1.2:35357
 # username = heat
 # password = password
 # user_domain_id = default
 V3_PASSWORD_PLUGIN = 'v3password'
 TRUSTEE_CONF_GROUP = 'trustee'
-auth.register_conf_options(cfg.CONF, TRUSTEE_CONF_GROUP)
+ks_loading.register_auth_conf_options(cfg.CONF, TRUSTEE_CONF_GROUP)
 
 
 def list_opts():
-    trustee_opts = auth.conf.get_common_conf_options()
-    trustee_opts.extend(auth.conf.get_plugin_options(V3_PASSWORD_PLUGIN))
+    trustee_opts = ks_loading.get_auth_common_conf_options()
+    trustee_opts.extend(ks_loading.get_auth_plugin_conf_options(
+        V3_PASSWORD_PLUGIN))
     yield TRUSTEE_CONF_GROUP, trustee_opts
 
 
@@ -86,7 +87,9 @@ class RequestContext(context.RequestContext):
                                              show_deleted=show_deleted,
                                              request_id=request_id,
                                              user_domain=user_domain_id,
-                                             project_domain=project_domain_id)
+                                             project_domain=project_domain_id,
+                                             roles=roles,
+                                             overwrite=overwrite)
 
         self.username = username
         self.user_id = user_id
@@ -96,7 +99,6 @@ class RequestContext(context.RequestContext):
         self.tenant_id = tenant_id
         self.auth_token_info = auth_token_info
         self.auth_url = auth_url
-        self.roles = roles or []
         self._session = None
         self._clients = None
         self.trust_id = trust_id
@@ -109,6 +111,17 @@ class RequestContext(context.RequestContext):
             self.is_admin = self.policy.check_is_admin(self)
         else:
             self.is_admin = is_admin
+
+        # context scoped cache dict where the key is a class of the type of
+        # object being cached and the value is the cache implementation class
+        self._object_cache = {}
+
+    def cache(self, cache_cls):
+        cache = self._object_cache.get(cache_cls)
+        if not cache:
+            cache = cache_cls()
+            self._object_cache[cache_cls] = cache
+        return cache
 
     @property
     def session(self):
@@ -170,7 +183,7 @@ class RequestContext(context.RequestContext):
         if self._trusts_auth_plugin:
             return self._trusts_auth_plugin
 
-        self._trusts_auth_plugin = auth.load_from_conf_options(
+        self._trusts_auth_plugin = ks_loading.load_auth_from_conf_options(
             cfg.CONF, TRUSTEE_CONF_GROUP, trust_id=self.trust_id)
 
         if self._trusts_auth_plugin:
@@ -198,8 +211,8 @@ class RequestContext(context.RequestContext):
 
     def _create_auth_plugin(self):
         if self.auth_token_info:
-            auth_ref = access.AccessInfo.factory(body=self.auth_token_info,
-                                                 auth_token=self.auth_token)
+            auth_ref = access.AccessInfoV3(self.auth_token_info,
+                                           auth_token=self.auth_token)
             return access_plugin.AccessInfoPlugin(
                 auth_url=self.keystone_v3_endpoint,
                 auth_ref=auth_ref)
@@ -235,6 +248,46 @@ class RequestContext(context.RequestContext):
                 self._auth_plugin = self._create_auth_plugin()
 
         return self._auth_plugin
+
+
+class StoredContext(RequestContext):
+    def _load_keystone_data(self):
+        self._keystone_loaded = True
+        auth_ref = self.clients.client('keystone').auth_ref
+
+        self.roles = auth_ref.role_names
+        self.user_domain = auth_ref.user_domain_id
+        self.project_domain = auth_ref.project_domain_id
+
+    @property
+    def roles(self):
+        if not getattr(self, '_keystone_loaded', False):
+            self._load_keystone_data()
+        return self._roles
+
+    @roles.setter
+    def roles(self, roles):
+        self._roles = roles
+
+    @property
+    def user_domain(self):
+        if not getattr(self, '_keystone_loaded', False):
+            self._load_keystone_data()
+        return self._user_domain
+
+    @user_domain.setter
+    def user_domain(self, user_domain):
+        self._user_domain = user_domain
+
+    @property
+    def project_domain(self):
+        if not getattr(self, '_keystone_loaded', False):
+            self._load_keystone_data()
+        return self._project_domain
+
+    @project_domain.setter
+    def project_domain(self, project_domain):
+        self._project_domain = project_domain
 
 
 def get_admin_context(show_deleted=False):

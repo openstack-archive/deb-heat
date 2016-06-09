@@ -29,6 +29,7 @@ from heat.engine.clients.os import barbican
 from heat.engine.clients.os import cinder
 from heat.engine.clients.os import glance
 from heat.engine.clients.os import keystone
+from heat.engine.clients.os.keystone import keystone_constraints as ks_constr
 from heat.engine.clients.os.neutron import neutron_constraints as neutron
 from heat.engine.clients.os import nova
 from heat.engine.clients.os import sahara
@@ -40,7 +41,6 @@ from heat.engine import scheduler
 from heat.tests import fakes
 from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
-
 
 TEST_DEFAULT_LOGLEVELS = {'migrate': logging.WARN,
                           'sqlalchemy': logging.WARN,
@@ -102,9 +102,12 @@ class HeatTestCase(testscenarios.WithScenarios,
         project_dir = os.path.abspath(os.path.join(mod_dir, '../../'))
         env_dir = os.path.join(project_dir, 'etc', 'heat',
                                'environment.d')
+        template_dir = os.path.join(project_dir, 'etc', 'heat',
+                                    'templates')
 
         cfg.CONF.set_default('environment_dir', env_dir)
-        cfg.CONF.set_override('error_wait_time', None)
+        cfg.CONF.set_override('error_wait_time', None, enforce_type=True)
+        cfg.CONF.set_default('template_dir', template_dir)
         self.addCleanup(cfg.CONF.reset)
 
         messaging.setup("fake://", optional=True)
@@ -289,7 +292,7 @@ class HeatTestCase(testscenarios.WithScenarios,
         validate.return_value = True
 
     def stub_KeystoneProjectConstraint(self):
-        validate = self.patchobject(keystone.KeystoneProjectConstraint,
+        validate = self.patchobject(ks_constr.KeystoneProjectConstraint,
                                     'validate')
         validate.return_value = True
 

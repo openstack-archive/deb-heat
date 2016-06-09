@@ -10,6 +10,7 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+from heat.common import exception
 
 from heat.common.i18n import _
 from heat.engine import attributes
@@ -40,20 +41,31 @@ class NovaFlavor(resource.Resource):
     entity = 'flavors'
 
     PROPERTIES = (
-        RAM, VCPUS, DISK, SWAP, EPHEMERAL,
-        RXTX_FACTOR, EXTRA_SPECS, IS_PUBLIC
+        ID, NAME, RAM, VCPUS, DISK, SWAP,
+        EPHEMERAL, RXTX_FACTOR, EXTRA_SPECS, IS_PUBLIC
     ) = (
-        'ram', 'vcpus', 'disk', 'swap', 'ephemeral',
-        'rxtx_factor', 'extra_specs', 'is_public',
+        'flavorid', 'name', 'ram', 'vcpus', 'disk', 'swap',
+        'ephemeral', 'rxtx_factor', 'extra_specs', 'is_public',
     )
 
     ATTRIBUTES = (
-        IS_PUBLIC_ATTR,
+        IS_PUBLIC_ATTR, EXTRA_SPECS_ATTR
     ) = (
-        'is_public',
+        'is_public', 'extra_specs'
     )
 
     properties_schema = {
+        ID: properties.Schema(
+            properties.Schema.STRING,
+            _('Unique ID of the flavor. If not specified, '
+              'an UUID will be auto generated and used.'),
+            support_status=support.SupportStatus(version='7.0.0')
+        ),
+        NAME: properties.Schema(
+            properties.Schema.STRING,
+            _('Name of the flavor.'),
+            support_status=support.SupportStatus(version='7.0.0'),
+        ),
         RAM: properties.Schema(
             properties.Schema.INTEGER,
             _('Memory in MB for the flavor.'),
@@ -108,14 +120,20 @@ class NovaFlavor(resource.Resource):
             support_status=support.SupportStatus(version='6.0.0'),
             type=attributes.Schema.BOOLEAN
         ),
+        EXTRA_SPECS_ATTR: attributes.Schema(
+            _('Extra specs of the flavor in key-value pairs.'),
+            support_status=support.SupportStatus(version='7.0.0'),
+            type=attributes.Schema.MAP
+        )
     }
 
     def handle_create(self):
         args = dict(self.properties)
-        args['flavorid'] = 'auto'
-        args['name'] = self.physical_resource_name()
+        if not args['flavorid']:
+            args['flavorid'] = 'auto'
+        if not args['name']:
+            args['name'] = self.physical_resource_name()
         flavor_keys = args.pop(self.EXTRA_SPECS)
-
         flavor = self.client().flavors.create(**args)
         self.resource_id_set(flavor.id)
         if flavor_keys:
@@ -140,6 +158,22 @@ class NovaFlavor(resource.Resource):
         flavor = self.client().flavors.get(self.resource_id)
         if name == self.IS_PUBLIC_ATTR:
             return getattr(flavor, name)
+        if name == self.EXTRA_SPECS_ATTR:
+            return flavor.get_keys()
+
+    def get_live_resource_data(self):
+        try:
+            flavor = self.client().flavors.get(self.resource_id)
+            resource_data = {self.EXTRA_SPECS: flavor.get_keys()}
+        except Exception as ex:
+            if self.client_plugin().is_not_found(ex):
+                raise exception.EntityNotFound(entity='Resource',
+                                               name=self.name)
+            raise
+        return resource_data
+
+    def parse_live_resource_data(self, resource_properties, resource_data):
+        return resource_data
 
 
 def resource_mapping():

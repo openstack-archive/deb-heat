@@ -38,6 +38,7 @@ from heat.engine import translation
 from heat.rpc import api as rpc_api
 
 cfg.CONF.import_opt('default_software_config_transport', 'heat.common.config')
+cfg.CONF.import_opt('max_server_name_length', 'heat.common.config')
 
 LOG = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         BLOCK_DEVICE_MAPPING_DEVICE_NAME,
         BLOCK_DEVICE_MAPPING_VOLUME_ID,
         BLOCK_DEVICE_MAPPING_IMAGE_ID,
+        BLOCK_DEVICE_MAPPING_IMAGE,
         BLOCK_DEVICE_MAPPING_SNAPSHOT_ID,
         BLOCK_DEVICE_MAPPING_SWAP_SIZE,
         BLOCK_DEVICE_MAPPING_DEVICE_TYPE,
@@ -93,6 +95,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         'device_name',
         'volume_id',
         'image_id',
+        'image',
         'snapshot_id',
         'swap_size',
         'device_type',
@@ -214,6 +217,23 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                     BLOCK_DEVICE_MAPPING_IMAGE_ID: properties.Schema(
                         properties.Schema.STRING,
                         _('The ID of the image to create a volume from.'),
+                        support_status=support.SupportStatus(
+                            status=support.DEPRECATED,
+                            version='7.0.0',
+                            message=_('Use property %s.') %
+                                    BLOCK_DEVICE_MAPPING_IMAGE,
+                            previous_status=support.SupportStatus(
+                                version='5.0.0')
+                        ),
+                        constraints=[
+                            constraints.CustomConstraint('glance.image')
+                        ],
+                    ),
+                    BLOCK_DEVICE_MAPPING_IMAGE: properties.Schema(
+                        properties.Schema.STRING,
+                        _('The ID or name of the image '
+                          'to create a volume from.'),
+                        support_status=support.SupportStatus(version='7.0.0'),
                         constraints=[
                             constraints.CustomConstraint('glance.image')
                         ],
@@ -558,9 +578,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         ),
     }
 
-    # Server host name limit to 53 characters by due to typical default
-    # linux HOST_NAME_MAX of 64, minus the .novalocal appended to the name
-    physical_resource_name_limit = 53
+    physical_resource_name_limit = cfg.CONF.max_server_name_length
 
     default_client_name = 'nova'
 
@@ -571,18 +589,31 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
             translation.TranslationRule(
                 props,
                 translation.TranslationRule.REPLACE,
-                source_path=[self.NETWORKS, self.NETWORK_ID],
+                translation_path=[self.NETWORKS, self.NETWORK_ID],
                 value_name=self.NETWORK_UUID),
             translation.TranslationRule(
                 props,
                 translation.TranslationRule.RESOLVE,
-                source_path=[self.FLAVOR],
+                translation_path=[self.FLAVOR],
                 client_plugin=self.client_plugin('nova'),
                 finder='find_flavor_by_name_or_id'),
             translation.TranslationRule(
                 props,
                 translation.TranslationRule.RESOLVE,
-                source_path=[self.IMAGE],
+                translation_path=[self.IMAGE],
+                client_plugin=self.client_plugin('glance'),
+                finder='find_image_by_name_or_id'),
+            translation.TranslationRule(
+                props,
+                translation.TranslationRule.REPLACE,
+                translation_path=[self.BLOCK_DEVICE_MAPPING_V2,
+                                  self.BLOCK_DEVICE_MAPPING_IMAGE],
+                value_name=self.BLOCK_DEVICE_MAPPING_IMAGE_ID),
+            translation.TranslationRule(
+                props,
+                translation.TranslationRule.RESOLVE,
+                translation_path=[self.BLOCK_DEVICE_MAPPING_V2,
+                                  self.BLOCK_DEVICE_MAPPING_IMAGE],
                 client_plugin=self.client_plugin('glance'),
                 finder='find_image_by_name_or_id'),
         ]
@@ -591,21 +622,21 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                 translation.TranslationRule(
                     props,
                     translation.TranslationRule.RESOLVE,
-                    source_path=[self.NETWORKS, self.NETWORK_ID],
+                    translation_path=[self.NETWORKS, self.NETWORK_ID],
                     client_plugin=self.client_plugin('neutron'),
                     finder='find_resourceid_by_name_or_id',
                     entity='network'),
                 translation.TranslationRule(
                     props,
                     translation.TranslationRule.RESOLVE,
-                    source_path=[self.NETWORKS, self.NETWORK_SUBNET],
+                    translation_path=[self.NETWORKS, self.NETWORK_SUBNET],
                     client_plugin=self.client_plugin('neutron'),
                     finder='find_resourceid_by_name_or_id',
                     entity='subnet'),
                 translation.TranslationRule(
                     props,
                     translation.TranslationRule.RESOLVE,
-                    source_path=[self.NETWORKS, self.NETWORK_PORT],
+                    translation_path=[self.NETWORKS, self.NETWORK_PORT],
                     client_plugin=self.client_plugin('neutron'),
                     finder='find_resourceid_by_name_or_id',
                     entity='port')])
@@ -614,7 +645,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                 translation.TranslationRule(
                     props,
                     translation.TranslationRule.RESOLVE,
-                    source_path=[self.NETWORKS, self.NETWORK_ID],
+                    translation_path=[self.NETWORKS, self.NETWORK_ID],
                     client_plugin=self.client_plugin('nova'),
                     finder='get_nova_network_id')])
         return rules
@@ -826,7 +857,8 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         scheduler_hints = self._scheduler_hints(
             self.properties[self.SCHEDULER_HINTS])
 
-        nics = self._build_nics(self.properties[self.NETWORKS])
+        nics = self._build_nics(self.properties[self.NETWORKS],
+                                security_groups=security_groups)
         block_device_mapping = self._build_block_device_mapping(
             self.properties[self.BLOCK_DEVICE_MAPPING])
         block_device_mapping_v2 = self._build_block_device_mapping_v2(
@@ -945,9 +977,9 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                     'boot_index': 0,
                     'delete_on_termination': False,
                 }
-            elif mapping.get(cls.BLOCK_DEVICE_MAPPING_IMAGE_ID):
+            elif mapping.get(cls.BLOCK_DEVICE_MAPPING_IMAGE):
                 bmd_dict = {
-                    'uuid': mapping.get(cls.BLOCK_DEVICE_MAPPING_IMAGE_ID),
+                    'uuid': mapping.get(cls.BLOCK_DEVICE_MAPPING_IMAGE),
                     'source_type': 'image',
                     'destination_type': 'volume',
                     'boot_index': 0,
@@ -1097,12 +1129,13 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         updaters = []
         new_networks = prop_diff.get(self.NETWORKS)
         old_networks = self.properties[self.NETWORKS]
+        security_groups = self.properties[self.SECURITY_GROUPS]
 
         if not server:
             server = self.client().servers.get(self.resource_id)
         interfaces = server.interface_list()
         remove_ports, add_nets = self.calculate_networks(
-            old_networks, new_networks, interfaces)
+            old_networks, new_networks, interfaces, security_groups)
 
         for port in remove_ports:
             updaters.append(
@@ -1146,20 +1179,21 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
             return ud_update_policy == 'REPLACE'
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        if 'Metadata' in tmpl_diff:
+        if tmpl_diff.metadata_changed():
             # If SOFTWARE_CONFIG user_data_format is enabled we require
             # the "deployments" and "os-collect-config" keys for Deployment
             # polling.  We can attempt to merge the occ data, but any
             # metadata update containing deployments will be discarded.
+            new_md = json_snippet.metadata()
             if self.user_data_software_config():
                 metadata = self.metadata_get(True) or {}
-                new_occ_md = tmpl_diff['Metadata'].get('os-collect-config', {})
+                new_occ_md = new_md.get('os-collect-config', {})
                 occ_md = metadata.get('os-collect-config', {})
                 occ_md.update(new_occ_md)
-                tmpl_diff['Metadata']['os-collect-config'] = occ_md
+                new_md['os-collect-config'] = occ_md
                 deployment_md = metadata.get('deployments', [])
-                tmpl_diff['Metadata']['deployments'] = deployment_md
-            self.metadata_set(tmpl_diff['Metadata'])
+                new_md['deployments'] = deployment_md
+            self.metadata_set(new_md)
 
         updaters = []
         server = None
@@ -1292,7 +1326,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         for mapping in bdm_v2:
             volume_id = mapping.get(self.BLOCK_DEVICE_MAPPING_VOLUME_ID)
             snapshot_id = mapping.get(self.BLOCK_DEVICE_MAPPING_SNAPSHOT_ID)
-            image_id = mapping.get(self.BLOCK_DEVICE_MAPPING_IMAGE_ID)
+            image_id = mapping.get(self.BLOCK_DEVICE_MAPPING_IMAGE)
             swap_size = mapping.get(self.BLOCK_DEVICE_MAPPING_SWAP_SIZE)
 
             property_tuple = (volume_id, snapshot_id, image_id, swap_size)
@@ -1301,7 +1335,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                 raise exception.ResourcePropertyConflict(
                     self.BLOCK_DEVICE_MAPPING_VOLUME_ID,
                     self.BLOCK_DEVICE_MAPPING_SNAPSHOT_ID,
-                    self.BLOCK_DEVICE_MAPPING_IMAGE_ID,
+                    self.BLOCK_DEVICE_MAPPING_IMAGE,
                     self.BLOCK_DEVICE_MAPPING_SWAP_SIZE)
 
             if property_tuple.count(None) == 4:

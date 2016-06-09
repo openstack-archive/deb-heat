@@ -27,6 +27,7 @@ from heat.common.i18n import _
 from heat.common.i18n import _LI
 from heat.db import api as db_api
 from heat.engine import api
+from heat.engine import scheduler
 from heat.objects import resource as resource_objects
 from heat.objects import software_config as software_config_object
 from heat.objects import software_deployment as software_deployment_object
@@ -196,7 +197,19 @@ class SoftwareConfigService(service.Service):
         return software_deployment_object.SoftwareDeployment.get_by_id(
             cnxt, sd.id)
 
-    def show_software_deployment(self, cnxt, deployment_id):
+    def check_software_deployment(self, cnxt, deployment_id, timeout):
+        def _check():
+            while True:
+                sd = self._show_software_deployment(cnxt, deployment_id)
+                if sd.status != rpc_api.SOFTWARE_DEPLOYMENT_IN_PROGRESS:
+                    return
+                yield
+        scheduler.TaskRunner(_check)(timeout=timeout)
+        sd = software_deployment_object.SoftwareDeployment.get_by_id(
+            cnxt, deployment_id)
+        return api.format_software_deployment(sd)
+
+    def _show_software_deployment(self, cnxt, deployment_id):
         sd = software_deployment_object.SoftwareDeployment.get_by_id(
             cnxt, deployment_id)
         if sd.status == rpc_api.SOFTWARE_DEPLOYMENT_IN_PROGRESS:
@@ -209,6 +222,10 @@ class SoftwareConfigService(service.Service):
             elif transport == 'ZAQAR_SIGNAL':
                 sd = self._refresh_zaqar_software_deployment(
                     cnxt, sd, input_values.get('deploy_queue_id'))
+        return sd
+
+    def show_software_deployment(self, cnxt, deployment_id):
+        sd = self._show_software_deployment(cnxt, deployment_id)
         return api.format_software_deployment(sd)
 
     def create_software_deployment(self, cnxt, server_id, config_id,
@@ -258,9 +275,10 @@ class SoftwareConfigService(service.Service):
             status_reasons[output_status_code] = _(
                 'Deployment exited with non-zero status code: %s'
             ) % details.get(output_status_code)
-            event_reason = 'deployment failed (%s)' % status_code
+            event_reason = 'deployment %s failed (%s)' % (deployment_id,
+                                                          status_code)
         else:
-            event_reason = 'deployment succeeded'
+            event_reason = 'deployment %s succeeded' % deployment_id
 
         for output in sd.config.config['outputs'] or []:
             out_key = output['name']
@@ -269,7 +287,7 @@ class SoftwareConfigService(service.Service):
                 if output.get('error_output', False):
                     status = rpc_api.SOFTWARE_DEPLOYMENT_FAILED
                     status_reasons[out_key] = details[out_key]
-                    event_reason = 'deployment failed'
+                    event_reason = 'deployment %s failed' % deployment_id
 
         for out_key in rpc_api.SOFTWARE_DEPLOYMENT_OUTPUTS:
             ov[out_key] = details.get(out_key)

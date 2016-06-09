@@ -189,9 +189,10 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         props = template['Resources']['server']['Properties']
         props['user_data_format'] = 'SOFTWARE_CONFIG'
         self._create_stack(self.template_with_server)
-        sd = self.deployment
-        self.assertEqual('CFN_SIGNAL', sd.properties.get('signal_transport'))
-        sd.validate()
+        mock_sd = self.deployment
+        self.assertEqual('CFN_SIGNAL',
+                         mock_sd.properties.get('signal_transport'))
+        mock_sd.validate()
 
     def test_validate_without_server(self):
         stack = utils.parse_stack(self.template_no_server)
@@ -207,8 +208,8 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         props = template['Resources']['server']['Properties']
         props['user_data_format'] = 'RAW'
         self._create_stack(template)
-        sd = self.deployment
-        err = self.assertRaises(exc.StackValidationFailed, sd.validate)
+        mock_sd = self.deployment
+        err = self.assertRaises(exc.StackValidationFailed, mock_sd.validate)
         self.assertEqual("Resource server's property "
                          "user_data_format should be set to "
                          "SOFTWARE_CONFIG since there are "
@@ -290,11 +291,11 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         return sc
 
     def mock_deployment(self):
-        sd = {
+        mock_sd = {
             'config_id': '9966c8e7-bc9c-42de-aa7d-f2447a952cb2'
         }
-        self.rpc_client.create_software_deployment.return_value = sd
-        return sd
+        self.rpc_client.create_software_deployment.return_value = mock_sd
+        return mock_sd
 
     def test_handle_create(self):
         self._create_stack(self.template_no_signal)
@@ -545,13 +546,13 @@ class SoftwareDeploymentTest(common.HeatTestCase):
 
     def test_check_create_complete(self):
         self._create_stack(self.template)
-        sd = self.mock_deployment()
-        self.rpc_client.show_software_deployment.return_value = sd
+        mock_sd = self.mock_deployment()
+        self.rpc_client.show_software_deployment.return_value = mock_sd
 
-        sd['status'] = self.deployment.COMPLETE
-        self.assertTrue(self.deployment.check_create_complete(sd))
-        sd['status'] = self.deployment.IN_PROGRESS
-        self.assertFalse(self.deployment.check_create_complete(sd))
+        mock_sd['status'] = self.deployment.COMPLETE
+        self.assertTrue(self.deployment.check_create_complete(mock_sd))
+        mock_sd['status'] = self.deployment.IN_PROGRESS
+        self.assertFalse(self.deployment.check_create_complete(mock_sd))
 
     def test_check_create_complete_none(self):
         self._create_stack(self.template)
@@ -559,14 +560,14 @@ class SoftwareDeploymentTest(common.HeatTestCase):
 
     def test_check_update_complete(self):
         self._create_stack(self.template)
-        sd = self.mock_deployment()
-        self.rpc_client.show_software_deployment.return_value = sd
+        mock_sd = self.mock_deployment()
+        self.rpc_client.show_software_deployment.return_value = mock_sd
 
-        sd['status'] = self.deployment.COMPLETE
-        self.assertTrue(self.deployment.check_update_complete(sd))
+        mock_sd['status'] = self.deployment.COMPLETE
+        self.assertTrue(self.deployment.check_update_complete(mock_sd))
 
-        sd['status'] = self.deployment.IN_PROGRESS
-        self.assertFalse(self.deployment.check_update_complete(sd))
+        mock_sd['status'] = self.deployment.IN_PROGRESS
+        self.assertFalse(self.deployment.check_update_complete(mock_sd))
 
     def test_check_update_complete_none(self):
         self._create_stack(self.template)
@@ -574,14 +575,14 @@ class SoftwareDeploymentTest(common.HeatTestCase):
 
     def test_check_suspend_complete(self):
         self._create_stack(self.template)
-        sd = self.mock_deployment()
-        self.rpc_client.show_software_deployment.return_value = sd
+        mock_sd = self.mock_deployment()
+        self.rpc_client.show_software_deployment.return_value = mock_sd
 
-        sd['status'] = self.deployment.COMPLETE
-        self.assertTrue(self.deployment.check_suspend_complete(sd))
+        mock_sd['status'] = self.deployment.COMPLETE
+        self.assertTrue(self.deployment.check_suspend_complete(mock_sd))
 
-        sd['status'] = self.deployment.IN_PROGRESS
-        self.assertFalse(self.deployment.check_suspend_complete(sd))
+        mock_sd['status'] = self.deployment.IN_PROGRESS
+        self.assertFalse(self.deployment.check_suspend_complete(mock_sd))
 
     def test_check_suspend_complete_none(self):
         self._create_stack(self.template)
@@ -589,14 +590,14 @@ class SoftwareDeploymentTest(common.HeatTestCase):
 
     def test_check_resume_complete(self):
         self._create_stack(self.template)
-        sd = self.mock_deployment()
-        self.rpc_client.show_software_deployment.return_value = sd
+        mock_sd = self.mock_deployment()
+        self.rpc_client.show_software_deployment.return_value = mock_sd
 
-        sd['status'] = self.deployment.COMPLETE
-        self.assertTrue(self.deployment.check_resume_complete(sd))
+        mock_sd['status'] = self.deployment.COMPLETE
+        self.assertTrue(self.deployment.check_resume_complete(mock_sd))
 
-        sd['status'] = self.deployment.IN_PROGRESS
-        self.assertFalse(self.deployment.check_resume_complete(sd))
+        mock_sd['status'] = self.deployment.IN_PROGRESS
+        self.assertFalse(self.deployment.check_resume_complete(mock_sd))
 
     def test_check_resume_complete_none(self):
         self._create_stack(self.template)
@@ -604,20 +605,20 @@ class SoftwareDeploymentTest(common.HeatTestCase):
 
     def test_check_create_complete_error(self):
         self._create_stack(self.template)
-        sd = {
+        mock_sd = {
             'status': self.deployment.FAILED,
             'status_reason': 'something wrong'
         }
-        self.rpc_client.show_software_deployment.return_value = sd
+        self.rpc_client.show_software_deployment.return_value = mock_sd
         err = self.assertRaises(
-            exc.Error, self.deployment.check_create_complete, sd)
+            exc.Error, self.deployment.check_create_complete, mock_sd)
         self.assertEqual(
             'Deployment to server failed: something wrong', six.text_type(err))
 
     def test_handle_delete(self):
         self._create_stack(self.template)
-        sd = self.mock_deployment()
-        self.rpc_client.show_software_deployment.return_value = sd
+        mock_sd = self.mock_deployment()
+        self.rpc_client.show_software_deployment.return_value = mock_sd
 
         self.deployment.resource_id = 'c8a19429-7fde-47ea-a42f-40045488226c'
         self.deployment.handle_delete()
@@ -629,21 +630,22 @@ class SoftwareDeploymentTest(common.HeatTestCase):
     def test_handle_delete_resource_id_is_None(self):
         self._create_stack(self.template_delete_suspend_resume)
         self.mock_software_config()
-        sd = self.mock_deployment()
-        self.assertEqual(sd, self.deployment.handle_delete())
+        mock_sd = self.mock_deployment()
+        self.assertEqual(mock_sd, self.deployment.handle_delete())
 
     def test_delete_complete(self):
         self._create_stack(self.template_delete_suspend_resume)
 
         self.mock_software_config()
         derived_sc = self.mock_derived_software_config()
-        sd = self.mock_deployment()
+        mock_sd = self.mock_deployment()
+        mock_sd['server_id'] = 'b509edfb-1448-4b57-8cb1-2e31acccbb8a'
 
         self.deployment.resource_id = 'c8a19429-7fde-47ea-a42f-40045488226c'
 
-        self.rpc_client.show_software_deployment.return_value = sd
-        self.rpc_client.update_software_deployment.return_value = sd
-        self.assertEqual(sd, self.deployment.handle_delete())
+        self.rpc_client.show_software_deployment.return_value = mock_sd
+        self.rpc_client.update_software_deployment.return_value = mock_sd
+        self.assertEqual(mock_sd, self.deployment.handle_delete())
         self.assertEqual({
             'deployment_id': 'c8a19429-7fde-47ea-a42f-40045488226c',
             'action': 'DELETE',
@@ -652,11 +654,34 @@ class SoftwareDeploymentTest(common.HeatTestCase):
             'status_reason': 'Deploy data available'},
             self.rpc_client.update_software_deployment.call_args[1])
 
-        sd['status'] = self.deployment.IN_PROGRESS
-        self.assertFalse(self.deployment.check_delete_complete(sd))
+        mock_sd['status'] = self.deployment.IN_PROGRESS
+        self.assertFalse(self.deployment.check_delete_complete(mock_sd))
 
-        sd['status'] = self.deployment.COMPLETE
-        self.assertTrue(self.deployment.check_delete_complete(sd))
+        mock_sd['status'] = self.deployment.COMPLETE
+        self.assertTrue(self.deployment.check_delete_complete(mock_sd))
+
+    def test_delete_complete_missing_server(self):
+        """Tests deleting a deployment when the server disappears"""
+        self._create_stack(self.template_delete_suspend_resume)
+
+        self.mock_software_config()
+        mock_sd = self.mock_deployment()
+        mock_sd['server_id'] = 'b509edfb-1448-4b57-8cb1-2e31acccbb8a'
+
+        # Simulate Nova not knowing about the server
+        mock_get_server = self.patchobject(
+            nova.NovaClientPlugin, 'get_server',
+            side_effect=exc.EntityNotFound)
+
+        self.deployment.resource_id = 'c8a19429-7fde-47ea-a42f-40045488226c'
+
+        self.rpc_client.show_software_deployment.return_value = mock_sd
+        self.rpc_client.update_software_deployment.return_value = mock_sd
+
+        mock_sd['status'] = self.deployment.COMPLETE
+        self.assertTrue(self.deployment.check_delete_complete(mock_sd))
+
+        mock_get_server.assert_called_once_with(mock_sd['server_id'])
 
     def test_handle_delete_notfound(self):
         self._create_stack(self.template)
@@ -665,9 +690,9 @@ class SoftwareDeploymentTest(common.HeatTestCase):
 
         self.mock_software_config()
         derived_sc = self.mock_derived_software_config()
-        sd = self.mock_deployment()
-        sd['config_id'] = derived_sc['id']
-        self.rpc_client.show_software_deployment.return_value = sd
+        mock_sd = self.mock_deployment()
+        mock_sd['config_id'] = derived_sc['id']
+        self.rpc_client.show_software_deployment.return_value = mock_sd
 
         nf = exc.NotFound
         self.rpc_client.delete_software_deployment.side_effect = nf
@@ -693,9 +718,9 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         # in this case also need to call the _delete_resource(),
         # otherwise the sd data will residue in db
         self._create_stack(self.template)
-        sd = self.mock_deployment()
+        mock_sd = self.mock_deployment()
         self.deployment.resource_id = 'c8a19429-7fde-47ea-a42f-40045488226c'
-        self.rpc_client.show_software_deployment.return_value = sd
+        self.rpc_client.show_software_deployment.return_value = mock_sd
         self.assertTrue(self.deployment.check_delete_complete())
         self.assertEqual(
             (self.ctx, self.deployment.resource_id),
@@ -705,10 +730,10 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         self._create_stack(self.template)
 
         self.mock_derived_software_config()
-        sd = self.mock_deployment()
+        mock_sd = self.mock_deployment()
         rsrc = self.stack['deployment_mysql']
 
-        self.rpc_client.show_software_deployment.return_value = sd
+        self.rpc_client.show_software_deployment.return_value = mock_sd
         self.deployment.resource_id = 'c8a19429-7fde-47ea-a42f-40045488226c'
         config_id = '0ff2e903-78d7-4cca-829e-233af3dae705'
         prop_diff = {
@@ -746,9 +771,9 @@ class SoftwareDeploymentTest(common.HeatTestCase):
 
         self.mock_software_config()
         derived_sc = self.mock_derived_software_config()
-        sd = self.mock_deployment()
+        mock_sd = self.mock_deployment()
 
-        self.rpc_client.show_software_deployment.return_value = sd
+        self.rpc_client.show_software_deployment.return_value = mock_sd
         self.deployment.resource_id = 'c8a19429-7fde-47ea-a42f-40045488226c'
 
         # first, handle the suspend
@@ -762,11 +787,11 @@ class SoftwareDeploymentTest(common.HeatTestCase):
             'status_reason': 'Deploy data available'},
             self.rpc_client.update_software_deployment.call_args[1])
 
-        sd['status'] = 'IN_PROGRESS'
-        self.assertFalse(self.deployment.check_suspend_complete(sd))
+        mock_sd['status'] = 'IN_PROGRESS'
+        self.assertFalse(self.deployment.check_suspend_complete(mock_sd))
 
-        sd['status'] = 'COMPLETE'
-        self.assertTrue(self.deployment.check_suspend_complete(sd))
+        mock_sd['status'] = 'COMPLETE'
+        self.assertTrue(self.deployment.check_suspend_complete(mock_sd))
 
         # now, handle the resume
         self.deployment.handle_resume()
@@ -779,11 +804,11 @@ class SoftwareDeploymentTest(common.HeatTestCase):
             'status_reason': 'Deploy data available'},
             self.rpc_client.update_software_deployment.call_args[1])
 
-        sd['status'] = 'IN_PROGRESS'
-        self.assertFalse(self.deployment.check_resume_complete(sd))
+        mock_sd['status'] = 'IN_PROGRESS'
+        self.assertFalse(self.deployment.check_resume_complete(mock_sd))
 
-        sd['status'] = 'COMPLETE'
-        self.assertTrue(self.deployment.check_resume_complete(sd))
+        mock_sd['status'] = 'COMPLETE'
+        self.assertTrue(self.deployment.check_resume_complete(mock_sd))
 
     def test_handle_signal_ok_zero(self):
         self._create_stack(self.template)
@@ -893,7 +918,7 @@ class SoftwareDeploymentTest(common.HeatTestCase):
 
     def test_fn_get_att(self):
         self._create_stack(self.template)
-        sd = {
+        mock_sd = {
             'outputs': [
                 {'name': 'failed', 'error_output': True},
                 {'name': 'foo'}
@@ -906,7 +931,7 @@ class SoftwareDeploymentTest(common.HeatTestCase):
             },
             'status': self.deployment.COMPLETE
         }
-        self.rpc_client.show_software_deployment.return_value = sd
+        self.rpc_client.show_software_deployment.return_value = mock_sd
         self.assertEqual('bar', self.deployment.FnGetAtt('foo'))
         self.assertEqual('A thing happened',
                          self.deployment.FnGetAtt('deploy_stdout'))
@@ -928,11 +953,11 @@ class SoftwareDeploymentTest(common.HeatTestCase):
     def test_fn_get_att_error(self):
         self._create_stack(self.template)
 
-        sd = {
+        mock_sd = {
             'outputs': [],
             'output_values': {'foo': 'bar'},
         }
-        self.rpc_client.show_software_deployment.return_value = sd
+        self.rpc_client.show_software_deployment.return_value = mock_sd
 
         err = self.assertRaises(
             exc.InvalidTemplateAttribute,
@@ -945,10 +970,10 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         self._create_stack(self.template)
 
         self.mock_software_config()
-        sd = self.mock_deployment()
+        mock_sd = self.mock_deployment()
         rsrc = self.stack['deployment_mysql']
 
-        self.rpc_client.show_software_deployment.return_value = sd
+        self.rpc_client.show_software_deployment.return_value = mock_sd
         self.deployment.resource_id = 'c8a19429-7fde-47ea-a42f-40045488226c'
         config_id = '0ff2e903-78d7-4cca-829e-233af3dae705'
         prop_diff = {'config': config_id}
@@ -970,10 +995,10 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         self._create_stack(self.template)
 
         self.mock_software_component()
-        sd = self.mock_deployment()
+        mock_sd = self.mock_deployment()
         rsrc = self.stack['deployment_mysql']
 
-        self.rpc_client.show_software_deployment.return_value = sd
+        self.rpc_client.show_software_deployment.return_value = mock_sd
         self.deployment.resource_id = 'c8a19429-7fde-47ea-a42f-40045488226c'
         config_id = '0ff2e903-78d7-4cca-829e-233af3dae705'
         prop_diff = {'config': config_id}
@@ -1018,9 +1043,9 @@ class SoftwareDeploymentTest(common.HeatTestCase):
             'outputs': [],
         }
         self.rpc_client.show_software_config.return_value = config
-        sd = self.mock_deployment()
+        mock_sd = self.mock_deployment()
 
-        self.rpc_client.show_software_deployment.return_value = sd
+        self.rpc_client.show_software_deployment.return_value = mock_sd
 
         self.assertIsNotNone(self.deployment.handle_create())
         self.assertIsNone(self.deployment.handle_delete())
@@ -1190,6 +1215,31 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         self.deployment.physical_resource_name = mock.Mock()
         self.deployment._delete_zaqar_signal_queue()
         self.assertEqual(2, len(self.deployment.data_delete.mock_calls))
+
+    def test_server_exists(self):
+        # Setup
+        self._create_stack(self.template_delete_suspend_resume)
+        mock_sd = {'server_id': 'b509edfb-1448-4b57-8cb1-2e31acccbb8a'}
+
+        # For a success case, this doesn't raise an exception
+        self.patchobject(nova.NovaClientPlugin, 'get_server')
+
+        # Test
+        result = self.deployment._server_exists(mock_sd)
+        self.assertTrue(result)
+
+    def test_server_exists_no_server(self):
+        # Setup
+        self._create_stack(self.template_delete_suspend_resume)
+        mock_sd = {'server_id': 'b509edfb-1448-4b57-8cb1-2e31acccbb8a'}
+
+        # For a success case, this doesn't raise an exception
+        self.patchobject(nova.NovaClientPlugin, 'get_server',
+                         side_effect=exc.EntityNotFound)
+
+        # Test
+        result = self.deployment._server_exists(mock_sd)
+        self.assertFalse(result)
 
 
 class SoftwareDeploymentGroupTest(common.HeatTestCase):

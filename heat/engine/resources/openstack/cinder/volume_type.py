@@ -36,6 +36,8 @@ class CinderVolumeType(resource.Resource):
 
     entity = 'volume_types'
 
+    required_service_extension = 'os-types-manage'
+
     PROPERTIES = (
         NAME, METADATA, IS_PUBLIC, DESCRIPTION, PROJECTS,
     ) = (
@@ -138,11 +140,6 @@ class CinderVolumeType(resource.Resource):
                     self.resource_id, project_id)
             # add the new projects access
             self._add_projects_access(set(new_projects) - set(old_projects))
-
-    # TODO(huangtianhua): remove this method when bug #1479641 is fixed.
-    def _show_resource(self):
-        vtype = self.client().volume_types.get(self.resource_id)
-        return vtype._info
 
     def validate(self):
         super(CinderVolumeType, self).validate()

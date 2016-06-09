@@ -19,7 +19,6 @@ import six
 from heat.common import exception
 from heat.common import grouputils
 from heat.common import template_format
-from heat.engine import function
 from heat.engine.resources.openstack.heat import resource_group
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
@@ -408,11 +407,15 @@ class ResourceGroupTest(common.HeatTestCase):
         res_prop['listprop'] = list(res_prop['listprop'])
         self.assertEqual(expect, nested)
 
-        res_def = snip['Properties']['resource_def']
+        props = copy.deepcopy(templ['resources']['group1']['properties'])
+        res_def = props['resource_def']
         res_def['properties']['Foo'] = "Bar___foo__"
-        res_def['properties']['listprop'] = ["__foo___0", "__foo___1",
+        res_def['properties']['listprop'] = ["__foo___0",
+                                             "__foo___1",
                                              "__foo___2"]
         res_def['type'] = "ResourceWithListProp__foo__"
+        snip = snip.freeze(properties=props)
+
         resg = resource_group.ResourceGroup('test', snip, stack)
         expect = {
             "heat_template_version": "2015-04-30",
@@ -518,9 +521,11 @@ class ResourceGroupTest(common.HeatTestCase):
 
     def test_handle_create_with_batching(self):
         stack = utils.parse_stack(tmpl_with_default_updt_policy())
-        snip = stack.t.resource_definitions(stack)['group1']
-        snip['UpdatePolicy']['batch_create'] = {'max_batch_size': 3}
-        snip['Properties']['count'] = 10
+        defn = stack.t.resource_definitions(stack)['group1']
+        props = stack.t.t['resources']['group1']['properties'].copy()
+        props['count'] = 10
+        update_policy = {'batch_create': {'max_batch_size': 3}}
+        snip = defn.freeze(properties=props, update_policy=update_policy)
         resgrp = resource_group.ResourceGroup('test', snip, stack)
         self.patchobject(scheduler.TaskRunner, 'start')
         checkers = resgrp.handle_create()
@@ -781,6 +786,12 @@ class ResourceGroupAttrTest(common.HeatTestCase):
         self.assertEqual(expected[1], resg.FnGetAtt("refs", 1))
         self.assertIsNone(resg.FnGetAtt("refs", 2))
 
+    def test_aggregate_refs_map(self):
+        resg = self._create_dummy_stack()
+        found = resg.FnGetAtt("refs_map")
+        expected = {'0': 'ID-0', '1': 'ID-1'}
+        self.assertEqual(expected, found)
+
     def test_aggregate_outputs(self):
         """Test outputs aggregation."""
         expected = {'0': ['foo', 'bar'], '1': ['foo', 'bar']}
@@ -1011,37 +1022,24 @@ class RollingUpdatePolicyDiffTest(common.HeatTestCase):
         # load current stack
         current_stack = utils.parse_stack(current)
         current_grp = current_stack['group1']
-        current_grp_json = function.resolve(
-            current_grp.t)
+        current_grp_json = current_grp.frozen_definition()
 
         updated_stack = utils.parse_stack(updated)
         updated_grp = updated_stack['group1']
-        updated_grp_json = function.resolve(
-            updated_grp.t)
+        updated_grp_json = updated_grp.t.freeze()
 
         # identify the template difference
         tmpl_diff = updated_grp.update_template_diff(
             updated_grp_json, current_grp_json)
-        updated_policy = (updated_grp_json['UpdatePolicy']
-                          if 'UpdatePolicy' in updated_grp_json else None)
-        expected = {u'UpdatePolicy': updated_policy}
-        self.assertEqual(expected, tmpl_diff)
+        self.assertTrue(tmpl_diff.update_policy_changed())
 
         # test application of the new update policy in handle_update
-        update_snippet = rsrc_defn.ResourceDefinition(
-            current_grp.name,
-            current_grp.type(),
-            properties=updated_grp_json['Properties'],
-            update_policy=updated_policy)
-
         current_grp._try_rolling_update = mock.Mock()
         current_grp._assemble_nested_for_size = mock.Mock()
         self.patchobject(scheduler.TaskRunner, 'start')
-        current_grp.handle_update(update_snippet, tmpl_diff, None)
-        if updated_policy is None:
-            self.assertEqual({}, current_grp.update_policy.data)
-        else:
-            self.assertEqual(updated_policy, current_grp.update_policy.data)
+        current_grp.handle_update(updated_grp_json, tmpl_diff, None)
+        self.assertEqual(updated_grp_json._update_policy or {},
+                         current_grp.update_policy.data)
 
     def test_update_policy_added(self):
         self.validate_update_policy_diff(template,
@@ -1070,8 +1068,7 @@ class RollingUpdateTest(common.HeatTestCase):
         current = copy.deepcopy(template)
         self.current_stack = utils.parse_stack(current)
         self.current_grp = self.current_stack['group1']
-        current_grp_json = function.resolve(
-            self.current_grp.t)
+        current_grp_json = self.current_grp.frozen_definition()
         prop_diff, tmpl_diff = None, None
         updated = tmpl_with_updt_policy() if (
             with_policy) else copy.deepcopy(template)
@@ -1085,21 +1082,14 @@ class RollingUpdateTest(common.HeatTestCase):
                                   'type': 'OverwrittenFnGetRefIdType'}})
         updated_stack = utils.parse_stack(updated)
         updated_grp = updated_stack['group1']
-        updated_grp_json = function.resolve(updated_grp.t)
+        updated_grp_json = updated_grp.t.freeze()
         tmpl_diff = updated_grp.update_template_diff(
             updated_grp_json, current_grp_json)
 
-        updated_policy = updated_grp_json[
-            'UpdatePolicy']if 'UpdatePolicy' in updated_grp_json else None
-        update_snippet = rsrc_defn.ResourceDefinition(
-            self.current_grp.name,
-            self.current_grp.type(),
-            properties=updated_grp_json['Properties'],
-            update_policy=updated_policy)
         self.current_grp._replace = mock.Mock(return_value=[])
         self.current_grp._assemble_nested = mock.Mock()
         self.patchobject(scheduler.TaskRunner, 'start')
-        self.current_grp.handle_update(update_snippet, tmpl_diff, prop_diff)
+        self.current_grp.handle_update(updated_grp_json, tmpl_diff, prop_diff)
 
     def test_update_without_policy_prop_diff(self):
         self.check_with_update(with_diff=True)
@@ -1117,7 +1107,7 @@ class RollingUpdateTest(common.HeatTestCase):
         self.stack.timeout_secs = mock.Mock(return_value=200)
         err = self.assertRaises(ValueError, self.current_grp._update_timeout,
                                 3, 100)
-        self.assertIn('The current UpdatePolicy will result in stack update '
+        self.assertIn('The current update policy will result in stack update '
                       'timeout.', six.text_type(err))
 
     def test_update_time_sufficient(self):

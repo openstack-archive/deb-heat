@@ -19,6 +19,7 @@ from oslo_config import cfg
 from oslo_db import api as oslo_db_api
 from oslo_db.sqlalchemy import session as db_session
 from oslo_db.sqlalchemy import utils
+from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import encodeutils
 from oslo_utils import timeutils
@@ -33,10 +34,13 @@ from sqlalchemy.orm import session as orm_session
 from heat.common import crypt
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common.i18n import _LE
+from heat.common.i18n import _LI
 from heat.db.sqlalchemy import filters as db_filters
 from heat.db.sqlalchemy import migration
 from heat.db.sqlalchemy import models
 from heat.db.sqlalchemy import utils as db_utils
+from heat.engine import environment as heat_environment
 from heat.rpc import api as rpc_api
 
 CONF = cfg.CONF
@@ -45,6 +49,8 @@ CONF.import_opt('max_events_per_stack', 'heat.common.config')
 CONF.import_group('profiler', 'heat.common.config')
 
 _facade = None
+
+LOG = logging.getLogger(__name__)
 
 
 def get_facade():
@@ -128,7 +134,33 @@ def raw_template_update(context, template_id, values):
 
 def raw_template_delete(context, template_id):
     raw_template = raw_template_get(context, template_id)
+    raw_tmpl_files_id = raw_template.files_id
     raw_template.delete()
+    if raw_tmpl_files_id is None:
+        return
+    # If no other raw_template is referencing the same raw_template_files,
+    # delete that too
+    if _session(context).query(models.RawTemplate).filter_by(
+            files_id=raw_tmpl_files_id).first() is None:
+        raw_template_files_get(context, raw_tmpl_files_id).delete()
+
+
+def raw_template_files_create(context, values):
+    session = _session(context)
+    raw_templ_files_ref = models.RawTemplateFiles()
+    raw_templ_files_ref.update(values)
+    with session.begin():
+        raw_templ_files_ref.save(session)
+    return raw_templ_files_ref
+
+
+def raw_template_files_get(context, files_id):
+    result = model_query(context, models.RawTemplateFiles).get(files_id)
+    if not result:
+        raise exception.NotFound(
+            _("raw_template_files with files_id %d not found") %
+            files_id)
+    return result
 
 
 def resource_get(context, resource_id):
@@ -153,7 +185,7 @@ def resource_get_by_name_and_stack(context, resource_name, stack_id):
 
 def resource_get_by_physical_resource_id(context, physical_resource_id):
     results = (model_query(context, models.Resource)
-               .filter_by(nova_instance=physical_resource_id)
+               .filter_by(physical_resource_id=physical_resource_id)
                .all())
 
     for result in results:
@@ -437,6 +469,7 @@ def _query_stack_get_all(context, tenant_safe=True, show_deleted=False,
     if tenant_safe:
         query = query.filter_by(tenant=context.tenant_id)
 
+    query = query.options(orm.subqueryload("tags"))
     if tags:
         for tag in tags:
             tag_alias = orm_aliased(models.StackTag)
@@ -524,6 +557,8 @@ def stack_create(context, values):
     return stack_ref
 
 
+@oslo_db_api.wrap_db_retry(max_retries=3, retry_on_deadlock=True,
+                           retry_interval=0.5, inc_retry_interval=True)
 def stack_update(context, stack_id, values, exp_trvsl=None):
     stack = stack_get(context, stack_id)
 
@@ -917,6 +952,13 @@ def software_config_get_all(context, limit=None, marker=None,
 
 def software_config_delete(context, config_id):
     config = software_config_get(context, config_id)
+    # Query if the software config has been referenced by deployment.
+    result = model_query(context, models.SoftwareDeployment).filter_by(
+        config_id=config_id).first()
+    if result:
+        msg = (_("Software config with id %s can not be deleted as "
+                 "it is referenced.") % config_id)
+        raise exception.InvalidRestrictedAction(message=msg)
     session = orm_session.Session.object_session(config)
     with session.begin():
         session.delete(config)
@@ -1091,6 +1133,8 @@ def purge_deleted(age, granularity='days'):
     resource_data = sqlalchemy.Table('resource_data', meta, autoload=True)
     event = sqlalchemy.Table('event', meta, autoload=True)
     raw_template = sqlalchemy.Table('raw_template', meta, autoload=True)
+    raw_template_files = sqlalchemy.Table('raw_template_files', meta,
+                                          autoload=True)
     user_creds = sqlalchemy.Table('user_creds', meta, autoload=True)
     service = sqlalchemy.Table('service', meta, autoload=True)
     syncpoint = sqlalchemy.Table('sync_point', meta, autoload=True)
@@ -1144,9 +1188,26 @@ def purge_deleted(age, granularity='days'):
                 stack.c.prev_raw_template_id.in_(raw_template_ids))
             raw_tmpl = [i[0] for i in engine.execute(raw_tmpl_sel)]
             raw_template_ids = raw_template_ids - set(raw_tmpl)
+            raw_tmpl_file_sel = sqlalchemy.select(
+                [raw_template.c.files_id]).where(
+                    raw_template.c.id.in_(raw_template_ids))
+            raw_tmpl_file_ids = [i[0] for i in engine.execute(
+                raw_tmpl_file_sel)]
             raw_templ_del = raw_template.delete().where(
                 raw_template.c.id.in_(raw_template_ids))
             engine.execute(raw_templ_del)
+            # purge any raw_template_files that are no longer referenced
+            if raw_tmpl_file_ids:
+                raw_tmpl_file_sel = sqlalchemy.select(
+                    [raw_template.c.files_id]).where(
+                        raw_template.c.files_id.in_(raw_tmpl_file_ids))
+                raw_tmpl_files = [i[0] for i in engine.execute(
+                    raw_tmpl_file_sel)]
+                raw_tmpl_file_ids = set(raw_tmpl_file_ids) \
+                    - set(raw_tmpl_files)
+                raw_tmpl_file_del = raw_template_files.delete().where(
+                    raw_template_files.c.id.in_(raw_tmpl_file_ids))
+                engine.execute(raw_tmpl_file_del)
         # purge any user creds that are no longer referenced
         user_creds_ids = [i[3] for i in stacks if i[3] is not None]
         if user_creds_ids:
@@ -1213,7 +1274,8 @@ def db_version(engine):
     return migration.db_version(engine)
 
 
-def db_encrypt_parameters_and_properties(ctxt, encryption_key, batch_size=50):
+def db_encrypt_parameters_and_properties(ctxt, encryption_key, batch_size=50,
+                                         verbose=False):
     """Encrypt parameters and properties for all templates in db.
 
     :param ctxt: RPC context
@@ -1222,35 +1284,60 @@ def db_encrypt_parameters_and_properties(ctxt, encryption_key, batch_size=50):
     :param batch_size: number of templates requested from db in each iteration.
                        50 means that heat requests 50 templates, encrypt them
                        and proceed with next 50 items.
+    :param verbose: log an INFO message when processing of each raw_template or
+                    resource begins or ends
+    :return: list of exceptions encountered during encryption
     """
     from heat.engine import template
     session = get_session()
     with session.begin():
         query = session.query(models.RawTemplate)
+        excs = []
         for raw_template in _get_batch(
                 session=session, ctxt=ctxt, query=query,
                 model=models.RawTemplate, batch_size=batch_size):
-            tmpl = template.Template.load(ctxt, raw_template.id, raw_template)
-            param_schemata = tmpl.param_schemata()
-            env = raw_template.environment
+            try:
+                if verbose:
+                    LOG.info(_LI("Processing raw_template %(id)d..."),
+                             {'id': raw_template.id})
+                tmpl = template.Template.load(
+                    ctxt, raw_template.id, raw_template)
+                param_schemata = tmpl.param_schemata()
+                env = raw_template.environment
 
-            if 'encrypted_param_names' in env:
-                encrypted_params = env['encrypted_param_names']
-            else:
-                encrypted_params = []
-            for param_name, param_val in env['parameters'].items():
-                if ((param_name in encrypted_params) or
-                   (not param_schemata[param_name].hidden)):
+                if (not env or
+                        'parameters' not in env or
+                        not param_schemata):
+                    continue
+                if 'encrypted_param_names' in env:
+                    encrypted_params = env['encrypted_param_names']
+                else:
+                    encrypted_params = []
+
+                for param_name, param_val in env['parameters'].items():
+                    if (param_name in encrypted_params or
+                            param_name not in param_schemata or
+                            not param_schemata[param_name].hidden):
                         continue
-                encrypted_val = crypt.encrypt(param_val, encryption_key)
-                env['parameters'][param_name] = encrypted_val
-                encrypted_params.append(param_name)
+                    encrypted_val = crypt.encrypt(six.text_type(param_val),
+                                                  encryption_key)
+                    env['parameters'][param_name] = encrypted_val
+                    encrypted_params.append(param_name)
 
-            if encrypted_params:
-                environment = env.copy()
-                environment['encrypted_param_names'] = encrypted_params
-                raw_template_update(ctxt, raw_template.id,
-                                    {'environment': environment})
+                if encrypted_params:
+                    environment = env.copy()
+                    environment['encrypted_param_names'] = encrypted_params
+                    raw_template_update(ctxt, raw_template.id,
+                                        {'environment': environment})
+            except Exception as exc:
+                LOG.exception(_LE('Failed to encrypt parameters of raw '
+                                  'template %(id)d'), {'id': raw_template.id})
+                excs.append(exc)
+                continue
+            finally:
+                if verbose:
+                    LOG.info(_LI("Finished processing raw_template "
+                                 "%(id)d."), {'id': raw_template.id})
 
         query = session.query(models.Resource).filter(
             ~models.Resource.properties_data.is_(None),
@@ -1258,21 +1345,39 @@ def db_encrypt_parameters_and_properties(ctxt, encryption_key, batch_size=50):
         for resource in _get_batch(
                 session=session, ctxt=ctxt, query=query, model=models.Resource,
                 batch_size=batch_size):
-            result = {}
-            for prop_name, prop_value in resource.properties_data.items():
-                prop_string = jsonutils.dumps(prop_value)
-                encrypted_value = crypt.encrypt(prop_string,
-                                                encryption_key)
-                result[prop_name] = encrypted_value
-            resource.properties_data = result
-            resource.properties_data_encrypted = True
-            resource_update(ctxt, resource.id,
-                            {'properties_data': result,
-                             'properties_data_encrypted': True},
-                            resource.atomic_key)
+            try:
+                if verbose:
+                    LOG.info(_LI("Processing resource %(id)d..."),
+                             {'id': resource.id})
+                result = {}
+                if not resource.properties_data:
+                    continue
+                for prop_name, prop_value in resource.properties_data.items():
+                    prop_string = jsonutils.dumps(prop_value)
+                    encrypted_value = crypt.encrypt(prop_string,
+                                                    encryption_key)
+                    result[prop_name] = encrypted_value
+                resource.properties_data = result
+                resource.properties_data_encrypted = True
+                resource_update(ctxt, resource.id,
+                                {'properties_data': result,
+                                 'properties_data_encrypted': True},
+                                resource.atomic_key)
+            except Exception as exc:
+                LOG.exception(_LE('Failed to encrypt properties_data of '
+                                  'resource %(id)d'), {'id': resource.id})
+                excs.append(exc)
+                continue
+            finally:
+                if verbose:
+                    LOG.info(_LI("Finished processing resource "
+                                 "%(id)d."), {'id': resource.id})
+
+        return excs
 
 
-def db_decrypt_parameters_and_properties(ctxt, encryption_key, batch_size=50):
+def db_decrypt_parameters_and_properties(ctxt, encryption_key, batch_size=50,
+                                         verbose=False):
     """Decrypt parameters and properties for all templates in db.
 
     :param ctxt: RPC context
@@ -1281,25 +1386,43 @@ def db_decrypt_parameters_and_properties(ctxt, encryption_key, batch_size=50):
     :param batch_size: number of templates requested from db in each iteration.
                        50 means that heat requests 50 templates, encrypt them
                        and proceed with next 50 items.
+    :param verbose: log an INFO message when processing of each raw_template or
+                    resource begins or ends
+    :return: list of exceptions encountered during decryption
     """
     session = get_session()
+    excs = []
     with session.begin():
         query = session.query(models.RawTemplate)
         for raw_template in _get_batch(
                 session=session, ctxt=ctxt, query=query,
                 model=models.RawTemplate, batch_size=batch_size):
-            parameters = raw_template.environment['parameters']
-            encrypted_params = raw_template.environment[
-                'encrypted_param_names']
-            for param_name in encrypted_params:
-                method, value = parameters[param_name]
-                decrypted_val = crypt.decrypt(method, value, encryption_key)
-                parameters[param_name] = decrypted_val
+            try:
+                if verbose:
+                    LOG.info(_LI("Processing raw_template %(id)d..."),
+                             {'id': raw_template.id})
+                parameters = raw_template.environment['parameters']
+                encrypted_params = raw_template.environment[
+                    'encrypted_param_names']
+                for param_name in encrypted_params:
+                    method, value = parameters[param_name]
+                    decrypted_val = crypt.decrypt(method, value,
+                                                  encryption_key)
+                    parameters[param_name] = decrypted_val
 
-            environment = raw_template.environment.copy()
-            environment['encrypted_param_names'] = []
-            raw_template_update(ctxt, raw_template.id,
-                                {'environment': environment})
+                environment = raw_template.environment.copy()
+                environment['encrypted_param_names'] = []
+                raw_template_update(ctxt, raw_template.id,
+                                    {'environment': environment})
+            except Exception as exc:
+                LOG.exception(_LE('Failed to decrypt parameters of raw '
+                                  'template %(id)d'), {'id': raw_template.id})
+                excs.append(exc)
+                continue
+            finally:
+                if verbose:
+                    LOG.info(_LI("Finished processing raw_template "
+                                 "%(id)d."), {'id': raw_template.id})
 
         query = session.query(models.Resource).filter(
             ~models.Resource.properties_data.is_(None),
@@ -1307,19 +1430,33 @@ def db_decrypt_parameters_and_properties(ctxt, encryption_key, batch_size=50):
         for resource in _get_batch(
                 session=session, ctxt=ctxt, query=query, model=models.Resource,
                 batch_size=batch_size):
-            result = {}
-            for prop_name, prop_value in resource.properties_data.items():
-                method, value = prop_value
-                decrypted_value = crypt.decrypt(method, value,
-                                                encryption_key)
-                prop_string = jsonutils.loads(decrypted_value)
-                result[prop_name] = prop_string
-            resource.properties_data = result
-            resource.properties_data_encrypted = False
-            resource_update(ctxt, resource.id,
-                            {'properties_data': result,
-                             'properties_data_encrypted': False},
-                            resource.atomic_key)
+            try:
+                if verbose:
+                    LOG.info(_LI("Processing resource %(id)d..."),
+                             {'id': resource.id})
+                result = {}
+                for prop_name, prop_value in resource.properties_data.items():
+                    method, value = prop_value
+                    decrypted_value = crypt.decrypt(method, value,
+                                                    encryption_key)
+                    prop_string = jsonutils.loads(decrypted_value)
+                    result[prop_name] = prop_string
+                resource.properties_data = result
+                resource.properties_data_encrypted = False
+                resource_update(ctxt, resource.id,
+                                {'properties_data': result,
+                                 'properties_data_encrypted': False},
+                                resource.atomic_key)
+            except Exception as exc:
+                LOG.exception(_LE('Failed to decrypt properties_data of '
+                                  'resource %(id)d'), {'id': resource.id})
+                excs.append(exc)
+                continue
+            finally:
+                if verbose:
+                    LOG.info(_LI("Finished processing resource "
+                                 "%(id)d."), {'id': resource.id})
+        return excs
 
 
 def _get_batch(session, ctxt, query, model, batch_size=50):
@@ -1334,3 +1471,43 @@ def _get_batch(session, ctxt, query, model, batch_size=50):
             for result in results:
                 yield result
             last_batch_marker = results[-1].id
+
+
+def reset_stack_status(context, stack_id, stack=None):
+    if stack is None:
+        stack = model_query(context, models.Stack).get(stack_id)
+
+    if stack is None:
+        raise exception.NotFound(_('Stack with id %s not found') % stack_id)
+
+    session = _session(context)
+    with session.begin():
+        query = model_query(context, models.Resource).filter_by(
+            status='IN_PROGRESS', stack_id=stack_id)
+        query.update({'status': 'FAILED',
+                      'status_reason': 'Stack status manually reset'})
+
+        query = model_query(context, models.ResourceData)
+        query = query.join(models.Resource)
+        query = query.filter_by(stack_id=stack_id)
+        query = query.filter(
+            models.ResourceData.key.in_(heat_environment.HOOK_TYPES))
+        data_ids = [data.id for data in query]
+
+        if data_ids:
+            query = model_query(context, models.ResourceData)
+            query = query.filter(models.ResourceData.id.in_(data_ids))
+            query.delete(synchronize_session='fetch')
+
+    query = model_query(context, models.Stack).filter_by(owner_id=stack_id)
+    for child in query:
+        reset_stack_status(context, child.id, child)
+
+    with session.begin():
+        if stack.status == 'IN_PROGRESS':
+            stack.status = 'FAILED'
+            stack.status_reason = 'Stack status manually reset'
+
+        session.query(
+            models.StackLock
+        ).filter_by(stack_id=stack_id).delete()

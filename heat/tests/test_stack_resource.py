@@ -25,6 +25,7 @@ from heat.common import template_format
 from heat.engine.resources import stack_resource
 from heat.engine import stack as parser
 from heat.engine import template as templatem
+from heat.objects import raw_template
 from heat.objects import stack as stack_object
 from heat.objects import stack_lock
 from heat.tests import common
@@ -200,13 +201,17 @@ class StackResourceTest(StackResourceBaseTest):
         ret = self.parent_resource.prepare_abandon()
         self.assertEqual({}, ret)
 
-    def test_abandon_nested_not_deleted(self):
-        delete_nested = self.patchobject(self.parent_resource, 'delete_nested')
+    def test_abandon_nested_sends_rpc_abandon(self):
+        rpcc = mock.Mock()
+        self.parent_resource.rpc_client = rpcc
+        self.parent_resource.nested = mock.MagicMock()
 
-        self.parent_stack.prepare_abandon()
-        self.parent_stack.delete(abandon=True)
+        self.parent_resource.prepare_abandon()
+        self.parent_resource.delete_nested()
 
-        self.assertEqual(0, delete_nested.call_count)
+        rpcc.return_value.abandon_stack.assert_called_once_with(
+            self.parent_resource.context, mock.ANY)
+        rpcc.return_value.delete_stack.assert_not_called()
 
     def test_propagated_files(self):
         """Test passing of the files map in the top level to the child.
@@ -216,7 +221,7 @@ class StackResourceTest(StackResourceBaseTest):
         """
         self.parent_stack.t.files["foo"] = "bar"
         parsed_t = self.parent_resource._parse_child_template(self.templ, None)
-        self.assertEqual({"foo": "bar"}, parsed_t.files)
+        self.assertEqual({"foo": "bar"}, parsed_t.files.files)
 
     @mock.patch('heat.engine.environment.get_child_environment')
     @mock.patch.object(stack_resource.parser, 'Stack')
@@ -308,7 +313,7 @@ class StackResourceTest(StackResourceBaseTest):
         self.parent_resource.child_params = mock.Mock(return_value={})
         self.parent_resource.preview()
         self.stack = self.parent_resource.nested()
-        self.assertEqual({"foo": "bar"}, self.stack.t.files)
+        self.assertEqual({"foo": "bar"}, self.stack.t.files.files)
 
     def test_preview_validates_nested_resources(self):
         parent_t = self.parent_stack.t
@@ -455,7 +460,8 @@ class StackResourceTest(StackResourceBaseTest):
         self.assertEqual(4, rsrc.FnGetAtt(rsrc.CURRENT_SIZE))
 
     def test__validate_nested_resources_checks_num_of_resources(self):
-        stack_resource.cfg.CONF.set_override('max_resources_per_stack', 2)
+        stack_resource.cfg.CONF.set_override('max_resources_per_stack', 2,
+                                             enforce_type=True)
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
                 'Resources': [1]}
         template = stack_resource.template.Template(tmpl)
@@ -821,6 +827,16 @@ class WithTemplateTest(StackResourceBaseTest):
                        adopt_data={'template': 'foo', 'environment': 'eee'})),
     ]
 
+    class IntegerMatch(object):
+        def __eq__(self, other):
+            if getattr(self, 'match', None) is not None:
+                return other == self.match
+            if not isinstance(other, six.integer_types):
+                return False
+
+            self.match = other
+            return True
+
     def test_create_with_template(self):
         child_env = {'parameter_defaults': {},
                      'event_sinks': [],
@@ -836,15 +852,24 @@ class WithTemplateTest(StackResourceBaseTest):
         self.parent_resource.create_with_template(
             self.empty_temp, user_params=self.params,
             timeout_mins=self.timeout_mins, adopt_data=self.adopt_data)
-        adopt_data_str = None
-        if self.adopt_data:
+        if self.adopt_data is not None:
             adopt_data_str = json.dumps(self.adopt_data)
+            tmpl_args = {
+                'template': self.empty_temp.t,
+                'params': child_env,
+                'files': {},
+            }
+        else:
+            adopt_data_str = None
+            tmpl_args = {
+                'template_id': self.IntegerMatch(),
+                'template': None,
+                'params': None,
+                'files': None,
+            }
         rpcc.return_value._create_stack.assert_called_once_with(
             self.ctx,
             stack_name=res_name,
-            template=self.empty_temp.t,
-            params=child_env,
-            files={},
             args={'disable_rollback': True,
                   'adopt_stack_data': adopt_data_str,
                   'timeout_mins': self.timeout_mins},
@@ -853,16 +878,12 @@ class WithTemplateTest(StackResourceBaseTest):
             parent_resource_name='test',
             user_creds_id='uc123',
             owner_id=self.parent_stack.id,
-            nested_depth=1)
+            nested_depth=1,
+            **tmpl_args)
 
-    def test_update_with_template(self):
-        nested = mock.MagicMock()
-        nested.updated_time = 'now_time'
-        nested.state = ('CREATE', 'COMPLETE')
-        nested.identifier.return_value = {'stack_identifier':
-                                          'stack-identifier'}
-        self.parent_resource.nested = mock.MagicMock(return_value=nested)
-        self.parent_resource._nested = nested
+    def test_create_with_template_failure(self):
+        class StackValidationFailed_Remote(exception.StackValidationFailed):
+            pass
 
         child_env = {'parameter_defaults': {},
                      'event_sinks': [],
@@ -871,19 +892,116 @@ class WithTemplateTest(StackResourceBaseTest):
                      'encrypted_param_names': []}
         self.parent_resource.child_params = mock.Mock(
             return_value=self.params)
+        res_name = self.parent_resource.physical_resource_name()
         rpcc = mock.Mock()
         self.parent_resource.rpc_client = rpcc
-        rpcc.return_value._create_stack.return_value = {'stack_id': 'pancakes'}
+        remote_exc = StackValidationFailed_Remote(message='oops')
+        rpcc.return_value._create_stack.side_effect = remote_exc
+        self.assertRaises(exception.ResourceFailure,
+                          self.parent_resource.create_with_template,
+                          self.empty_temp, user_params=self.params,
+                          timeout_mins=self.timeout_mins,
+                          adopt_data=self.adopt_data)
+        if self.adopt_data is not None:
+            adopt_data_str = json.dumps(self.adopt_data)
+            tmpl_args = {
+                'template': self.empty_temp.t,
+                'params': child_env,
+                'files': {},
+            }
+        else:
+            adopt_data_str = None
+            tmpl_args = {
+                'template_id': self.IntegerMatch(),
+                'template': None,
+                'params': None,
+                'files': None,
+            }
+        rpcc.return_value._create_stack.assert_called_once_with(
+            self.ctx,
+            stack_name=res_name,
+            args={'disable_rollback': True,
+                  'adopt_stack_data': adopt_data_str,
+                  'timeout_mins': self.timeout_mins},
+            environment_files=None,
+            stack_user_project_id='aprojectid',
+            parent_resource_name='test',
+            user_creds_id='uc123',
+            owner_id=self.parent_stack.id,
+            nested_depth=1,
+            **tmpl_args)
+        if self.adopt_data is None:
+            stored_tmpl_id = tmpl_args['template_id'].match
+            self.assertIsNotNone(stored_tmpl_id)
+            self.assertRaises(exception.NotFound,
+                              raw_template.RawTemplate.get_by_id,
+                              self.ctx, stored_tmpl_id)
+
+    def test_update_with_template(self):
+        if self.adopt_data is not None:
+            return
+        nested = mock.MagicMock()
+        nested.updated_time = 'now_time'
+        nested.state = ('CREATE', 'COMPLETE')
+        nested.identifier.return_value = {'stack_identifier':
+                                          'stack-identifier'}
+        self.parent_resource.nested = mock.MagicMock(return_value=nested)
+        self.parent_resource._nested = nested
+
+        self.parent_resource.child_params = mock.Mock(
+            return_value=self.params)
+        rpcc = mock.Mock()
+        self.parent_resource.rpc_client = rpcc
+        rpcc.return_value._update_stack.return_value = {'stack_id': 'pancakes'}
         self.parent_resource.update_with_template(
             self.empty_temp, user_params=self.params,
             timeout_mins=self.timeout_mins)
-        rpcc.return_value.update_stack.assert_called_once_with(
+        rpcc.return_value._update_stack.assert_called_once_with(
             self.ctx,
             stack_identity={'stack_identifier': 'stack-identifier'},
-            template=self.empty_temp.t,
-            params=child_env,
-            files={},
+            template_id=self.IntegerMatch(),
+            template=None,
+            params=None,
+            files=None,
             args={'timeout_mins': self.timeout_mins})
+
+    def test_update_with_template_failure(self):
+        class StackValidationFailed_Remote(exception.StackValidationFailed):
+            pass
+
+        if self.adopt_data is not None:
+            return
+        nested = mock.MagicMock()
+        nested.updated_time = 'now_time'
+        nested.state = ('CREATE', 'COMPLETE')
+        nested.identifier.return_value = {'stack_identifier':
+                                          'stack-identifier'}
+        self.parent_resource.nested = mock.MagicMock(return_value=nested)
+        self.parent_resource._nested = nested
+
+        self.parent_resource.child_params = mock.Mock(
+            return_value=self.params)
+        rpcc = mock.Mock()
+        self.parent_resource.rpc_client = rpcc
+        remote_exc = StackValidationFailed_Remote(message='oops')
+        rpcc.return_value._update_stack.side_effect = remote_exc
+        self.assertRaises(exception.ResourceFailure,
+                          self.parent_resource.update_with_template,
+                          self.empty_temp, user_params=self.params,
+                          timeout_mins=self.timeout_mins)
+        template_id = self.IntegerMatch()
+        rpcc.return_value._update_stack.assert_called_once_with(
+            self.ctx,
+            stack_identity={'stack_identifier': 'stack-identifier'},
+            template_id=template_id,
+            template=None,
+            params=None,
+            files=None,
+            args={'timeout_mins': self.timeout_mins})
+        self.assertIsNotNone(template_id.match)
+        self.assertRaises(exception.NotFound,
+                          raw_template.RawTemplate.get_by_id,
+                          self.ctx, template_id.match)
 
 
 class RaiseLocalException(StackResourceBaseTest):
@@ -891,12 +1009,14 @@ class RaiseLocalException(StackResourceBaseTest):
     def test_heat_exception(self):
         local = exception.StackValidationFailed(message='test')
         self.assertRaises(exception.StackValidationFailed,
-                          self.parent_resource.raise_local_exception, local)
+                          self.parent_resource.translate_remote_exceptions,
+                          local)
 
     def test_messaging_timeout(self):
         local = msg_exceptions.MessagingTimeout('took too long')
         self.assertRaises(msg_exceptions.MessagingTimeout,
-                          self.parent_resource.raise_local_exception, local)
+                          self.parent_resource.translate_remote_exceptions,
+                          local)
 
     def test_remote_heat_ex(self):
         class StackValidationFailed_Remote(exception.StackValidationFailed):
@@ -904,4 +1024,5 @@ class RaiseLocalException(StackResourceBaseTest):
 
         local = StackValidationFailed_Remote(message='test')
         self.assertRaises(exception.ResourceFailure,
-                          self.parent_resource.raise_local_exception, local)
+                          self.parent_resource.translate_remote_exceptions,
+                          local)

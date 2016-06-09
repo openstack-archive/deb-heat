@@ -55,6 +55,10 @@ empty_template = template_format.parse('''{
   "HeatTemplateFormatVersion" : "2012-12-12",
 }''')
 
+empty_template20161014 = template_format.parse('''{
+  "HeatTemplateFormatVersion" : "2016-10-14",
+}''')
+
 parameter_template = template_format.parse('''{
   "HeatTemplateFormatVersion" : "2012-12-12",
   "Parameters" : {
@@ -451,7 +455,8 @@ class TemplateTest(common.HeatTestCase):
         init_ex = self.assertRaises(exception.InvalidTemplateVersion,
                                     template.Template, invalid_hot_version_tmp)
         valid_versions = ['2013-05-23', '2014-10-16',
-                          '2015-04-30', '2015-10-15', '2016-04-08']
+                          '2015-04-30', '2015-10-15', '2016-04-08',
+                          '2016-10-14']
         ex_error_msg = ('The template version is invalid: '
                         '"heat_template_version: 2012-12-12". '
                         '"heat_template_version" should be one of: %s'
@@ -522,7 +527,8 @@ class TemplateTest(common.HeatTestCase):
                                     invalid_heat_version_tmp)
         ex_error_msg = ('The template version is invalid: '
                         '"HeatTemplateFormatVersion: 2010-09-09". '
-                        '"HeatTemplateFormatVersion" should be: 2012-12-12')
+                        '"HeatTemplateFormatVersion" should be one of: '
+                        '2012-12-12, 2016-10-14')
         self.assertEqual(ex_error_msg, six.text_type(init_ex))
 
     def test_invalid_version_not_in_heat_versions(self):
@@ -695,6 +701,43 @@ class TemplateTest(common.HeatTestCase):
         self.assertEqual("", self.resolve(data, tmpl))
         data = {"Fn::Select": ["one", '']}
         self.assertEqual("", self.resolve(data, tmpl))
+
+    def test_equals(self):
+        tpl = template_format.parse('''
+        HeatTemplateFormatVersion: 2016-10-14
+        Parameters:
+          env_type:
+            Type: String
+            Default: 'test'
+        ''')
+        snippet = {'Fn::Equals': [{'Ref': 'env_type'}, 'prod']}
+        # when param 'env_type' is 'test', equals function resolve to false
+        tmpl = template.Template(tpl)
+        stk = stack.Stack(utils.dummy_context(),
+                          'test_equals_false', tmpl)
+        resolved = self.resolve(snippet, tmpl, stk)
+        self.assertFalse(resolved)
+        # when param 'env_type' is 'prod', equals function resolve to true
+        tmpl = template.Template(tpl,
+                                 env=environment.Environment(
+                                     {'env_type': 'prod'}))
+        stk = stack.Stack(utils.dummy_context(),
+                          'test_equals_true', tmpl)
+        resolved = self.resolve(snippet, tmpl, stk)
+        self.assertTrue(resolved)
+
+    def test_equals_invalid_args(self):
+        tmpl = template.Template(empty_template20161014)
+
+        snippet = {'Fn::Equals': ['test', 'prod', 'invalid']}
+        exc = self.assertRaises(ValueError, self.resolve, snippet, tmpl)
+        self.assertIn('Arguments to "Fn::Equals" must be of the form: '
+                      '[value_1, value_2]', six.text_type(exc))
+        # test invalid type
+        snippet = {'Fn::Equals': {"equal": False}}
+        exc = self.assertRaises(ValueError, self.resolve, snippet, tmpl)
+        self.assertIn('Arguments to "Fn::Equals" must be of the form: '
+                      '[value_1, value_2]', six.text_type(exc))
 
     def test_join(self):
         tmpl = template.Template(empty_template)
@@ -971,6 +1014,26 @@ class TemplateTest(common.HeatTestCase):
         self.assertEqual({}, empty_template['parameter_groups'])
         self.assertEqual({}, empty_template['resources'])
         self.assertEqual({}, empty_template['outputs'])
+
+    def test_create_empty_template_from_another_template(self):
+        res_param_template = template_format.parse('''{
+          "HeatTemplateFormatVersion" : "2012-12-12",
+          "Parameters" : {
+            "foo" : { "Type" : "String" },
+            "blarg" : { "Type" : "String", "Default": "quux" }
+          },
+          "Resources" : {
+            "foo" : { "Type" : "GenericResourceType" },
+            "blarg" : { "Type" : "GenericResourceType" }
+          }
+        }''')
+
+        env = environment.Environment({'foo': 'bar'})
+        hot_tmpl = template.Template(res_param_template, env)
+        empty_template = template.Template.create_empty_template(
+            from_template=hot_tmpl)
+        self.assertEqual({}, empty_template['Resources'])
+        self.assertEqual(hot_tmpl.env, empty_template.env)
 
 
 class TemplateFnErrorTest(common.HeatTestCase):

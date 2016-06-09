@@ -187,7 +187,7 @@ For example, Heat currently supports the following values for the
 ----------
     The key with value ``2016-04-08`` indicates that the YAML document is a HOT
     template and it may contain features added and/or removed up until the
-    Mitaka release.  This version also adds the map_merge function which
+    Mitaka release.  This version also adds the ``map_merge`` function which
     can be used to merge the contents of maps. The complete list of supported
     functions is::
 
@@ -202,6 +202,29 @@ For example, Heat currently supports the following values for the
       resource_facade
       str_replace
       str_split
+
+2016-10-14
+----------
+    The key with value ``2016-10-14`` indicates that the YAML document is a HOT
+    template and it may contain features added and/or removed up until the
+    Newton release.  This version adds the ``yaql`` function which
+    can be used for evaluation of complex expressions, and also adds ``equals``
+    function which can be used to compare whether two values are equal.
+    The complete list of supported functions is::
+
+      digest
+      get_attr
+      get_file
+      get_param
+      get_resource
+      list_join
+      map_merge
+      repeat
+      resource_facade
+      str_replace
+      str_split
+      yaql
+      equals
 
 .. _hot_spec_parameter_groups:
 
@@ -267,6 +290,7 @@ default value defined as nested elements.
       hidden: <true | false>
       constraints:
         <parameter constraints>
+      immutable: <true | false>
 
 param name
     The name of the parameter.
@@ -302,6 +326,11 @@ constraints
     Orchestration engine when a user deploys a stack. The stack creation fails
     if the parameter value doesn't comply to the constraints.
     This attribute is optional.
+
+immutable
+    Defines whether the parameter is updatable. Stack update fails, if this is
+    set to ``true`` and the parameter value is changed.
+    This attribute is optional and defaults to ``false``.
 
 The table below describes all currently supported types with examples:
 
@@ -615,9 +644,9 @@ update_policy
     This attribute is optional.
 
 deletion_policy
-    Deletion policy for the resource. Which type of deletion policy is
-    supported depends on the type of the current resource.
-    This attribute is optional.
+    Deletion policy for the resource. The allowed deletion policies are
+    ``Delete``, ``Retain``, and ``Snapshot``.
+    This attribute is optional; the default policy is ``Delete``.
 
 Depending on the type of resource, the resource block might include more
 resource specific data.
@@ -1258,3 +1287,55 @@ For example
 This resolves to a map containing ``{'k1': 'v2', 'k2': 'v2'}``.
 
 Maps containing no items resolve to {}.
+
+yaql
+----
+The ``yaql`` evaluates yaql expression on a given data.
+
+The syntax of the ``yaql`` function is
+
+.. code-block:: yaml
+
+    yaql:
+      expression: <expression>
+      data: <data>
+
+For example
+
+.. code-block:: yaml
+
+    parameters:
+      list_param:
+        type: comma_delimited_list
+        default: [1, 2, 3]
+
+    outputs:
+      max_elem:
+        yaql:
+          expression: $.data.list_param.select(int($)).max()
+          data:
+            list_param: {get_param: list_param}
+
+max_elem output will be evaluated to 3
+
+equals
+------
+The ``equals`` function compares whether two values are equal.
+
+The syntax of the ``equals`` function is
+
+.. code-block:: yaml
+
+    equals: [value_1, value_2]
+
+The value can be any type that you want to compare. This function
+returns true if the two values are equal or false if they aren't.
+
+For example
+
+.. code-block:: yaml
+
+    equals: [{get_param: env_type}, 'prod']
+
+If param 'env_type' equals to 'prod', this function returns true,
+otherwise returns false.

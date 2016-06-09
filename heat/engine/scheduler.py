@@ -23,7 +23,7 @@ from six import reraise as raise_
 
 from heat.common.i18n import _
 from heat.common.i18n import _LI
-from heat.common.i18n import repr_wraper
+from heat.common.i18n import repr_wrapper
 from heat.common import timeutils
 
 LOG = logging.getLogger(__name__)
@@ -140,6 +140,11 @@ class TaskRunner(object):
 
         The task function may be a co-routine that yields control flow between
         steps.
+
+        If the task co-routine wishes to be advanced only on every nth step of
+        the TaskRunner, it may yield an integer which is the period of the
+        task. e.g. "yield 2" will result in the task being advanced on every
+        second step.
         """
         assert callable(task), "Task is not callable"
 
@@ -149,6 +154,7 @@ class TaskRunner(object):
         self._runner = None
         self._done = False
         self._timeout = None
+        self._poll_period = 1
         self.name = task_description(task)
 
     def __str__(self):
@@ -207,6 +213,10 @@ class TaskRunner(object):
         if not self.done():
             assert self._runner is not None, "Task not started"
 
+            if self._poll_period > 1:
+                self._poll_period -= 1
+                return False
+
             if self._timeout is not None and self._timeout.expired():
                 LOG.info(_LI('%s timed out'), six.text_type(self))
                 self._done = True
@@ -216,10 +226,15 @@ class TaskRunner(object):
                 LOG.debug('%s running' % six.text_type(self))
 
                 try:
-                    next(self._runner)
+                    poll_period = next(self._runner)
                 except StopIteration:
                     self._done = True
                     LOG.debug('%s complete' % six.text_type(self))
+                else:
+                    if isinstance(poll_period, six.integer_types):
+                        self._poll_period = max(poll_period, 1)
+                    else:
+                        self._poll_period = 1
 
         return self._done
 
@@ -291,7 +306,7 @@ def wrappertask(task):
 
         while True:
             try:
-                if subtask is not None:
+                if isinstance(subtask, types.GeneratorType):
                     subtask_running = True
                     try:
                         step = next(subtask)
@@ -315,7 +330,7 @@ def wrappertask(task):
                             except StopIteration:
                                 subtask_running = False
                 else:
-                    yield
+                    yield subtask
             except GeneratorExit:
                 parent.close()
                 raise
@@ -333,7 +348,7 @@ def wrappertask(task):
     return wrapper
 
 
-@repr_wraper
+@repr_wrapper
 class DependencyTaskGroup(object):
     """Task which manages group of subtasks that have ordering dependencies."""
 
@@ -401,11 +416,14 @@ class DependencyTaskGroup(object):
                     self.cancel_all()
 
         if raised_exceptions:
-            if self.aggregate_exceptions:
-                raise ExceptionGroup(v for t, v, tb in raised_exceptions)
-            else:
-                exc_type, exc_val, traceback = raised_exceptions[0]
-                raise_(exc_type, exc_val, traceback)
+            try:
+                if self.aggregate_exceptions:
+                    raise ExceptionGroup(v for t, v, tb in raised_exceptions)
+                else:
+                    exc_type, exc_val, traceback = raised_exceptions[0]
+                    raise_(exc_type, exc_val, traceback)
+            finally:
+                del raised_exceptions
 
     def cancel_all(self, grace_period=None):
         for r in six.itervalues(self._runners):

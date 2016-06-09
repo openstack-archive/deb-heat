@@ -13,6 +13,7 @@
 
 from oslo_log import log as logging
 
+from heat.common import exception
 from heat.common.i18n import _
 from heat.common.i18n import _LW
 from heat.engine import attributes
@@ -72,7 +73,11 @@ class CronTrigger(resource.Resource):
             schema={
                 WORKFLOW_NAME: properties.Schema(
                     properties.Schema.STRING,
-                    _('Name of the workflow.')
+                    _('Name of the workflow.'),
+                    required=True,
+                    constraints=[
+                        constraints.CustomConstraint('mistral.workflow')
+                    ]
                 ),
                 WORKFLOW_INPUT: properties.Schema(
                     properties.Schema.MAP,
@@ -104,6 +109,13 @@ class CronTrigger(resource.Resource):
     default_client_name = 'mistral'
 
     entity = 'cron_triggers'
+
+    def validate(self):
+        super(CronTrigger, self).validate()
+        if not (self.properties[self.PATTERN]
+                or self.properties[self.FIRST_TIME]):
+            raise exception.PropertyUnspecifiedError(self.PATTERN,
+                                                     self.FIRST_TIME)
 
     def _cron_trigger_name(self):
         return self.properties.get(self.NAME) or self.physical_resource_name()

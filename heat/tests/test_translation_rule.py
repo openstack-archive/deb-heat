@@ -73,8 +73,8 @@ class TestTranslationRule(common.HeatTestCase):
                                 translation.TranslationRule.ADD,
                                 'networks.network',
                                 'value')
-        self.assertEqual('source_path should be a list with path instead of '
-                         '%s.' % str, six.text_type(exc))
+        self.assertEqual('translation_path should be a list with path instead '
+                         'of %s.' % str, six.text_type(exc))
 
         exc = self.assertRaises(ValueError,
                                 translation.TranslationRule,
@@ -82,7 +82,7 @@ class TestTranslationRule(common.HeatTestCase):
                                 translation.TranslationRule.ADD,
                                 [],
                                 mock.ANY)
-        self.assertEqual('source_path must be non-empty list with path.',
+        self.assertEqual('translation_path must be non-empty list with path.',
                          six.text_type(exc))
 
         exc = self.assertRaises(ValueError,
@@ -359,8 +359,10 @@ class TestTranslationRule(common.HeatTestCase):
             translation.TranslationRule.REPLACE,
             ['bar'],
             value_path=['far'])
-        ex = self.assertRaises(ValueError, rule.execute_rule)
-        self.assertEqual('Cannot use bar and far at the same time.',
+        ex = self.assertRaises(exception.ResourcePropertyConflict,
+                               rule.execute_rule)
+        self.assertEqual("Cannot define the following properties at the "
+                         "same time: ['bar', 'far'].",
                          six.text_type(ex))
 
     def test_replace_rule_str_value_path(self):

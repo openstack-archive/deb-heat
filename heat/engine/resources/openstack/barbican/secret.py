@@ -11,6 +11,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import base64
+
+from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import attributes
 from heat.engine import constraints
@@ -136,6 +139,45 @@ class Secret(resource.Resource):
         self.resource_id_set(secret_ref)
         return secret_ref
 
+    def validate(self):
+        super(Secret, self).validate()
+
+        if self.properties[self.PAYLOAD_CONTENT_TYPE]:
+            if not self.properties[self.PAYLOAD]:
+                raise exception.ResourcePropertyDependency(
+                    prop1=self.PAYLOAD_CONTENT_TYPE,
+                    prop2=self.PAYLOAD)
+
+            if (self.properties[self.PAYLOAD_CONTENT_TYPE] ==
+                    'application/octet-stream'):
+                if not self.properties[self.PAYLOAD_CONTENT_ENCODING]:
+                    msg = _("Property unspecified. For '%(value)s' value "
+                            "of '%(prop1)s' property, '%(prop2)s' property "
+                            "must be specified.") % {
+                        'value': self.properties[self.PAYLOAD_CONTENT_TYPE],
+                        'prop1': self.PAYLOAD_CONTENT_TYPE,
+                        'prop2': self.PAYLOAD_CONTENT_ENCODING}
+                    raise exception.StackValidationFailed(message=msg)
+                try:
+                    base64.b64decode(self.properties[self.PAYLOAD])
+                except Exception:
+                    msg = _("Invalid %(prop1)s for specified '%(value)s' "
+                            "value of '%(prop2)s' property.") % {
+                        'prop1': self.PAYLOAD,
+                        'value': self.properties[
+                            self.PAYLOAD_CONTENT_ENCODING],
+                        'prop2': self.PAYLOAD_CONTENT_ENCODING}
+                    raise exception.StackValidationFailed(message=msg)
+
+        if (self.properties[self.PAYLOAD_CONTENT_ENCODING] and
+                (not self.properties[self.PAYLOAD_CONTENT_TYPE] or
+                    self.properties[self.PAYLOAD_CONTENT_TYPE] ==
+                    'text/plain')):
+            raise exception.ResourcePropertyValueDependency(
+                prop1=self.PAYLOAD_CONTENT_ENCODING,
+                prop2=self.PAYLOAD_CONTENT_TYPE,
+                value='application/octet-stream')
+
     def _resolve_attribute(self, name):
         secret = self.client().secrets.get(self.resource_id)
 
@@ -144,12 +186,6 @@ class Secret(resource.Resource):
 
         if name == self.STATUS:
             return secret.status
-
-    # TODO(ochuprykov): remove this method when bug #1485619 will be fixed
-    def _show_resource(self):
-        order = self.client().secrets.get(self.resource_id)
-        info = order._get_formatted_entity()
-        return dict(zip(info[0], info[1]))
 
 
 def resource_mapping():

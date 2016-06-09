@@ -4,19 +4,16 @@
 #
 # Translators:
 # Xiao Xi LIU <liuxx@cn.ibm.com>, 2014
-# Lucas Palm <lapalm@us.ibm.com>, 2015. #zanata
-# OpenStack Infra <zanata@openstack.org>, 2015. #zanata
-# Gaoxiao Zhu <zhu.gaoxiao@h3c.com>, 2016. #zanata
-# Linda <duleish@cn.ibm.com>, 2016. #zanata
+# Andreas Jaeger <jaegerandi@gmail.com>, 2016. #zanata
 msgid ""
 msgstr ""
-"Project-Id-Version: heat 6.0.0.0rc2.dev7\n"
-"Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2016-03-21 10:32+0000\n"
+"Project-Id-Version: heat 6.0.1.dev352\n"
+"Report-Msgid-Bugs-To: https://bugs.launchpad.net/openstack-i18n/\n"
+"POT-Creation-Date: 2016-06-02 03:51+0000\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"PO-Revision-Date: 2016-03-16 01:38+0000\n"
+"PO-Revision-Date: 2016-03-31 03:31+0000\n"
 "Last-Translator: Linda <duleish@cn.ibm.com>\n"
 "Language: zh-CN\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
@@ -463,9 +460,6 @@ msgstr "未输入必填参数"
 
 msgid "A map containing all headers for the container."
 msgstr "包含容器的所有头的映射。"
-
-msgid "A map of Nova names and IDs to apply configuration to."
-msgstr "要将配置应用于的 Nova 名称和标识的映射。"
 
 msgid ""
 "A map of Nova names and captured stderrs from the configuration execution to "
@@ -1066,13 +1060,6 @@ msgstr "无法暂挂 %s，未设置 resource_id"
 #, python-format
 msgid "Cannot suspend %s, stack not created"
 msgstr "无法暂挂 %s，未创建堆栈"
-
-#, python-format
-msgid "Cannot use %(key)s and %(name)s at the same time."
-msgstr "不能同时使用 %(key)s 和 %(name)s。"
-
-msgid "Cannot use network and uuid at the same time."
-msgstr "不能同时使用 network 和 uuid。"
 
 msgid "Captured stderr from the configuration execution."
 msgstr "已从配置执行捕获标准错误。"
@@ -1776,9 +1763,6 @@ msgstr "验证值“%(value)s”时出错"
 #, python-format
 msgid "Error validating value '%(value)s': %(message)s"
 msgstr "验证值“%(value)s”时出错：%(message)s"
-
-msgid "Error wait time in seconds for stack action (ie. create or update)."
-msgstr "堆栈操作（即，创建或更新）的出错等待时间，以秒计。"
 
 msgid "Ethertype of the traffic."
 msgstr "流量的以太网类型。"
@@ -3704,9 +3688,6 @@ msgstr "对应该类型的 VCPU 数。"
 msgid "Number of backlog requests to configure the socket with."
 msgstr "用于配置套接字的储备请求数。"
 
-msgid "Number of heat-engine processes to fork and run."
-msgstr "要派生并运行的 Heat 引擎进程数。"
-
 msgid "Number of instances in the Node group."
 msgstr "节点组中的实例数。"
 
@@ -4789,10 +4770,6 @@ msgstr "暂挂服务器 %s 失败"
 msgid "Swap space in MB."
 msgstr "交换空间（以 MB 计）。"
 
-#, python-format
-msgid "Sync Point %s not found"
-msgstr "找不到同步点 %s"
-
 msgid "System SIGHUP signal received."
 msgstr "接收到系统 SIGHUP 信号。"
 
@@ -4989,18 +4966,6 @@ msgstr "所指定存储区的 DNS 名称。"
 
 msgid "The DNS nameserver address."
 msgstr "DNS 名称服务器地址。"
-
-msgid ""
-"The HARestarter resource type is deprecated and will be removed in a future "
-"release of Heat, once it has support for auto-healing any type of resource. "
-"Note that HARestarter does *not* actually restart servers - it deletes and "
-"then recreates them. It also does the same to all dependent resources, and "
-"may therefore exhibit unexpected and undesirable behaviour. Avoid."
-msgstr ""
-"已不推荐使用 HARestarter 资源类型，将在 Heat 的未来发行版中移除（只要它开始支"
-"持自动处理任何类型的资源）。请注意，HARestarter 并非实际重新启动服务器 - 它删"
-"除服务器然后重新创建服务器。它也会对所有从属资源执行相同操作，并且可能因此展"
-"示意外的非预期的行为。应避免。"
 
 msgid "The HTTP method used for requests by the monitor of type HTTP."
 msgstr "用于通过类型为 HTTP 的监视器进行的请求的 HTTP 方法。"
@@ -5367,10 +5332,6 @@ msgid ""
 msgstr ""
 "个性化文件“%(path)s”的内容超过允许的最大个性化文件大小（%(max_size)s 个字"
 "节）。"
-
-#, python-format
-msgid "The current %s will result in stack update timeout."
-msgstr "当前 %s 将导致堆栈更新超时。"
 
 msgid "The current size of AutoscalingResourceGroup."
 msgstr "AutoscalingResourceGroup 的当前大小。"
@@ -6288,6 +6249,9 @@ msgid ""
 "%(type_name)s."
 msgstr "装入全局资源类型 %(type_name)s 的定义时发生了错误。"
 
+msgid "This attribute has been removed in Magnum"
+msgstr "Magnum 中已移除此属性"
+
 msgid "This endpoint is enabled or disabled."
 msgstr "此端点已启用或已禁用。"
 
@@ -6525,9 +6489,6 @@ msgstr ""
 "意外属性：%(unexpected)s。对于 %(type)s 类型的指令，仅允许使用以下属性："
 "%(allowed)s。"
 
-msgid "Unexpected returning while IN_PROGRESS."
-msgstr "正在进行时返回意外结果。"
-
 msgid "Unique identifier for the device."
 msgstr "设备的唯一标识。"
 
@@ -6565,9 +6526,6 @@ msgstr "用于度量值的单位。"
 
 msgid "Unknown"
 msgstr "未知"
-
-msgid "Unknown Keystone version"
-msgstr "Keystone 版本未知"
 
 #, python-format
 msgid "Unknown Property %s"
@@ -6647,6 +6605,16 @@ msgid ""
 msgstr "改用 get_resource|Ref 命令。例如：{ get_resource : <resource_name> }"
 
 msgid ""
+"Use of this resource is discouraged. Please use OS::Heat::"
+"SoftwareDeploymentGroup instead."
+msgstr "不推荐使用此资源。请改用 OS::Heat::SoftwareDeploymentGroup。"
+
+msgid ""
+"Use of this resource is discouraged. Please use OS::Heat::"
+"StructuredDeploymentGroup instead."
+msgstr "不推荐使用此资源，请改用 OS::Heat::StructuredDeploymentGroup。"
+
+msgid ""
 "Use only with Neutron, to list the internal subnet to which the instance "
 "will be attached; needed only if multiple exist; list length must be exactly "
 "1."
@@ -6673,6 +6641,9 @@ msgid ""
 msgstr ""
 "使用网络属性而不是 first_address。例如：\"{get_attr: [<server name>, "
 "networks, <network name>, 0]}\""
+
+msgid "Use this resource at your own risk."
+msgstr "使用此资源的风险由您自己承担。"
 
 msgid "Use value_name only for replacing list elements."
 msgstr "仅应在替换列表元素时使用 value_name。"
@@ -7052,6 +7023,10 @@ msgid ""
 msgstr "不允许在 user_data_format 为 SOFTWARE_CONFIG 的资源元数据中使用部署键"
 
 #, python-format
+msgid "deployments of server %s"
+msgstr "服务器 %s 的部署"
+
+#, python-format
 msgid "environment has wrong section \"%s\""
 msgstr "环境具有不正确的部分“%s”"
 
@@ -7084,6 +7059,10 @@ msgstr "ipv4 不支持 ipv6_ra_mode 和 ipv6_address_mode。"
 
 msgid "limit cannot be less than 4"
 msgstr "限制不能小于 4"
+
+#, python-format
+msgid "metadata setting for resource %s"
+msgstr "资源 %s 的元数据设置"
 
 msgid "min/max length must be integral"
 msgstr "最小值/最大值长度必须为整数"
@@ -7134,13 +7113,6 @@ msgstr "对于平面网络类型，不允许 segmentation_id。"
 
 msgid "server_id must be specified"
 msgstr "必须指定server_id"
-
-msgid "source_path must be non-empty list with path."
-msgstr "source_path 必须为带有路径的非空列表。"
-
-#, python-format
-msgid "source_path should be a list with path instead of %s."
-msgstr "source_path 应该是带有路径的列表，而不是 %s。"
 
 msgid "stack not found"
 msgstr "找不到堆栈"

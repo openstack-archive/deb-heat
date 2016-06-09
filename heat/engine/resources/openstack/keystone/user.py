@@ -131,6 +131,12 @@ class KeystoneUser(resource.Resource,
         if enabled is not None:
             values['enabled'] = enabled
 
+        # If there're no args above, keystone raises BadRequest error with
+        # message about not enough parameters for updating, so return from
+        # this method to prevent raising error.
+        if not values:
+            return
+
         values['user'] = user_id
         domain = (self.client_plugin().get_domain_id(domain))
 
@@ -208,8 +214,8 @@ class KeystoneUser(resource.Resource,
             enabled = prop_diff.get(self.ENABLED)
             email = prop_diff.get(self.EMAIL)
             password = prop_diff.get(self.PASSWORD)
-            domain = (prop_diff.get(self.DOMAIN) or
-                      self._stored_properties_data.get(self.DOMAIN))
+            domain = (prop_diff.get(self.DOMAIN)
+                      or self.properties[self.DOMAIN])
 
             default_project = prop_diff.get(self.DEFAULT_PROJECT)
 
@@ -227,7 +233,7 @@ class KeystoneUser(resource.Resource,
             if self.GROUPS in prop_diff:
                 (new_group_ids, removed_group_ids) = self._find_diff(
                     prop_diff[self.GROUPS],
-                    self._stored_properties_data.get(self.GROUPS))
+                    self.properties[self.GROUPS])
                 if new_group_ids:
                     self._add_user_to_groups(self.resource_id, new_group_ids)
 
@@ -241,12 +247,12 @@ class KeystoneUser(resource.Resource,
     def handle_delete(self):
         if self.resource_id is not None:
             with self.client_plugin().ignore_not_found:
-                if self._stored_properties_data.get(self.GROUPS) is not None:
+                if self.properties[self.GROUPS] is not None:
                     self._remove_user_from_groups(
                         self.resource_id,
                         [self.client_plugin().get_group_id(group)
                          for group in
-                         self._stored_properties_data.get(self.GROUPS)])
+                         self.properties[self.GROUPS]])
 
                 self.client().users.delete(self.resource_id)
 

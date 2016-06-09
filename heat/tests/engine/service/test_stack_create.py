@@ -86,12 +86,12 @@ class StackCreateTest(common.HeatTestCase):
                                 environment_files=environment_files)
 
     def test_stack_create_equals_max_per_tenant(self):
-        cfg.CONF.set_override('max_stacks_per_tenant', 1)
+        cfg.CONF.set_override('max_stacks_per_tenant', 1, enforce_type=True)
         stack_name = 'service_create_test_stack_equals_max'
         self._test_stack_create(stack_name)
 
     def test_stack_create_exceeds_max_per_tenant(self):
-        cfg.CONF.set_override('max_stacks_per_tenant', 0)
+        cfg.CONF.set_override('max_stacks_per_tenant', 0, enforce_type=True)
         stack_name = 'service_create_test_stack_exceeds_max'
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self._test_stack_create, stack_name)
@@ -240,7 +240,7 @@ class StackCreateTest(common.HeatTestCase):
                                     return_value=stk.env)
         mock_stack = self.patchobject(stack, 'Stack', return_value=stk)
 
-        cfg.CONF.set_override('max_resources_per_stack', 3)
+        cfg.CONF.set_override('max_resources_per_stack', 3, enforce_type=True)
 
         result = self.man.create_stack(self.ctx, stack_name, template, params,
                                        None, {})
@@ -272,13 +272,42 @@ class StackCreateTest(common.HeatTestCase):
             }
         }
 
-        cfg.CONF.set_override('max_resources_per_stack', 2)
+        cfg.CONF.set_override('max_resources_per_stack', 2, enforce_type=True)
         ex = self.assertRaises(dispatcher.ExpectedException,
                                self.man.create_stack, self.ctx, stack_name,
                                tpl, params, None, {})
         self.assertEqual(exception.RequestLimitExceeded, ex.exc_info[0])
         self.assertIn(exception.StackResourceLimitExceeded.msg_fmt,
                       six.text_type(ex.exc_info[1]))
+
+    @mock.patch.object(threadgroup, 'ThreadGroup')
+    @mock.patch.object(stack.Stack, 'validate')
+    def test_stack_create_nested(self, mock_validate, mock_tg):
+        stack_name = 'service_create_nested_test_stack'
+        mock_tg.return_value = tools.DummyThreadGroup()
+
+        stk = tools.get_stack(stack_name, self.ctx, with_params=True)
+        tmpl_id = stk.t.store()
+
+        mock_load = self.patchobject(templatem.Template, 'load',
+                                     return_value=stk.t)
+        mock_stack = self.patchobject(stack, 'Stack', return_value=stk)
+        result = self.man.create_stack(self.ctx, stack_name, None,
+                                       None, None, {}, nested_depth=1,
+                                       template_id=tmpl_id)
+        self.assertEqual(stk.identifier(), result)
+        self.assertIsInstance(result, dict)
+        self.assertTrue(result['stack_id'])
+
+        mock_load.assert_called_once_with(self.ctx, tmpl_id)
+        mock_stack.assert_called_once_with(self.ctx, stack_name, stk.t,
+                                           owner_id=None, nested_depth=1,
+                                           user_creds_id=None,
+                                           stack_user_project_id=None,
+                                           convergence=False,
+                                           parent_resource=None)
+
+        mock_validate.assert_called_once_with()
 
     def test_stack_validate(self):
         stack_name = 'stack_create_test_validate'
@@ -354,6 +383,6 @@ class StackCreateTest(common.HeatTestCase):
     def test_stack_create_max_unlimited(self, total_res_mock, validate_mock):
         total_res_mock.return_value = 9999
         validate_mock.return_value = None
-        cfg.CONF.set_override('max_resources_per_stack', -1)
+        cfg.CONF.set_override('max_resources_per_stack', -1, enforce_type=True)
         stack_name = 'service_create_test_max_unlimited'
         self._test_stack_create(stack_name)

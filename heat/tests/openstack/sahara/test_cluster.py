@@ -111,7 +111,7 @@ class SaharaClusterTest(common.HeatTestCase):
         self.cl_mgr.get.assert_called_once_with(self.fake_cl.id)
 
     def test_cluster_create_fails(self):
-        cfg.CONF.set_override('action_retry_limit', 0)
+        cfg.CONF.set_override('action_retry_limit', 0, enforce_type=True)
         cluster = self._init_cluster(self.t)
         self.cl_mgr.create.return_value = self.fake_cl
         self.cl_mgr.get.return_value = FakeCluster(status='Error')
@@ -199,5 +199,6 @@ resources:
       neutron_management_network: some_network
       '''
         ct = self._create_cluster(template_format.parse(tmpl))
-        self.assertEqual('some_image', ct.properties.get('default_image_id'))
-        self.assertIsNone(ct.properties.get('image'))
+        self.assertEqual('some_image_id',
+                         ct.properties.get('default_image_id'))
+        self.assertIsNone(ct.properties.get('image_id'))

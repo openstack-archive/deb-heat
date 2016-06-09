@@ -12,11 +12,10 @@
 #    under the License.
 
 import copy
+from magnumclient.common.apiclient import exceptions as mc_exc
 import mock
 from oslo_config import cfg
 import six
-
-from magnumclient.openstack.common.apiclient import exceptions as mc_exc
 
 from heat.common import exception
 from heat.common import template_format
@@ -75,7 +74,7 @@ class TestMagnumBay(common.HeatTestCase):
         self.assertEqual((b.CREATE, b.COMPLETE), b.state)
 
     def test_bay_create_failed(self):
-        cfg.CONF.set_override('action_retry_limit', 0)
+        cfg.CONF.set_override('action_retry_limit', 0, enforce_type=True)
         b = self._create_resource('bay', self.rsrc_defn, self.stack,
                                   stat='CREATE_FAILED')
         exc = self.assertRaises(
@@ -143,6 +142,21 @@ class TestMagnumBay(common.HeatTestCase):
         scheduler.TaskRunner(b.delete)()
         self.assertEqual((b.DELETE, b.COMPLETE), b.state)
         self.assertEqual(2, self.client.bays.get.call_count)
+
+    def test_bay_get_live_state(self):
+        b = self._create_resource('bay', self.rsrc_defn, self.stack)
+        scheduler.TaskRunner(b.create)()
+        value = mock.MagicMock()
+        value.to_dict.return_value = {
+            'name': 'test_bay',
+            'baymodel': 123456,
+            'node_count': 5,
+            'master_count': 1,
+            'discovery_url': 'https://discovery.etcd.io',
+            'bay_create_timeout': 15}
+        self.client.bays.get.return_value = value
+        reality = b.get_live_state(b.properties)
+        self.assertEqual({'node_count': 5, 'master_count': 1}, reality)
 
 
 class BaymodelConstraintTest(common.HeatTestCase):

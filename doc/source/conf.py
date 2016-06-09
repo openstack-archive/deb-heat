@@ -29,6 +29,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import warnings
 
 from oslo_config import cfg
 
@@ -49,10 +50,12 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, BASE_DIR)
 
 cfg.CONF.import_opt('plugin_dirs', 'heat.common.config')
-cfg.CONF.set_override(name='plugin_dirs', override=PLUGIN_DIRS)
+cfg.CONF.set_override(name='plugin_dirs', override=PLUGIN_DIRS,
+                      enforce_type=True)
 
 cfg.CONF.import_opt('environment_dir', 'heat.common.config')
-cfg.CONF.set_override(name='environment_dir', override=TEMP_ENV_DIR)
+cfg.CONF.set_override(name='environment_dir', override=TEMP_ENV_DIR,
+                      enforce_type=True)
 
 # This is required for ReadTheDocs.org, but isn't a bad idea anyway.
 os.environ['DJANGO_SETTINGS_MODULE'] = 'openstack_dashboard.settings'
@@ -184,8 +187,12 @@ html_theme_options = {
 # html_last_updated_fmt = '%b %d, %Y'
 git_cmd = ["git", "log", "--pretty=format:'%ad, commit %h'", "--date=local",
            "-n1"]
-html_last_updated_fmt = subprocess.Popen(
-    git_cmd, stdout=subprocess.PIPE).communicate()[0]
+try:
+    html_last_updated_fmt = subprocess.Popen(
+        git_cmd, stdout=subprocess.PIPE).communicate()[0]
+except Exception:
+    warnings.warn('Cannot get last updated time from git repository. '
+                  'Not setting "html_last_updated_fmt".')
 
 # If true, SmartyPants will be used to convert quotes and dashes to
 # typographically correct entities.

@@ -454,6 +454,16 @@ class StackController(object):
         return templ
 
     @util.identified_stack
+    def environment(self, req, identity):
+        """Get the environment for an existing stack."""
+        env = self.rpc_client.get_environment(req.context, identity)
+
+        if env is None:
+            raise exc.HTTPNotFound()
+
+        return env
+
+    @util.identified_stack
     def update(self, req, identity, body):
         """Update an existing stack with a new template and/or parameters."""
         data = InstantiationData(body)
@@ -614,12 +624,22 @@ class StackController(object):
         support_status = req.params.get('support_status')
         type_name = req.params.get('name')
         version = req.params.get('version')
+        if req.params.get('with_description') is not None:
+            with_description = self._extract_bool_param(
+                'with_description',
+                req.params.get('with_description'))
+        else:
+            # Add backward compatibility support for case when heatclient
+            # version is lower than version with this parameter.
+            with_description = False
         return {
             'resource_types':
-            self.rpc_client.list_resource_types(req.context,
-                                                support_status=support_status,
-                                                type_name=type_name,
-                                                heat_version=version)}
+            self.rpc_client.list_resource_types(
+                req.context,
+                support_status=support_status,
+                type_name=type_name,
+                heat_version=version,
+                with_description=with_description)}
 
     @util.policy_enforce
     def list_template_versions(self, req):
@@ -639,9 +659,11 @@ class StackController(object):
         }
 
     @util.policy_enforce
-    def resource_schema(self, req, type_name):
+    def resource_schema(self, req, type_name, with_description=False):
         """Returns the schema of the given resource type."""
-        return self.rpc_client.resource_schema(req.context, type_name)
+        return self.rpc_client.resource_schema(
+            req.context, type_name,
+            self._extract_bool_param('with_description', with_description))
 
     @util.policy_enforce
     def generate_template(self, req, type_name):

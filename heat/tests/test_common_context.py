@@ -123,7 +123,7 @@ class TestRequestContext(common.HeatTestCase):
     def test_keystone_v3_endpoint_in_context(self):
         """Ensure that the context is the preferred source for the auth_uri."""
         cfg.CONF.set_override('auth_uri', 'http://xyz',
-                              group='clients_keystone')
+                              group='clients_keystone', enforce_type=True)
         policy_check = 'heat.common.policy.Enforcer.check_is_admin'
         with mock.patch(policy_check) as pc:
             pc.return_value = False
@@ -139,10 +139,10 @@ class TestRequestContext(common.HeatTestCase):
         the preferred source when the context does not have the auth_uri.
         """
         cfg.CONF.set_override('auth_uri', 'http://xyz',
-                              group='clients_keystone')
+                              group='clients_keystone', enforce_type=True)
         importutils.import_module('keystonemiddleware.auth_token')
         cfg.CONF.set_override('auth_uri', 'http://abc/v2.0',
-                              group='keystone_authtoken')
+                              group='keystone_authtoken', enforce_type=True)
         policy_check = 'heat.common.policy.Enforcer.check_is_admin'
         with mock.patch(policy_check) as pc:
             pc.return_value = False
@@ -164,7 +164,7 @@ class TestRequestContext(common.HeatTestCase):
         """
         importutils.import_module('keystonemiddleware.auth_token')
         cfg.CONF.set_override('auth_uri', 'http://abc/v2.0',
-                              group='keystone_authtoken')
+                              group='keystone_authtoken', enforce_type=True)
         policy_check = 'heat.common.policy.Enforcer.check_is_admin'
         with mock.patch(policy_check) as pc:
             pc.return_value = False
@@ -187,24 +187,47 @@ class TestRequestContext(common.HeatTestCase):
     def test_create_trusts_auth_plugin_with_correct_user_domain_id(self):
         importutils.import_module('keystonemiddleware.auth_token')
         cfg.CONF.set_override('auth_uri', 'http://abc/v2.0',
-                              group='keystone_authtoken')
+                              group='keystone_authtoken', enforce_type=True)
         cfg.CONF.set_override('admin_user', 'heat',
-                              group='keystone_authtoken')
+                              group='keystone_authtoken', enforce_type=True)
         cfg.CONF.set_override('admin_password', 'password',
-                              group='keystone_authtoken')
+                              group='keystone_authtoken', enforce_type=True)
         policy_check = 'heat.common.policy.Enforcer.check_is_admin'
         with mock.patch(policy_check) as pc:
             pc.return_value = False
             ctx = context.RequestContext(auth_url=None,
                                          user_domain_id='non-default',
                                          username='test')
-            with mock.patch('keystoneclient.auth.identity.v3.Password') as ps:
+            with mock.patch('keystoneauth1.identity.v3.Password') as ps:
                 ctx.trusts_auth_plugin
                 ps.assert_called_once_with(username='heat',
                                            password='password',
                                            user_domain_id='default',
                                            auth_url='http://abc/v3',
                                            trust_id=None)
+
+    def test_cache(self):
+        ctx = context.RequestContext.from_dict(self.ctx)
+
+        class Class1(object):
+            pass
+
+        class Class2(object):
+            pass
+
+        self.assertEqual(0, len(ctx._object_cache))
+
+        cache1 = ctx.cache(Class1)
+        self.assertIsInstance(cache1, Class1)
+        self.assertEqual(1, len(ctx._object_cache))
+
+        cache1a = ctx.cache(Class1)
+        self.assertEqual(cache1, cache1a)
+        self.assertEqual(1, len(ctx._object_cache))
+
+        cache2 = ctx.cache(Class2)
+        self.assertIsInstance(cache2, Class2)
+        self.assertEqual(2, len(ctx._object_cache))
 
 
 class RequestContextMiddlewareTest(common.HeatTestCase):

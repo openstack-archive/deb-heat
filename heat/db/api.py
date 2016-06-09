@@ -58,6 +58,14 @@ def raw_template_delete(context, template_id):
     return IMPL.raw_template_delete(context, template_id)
 
 
+def raw_template_files_create(context, values):
+    return IMPL.raw_template_files_create(context, values)
+
+
+def raw_template_files_get(context, tmpl_files_id):
+    return IMPL.raw_template_files_get(context, tmpl_files_id)
+
+
 def resource_data_get_all(context, resource_id, data=None):
     return IMPL.resource_data_get_all(context, resource_id, data)
 
@@ -425,3 +433,7 @@ def db_sync(engine, version=None):
 def db_version(engine):
     """Display the current database version."""
     return IMPL.db_version(engine)
+
+
+def reset_stack_status(context, stack_id):
+    return IMPL.reset_stack_status(context, stack_id)

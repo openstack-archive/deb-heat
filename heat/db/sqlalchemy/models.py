@@ -96,8 +96,20 @@ class RawTemplate(BASE, HeatBase):
     __tablename__ = 'raw_template'
     id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
     template = sqlalchemy.Column(types.Json)
+    # legacy column
     files = sqlalchemy.Column(types.Json)
+    # modern column, reference to raw_template_files
+    files_id = sqlalchemy.Column(
+        sqlalchemy.Integer(),
+        sqlalchemy.ForeignKey('raw_template_files.id'))
     environment = sqlalchemy.Column('environment', types.Json)
+
+
+class RawTemplateFiles(BASE, HeatBase):
+    """Where template files json dicts are stored."""
+    __tablename__ = 'raw_template_files'
+    id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
+    files = sqlalchemy.Column(types.Json)
 
 
 class StackTag(BASE, HeatBase):
@@ -280,7 +292,8 @@ class Resource(BASE, HeatBase, StateAware):
                              default=lambda: str(uuid.uuid4()),
                              unique=True)
     name = sqlalchemy.Column('name', sqlalchemy.String(255))
-    nova_instance = sqlalchemy.Column('nova_instance', sqlalchemy.String(255))
+    physical_resource_id = sqlalchemy.Column('nova_instance',
+                                             sqlalchemy.String(255))
     # odd name as "metadata" is reserved
     rsrc_metadata = sqlalchemy.Column('rsrc_metadata', types.Json)
 

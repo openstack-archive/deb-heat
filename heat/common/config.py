@@ -84,7 +84,9 @@ service_opts = [
                default=5,
                help=_('Maximum depth allowed when using nested stacks.')),
     cfg.IntOpt('num_engine_workers',
-               help=_('Number of heat-engine processes to fork and run.'))]
+               help=_('Number of heat-engine processes to fork and run. '
+                      'Will default to either to 4 or number of CPUs on '
+                      'the host, whichever is greater.'))]
 
 engine_opts = [
     cfg.ListOpt('plugin_dirs',
@@ -94,6 +96,9 @@ engine_opts = [
     cfg.StrOpt('environment_dir',
                default='/etc/heat/environment.d',
                help=_('The directory to search for environment files.')),
+    cfg.StrOpt('template_dir',
+               default='/etc/heat/templates',
+               help=_('The directory to search for template files.')),
     cfg.StrOpt('deferred_auth_method',
                choices=['password', 'trusts'],
                default='trusts',
@@ -132,6 +137,13 @@ engine_opts = [
                help=_('Number of times to retry when a client encounters an '
                       'expected intermittent error. Set to 0 to disable '
                       'retries.')),
+    # Server host name limit to 53 characters by due to typical default
+    # linux HOST_NAME_MAX of 64, minus the .novalocal appended to the name
+    cfg.IntOpt('max_server_name_length',
+               default=53,
+               max=53,
+               help=_('Maximum length of a server name to be used '
+                      'in nova.')),
     cfg.IntOpt('max_interface_check_attempts',
                min=1,
                default=10,
@@ -154,8 +166,9 @@ engine_opts = [
                       ' update).')),
     cfg.IntOpt('error_wait_time',
                default=240,
-               help=_('Error wait time in seconds for stack action (ie. create'
-                      ' or update).')),
+               help=_('The amount of time in seconds after an error has'
+                      ' occurred that tasks may continue to run before'
+                      ' being cancelled.')),
     cfg.IntOpt('engine_life_check_timeout',
                default=2,
                help=_('RPC timeout for the engine liveness check that is used'
@@ -367,9 +380,11 @@ def list_opts():
     yield profiler.list_opts()[0]
     yield 'clients', default_clients_opts
 
-    for client in ('nova', 'swift', 'neutron', 'cinder',
-                   'ceilometer', 'keystone', 'heat', 'glance', 'trove',
-                   'sahara'):
+    for client in ('barbican', 'ceilometer', 'cinder', 'designate', 'glance',
+                   'heat', 'keystone', 'magnum', 'manila', 'mistral',
+                   'neutron', 'nova', 'sahara', 'senlin', 'swift', 'trove',
+                   'zaqar'
+                   ):
         client_specific_group = 'clients_' + client
         yield client_specific_group, clients_opts
 
@@ -465,6 +480,21 @@ def get_client_option(client, option):
     # look for the option in the generic [clients] section
     cfg.CONF.import_opt(option, 'heat.common.config', group='clients')
     return getattr(cfg.CONF.clients, option)
+
+
+def get_ssl_options(client):
+    # Look for the ssl options in the [clients_${client}] section
+    cacert = get_client_option(client, 'ca_file')
+    insecure = get_client_option(client, 'insecure')
+    cert = get_client_option(client, 'cert_file')
+    key = get_client_option(client, 'key_file')
+    if insecure:
+        verify = False
+    else:
+        verify = cacert or True
+    if cert and key:
+        cert = (cert, key)
+    return {'verify': verify, 'cert': cert}
 
 
 def set_config_defaults():

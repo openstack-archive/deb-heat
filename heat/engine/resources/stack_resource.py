@@ -12,6 +12,7 @@
 #    under the License.
 
 import json
+import warnings
 
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -21,7 +22,6 @@ import six
 
 from heat.common import exception
 from heat.common.i18n import _
-from heat.common.i18n import _LE
 from heat.common.i18n import _LW
 from heat.common import identifier
 from heat.common import template_format
@@ -31,9 +31,12 @@ from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import stack as parser
 from heat.engine import template
+from heat.objects import raw_template
 from heat.objects import stack as stack_object
 from heat.objects import stack_lock
 from heat.rpc import api as rpc_api
+
+from heat.engine.clients.client_plugin import ExceptionFilter
 
 LOG = logging.getLogger(__name__)
 
@@ -116,20 +119,23 @@ class StackResource(resource.Resource):
                                                     prev_resource)
         except StopIteration:
             with excutils.save_and_reraise_exception():
-                stack_identity = identifier.HeatIdentifier(
-                    self.context.tenant_id,
-                    self.physical_resource_name(),
-                    self.resource_id)
+                stack_identity = self.nested_identifier()
                 self.rpc_client().stack_cancel_update(
                     self.context,
                     dict(stack_identity),
                     cancel_with_rollback=False)
 
-    def has_nested(self):
-        if self.nested() is not None:
-            return True
+    def nested_identifier(self):
+        if not self.resource_id:
+            raise AttributeError()
+        return identifier.HeatIdentifier(
+            self.context.tenant_id,
+            self.physical_resource_name(),
+            self.resource_id)
 
-        return False
+    def has_nested(self):
+        # This class and its subclasses manage nested stacks
+        return True
 
     def nested(self):
         """Return a Stack object representing the nested (child) stack.
@@ -264,7 +270,7 @@ class StackResource(resource.Resource):
             timeout_mins = self.stack.timeout_mins
         stack_user_project_id = self.stack.stack_user_project_id
 
-        kwargs = self._stack_kwargs(user_params, child_template)
+        kwargs = self._stack_kwargs(user_params, child_template, adopt_data)
 
         adopt_data_str = None
         if adopt_data is not None:
@@ -290,14 +296,19 @@ class StackResource(resource.Resource):
             'nested_depth': self._child_nested_depth(),
             'parent_resource_name': self.name
         })
-        try:
-            result = self.rpc_client()._create_stack(self.context, **kwargs)
-        except Exception as ex:
-            self.raise_local_exception(ex)
+        with self.translate_remote_exceptions:
+            result = None
+            try:
+                result = self.rpc_client()._create_stack(self.context,
+                                                         **kwargs)
+            finally:
+                if adopt_data is None and not result:
+                    raw_template.RawTemplate.delete(self.context,
+                                                    kwargs['template_id'])
 
         self.resource_id_set(result['stack_id'])
 
-    def _stack_kwargs(self, user_params, child_template):
+    def _stack_kwargs(self, user_params, child_template, adopt_data=None):
 
         if user_params is None:
             user_params = self.child_params()
@@ -311,23 +322,39 @@ class StackResource(resource.Resource):
 
         parsed_template = self._child_parsed_template(child_template,
                                                       child_env)
-        return {
-            'template': parsed_template.t,
-            'params': child_env.user_env_as_dict(),
-            'files': parsed_template.files
-        }
+        if adopt_data is None:
+            template_id = parsed_template.store(self.context)
+            return {
+                'template_id': template_id,
+                'template': None,
+                'params': None,
+                'files': None,
+            }
+        else:
+            return {
+                'template': parsed_template.t,
+                'params': child_env.user_env_as_dict(),
+                'files': parsed_template.files,
+            }
 
     def raise_local_exception(self, ex):
+        warnings.warn('raise_local_exception() is deprecated. Use the '
+                      'translate_remote_exceptions context manager instead.',
+                      DeprecationWarning)
+        return self.translate_remote_exceptions(ex)
+
+    @ExceptionFilter
+    def translate_remote_exceptions(self, ex):
         if (isinstance(ex, exception.ActionInProgress) and
                 self.stack.action == self.stack.ROLLBACK):
             # The update was interrupted and the rollback is already in
             # progress, so just ignore the error and wait for the rollback to
             # finish
-            return
+            return True
 
         class_name = reflection.get_class_name(ex, fully_qualified=False)
         if not class_name.endswith('_Remote'):
-            raise ex
+            return False
 
         full_message = six.text_type(ex)
         if full_message.find('\n') > -1:
@@ -431,11 +458,15 @@ class StackResource(resource.Resource):
             'stack_identity': dict(nested_stack.identifier()),
             'args': {rpc_api.PARAM_TIMEOUT: timeout_mins}
         })
-        try:
-            self.rpc_client().update_stack(self.context, **kwargs)
-        except Exception as ex:
-            LOG.exception(_LE('update_stack'))
-            self.raise_local_exception(ex)
+        with self.translate_remote_exceptions:
+            result = None
+            try:
+                result = self.rpc_client()._update_stack(self.context,
+                                                         **kwargs)
+            finally:
+                if not result:
+                    raw_template.RawTemplate.delete(self.context,
+                                                    kwargs['template_id'])
         return cookie
 
     def check_update_complete(self, cookie=None):
@@ -451,7 +482,10 @@ class StackResource(resource.Resource):
         stack_identity = dict(stack.identifier())
 
         try:
-            self.rpc_client().delete_stack(self.context, stack_identity)
+            if self.abandon_in_progress:
+                self.rpc_client().abandon_stack(self.context, stack_identity)
+            else:
+                self.rpc_client().delete_stack(self.context, stack_identity)
         except Exception as ex:
             self.rpc_client().ignore_error_named(ex, 'NotFound')
 
@@ -466,10 +500,7 @@ class StackResource(resource.Resource):
         if stack is None:
             raise exception.Error(_('Cannot suspend %s, stack not created')
                                   % self.name)
-        stack_identity = identifier.HeatIdentifier(
-            self.context.tenant_id,
-            self.physical_resource_name(),
-            self.resource_id)
+        stack_identity = self.nested_identifier()
         self.rpc_client().stack_suspend(self.context, dict(stack_identity))
 
     def check_suspend_complete(self, cookie=None):
@@ -480,10 +511,7 @@ class StackResource(resource.Resource):
         if stack is None:
             raise exception.Error(_('Cannot resume %s, stack not created')
                                   % self.name)
-        stack_identity = identifier.HeatIdentifier(
-            self.context.tenant_id,
-            self.physical_resource_name(),
-            self.resource_id)
+        stack_identity = self.nested_identifier()
         self.rpc_client().stack_resume(self.context, dict(stack_identity))
 
     def check_resume_complete(self, cookie=None):
@@ -495,10 +523,7 @@ class StackResource(resource.Resource):
             raise exception.Error(_('Cannot check %s, stack not created')
                                   % self.name)
 
-        stack_identity = identifier.HeatIdentifier(
-            self.context.tenant_id,
-            self.physical_resource_name(),
-            self.resource_id)
+        stack_identity = self.nested_identifier()
         self.rpc_client().stack_check(self.context, dict(stack_identity))
 
     def check_check_complete(self, cookie=None):

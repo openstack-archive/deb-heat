@@ -18,7 +18,6 @@ import six
 from heat.common import exception
 from heat.common import grouputils
 from heat.common import template_format
-from heat.engine import function
 from heat.engine import rsrc_defn
 from heat.tests.autoscaling import inline_templates
 from heat.tests import common
@@ -114,7 +113,7 @@ class TestGroupAdjust(common.HeatTestCase):
 
     def test_scaling_policy_cooldown_toosoon(self):
         """If _is_scaling_allowed() returns False don't progress."""
-        dont_call = self.patchobject(grouputils, 'get_size')
+        dont_call = self.patchobject(self.group, 'resize')
         self.patchobject(self.group, '_is_scaling_allowed',
                          return_value=False)
         self.assertRaises(exception.NoActionRequired,
@@ -122,35 +121,18 @@ class TestGroupAdjust(common.HeatTestCase):
         self.assertEqual([], dont_call.call_args_list)
 
     def test_scaling_same_capacity(self):
-        """Alway resize even if the capacity is the same."""
+        """Don't resize when capacity is the same."""
         self.patchobject(grouputils, 'get_size', return_value=3)
         resize = self.patchobject(self.group, 'resize')
         finished_scaling = self.patchobject(self.group, '_finished_scaling')
         notify = self.patch('heat.engine.notification.autoscaling.send')
-        self.patchobject(self.group, '_is_scaling_allowed',
-                         return_value=True)
-        self.group.adjust(3, adjustment_type='ExactCapacity')
-
-        expected_notifies = [
-            mock.call(
-                capacity=3, suffix='start',
-                adjustment_type='ExactCapacity',
-                groupname=u'my-group',
-                message=u'Start resizing the group my-group',
-                adjustment=3,
-                stack=self.group.stack),
-            mock.call(
-                capacity=3, suffix='end',
-                adjustment_type='ExactCapacity',
-                groupname=u'my-group',
-                message=u'End resizing the group my-group',
-                adjustment=3,
-                stack=self.group.stack)]
-
+        self.assertRaises(exception.NoActionRequired,
+                          self.group.adjust, 3,
+                          adjustment_type='ExactCapacity')
+        expected_notifies = []
         self.assertEqual(expected_notifies, notify.call_args_list)
-        resize.assert_called_once_with(3)
-        finished_scaling.assert_called_once_with('ExactCapacity : 3',
-                                                 changed_size=False)
+        self.assertEqual(0, resize.call_count)
+        self.assertEqual(0, finished_scaling.call_count)
 
     def test_scale_up_min_adjustment(self):
         self.patchobject(grouputils, 'get_size', return_value=1)
@@ -181,7 +163,8 @@ class TestGroupAdjust(common.HeatTestCase):
         self.assertEqual(expected_notifies, notify.call_args_list)
         resize.assert_called_once_with(3)
         finished_scaling.assert_called_once_with(
-            'PercentChangeInCapacity : 33', changed_size=True)
+            'PercentChangeInCapacity : 33',
+            size_changed=True)
 
     def test_scale_down_min_adjustment(self):
         self.patchobject(grouputils, 'get_size', return_value=3)
@@ -212,7 +195,8 @@ class TestGroupAdjust(common.HeatTestCase):
         self.assertEqual(expected_notifies, notify.call_args_list)
         resize.assert_called_once_with(1)
         finished_scaling.assert_called_once_with(
-            'PercentChangeInCapacity : -33', changed_size=True)
+            'PercentChangeInCapacity : -33',
+            size_changed=True)
 
     def test_scaling_policy_cooldown_ok(self):
         self.patchobject(grouputils, 'get_size', return_value=0)
@@ -241,7 +225,7 @@ class TestGroupAdjust(common.HeatTestCase):
         self.assertEqual(expected_notifies, notify.call_args_list)
         resize.assert_called_once_with(1)
         finished_scaling.assert_called_once_with('ChangeInCapacity : 1',
-                                                 changed_size=True)
+                                                 size_changed=True)
         grouputils.get_size.assert_called_once_with(self.group)
 
     def test_scaling_policy_resize_fail(self):
@@ -556,7 +540,7 @@ class RollingUpdatePolicyDiffTest(common.HeatTestCase):
 
         # get the json snippet for the current InstanceGroup resource
         current_grp = current_stack['my-group']
-        current_snippets = dict((n, r.parsed_template())
+        current_snippets = dict((n, r.frozen_definition())
                                 for n, r in current_stack.items())
         current_grp_json = current_snippets[current_grp.name]
 
@@ -567,7 +551,7 @@ class RollingUpdatePolicyDiffTest(common.HeatTestCase):
         # get the updated json snippet for the InstanceGroup resource in the
         # context of the current stack
         updated_grp = updated_stack['my-group']
-        updated_grp_json = function.resolve(updated_grp.t)
+        updated_grp_json = updated_grp.t.freeze()
 
         # identify the template difference
         tmpl_diff = updated_grp.update_template_diff(
@@ -575,17 +559,11 @@ class RollingUpdatePolicyDiffTest(common.HeatTestCase):
         updated_policy = (updated_grp.properties['rolling_updates']
                           if 'rolling_updates' in updated_grp.properties.data
                           else None)
-        self.assertEqual(updated_policy,
-                         tmpl_diff['Properties'].get('rolling_updates'))
+        self.assertTrue(tmpl_diff.properties_changed())
 
-        # test application of the new update policy in handle_update
-        update_snippet = rsrc_defn.ResourceDefinition(
-            current_grp.name,
-            current_grp.type(),
-            properties=updated_grp.t['Properties'])
         current_grp._try_rolling_update = mock.MagicMock()
         current_grp.resize = mock.MagicMock()
-        current_grp.handle_update(update_snippet, tmpl_diff, None)
+        current_grp.handle_update(updated_grp_json, tmpl_diff, None)
         if updated_policy is None:
             self.assertIsNone(
                 current_grp.properties.data.get('rolling_updates'))

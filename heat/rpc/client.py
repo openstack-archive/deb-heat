@@ -47,6 +47,10 @@ class EngineClient(object):
         1.24 - Adds ignorable_errors to validate_template
         1.25 - list_stack_resource filter update
         1.26 - Add mark_unhealthy
+        1.27 - Add check_software_deployment
+        1.28 - Add environment_show call
+        1.29 - Add template_id to create_stack/update_stack
+        1.30 - Add possibility to resource_type_* return descriptions
     """
 
     BASE_RPC_API_VERSION = '1.0'
@@ -60,12 +64,17 @@ class EngineClient(object):
     def make_msg(method, **kwargs):
         return method, kwargs
 
-    def call(self, ctxt, msg, version=None):
+    def call(self, ctxt, msg, version=None, timeout=None):
         method, kwargs = msg
+
         if version is not None:
             client = self._client.prepare(version=version)
         else:
             client = self._client
+
+        if timeout is not None:
+            client = client.prepare(timeout=timeout)
+
         return client.call(ctxt, method, **kwargs)
 
     def cast(self, ctxt, msg, version=None):
@@ -242,7 +251,8 @@ class EngineClient(object):
     def _create_stack(self, ctxt, stack_name, template, params, files,
                       args, environment_files=None,
                       owner_id=None, nested_depth=0, user_creds_id=None,
-                      stack_user_project_id=None, parent_resource_name=None):
+                      stack_user_project_id=None, parent_resource_name=None,
+                      template_id=None):
         """Internal interface for engine-to-engine communication via RPC.
 
         Allows some additional options which should not be exposed to users via
@@ -253,6 +263,7 @@ class EngineClient(object):
         :param user_creds_id: user_creds record for nested stack
         :param stack_user_project_id: stack user project for nested stack
         :param parent_resource_name: the parent resource name
+        :param template_id: the ID of a pre-stored template in the DB
         """
         return self.call(
             ctxt, self.make_msg('create_stack', stack_name=stack_name,
@@ -263,8 +274,9 @@ class EngineClient(object):
                                 nested_depth=nested_depth,
                                 user_creds_id=user_creds_id,
                                 stack_user_project_id=stack_user_project_id,
-                                parent_resource_name=parent_resource_name),
-            version='1.23')
+                                parent_resource_name=parent_resource_name,
+                                template_id=template_id),
+            version='1.29')
 
     def update_stack(self, ctxt, stack_identity, template, params,
                      files, args, environment_files=None):
@@ -283,6 +295,20 @@ class EngineClient(object):
                names included in the files dict
         :type  environment_files: list or None
         """
+        return self._update_stack(ctxt, stack_identity, template, params,
+                                  files, args,
+                                  environment_files=environment_files)
+
+    def _update_stack(self, ctxt, stack_identity, template, params,
+                      files, args, environment_files=None,
+                      template_id=None):
+        """Internal interface for engine-to-engine communication via RPC.
+
+        Allows an additional option which should not be exposed to users via
+        the API:
+
+        :param template_id: the ID of a pre-stored template in the DB
+        """
         return self.call(ctxt,
                          self.make_msg('update_stack',
                                        stack_identity=stack_identity,
@@ -290,8 +316,9 @@ class EngineClient(object):
                                        params=params,
                                        files=files,
                                        environment_files=environment_files,
-                                       args=args),
-                         version='1.23')
+                                       args=args,
+                                       template_id=template_id),
+                         version='1.29')
 
     def preview_update_stack(self, ctxt, stack_identity, template, params,
                              files, args, environment_files=None):
@@ -366,6 +393,19 @@ class EngineClient(object):
         return self.call(ctxt, self.make_msg('get_template',
                                              stack_identity=stack_identity))
 
+    def get_environment(self, context, stack_identity):
+        """Returns the environment for an existing stack.
+
+        :param context: RPC context
+        :param stack_identity: identifies the stack
+        :rtype: dict
+        """
+
+        return self.call(context,
+                         self.make_msg('get_environment',
+                                       stack_identity=stack_identity),
+                         version='1.28')
+
     def delete_stack(self, ctxt, stack_identity, cast=True):
         """Deletes a given stack.
 
@@ -392,19 +432,23 @@ class EngineClient(object):
                             ctxt,
                             support_status=None,
                             type_name=None,
-                            heat_version=None):
+                            heat_version=None,
+                            with_description=False):
         """Get a list of valid resource types.
 
         :param ctxt: RPC context.
         :param support_status: Support status of resource type
         :param type_name: Resource type's name (regular expression allowed)
-        :param version: Heat version
+        :param heat_version: Heat version
+        :param with_description: Either return resource type description or not
         """
-        return self.call(ctxt, self.make_msg('list_resource_types',
-                                             support_status=support_status,
-                                             type_name=type_name,
-                                             heat_version=heat_version),
-                         version='1.16')
+        return self.call(ctxt,
+                         self.make_msg('list_resource_types',
+                                       support_status=support_status,
+                                       type_name=type_name,
+                                       heat_version=heat_version,
+                                       with_description=with_description),
+                         version='1.30')
 
     def list_template_versions(self, ctxt):
         """Get a list of available template versions.
@@ -425,13 +469,17 @@ class EngineClient(object):
             'list_template_functions', template_version=template_version),
             version='1.13')
 
-    def resource_schema(self, ctxt, type_name):
+    def resource_schema(self, ctxt, type_name, with_description=False):
         """Get the schema for a resource type.
 
         :param ctxt: RPC context.
+        :param with_description: Return resource with description or not.
         """
-        return self.call(ctxt, self.make_msg('resource_schema',
-                                             type_name=type_name))
+        return self.call(ctxt,
+                         self.make_msg('resource_schema',
+                                       type_name=type_name,
+                                       with_description=with_description),
+                         version='1.30')
 
     def generate_template(self, ctxt, type_name, template_type='cfn'):
         """Generate a template based on the specified type.
@@ -680,6 +728,12 @@ class EngineClient(object):
     def show_software_deployment(self, cnxt, deployment_id):
         return self.call(cnxt, self.make_msg('show_software_deployment',
                                              deployment_id=deployment_id))
+
+    def check_software_deployment(self, cnxt, deployment_id, timeout):
+        return self.call(cnxt, self.make_msg('check_software_deployment',
+                                             deployment_id=deployment_id,
+                                             timeout=timeout),
+                         timeout=timeout, version='1.27')
 
     def create_software_deployment(self, cnxt, server_id, config_id=None,
                                    input_values=None, action='INIT',

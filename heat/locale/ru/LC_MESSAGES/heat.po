@@ -3,14 +3,12 @@
 # This file is distributed under the same license as the heat project.
 #
 # Translators:
-# Lucas Palm <lapalm@us.ibm.com>, 2015. #zanata
-# OpenStack Infra <zanata@openstack.org>, 2015. #zanata
-# Grigory Mokhin <mokhin@gmail.com>, 2016. #zanata
+# Andreas Jaeger <jaegerandi@gmail.com>, 2016. #zanata
 msgid ""
 msgstr ""
-"Project-Id-Version: heat 6.0.0.0rc2.dev8\n"
-"Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2016-03-22 09:39+0000\n"
+"Project-Id-Version: heat 6.0.1.dev352\n"
+"Report-Msgid-Bugs-To: https://bugs.launchpad.net/openstack-i18n/\n"
+"POT-Creation-Date: 2016-06-02 03:51+0000\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
@@ -506,9 +504,6 @@ msgstr "Не указан обязательный входной парамет
 msgid "A map containing all headers for the container."
 msgstr "Карта, содержащая все заголовки для контейнера."
 
-msgid "A map of Nova names and IDs to apply configuration to."
-msgstr "Карта связей имен и ИД Nova, к которой будет применяться конфигурация."
-
 msgid ""
 "A map of Nova names and captured stderrs from the configuration execution to "
 "each server."
@@ -955,10 +950,6 @@ msgid "Arguments to %s not fully resolved"
 msgstr "Аргументы %s обрабатываются неполностью"
 
 #, python-format
-msgid "At least one of the following properties must be specified: %(props)s"
-msgstr "Необходимо указать хотя бы одно из следующих свойств: %(props)s"
-
-#, python-format
 msgid "Attempt to delete a stack with id: %(id)s %(msg)s"
 msgstr "Попытка удаления стека с ИД: %(id)s %(msg)s"
 
@@ -1172,13 +1163,6 @@ msgstr "Приостановить %s невозможно, resource_id не з�
 #, python-format
 msgid "Cannot suspend %s, stack not created"
 msgstr "Приостановить %s невозможно, стек не создан"
-
-#, python-format
-msgid "Cannot use %(key)s and %(name)s at the same time."
-msgstr "Нельзя использовать %(key)s и %(name)s одновременно."
-
-msgid "Cannot use network and uuid at the same time."
-msgstr "Нельзя использовать сеть и uuid одновременно."
 
 msgid "Captured stderr from the configuration execution."
 msgstr "Захвачен stderr при выполнении настройки."
@@ -1934,11 +1918,6 @@ msgstr "Ошибка при проверке значения '%(value)s'"
 #, python-format
 msgid "Error validating value '%(value)s': %(message)s"
 msgstr "Ошибка при проверке значения '%(value)s': %(message)s"
-
-msgid "Error wait time in seconds for stack action (ie. create or update)."
-msgstr ""
-"Ошибка времени ожидания (в секундах) для действия стека (создание или "
-"обновление)."
 
 msgid "Ethertype of the traffic."
 msgstr "Тип Ethertype потока данных."
@@ -4029,9 +4008,6 @@ msgstr "Количество VCPU для разновидности."
 msgid "Number of backlog requests to configure the socket with."
 msgstr "Количество непереданных запросов для настройки сокета."
 
-msgid "Number of heat-engine processes to fork and run."
-msgstr "Число процессов модуля heat для разветвления и выполнения."
-
 msgid "Number of instances in the Node group."
 msgstr "Число экземпляров в группе узлов."
 
@@ -5208,10 +5184,6 @@ msgstr "Не удалось приостановить сервер %s"
 msgid "Swap space in MB."
 msgstr "Размер пространства подкачки в МБ."
 
-#, python-format
-msgid "Sync Point %s not found"
-msgstr "Точка синхронизации %s не найдена"
-
 msgid "System SIGHUP signal received."
 msgstr "Получен системный сигнал SIGHUP."
 
@@ -5418,20 +5390,6 @@ msgstr "Имя DNS указанного комплекта."
 
 msgid "The DNS nameserver address."
 msgstr "Адрес сервера DNS."
-
-msgid ""
-"The HARestarter resource type is deprecated and will be removed in a future "
-"release of Heat, once it has support for auto-healing any type of resource. "
-"Note that HARestarter does *not* actually restart servers - it deletes and "
-"then recreates them. It also does the same to all dependent resources, and "
-"may therefore exhibit unexpected and undesirable behaviour. Avoid."
-msgstr ""
-"Тип ресурса HARestarter устарел и будет удален в будущих выпусках Heat, "
-"когда будет реализована функция автоматического самовосстановления для "
-"любого типа ресурса. Учтите, что HARestarter не перезапускает серверы: "
-"сервер удаляется и затем воссоздается. То же относится ко всем зависимым "
-"ресурсам, поэтому могут возникать непредвиденные и нежелательные результаты. "
-"Не рекомендуется к использованию."
 
 msgid "The HTTP method used for requests by the monitor of type HTTP."
 msgstr "Метод HTTP, используемый для запросов монитором типа HTTP."
@@ -5817,10 +5775,6 @@ msgid ""
 msgstr ""
 "Содержимое файла личных параметров \"%(path)s\" превышает максимально "
 "допустимый размер (%(max_size)s байтов)."
-
-#, python-format
-msgid "The current %s will result in stack update timeout."
-msgstr "Текущее значение %s приведет к истечению тайм-аута обновления стека."
 
 msgid "The current size of AutoscalingResourceGroup."
 msgstr "Текущий размер AutoscalingResourceGroup."
@@ -7095,9 +7049,6 @@ msgstr ""
 "Непредвиденные свойства: %(unexpected)s. Для типа заказа %(type)s допустимы "
 "только следующие свойства: %(allowed)s."
 
-msgid "Unexpected returning while IN_PROGRESS."
-msgstr "Непредвиденный возврат в состоянии IN_PROGRESS."
-
 msgid "Unique identifier for the device."
 msgstr "Уникальный идентификатор устройства."
 
@@ -7147,9 +7098,6 @@ msgstr "Единица измерения показателя."
 
 msgid "Unknown"
 msgstr "Неизвестно"
-
-msgid "Unknown Keystone version"
-msgstr "Неизвестная версия Keystone"
 
 #, python-format
 msgid "Unknown Property %s"
@@ -7774,13 +7722,6 @@ msgstr "segmentation_id не разрешен для однородной сет
 
 msgid "server_id must be specified"
 msgstr "Не указан server_id"
-
-msgid "source_path must be non-empty list with path."
-msgstr "source_path должен быть непустым списком путей."
-
-#, python-format
-msgid "source_path should be a list with path instead of %s."
-msgstr "source_path должен быть списком путей, а не %s"
 
 msgid "stack not found"
 msgstr "стек не найден"

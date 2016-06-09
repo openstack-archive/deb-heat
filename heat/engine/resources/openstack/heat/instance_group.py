@@ -146,7 +146,7 @@ class InstanceGroup(stack_resource.StackResource):
 
     def validate_launchconfig(self):
         # It seems to be a common error to not have a dependency on the
-        # launchconfiguration. This can happen if the the actual resource
+        # launchconfiguration. This can happen if the actual resource
         # name is used instead of {get_resource: launch_conf} and no
         # depends_on is used.
 
@@ -190,7 +190,7 @@ class InstanceGroup(stack_resource.StackResource):
         """
         if tmpl_diff:
             # parse update policy
-            if rsrc_defn.UPDATE_POLICY in tmpl_diff:
+            if tmpl_diff.update_policy_changed():
                 up = json_snippet.update_policy(self.update_policy_schema,
                                                 self.context)
                 self.update_policy = up
@@ -276,8 +276,8 @@ class InstanceGroup(stack_resource.StackResource):
     def _update_timeout(self, batch_cnt, pause_sec):
         total_pause_time = pause_sec * max(batch_cnt - 1, 0)
         if total_pause_time >= self.stack.timeout_secs():
-            msg = _('The current %s will result in stack update '
-                    'timeout.') % rsrc_defn.UPDATE_POLICY
+            msg = _('The current update policy will result in stack update '
+                    'timeout.')
             raise ValueError(msg)
         return self.stack.timeout_secs() - total_pause_time
 

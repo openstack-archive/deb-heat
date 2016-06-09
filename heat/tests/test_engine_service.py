@@ -209,7 +209,7 @@ class StackConvergenceServiceCreateUpdateTest(common.HeatTestCase):
 
     def setUp(self):
         super(StackConvergenceServiceCreateUpdateTest, self).setUp()
-        cfg.CONF.set_override('convergence_engine', True)
+        cfg.CONF.set_override('convergence_engine', True, enforce_type=True)
         self.ctx = utils.dummy_context()
         self.man = service.EngineService('a-host', 'a-topic')
 
@@ -413,39 +413,18 @@ class StackServiceTest(common.HeatTestCase):
 
     @tools.stack_context('service_identify_test_stack', False)
     def test_stack_identify(self):
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(self.ctx,
-                          stack=mox.IgnoreArg()).AndReturn(self.stack)
-
-        self.m.ReplayAll()
         identity = self.eng.identify_stack(self.ctx, self.stack.name)
         self.assertEqual(self.stack.identifier(), identity)
-
-        self.m.VerifyAll()
 
     @tools.stack_context('ef0c41a4-644f-447c-ad80-7eecb0becf79', False)
     def test_stack_identify_by_name_in_uuid(self):
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(self.ctx,
-                          stack=mox.IgnoreArg()).AndReturn(self.stack)
-
-        self.m.ReplayAll()
         identity = self.eng.identify_stack(self.ctx, self.stack.name)
         self.assertEqual(self.stack.identifier(), identity)
 
-        self.m.VerifyAll()
-
     @tools.stack_context('service_identify_uuid_test_stack', False)
     def test_stack_identify_uuid(self):
-        self.m.StubOutWithMock(parser.Stack, 'load')
-        parser.Stack.load(self.ctx,
-                          stack=mox.IgnoreArg()).AndReturn(self.stack)
-
-        self.m.ReplayAll()
         identity = self.eng.identify_stack(self.ctx, self.stack.id)
         self.assertEqual(self.stack.identifier(), identity)
-
-        self.m.VerifyAll()
 
     def test_stack_identify_nonexist(self):
         ex = self.assertRaises(dispatcher.ExpectedException,
@@ -463,7 +442,8 @@ class StackServiceTest(common.HeatTestCase):
     def test_stack_by_name_tenants(self):
         self.assertEqual(
             self.stack.id,
-            stack_object.Stack.get_by_name(self.ctx, self.stack.name).id)
+            stack_object.Stack.get_by_name(self.ctx, self.stack.name).id
+        )
         ctx2 = utils.dummy_context(tenant_id='stack_service_test_tenant2')
         self.assertIsNone(stack_object.Stack.get_by_name(
             ctx2,
@@ -483,13 +463,6 @@ class StackServiceTest(common.HeatTestCase):
 
     @tools.stack_context('service_list_all_test_stack')
     def test_stack_list_all(self):
-        self.m.StubOutWithMock(parser.Stack, '_from_db')
-        parser.Stack._from_db(
-            self.ctx, mox.IgnoreArg(),
-            resolve_data=False
-        ).AndReturn(self.stack)
-
-        self.m.ReplayAll()
         sl = self.eng.list_stacks(self.ctx)
 
         self.assertEqual(1, len(sl))
@@ -503,9 +476,7 @@ class StackServiceTest(common.HeatTestCase):
             self.assertIn('stack_status', s)
             self.assertIn('stack_status_reason', s)
             self.assertIn('description', s)
-            self.assertIn('WordPress', s['description'])
-
-        self.m.VerifyAll()
+            self.assertEqual('', s['description'])
 
     @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_passes_marker_info(self, mock_stack_get_all):
@@ -516,232 +487,220 @@ class StackServiceTest(common.HeatTestCase):
         self.eng.list_stacks(self.ctx, limit=limit, marker=marker,
                              sort_keys=sort_keys, sort_dir=sort_dir)
         mock_stack_get_all.assert_called_once_with(self.ctx,
-                                                   limit,
-                                                   sort_keys,
-                                                   marker,
-                                                   sort_dir,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   )
+                                                   limit=limit,
+                                                   sort_keys=sort_keys,
+                                                   marker=marker,
+                                                   sort_dir=sort_dir,
+                                                   filters=mock.ANY,
+                                                   tenant_safe=mock.ANY,
+                                                   show_deleted=mock.ANY,
+                                                   show_nested=mock.ANY,
+                                                   show_hidden=mock.ANY,
+                                                   tags=mock.ANY,
+                                                   tags_any=mock.ANY,
+                                                   not_tags=mock.ANY,
+                                                   not_tags_any=mock.ANY)
 
     @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_passes_filtering_info(self, mock_stack_get_all):
         filters = {'foo': 'bar'}
         self.eng.list_stacks(self.ctx, filters=filters)
-        mock_stack_get_all.assert_called_once_with(mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   filters,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   )
+        mock_stack_get_all.assert_called_once_with(self.ctx,
+                                                   limit=mock.ANY,
+                                                   sort_keys=mock.ANY,
+                                                   marker=mock.ANY,
+                                                   sort_dir=mock.ANY,
+                                                   filters=filters,
+                                                   tenant_safe=mock.ANY,
+                                                   show_deleted=mock.ANY,
+                                                   show_nested=mock.ANY,
+                                                   show_hidden=mock.ANY,
+                                                   tags=mock.ANY,
+                                                   tags_any=mock.ANY,
+                                                   not_tags=mock.ANY,
+                                                   not_tags_any=mock.ANY)
 
     @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_passes_filter_translated(self, mock_stack_get_all):
         filters = {'stack_name': 'bar'}
         self.eng.list_stacks(self.ctx, filters=filters)
         translated = {'name': 'bar'}
-        mock_stack_get_all.assert_called_once_with(mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   translated,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   )
+        mock_stack_get_all.assert_called_once_with(self.ctx,
+                                                   limit=mock.ANY,
+                                                   sort_keys=mock.ANY,
+                                                   marker=mock.ANY,
+                                                   sort_dir=mock.ANY,
+                                                   filters=translated,
+                                                   tenant_safe=mock.ANY,
+                                                   show_deleted=mock.ANY,
+                                                   show_nested=mock.ANY,
+                                                   show_hidden=mock.ANY,
+                                                   tags=mock.ANY,
+                                                   tags_any=mock.ANY,
+                                                   not_tags=mock.ANY,
+                                                   not_tags_any=mock.ANY)
 
     @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_tenant_safe_defaults_to_true(self, mock_stack_get_all):
         self.eng.list_stacks(self.ctx)
-        mock_stack_get_all.assert_called_once_with(mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   True,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   )
+        mock_stack_get_all.assert_called_once_with(self.ctx,
+                                                   limit=mock.ANY,
+                                                   sort_keys=mock.ANY,
+                                                   marker=mock.ANY,
+                                                   sort_dir=mock.ANY,
+                                                   filters=mock.ANY,
+                                                   tenant_safe=True,
+                                                   show_deleted=mock.ANY,
+                                                   show_nested=mock.ANY,
+                                                   show_hidden=mock.ANY,
+                                                   tags=mock.ANY,
+                                                   tags_any=mock.ANY,
+                                                   not_tags=mock.ANY,
+                                                   not_tags_any=mock.ANY)
 
     @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_passes_tenant_safe_info(self, mock_stack_get_all):
         self.eng.list_stacks(self.ctx, tenant_safe=False)
-        mock_stack_get_all.assert_called_once_with(mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   False,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   )
+        mock_stack_get_all.assert_called_once_with(self.ctx,
+                                                   limit=mock.ANY,
+                                                   sort_keys=mock.ANY,
+                                                   marker=mock.ANY,
+                                                   sort_dir=mock.ANY,
+                                                   filters=mock.ANY,
+                                                   tenant_safe=False,
+                                                   show_deleted=mock.ANY,
+                                                   show_nested=mock.ANY,
+                                                   show_hidden=mock.ANY,
+                                                   tags=mock.ANY,
+                                                   tags_any=mock.ANY,
+                                                   not_tags=mock.ANY,
+                                                   not_tags_any=mock.ANY)
 
     @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_show_nested(self, mock_stack_get_all):
         self.eng.list_stacks(self.ctx, show_nested=True)
-        mock_stack_get_all.assert_called_once_with(mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   True,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   )
+        mock_stack_get_all.assert_called_once_with(self.ctx,
+                                                   limit=mock.ANY,
+                                                   sort_keys=mock.ANY,
+                                                   marker=mock.ANY,
+                                                   sort_dir=mock.ANY,
+                                                   filters=mock.ANY,
+                                                   tenant_safe=mock.ANY,
+                                                   show_deleted=mock.ANY,
+                                                   show_nested=True,
+                                                   show_hidden=mock.ANY,
+                                                   tags=mock.ANY,
+                                                   tags_any=mock.ANY,
+                                                   not_tags=mock.ANY,
+                                                   not_tags_any=mock.ANY)
 
     @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_show_deleted(self, mock_stack_get_all):
         self.eng.list_stacks(self.ctx, show_deleted=True)
-        mock_stack_get_all.assert_called_once_with(mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   True,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   )
+        mock_stack_get_all.assert_called_once_with(self.ctx,
+                                                   limit=mock.ANY,
+                                                   sort_keys=mock.ANY,
+                                                   marker=mock.ANY,
+                                                   sort_dir=mock.ANY,
+                                                   filters=mock.ANY,
+                                                   tenant_safe=mock.ANY,
+                                                   show_deleted=True,
+                                                   show_nested=mock.ANY,
+                                                   show_hidden=mock.ANY,
+                                                   tags=mock.ANY,
+                                                   tags_any=mock.ANY,
+                                                   not_tags=mock.ANY,
+                                                   not_tags_any=mock.ANY)
 
     @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_show_hidden(self, mock_stack_get_all):
         self.eng.list_stacks(self.ctx, show_hidden=True)
-        mock_stack_get_all.assert_called_once_with(mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   True,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   )
+        mock_stack_get_all.assert_called_once_with(self.ctx,
+                                                   limit=mock.ANY,
+                                                   sort_keys=mock.ANY,
+                                                   marker=mock.ANY,
+                                                   sort_dir=mock.ANY,
+                                                   filters=mock.ANY,
+                                                   tenant_safe=mock.ANY,
+                                                   show_deleted=mock.ANY,
+                                                   show_nested=mock.ANY,
+                                                   show_hidden=True,
+                                                   tags=mock.ANY,
+                                                   tags_any=mock.ANY,
+                                                   not_tags=mock.ANY,
+                                                   not_tags_any=mock.ANY)
 
     @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_tags(self, mock_stack_get_all):
         self.eng.list_stacks(self.ctx, tags=['foo', 'bar'])
-        mock_stack_get_all.assert_called_once_with(mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   ['foo', 'bar'],
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   )
+        mock_stack_get_all.assert_called_once_with(self.ctx,
+                                                   limit=mock.ANY,
+                                                   sort_keys=mock.ANY,
+                                                   marker=mock.ANY,
+                                                   sort_dir=mock.ANY,
+                                                   filters=mock.ANY,
+                                                   tenant_safe=mock.ANY,
+                                                   show_deleted=mock.ANY,
+                                                   show_nested=mock.ANY,
+                                                   show_hidden=mock.ANY,
+                                                   tags=['foo', 'bar'],
+                                                   tags_any=mock.ANY,
+                                                   not_tags=mock.ANY,
+                                                   not_tags_any=mock.ANY)
 
     @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_tags_any(self, mock_stack_get_all):
         self.eng.list_stacks(self.ctx, tags_any=['foo', 'bar'])
-        mock_stack_get_all.assert_called_once_with(mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   ['foo', 'bar'],
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   )
+        mock_stack_get_all.assert_called_once_with(self.ctx,
+                                                   limit=mock.ANY,
+                                                   sort_keys=mock.ANY,
+                                                   marker=mock.ANY,
+                                                   sort_dir=mock.ANY,
+                                                   filters=mock.ANY,
+                                                   tenant_safe=mock.ANY,
+                                                   show_deleted=mock.ANY,
+                                                   show_nested=mock.ANY,
+                                                   show_hidden=mock.ANY,
+                                                   tags=mock.ANY,
+                                                   tags_any=['foo', 'bar'],
+                                                   not_tags=mock.ANY,
+                                                   not_tags_any=mock.ANY)
 
     @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_not_tags(self, mock_stack_get_all):
         self.eng.list_stacks(self.ctx, not_tags=['foo', 'bar'])
-        mock_stack_get_all.assert_called_once_with(mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   ['foo', 'bar'],
-                                                   mock.ANY,
-                                                   )
+        mock_stack_get_all.assert_called_once_with(self.ctx,
+                                                   limit=mock.ANY,
+                                                   sort_keys=mock.ANY,
+                                                   marker=mock.ANY,
+                                                   sort_dir=mock.ANY,
+                                                   filters=mock.ANY,
+                                                   tenant_safe=mock.ANY,
+                                                   show_deleted=mock.ANY,
+                                                   show_nested=mock.ANY,
+                                                   show_hidden=mock.ANY,
+                                                   tags=mock.ANY,
+                                                   tags_any=mock.ANY,
+                                                   not_tags=['foo', 'bar'],
+                                                   not_tags_any=mock.ANY)
 
     @mock.patch.object(stack_object.Stack, 'get_all')
     def test_stack_list_not_tags_any(self, mock_stack_get_all):
         self.eng.list_stacks(self.ctx, not_tags_any=['foo', 'bar'])
-        mock_stack_get_all.assert_called_once_with(mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   mock.ANY,
-                                                   ['foo', 'bar'],
-                                                   )
+        mock_stack_get_all.assert_called_once_with(self.ctx,
+                                                   limit=mock.ANY,
+                                                   sort_keys=mock.ANY,
+                                                   marker=mock.ANY,
+                                                   sort_dir=mock.ANY,
+                                                   filters=mock.ANY,
+                                                   tenant_safe=mock.ANY,
+                                                   show_deleted=mock.ANY,
+                                                   show_nested=mock.ANY,
+                                                   show_hidden=mock.ANY,
+                                                   tags=mock.ANY,
+                                                   tags_any=mock.ANY,
+                                                   not_tags=mock.ANY,
+                                                   not_tags_any=['foo', 'bar'])
 
     @mock.patch.object(stack_object.Stack, 'count_all')
     def test_count_stacks_passes_filter_info(self, mock_stack_count_all):
@@ -829,7 +788,7 @@ class StackServiceTest(common.HeatTestCase):
 
     @tools.stack_context('service_export_stack')
     def test_export_stack(self):
-        cfg.CONF.set_override('enable_stack_abandon', True)
+        cfg.CONF.set_override('enable_stack_abandon', True, enforce_type=True)
         self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.ctx,
                           stack=mox.IgnoreArg()).AndReturn(self.stack)
@@ -862,7 +821,7 @@ class StackServiceTest(common.HeatTestCase):
 
     @tools.stack_context('service_abandon_stack')
     def test_abandon_stack(self):
-        cfg.CONF.set_override('enable_stack_abandon', True)
+        cfg.CONF.set_override('enable_stack_abandon', True, enforce_type=True)
         self.m.StubOutWithMock(parser.Stack, 'load')
         parser.Stack.load(self.ctx,
                           stack=mox.IgnoreArg()).AndReturn(self.stack)
@@ -1068,6 +1027,35 @@ class StackServiceTest(common.HeatTestCase):
         outputs = self.eng.list_outputs(self.ctx, mock.ANY)
         self.assertEqual([], outputs)
 
+    def test_get_environment(self):
+        # Setup
+        t = template_format.parse(tools.wp_template)
+        env = {'parameters': {'KeyName': 'EnvKey'}}
+        tmpl = templatem.Template(t)
+        stack = parser.Stack(self.ctx, 'get_env_stack', tmpl)
+
+        mock_get_stack = self.patchobject(self.eng, '_get_stack')
+        mock_get_stack.return_value = mock.MagicMock()
+        mock_get_stack.return_value.raw_template.environment = env
+        self.patchobject(parser.Stack, 'load', return_value=stack)
+
+        # Test
+        found = self.eng.get_environment(self.ctx, stack.identifier())
+
+        # Verify
+        self.assertEqual(env, found)
+
+    def test_get_environment_no_env(self):
+        # Setup
+        exc = exception.EntityNotFound(entity='stack', name='missing')
+        self.patchobject(self.eng, '_get_stack', side_effect=exc)
+
+        # Test
+        self.assertRaises(dispatcher.ExpectedException,
+                          self.eng.get_environment,
+                          self.ctx,
+                          'irrelevant')
+
     def test_stack_show_output(self):
         t = template_format.parse(tools.wp_template)
         t['outputs'] = {'test': {'value': 'first', 'description': 'sec'},
@@ -1122,6 +1110,34 @@ class StackServiceTest(common.HeatTestCase):
         sl = self.eng.show_stack(self.ctx, None, resolve_outputs=True)
 
         self.assertEqual(0, len(sl))
+
+    def test_get_template(self):
+        # Setup
+        t = template_format.parse(tools.wp_template)
+        tmpl = templatem.Template(t)
+        stack = parser.Stack(self.ctx, 'get_env_stack', tmpl)
+
+        mock_get_stack = self.patchobject(self.eng, '_get_stack')
+        mock_get_stack.return_value = mock.MagicMock()
+        mock_get_stack.return_value.raw_template.template = t
+        self.patchobject(parser.Stack, 'load', return_value=stack)
+
+        # Test
+        found = self.eng.get_template(self.ctx, stack.identifier())
+
+        # Verify
+        self.assertEqual(t, found)
+
+    def test_get_template_no_template(self):
+        # Setup
+        exc = exception.EntityNotFound(entity='stack', name='missing')
+        self.patchobject(self.eng, '_get_stack', side_effect=exc)
+
+        # Test
+        self.assertRaises(dispatcher.ExpectedException,
+                          self.eng.get_template,
+                          self.ctx,
+                          'missing')
 
     def _preview_stack(self, environment_files=None):
         res._register_class('GenericResource1', generic_rsrc.GenericResource)
@@ -1203,7 +1219,7 @@ class StackServiceTest(common.HeatTestCase):
 
     @mock.patch.object(stack_object.Stack, 'count_all')
     def test_validate_new_stack_checks_stack_limit(self, mock_db_count):
-        cfg.CONF.set_override('max_stacks_per_tenant', 99)
+        cfg.CONF.set_override('max_stacks_per_tenant', 99, enforce_type=True)
         mock_db_count.return_value = 99
         template = templatem.Template(
             {'HeatTemplateFormatVersion': '2012-12-12'})
@@ -1238,7 +1254,7 @@ class StackServiceTest(common.HeatTestCase):
         self.assertEqual(msg, six.text_type(ex))
 
     def test_validate_new_stack_checks_resource_limit(self):
-        cfg.CONF.set_override('max_resources_per_stack', 5)
+        cfg.CONF.set_override('max_resources_per_stack', 5, enforce_type=True)
         template = {'HeatTemplateFormatVersion': '2012-12-12',
                     'Resources': {
                         'Res1': {'Type': 'GenericResource1'},
@@ -1385,7 +1401,7 @@ class StackServiceTest(common.HeatTestCase):
         self.assertEqual('FAILED', test_stack.resources.get('r3').status)
 
     def test_parse_adopt_stack_data_without_parameters(self):
-        cfg.CONF.set_override('enable_stack_adopt', True)
+        cfg.CONF.set_override('enable_stack_adopt', True, enforce_type=True)
         template = {"heat_template_version": "2015-04-30",
                     "resources": {
                         "myres": {
@@ -1410,7 +1426,7 @@ class StackServiceTest(common.HeatTestCase):
             self.ctx, 'stack_name', template, {}, {}, None, args)
 
     def test_parse_adopt_stack_data_with_parameters(self):
-        cfg.CONF.set_override('enable_stack_adopt', True)
+        cfg.CONF.set_override('enable_stack_adopt', True, enforce_type=True)
         template = {"heat_template_version": "2015-04-30",
                     "parameters": {
                         "volsize": {"type": "number"}

@@ -32,7 +32,7 @@ class NeutronClientPluginTestCase(common.HeatTestCase):
         con = utils.dummy_context()
         c = con.clients
         self.neutron_plugin = c.client_plugin('neutron')
-        self.neutron_plugin._client = self.neutron_client
+        self.neutron_plugin.client = lambda: self.neutron_client
 
 
 class NeutronClientPluginTest(NeutronClientPluginTestCase):
@@ -41,42 +41,6 @@ class NeutronClientPluginTest(NeutronClientPluginTestCase):
         self.mock_find = self.patchobject(neutron.neutronV20,
                                           'find_resourceid_by_name_or_id')
         self.mock_find.return_value = 42
-
-    def test_resolve_network(self):
-        props = {'net': 'test_network'}
-
-        res = self.neutron_plugin.resolve_network(props, 'net', 'net_id')
-        self.assertEqual(42, res)
-        self.mock_find.assert_called_once_with(self.neutron_client, 'network',
-                                               'test_network',
-                                               cmd_resource=None)
-
-        # check resolve if was send id instead of name
-        props = {'net_id': 77}
-        res = self.neutron_plugin.resolve_network(props, 'net', 'net_id')
-        self.assertEqual(77, res)
-        # in this case find_resourceid_by_name_or_id is not called
-        self.mock_find.assert_called_once_with(self.neutron_client, 'network',
-                                               'test_network',
-                                               cmd_resource=None)
-
-    def test_resolve_subnet(self):
-        props = {'snet': 'test_subnet'}
-
-        res = self.neutron_plugin.resolve_subnet(props, 'snet', 'snet_id')
-        self.assertEqual(42, res)
-        self.mock_find.assert_called_once_with(self.neutron_client, 'subnet',
-                                               'test_subnet',
-                                               cmd_resource=None)
-
-        # check resolve if was send id instead of name
-        props = {'snet_id': 77}
-        res = self.neutron_plugin.resolve_subnet(props, 'snet', 'snet_id')
-        self.assertEqual(77, res)
-        # in this case find_resourceid_by_name_or_id is not called
-        self.mock_find.assert_called_once_with(self.neutron_client, 'subnet',
-                                               'test_subnet',
-                                               cmd_resource=None)
 
     def test_get_secgroup_uuids(self):
         # test get from uuids

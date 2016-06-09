@@ -17,6 +17,7 @@ import datetime
 import functools
 import itertools
 import re
+import warnings
 
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -79,16 +80,22 @@ def reset_state_on_error(func):
         errmsg = None
         try:
             return func(stack, *args, **kwargs)
-        except BaseException as exc:
+        except Exception as exc:
             with excutils.save_and_reraise_exception():
                 errmsg = six.text_type(exc)
                 LOG.error(_LE('Unexpected exception in %(func)s: %(msg)s'),
                           {'func': func.__name__, 'msg': errmsg})
+        except BaseException as exc:
+            with excutils.save_and_reraise_exception():
+                exc_type = type(exc).__name__
+                errmsg = '%s(%s)' % (exc_type, six.text_type(exc))
+                LOG.info(_LI('Stopped due to %(msg)s in %(func)s'),
+                         {'func': func.__name__, 'msg': errmsg})
         finally:
             if stack.status == stack.IN_PROGRESS:
-                msg = _("Unexpected returning while IN_PROGRESS.")
+                rtnmsg = _("Unexpected exit while IN_PROGRESS.")
                 stack.state_set(stack.action, stack.FAILED,
-                                errmsg if errmsg is not None else msg)
+                                errmsg if errmsg is not None else rtnmsg)
                 assert errmsg is not None, "Returned while IN_PROGRESS."
 
     return handle_exceptions
@@ -166,6 +173,7 @@ class Stack(collections.Mapping):
         self._dependencies = None
         self._access_allowed_handlers = {}
         self._db_resources = None
+        self._tags = tags
         self.adopt_stack_data = adopt_stack_data
         self.stack_user_project_id = stack_user_project_id
         self.created_time = created_time
@@ -203,12 +211,6 @@ class Stack(collections.Mapping):
 
         if use_stored_context:
             self.context = self.stored_context()
-            self.context.roles = self.context.clients.client(
-                'keystone').auth_ref.role_names
-            self.context.user_domain = self.context.clients.client(
-                'keystone').auth_ref.user_domain_id
-            self.context.project_domain = self.context.clients.client(
-                'keystone').auth_ref.project_domain_id
 
         self.clients = self.context.clients
 
@@ -229,6 +231,19 @@ class Stack(collections.Mapping):
             self.outputs = self.resolve_static_data(self.t[self.t.OUTPUTS])
         else:
             self.outputs = {}
+
+    @property
+    def tags(self):
+        if self._tags is None:
+            tags = stack_tag_object.StackTagList.get(
+                self.context, self.id)
+            if tags:
+                self._tags = [t.tag for t in tags]
+        return self._tags
+
+    @tags.setter
+    def tags(self, value):
+        self._tags = value
 
     @property
     def worker_client(self):
@@ -275,7 +290,9 @@ class Stack(collections.Mapping):
             # We don't store roles in the user_creds table, so disable the
             # policy check for admin by setting is_admin=False.
             creds['is_admin'] = False
-            return common_context.RequestContext.from_dict(creds)
+            creds['overwrite'] = False
+
+            return common_context.StoredContext.from_dict(creds)
         else:
             msg = _("Attempt to use stored_context with no user_creds")
             raise exception.Error(msg)
@@ -284,44 +301,40 @@ class Stack(collections.Mapping):
     def resources(self):
         return self._find_resources()
 
-    def _find_resources(self, filters=None):
+    def _find_resources(self):
         if self._resources is None:
             res_defns = self.t.resource_definitions(self)
 
-            if not filters:
-                self._resources = dict((name,
-                                        resource.Resource(name, data, self))
-                                       for (name, data) in res_defns.items())
-            else:
-                self._resources = dict()
-                self._db_resources = dict()
-                for rsc in six.itervalues(
-                        resource_objects.Resource.get_all_by_stack(
-                            self.context, self.id, True, filters)):
-                    self._db_resources[rsc.name] = rsc
-                    res = resource.Resource(rsc.name,
-                                            res_defns[rsc.name],
-                                            self)
-                    self._resources[rsc.name] = res
-
-            # There is no need to continue storing the db resources
-            # after resource creation
-            self._db_resources = None
+            self._resources = dict((name,
+                                    resource.Resource(name, data, self))
+                                   for (name, data) in res_defns.items())
 
         return self._resources
+
+    def _find_filtered_resources(self, filters):
+        for rsc in six.itervalues(
+                resource_objects.Resource.get_all_by_stack(
+                    self.context, self.id, True, filters)):
+            yield self.resources[rsc.name]
 
     def iter_resources(self, nested_depth=0, filters=None):
         """Iterates over all the resources in a stack.
 
         Iterating includes nested stacks up to `nested_depth` levels below.
         """
-        for res in six.itervalues(self._find_resources(filters)):
+        if not filters:
+            resources = six.itervalues(self.resources)
+        else:
+            resources = self._find_filtered_resources(filters)
+        for res in resources:
             yield res
 
             if not res.has_nested() or nested_depth == 0:
                 continue
 
             nested_stack = res.nested()
+            if not nested_stack:
+                continue
             for nested_res in nested_stack.iter_resources(nested_depth - 1):
                 yield nested_res
 
@@ -466,19 +479,19 @@ class Stack(collections.Mapping):
                  tags_any=None, not_tags=None, not_tags_any=None):
         stacks = stack_object.Stack.get_all(
             context,
-            limit,
-            sort_keys,
-            marker,
-            sort_dir,
-            filters,
-            tenant_safe,
-            show_deleted,
-            show_nested,
-            show_hidden,
-            tags,
-            tags_any,
-            not_tags,
-            not_tags_any) or []
+            limit=limit,
+            sort_keys=sort_keys,
+            marker=marker,
+            sort_dir=sort_dir,
+            filters=filters,
+            tenant_safe=tenant_safe,
+            show_deleted=show_deleted,
+            show_nested=show_nested,
+            show_hidden=show_hidden,
+            tags=tags,
+            tags_any=tags_any,
+            not_tags=not_tags,
+            not_tags_any=not_tags_any)
         for stack in stacks:
             try:
                 yield cls._from_db(context, stack, resolve_data=resolve_data)
@@ -492,9 +505,6 @@ class Stack(collections.Mapping):
                  use_stored_context=False, cache_data=None):
         template = tmpl.Template.load(
             context, stack.raw_template_id, stack.raw_template)
-        tags = None
-        if stack.tags:
-            tags = [t.tag for t in stack.tags]
         return cls(context, stack.name, template,
                    stack_id=stack.id,
                    action=stack.action, status=stack.status,
@@ -510,7 +520,7 @@ class Stack(collections.Mapping):
                    user_creds_id=stack.user_creds_id, tenant_id=stack.tenant,
                    use_stored_context=use_stored_context,
                    username=stack.username, convergence=stack.convergence,
-                   current_traversal=stack.current_traversal, tags=tags,
+                   current_traversal=stack.current_traversal,
                    prev_raw_template_id=stack.prev_raw_template_id,
                    current_deps=stack.current_deps, cache_data=cache_data)
 
@@ -758,7 +768,7 @@ class Stack(collections.Mapping):
                 if ignorable_errors and ex.error_code in ignorable_errors:
                     result = None
                 else:
-                    raise ex
+                    raise
             except AssertionError:
                 raise
             except Exception as ex:
@@ -840,10 +850,11 @@ class Stack(collections.Mapping):
         self.status = status
         self.status_reason = reason
 
-        if self.convergence and action in (self.UPDATE, self.DELETE,
-                                           self.CREATE, self.ADOPT):
-            # if convergence and stack operation is create/update/delete,
-            # stack lock is not used, hence persist state
+        if self.convergence and action in (
+                self.UPDATE, self.DELETE, self.CREATE,
+                self.ADOPT, self.ROLLBACK):
+            # if convergence and stack operation is create/update/rollback/
+            # delete, stack lock is not used, hence persist state
             updated = self._persist_state()
             if not updated:
                 # Possibly failed concurrent update
@@ -1044,7 +1055,7 @@ class Stack(collections.Mapping):
 
     def supports_check_action(self):
         def is_supported(stack, res):
-            if res.has_nested():
+            if res.has_nested() and res.nested():
                 return res.nested().supports_check_action()
             else:
                 return hasattr(res, 'handle_%s' % self.CHECK.lower())
@@ -1350,7 +1361,8 @@ class Stack(collections.Mapping):
         # Save a copy of the new template.  To avoid two DB writes
         # we store the ID at the same time as the action/status
         prev_tmpl_id = self.prev_raw_template_id
-        bu_tmpl = copy.deepcopy(newstack.t)
+        # newstack.t may have been pre-stored, so save with that one
+        bu_tmpl, newstack.t = newstack.t, copy.deepcopy(newstack.t)
         self.prev_raw_template_id = bu_tmpl.store()
         self.action = action
         self.status = self.IN_PROGRESS
@@ -1364,6 +1376,7 @@ class Stack(collections.Mapping):
             # Oldstack is useless when the action is not UPDATE , so we don't
             # need to build it, this can avoid some unexpected errors.
             kwargs = self.get_kwargs_for_cloning()
+            self._ensure_encrypted_param_names_valid()
             oldstack = Stack(self.context, self.name, copy.deepcopy(self.t),
                              **kwargs)
 
@@ -1372,11 +1385,11 @@ class Stack(collections.Mapping):
                                                   self.t.env.params})
         previous_template_id = None
         should_rollback = False
+        update_task = update.StackUpdate(
+            self, newstack, backup_stack,
+            rollback=action == self.ROLLBACK,
+            error_wait_time=cfg.CONF.error_wait_time)
         try:
-            update_task = update.StackUpdate(
-                self, newstack, backup_stack,
-                rollback=action == self.ROLLBACK,
-                error_wait_time=cfg.CONF.error_wait_time)
             updater = scheduler.TaskRunner(update_task)
 
             self.parameters = newstack.parameters
@@ -1480,6 +1493,14 @@ class Stack(collections.Mapping):
             return not self.disable_rollback
         else:
             return False
+
+    def _ensure_encrypted_param_names_valid(self):
+        # If encryption was enabled when the stack was created but
+        # then disabled when the stack was updated, env.params and
+        # env.encrypted_param_names will be in an inconsistent
+        # state
+        if not cfg.CONF.encrypt_parameters_and_properties:
+            self.t.env.encrypted_param_names = []
 
     def _message_parser(self, message):
         if message == rpc_api.THREAD_CANCEL:
@@ -1814,6 +1835,12 @@ class Stack(collections.Mapping):
         stop resource_name and all that depend on it
         start resource_name and all that depend on it
         """
+        warnings.warn("Stack.restart_resource() is horribly broken and will "
+                      "never be fixed. If you're using it in a resource type "
+                      "other than HARestarter, don't. And don't use "
+                      "HARestarter either.",
+                      DeprecationWarning)
+
         deps = self.dependencies[self[resource_name]]
         failed = False
 
@@ -1931,23 +1958,33 @@ class Stack(collections.Mapping):
     def purge_db(self):
         """Cleanup database after stack has completed/failed.
 
-        1. Delete previous raw template if stack completes successfully.
-        2. Deletes all sync points. They are no longer needed after stack
+        1. If the stack failed, update the current_traversal to empty string
+        so that the resource workers bail out.
+        2. Delete previous raw template if stack completes successfully.
+        3. Deletes all sync points. They are no longer needed after stack
            has completed/failed.
-        3. Delete the stack if the action is DELETE.
+        4. Delete the stack if the action is DELETE.
        """
+        exp_trvsl = self.current_traversal
+        if self.status == self.FAILED:
+            self.current_traversal = ''
+
+        prev_tmpl_id = None
         if (self.prev_raw_template_id is not None and
                 self.status != self.FAILED):
             prev_tmpl_id = self.prev_raw_template_id
             self.prev_raw_template_id = None
-            stack_id = self.store()
-            if stack_id is None:
-                # Failed concurrent update
-                LOG.warning(_LW("Failed to store stack %(name)s with traversal"
-                                " ID %(trvsl_id)s, aborting stack purge"),
-                            {'name': self.name,
-                             'trvsl_id': self.current_traversal})
-                return
+
+        stack_id = self.store(exp_trvsl=exp_trvsl)
+        if stack_id is None:
+            # Failed concurrent update
+            LOG.warning(_LW("Failed to store stack %(name)s with traversal ID "
+                            "%(trvsl_id)s, aborting stack purge"),
+                        {'name': self.name,
+                         'trvsl_id': self.current_traversal})
+            return
+
+        if prev_tmpl_id is not None:
             raw_template_object.RawTemplate.delete(self.context, prev_tmpl_id)
 
         sync_point.delete_all(self.context, self.id, self.current_traversal)

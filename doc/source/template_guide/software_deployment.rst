@@ -60,7 +60,6 @@ specify a shell script in the ``user_data`` property and have it be executed by
 the server during boot:
 
 .. code-block:: yaml
-   :linenos:
 
     resources:
 
@@ -81,7 +80,6 @@ Often there is a need to set variable values based on parameters or resources
 in the stack. This can be done with the :code:`str_replace` intrinsic function:
 
 .. code-block:: yaml
-   :linenos:
 
      parameters:
        foo:
@@ -112,7 +110,6 @@ template, so the ``get_file`` intrinsic function can be used to maintain the
 script in a separate file:
 
 .. code-block:: yaml
-   :linenos:
 
      parameters:
        foo:
@@ -148,7 +145,6 @@ For ``RAW`` the user_data is passed to Nova unmodified. For a Cloud-init_
 enabled image, the following are both valid ``RAW`` user-data:
 
 .. code-block:: yaml
-  :linenos:
 
     resources:
 
@@ -229,7 +225,6 @@ The following template example uses the convenience attribute ``curl_cli``
 which builds a curl command with a valid token:
 
 .. code-block:: yaml
-  :linenos:
 
     resources:
       wait_condition:
@@ -304,7 +299,6 @@ The above template example only needs to have the ``type`` changed to the
 swift signal resources:
 
 .. code-block:: yaml
-  :linenos:
 
     resources:
       signal:
@@ -345,7 +339,6 @@ The resource :ref:`OS::Heat::SoftwareConfig` is used for storing configs
 represented by text scripts, for example:
 
 .. code-block:: yaml
-  :linenos:
 
     resources:
       boot_script:
@@ -361,7 +354,7 @@ represented by text scripts, for example:
         type: OS::Nova::Server
         properties:
           # flavor, image etc
-          user_data_format: RAW
+          user_data_format: SOFTWARE_CONFIG
           user_data: {get_resource: boot_script}
 
 The resource :ref:`OS::Heat::CloudConfig` allows Cloud-init_ cloud-config to
@@ -371,7 +364,6 @@ ensures that the cloud-config is valid YAML, although no further checks for
 valid cloud-config are done.
 
 .. code-block:: yaml
-  :linenos:
 
     parameters:
       file_content:
@@ -391,7 +383,7 @@ valid cloud-config are done.
         type: OS::Nova::Server
         properties:
           # flavor, image etc
-          user_data_format: RAW
+          user_data_format: SOFTWARE_CONFIG
           user_data: {get_resource: boot_config}
 
 The resource :ref:`OS::Heat::MultipartMime` allows multiple
@@ -399,7 +391,6 @@ The resource :ref:`OS::Heat::MultipartMime` allows multiple
 resources to be combined into a single Cloud-init_ multi-part message:
 
 .. code-block:: yaml
-  :linenos:
 
     parameters:
       file_content:
@@ -440,7 +431,7 @@ resources to be combined into a single Cloud-init_ multi-part message:
         type: OS::Nova::Server
         properties:
           # flavor, image etc
-          user_data_format: RAW
+          user_data_format: SOFTWARE_CONFIG
           user_data: {get_resource: server_init}
 
 
@@ -480,7 +471,6 @@ custom image. The following script uses diskimage-builder to create an image
 required in later examples:
 
 .. code-block:: sh
-  :linenos:
 
     # Clone the required repositories. Some of these are also available
     # via pypi or as distro packages.
@@ -535,7 +525,6 @@ file. See the following example for a script
 which expects inputs ``foo``, ``bar`` and generates an output ``result``.
 
 .. code-block:: yaml
-  :linenos:
 
     resources:
       config:
@@ -634,7 +623,6 @@ to the ``config`` property of the config resource, as in the following
 example:
 
 .. code-block:: yaml
-  :linenos:
 
     resources:
 
@@ -722,7 +710,6 @@ to be modified with the following:
     export DEPLOYMENT_TOOL="heat-config-puppet"
 
 .. code-block:: yaml
-  :linenos:
 
     resources:
 
@@ -769,7 +756,6 @@ This demonstrates the use of the ``get_file`` function, which will attach the
 contents of the file ``example-puppet-manifest.pp``, containing:
 
 .. code-block:: puppet
-  :linenos:
 
     file { 'barfile':
         ensure  => file,
@@ -790,7 +776,7 @@ contents of the file ``example-puppet-manifest.pp``, containing:
 .. _`AWS::CloudFormation::Init`: http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-init.html
 .. _diskimage-builder: https://git.openstack.org/cgit/openstack/diskimage-builder
 .. _imagefactory: http://imgfac.org/
-.. _`Metadata service`: http://docs.openstack.org/admin-guide-cloud/compute-networking-nova.html#metadata-service
+.. _`Metadata service`: http://docs.openstack.org/admin-guide/compute-networking-nova.html#metadata-service
 .. _Cloud-init: http://cloudinit.readthedocs.org/en/latest/
 .. _curl: http://curl.haxx.se/
 .. _`Orchestration API`: http://developer.openstack.org/api-ref-orchestration-v1.html

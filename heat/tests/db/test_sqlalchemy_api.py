@@ -11,8 +11,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import datetime
+import fixtures
 import json
+import logging
 import time
 import uuid
 
@@ -39,6 +42,7 @@ from heat.engine.resources.aws.ec2 import instance as instances
 from heat.engine import scheduler
 from heat.engine import stack as parser
 from heat.engine import template as tmpl
+from heat.engine import template_files
 from heat.tests import common
 from heat.tests.openstack.nova import fakes as fakes_nova
 from heat.tests import utils
@@ -599,7 +603,8 @@ class SqlAlchemyTest(common.HeatTestCase):
         self.assertEqual(['id'], sort_keys)
 
     def test_stack_get_all_hidden_tags(self):
-        cfg.CONF.set_override('hidden_stack_tags', ['hidden'])
+        cfg.CONF.set_override('hidden_stack_tags', ['hidden'],
+                              enforce_type=True)
 
         stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
         stacks[0].tags = ['hidden']
@@ -709,7 +714,8 @@ class SqlAlchemyTest(common.HeatTestCase):
         self.assertEqual(stacks[0].id, st_db[0].id)
 
     def test_stack_get_all_by_tag_with_show_hidden(self):
-        cfg.CONF.set_override('hidden_stack_tags', ['hidden'])
+        cfg.CONF.set_override('hidden_stack_tags', ['hidden'],
+                              enforce_type=True)
 
         stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
         stacks[0].tags = ['tag1']
@@ -746,7 +752,8 @@ class SqlAlchemyTest(common.HeatTestCase):
         self.assertEqual(3, st_db)
 
     def test_count_all_hidden_tags(self):
-        cfg.CONF.set_override('hidden_stack_tags', ['hidden'])
+        cfg.CONF.set_override('hidden_stack_tags', ['hidden'],
+                              enforce_type=True)
 
         stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
         stacks[0].tags = ['hidden']
@@ -776,7 +783,8 @@ class SqlAlchemyTest(common.HeatTestCase):
         self.assertEqual(2, st_db)
 
     def test_count_all_by_tag_with_show_hidden(self):
-        cfg.CONF.set_override('hidden_stack_tags', ['hidden'])
+        cfg.CONF.set_override('hidden_stack_tags', ['hidden'],
+                              enforce_type=True)
 
         stacks = [self._setup_test_stack('stack', x)[1] for x in UUIDs]
         stacks[0].tags = ['tag1']
@@ -1108,6 +1116,26 @@ class SqlAlchemyTest(common.HeatTestCase):
             self.ctx, config_id)
         self.assertIn(config_id, six.text_type(err))
 
+    def test_software_config_delete_not_allowed(self):
+        tenant_id = self.ctx.tenant_id
+        config = db_api.software_config_create(
+            self.ctx, {'name': 'config_mysql',
+                       'tenant': tenant_id})
+        config_id = config.id
+        values = {
+            'tenant': tenant_id,
+            'stack_user_project_id': str(uuid.uuid4()),
+            'config_id': config_id,
+            'server_id': str(uuid.uuid4()),
+        }
+        db_api.software_deployment_create(self.ctx, values)
+        err = self.assertRaises(
+            exception.InvalidRestrictedAction, db_api.software_config_delete,
+            self.ctx, config_id)
+        msg = ("Software config with id %s can not be deleted as it is "
+               "referenced" % config_id)
+        self.assertIn(msg, six.text_type(err))
+
     def _deployment_values(self):
         tenant_id = self.ctx.tenant_id
         stack_user_project_id = str(uuid.uuid4())
@@ -1352,8 +1380,12 @@ def create_raw_template(context, **kwargs):
     t = template_format.parse(wp_template)
     template = {
         'template': t,
-        'files': {'foo': 'bar'}
     }
+    if 'files' not in kwargs and 'files_id' not in kwargs:
+        # modern raw_templates have associated raw_template_files db obj
+        tf = template_files.TemplateFiles({'foo': 'bar'})
+        tf.store()
+        kwargs['files_id'] = tf.files_id
     template.update(kwargs)
     return db_api.raw_template_create(context, template)
 
@@ -1389,7 +1421,7 @@ def create_stack(ctx, template, user_creds, **kwargs):
 def create_resource(ctx, stack, **kwargs):
     values = {
         'name': 'test_resource_name',
-        'nova_instance': UUID1,
+        'physical_resource_id': UUID1,
         'action': 'create',
         'status': 'complete',
         'status_reason': 'create_complete',
@@ -1481,7 +1513,6 @@ class DBAPIRawTemplateTest(common.HeatTestCase):
         tp = create_raw_template(self.ctx, template=t)
         self.assertIsNotNone(tp.id)
         self.assertEqual(t, tp.template)
-        self.assertEqual({'foo': 'bar'}, tp.files)
 
     def test_raw_template_get(self):
         t = template_format.parse(wp_template)
@@ -1726,6 +1757,15 @@ class DBAPIStackTest(common.HeatTestCase):
                                       exp_trvsl=diff_uuid)
         self.assertFalse(updated)
 
+    @mock.patch.object(time, 'sleep')
+    def test_stack_update_retries_on_deadlock(self, sleep):
+        stack = create_stack(self.ctx, self.template, self.user_creds)
+        with mock.patch('sqlalchemy.orm.query.Query.update',
+                        side_effect=db_exception.DBDeadlock) as mock_update:
+            self.assertRaises(db_exception.DBDeadlock,
+                              db_api.stack_update, self.ctx, stack.id, {})
+            self.assertEqual(4, mock_update.call_count)
+
     def test_stack_set_status_release_lock(self):
         stack = create_stack(self.ctx, self.template, self.user_creds)
         values = {
@@ -1929,26 +1969,31 @@ class DBAPIStackTest(common.HeatTestCase):
         now = timeutils.utcnow()
         delta = datetime.timedelta(seconds=3600 * 7)
         deleted = [now - delta * i for i in range(1, 6)]
-        templates = [create_raw_template(self.ctx) for i in range(5)]
+        tmpl_files = [template_files.TemplateFiles(
+            {'foo': 'file contents %d' % i}) for i in range(5)]
+        [tmpl_file.store(self.ctx) for tmpl_file in tmpl_files]
+        templates = [create_raw_template(self.ctx,
+                                         files_id=tmpl_files[i].files_id
+                                         ) for i in range(5)]
         creds = [create_user_creds(self.ctx) for i in range(5)]
         stacks = [create_stack(self.ctx, templates[i], creds[i],
                                deleted_at=deleted[i]) for i in range(5)]
 
         db_api.purge_deleted(age=1, granularity='days')
         self._deleted_stack_existance(utils.dummy_context(), stacks,
-                                      (0, 1, 2), (3, 4))
+                                      tmpl_files, (0, 1, 2), (3, 4))
 
         db_api.purge_deleted(age=22, granularity='hours')
         self._deleted_stack_existance(utils.dummy_context(), stacks,
-                                      (0, 1, 2), (3, 4))
+                                      tmpl_files, (0, 1, 2), (3, 4))
 
         db_api.purge_deleted(age=1100, granularity='minutes')
         self._deleted_stack_existance(utils.dummy_context(), stacks,
-                                      (0, 1), (2, 3, 4))
+                                      tmpl_files, (0, 1), (2, 3, 4))
 
         db_api.purge_deleted(age=3600, granularity='seconds')
         self._deleted_stack_existance(utils.dummy_context(), stacks,
-                                      (), (0, 1, 2, 3, 4))
+                                      tmpl_files, (), (0, 1, 2, 3, 4))
 
     def test_purge_deleted_prev_raw_template(self):
         now = timeutils.utcnow()
@@ -1964,10 +2009,44 @@ class DBAPIStackTest(common.HeatTestCase):
                                               show_deleted=True))
         self.assertIsNotNone(db_api.raw_template_get(ctx, templates[1].id))
 
-    def _deleted_stack_existance(self, ctx, stacks, existing, deleted):
+    def test_dont_purge_shared_raw_template_files(self):
+        now = timeutils.utcnow()
+        delta = datetime.timedelta(seconds=3600 * 7)
+        deleted = [now - delta * i for i in range(1, 6)]
+        # the last two template_files are identical to first two
+        # (so should not be purged)
+        tmpl_files = [template_files.TemplateFiles(
+            {'foo': 'more file contents'}) for i in range(3)]
+        [tmpl_file.store(self.ctx) for tmpl_file in tmpl_files]
+        templates = [create_raw_template(self.ctx,
+                                         files_id=tmpl_files[i % 3].files_id
+                                         ) for i in range(5)]
+        creds = [create_user_creds(self.ctx) for i in range(5)]
+        [create_stack(self.ctx, templates[i], creds[i],
+                      deleted_at=deleted[i]) for i in range(5)]
+        db_api.purge_deleted(age=15, granularity='hours')
+
+        # The third raw_template_files object should be purged (along
+        # with the last three stacks/templates). However, the other
+        # two are shared with existing templates, so should not be
+        # purged.
+        self.assertIsNotNone(db_api.raw_template_files_get(
+            self.ctx, tmpl_files[0].files_id))
+        self.assertIsNotNone(db_api.raw_template_files_get(
+            self.ctx, tmpl_files[1].files_id))
+        self.assertRaises(exception.NotFound,
+                          db_api.raw_template_files_get,
+                          self.ctx, tmpl_files[2].files_id)
+
+    def _deleted_stack_existance(self, ctx, stacks,
+                                 tmpl_files, existing, deleted):
+        tmpl_idx = 0
         for s in existing:
             self.assertIsNotNone(db_api.stack_get(ctx, stacks[s].id,
                                                   show_deleted=True))
+            self.assertIsNotNone(db_api.raw_template_files_get(
+                ctx, tmpl_files[tmpl_idx].files_id))
+            tmpl_idx = tmpl_idx + 1
         for s in deleted:
             self.assertIsNone(db_api.stack_get(ctx, stacks[s].id,
                                                show_deleted=True))
@@ -1977,6 +2056,9 @@ class DBAPIStackTest(common.HeatTestCase):
             self.assertRaises(exception.NotFound,
                               db_api.resource_get_all_by_stack,
                               ctx, stacks[s].id)
+            self.assertRaises(exception.NotFound,
+                              db_api.raw_template_files_get,
+                              ctx, tmpl_files[tmpl_idx].files_id)
             for r in stacks[s].resources:
                 self.assertRaises(exception.NotFound,
                                   db_api.resource_data_get_all(r.context,
@@ -1985,6 +2067,7 @@ class DBAPIStackTest(common.HeatTestCase):
                              db_api.event_get_all_by_stack(ctx,
                                                            stacks[s].id))
             self.assertIsNone(db_api.user_creds_get(stacks[s].user_creds_id))
+            tmpl_idx = tmpl_idx + 1
 
     def test_stack_get_root_id(self):
         root = create_stack(self.ctx, self.template, self.user_creds,
@@ -2080,7 +2163,7 @@ class DBAPIResourceTest(common.HeatTestCase):
         ret_res = db_api.resource_get(self.ctx, res.id)
         self.assertIsNotNone(ret_res)
         self.assertEqual('test_resource_name', ret_res.name)
-        self.assertEqual(UUID1, ret_res.nova_instance)
+        self.assertEqual(UUID1, ret_res.physical_resource_id)
         self.assertEqual('create', ret_res.action)
         self.assertEqual('complete', ret_res.status)
         self.assertEqual('create_complete', ret_res.status_reason)
@@ -2115,7 +2198,7 @@ class DBAPIResourceTest(common.HeatTestCase):
 
         ret_res = db_api.resource_get_by_physical_resource_id(self.ctx, UUID1)
         self.assertIsNotNone(ret_res)
-        self.assertEqual(UUID1, ret_res.nova_instance)
+        self.assertEqual(UUID1, ret_res.physical_resource_id)
 
         self.assertIsNone(db_api.resource_get_by_physical_resource_id(self.ctx,
                                                                       UUID2))
@@ -2908,7 +2991,7 @@ class DBAPICryptParamsPropsTest(common.HeatTestCase):
 
     def _create_template(self):
         """Initialize sample template."""
-        t = template_format.parse('''
+        self.t = template_format.parse('''
         heat_template_version: 2013-05-23
         parameters:
             param1:
@@ -2953,7 +3036,7 @@ class DBAPICryptParamsPropsTest(common.HeatTestCase):
                 type: GenericResourceType
         ''')
         template = {
-            'template': t,
+            'template': self.t,
             'files': {'foo': 'bar'},
             'environment': {
                 'parameters': {
@@ -2975,106 +3058,111 @@ class DBAPICryptParamsPropsTest(common.HeatTestCase):
             'param_map': '{\"test\":\"json\"}',
             'param_comma_list': '[\"Hola\", \"Senor\"]'}
 
-        for r_tmpl in session.query(models.RawTemplate).all():
+        raw_templates = session.query(models.RawTemplate).all()
+        self.assertNotEqual([], raw_templates)
+        for r_tmpl in raw_templates:
             for param_name, param_value in hidden_params_dict.items():
                 self.assertEqual(param_value,
                                  r_tmpl.environment['parameters'][param_name])
                 self.assertEqual('foo',
                                  r_tmpl.environment['parameters']['param1'])
-        for resource in session.query(models.Resource).all():
+        resources = session.query(models.Resource).all()
+        self.assertNotEqual([], resources)
+        for resource in resources:
             self.assertEqual('bar1', resource.properties_data['foo1'])
 
-        # Test encryption
-        db_api.db_encrypt_parameters_and_properties(
-            self.ctx, cfg.CONF.auth_encryption_key, batch_size=batch_size)
-        session = db_api.get_session()
-        for enc_tmpl in session.query(models.RawTemplate).all():
-            for param_name in hidden_params_dict.keys():
-                self.assertEqual(
-                    'cryptography_decrypt_v1',
-                    enc_tmpl.environment['parameters'][param_name][0])
-                self.assertEqual('foo',
-                                 enc_tmpl.environment['parameters']['param1'])
-            self.assertIsNone(enc_tmpl.environment['parameters'].get('param3'))
+        def encrypt(enc_key=None):
+            if enc_key is None:
+                enc_key = cfg.CONF.auth_encryption_key
+            self.assertEqual([], db_api.db_encrypt_parameters_and_properties(
+                self.ctx, enc_key, batch_size=batch_size))
+            session = db_api.get_session()
+            enc_raw_templates = session.query(models.RawTemplate).all()
+            self.assertNotEqual([], enc_raw_templates)
+            for enc_tmpl in enc_raw_templates:
+                for param_name in hidden_params_dict.keys():
+                    self.assertEqual(
+                        'cryptography_decrypt_v1',
+                        enc_tmpl.environment['parameters'][param_name][0])
+                    self.assertEqual(
+                        'foo', enc_tmpl.environment['parameters']['param1'])
+                    # test that default parameters are not encrypted
+                    self.assertIsNone(
+                        enc_tmpl.environment['parameters'].get('param3'))
 
-        encrypt_value = enc_tmpl.environment['parameters']['param2'][1]
-        for enc_prop in session.query(models.Resource).all():
-            self.assertEqual('cryptography_decrypt_v1',
-                             enc_prop.properties_data['foo1'][0])
+            encrypt_value = enc_tmpl.environment['parameters']['param2'][1]
+            enc_resources = session.query(models.Resource).all()
+            self.assertNotEqual([], enc_resources)
+            for enc_prop in enc_resources:
+                self.assertEqual('cryptography_decrypt_v1',
+                                 enc_prop.properties_data['foo1'][0])
+            return encrypt_value
+
+        # Test encryption
+        encrypt_value = encrypt()
 
         # Test that encryption is idempotent
-        db_api.db_encrypt_parameters_and_properties(
-            self.ctx, cfg.CONF.auth_encryption_key, batch_size=batch_size)
-        session = db_api.get_session()
-        for enc_tmpl in session.query(models.RawTemplate).all():
-            for param_name in hidden_params_dict.keys():
-                self.assertEqual(
-                    'cryptography_decrypt_v1',
-                    enc_tmpl.environment['parameters'][param_name][0])
-                self.assertEqual('foo',
-                                 enc_tmpl.environment['parameters']['param1'])
-                self.assertIsNone(
-                    enc_tmpl.environment['parameters'].get('param3'))
-        for enc_prop in session.query(models.Resource).all():
-            self.assertEqual('cryptography_decrypt_v1',
-                             enc_prop.properties_data['foo1'][0])
+        encrypt_value2 = encrypt()
+        self.assertEqual(encrypt_value, encrypt_value2)
+
+        def decrypt(enc_key=None):
+            if enc_key is None:
+                enc_key = cfg.CONF.auth_encryption_key
+            self.assertEqual([], db_api.db_decrypt_parameters_and_properties(
+                self.ctx, enc_key, batch_size=batch_size))
+            session = db_api.get_session()
+            dec_templates = session.query(models.RawTemplate).all()
+            self.assertNotEqual([], dec_templates)
+            for dec_tmpl in dec_templates:
+                self.assertNotEqual(
+                    encrypt_value,
+                    r_tmpl.environment['parameters']['param2'][1])
+                # test that default parameters are not encrypted
+                self.assertIsNone(r_tmpl.environment['parameters'].get(
+                    'param3'))
+                for param_name, param_value in hidden_params_dict.items():
+                    self.assertEqual(
+                        param_value,
+                        dec_tmpl.environment['parameters'][param_name])
+                    self.assertEqual(
+                        'foo', dec_tmpl.environment['parameters']['param1'])
+                    self.assertIsNone(
+                        dec_tmpl.environment['parameters'].get('param3'))
+
+                    # test that decryption does store default
+                    # parameter values in raw_template.environment
+                    self.assertIsNone(dec_tmpl.environment['parameters'].get(
+                        'param3'))
+
+            decrypt_value = dec_tmpl.environment['parameters']['param2'][1]
+            dec_resources = session.query(models.Resource).all()
+            self.assertNotEqual([], dec_resources)
+            for dec_prop in dec_resources:
+                self.assertEqual('bar1', dec_prop.properties_data['foo1'])
+            return decrypt_value
 
         # Test decryption
-        db_api.db_decrypt_parameters_and_properties(
-            self.ctx, cfg.CONF.auth_encryption_key, batch_size=batch_size)
-        session = db_api.get_session()
-        for dec_tmpl in session.query(models.RawTemplate).all():
-            for param_name, param_value in hidden_params_dict.items():
-                self.assertEqual(
-                    param_value,
-                    dec_tmpl.environment['parameters'][param_name])
-                self.assertEqual('foo',
-                                 dec_tmpl.environment['parameters']['param1'])
-                self.assertIsNone(
-                    dec_tmpl.environment['parameters'].get('param3'))
-        for dec_prop in session.query(models.Resource).all():
-            self.assertEqual('bar1', dec_prop.properties_data['foo1'])
+        decrypt_value = decrypt()
 
         # Test that decryption is idempotent
-        db_api.db_decrypt_parameters_and_properties(
-            self.ctx, cfg.CONF.auth_encryption_key, batch_size=batch_size)
-        session = db_api.get_session()
-        for dec_tmpl in session.query(models.RawTemplate).all():
-            for param_name, param_value in hidden_params_dict.items():
-                self.assertEqual(
-                    param_value,
-                    dec_tmpl.environment['parameters'][param_name])
-                self.assertEqual('foo',
-                                 dec_tmpl.environment['parameters']['param1'])
-                self.assertIsNone(
-                    dec_tmpl.environment['parameters'].get('param3'))
-        for dec_prop in session.query(models.Resource).all():
-            self.assertEqual('bar1', dec_prop.properties_data['foo1'])
+        decrypt_value2 = decrypt()
 
-        # Test using a different encryption key to decrypt
-        db_api.db_encrypt_parameters_and_properties(
-            self.ctx, '774c15be099ea74123a9b9592ff12680',
-            batch_size=batch_size)
-        session = db_api.get_session()
-        for r_tmpl in session.query(models.RawTemplate).all():
-            self.assertNotEqual(encrypt_value,
-                                r_tmpl.environment['parameters']['param2'][1])
-            # test that default parameters are not encrypted
-            self.assertIsNone(r_tmpl.environment['parameters'].get('param3'))
-        db_api.db_decrypt_parameters_and_properties(
-            self.ctx, '774c15be099ea74123a9b9592ff12680',
-            batch_size=batch_size)
-        session = db_api.get_session()
-        for r_tmpl in session.query(models.RawTemplate).all():
-            self.assertEqual('bar',
-                             r_tmpl.environment['parameters']['param2'])
-            # test that decryption does store default parameter values in
-            # raw_template.environment
-            self.assertIsNone(r_tmpl.environment['parameters'].get('param3'))
+        # Test using a different encryption key to encrypt & decrypt
+        encrypt_value3 = encrypt(enc_key='774c15be099ea74123a9b9592ff12680')
+        decrypt_value3 = decrypt(enc_key='774c15be099ea74123a9b9592ff12680')
+        self.assertEqual(decrypt_value, decrypt_value2, decrypt_value3)
+        self.assertNotEqual(encrypt_value, decrypt_value)
+        self.assertNotEqual(encrypt_value3, decrypt_value3)
+        self.assertNotEqual(encrypt_value, encrypt_value3)
+
+    def _delete_templates(self, template_refs):
+        for tmpl_ref in template_refs:
+            db_api.raw_template_delete(self.ctx, tmpl_ref.id)
 
     def test_db_encrypt_decrypt(self):
         """Test encryption and decryption for single template"""
-        self._create_template()
+        tmpl = self._create_template()
+        self.addCleanup(self._delete_templates, [tmpl])
         self._test_db_encrypt_decrypt()
 
     def test_db_encrypt_decrypt_in_batches(self):
@@ -3083,6 +3171,267 @@ class DBAPICryptParamsPropsTest(common.HeatTestCase):
         Test encryption and decryption when heat requests templates in batch:
         predefined amount records.
         """
-        self._create_template()
-        self._create_template()
+        tmpl1 = self._create_template()
+        tmpl2 = self._create_template()
+        self.addCleanup(self._delete_templates, [tmpl1, tmpl2])
         self._test_db_encrypt_decrypt(batch_size=1)
+
+    def test_db_encrypt_decrypt_exception_continue(self):
+        """Test that encryption and decryption proceed after an exception"""
+        def create_malformed_template():
+            """Initialize a malformed template which should fail encryption."""
+            t = template_format.parse('''
+            heat_template_version: 2013-05-23
+            parameters:
+                param1:
+                    type: string
+                    description: value1.
+                param2:
+                    type: string
+                    description: value2.
+                    hidden: true
+                param3:
+                    type: string
+                    description: value3
+                    hidden: true
+                    default: "don't encrypt me! I'm not sensitive enough"
+            resources:
+                a_resource:
+                    type: GenericResourceType
+            ''')
+            template = {
+                'template': t,
+                'files': {'foo': 'bar'},
+                'environment': ''}  # <- environment should be a dict
+
+            return db_api.raw_template_create(self.ctx, template)
+
+        tmpl1 = create_malformed_template()
+        tmpl2 = self._create_template()
+        self.addCleanup(self._delete_templates, [tmpl1, tmpl2])
+
+        session = db_api.get_session()
+        r_tmpls = session.query(models.RawTemplate).all()
+        self.assertEqual('', r_tmpls[1].environment)
+
+        # Test encryption
+        enc_result = db_api.db_encrypt_parameters_and_properties(
+            self.ctx, cfg.CONF.auth_encryption_key, batch_size=50)
+        self.assertEqual(1, len(enc_result))
+        self.assertIs(AttributeError, type(enc_result[0]))
+        session = db_api.get_session()
+        enc_tmpls = session.query(models.RawTemplate).all()
+        self.assertEqual('', enc_tmpls[1].environment)
+        self.assertEqual('cryptography_decrypt_v1',
+                         enc_tmpls[2].environment['parameters']['param2'][0])
+
+        # Test decryption
+        dec_result = db_api.db_decrypt_parameters_and_properties(
+            self.ctx, cfg.CONF.auth_encryption_key, batch_size=50)
+        self.assertEqual(len(dec_result), 1)
+        self.assertIs(TypeError, type(dec_result[0]))
+        session = db_api.get_session()
+        dec_tmpls = session.query(models.RawTemplate).all()
+        self.assertEqual('', dec_tmpls[1].environment)
+        self.assertEqual('bar',
+                         dec_tmpls[2].environment['parameters']['param2'])
+
+    def test_db_encrypt_no_env(self):
+        template = {
+            'template': self.t,
+            'files': {'foo': 'bar'},
+            'environment': None}
+        db_api.raw_template_create(self.ctx, template)
+        self.assertEqual([], db_api.db_encrypt_parameters_and_properties(
+            self.ctx, cfg.CONF.auth_encryption_key))
+
+    def test_db_encrypt_no_env_parameters(self):
+        template = {
+            'template': self.t,
+            'files': {'foo': 'bar'},
+            'environment': {'encrypted_param_names': ['a']}}
+        db_api.raw_template_create(self.ctx, template)
+        self.assertEqual([], db_api.db_encrypt_parameters_and_properties(
+            self.ctx, cfg.CONF.auth_encryption_key))
+
+    def test_db_encrypt_no_properties_data(self):
+        ctx = utils.dummy_context()
+        template = self._create_template()
+        user_creds = create_user_creds(ctx)
+        stack = create_stack(ctx, template, user_creds)
+        resources = [create_resource(ctx, stack, name='res1')]
+        resources[0].properties_data = None
+        self.assertEqual([], db_api.db_encrypt_parameters_and_properties(
+            ctx, cfg.CONF.auth_encryption_key))
+
+    def test_db_encrypt_decrypt_verbose_on(self):
+        info_logger = self.useFixture(
+            fixtures.FakeLogger(level=logging.INFO,
+                                format="%(levelname)8s [%(name)s] %("
+                                "message)s"))
+        ctx = utils.dummy_context()
+        template = self._create_template()
+        user_creds = create_user_creds(ctx)
+        stack = create_stack(ctx, template, user_creds)
+        create_resource(ctx, stack, name='res1')
+
+        db_api.db_encrypt_parameters_and_properties(
+            ctx, cfg.CONF.auth_encryption_key, verbose=True)
+        self.assertIn("Processing raw_template 1", info_logger.output)
+        self.assertIn("Processing resource 1", info_logger.output)
+        self.assertIn("Finished processing raw_template 1",
+                      info_logger.output)
+        self.assertIn("Finished processing resource 1", info_logger.output)
+
+        info_logger2 = self.useFixture(
+            fixtures.FakeLogger(level=logging.INFO,
+                                format="%(levelname)8s [%(name)s] %("
+                                "message)s"))
+
+        db_api.db_decrypt_parameters_and_properties(
+            ctx, cfg.CONF.auth_encryption_key, verbose=True)
+        self.assertIn("Processing raw_template 1", info_logger2.output)
+        self.assertIn("Processing resource 1", info_logger2.output)
+        self.assertIn("Finished processing raw_template 1",
+                      info_logger2.output)
+        self.assertIn("Finished processing resource 1", info_logger2.output)
+
+    def test_db_encrypt_decrypt_verbose_off(self):
+        info_logger = self.useFixture(
+            fixtures.FakeLogger(level=logging.INFO,
+                                format="%(levelname)8s [%(name)s] %("
+                                "message)s"))
+        ctx = utils.dummy_context()
+        template = self._create_template()
+        user_creds = create_user_creds(ctx)
+        stack = create_stack(ctx, template, user_creds)
+        create_resource(ctx, stack, name='res1')
+
+        db_api.db_encrypt_parameters_and_properties(
+            ctx, cfg.CONF.auth_encryption_key, verbose=False)
+        self.assertNotIn("Processing raw_template 1", info_logger.output)
+        self.assertNotIn("Processing resource 1", info_logger.output)
+        self.assertNotIn("Successfully processed raw_template 1",
+                         info_logger.output)
+        self.assertNotIn("Successfully processed resource 1",
+                         info_logger.output)
+
+        info_logger2 = self.useFixture(
+            fixtures.FakeLogger(level=logging.INFO,
+                                format="%(levelname)8s [%(name)s] %("
+                                "message)s"))
+
+        db_api.db_decrypt_parameters_and_properties(
+            ctx, cfg.CONF.auth_encryption_key, verbose=False)
+        self.assertNotIn("Processing raw_template 1", info_logger2.output)
+        self.assertNotIn("Processing resource 1", info_logger2.output)
+        self.assertNotIn("Successfully processed raw_template 1",
+                         info_logger2.output)
+        self.assertNotIn("Successfully processed resource 1",
+                         info_logger2.output)
+
+    def test_db_encrypt_no_param_schema(self):
+        t = copy.deepcopy(self.t)
+        del(t['parameters']['param2'])
+        template = {
+            'template': t,
+            'files': {'foo': 'bar'},
+            'environment': {'encrypted_param_names': [],
+                            'parameters': {'param2': 'foo'}}}
+        db_api.raw_template_create(self.ctx, template)
+        self.assertEqual([], db_api.db_encrypt_parameters_and_properties(
+            self.ctx, cfg.CONF.auth_encryption_key))
+
+    def test_db_encrypt_non_string_param_type(self):
+        t = template_format.parse('''
+        heat_template_version: 2013-05-23
+        parameters:
+            param1:
+                type: string
+                description: value1.
+            param2:
+                type: string
+                description: value2.
+                hidden: true
+            param3:
+                type: string
+                description: value3
+                hidden: true
+                default: 1234
+        resources:
+            a_resource:
+                type: GenericResourceType
+        ''')
+        template = {
+            'template': t,
+            'files': {},
+            'environment': {'parameters': {
+                'param1': 'foo',
+                'param2': 'bar',
+                'param3': 12345}}}
+        db_api.raw_template_create(self.ctx, template)
+        self.assertEqual([], db_api.db_encrypt_parameters_and_properties(
+            self.ctx, cfg.CONF.auth_encryption_key))
+        session = db_api.get_session()
+        enc_raw_templates = session.query(models.RawTemplate).all()
+        self.assertNotEqual([], enc_raw_templates)
+        enc_params = enc_raw_templates[1].environment['parameters']
+
+        self.assertEqual([], db_api.db_decrypt_parameters_and_properties(
+            self.ctx, cfg.CONF.auth_encryption_key, batch_size=50))
+        session = db_api.get_session()
+        dec_tmpls = session.query(models.RawTemplate).all()
+        dec_params = dec_tmpls[1].environment['parameters']
+
+        self.assertNotEqual(enc_params['param3'], dec_params['param3'])
+        self.assertEqual('bar', dec_params['param2'])
+        self.assertEqual('12345', dec_params['param3'])
+
+
+class ResetStackStatusTests(common.HeatTestCase):
+
+    def setUp(self):
+        super(ResetStackStatusTests, self).setUp()
+        self.ctx = utils.dummy_context()
+        self.template = create_raw_template(self.ctx)
+        self.user_creds = create_user_creds(self.ctx)
+        self.stack = create_stack(self.ctx, self.template, self.user_creds)
+
+    def test_status_reset(self):
+        db_api.stack_update(self.ctx, self.stack.id, {'status': 'IN_PROGRESS'})
+        db_api.stack_lock_create(self.stack.id, UUID1)
+        db_api.reset_stack_status(self.ctx, self.stack.id)
+        self.assertEqual('FAILED', self.stack.status)
+        self.assertEqual('Stack status manually reset',
+                         self.stack.status_reason)
+        self.assertEqual(True, db_api.stack_lock_release(self.stack.id, UUID1))
+
+    def test_resource_reset(self):
+        resource_progress = create_resource(self.ctx, self.stack,
+                                            status='IN_PROGRESS')
+        resource_complete = create_resource(self.ctx, self.stack)
+        db_api.reset_stack_status(self.ctx, self.stack.id)
+        self.assertEqual('complete', resource_complete.status)
+        self.assertEqual('FAILED', resource_progress.status)
+
+    def test_hook_reset(self):
+        resource = create_resource(self.ctx, self.stack)
+        resource.context = self.ctx
+        create_resource_data(self.ctx, resource, key="pre-create")
+        create_resource_data(self.ctx, resource)
+        db_api.reset_stack_status(self.ctx, self.stack.id)
+
+        vals = db_api.resource_data_get_all(self.ctx, resource.id)
+        self.assertEqual({'test_resource_key': 'test_value'}, vals)
+
+    def test_nested_stack(self):
+        db_api.stack_update(self.ctx, self.stack.id, {'status': 'IN_PROGRESS'})
+        child = create_stack(self.ctx, self.template, self.user_creds,
+                             owner_id=self.stack.id)
+        grandchild = create_stack(self.ctx, self.template, self.user_creds,
+                                  owner_id=child.id, status='IN_PROGRESS')
+        resource = create_resource(self.ctx, grandchild, status='IN_PROGRESS')
+        db_api.reset_stack_status(self.ctx, self.stack.id)
+        self.assertEqual('FAILED', grandchild.status)
+        self.assertEqual('FAILED', resource.status)
+        self.assertEqual('FAILED', self.stack.status)

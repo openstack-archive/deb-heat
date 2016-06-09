@@ -5,14 +5,12 @@
 # Translators:
 # Marcelo Dieder <marcelodieder@gmail.com>, 2013
 # Rodrigo Felix de Almeida <rodrigofelixdealmeida@gmail.com>, 2014
-# Lucas Palm <lapalm@us.ibm.com>, 2015. #zanata
-# OpenStack Infra <zanata@openstack.org>, 2015. #zanata
-# Carlos Marques <marquesc@br.ibm.com>, 2016. #zanata
+# Andreas Jaeger <jaegerandi@gmail.com>, 2016. #zanata
 msgid ""
 msgstr ""
-"Project-Id-Version: heat 6.0.0.0rc2.dev14\n"
-"Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2016-03-24 10:21+0000\n"
+"Project-Id-Version: heat 6.0.1.dev352\n"
+"Report-Msgid-Bugs-To: https://bugs.launchpad.net/openstack-i18n/\n"
+"POT-Creation-Date: 2016-06-02 03:51+0000\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
@@ -512,10 +510,6 @@ msgstr "Um parâmetro de entrada obrigatório está faltando"
 msgid "A map containing all headers for the container."
 msgstr "Um mapa contendo todos os cabeçalhos para o contêiner."
 
-msgid "A map of Nova names and IDs to apply configuration to."
-msgstr ""
-"Um mapa de nomes e IDs do Nova aos quais a configuração deve ser aplicada."
-
 msgid ""
 "A map of Nova names and captured stderrs from the configuration execution to "
 "each server."
@@ -978,11 +972,6 @@ msgid "Arguments to %s not fully resolved"
 msgstr "Argumentos para %s não totalmente resolvidos"
 
 #, python-format
-msgid "At least one of the following properties must be specified: %(props)s"
-msgstr ""
-"Pelo menos uma das propriedades a seguir deve ser especificada: %(props)s"
-
-#, python-format
 msgid "Attempt to delete a stack with id: %(id)s %(msg)s"
 msgstr "Tentativa de excluir uma pilha com ID: %(id)s%(msg)s"
 
@@ -1196,13 +1185,6 @@ msgstr "Não é possível suspender %s, resource_id não configurado"
 #, python-format
 msgid "Cannot suspend %s, stack not created"
 msgstr "Não é possível suspender %s; pilha não criada"
-
-#, python-format
-msgid "Cannot use %(key)s and %(name)s at the same time."
-msgstr "Não é possível usar %(key)s e %(name)s ao mesmo tempo."
-
-msgid "Cannot use network and uuid at the same time."
-msgstr "Não é possível usar a rede e o UUID ao mesmo tempo."
 
 msgid "Captured stderr from the configuration execution."
 msgstr "stderr capturado da execução de configuração."
@@ -1966,11 +1948,6 @@ msgstr "Erro ao validar o valor '%(value)s'"
 #, python-format
 msgid "Error validating value '%(value)s': %(message)s"
 msgstr "Erro ao validar o valor '%(value)s': %(message)s"
-
-msgid "Error wait time in seconds for stack action (ie. create or update)."
-msgstr ""
-"Erro no tempo de espera em segundos para a ação da pilha (por exemplo, a "
-"criação ou atualização)."
 
 msgid "Ethertype of the traffic."
 msgstr "Ethertype do tráfego."
@@ -4078,9 +4055,6 @@ msgid "Number of backlog requests to configure the socket with."
 msgstr ""
 "Número de solicitações de lista não processada para configurar o soquete."
 
-msgid "Number of heat-engine processes to fork and run."
-msgstr "O número de processos de mecanismo do heat para bifurcar e executar."
-
 msgid "Number of instances in the Node group."
 msgstr "Número de instâncias no grupo de nós."
 
@@ -5273,10 +5247,6 @@ msgstr "A suspensão do servidor %s falhou"
 msgid "Swap space in MB."
 msgstr "O espaço de troca, em MB."
 
-#, python-format
-msgid "Sync Point %s not found"
-msgstr "Ponto de Sincronização %s não localizado"
-
 msgid "System SIGHUP signal received."
 msgstr "Sinal SIGHUP do sistema recebido."
 
@@ -5488,20 +5458,6 @@ msgstr "O nome DNS do depósito especificado."
 
 msgid "The DNS nameserver address."
 msgstr "O endereço do servidor de nomes do DNS."
-
-msgid ""
-"The HARestarter resource type is deprecated and will be removed in a future "
-"release of Heat, once it has support for auto-healing any type of resource. "
-"Note that HARestarter does *not* actually restart servers - it deletes and "
-"then recreates them. It also does the same to all dependent resources, and "
-"may therefore exhibit unexpected and undesirable behaviour. Avoid."
-msgstr ""
-"O tipo de recurso HARestarter foi descontinuado e será remido em uma "
-"liberação futura do Heat, já que ele possui suporte para recuperação "
-"automática de qualquer tipo de recurso. Observe que o HARestarter na "
-"realidade *não* reinicia servidores - ele os exclui e, em seguida, os "
-"recria. Ele também faz o mesmo para todos os recursos dependentes e pode, "
-"portanto, exibir um comportamento inesperado e indesejado. Evite."
 
 msgid "The HTTP method used for requests by the monitor of type HTTP."
 msgstr "O método HTTP utilizado para pedidos pelo monitor de tipo de HTTP."
@@ -5898,10 +5854,6 @@ msgid ""
 msgstr ""
 "O conteúdo do arquivo de personalidade \"%(path)s\" é maior que o máximo "
 "permitido do tamanho do arquivo de personalidade (bytes %(max_size)s)."
-
-#, python-format
-msgid "The current %s will result in stack update timeout."
-msgstr "O %s atual resultará em tempo limite de atualização de pilha."
 
 msgid "The current size of AutoscalingResourceGroup."
 msgstr "O tamanho atual do AutoscalingResourceGroup."
@@ -7192,9 +7144,6 @@ msgstr ""
 "Propriedades inesperadas: %(unexpected)s. Somente essas propriedades são "
 "permitidas para o tipo de pedido %(type)s: %(allowed)s."
 
-msgid "Unexpected returning while IN_PROGRESS."
-msgstr "Retorno inesperado enquanto IN_PROGRESS."
-
 msgid "Unique identifier for the device."
 msgstr "Identificador exclusivo para o dispositivo."
 
@@ -7238,9 +7187,6 @@ msgstr "Unidade para a métrica."
 
 msgid "Unknown"
 msgstr "Desconhecido"
-
-msgid "Unknown Keystone version"
-msgstr "Versão Keystone desconhecida"
 
 #, python-format
 msgid "Unknown Property %s"
@@ -7873,13 +7819,6 @@ msgstr "segmentation_id não é permitido para o tipo de rede simples."
 
 msgid "server_id must be specified"
 msgstr "server_id deve ser especificado"
-
-msgid "source_path must be non-empty list with path."
-msgstr "source_path deve ser uma lista não vazia com caminho."
-
-#, python-format
-msgid "source_path should be a list with path instead of %s."
-msgstr "source_path deve ser uma lista com caminho em vez de %s."
 
 msgid "stack not found"
 msgstr "pilha não localizada"

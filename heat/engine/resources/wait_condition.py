@@ -11,13 +11,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
+
 from oslo_log import log as logging
 import six
 
 from heat.common import exception
 from heat.common.i18n import _
-from heat.common.i18n import _LE
-from heat.common.i18n import _LW
+from heat.common.i18n import _LI
 from heat.engine.resources import signal_responder
 
 LOG = logging.getLogger(__name__)
@@ -49,8 +50,11 @@ class BaseWaitConditionHandle(signal_responder.SignalResponder):
         return status in self.WAIT_STATUSES
 
     def _metadata_format_ok(self, metadata):
-        if sorted(tuple(six.iterkeys(metadata))) == sorted(self.METADATA_KEYS):
-            return self._status_ok(metadata[self.STATUS])
+        if not isinstance(metadata, collections.Mapping):
+            return False
+        if set(metadata) != set(self.METADATA_KEYS):
+            return False
+        return self._status_ok(metadata[self.STATUS])
 
     def normalise_signal_data(self, signal_data, latest_metadata):
         return signal_data
@@ -63,7 +67,7 @@ class BaseWaitConditionHandle(signal_responder.SignalResponder):
                                                      latest_rsrc_metadata)
 
             if not self._metadata_format_ok(signal_data):
-                LOG.error(_LE("Metadata failed validation for %s"), self.name)
+                LOG.info(_LI("Metadata failed validation for %s"), self.name)
                 raise ValueError(_("Metadata format invalid"))
 
             new_entry = signal_data.copy()
@@ -71,8 +75,8 @@ class BaseWaitConditionHandle(signal_responder.SignalResponder):
 
             new_rsrc_metadata = latest_rsrc_metadata.copy()
             if unique_id in new_rsrc_metadata:
-                LOG.warning(_LW("Overwriting Metadata item for id %s!"),
-                            unique_id)
+                LOG.info(_LI("Overwriting Metadata item for id %s!"),
+                         unique_id)
             new_rsrc_metadata.update({unique_id: new_entry})
 
             write_attempts.append(signal_data)

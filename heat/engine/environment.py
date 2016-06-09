@@ -12,14 +12,15 @@
 #    under the License.
 
 import collections
-import fnmatch
 import glob
 import itertools
 import os.path
 import re
+import weakref
 
 from oslo_config import cfg
 from oslo_log import log
+from oslo_utils import fnmatch
 import six
 
 from heat.common import environment_format as env_fmt
@@ -114,11 +115,15 @@ class ResourceInfo(object):
             return MapResourceInfo(registry, path, value)
 
     def __init__(self, registry, path, value):
-        self.registry = registry
+        self._registry = weakref.ref(registry)
         self.path = path
         self.name = path[-1]
         self.value = value
         self.user_resource = True
+
+    @property
+    def registry(self):
+        return self._registry()
 
     def __eq__(self, other):
         if other is None:
@@ -192,9 +197,10 @@ class TemplateResourceInfo(ResourceInfo):
             data = template_resource.TemplateResource.get_template_file(
                 self.template_name,
                 allowed_schemes)
-        env = self.registry.environment
+        param_defaults = self.registry.param_defaults
         return template_resource.generate_class_from_template(str(self.name),
-                                                              data, env)
+                                                              data,
+                                                              param_defaults)
 
     def get_class_to_instantiate(self):
         from heat.engine.resources import template_resource
@@ -248,10 +254,10 @@ class GlobResourceInfo(MapResourceInfo):
 class ResourceRegistry(object):
     """By looking at the environment, find the resource implementation."""
 
-    def __init__(self, global_registry, env):
+    def __init__(self, global_registry, param_defaults):
         self._registry = {'resources': {}}
         self.global_registry = global_registry
-        self.environment = env
+        self.param_defaults = param_defaults
 
     def load(self, json_snippet):
         self._load_registry([], json_snippet)
@@ -393,7 +399,7 @@ class ResourceRegistry(object):
     def matches_hook(self, resource_name, hook):
         """Return whether a resource have a hook set in the environment.
 
-        For a given resource and a hook type, we check to see if the the passed
+        For a given resource and a hook type, we check to see if the passed
         group of resources has the right hook associated with the name.
 
         Hooks are set in this format via `resources`:
@@ -568,7 +574,8 @@ class ResourceRegistry(object):
                   cnxt=None,
                   support_status=None,
                   type_name=None,
-                  version=None):
+                  version=None,
+                  with_description=False):
         """Return a list of valid resource types."""
 
         # validate the support status
@@ -621,7 +628,21 @@ class ResourceRegistry(object):
             return (version is None or
                     cls.get_class().support_status.version == version)
 
-        return [name for name, cls in six.iteritems(self._registry)
+        def resource_description(name, cls, with_description):
+            if not with_description:
+                return name
+            if cls.description == 'Plugin':
+                rsrc = cls.value
+            elif cls.description == 'Template':
+                rsrc = cls.get_class()
+            else:
+                rsrc = None
+            return {
+                'resource_type': name,
+                'description': rsrc.__doc__}
+
+        return [resource_description(name, cls, with_description)
+                for name, cls in six.iteritems(self._registry)
                 if (is_resource(name) and
                     name_matches(name) and
                     status_matches(cls) and
@@ -654,10 +675,10 @@ class Environment(object):
             global_registry = None
             event_sink_classes = {}
 
-        self.registry = ResourceRegistry(global_registry, self)
-        self.registry.load(env.get(env_fmt.RESOURCE_REGISTRY, {}))
-
         self.param_defaults = env.get(env_fmt.PARAMETER_DEFAULTS, {})
+
+        self.registry = ResourceRegistry(global_registry, self.param_defaults)
+        self.registry.load(env.get(env_fmt.RESOURCE_REGISTRY, {}))
 
         self.encrypted_param_names = env.get(env_fmt.ENCRYPTED_PARAM_NAMES, [])
 
@@ -717,11 +738,13 @@ class Environment(object):
                   cnxt=None,
                   support_status=None,
                   type_name=None,
-                  version=None):
+                  version=None,
+                  with_description=False):
         return self.registry.get_types(cnxt,
                                        support_status=support_status,
                                        type_name=type_name,
-                                       version=version)
+                                       version=version,
+                                       with_description=with_description)
 
     def get_resource_info(self, resource_type, resource_name=None,
                           registry_type=None, ignore=None):

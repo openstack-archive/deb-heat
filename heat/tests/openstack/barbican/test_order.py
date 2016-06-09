@@ -11,8 +11,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import copy
-
 import mock
 import six
 
@@ -87,8 +85,10 @@ class TestOrder(common.HeatTestCase):
         self.assertEqual(256, args['bit_length'])
 
     def test_create_order_without_type_fail(self):
-        snippet = copy.deepcopy(self.res_template)
-        del snippet['Properties']['type']
+        props = self.props.copy()
+        del props['type']
+        snippet = self.res_template.freeze(properties=props)
+
         self.assertRaisesRegexp(exception.ResourceFailure,
                                 'Property type not assigned',
                                 self._create_resource,
@@ -96,9 +96,10 @@ class TestOrder(common.HeatTestCase):
                                 snippet, self.stack)
 
     def test_validate_non_certificate_order(self):
-        snippet = copy.deepcopy(self.res_template)
-        del snippet['Properties']['bit_length']
-        del snippet['Properties']['algorithm']
+        props = self.props.copy()
+        del props['bit_length']
+        del props['algorithm']
+        snippet = self.res_template.freeze(properties=props)
         res = self._create_resource('test', snippet, self.stack)
         msg = ("Properties algorithm and bit_length are required for "
                "key type of order.")
@@ -106,9 +107,21 @@ class TestOrder(common.HeatTestCase):
                                 msg,
                                 res.validate)
 
+    def test_validate_certificate_with_profile_without_ca_id(self):
+        props = self.props.copy()
+        props['profile'] = 'cert'
+        props['type'] = 'certificate'
+        snippet = self.res_template.freeze(properties=props)
+        res = self._create_resource('test', snippet, self.stack)
+        msg = ("profile cannot be specified without ca_id.")
+        self.assertRaisesRegexp(exception.ResourcePropertyDependency,
+                                msg,
+                                res.validate)
+
     def test_key_order_validation_fail(self):
-        snippet = copy.deepcopy(self.res_template)
-        snippet['Properties']['pass_phrase'] = "something"
+        props = self.props.copy()
+        props['pass_phrase'] = "something"
+        snippet = self.res_template.freeze(properties=props)
         res = self._create_resource('test', snippet, self.stack)
         msg = ("Unexpected properties: pass_phrase. Only these properties "
                "are allowed for key type of order: algorithm, "
@@ -118,8 +131,9 @@ class TestOrder(common.HeatTestCase):
                                 res.validate)
 
     def test_certificate_validation_fail(self):
-        snippet = copy.deepcopy(self.res_template)
-        snippet['Properties']['type'] = 'certificate'
+        props = self.props.copy()
+        props['type'] = 'certificate'
+        snippet = self.res_template.freeze(properties=props)
         res = self._create_resource('test', snippet, self.stack)
         msg = ("Unexpected properties: algorithm, bit_length, mode. Only "
                "these properties are allowed for certificate type of order: "
@@ -130,9 +144,10 @@ class TestOrder(common.HeatTestCase):
                                 res.validate)
 
     def test_asymmetric_order_validation_fail(self):
-        snippet = copy.deepcopy(self.res_template)
-        snippet['Properties']['type'] = 'asymmetric'
-        snippet['Properties']['subject_dn'] = 'asymmetric'
+        props = self.props.copy()
+        props['type'] = 'asymmetric'
+        props['subject_dn'] = 'asymmetric'
+        snippet = self.res_template.freeze(properties=props)
         res = self._create_resource('test', snippet, self.stack)
         msg = ("Unexpected properties: subject_dn. Only these properties are "
                "allowed for asymmetric type of order: algorithm, bit_length, "
@@ -146,14 +161,12 @@ class TestOrder(common.HeatTestCase):
         mock_order.status = 'test-status'
         mock_order.order_ref = 'test-order-ref'
         mock_order.secret_ref = 'test-secret-ref'
-        mock_order._get_formatted_entity.return_value = (('attr', ), ('v',))
 
         res = self._create_resource('foo', self.res_template, self.stack)
         self.barbican.orders.get.return_value = mock_order
 
         self.assertEqual('test-order-ref', res.FnGetAtt('order_ref'))
         self.assertEqual('test-secret-ref', res.FnGetAtt('secret_ref'))
-        self.assertEqual({'attr': 'v'}, res.FnGetAtt('show'))
 
     def test_attributes_handle_exceptions(self):
         mock_order = mock.Mock()

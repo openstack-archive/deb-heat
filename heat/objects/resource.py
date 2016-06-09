@@ -29,7 +29,6 @@ from heat.db import api as db_api
 from heat.objects import base as heat_base
 from heat.objects import fields as heat_fields
 from heat.objects import resource_data
-from heat.objects import stack
 
 cfg.CONF.import_opt('encrypt_parameters_and_properties', 'heat.common.config')
 
@@ -54,7 +53,7 @@ class Resource(
         'stack_id': fields.StringField(),
         'created_at': fields.DateTimeField(read_only=True),
         'updated_at': fields.DateTimeField(nullable=True),
-        'nova_instance': fields.StringField(nullable=True),
+        'physical_resource_id': fields.StringField(nullable=True),
         'name': fields.StringField(nullable=True),
         'status': fields.StringField(nullable=True),
         'status_reason': fields.StringField(nullable=True),
@@ -66,7 +65,6 @@ class Resource(
             resource_data.ResourceData,
             nullable=True
         ),
-        'stack': fields.ObjectField(stack.Stack),
         'engine_id': fields.StringField(nullable=True),
         'atomic_key': fields.IntegerField(nullable=True),
         'current_template_id': fields.IntegerField(),

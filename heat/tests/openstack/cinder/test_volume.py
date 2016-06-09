@@ -997,7 +997,8 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
 
     def test_cinder_create_with_stack_scheduler_hints(self):
         fv = vt_base.FakeVolume('creating')
-        sh.cfg.CONF.set_override('stack_scheduler_hints', True)
+        sh.cfg.CONF.set_override('stack_scheduler_hints', True,
+                                 enforce_type=True)
 
         stack_name = 'test_cvolume_stack_scheduler_hints_stack'
         t = template_format.parse(single_cinder_volume_template)
@@ -1060,14 +1061,28 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
     def test_cinder_create_with_image_and_imageRef(self):
         stack_name = 'test_create_with_image_and_imageRef'
         combinations = {'imageRef': 'image-456', 'image': 'image-123'}
-        err_msg = "Cannot use image and imageRef at the same time."
+        err_msg = ("Cannot define the following properties at the same time: "
+                   "['image', 'imageRef'].")
         self.stub_ImageConstraint_validate()
         stack = utils.parse_stack(self.t, stack_name=stack_name)
         vp = stack.t['Resources']['volume2']['Properties']
         vp.pop('size')
         vp.update(combinations)
-        ex = self.assertRaises(ValueError, stack.get, 'volume2')
+        ex = self.assertRaises(exception.ResourcePropertyConflict,
+                               stack.get, 'volume2')
         self.assertEqual(err_msg, six.text_type(ex))
+
+    def test_cinder_create_with_image_and_size(self):
+        stack_name = 'test_create_with_image_and_size'
+        combinations = {'image': 'image-123'}
+        err_msg = ('If neither "backup_id" nor "size" is provided, one and '
+                   'only one of "source_volid", "snapshot_id" must be '
+                   'specified, but currently '
+                   'specified options: [\'image\'].')
+        self.stub_ImageConstraint_validate()
+        self._test_cinder_create_invalid_property_combinations(
+            stack_name, combinations,
+            err_msg, exception.StackValidationFailed)
 
     def test_cinder_create_with_size_snapshot_and_image(self):
         stack_name = 'test_create_with_size_snapshot_and_image'
@@ -1124,8 +1139,8 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
             'source_volid': 'source_volume-123',
             'snapshot_id': 'snapshot-123'}
         err_msg = ('If neither "backup_id" nor "size" is provided, one and '
-                   'only one of "image", "imageRef", "source_volid", '
-                   '"snapshot_id" must be specified, but currently '
+                   'only one of "source_volid", "snapshot_id" must be '
+                   'specified, but currently '
                    'specified options: [\'snapshot_id\', \'source_volid\'].')
         self.stub_VolumeConstraint_validate()
         self.stub_SnapshotConstraint_validate()
@@ -1139,8 +1154,8 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
             'source_volid': 'source_volume-123',
             'image': 'image-123'}
         err_msg = ('If neither "backup_id" nor "size" is provided, one and '
-                   'only one of "image", "imageRef", "source_volid", '
-                   '"snapshot_id" must be specified, but currently '
+                   'only one of "source_volid", "snapshot_id" must be '
+                   'specified, but currently '
                    'specified options: [\'source_volid\', \'image\'].')
         self.stub_VolumeConstraint_validate()
         self.stub_ImageConstraint_validate()
@@ -1152,9 +1167,8 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
         stack_name = 'test_create_no_size_no_options'
         combinations = {}
         err_msg = ('If neither "backup_id" nor "size" is provided, one and '
-                   'only one of "image", "imageRef", "source_volid", '
-                   '"snapshot_id" must be specified, but currently '
-                   'specified options: [].')
+                   'only one of "source_volid", "snapshot_id" must be '
+                   'specified, but currently specified options: [].')
         self._test_cinder_create_invalid_property_combinations(
             stack_name, combinations,
             err_msg, exception.StackValidationFailed)

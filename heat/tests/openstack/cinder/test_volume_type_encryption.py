@@ -13,6 +13,7 @@
 
 import mock
 
+from heat.engine.clients.os import cinder as c_plugin
 from heat.engine import stack
 from heat.engine import template
 from heat.tests import common
@@ -40,7 +41,8 @@ class CinderEncryptedVolumeTypeTest(common.HeatTestCase):
         super(CinderEncryptedVolumeTypeTest, self).setUp()
 
         self.ctx = utils.dummy_context()
-
+        self.patchobject(c_plugin.CinderClientPlugin, 'has_extension',
+                         return_value=True)
         self.stack = stack.Stack(
             self.ctx, 'cinder_vol_type_encryption_test_stack',
             template.Template(cinder_volume_type_encryption)
@@ -98,7 +100,7 @@ class CinderEncryptedVolumeTypeTest(common.HeatTestCase):
         volume_type_id = '01bd581d-33fe-4d6d-bd7b-70ae076d39fb'
         self.my_encrypted_vol_type.resource_id = volume_type_id
         volume_type = mock.Mock()
-        volume_type._info = {'vtype': 'info'}
+        volume_type.to_dict = lambda: {'vtype': 'info'}
         self.volume_encryption_types.get.return_value = volume_type
         self.assertEqual({'vtype': 'info'},
                          self.my_encrypted_vol_type.FnGetAtt('show'))

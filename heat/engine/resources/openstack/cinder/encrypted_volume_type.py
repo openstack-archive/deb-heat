@@ -34,6 +34,8 @@ class CinderEncryptedVolumeType(resource.Resource):
 
     entity = 'volume_encryption_types'
 
+    required_service_extension = 'encryption'
+
     PROPERTIES = (
         PROVIDER, CONTROL_LOCATION, CIPHER, KEY_SIZE, VOLUME_TYPE
     ) = (
@@ -109,11 +111,6 @@ class CinderEncryptedVolumeType(resource.Resource):
             self.client().volume_encryption_types.update(
                 volume_type=self.resource_id, specs=prop_diff
             )
-
-    # TODO(prazumovsky): remove this method when bug #1479641 is fixed.
-    def _show_resource(self):
-        evt = self.client().volume_encryption_types.get(self.resource_id)
-        return evt._info
 
 
 def resource_mapping():

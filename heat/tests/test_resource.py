@@ -185,9 +185,9 @@ class ResourceTest(common.HeatTestCase):
         self.assertEqual(0, mock_load.call_count)
 
         # set stack._resources = None to reload the resources
-        # and set strict_validate = False
+        # and set resource_validate = False
         stack._resources = None
-        stack.strict_validate = False
+        stack.resource_validate = False
         mock_db_get.return_value = mock.Mock()
         self.assertEqual(1, len(stack.resources))
         self.assertEqual(1, mock_translate.call_count)
@@ -440,7 +440,7 @@ class ResourceTest(common.HeatTestCase):
         res, utmpl = self._setup_resource_for_update(
             res_name='test_update_rsrc_in_progress_raises_exception')
 
-        cfg.CONF.set_override('convergence_engine', False)
+        cfg.CONF.set_override('convergence_engine', False, enforce_type=True)
 
         res.action = res.UPDATE
         res.status = res.IN_PROGRESS
@@ -537,7 +537,7 @@ class ResourceTest(common.HeatTestCase):
 
         self.assertEqual(new_id, res.replaced_by)
         self.assertEqual(res.id, new_res.replaces)
-        self.assertIsNone(new_res.nova_instance)
+        self.assertIsNone(new_res.physical_resource_id)
         self.assertEqual(new_tmpl_id, new_res.current_template_id)
 
     def test_parsed_template(self):
@@ -598,7 +598,9 @@ class ResourceTest(common.HeatTestCase):
                                                       metadata={'foo': 456})
         res = generic_rsrc.GenericResource('test_resource', tmpl, self.stack)
         diff = res.update_template_diff(update_snippet, tmpl)
-        self.assertEqual({'Metadata': {'foo': 456}}, diff)
+        self.assertFalse(diff.properties_changed())
+        self.assertTrue(diff.metadata_changed())
+        self.assertFalse(diff.update_policy_changed())
 
     def test_update_template_diff_changed_add(self):
         tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo')
@@ -606,7 +608,9 @@ class ResourceTest(common.HeatTestCase):
                                                       metadata={'foo': 123})
         res = generic_rsrc.GenericResource('test_resource', tmpl, self.stack)
         diff = res.update_template_diff(update_snippet, tmpl)
-        self.assertEqual({'Metadata': {'foo': 123}}, diff)
+        self.assertFalse(diff.properties_changed())
+        self.assertTrue(diff.metadata_changed())
+        self.assertFalse(diff.update_policy_changed())
 
     def test_update_template_diff_changed_remove(self):
         tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo',
@@ -614,7 +618,9 @@ class ResourceTest(common.HeatTestCase):
         update_snippet = rsrc_defn.ResourceDefinition('test_resource', 'Foo')
         res = generic_rsrc.GenericResource('test_resource', tmpl, self.stack)
         diff = res.update_template_diff(update_snippet, tmpl)
-        self.assertEqual({'Metadata': None}, diff)
+        self.assertFalse(diff.properties_changed())
+        self.assertTrue(diff.metadata_changed())
+        self.assertFalse(diff.update_policy_changed())
 
     def test_update_template_diff_properties_none(self):
         before_props = {}
@@ -795,7 +801,7 @@ class ResourceTest(common.HeatTestCase):
         self.m.VerifyAll()
 
     def test_create_fail_retry_disabled(self):
-        cfg.CONF.set_override('action_retry_limit', 0)
+        cfg.CONF.set_override('action_retry_limit', 0, enforce_type=True)
         tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo',
                                             {'Foo': 'abc'})
         res = generic_rsrc.ResourceWithProps('test_resource', tmpl, self.stack)
@@ -924,11 +930,10 @@ class ResourceTest(common.HeatTestCase):
         utmpl = rsrc_defn.ResourceDefinition('test_resource',
                                              'GenericResourceType',
                                              {'Foo': 'xyz'})
-        tmpl_diff = {'Properties': {'Foo': 'xyz'}}
         prop_diff = {'Foo': 'xyz'}
         self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_update')
         generic_rsrc.ResourceWithProps.handle_update(
-            utmpl, tmpl_diff, prop_diff).AndReturn(None)
+            utmpl, mock.ANY, prop_diff).AndReturn(None)
         self.m.ReplayAll()
 
         scheduler.TaskRunner(res.update, utmpl)()
@@ -951,10 +956,9 @@ class ResourceTest(common.HeatTestCase):
                                              'GenericResourceType',
                                              {'Foo': 'xyz'})
         self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_update')
-        tmpl_diff = {'Properties': {'Foo': 'xyz'}}
         prop_diff = {'Foo': 'xyz'}
         generic_rsrc.ResourceWithProps.handle_update(
-            utmpl, tmpl_diff, prop_diff).AndRaise(exception.UpdateReplace(
+            utmpl, mock.ANY, prop_diff).AndRaise(exception.UpdateReplace(
                 res.name))
         self.m.ReplayAll()
         # should be re-raised so parser.Stack can handle replacement
@@ -977,10 +981,9 @@ class ResourceTest(common.HeatTestCase):
                                              'GenericResourceType',
                                              {'Foo': 'xyz'})
         self.m.StubOutWithMock(generic_rsrc.ResourceWithProps, 'handle_update')
-        tmpl_diff = {'Properties': {'Foo': 'xyz'}}
         prop_diff = {'Foo': 'xyz'}
         generic_rsrc.ResourceWithProps.handle_update(
-            utmpl, tmpl_diff, prop_diff).AndRaise(exception.UpdateReplace())
+            utmpl, mock.ANY, prop_diff).AndRaise(exception.UpdateReplace())
         self.m.ReplayAll()
         # should be re-raised so parser.Stack can handle replacement
         updater = scheduler.TaskRunner(res.update, utmpl)
@@ -1597,7 +1600,8 @@ class ResourceTest(common.HeatTestCase):
         self.assertEqual({'foo': 'res', 'Foo': 'res'}, res.FnGetAtts())
 
     def test_properties_data_stored_encrypted_decrypted_on_load(self):
-        cfg.CONF.set_override('encrypt_parameters_and_properties', True)
+        cfg.CONF.set_override('encrypt_parameters_and_properties', True,
+                              enforce_type=True)
 
         tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo')
         stored_properties_data = {'prop1': 'string',
@@ -1641,7 +1645,8 @@ class ResourceTest(common.HeatTestCase):
         self.assertEqual('string', res_obj.properties_data['prop1'])
 
     def test_properties_data_no_encryption(self):
-        cfg.CONF.set_override('encrypt_parameters_and_properties', False)
+        cfg.CONF.set_override('encrypt_parameters_and_properties', False,
+                              enforce_type=True)
 
         tmpl = rsrc_defn.ResourceDefinition('test_resource', 'Foo')
         stored_properties_data = {'prop1': 'string',
@@ -1681,6 +1686,17 @@ class ResourceTest(common.HeatTestCase):
         rs = resource_objects.Resource.get_obj(self.stack.context, res_id)
         self.assertEqual(engine_id, rs.engine_id)
         self.assertEqual(atomic_key, rs.atomic_key)
+
+    @mock.patch.object(resource_objects.Resource, 'get_obj')
+    @mock.patch.object(resource_objects.Resource, 'select_and_update')
+    def test_release_ignores_not_found_error(self, mock_sau, mock_get_obj):
+        tmpl = rsrc_defn.ResourceDefinition('test_res', 'Foo')
+        res = generic_rsrc.GenericResource('test_res', tmpl, self.stack)
+        res._store()
+        res._acquire('engine-id')
+        mock_get_obj.side_effect = exception.NotFound()
+        res._release('engine-id')
+        self.assertFalse(mock_sau.called)
 
     @mock.patch.object(resource.scheduler.TaskRunner, '__init__',
                        return_value=None)
@@ -3560,7 +3576,7 @@ class TestLiveStateUpdate(common.HeatTestCase):
         res = self._prepare_resource_live_state()
         res.resource_id = self.resource_id
 
-        cfg.CONF.set_override('observe_on_update', True)
+        cfg.CONF.set_override('observe_on_update', True, enforce_type=True)
 
         utmpl = rsrc_defn.ResourceDefinition('test_resource',
                                              'ResourceWithPropsType',

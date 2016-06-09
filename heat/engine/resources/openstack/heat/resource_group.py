@@ -27,7 +27,6 @@ from heat.engine import function
 from heat.engine.hot import template
 from heat.engine import properties
 from heat.engine.resources import stack_resource
-from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.engine import support
 from heat.scaling import rolling_update
@@ -44,7 +43,9 @@ class ResourceGroup(stack_resource.StackResource):
     for a single resource in the group, synthetic attributes of the form
     `resource.{resource index}.{attribute name}` can be used. The resource ID
     of a particular resource in the group can be obtained via the synthetic
-    attribute `resource.{resource index}`.
+    attribute `resource.{resource index}`. Note, that if you get attribute
+    without `{resource index}`, e.g. `[resource, {attribute_name}]`, you'll get
+    a list of this attribute's value for all resources in group.
 
     While each resource in the group will be identically configured, this
     resource does allow for some index-based customization of the properties
@@ -108,9 +109,9 @@ class ResourceGroup(stack_resource.StackResource):
     )
 
     ATTRIBUTES = (
-        REFS, ATTR_ATTRIBUTES,
+        REFS, REFS_MAP, ATTR_ATTRIBUTES,
     ) = (
-        'refs', 'attributes',
+        'refs', 'refs_map', 'attributes',
     )
 
     properties_schema = {
@@ -198,6 +199,12 @@ class ResourceGroup(stack_resource.StackResource):
         REFS: attributes.Schema(
             _("A list of resource IDs for the resources in the group."),
             type=attributes.Schema.LIST
+        ),
+        REFS_MAP: attributes.Schema(
+            _("A map of resource names to IDs for the resources in "
+              "the group."),
+            type=attributes.Schema.MAP,
+            support_status=support.SupportStatus(version='7.0.0'),
         ),
         ATTR_ATTRIBUTES: attributes.Schema(
             _("A map of resource names to the specified attribute of each "
@@ -386,7 +393,7 @@ class ResourceGroup(stack_resource.StackResource):
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if tmpl_diff:
             # parse update policy
-            if rsrc_defn.UPDATE_POLICY in tmpl_diff:
+            if tmpl_diff.update_policy_changed():
                 up = json_snippet.update_policy(self.update_policy_schema,
                                                 self.context)
                 self.update_policy = up
@@ -417,6 +424,10 @@ class ResourceGroup(stack_resource.StackResource):
         if key == self.REFS:
             vals = [grouputils.get_rsrc_id(self, key, False, n) for n in names]
             return attributes.select_from_attribute(vals, path)
+        if key == self.REFS_MAP:
+            refs_map = {n: grouputils.get_rsrc_id(self, key, False, n)
+                        for n in names}
+            return refs_map
         if key == self.ATTR_ATTRIBUTES:
             if not path:
                 raise exception.InvalidTemplateAttribute(
@@ -558,8 +569,8 @@ class ResourceGroup(stack_resource.StackResource):
     def _update_timeout(self, batch_cnt, pause_sec):
         total_pause_time = pause_sec * max(batch_cnt - 1, 0)
         if total_pause_time >= self.stack.timeout_secs():
-            msg = _('The current %s will result in stack update '
-                    'timeout.') % rsrc_defn.UPDATE_POLICY
+            msg = _('The current update policy will result in stack update '
+                    'timeout.')
             raise ValueError(msg)
         return self.stack.timeout_secs() - total_pause_time
 

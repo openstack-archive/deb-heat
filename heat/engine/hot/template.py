@@ -250,21 +250,19 @@ class HOTemplate20130523(template.Template):
         return dict((name, self.rsrc_defn_from_snippet(name, data))
                     for name, data in parsed_resources.items())
 
-    @staticmethod
-    def rsrc_defn_from_snippet(name, data):
+    @classmethod
+    def rsrc_defn_from_snippet(cls, name, data):
         depends = data.get(RES_DEPENDS_ON)
         if isinstance(depends, six.string_types):
             depends = [depends]
 
         deletion_policy = function.resolve(data.get(RES_DELETION_POLICY))
         if deletion_policy is not None:
-            if deletion_policy not in six.iterkeys(
-                    HOTemplate20130523.deletion_policies):
+            if deletion_policy not in cls.deletion_policies:
                 msg = _('Invalid deletion policy "%s"') % deletion_policy
                 raise exception.StackValidationFailed(message=msg)
             else:
-                deletion_policy = HOTemplate20130523.deletion_policies[
-                    deletion_policy]
+                deletion_policy = cls.deletion_policies[deletion_policy]
         kwargs = {
             'resource_type': data.get(RES_TYPE),
             'properties': data.get(RES_PROPERTIES),
@@ -377,6 +375,45 @@ class HOTemplate20160408(HOTemplate20151015):
         'repeat': hot_funcs.Repeat,
         'resource_facade': hot_funcs.ResourceFacade,
         'str_replace': hot_funcs.ReplaceJson,
+
+        # functions added since 20151015
+        'map_merge': hot_funcs.MapMerge,
+
+        # functions added since 20150430
+        'str_split': hot_funcs.StrSplit,
+
+        # functions removed from 20150430
+        'Fn::Select': hot_funcs.Removed,
+
+        # functions removed from 20130523
+        'Fn::GetAZs': hot_funcs.Removed,
+        'Fn::Join': hot_funcs.Removed,
+        'Fn::Split': hot_funcs.Removed,
+        'Fn::Replace': hot_funcs.Removed,
+        'Fn::Base64': hot_funcs.Removed,
+        'Fn::MemberListToMap': hot_funcs.Removed,
+        'Fn::ResourceFacade': hot_funcs.Removed,
+        'Ref': hot_funcs.Removed,
+    }
+
+
+class HOTemplate20161014(HOTemplate20160408):
+    functions = {
+        'digest': hot_funcs.Digest,
+        'get_attr': hot_funcs.GetAttAllAttributes,
+        'get_file': hot_funcs.GetFile,
+        'get_param': hot_funcs.GetParam,
+        'get_resource': cfn_funcs.ResourceRef,
+        'list_join': hot_funcs.JoinMultiple,
+        'repeat': hot_funcs.Repeat,
+        'resource_facade': hot_funcs.ResourceFacade,
+        'str_replace': hot_funcs.ReplaceJson,
+
+        # functions added since 20161014
+        'yaql': hot_funcs.Yaql,
+
+        # functions added since 20161014
+        'equals': cfn_funcs.Equals,
 
         # functions added since 20151015
         'map_merge': hot_funcs.MapMerge,

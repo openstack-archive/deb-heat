@@ -81,6 +81,36 @@ resources:
       networks: [{'network': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}]
 '''
 
+with_port_template = '''
+heat_template_version: 2015-04-30
+resources:
+  port:
+    type: OS::Neutron::Port
+    properties:
+      network: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+  server:
+    type: OS::Nova::Server
+    properties:
+      image: F17-x86_64-gold
+      flavor: m1.small
+      networks:
+        - port: {get_resource: port}
+          fixed_ip: 10.0.0.99
+'''
+
+bdm_v2_template = '''
+heat_template_version: 2015-04-30
+resources:
+  server:
+    type: OS::Nova::Server
+    properties:
+      flavor: m1.tiny
+      block_device_mapping_v2:
+        - device_name: vda
+          delete_on_termination: true
+          image_id: F17-x86_64-gold
+'''
+
 subnet_template = '''
 heat_template_version: 2013-05-23
 resources:
@@ -121,6 +151,20 @@ resources:
       image: F17-x86_64-gold
       networks:
         - network: 4321
+"""
+
+tmpl_server_with_sub_secu_group = """
+heat_template_version: 2015-10-15
+resources:
+  server:
+    type: OS::Nova::Server
+    properties:
+      flavor: m1.small
+      image: F17-x86_64-gold
+      networks:
+        - subnet: 2a60cbaa-3d33-4af6-a9ce-83594ac546fc
+      security_groups:
+        - my_seg
 """
 
 server_with_sw_config_personality = """
@@ -239,6 +283,7 @@ class ServersTest(common.HeatTestCase):
         server_name = str(name) if override_name else None
         tmpl, self.stack = self._get_test_template(stack_name, server_name,
                                                    image_id)
+        self.server_props = tmpl.t['Resources']['WebServer']['Properties']
         resource_defns = tmpl.resource_definitions(self.stack)
         server = servers.Server(str(name), resource_defns['WebServer'],
                                 self.stack)
@@ -356,6 +401,46 @@ class ServersTest(common.HeatTestCase):
         scheduler.TaskRunner(server.create)()
         args, kwargs = mock_create.call_args
         self.assertEqual(kwargs['meta'], {'a': "1"})
+
+    def test_server_create_with_subnet_security_group(self):
+        stack_name = 'server_with_subnet_security_group'
+        self.patchobject(nova.NovaClientPlugin, '_create',
+                         return_value=self.fc)
+        return_server = self.fc.servers.list()[1]
+        (tmpl, stack) = self._setup_test_stack(
+            stack_name, test_templ=tmpl_server_with_sub_secu_group)
+
+        resource_defns = tmpl.resource_definitions(stack)
+        server = servers.Server('server_with_sub_secu',
+                                resource_defns['server'], stack)
+        mock_find = self.patchobject(
+            neutron.NeutronClientPlugin,
+            'find_resourceid_by_name_or_id',
+            return_value='2a60cbaa-3d33-4af6-a9ce-83594ac546fc')
+
+        sec_uuids = ['86c0f8ae-23a8-464f-8603-c54113ef5467']
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'get_secgroup_uuids', return_value=sec_uuids)
+        self.patchobject(server, 'store_external_ports')
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'network_id_from_subnet_id',
+                         return_value='05d8e681-4b37-4570-bc8d-810089f706b2')
+        mock_create_port = self.patchobject(
+            neutronclient.Client, 'create_port')
+
+        self.patchobject(
+            self.fc.servers, 'create', return_value=return_server)
+
+        scheduler.TaskRunner(server.create)()
+
+        kwargs = {'network_id': '05d8e681-4b37-4570-bc8d-810089f706b2',
+                  'fixed_ips': [
+                      {'subnet_id': '2a60cbaa-3d33-4af6-a9ce-83594ac546fc'}],
+                  'security_groups': sec_uuids,
+                  'name': 'server_with_sub_secu-port-0',
+                  }
+        mock_create_port.assert_called_with({'port': kwargs})
+        self.assertEqual(1, mock_find.call_count)
 
     def test_server_create_with_image_id(self):
         return_server = self.fc.servers.list()[1]
@@ -550,8 +635,8 @@ class ServersTest(common.HeatTestCase):
         return_server = self.fc.servers.list()[1]
         (tmpl, stack) = self._setup_test_stack(stack_name)
         self.stack = stack
-        tmpl['Resources']['WebServer']['Properties'][
-            'user_data_format'] = 'SOFTWARE_CONFIG'
+        self.server_props = tmpl['Resources']['WebServer']['Properties']
+        self.server_props['user_data_format'] = 'SOFTWARE_CONFIG'
         if md is not None:
             tmpl['Resources']['WebServer']['Metadata'] = md
 
@@ -631,6 +716,7 @@ class ServersTest(common.HeatTestCase):
         props['software_config_transport'] = 'POLL_SERVER_HEAT'
         if md is not None:
             tmpl.t['Resources']['WebServer']['Metadata'] = md
+        self.server_props = props
 
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('WebServer',
@@ -697,6 +783,7 @@ class ServersTest(common.HeatTestCase):
         props['software_config_transport'] = 'POLL_TEMP_URL'
         if md is not None:
             tmpl.t['Resources']['WebServer']['Metadata'] = md
+        self.server_props = props
 
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('WebServer',
@@ -777,6 +864,7 @@ class ServersTest(common.HeatTestCase):
         props['software_config_transport'] = 'ZAQAR_MESSAGE'
         if md is not None:
             tmpl.t['Resources']['WebServer']['Metadata'] = md
+        self.server_props = props
 
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('WebServer',
@@ -886,7 +974,8 @@ class ServersTest(common.HeatTestCase):
                          return_value=self.fc)
         return_server = self.fc.servers.list()[1]
         return_server.id = '5678'
-        sh.cfg.CONF.set_override('stack_scheduler_hints', True)
+        sh.cfg.CONF.set_override('stack_scheduler_hints', True,
+                                 enforce_type=True)
         # Unroll _create_test_server, to enable check
         # for addition of heat ids (stack id, resource name)
         stack_name = 'test_server_w_stack_sched_hints_s'
@@ -1071,11 +1160,13 @@ class ServersTest(common.HeatTestCase):
               'network': network_name}])
 
         resource_defns = tmpl.resource_definitions(stack)
-        ex = self.assertRaises(ValueError, servers.Server,
+        ex = self.assertRaises(exception.ResourcePropertyConflict,
+                               servers.Server,
                                'server_validate_with_networks',
                                resource_defns['WebServer'], stack)
 
-        self.assertIn(_('Cannot use network and uuid at the same time.'),
+        self.assertIn("Cannot define the following properties at the "
+                      "same time: ['network', 'uuid'].",
                       six.text_type(ex))
 
     def test_server_validate_with_network_empty_ref(self):
@@ -1121,21 +1212,58 @@ class ServersTest(common.HeatTestCase):
                         'server "%s".') % server.name,
                       six.text_type(ex))
 
-    def test_server_validate_with_port_fixed_ip(self):
-        stack_name = 'srv_net'
+    def test_server_validate_with_network_floating_ip(self):
+        stack_name = 'srv_net_floating_ip'
         (tmpl, stack) = self._setup_test_stack(stack_name)
+        # create a server with 'uuid' and 'network' properties
         tmpl['Resources']['WebServer']['Properties']['networks'] = (
-            [{'port': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-              'fixed_ip': '10.0.0.99'}])
+            [{'floating_ip': '172.24.4.14',
+              'network': '6b1688bb-18a0-4754-ab05-19daaedc5871'}])
         self.patchobject(nova.NovaClientPlugin, '_create',
                          return_value=self.fc)
         resource_defns = tmpl.resource_definitions(stack)
-        server = servers.Server('server_validate_with_networks',
+        server = servers.Server('server_validate_net_floating_ip',
                                 resource_defns['WebServer'], stack)
         self.patchobject(glance.GlanceClientPlugin, 'get_image',
                          return_value=self.mock_image)
         self.patchobject(nova.NovaClientPlugin, 'get_flavor',
                          return_value=self.mock_flavor)
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'find_resourceid_by_name_or_id')
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               server.validate)
+        self.assertIn(_('Property "floating_ip" is not supported if '
+                        'only "network" is specified, because the '
+                        'corresponding port can not be retrieved.'),
+                      six.text_type(ex))
+
+    def test_server_validate_port_fixed_ip(self):
+        stack_name = 'port_with_fixed_ip'
+        (tmpl, stack) = self._setup_test_stack(stack_name,
+                                               test_templ=with_port_template)
+
+        resource_defns = tmpl.resource_definitions(stack)
+
+        server = servers.Server('validate_port_reference_fixed_ip',
+                                resource_defns['server'], stack)
+
+        self.patchobject(glance.GlanceClientPlugin, 'get_image',
+                         return_value=self.mock_image)
+        self.patchobject(nova.NovaClientPlugin, 'get_flavor',
+                         return_value=self.mock_flavor)
+
+        error = self.assertRaises(exception.ResourcePropertyConflict,
+                                  server.validate)
+        self.assertEqual("Cannot define the following properties at the same "
+                         "time: networks/fixed_ip, networks/port.",
+                         six.text_type(error))
+        # test if the 'port' doesn't reference with non-created resource
+        tmpl['Resources']['server']['Properties']['networks'] = (
+            [{'port': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+              'fixed_ip': '10.0.0.99'}])
+        resource_defns = tmpl.resource_definitions(stack)
+        server = servers.Server('with_port_fixed_ip',
+                                resource_defns['server'], stack)
         self.patchobject(neutron.NeutronClientPlugin,
                          'find_resourceid_by_name_or_id')
         error = self.assertRaises(exception.ResourcePropertyConflict,
@@ -1145,15 +1273,30 @@ class ServersTest(common.HeatTestCase):
                          six.text_type(error))
 
     def test_server_validate_with_port_not_using_neutron(self):
+        test_templ = with_port_template.replace('fixed_ip: 10.0.0.99', '')
         stack_name = 'with_port_in_nova_network'
-        (tmpl, stack) = self._setup_test_stack(stack_name)
-        tmpl['Resources']['WebServer']['Properties']['networks'] = (
-            [{'port': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}])
-        self.patchobject(nova.NovaClientPlugin, '_create',
-                         return_value=self.fc)
+        (tmpl, stack) = self._setup_test_stack(stack_name,
+                                               test_templ=test_templ)
         self.patchobject(servers.Server,
                          'is_using_neutron', return_value=False)
 
+        resource_defns = tmpl.resource_definitions(stack)
+        server = servers.Server('port_reference_use_nova_network',
+                                resource_defns['server'], stack)
+
+        self.patchobject(glance.GlanceClientPlugin, 'get_image',
+                         return_value=self.mock_image)
+        self.patchobject(nova.NovaClientPlugin, 'get_flavor',
+                         return_value=self.mock_flavor)
+
+        error = self.assertRaises(exception.StackValidationFailed,
+                                  server.validate)
+        self.assertEqual('Property "port" is supported only for Neutron.',
+                         six.text_type(error))
+
+        # test if port doesn't reference with non-created resource
+        tmpl['Resources']['server']['Properties']['networks'] = (
+            [{'port': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}])
         # We're patching neutron finder here as constraint validation
         # does not check if neutron is enabled or not. This would be
         # fixed in a subsequent patch.
@@ -1162,11 +1305,8 @@ class ServersTest(common.HeatTestCase):
 
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('validate_port_in_nova_network',
-                                resource_defns['WebServer'], stack)
-        self.patchobject(glance.GlanceClientPlugin, 'get_image',
-                         return_value=self.mock_image)
-        self.patchobject(nova.NovaClientPlugin, 'get_flavor',
-                         return_value=self.mock_flavor)
+                                resource_defns['server'], stack)
+
         error = self.assertRaises(exception.StackValidationFailed,
                                   server.validate)
         self.assertEqual('Property "port" is supported only for Neutron.',
@@ -1432,9 +1572,9 @@ class ServersTest(common.HeatTestCase):
         sc.url = 'http://192.0.2.2'
         self.patchobject(swift.SwiftClientPlugin, '_create',
                          return_value=sc)
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties'][
-            'software_config_transport'] = 'POLL_TEMP_URL'
+        update_props = self.server_props.copy()
+        update_props['software_config_transport'] = 'POLL_TEMP_URL'
+        update_template = server.t.freeze(properties=update_props)
 
         self.rpc_client = mock.MagicMock()
         server._rpc_client = self.rpc_client
@@ -1475,8 +1615,9 @@ class ServersTest(common.HeatTestCase):
         self.patchobject(self.fc.servers, 'get',
                          return_value=return_server)
         set_meta_mock = self.patchobject(self.fc.servers, 'set_meta')
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['metadata'] = new_meta
+        update_props = self.server_props.copy()
+        update_props['metadata'] = new_meta
+        update_template = server.t.freeze(properties=update_props)
         scheduler.TaskRunner(server.update, update_template)()
         self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
         set_meta_mock.assert_called_with(
@@ -1498,8 +1639,9 @@ class ServersTest(common.HeatTestCase):
 
         # If we're going to call set_meta() directly we
         # need to handle the serialization ourselves.
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['metadata'] = new_meta
+        update_props = self.server_props.copy()
+        update_props['metadata'] = new_meta
+        update_template = server.t.freeze(properties=update_props)
         scheduler.TaskRunner(server.update, update_template)()
         self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
         set_meta_mock.assert_called_with(
@@ -1515,8 +1657,9 @@ class ServersTest(common.HeatTestCase):
         self.patchobject(self.fc.servers, 'get',
                          return_value=return_server)
         set_meta_mock = self.patchobject(self.fc.servers, 'set_meta')
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['metadata'] = new_meta
+        update_props = self.server_props.copy()
+        update_props['metadata'] = new_meta
+        update_template = server.t.freeze(properties=update_props)
         scheduler.TaskRunner(server.update, update_template)()
         self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
         set_meta_mock.assert_called_with(
@@ -1531,8 +1674,9 @@ class ServersTest(common.HeatTestCase):
         self.patchobject(self.fc.servers, 'get',
                          return_value=new_return_server)
         del_meta_mock = self.patchobject(self.fc.servers, 'delete_meta')
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['metadata'] = new_meta
+        update_props = self.server_props.copy()
+        update_props['metadata'] = new_meta
+        update_template = server.t.freeze(properties=update_props)
 
         scheduler.TaskRunner(server.update, update_template)()
         self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
@@ -1548,8 +1692,9 @@ class ServersTest(common.HeatTestCase):
         server = self._create_test_server(return_server,
                                           'srv_update')
         new_name = 'new_name'
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['name'] = new_name
+        update_props = self.server_props.copy()
+        update_props['name'] = new_name
+        update_template = server.t.freeze(properties=update_props)
 
         self.patchobject(self.fc.servers, 'get',
                          return_value=return_server)
@@ -1565,8 +1710,9 @@ class ServersTest(common.HeatTestCase):
         server = self._create_test_server(return_server,
                                           'change_password')
         new_password = 'new_password'
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['admin_pass'] = new_password
+        update_props = self.server_props.copy()
+        update_props['admin_pass'] = new_password
+        update_template = server.t.freeze(properties=update_props)
 
         self.patchobject(self.fc.servers, 'get', return_value=return_server)
         self.patchobject(return_server, 'change_password')
@@ -1586,8 +1732,9 @@ class ServersTest(common.HeatTestCase):
         return_server.id = '1234'
         server = self._create_test_server(return_server,
                                           'srv_update')
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['flavor'] = 'm1.small'
+        update_props = self.server_props.copy()
+        update_props['flavor'] = 'm1.small'
+        update_template = server.t.freeze(properties=update_props)
 
         def set_status(status):
             return_server.status = status
@@ -1617,8 +1764,9 @@ class ServersTest(common.HeatTestCase):
         return_server.id = '1234'
         server = self._create_test_server(return_server,
                                           'srv_update2')
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['flavor'] = 'm1.small'
+        update_props = self.server_props.copy()
+        update_props['flavor'] = 'm1.small'
+        update_template = server.t.freeze(properties=update_props)
 
         def set_status(status):
             return_server.status = status
@@ -1652,8 +1800,9 @@ class ServersTest(common.HeatTestCase):
         server_resource = self._create_test_server(server,
                                                    'resize_server')
         # prepare template with resized server
-        update_template = copy.deepcopy(server_resource.t)
-        update_template['Properties']['flavor'] = 'm1.small'
+        update_props = self.server_props.copy()
+        update_props['flavor'] = 'm1.small'
+        update_template = server_resource.t.freeze(properties=update_props)
 
         # define status transition when server resize
         # ACTIVE(initial) -> ACTIVE -> RESIZE -> VERIFY_RESIZE
@@ -1684,13 +1833,14 @@ class ServersTest(common.HeatTestCase):
     def test_server_update_server_flavor_replace(self, mock_replace):
         stack_name = 'update_flvrep'
         (tmpl, stack) = self._setup_test_stack(stack_name)
-        tmpl['Resources']['WebServer']['Properties'][
-            'flavor_update_policy'] = 'REPLACE'
+        server_props = tmpl['Resources']['WebServer']['Properties']
+        server_props['flavor_update_policy'] = 'REPLACE'
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('server_server_update_flavor_replace',
                                 resource_defns['WebServer'], stack)
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['flavor'] = 'm1.small'
+        update_props = server_props.copy()
+        update_props['flavor'] = 'm1.small'
+        update_template = server.t.freeze(properties=update_props)
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(exception.UpdateReplace, updater)
 
@@ -1702,12 +1852,13 @@ class ServersTest(common.HeatTestCase):
         server = servers.Server('server_server_update_flavor_replace',
                                 resource_defns['WebServer'], stack)
 
-        update_template = copy.deepcopy(server.t)
+        update_props = tmpl.t['Resources']['WebServer']['Properties'].copy()
         # confirm that when flavor_update_policy is changed during
         # the update then the updated policy is followed for a flavor
         # update
-        update_template['Properties']['flavor_update_policy'] = 'REPLACE'
-        update_template['Properties']['flavor'] = 'm1.small'
+        update_props['flavor_update_policy'] = 'REPLACE'
+        update_props['flavor'] = 'm1.small'
+        update_template = server.t.freeze(properties=update_props)
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(exception.UpdateReplace, updater)
 
@@ -1721,8 +1872,9 @@ class ServersTest(common.HeatTestCase):
         server = servers.Server('server_update_userdata_replace',
                                 resource_defns['WebServer'], stack)
 
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['user_data'] = 'changed'
+        update_props = tmpl.t['Resources']['WebServer']['Properties'].copy()
+        update_props['user_data'] = 'changed'
+        update_template = server.t.freeze(properties=update_props)
         server.action = server.CREATE
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(exception.UpdateReplace, updater)
@@ -1740,9 +1892,10 @@ class ServersTest(common.HeatTestCase):
         server = servers.Server('server_update_userdata_ignore',
                                 resource_defns['WebServer'], stack)
 
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['user_data'] = 'changed'
-        update_template['Properties']['user_data_update_policy'] = 'IGNORE'
+        update_props = tmpl.t['Resources']['WebServer']['Properties'].copy()
+        update_props['user_data'] = 'changed'
+        update_props['user_data_update_policy'] = 'IGNORE'
+        update_template = server.t.freeze(properties=update_props)
         server.action = server.CREATE
         scheduler.TaskRunner(server.update, update_template)()
         self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
@@ -1758,8 +1911,9 @@ class ServersTest(common.HeatTestCase):
         server = servers.Server('server_update_image_replace',
                                 resource_defns['WebServer'], stack)
         image_id = self.getUniqueString()
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['image'] = image_id
+        update_props = tmpl.t['Resources']['WebServer']['Properties'].copy()
+        update_props['image'] = image_id
+        update_template = server.t.freeze(properties=update_props)
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(exception.UpdateReplace, updater)
 
@@ -1775,12 +1929,16 @@ class ServersTest(common.HeatTestCase):
         new_image = 'F17-x86_64-gold'
         # current test demonstrate updating when image_update_policy was not
         # changed, so image_update_policy will be used from self.properties
-        server.t['Properties']['image_update_policy'] = policy
+        before_props = self.server_props.copy()
+        before_props['image_update_policy'] = policy
+        server.t = server.t.freeze(properties=before_props)
+        server.reparse()
 
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['image'] = new_image
+        update_props = before_props.copy()
+        update_props['image'] = new_image
         if password:
-            update_template['Properties']['admin_pass'] = password
+            update_props['admin_pass'] = password
+        update_template = server.t.freeze(properties=update_props)
 
         mock_rebuild = self.patchobject(self.fc.servers, 'rebuild')
 
@@ -1841,9 +1999,13 @@ class ServersTest(common.HeatTestCase):
         new_image = 'F17-x86_64-gold'
         # current test demonstrate updating when image_update_policy was not
         # changed, so image_update_policy will be used from self.properties
-        server.t['Properties']['image_update_policy'] = 'REBUILD'
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['image'] = new_image
+        before_props = self.server_props.copy()
+        before_props['image_update_policy'] = 'REBUILD'
+        update_props = before_props.copy()
+        update_props['image'] = new_image
+        update_template = server.t.freeze(properties=update_props)
+        server.t = server.t.freeze(properties=before_props)
+        server.reparse()
         mock_rebuild = self.patchobject(self.fc.servers, 'rebuild')
 
         def set_status(status):
@@ -1867,9 +2029,10 @@ class ServersTest(common.HeatTestCase):
         return_server = self.fc.servers.list()[1]
         server = self._create_test_server(return_server,
                                           'update_prop')
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['image'] = 'F17-x86_64-gold'
-        update_template['Properties']['image_update_policy'] = 'REPLACE'
+        update_props = self.server_props.copy()
+        update_props['image'] = 'F17-x86_64-gold'
+        update_props['image_update_policy'] = 'REPLACE'
+        update_template = server.t.freeze(properties=update_props)
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(exception.UpdateReplace, updater)
 
@@ -2413,7 +2576,7 @@ class ServersTest(common.HeatTestCase):
             'destination_type': 'volume', 'boot_index': 0,
             'delete_on_termination': False}
         ], servers.Server._build_block_device_mapping_v2([
-            {'image_id': '1'}
+            {'image': '1'}
         ]))
 
         self.assertEqual([{
@@ -2427,6 +2590,28 @@ class ServersTest(common.HeatTestCase):
         self.assertEqual([], servers.Server._build_block_device_mapping_v2([
             {'device_name': ''}
         ]))
+
+    def test_block_device_mapping_v2_image_resolve(self):
+        (tmpl, stack) = self._setup_test_stack('mapping',
+                                               test_templ=bdm_v2_template)
+        resource_defns = tmpl.resource_definitions(stack)
+        self.server = servers.Server('server',
+                                     resource_defns['server'], stack)
+        self.server.translate_properties(self.server.properties, True)
+        self.assertEqual(2, self.server.t._properties[
+            'block_device_mapping_v2'][0]['image'])
+
+    def test_block_device_mapping_v2_image_prop_conflict(self):
+        test_templ = bdm_v2_template + "\n          image: F17-x86_64-gold"
+        (tmpl, stack) = self._setup_test_stack('mapping',
+                                               test_templ=test_templ)
+        resource_defns = tmpl.resource_definitions(stack)
+        msg = ("Cannot define the following properties at the same time: "
+               "['image', 'image_id'].")
+        exc = self.assertRaises(exception.ResourcePropertyConflict,
+                                servers.Server, 'server',
+                                resource_defns['server'], stack)
+        self.assertEqual(msg, six.text_type(exc))
 
     @mock.patch.object(nova.NovaClientPlugin, '_create')
     def test_validate_with_both_blk_dev_map_and_blk_dev_map_v2(self,
@@ -2926,12 +3111,11 @@ class ServersTest(common.HeatTestCase):
         server = self._create_test_server(return_server, 'networks_update')
 
         new_networks = [{'port': '2a60cbaa-3d33-4af6-a9ce-83594ac546fc'}]
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['networks'] = new_networks
+        update_props = self.server_props.copy()
+        update_props['networks'] = new_networks
+        update_template = server.t.freeze(properties=update_props)
 
         self.patchobject(self.fc.servers, 'get', return_value=return_server)
-        # to make sure, that old_networks will be None
-        self.assertFalse(hasattr(server.t['Properties'], 'networks'))
 
         iface = self.create_fake_iface('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
                                        '450abbc9-9b6d-4d6f-8c3a-c47ac34100ef',
@@ -2956,13 +3140,11 @@ class ServersTest(common.HeatTestCase):
 
         new_networks = [{'network': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
                          'fixed_ip': '1.2.3.4'}]
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['networks'] = new_networks
+        update_props = self.server_props.copy()
+        update_props['networks'] = new_networks
+        update_template = server.t.freeze(properties=update_props)
 
         self.patchobject(self.fc.servers, 'get', return_value=return_server)
-
-        # to make sure, that old_networks will be None
-        self.assertFalse(hasattr(server.t['Properties'], 'networks'))
 
         iface = self.create_fake_iface('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
                                        '450abbc9-9b6d-4d6f-8c3a-c47ac34100ef',
@@ -2976,6 +3158,58 @@ class ServersTest(common.HeatTestCase):
         self.assertEqual(1, mock_detach.call_count)
         self.assertEqual(1, mock_attach.call_count)
 
+    def test_server_update_subnet_with_security_group(self):
+        return_server = self.fc.servers.list()[3]
+        return_server.id = '9102'
+
+        server = self._create_test_server(return_server, 'update_subnet')
+        # set old properties for 'networks' and 'security_groups'
+        server.t['Properties']['networks'] = [
+            {'subnet': 'aaa09d50-8c23-4498-a542-aa0deb24f73e'}]
+        server.t['Properties']['security_groups'] = ['the_sg']
+        # set new property 'networks'
+        new_networks = [{'subnet': '2a60cbaa-3d33-4af6-a9ce-83594ac546fc'}]
+        update_template = copy.deepcopy(server.t)
+        update_template['Properties']['networks'] = new_networks
+
+        sec_uuids = ['86c0f8ae-23a8-464f-8603-c54113ef5467']
+
+        self.patchobject(self.fc.servers, 'get', return_value=return_server)
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'get_secgroup_uuids', return_value=sec_uuids)
+        # execute translation rules need to call find_resourceid_by_name_or_id
+        mock_find = self.patchobject(
+            neutron.NeutronClientPlugin,
+            'find_resourceid_by_name_or_id',
+            side_effect=['2a60cbaa-3d33-4af6-a9ce-83594ac546fc',
+                         'aaa09d50-8c23-4498-a542-aa0deb24f73e',
+                         '2a60cbaa-3d33-4af6-a9ce-83594ac546fc'])
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'network_id_from_subnet_id',
+                         return_value='05d8e681-4b37-4570-bc8d-810089f706b2')
+        mock_create_port = self.patchobject(
+            neutronclient.Client, 'create_port')
+
+        iface = self.create_fake_iface('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                                       '05d8e681-4b37-4570-bc8d-810089f706b2',
+                                       '1.2.3.4')
+        self.patchobject(return_server, 'interface_list', return_value=[iface])
+        mock_detach = self.patchobject(return_server, 'interface_detach')
+        mock_attach = self.patchobject(return_server, 'interface_attach')
+
+        scheduler.TaskRunner(server.update, update_template, before=server.t)()
+        self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
+        self.assertEqual(1, mock_detach.call_count)
+        self.assertEqual(1, mock_attach.call_count)
+        self.assertEqual(3, mock_find.call_count)
+        kwargs = {'network_id': '05d8e681-4b37-4570-bc8d-810089f706b2',
+                  'fixed_ips': [
+                      {'subnet_id': '2a60cbaa-3d33-4af6-a9ce-83594ac546fc'}],
+                  'security_groups': sec_uuids,
+                  'name': 'update_subnet-port-0',
+                  }
+        mock_create_port.assert_called_with({'port': kwargs})
+
     def test_server_update_empty_networks_with_complex_parameters(self):
         return_server = self.fc.servers.list()[3]
         return_server.id = '9102'
@@ -2984,13 +3218,11 @@ class ServersTest(common.HeatTestCase):
         new_networks = [{'network': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
                          'fixed_ip': '1.2.3.4',
                          'port': '2a60cbaa-3d33-4af6-a9ce-83594ac546fc'}]
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['networks'] = new_networks
+        update_props = self.server_props.copy()
+        update_props['networks'] = new_networks
+        update_template = server.t.freeze(properties=update_props)
 
         self.patchobject(self.fc.servers, 'get', return_value=return_server)
-
-        # to make sure, that old_networks will be None
-        self.assertFalse(hasattr(server.t['Properties'], 'networks'))
 
         iface = self.create_fake_iface('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
                                        '450abbc9-9b6d-4d6f-8c3a-c47ac34100ef',
@@ -3021,9 +3253,13 @@ class ServersTest(common.HeatTestCase):
              'fixed_ip': '1.2.3.4'},
             {'port': '2a60cbaa-3d33-4af6-a9ce-83594ac546fc'}]
 
-        server.t['Properties']['networks'] = old_networks
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['networks'] = new_networks
+        before_props = self.server_props.copy()
+        before_props['networks'] = old_networks
+        update_props = self.server_props.copy()
+        update_props['networks'] = new_networks
+        update_template = server.t.freeze(properties=update_props)
+        server.t = server.t.freeze(properties=before_props)
+        # server.reparse()
 
         self.patchobject(self.fc.servers, 'get', return_value=return_server)
 
@@ -3062,9 +3298,13 @@ class ServersTest(common.HeatTestCase):
             {'network': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
              'fixed_ip': '31.32.33.34'}]
 
-        server.t['Properties']['networks'] = old_networks
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['networks'] = None
+        before_props = self.server_props.copy()
+        before_props['networks'] = old_networks
+        update_props = self.server_props.copy()
+        update_props['networks'] = None
+        update_template = server.t.freeze(properties=update_props)
+        server.t = server.t.freeze(properties=before_props)
+        # server.reparse()
 
         self.patchobject(self.fc.servers, 'get', return_value=return_server)
         poor_interfaces = [
@@ -3099,9 +3339,13 @@ class ServersTest(common.HeatTestCase):
             {'network': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
              'fixed_ip': '31.32.33.34'}]
 
-        server.t['Properties']['networks'] = old_networks
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['networks'] = []
+        before_props = self.server_props.copy()
+        before_props['networks'] = old_networks
+        update_props = self.server_props.copy()
+        update_props['networks'] = []
+        update_template = server.t.freeze(properties=update_props)
+        server.t = server.t.freeze(properties=before_props)
+        # server.reparse()
 
         self.patchobject(self.fc.servers, 'get', return_value=return_server)
         poor_interfaces = [
@@ -3134,9 +3378,10 @@ class ServersTest(common.HeatTestCase):
         server = self._create_test_server(return_server,
                                           'my_server')
 
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['image'] = 'F17-x86_64-gold'
-        update_template['Properties']['image_update_policy'] = 'REPLACE'
+        update_props = self.server_props.copy()
+        update_props['image'] = 'F17-x86_64-gold'
+        update_props['image_update_policy'] = 'REPLACE'
+        update_template = server.t.freeze(properties=update_props)
         updater = scheduler.TaskRunner(server.update, update_template)
         self.assertRaises(exception.UpdateReplace, updater)
 
@@ -3152,8 +3397,9 @@ class ServersTest(common.HeatTestCase):
         self.patchobject(glance.GlanceClientPlugin,
                          'find_image_by_name_or_id',
                          side_effect=[1, ex])
-        update_template = copy.deepcopy(server.t)
-        update_template['Properties']['image'] = 'Update Image'
+        update_props = self.server_props.copy()
+        update_props['image'] = 'Update Image'
+        update_template = server.t.freeze(properties=update_props)
 
         # update
         updater = scheduler.TaskRunner(server.update, update_template)
@@ -3558,6 +3804,8 @@ class ServerInternalPortTest(common.HeatTestCase):
             properties:
               flavor: m1.small
               image: F17-x86_64-gold
+              security_groups:
+                - test_sec
               networks:
                 - network: 4321
                   subnet: 1234
@@ -3567,12 +3815,15 @@ class ServerInternalPortTest(common.HeatTestCase):
         t, stack, server = self._return_template_stack_and_rsrc_defn('test',
                                                                      tmpl)
         self.patchobject(server, '_validate_belonging_subnet_to_net')
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'get_secgroup_uuids', return_value=['5566'])
         self.port_create.return_value = {'port': {'id': '111222'}}
         data_set = self.patchobject(resource.Resource, 'data_set')
 
         network = [{'network': '4321', 'subnet': '1234',
                     'fixed_ip': '127.0.0.1'}]
-        server._build_nics(network)
+        security_groups = ['test_sec']
+        server._build_nics(network, security_groups)
 
         self.port_create.assert_called_once_with(
             {'port': {'name': 'server-port-0',
@@ -3580,7 +3831,8 @@ class ServerInternalPortTest(common.HeatTestCase):
                       'fixed_ips': [{
                           'ip_address': '127.0.0.1',
                           'subnet_id': '1234'
-                      }]}})
+                      }],
+                      'security_groups': ['5566']}})
         data_set.assert_called_once_with('internal_ports',
                                          '[{"id": "111222"}]')
 
@@ -3630,8 +3882,13 @@ class ServerInternalPortTest(common.HeatTestCase):
                            {'mac_address': '00:00:00:00:00:00'}
                        ]
                    }}
-        kwargs = server._prepare_internal_port_kwargs(network)
+        sec_uuids = ['8d94c72093284da88caaef5e985d96f7']
+        self.patchobject(neutron.NeutronClientPlugin,
+                         'get_secgroup_uuids', return_value=sec_uuids)
+        kwargs = server._prepare_internal_port_kwargs(
+            network, security_groups=['test_sec'])
         self.assertEqual({'network_id': '4321',
+                          'security_groups': sec_uuids,
                           'fixed_ips': [
                               {'ip_address': '127.0.0.1', 'subnet_id': '1234'}
                           ],

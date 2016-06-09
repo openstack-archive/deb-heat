@@ -221,7 +221,10 @@ class Workflow(signal_responder.SignalResponder,
                           'or by name of the referenced workflow, i.e. '
                           '{ workflow: wf_name } or '
                           '{ workflow: { get_resource: wf_name }}. Either '
-                          'action or workflow may be defined in the task.')
+                          'action or workflow may be defined in the task.'),
+                        constraints=[
+                            constraints.CustomConstraint('mistral.workflow')
+                        ]
                     ),
                     PUBLISH: properties.Schema(
                         properties.Schema.MAP,
@@ -331,7 +334,8 @@ class Workflow(signal_responder.SignalResponder,
                 },
             ),
             required=True,
-            update_allowed=True
+            update_allowed=True,
+            constraints=[constraints.Length(min=1)]
         )
     }
 
@@ -545,7 +549,9 @@ class Workflow(signal_responder.SignalResponder,
             if prop in prop_diff:
                 del prop_diff[prop]
         if len(prop_diff) > 0:
-            new_props = self.prepare_properties(tmpl_diff['Properties'])
+            props = json_snippet.properties(self.properties_schema,
+                                            self.context)
+            new_props = self.prepare_properties(props)
             try:
                 workflow = self.client().workflows.update(new_props)
             except Exception as ex:

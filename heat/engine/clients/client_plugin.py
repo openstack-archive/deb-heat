@@ -16,17 +16,16 @@ import functools
 import sys
 import weakref
 
-from keystoneclient import auth
-from keystoneclient.auth.identity import v2
-from keystoneclient.auth.identity import v3
-from keystoneclient import exceptions
-from keystoneclient import session
+from keystoneauth1 import exceptions
+from keystoneauth1.identity import generic
+from keystoneauth1 import plugin
+from keystoneauth1 import session
 from oslo_config import cfg
 import requests
 import six
 
 from heat.common import config
-from heat.common.i18n import _
+from heat.common import exception as heat_exception
 
 cfg.CONF.import_opt('client_retry_limit', 'heat.common.config')
 
@@ -99,10 +98,15 @@ class ClientPlugin(object):
     # types, so its used in list format
     service_types = []
 
+    # To make the backward compatibility with existing resource plugins
+    default_version = None
+
+    supported_versions = []
+
     def __init__(self, context):
         self._context = weakref.ref(context)
         self._clients = weakref.ref(context.clients)
-        self._client = None
+        self.invalidate()
         self._keystone_session_obj = None
 
     @property
@@ -124,34 +128,45 @@ class ClientPlugin(object):
         # authentication requests so there is no reason to construct it fresh
         # for every client plugin. It should be global and shared amongst them.
         if not self._keystone_session_obj:
-            o = {'cacert': self._get_client_option('keystone', 'ca_file'),
-                 'insecure': self._get_client_option('keystone', 'insecure'),
-                 'cert': self._get_client_option('keystone', 'cert_file'),
-                 'key': self._get_client_option('keystone', 'key_file')}
-
-            self._keystone_session_obj = session.Session.construct(o)
+            self._keystone_session_obj = session.Session(
+                **config.get_ssl_options('keystone'))
 
         return self._keystone_session_obj
 
     def invalidate(self):
         """Invalidate/clear any cached client."""
-        self._client = None
+        self._client_instances = {}
 
-    def client(self):
-        if not self._client:
-            self._client = self._create()
-        elif (cfg.CONF.reauthentication_auth_method == 'trusts'
+    def client(self, version=None):
+        if not version:
+            version = self.default_version
+
+        if version in self._client_instances:
+            if (cfg.CONF.reauthentication_auth_method == 'trusts'
                 and self.context.auth_plugin.auth_ref.will_expire_soon(
                     cfg.CONF.stale_token_duration)):
-            # If the token is near expiry, force creating a new client,
-            # which will get a new token via another call to auth_token
-            # We also have to invalidate all other cached clients
-            self.clients.invalidate_plugins()
-            self._client = self._create()
-        return self._client
+                # If the token is near expiry, force creating a new client,
+                # which will get a new token via another call to auth_token
+                # We also have to invalidate all other cached clients
+                self.clients.invalidate_plugins()
+            else:
+                return self._client_instances[version]
+
+        # Back-ward compatibility
+        if version is None:
+            self._client_instances[version] = self._create()
+        else:
+            if version not in self.supported_versions:
+                raise heat_exception.InvalidServiceVersion(
+                    version=version,
+                    service=self._get_service_name())
+
+            self._client_instances[version] = self._create(version=version)
+
+        return self._client_instances[version]
 
     @abc.abstractmethod
-    def _create(self):
+    def _create(self, version=None):
         """Return a newly created client."""
         pass
 
@@ -181,31 +196,13 @@ class ClientPlugin(object):
         try:
             url = get_endpoint()
         except exceptions.EmptyCatalog:
-            kc = self.clients.client('keystone').client
-
             auth_plugin = self.context.auth_plugin
-            endpoint = auth_plugin.get_endpoint(None,
-                                                interface=auth.AUTH_INTERFACE)
+            endpoint = auth_plugin.get_endpoint(
+                None, interface=plugin.AUTH_INTERFACE)
             token = auth_plugin.get_token(None)
-            project_id = auth_plugin.get_project_id(None)
-
-            if kc.version == 'v3':
-                token_obj = v3.Token(endpoint, token, project_id=project_id)
-                catalog_key = 'catalog'
-                access_key = 'token'
-            elif kc.version == 'v2.0':
-                endpoint = endpoint.replace('v3', 'v2.0')
-                token_obj = v2.Token(endpoint, token, tenant_id=project_id)
-                catalog_key = 'serviceCatalog'
-                access_key = 'access'
-            else:
-                raise exceptions.Error(_("Unknown Keystone version"))
-
-            auth_ref = token_obj.get_auth_ref(self._keystone_session)
-
-            if catalog_key in auth_ref:
-                access_info = self.context.auth_token_info[access_key]
-                access_info[catalog_key] = auth_ref[catalog_key]
+            token_obj = generic.Token(endpoint, token)
+            auth_ref = token_obj.get_access(self._keystone_session)
+            if auth_ref.has_service_catalog():
                 self.context.reload_auth_plugin()
                 url = get_endpoint()
 

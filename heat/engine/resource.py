@@ -14,6 +14,7 @@
 import base64
 import contextlib
 import datetime as dt
+import warnings
 import weakref
 
 from oslo_config import cfg
@@ -57,6 +58,20 @@ datetime = dt.datetime
 
 def _register_class(resource_type, resource_class):
     resources.global_env().register_class(resource_type, resource_class)
+
+
+class PollDelay(Exception):
+    """Exception to delay polling of the resource.
+
+    This exception may be raised by a Resource subclass's check_*_complete()
+    methods to indicate that it need not be polled again immediately. If this
+    exception is raised, the check_*_complete() method will not be called
+    again until the nth time that the resource becomes eligible for polling.
+    A PollDelay period of 1 is equivalent to returning False.
+    """
+    def __init__(self, period):
+        assert period >= 1
+        self.period = period
 
 
 @six.python_2_unicode_compatible
@@ -192,8 +207,9 @@ class Resource(object):
         self.context = stack.context
         self.name = name
         self.t = definition
-        # Only translate in cases where strict_validate is True
-        self.reparse(translate=self.stack.strict_validate,
+        # Only translate in cases where resource_validate is True
+        # ex. for template-validate
+        self.reparse(translate=self.stack.resource_validate,
                      client_resolve=False)
         self.update_policy = self.t.update_policy(self.update_policy_schema,
                                                   self.context)
@@ -245,7 +261,7 @@ class Resource(object):
 
     def _load_data(self, resource):
         """Load the resource state from its DB representation."""
-        self.resource_id = resource.nova_instance
+        self.resource_id = resource.physical_resource_id
         self.action = resource.action
         self.status = resource.status
         self.status_reason = resource.status_reason
@@ -346,10 +362,10 @@ class Resource(object):
     def __eq__(self, other):
         """Allow == comparison of two resources."""
         # For the purposes of comparison, we declare two resource objects
-        # equal if their names and parsed_templates are the same
+        # equal if their names and resolved templates are the same
         if isinstance(other, Resource):
-            return (self.name == other.name) and (
-                self.parsed_template() == other.parsed_template())
+            return ((self.name == other.name) and
+                    (self.t.freeze() == other.t.freeze()))
         return NotImplemented
 
     def __ne__(self, other):
@@ -481,12 +497,16 @@ class Resource(object):
         May be limited to only one section of the data, in which case a default
         value may also be supplied.
         """
-        default = default or {}
+        warnings.warn('Resource.parsed_template() is deprecated and will be '
+                      'removed in the Ocata release. Use the '
+                      'ResourceDefinition API instead.',
+                      DeprecationWarning)
+
+        frozen = self.t.freeze()
         if section is None:
-            template = self.t
-        else:
-            template = self.t.get(section, default)
-        return function.resolve(template)
+            return frozen
+
+        return frozen.get(section, default or {})
 
     def frozen_definition(self):
         if self._stored_properties_data is not None:
@@ -501,15 +521,7 @@ class Resource(object):
         If something has been removed in after which exists in before we set it
         to None.
         """
-        # Create a set containing the keys in both current and update template
-        template_keys = set(six.iterkeys(before))
-        template_keys.update(set(six.iterkeys(after)))
-
-        # Create a set of keys which differ (or are missing/added)
-        changed_keys_set = set([k for k in template_keys
-                                if before.get(k) != after.get(k)])
-
-        return dict((k, after.get(k)) for k in changed_keys_set)
+        return after - before
 
     def update_template_diff_properties(self, after_props, before_props):
         """Return changed Properties between the before and after properties.
@@ -617,10 +629,10 @@ class Resource(object):
         """
         return [r.name for r in self.stack.dependencies.required_by(self)]
 
-    def client(self, name=None):
+    def client(self, name=None, version=None):
         client_name = name or self.default_client_name
         assert client_name, "Must specify client name"
-        return self.stack.clients.client(client_name)
+        return self.stack.clients.client(client_name, version)
 
     def client_plugin(self, name=None):
         client_name = name or self.default_client_name
@@ -696,14 +708,15 @@ class Resource(object):
         raised, or FAILED otherwise. Non-exit exceptions will be translated
         to ResourceFailure exceptions.
 
-        Expected exceptions are re-raised, with the Resource left in the
-        IN_PROGRESS state.
+        Expected exceptions are re-raised, with the Resource moved to the
+        COMPLETE state.
         """
         try:
             self.state_set(action, self.IN_PROGRESS)
             yield
         except expected_exceptions as ex:
             with excutils.save_and_reraise_exception():
+                self.state_set(action, self.COMPLETE, six.text_type(ex))
                 LOG.debug('%s', six.text_type(ex))
         except Exception as ex:
             LOG.info(_LI('%(action)s: %(info)s'),
@@ -746,8 +759,16 @@ class Resource(object):
             handler_data = handler(*args)
             yield
             if callable(check):
-                while not check(handler_data):
-                    yield
+                while True:
+                    try:
+                        done = check(handler_data)
+                    except PollDelay as delay:
+                        yield delay.period
+                    else:
+                        if done:
+                            break
+                        else:
+                            yield
 
     @scheduler.wrappertask
     def _do_action(self, action, pre_func=None, resource_data=None):
@@ -1034,17 +1055,15 @@ class Resource(object):
         """
         if self._needs_update(after, before, after_props, before_props,
                               prev_resource, check_init_complete):
-            tmpl_diff = self.update_template_diff(function.resolve(after),
-                                                  before)
+            tmpl_diff = self.update_template_diff(after.freeze(), before)
             if tmpl_diff and self.needs_replace_with_tmpl_diff(tmpl_diff):
                 raise exception.UpdateReplace(self)
 
-            self.update_template_diff_properties(after_props,
-                                                 before_props)
+            self.update_template_diff_properties(after_props, before_props)
             return True
 
     def _check_restricted_actions(self, actions, after, before,
-                                  after_porps, before_props,
+                                  after_props, before_props,
                                   prev_resource):
         """Checks for restricted actions.
 
@@ -1055,7 +1074,7 @@ class Resource(object):
         True, if in-place update is required.
         """
         try:
-            if self.preview_update(after, before, after_porps, before_props,
+            if self.preview_update(after, before, after_props, before_props,
                                    prev_resource, check_init_complete=True):
                 if 'update' in actions:
                     raise exception.ResourceActionRestricted(action='update')
@@ -1065,19 +1084,7 @@ class Resource(object):
                 raise exception.ResourceActionRestricted(action='replace')
             raise
 
-    @scheduler.wrappertask
-    def update(self, after, before=None, prev_resource=None):
-        """Return a task to update the resource.
-
-        Subclasses should provide a handle_update() method to customise update,
-        the base-class handle_update will fail by default.
-        """
-        action = self.UPDATE
-
-        assert isinstance(after, rsrc_defn.ResourceDefinition)
-
-        if before is None:
-            before = self.frozen_definition()
+    def _prepare_update_props(self, after, before):
 
         before_props = before.properties(self.properties_schema,
                                          self.context)
@@ -1104,6 +1111,40 @@ class Resource(object):
                 LOG.warning(_LW("Resource cannot be updated with it's "
                                 "live state in case of next "
                                 "error: %s"), six.text_type(ex))
+        return after_props, before_props
+
+    def _prepare_update_replace(self, action):
+        try:
+            if (self.stack.action == 'ROLLBACK' and
+                    self.stack.status == 'IN_PROGRESS' and
+                    not cfg.CONF.convergence_engine):
+                # handle case, when it's rollback and we should restore
+                # old resource
+                self.restore_prev_rsrc()
+            else:
+                self.prepare_for_replace()
+        except Exception as e:
+            # if any exception happen, we should set the resource to
+            # FAILED, then raise ResourceFailure
+            failure = exception.ResourceFailure(e, self, action)
+            self.state_set(action, self.FAILED, six.text_type(failure))
+            raise failure
+
+    @scheduler.wrappertask
+    def update(self, after, before=None, prev_resource=None):
+        """Return a task to update the resource.
+
+        Subclasses should provide a handle_update() method to customise update,
+        the base-class handle_update will fail by default.
+        """
+        action = self.UPDATE
+
+        assert isinstance(after, rsrc_defn.ResourceDefinition)
+        if before is None:
+            before = self.frozen_definition()
+
+        after_props, before_props = self._prepare_update_props(
+            after, before)
 
         yield self._break_if_required(
             self.UPDATE, environment.HOOK_PRE_UPDATE)
@@ -1139,8 +1180,7 @@ class Resource(object):
             with self._action_recorder(action, exception.UpdateReplace):
                 after_props.validate()
 
-                tmpl_diff = self.update_template_diff(function.resolve(after),
-                                                      before)
+                tmpl_diff = self.update_template_diff(after.freeze(), before)
                 if tmpl_diff and self.needs_replace_with_tmpl_diff(tmpl_diff):
                     raise exception.UpdateReplace(self)
 
@@ -1161,21 +1201,7 @@ class Resource(object):
             raise failure
         except exception.UpdateReplace:
             # catch all UpdateReplace exceptions
-            try:
-                if (self.stack.action == 'ROLLBACK' and
-                        self.stack.status == 'IN_PROGRESS' and
-                        not cfg.CONF.convergence_engine):
-                    # handle case, when it's rollback and we should restore
-                    # old resource
-                    self.restore_prev_rsrc()
-                else:
-                    self.prepare_for_replace()
-            except Exception as e:
-                # if any exception happen, we should set the resource to
-                # FAILED, then raise ResourceFailure
-                failure = exception.ResourceFailure(e, self, action)
-                self.state_set(action, self.FAILED, six.text_type(failure))
-                raise failure
+            self._prepare_update_replace(action)
             raise
 
         yield self._break_if_required(
@@ -1504,7 +1530,9 @@ class Resource(object):
         if self.id is not None:
             try:
                 resource_objects.Resource.update_by_id(
-                    self.context, self.id, {'nova_instance': self.resource_id})
+                    self.context,
+                    self.id,
+                    {'physical_resource_id': self.resource_id})
             except Exception as ex:
                 LOG.warning(_LW('db error %s'), ex)
 
@@ -1521,7 +1549,7 @@ class Resource(object):
                   'status': self.status,
                   'status_reason': self.status_reason,
                   'stack_id': self.stack.id,
-                  'nova_instance': self.resource_id,
+                  'physical_resource_id': self.resource_id,
                   'name': self.name,
                   'rsrc_metadata': metadata,
                   'properties_data': properties_data,
@@ -1573,7 +1601,7 @@ class Resource(object):
             'replaces': self.replaces,
             'replaced_by': self.replaced_by,
             'current_template_id': self.current_template_id,
-            'nova_instance': self.resource_id,
+            'physical_resource_id': self.resource_id,
             'root_stack_id': self.root_stack_id
         }
         if prev_action == self.INIT:
@@ -1629,7 +1657,13 @@ class Resource(object):
             raise ex
 
     def _release(self, engine_id):
-        rs = resource_objects.Resource.get_obj(self.context, self.id)
+        rs = None
+        try:
+            rs = resource_objects.Resource.get_obj(self.context, self.id)
+        except (exception.NotFound, exception.EntityNotFound):
+            # ignore: Resource is deleted holding a lock-on
+            return
+
         atomic_key = rs.atomic_key
         if atomic_key is None:
             atomic_key = 0
@@ -1700,7 +1734,7 @@ class Resource(object):
             if self.client_plugin().is_not_found(ex):
                 raise exception.EntityNotFound(
                     entity='Resource', name=self.name)
-            raise ex
+            raise
         return resource_data
 
     def parse_live_resource_data(self, resource_properties, resource_data):

@@ -17,7 +17,6 @@ import mock
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import function
 from heat.engine.resources.openstack.heat import instance_group as instgrp
 from heat.engine import rsrc_defn
 from heat.tests import common
@@ -230,7 +229,7 @@ class InstanceGroupTest(common.HeatTestCase):
 
         # get the json snippet for the current InstanceGroup resource
         current_grp = current_stack['JobServerGroup']
-        current_snippets = dict((n, r.parsed_template())
+        current_snippets = dict((n, r.frozen_definition())
                                 for n, r in current_stack.items())
         current_grp_json = current_snippets[current_grp.name]
 
@@ -241,29 +240,19 @@ class InstanceGroupTest(common.HeatTestCase):
         # get the updated json snippet for the InstanceGroup resource in the
         # context of the current stack
         updated_grp = updated_stack['JobServerGroup']
-        updated_grp_json = function.resolve(updated_grp.t)
+        updated_grp_json = updated_grp.t.freeze()
 
         # identify the template difference
         tmpl_diff = updated_grp.update_template_diff(
             updated_grp_json, current_grp_json)
-        updated_policy = (updated_grp.t['UpdatePolicy']
-                          if 'UpdatePolicy' in updated_grp.t else None)
-        expected = {u'UpdatePolicy': updated_policy}
-        self.assertEqual(expected, tmpl_diff)
+        self.assertTrue(tmpl_diff.update_policy_changed())
 
         # test application of the new update policy in handle_update
-        update_snippet = rsrc_defn.ResourceDefinition(
-            current_grp.name,
-            current_grp.type(),
-            properties=updated_grp.t['Properties'],
-            update_policy=updated_policy)
         current_grp._try_rolling_update = mock.MagicMock()
         current_grp.resize = mock.MagicMock()
-        current_grp.handle_update(update_snippet, tmpl_diff, None)
-        if updated_policy is None:
-            self.assertEqual({}, current_grp.update_policy.data)
-        else:
-            self.assertEqual(updated_policy, current_grp.update_policy.data)
+        current_grp.handle_update(updated_grp_json, tmpl_diff, None)
+        self.assertEqual(updated_grp_json._update_policy or {},
+                         current_grp.update_policy.data)
 
     def test_update_policy_added(self):
         self.validate_update_policy_diff(ig_tmpl_without_updt_policy,

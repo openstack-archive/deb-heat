@@ -98,6 +98,18 @@ def do_resource_data_list():
         print(print_format % (k, data[k]))
 
 
+def do_reset_stack_status():
+    print(_("Warning: this command is potentially destructive and only "
+            "intended to recover from specific crashes."))
+    print(_("It is advised to shutdown all Heat engines beforehand."))
+    print(_("Continue ? [y/N]"))
+    data = raw_input()
+    if not data.lower().startswith('y'):
+        return
+    ctxt = context.get_admin_context()
+    db_api.reset_stack_status(ctxt, CONF.command.stack_id)
+
+
 def purge_deleted():
     """Remove database records that have been previously soft deleted."""
     utils.purge_deleted(CONF.command.age, CONF.command.granularity)
@@ -108,9 +120,11 @@ def do_crypt_parameters_and_properties():
     ctxt = context.get_admin_context()
     prev_encryption_key = CONF.command.previous_encryption_key
     if CONF.command.crypt_operation == "encrypt":
-        utils.encrypt_parameters_and_properties(ctxt, prev_encryption_key)
+        utils.encrypt_parameters_and_properties(
+            ctxt, prev_encryption_key, CONF.command.verbose_update_params)
     elif CONF.command.crypt_operation == "decrypt":
-        utils.decrypt_parameters_and_properties(ctxt, prev_encryption_key)
+        utils.decrypt_parameters_and_properties(
+            ctxt, prev_encryption_key, CONF.command.verbose_update_params)
 
 
 def add_command_parsers(subparsers):
@@ -151,11 +165,19 @@ def add_command_parsers(subparsers):
                         default=None,
                         help=_('Provide old encryption key. New encryption'
                                ' key would be used from config file.'))
+    parser.add_argument('--verbose-update-params', action='store_true',
+                        help=_('Print an INFO message when processing of each '
+                               'raw_template or resource begins or ends'))
 
     parser = subparsers.add_parser('resource_data_list')
     parser.set_defaults(func=do_resource_data_list)
     parser.add_argument('resource_id',
                         help=_('Stack resource id'))
+
+    parser = subparsers.add_parser('reset_stack_status')
+    parser.set_defaults(func=do_reset_stack_status)
+    parser.add_argument('stack_id',
+                        help=_('Stack id'))
 
     ServiceManageCommand.add_service_parsers(subparsers)
 

@@ -22,6 +22,7 @@ from oslo_versionedobjects import fields
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common import identifier
 from heat.db import api as db_api
 from heat.objects import base as heat_base
 from heat.objects import fields as heat_fields
@@ -59,7 +60,6 @@ class Stack(
         'current_deps': heat_fields.JsonField(),
         'prev_raw_template_id': fields.IntegerField(),
         'prev_raw_template': fields.ObjectField('RawTemplate'),
-        'tags': fields.ObjectField('StackTagList'),
         'parent_resource_name': fields.StringField(nullable=True),
     }
 
@@ -70,9 +70,6 @@ class Stack(
                 stack['raw_template'] = (
                     raw_template.RawTemplate.get_by_id(
                         context, db_stack['raw_template_id']))
-            elif field == 'tags':
-                stack['tags'] = stack_tag.StackTagList.from_db_object(
-                    context, db_stack.get(field))
             else:
                 stack[field] = db_stack.__dict__.get(field)
         stack._context = context
@@ -112,8 +109,26 @@ class Stack(
         return stack
 
     @classmethod
-    def get_all(cls, context, *args, **kwargs):
-        db_stacks = db_api.stack_get_all(context, *args, **kwargs)
+    def get_all(cls, context, limit=None, sort_keys=None, marker=None,
+                sort_dir=None, filters=None, tenant_safe=True,
+                show_deleted=False, show_nested=False, show_hidden=False,
+                tags=None, tags_any=None, not_tags=None,
+                not_tags_any=None):
+        db_stacks = db_api.stack_get_all(
+            context,
+            limit=limit,
+            sort_keys=sort_keys,
+            marker=marker,
+            sort_dir=sort_dir,
+            filters=filters,
+            tenant_safe=tenant_safe,
+            show_deleted=show_deleted,
+            show_nested=show_nested,
+            show_hidden=show_hidden,
+            tags=tags,
+            tags_any=tags_any,
+            not_tags=not_tags,
+            not_tags_any=not_tags_any)
         for db_stack in db_stacks:
             try:
                 yield cls._from_db_object(context, cls(context), db_stack)
@@ -210,3 +225,11 @@ class Stack(
     def get_status(cls, context, stack_id):
         """Return action and status for the given stack."""
         return db_api.stack_get_status(context, stack_id)
+
+    def identifier(self):
+        """Return an identifier for this stack."""
+        return identifier.HeatIdentifier(self.tenant, self.name, self.id)
+
+    @property
+    def tags(self):
+        return stack_tag.StackTagList.get(self._context, self.id)

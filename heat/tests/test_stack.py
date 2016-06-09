@@ -14,10 +14,12 @@
 import collections
 import copy
 import datetime
-import eventlet
 import json
+import logging
 import time
 
+import eventlet
+import fixtures
 import mock
 import mox
 from oslo_config import cfg
@@ -37,6 +39,7 @@ from heat.engine import scheduler
 from heat.engine import service
 from heat.engine import stack
 from heat.engine import template
+from heat.engine import update
 from heat.objects import raw_template as raw_template_object
 from heat.objects import resource as resource_objects
 from heat.objects import stack as stack_object
@@ -93,7 +96,8 @@ class StackTest(common.HeatTestCase):
         self.assertEqual('', self.stack.status_reason)
 
     def test_timeout_secs_default(self):
-        cfg.CONF.set_override('stack_action_timeout', 1000)
+        cfg.CONF.set_override('stack_action_timeout', 1000,
+                              enforce_type=True)
         self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl)
         self.assertIsNone(self.stack.timeout_mins)
         self.assertEqual(1000, self.stack.timeout_secs())
@@ -343,7 +347,6 @@ class StackTest(common.HeatTestCase):
                              username=mox.IgnoreArg(),
                              convergence=False,
                              current_traversal=self.stack.current_traversal,
-                             tags=mox.IgnoreArg(),
                              prev_raw_template_id=None,
                              current_deps=None, cache_data=None)
 
@@ -1272,6 +1275,23 @@ class StackTest(common.HeatTestCase):
         ctx_expected['auth_token'] = None
         self.assertEqual(ctx_expected, self.stack.stored_context().to_dict())
 
+    def test_tags_property_get_set(self):
+        self.stack = stack.Stack(self.ctx, 'stack_tags', self.tmpl)
+        self.stack.store()
+        stack_id = self.stack.id
+        test_stack = stack.Stack.load(self.ctx, stack_id=stack_id)
+        self.assertIsNone(test_stack.tags)
+
+        self.stack = stack.Stack(self.ctx, 'stack_name', self.tmpl)
+        self.stack.tags = ['tag1', 'tag2']
+        self.assertEqual(['tag1', 'tag2'], self.stack._tags)
+        self.stack.store()
+        stack_id = self.stack.id
+        test_stack = stack.Stack.load(self.ctx, stack_id=stack_id)
+        self.assertIsNone(test_stack._tags)
+        self.assertEqual(['tag1', 'tag2'], test_stack.tags)
+        self.assertEqual(['tag1', 'tag2'], test_stack._tags)
+
     def test_load_reads_tags(self):
         self.stack = stack.Stack(self.ctx, 'stack_tags', self.tmpl)
         self.stack.store()
@@ -1331,9 +1351,12 @@ class StackTest(common.HeatTestCase):
 
     def test_store_saves_creds_trust(self):
         """A user_creds entry is created on first stack store."""
-        cfg.CONF.set_override('deferred_auth_method', 'trusts')
+        cfg.CONF.set_override('deferred_auth_method', 'trusts',
+                              enforce_type=True)
 
         self.m.StubOutWithMock(keystone.KeystoneClientPlugin, '_create')
+        keystone.KeystoneClientPlugin._create().AndReturn(
+            fakes.FakeKeystoneClient(user_id='auser123'))
         keystone.KeystoneClientPlugin._create().AndReturn(
             fakes.FakeKeystoneClient(user_id='auser123'))
         self.m.ReplayAll()
@@ -2293,7 +2316,8 @@ class StackTest(common.HeatTestCase):
         env1 = environment.Environment({'param1': 'foo', 'param2': 'bar'})
         self.stack = stack.Stack(self.ctx, 'test',
                                  template.Template(tmpl, env=env1))
-        cfg.CONF.set_override('encrypt_parameters_and_properties', False)
+        cfg.CONF.set_override('encrypt_parameters_and_properties', False,
+                              enforce_type=True)
 
         # Verify that hidden parameters stored in plain text
         self.stack.store()
@@ -2321,7 +2345,8 @@ class StackTest(common.HeatTestCase):
         env1 = environment.Environment({'param1': 'foo', 'param2': 'bar'})
         self.stack = stack.Stack(self.ctx, 'test',
                                  template.Template(tmpl, env=env1))
-        cfg.CONF.set_override('encrypt_parameters_and_properties', True)
+        cfg.CONF.set_override('encrypt_parameters_and_properties', True,
+                              enforce_type=True)
 
         # Verify that hidden parameters are stored encrypted
         self.stack.store()
@@ -2358,6 +2383,91 @@ class StackTest(common.HeatTestCase):
         self.assertEqual('foo', params.get('param1'))
         self.assertEqual('new_bar', params.get('param2'))
 
+    def test_parameters_created_encrypted_updated_decrypted(self):
+        """Test stack loading with disabled parameter value validation."""
+        tmpl = template_format.parse('''
+        heat_template_version: 2013-05-23
+        parameters:
+            param1:
+                type: string
+                description: value1.
+            param2:
+                type: string
+                description: value2.
+                hidden: true
+        resources:
+            a_resource:
+                type: GenericResourceType
+        ''')
+
+        # Create the stack with encryption enabled
+        cfg.CONF.set_override('encrypt_parameters_and_properties', True,
+                              enforce_type=True)
+        env1 = environment.Environment({'param1': 'foo', 'param2': 'bar'})
+        self.stack = stack.Stack(self.ctx, 'test',
+                                 template.Template(tmpl, env=env1))
+        self.stack.store()
+
+        # Update the stack with encryption disabled
+        cfg.CONF.set_override('encrypt_parameters_and_properties', False,
+                              enforce_type=True)
+        loaded_stack = stack.Stack.load(self.ctx, stack_id=self.stack.id)
+        loaded_stack.state_set(self.stack.CREATE, self.stack.COMPLETE,
+                               'for_update')
+        env2 = environment.Environment({'param1': 'foo', 'param2': 'new_bar'})
+        new_stack = stack.Stack(self.ctx, 'test_update',
+                                template.Template(tmpl, env=env2))
+
+        self.assertEqual(['param2'], loaded_stack.env.encrypted_param_names)
+
+        # Without the fix for bug #1572294, loaded_stack.update() will
+        # blow up with "ValueError: too many values to unpack"
+        loaded_stack.update(new_stack)
+
+        self.assertEqual([], loaded_stack.env.encrypted_param_names)
+
+    def test_parameters_inconsistent_encrypted_param_names(self):
+        tmpl = template_format.parse('''
+        heat_template_version: 2013-05-23
+        parameters:
+            param1:
+                type: string
+                description: value1.
+            param2:
+                type: string
+                description: value2.
+                hidden: true
+        resources:
+            a_resource:
+                type: GenericResourceType
+        ''')
+        warning_logger = self.useFixture(
+            fixtures.FakeLogger(level=logging.WARNING,
+                                format="%(levelname)8s [%(name)s] %("
+                                "message)s"))
+
+        cfg.CONF.set_override('encrypt_parameters_and_properties', False,
+                              enforce_type=True)
+
+        env1 = environment.Environment({'param1': 'foo', 'param2': 'bar'})
+        self.stack = stack.Stack(self.ctx, 'test',
+                                 template.Template(tmpl, env=env1))
+        self.stack.store()
+
+        loaded_stack = stack.Stack.load(self.ctx, stack_id=self.stack.id)
+        loaded_stack.state_set(self.stack.CREATE, self.stack.COMPLETE,
+                               'for_update')
+
+        env2 = environment.Environment({'param1': 'foo', 'param2': 'new_bar'})
+
+        # Put inconsistent encrypted_param_names data in the environment
+        env2.encrypted_param_names = ['param1']
+        new_stack = stack.Stack(self.ctx, 'test_update',
+                                template.Template(tmpl, env=env2))
+        self.assertIsNone(loaded_stack.update(new_stack))
+        self.assertIn('Encountered already-decrypted data',
+                      warning_logger.output)
+
     def test_parameters_stored_decrypted_successful_load(self):
         """Test stack loading with disabled parameter value validation."""
         tmpl = template_format.parse('''
@@ -2377,7 +2487,8 @@ class StackTest(common.HeatTestCase):
         env1 = environment.Environment({'param1': 'foo', 'param2': 'bar'})
         self.stack = stack.Stack(self.ctx, 'test',
                                  template.Template(tmpl, env=env1))
-        cfg.CONF.set_override('encrypt_parameters_and_properties', False)
+        cfg.CONF.set_override('encrypt_parameters_and_properties', False,
+                              enforce_type=True)
 
         # Verify that hidden parameters are stored decrypted
         self.stack.store()
@@ -2528,6 +2639,35 @@ class StackTest(common.HeatTestCase):
                                                stc.resolve_static_data,
                                                None)
         self.assertEqual(expected_message, six.text_type(expected_exception))
+
+    @mock.patch.object(update, 'StackUpdate')
+    def test_update_task_exception(self, mock_stack_update):
+        class RandomException(Exception):
+            pass
+
+        tmpl1 = template.Template({
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'}
+            }
+        })
+        self.stack = stack.Stack(utils.dummy_context(), 'test_stack', tmpl1)
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((stack.Stack.CREATE, stack.Stack.COMPLETE),
+                         self.stack.state)
+
+        tmpl2 = template.Template({
+            'HeatTemplateFormatVersion': '2012-12-12',
+            'Resources': {
+                'foo': {'Type': 'GenericResourceType'},
+                'bar': {'Type': 'GenericResourceType'}
+            }
+        })
+        updated_stack = stack.Stack(utils.dummy_context(), 'test_stack', tmpl2)
+
+        mock_stack_update.side_effect = RandomException()
+        self.assertRaises(RandomException, self.stack.update, updated_stack)
 
     def update_exception_handler(self, exc, action=stack.Stack.UPDATE,
                                  disable_rollback=False):

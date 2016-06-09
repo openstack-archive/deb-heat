@@ -18,7 +18,7 @@ from glanceclient import exc as glance_exc
 from glanceclient.openstack.common.apiclient import exceptions as g_a_exc
 from heatclient import client as heatclient
 from heatclient import exc as heat_exc
-from keystoneclient.auth.identity import v3
+from keystoneauth1.identity import generic
 from keystoneclient import exceptions as keystone_exc
 from manilaclient import exceptions as manila_exc
 import mock
@@ -44,12 +44,14 @@ class ClientsTest(common.HeatTestCase):
 
     def test_bad_cloud_backend(self):
         con = mock.Mock()
-        cfg.CONF.set_override('cloud_backend', 'some.weird.object')
+        cfg.CONF.set_override('cloud_backend', 'some.weird.object',
+                              enforce_type=True)
         exc = self.assertRaises(exception.Invalid, clients.Clients, con)
         self.assertIn('Invalid cloud_backend setting in heat.conf detected',
                       six.text_type(exc))
 
-        cfg.CONF.set_override('cloud_backend', 'heat.engine.clients.Clients')
+        cfg.CONF.set_override('cloud_backend', 'heat.engine.clients.Clients',
+                              enforce_type=True)
         exc = self.assertRaises(exception.Invalid, clients.Clients, con)
         self.assertIn('Invalid cloud_backend setting in heat.conf detected',
                       six.text_type(exc))
@@ -100,7 +102,7 @@ class ClientsTest(common.HeatTestCase):
 
     def test_clients_get_heat_cfn_metadata_url_conf(self):
         cfg.CONF.set_override('heat_metadata_server_url',
-                              'http://server.test:123')
+                              'http://server.test:123', enforce_type=True)
         obj = self._client_cfn_url()
         self.assertEqual("http://server.test:123/v1/",
                          obj.get_cfn_metadata_server_url())
@@ -153,7 +155,6 @@ class ClientsTest(common.HeatTestCase):
         obj.get_heat_url.return_value = None
         obj.url_for = mock.Mock(name="url_for")
         obj.url_for.return_value = "url_from_keystone"
-        obj._client = None
         heat = obj.client()
         heat_cached = obj.client()
         self.assertEqual(heat, heat_cached)
@@ -182,11 +183,11 @@ class ClientPluginTest(common.HeatTestCase):
         plugin = FooClientsPlugin(con)
 
         cfg.CONF.set_override('ca_file', '/tmp/bar',
-                              group='clients_heat')
+                              group='clients_heat', enforce_type=True)
         cfg.CONF.set_override('ca_file', '/tmp/foo',
-                              group='clients')
+                              group='clients', enforce_type=True)
         cfg.CONF.set_override('endpoint_type', 'internalURL',
-                              group='clients')
+                              group='clients', enforce_type=True)
 
         # check heat group
         self.assertEqual('/tmp/bar',
@@ -294,7 +295,7 @@ class ClientPluginTest(common.HeatTestCase):
                          plugin.url_for(service_type='foo'))
         self.assertTrue(con.auth_plugin.get_endpoint.called)
 
-    @mock.patch.object(v3, "Token", name="v3_token")
+    @mock.patch.object(generic, "Token", name="v3_token")
     def test_get_missing_service_catalog(self, mock_v3):
         class FakeKeystone(fakes.FakeKeystoneClient):
             def __init__(self):
@@ -322,7 +323,7 @@ class ClientPluginTest(common.HeatTestCase):
         self.assertEqual('http://192.0.2.1/bar',
                          plugin.url_for(service_type='bar'))
 
-    @mock.patch.object(v3, "Token", name="v3_token")
+    @mock.patch.object(generic, "Token", name="v3_token")
     def test_endpoint_not_found(self, mock_v3):
         class FakeKeystone(fakes.FakeKeystoneClient):
             def __init__(self):
@@ -342,8 +343,11 @@ class ClientPluginTest(common.HeatTestCase):
 
         mock_token_obj = mock.Mock()
         mock_v3.return_value = mock_token_obj
-        mock_token_obj.get_auth_ref.return_value = {'no_catalog': 'without'}
-
+        mock_access = mock.Mock()
+        self.patchobject(mock_token_obj, 'get_access',
+                         return_value=mock_access)
+        self.patchobject(mock_access, 'has_service_catalog',
+                         return_value=False)
         plugin = FooClientsPlugin(con)
 
         self.assertRaises(keystone_exc.EndpointNotFound,
@@ -357,7 +361,8 @@ class ClientPluginTest(common.HeatTestCase):
         self.assertRaises(TypeError, client_plugin.ClientPlugin, c)
 
     def test_create_client_on_token_expiration(self):
-        cfg.CONF.set_override('reauthentication_auth_method', 'trusts')
+        cfg.CONF.set_override('reauthentication_auth_method', 'trusts',
+                              enforce_type=True)
         con = mock.Mock()
         con.auth_plugin.auth_ref.will_expire_soon.return_value = False
         plugin = FooClientsPlugin(con)
@@ -411,7 +416,7 @@ class TestClientPluginsInitialise(common.HeatTestCase):
             self.assertIsNotNone(plugin)
             self.assertEqual(c, plugin.clients)
             self.assertEqual(con, plugin.context)
-            self.assertIsNone(plugin._client)
+            self.assertEqual({}, plugin._client_instances)
             self.assertTrue(clients.has_client(plugin_name))
             self.assertIsInstance(plugin.service_types, list)
             self.assertTrue(len(plugin.service_types) >= 1,
@@ -427,7 +432,9 @@ class TestClientPluginsInitialise(common.HeatTestCase):
             plugin = c.client_plugin(plugin_name)
             self.assertIsNotNone(plugin)
         c.invalidate_plugins()
-        self.assertEqual(len(plugin_types), mock_invalidate.call_count)
+        # while client plugin is initialized and while client is invoked
+        # its being invalidated, so the count will be doubled
+        self.assertEqual(len(plugin_types) * 2, mock_invalidate.call_count)
 
 
 class TestIsNotFound(common.HeatTestCase):

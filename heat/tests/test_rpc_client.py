@@ -166,18 +166,24 @@ class EngineRpcAPITestCase(common.HeatTestCase):
         call_kwargs['user_creds_id'] = None
         call_kwargs['stack_user_project_id'] = None
         call_kwargs['parent_resource_name'] = None
+        call_kwargs['template_id'] = None
         expected_message = self.rpcapi.make_msg('create_stack', **call_kwargs)
         kwargs['expected_message'] = expected_message
         self._test_engine_api('create_stack', 'call', **kwargs)
 
     def test_update_stack(self):
+        kwargs = dict(stack_identity=self.identity,
+                      template={u'Foo': u'bar'},
+                      params={u'InstanceType': u'm1.xlarge'},
+                      files={},
+                      environment_files=['foo.yaml'],
+                      args=mock.ANY)
+        call_kwargs = copy.deepcopy(kwargs)
+        call_kwargs['template_id'] = None
+        expected_message = self.rpcapi.make_msg('update_stack', **call_kwargs)
         self._test_engine_api('update_stack', 'call',
-                              stack_identity=self.identity,
-                              template={u'Foo': u'bar'},
-                              params={u'InstanceType': u'm1.xlarge'},
-                              files={},
-                              environment_files=['foo.yaml'],
-                              args=mock.ANY)
+                              expected_message=expected_message,
+                              **kwargs)
 
     def test_preview_update_stack(self):
         self._test_engine_api('preview_update_stack', 'call',
@@ -216,10 +222,12 @@ class EngineRpcAPITestCase(common.HeatTestCase):
                               support_status=None,
                               type_name=None,
                               heat_version=None,
-                              version='1.16')
+                              with_description=False,
+                              version='1.30')
 
     def test_resource_schema(self):
-        self._test_engine_api('resource_schema', 'call', type_name="TYPE")
+        self._test_engine_api('resource_schema', 'call', type_name="TYPE",
+                              with_description=False, version='1.30')
 
     def test_generate_template(self):
         self._test_engine_api('generate_template', 'call',
@@ -328,6 +336,11 @@ class EngineRpcAPITestCase(common.HeatTestCase):
         self._test_engine_api('show_software_deployment', 'call',
                               deployment_id=deployment_id)
 
+    def test_check_software_deployment(self):
+        deployment_id = '86729f02-4648-44d8-af44-d0ec65b6abc9'
+        self._test_engine_api('check_software_deployment', 'call',
+                              deployment_id=deployment_id, timeout=100)
+
     def test_create_software_deployment(self):
         self._test_engine_api(
             'create_software_deployment', 'call',
@@ -401,3 +414,8 @@ class EngineRpcAPITestCase(common.HeatTestCase):
                               mark_unhealthy=True,
                               resource_status_reason="Any reason",
                               version='1.26')
+
+    def test_get_environment(self):
+        self._test_engine_api(
+            'get_environment', 'call', stack_identity=self.identity,
+            version='1.28')

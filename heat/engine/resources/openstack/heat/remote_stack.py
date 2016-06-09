@@ -118,7 +118,8 @@ class RemoteStack(resource.Resource):
 
         # Build RequestContext from existing one
         dict_ctxt = self.context.to_dict()
-        dict_ctxt.update({'region_name': self._region_name})
+        dict_ctxt.update({'region_name': self._region_name,
+                          'overwrite': False})
         self._local_context = context.RequestContext.from_dict(dict_ctxt)
         return self._local_context
 
@@ -227,11 +228,8 @@ class RemoteStack(resource.Resource):
         # Always issue an update to the remote stack and let the individual
         # resources in it decide if they need updating.
         if self.resource_id:
-            snippet = json_snippet.get('Properties', {})
-            self.properties = properties.Properties(self.properties_schema,
-                                                    snippet,
-                                                    function.resolve,
-                                                    self.name)
+            self.properties = json_snippet.properties(self.properties_schema,
+                                                      self.context)
 
             params = self.properties[self.PARAMETERS]
             env = environment.get_child_environment(self.stack.env, params)
