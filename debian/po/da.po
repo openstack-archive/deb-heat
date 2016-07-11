@@ -1,14 +1,14 @@
 # Danish translation heat.
-# Copyright (C) 2014 heat og nedenstående oversættere.
+# Copyright (C) 2016 heat og nedenstående oversættere.
 # This file is distributed under the same license as the heat package.
-# Joe Hansen <joedalton2@yahoo.dk>, 2013, 2014.
+# Joe Hansen <joedalton2@yahoo.dk>, 2013, 2014, 2016.
 #
 msgid ""
 msgstr ""
 "Project-Id-Version: heat\n"
 "Report-Msgid-Bugs-To: heat@packages.debian.org\n"
 "POT-Creation-Date: 2016-03-29 13:17+0000\n"
-"PO-Revision-Date: 2014-02-22 23:51+0200\n"
+"PO-Revision-Date: 2016-07-09 23:51+0200\n"
 "Last-Translator: Joe Hansen <joedalton2@yahoo.dk>\n"
 "Language-Team: Danish <debian-l10n-danish@lists.debian.org>\n"
 "Language: da\n"
@@ -103,17 +103,14 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../heat-common.templates:6001
-#, fuzzy
-#| msgid ""
-#| "Note that you will need to have an up and running Keystone server on "
-#| "which to connect using the Keystone authentication token."
 msgid ""
 "Note that you will need to have an up and running Keystone server on which "
 "to connect using a known admin project name, admin username and password. "
 "The admin auth token is not used anymore."
 msgstr ""
-"Bemærk at du skal have en op og kørende Keystoneserver som du skal forbinde "
-"til med Keystones godkendelsessymbol."
+"Bemærk at du skal have en op og kørende Keystoneserver, som du skal forbinde "
+"til via et kendt administratorprojektnavn, administratorbrugernavn og "
+"adgangskode. Administratorens godkendelsessymbol bruges ikke længere."
 
 #. Type: string
 #. Description
@@ -134,10 +131,8 @@ msgstr ""
 #. Type: string
 #. Description
 #: ../heat-common.templates:8001
-#, fuzzy
-#| msgid "Keystone authentication token:"
 msgid "Keystone admin name:"
-msgstr "Godkendelsessymbol for Keystone:"
+msgstr "Administratornavn for Keystone:"
 
 #. Type: string
 #. Description
@@ -151,18 +146,21 @@ msgid ""
 "To register the service endpoint, this package needs to know the Admin "
 "login, name, project name, and password to the Keystone server."
 msgstr ""
+"For at registrere tjenesteslutpunkt skal denne pakke kende til "
+"administratorlogind'et, navn, projektnavn og adgangskode for "
+"Keystoneserveren."
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:9001
 msgid "Keystone admin project name:"
-msgstr ""
+msgstr "Projektnavn for Keystoneadministratoren:"
 
 #. Type: password
 #. Description
 #: ../heat-common.templates:10001
 msgid "Keystone admin password:"
-msgstr ""
+msgstr "Adgangskode for Keystoneadministratoren:"
 
 #. Type: string
 #. Description
@@ -310,9 +308,3 @@ msgid "Please specify the password used to connect to the RabbitMQ server."
 msgstr ""
 "Angiv venligst adgangskoden brugt til at forbinde med RAbbitMQ-serveren."
 
-#~ msgid ""
-#~ "To configure its endpoint in Keystone, heat-api needs the Keystone "
-#~ "authentication token."
-#~ msgstr ""
-#~ "For at konfigurere dets slutpunkt i Keystone, kræver heat-api Keystones "
-#~ "godkendelsessymbol."
