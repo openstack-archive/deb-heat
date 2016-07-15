@@ -1,10 +1,11 @@
-heat (1:7.0.0~b1-3) UNRELEASED; urgency=medium
+heat (1:7.0.0~b2-1) experimental; urgency=medium
 
+  * New upstream release.
   * Added new pt_BR.po Brazilian Portuguese debconf templates translation
     (Closes: #829341).
   * Updated Danish translation of the debconf templates (Closes: #830642).
 
- -- Thomas Goirand <zigo@debian.org>  Mon, 11 Jul 2016 14:29:42 +0200
+ -- Thomas Goirand <zigo@debian.org>  Fri, 15 Jul 2016 19:33:13 +0200
 
 heat (1:7.0.0~b1-1) experimental; urgency=medium
 
