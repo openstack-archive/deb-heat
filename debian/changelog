@@ -1,6 +1,7 @@
 heat (1:7.0.0~b2-1) experimental; urgency=medium
 
   * New upstream release.
+  * Fixed (build-)depends for this release.
   * Added new pt_BR.po Brazilian Portuguese debconf templates translation
     (Closes: #829341).
   * Updated Danish translation of the debconf templates (Closes: #830642).
