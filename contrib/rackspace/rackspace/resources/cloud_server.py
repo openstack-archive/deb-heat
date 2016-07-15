@@ -101,7 +101,7 @@ class CloudServer(server.Server):
                 _('How the server should receive the metadata required for '
                   'software configuration. POLL_TEMP_URL is the only '
                   'supported transport on Rackspace Cloud. This property is '
-                  'retained for compatability.'),
+                  'retained for compatibility.'),
                 default=server.Server.POLL_TEMP_URL,
                 update_allowed=True,
                 constraints=[
@@ -119,7 +119,7 @@ class CloudServer(server.Server):
         self._rack_connect_started_event_sent = False
 
     def _config_drive(self):
-        user_data_format = self.properties.get(self.USER_DATA_FORMAT, "")
+        user_data_format = self.properties[self.USER_DATA_FORMAT]
         is_sw_config = user_data_format == self.SOFTWARE_CONFIG
         user_data = self.properties.get(self.USER_DATA)
         config_drive = self.properties.get(self.CONFIG_DRIVE)

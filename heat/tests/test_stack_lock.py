@@ -14,6 +14,7 @@
 import mock
 
 from heat.common import exception
+from heat.common import service_utils
 from heat.engine import stack_lock
 from heat.objects import stack as stack_object
 from heat.objects import stack_lock as stack_lock_object
@@ -26,7 +27,7 @@ class StackLockTest(common.HeatTestCase):
         super(StackLockTest, self).setUp()
         self.context = utils.dummy_context()
         self.stack_id = "aae01f2d-52ae-47ac-8a0d-3fde3d220fea"
-        self.engine_id = stack_lock.StackLock.generate_engine_id()
+        self.engine_id = service_utils.generate_engine_id()
         stack = mock.MagicMock()
         stack.id = self.stack_id
         stack.name = "test_stack"
@@ -46,7 +47,8 @@ class StackLockTest(common.HeatTestCase):
                                      self.engine_id)
         slock.acquire()
 
-        mock_create.assert_called_once_with(self.stack_id, self.engine_id)
+        mock_create.assert_called_once_with(
+            self.context, self.stack_id, self.engine_id)
 
     def test_failed_acquire_existing_lock_current_engine(self):
         mock_create = self.patchobject(stack_lock_object.StackLock,
@@ -62,7 +64,8 @@ class StackLockTest(common.HeatTestCase):
             self.stack_id,
             tenant_safe=False,
             show_deleted=True)
-        mock_create.assert_called_once_with(self.stack_id, self.engine_id)
+        mock_create.assert_called_once_with(
+            self.context, self.stack_id, self.engine_id)
 
     def test_successful_acquire_existing_lock_engine_dead(self):
         mock_create = self.patchobject(stack_lock_object.StackLock,
@@ -74,12 +77,13 @@ class StackLockTest(common.HeatTestCase):
 
         slock = stack_lock.StackLock(self.context, self.stack_id,
                                      self.engine_id)
-        self.patchobject(slock, 'engine_alive', return_value=False)
+        self.patchobject(service_utils, 'engine_alive', return_value=False)
         slock.acquire()
 
-        mock_create.assert_called_once_with(self.stack_id, self.engine_id)
-        mock_steal.assert_called_once_with(self.stack_id, 'fake-engine-id',
-                                           self.engine_id)
+        mock_create.assert_called_once_with(
+            self.context, self.stack_id, self.engine_id)
+        mock_steal.assert_called_once_with(
+            self.context, self.stack_id, 'fake-engine-id', self.engine_id)
 
     def test_failed_acquire_existing_lock_engine_alive(self):
         mock_create = self.patchobject(stack_lock_object.StackLock,
@@ -88,7 +92,7 @@ class StackLockTest(common.HeatTestCase):
 
         slock = stack_lock.StackLock(self.context, self.stack_id,
                                      self.engine_id)
-        self.patchobject(slock, 'engine_alive', return_value=True)
+        self.patchobject(service_utils, 'engine_alive', return_value=True)
         self.assertRaises(exception.ActionInProgress, slock.acquire)
         self.mock_get_by_id.assert_called_once_with(
             self.context,
@@ -96,7 +100,8 @@ class StackLockTest(common.HeatTestCase):
             tenant_safe=False,
             show_deleted=True)
 
-        mock_create.assert_called_once_with(self.stack_id, self.engine_id)
+        mock_create.assert_called_once_with(
+            self.context, self.stack_id, self.engine_id)
 
     def test_failed_acquire_existing_lock_engine_dead(self):
         mock_create = self.patchobject(stack_lock_object.StackLock,
@@ -108,7 +113,7 @@ class StackLockTest(common.HeatTestCase):
 
         slock = stack_lock.StackLock(self.context, self.stack_id,
                                      self.engine_id)
-        self.patchobject(slock, 'engine_alive', return_value=False)
+        self.patchobject(service_utils, 'engine_alive', return_value=False)
         self.assertRaises(exception.ActionInProgress, slock.acquire)
         self.mock_get_by_id.assert_called_once_with(
             self.context,
@@ -116,9 +121,10 @@ class StackLockTest(common.HeatTestCase):
             tenant_safe=False,
             show_deleted=True)
 
-        mock_create.assert_called_once_with(self.stack_id, self.engine_id)
-        mock_steal.assert_called_once_with(self.stack_id, 'fake-engine-id',
-                                           self.engine_id)
+        mock_create.assert_called_once_with(
+            self.context, self.stack_id, self.engine_id)
+        mock_steal.assert_called_once_with(
+            self.context, self.stack_id, 'fake-engine-id', self.engine_id)
 
     def test_successful_acquire_with_retry(self):
         mock_create = self.patchobject(stack_lock_object.StackLock,
@@ -130,13 +136,14 @@ class StackLockTest(common.HeatTestCase):
 
         slock = stack_lock.StackLock(self.context, self.stack_id,
                                      self.engine_id)
-        self.patchobject(slock, 'engine_alive', return_value=False)
+        self.patchobject(service_utils, 'engine_alive', return_value=False)
         slock.acquire()
 
         mock_create.assert_has_calls(
-            [mock.call(self.stack_id, self.engine_id)] * 2)
+            [mock.call(self.context, self.stack_id, self.engine_id)] * 2)
         mock_steal.assert_has_calls(
-            [mock.call(self.stack_id, 'fake-engine-id', self.engine_id)] * 2)
+            [mock.call(self.context, self.stack_id,
+                       'fake-engine-id', self.engine_id)] * 2)
 
     def test_failed_acquire_one_retry_only(self):
         mock_create = self.patchobject(stack_lock_object.StackLock,
@@ -148,7 +155,7 @@ class StackLockTest(common.HeatTestCase):
 
         slock = stack_lock.StackLock(self.context, self.stack_id,
                                      self.engine_id)
-        self.patchobject(slock, 'engine_alive', return_value=False)
+        self.patchobject(service_utils, 'engine_alive', return_value=False)
         self.assertRaises(exception.ActionInProgress, slock.acquire)
         self.mock_get_by_id.assert_called_with(
             self.context,
@@ -157,9 +164,10 @@ class StackLockTest(common.HeatTestCase):
             show_deleted=True)
 
         mock_create.assert_has_calls(
-            [mock.call(self.stack_id, self.engine_id)] * 2)
+            [mock.call(self.context, self.stack_id, self.engine_id)] * 2)
         mock_steal.assert_has_calls(
-            [mock.call(self.stack_id, 'fake-engine-id', self.engine_id)] * 2)
+            [mock.call(self.context, self.stack_id,
+                       'fake-engine-id', self.engine_id)] * 2)
 
     def test_context_mgr_exception(self):
         stack_lock_object.StackLock.create = mock.Mock(return_value=None)

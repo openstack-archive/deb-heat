@@ -70,21 +70,22 @@ def resource_data_get_all(context, resource_id, data=None):
     return IMPL.resource_data_get_all(context, resource_id, data)
 
 
-def resource_data_get(resource, key):
-    return IMPL.resource_data_get(resource, key)
+def resource_data_get(context, resource_id, key):
+    return IMPL.resource_data_get(context, resource_id, key)
 
 
-def resource_data_set(resource, key, value, redact=False):
-    return IMPL.resource_data_set(resource, key, value, redact=redact)
+def resource_data_set(context, resource_id, key, value, redact=False):
+    return IMPL.resource_data_set(context, resource_id, key, value,
+                                  redact=redact)
 
 
 def resource_data_get_by_key(context, resource_id, key):
     return IMPL.resource_data_get_by_key(context, resource_id, key)
 
 
-def resource_data_delete(resource, key):
+def resource_data_delete(context, resource_id, key):
     """Remove a resource_data element associated to a resource."""
-    return IMPL.resource_data_delete(resource, key)
+    return IMPL.resource_data_delete(context, resource_id, key)
 
 
 def stack_tags_set(context, stack_id, tags):
@@ -121,8 +122,20 @@ def resource_exchange_stacks(context, resource_id1, resource_id2):
     return IMPL.resource_exchange_stacks(context, resource_id1, resource_id2)
 
 
-def resource_get_all_by_stack(context, stack_id, key_id=False, filters=None):
-    return IMPL.resource_get_all_by_stack(context, stack_id, key_id, filters)
+def resource_get_all_by_stack(context, stack_id, filters=None):
+    return IMPL.resource_get_all_by_stack(context, stack_id, filters)
+
+
+def resource_get_all_active_by_stack(context, stack_id):
+    return IMPL.resource_get_all_active_by_stack(context, stack_id)
+
+
+def resource_get_all_by_root_stack(context, stack_id, filters=None):
+    return IMPL.resource_get_all_by_root_stack(context, stack_id, filters)
+
+
+def resource_purge_deleted(context, stack_id):
+    return IMPL.resource_purge_deleted(context, stack_id)
 
 
 def resource_get_by_name_and_stack(context, resource_name, stack_id):
@@ -197,20 +210,21 @@ def stack_delete(context, stack_id):
     return IMPL.stack_delete(context, stack_id)
 
 
-def stack_lock_create(stack_id, engine_id):
-    return IMPL.stack_lock_create(stack_id, engine_id)
+def stack_lock_create(context, stack_id, engine_id):
+    return IMPL.stack_lock_create(context, stack_id, engine_id)
 
 
-def stack_lock_get_engine_id(stack_id):
-    return IMPL.stack_lock_get_engine_id(stack_id)
+def stack_lock_get_engine_id(context, stack_id):
+    return IMPL.stack_lock_get_engine_id(context, stack_id)
 
 
-def stack_lock_steal(stack_id, old_engine_id, new_engine_id):
-    return IMPL.stack_lock_steal(stack_id, old_engine_id, new_engine_id)
+def stack_lock_steal(context, stack_id, old_engine_id, new_engine_id):
+    return IMPL.stack_lock_steal(context, stack_id, old_engine_id,
+                                 new_engine_id)
 
 
-def stack_lock_release(stack_id, engine_id):
-    return IMPL.stack_lock_release(stack_id, engine_id)
+def stack_lock_release(context, stack_id, engine_id):
+    return IMPL.stack_lock_release(context, stack_id, engine_id)
 
 
 def persist_state_and_release_lock(context, stack_id, engine_id, values):
@@ -234,8 +248,8 @@ def user_creds_delete(context, user_creds_id):
     return IMPL.user_creds_delete(context, user_creds_id)
 
 
-def user_creds_get(context_id):
-    return IMPL.user_creds_get(context_id)
+def user_creds_get(context, user_creds_id):
+    return IMPL.user_creds_get(context, user_creds_id)
 
 
 def event_get(context, event_id):

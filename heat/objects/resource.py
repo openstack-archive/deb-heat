@@ -135,18 +135,46 @@ class Resource(
             resource_id2)
 
     @classmethod
-    def get_all_by_stack(cls, context, stack_id, key_id=False, filters=None):
-        resources_db = db_api.resource_get_all_by_stack(context,
-                                                        stack_id, key_id,
+    def get_all_by_stack(cls, context, stack_id, filters=None):
+        resources_db = db_api.resource_get_all_by_stack(context, stack_id,
                                                         filters)
+        return cls._resources_to_dict(context, resources_db)
+
+    @classmethod
+    def _resources_to_dict(cls, context, resources_db):
         resources = [
             (
-                resource_key,
+                resource_name,
                 cls._from_db_object(cls(context), context, resource_db)
             )
-            for resource_key, resource_db in six.iteritems(resources_db)
+            for resource_name, resource_db in six.iteritems(resources_db)
         ]
         return dict(resources)
+
+    @classmethod
+    def get_all_active_by_stack(cls, context, stack_id):
+        resources_db = db_api.resource_get_all_active_by_stack(context,
+                                                               stack_id)
+        resources = [
+            (
+                resource_id,
+                cls._from_db_object(cls(context), context, resource_db)
+            )
+            for resource_id, resource_db in six.iteritems(resources_db)
+        ]
+        return dict(resources)
+
+    @classmethod
+    def get_all_by_root_stack(cls, context, stack_id, filters):
+        resources_db = db_api.resource_get_all_by_root_stack(
+            context,
+            stack_id,
+            filters)
+        return cls._resources_to_dict(context, resources_db)
+
+    @classmethod
+    def purge_deleted(cls, context, stack_id):
+        return db_api.resource_purge_deleted(context, stack_id)
 
     @classmethod
     def get_by_name_and_stack(cls, context, resource_name, stack_id):

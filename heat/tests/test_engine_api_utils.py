@@ -20,13 +20,13 @@ from oslo_utils import timeutils
 import six
 
 from heat.common import exception
-from heat.common import identifier
 from heat.common import template_format
 from heat.engine import api
 from heat.engine import event
 from heat.engine import parameters
 from heat.engine import stack as parser
 from heat.engine import template
+from heat.objects import event as event_object
 from heat.rpc import api as rpc_api
 from heat.tests import common
 from heat.tests import utils
@@ -49,17 +49,19 @@ class FormatTest(common.HeatTestCase):
                 'generic4': {'Type': 'StackResourceType'}
             }
         })
-        self.stack = parser.Stack(utils.dummy_context(), 'test_stack',
+        self.context = utils.dummy_context()
+        self.stack = parser.Stack(self.context, 'test_stack',
                                   tmpl, stack_id=str(uuid.uuid4()))
 
-    def _dummy_event(self, event_id):
+    def _dummy_event(self):
         resource = self.stack['generic1']
-        return event.Event(utils.dummy_context(), self.stack, 'CREATE',
-                           'COMPLETE', 'state changed',
-                           'z3455xyc-9f88-404d-a85b-5315293e67de',
-                           resource.properties, resource.name, resource.type(),
-                           uuid='abc123yc-9f88-404d-a85b-531529456xyz',
-                           id=event_id)
+        ev = event.Event(self.context, self.stack, 'CREATE',
+                         'COMPLETE', 'state changed',
+                         'z3455xyc-9f88-404d-a85b-5315293e67de',
+                         resource.properties, resource.name, resource.type(),
+                         uuid='abc123yc-9f88-404d-a85b-531529456xyz')
+        event_id = ev.store()
+        return event_object.Event.get_by_id(self.context, event_id)
 
     def test_format_stack_resource(self):
         self.stack.created_time = datetime(2015, 8, 3, 17, 5, 1)
@@ -88,10 +90,10 @@ class FormatTest(common.HeatTestCase):
         )))
 
         formatted = api.format_stack_resource(res, True)
-        self.assertEqual(resource_details_keys, set(six.iterkeys(formatted)))
+        self.assertEqual(resource_details_keys, set(formatted.keys()))
 
         formatted = api.format_stack_resource(res, False)
-        self.assertEqual(resource_keys, set(six.iterkeys(formatted)))
+        self.assertEqual(resource_keys, set(formatted.keys()))
         self.assertEqual(self.stack.created_time.isoformat(),
                          formatted[rpc_api.RES_CREATION_TIME])
         self.assertEqual(self.stack.updated_time.isoformat(),
@@ -206,6 +208,8 @@ class FormatTest(common.HeatTestCase):
     def test_format_stack_resource_with_nested_stack(self):
         res = self.stack['generic4']
         nested_id = {'foo': 'bar'}
+        res.has_nested = mock.Mock()
+        res.has_nested.return_value = True
         res.nested_identifier = mock.Mock()
         res.nested_identifier.return_value = nested_id
 
@@ -214,8 +218,6 @@ class FormatTest(common.HeatTestCase):
 
     def test_format_stack_resource_with_nested_stack_none(self):
         res = self.stack['generic4']
-        res.nested = mock.Mock()
-        res.nested.return_value = None
 
         resource_keys = set((
             rpc_api.RES_CREATION_TIME,
@@ -232,7 +234,7 @@ class FormatTest(common.HeatTestCase):
             rpc_api.RES_REQUIRED_BY))
 
         formatted = api.format_stack_resource(res, False)
-        self.assertEqual(resource_keys, set(six.iterkeys(formatted)))
+        self.assertEqual(resource_keys, set(formatted.keys()))
 
     def test_format_stack_resource_with_nested_stack_not_found(self):
         res = self.stack['generic4']
@@ -255,12 +257,14 @@ class FormatTest(common.HeatTestCase):
 
         formatted = api.format_stack_resource(res, False)
         # 'nested_stack_id' is not in formatted
-        self.assertEqual(resource_keys, set(six.iterkeys(formatted)))
+        self.assertEqual(resource_keys, set(formatted.keys()))
 
     def test_format_stack_resource_with_nested_stack_empty(self):
         res = self.stack['generic4']
         nested_id = {'foo': 'bar'}
 
+        res.has_nested = mock.Mock()
+        res.has_nested.return_value = True
         res.nested_identifier = mock.Mock()
         res.nested_identifier.return_value = nested_id
 
@@ -281,10 +285,7 @@ class FormatTest(common.HeatTestCase):
         self.assertEqual('foobar', formatted[rpc_api.RES_PARENT_RESOURCE])
 
     def test_format_event_identifier_uuid(self):
-        self._test_format_event('abc123yc-9f88-404d-a85b-531529456xyz')
-
-    def _test_format_event(self, event_id):
-        event = self._dummy_event(event_id)
+        event = self._dummy_event()
 
         event_keys = set((
             rpc_api.EVENT_ID,
@@ -299,16 +300,16 @@ class FormatTest(common.HeatTestCase):
             rpc_api.EVENT_RES_TYPE,
             rpc_api.EVENT_RES_PROPERTIES))
 
-        formatted = api.format_event(event)
-        self.assertEqual(event_keys, set(six.iterkeys(formatted)))
+        formatted = api.format_event(event, self.stack.identifier())
+        self.assertEqual(event_keys, set(formatted.keys()))
 
         event_id_formatted = formatted[rpc_api.EVENT_ID]
-        event_identifier = identifier.EventIdentifier(
-            event_id_formatted['tenant'],
-            event_id_formatted['stack_name'],
-            event_id_formatted['stack_id'],
-            event_id_formatted['path'])
-        self.assertEqual(event_id, event_identifier.event_id)
+        self.assertEqual({
+            'path': '/resources/generic1/events/%s' % event.uuid,
+            'stack_id': self.stack.id,
+            'stack_name': 'test_stack',
+            'tenant': 'test_tenant_id'
+        }, event_id_formatted)
 
     @mock.patch.object(api, 'format_stack_resource')
     def test_format_stack_preview(self, mock_fmt_resource):
@@ -347,6 +348,7 @@ class FormatTest(common.HeatTestCase):
         expected_stack_info = {
             'capabilities': [],
             'creation_time': '1970-01-01T00:00:00',
+            'deletion_time': None,
             'description': 'No description',
             'disable_rollback': True,
             'notification_topics': [],

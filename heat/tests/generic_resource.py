@@ -36,7 +36,7 @@ class GenericResource(resource.Resource):
 
     @classmethod
     def is_service_available(cls, context):
-        return True
+        return (True, None)
 
     def handle_create(self):
         LOG.warning(_LW('Creating generic resource (Type "%s")'),
@@ -199,6 +199,7 @@ class SignalResource(signal_responder.SignalResponder):
                          'signal': attributes.Schema('Get a signal')}
 
     def handle_create(self):
+        self.password = 'password'
         super(SignalResource, self).handle_create()
         self.resource_id_set(self._get_user_id())
 
@@ -266,6 +267,25 @@ class ResourceWithFnGetRefIdType(ResourceWithProps):
 
 class ResourceWithListProp(ResourceWithFnGetRefIdType):
     properties_schema = {"listprop": properties.Schema(properties.Schema.LIST)}
+
+
+class ResourceWithHiddenPropertyAndAttribute(GenericResource):
+    properties_schema = {
+        "supported": properties.Schema(properties.Schema.LIST,
+                                       "Supported property."),
+        "hidden": properties.Schema(
+            properties.Schema.LIST,
+            "Hidden property.",
+            support_status=support.SupportStatus(status=support.HIDDEN))
+    }
+    attributes_schema = {
+        'supported': attributes.Schema(type=attributes.Schema.STRING,
+                                       description='Supported attribute.'),
+        'hidden': attributes.Schema(
+            type=attributes.Schema.STRING,
+            description='Hidden attribute',
+            support_status=support.SupportStatus(status=support.HIDDEN))
+    }
 
 
 class StackResourceType(stack_resource.StackResource, GenericResource):
@@ -340,3 +360,9 @@ class ResourceTypeUnSupportedLiberty(GenericResource):
 class ResourceTypeSupportedKilo(GenericResource):
     support_status = support.SupportStatus(
         version='2015.1')
+
+
+class ResourceTypeHidden(GenericResource):
+    support_status = support.SupportStatus(
+        version='7.0.0',
+        status=support.HIDDEN)

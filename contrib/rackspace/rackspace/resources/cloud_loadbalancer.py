@@ -801,7 +801,7 @@ class CloudLoadBalancer(resource.Resource):
         old_props = {}
         new_props = {}
 
-        for prop in six.iterkeys(prop_diff):
+        for prop in prop_diff:
             if prop in self.LB_UPDATE_PROPS:
                 old_props[prop] = getattr(lb, prop)
                 new_props[prop] = prop_diff[prop]
@@ -831,8 +831,8 @@ class CloudLoadBalancer(resource.Resource):
                               node[self.NODE_PORT]), node)
                    for node in diff_nodes)
 
-        old_set = set(six.iterkeys(old))
-        new_set = set(six.iterkeys(new))
+        old_set = set(old)
+        new_set = set(new)
 
         deleted = old_set.difference(new_set)
         added = new_set.difference(old_set)
@@ -900,8 +900,7 @@ class CloudLoadBalancer(resource.Resource):
 
         for node in updated:
             node_changed = False
-            for attribute in six.iterkeys(new[node]):
-                new_value = new[node][attribute]
+            for attribute, new_value in new[node].items():
                 if new_value and new_value != getattr(old[node], attribute):
                     node_changed = True
                     setattr(old[node], attribute, new_value)
@@ -1151,7 +1150,7 @@ class CloudLoadBalancer(resource.Resource):
         self._validate_https_redirect()
         # if a vip specifies and id, it can't specify version or type;
         # otherwise version and type are required
-        for vip in self.properties.get(self.VIRTUAL_IPS, []):
+        for vip in self.properties[self.VIRTUAL_IPS]:
             has_id = vip.get(self.VIRTUAL_IP_ID) is not None
             has_version = vip.get(self.VIRTUAL_IP_IP_VERSION) is not None
             has_type = vip.get(self.VIRTUAL_IP_TYPE) is not None

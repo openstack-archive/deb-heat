@@ -396,7 +396,7 @@ class StackServiceAuthorizeTest(common.HeatTestCase):
             self.ctx, self.stack, 'NoSuchResource'))
 
         # not matching credential_id
-        self.ctx.user_id = str(uuid.uuid4())
+        self.ctx.user = str(uuid.uuid4())
         self.assertFalse(self.eng._authorize_stack_user(
             self.ctx, self.stack, 'WebServer'))
 
@@ -469,6 +469,8 @@ class StackServiceTest(common.HeatTestCase):
         for s in sl:
             self.assertIn('creation_time', s)
             self.assertIn('updated_time', s)
+            self.assertIn('deletion_time', s)
+            self.assertIsNone(s['deletion_time'])
             self.assertIn('stack_identity', s)
             self.assertIsNotNone(s['stack_identity'])
             self.assertIn('stack_name', s)
@@ -892,6 +894,8 @@ class StackServiceTest(common.HeatTestCase):
         s = sl[0]
         self.assertIn('creation_time', s)
         self.assertIn('updated_time', s)
+        self.assertIn('deletion_time', s)
+        self.assertIsNone(s['deletion_time'])
         self.assertIn('stack_identity', s)
         self.assertIsNotNone(s['stack_identity'])
         self.assertIn('stack_name', s)
@@ -913,6 +917,8 @@ class StackServiceTest(common.HeatTestCase):
         s = sl[0]
         self.assertIn('creation_time', s)
         self.assertIn('updated_time', s)
+        self.assertIn('deletion_time', s)
+        self.assertIsNone(s['deletion_time'])
         self.assertIn('stack_identity', s)
         self.assertIsNotNone(s['stack_identity'])
         self.assertIn('stack_name', s)
@@ -928,11 +934,12 @@ class StackServiceTest(common.HeatTestCase):
 
         class DummyMgr(object):
             def names(self):
-                return ['a.b', 'c.d']
+                return ['a.2012-12-12', 'c.newton', 'c.2016-10-14',
+                        'c.something']
 
             def __getitem__(self, item):
                 m = mock.MagicMock()
-                if item == 'a.b':
+                if item == 'a.2012-12-12':
                     m.plugin = cfntemplate.CfnTemplate
                     return m
                 else:
@@ -941,9 +948,29 @@ class StackServiceTest(common.HeatTestCase):
 
         templ_mock.return_value = DummyMgr()
         templates = self.eng.list_template_versions(self.ctx)
-        expected = [{'version': 'a.b', 'type': 'cfn'},
-                    {'version': 'c.d', 'type': 'hot'}]
+        expected = [{'version': 'a.2012-12-12', 'type': 'cfn', 'aliases': []},
+                    {'version': 'c.2016-10-14',
+                     'aliases': ['c.newton', 'c.something'], 'type': 'hot'}]
         self.assertEqual(expected, templates)
+
+    @mock.patch('heat.engine.template._get_template_extension_manager')
+    def test_list_template_versions_invalid_version(self, templ_mock):
+
+        class DummyMgr(object):
+            def names(self):
+                return ['c.something']
+
+            def __getitem__(self, item):
+                m = mock.MagicMock()
+                if item == 'c.something':
+                    m.plugin = cfntemplate.CfnTemplate
+                    return m
+
+        templ_mock.return_value = DummyMgr()
+        ret = self.assertRaises(exception.InvalidTemplateVersions,
+                                self.eng.list_template_versions, self.ctx)
+        self.assertIn('A template version alias c.something was added',
+                      six.text_type(ret))
 
     @mock.patch('heat.engine.template._get_template_extension_manager')
     def test_list_template_functions(self, templ_mock):
@@ -1055,6 +1082,24 @@ class StackServiceTest(common.HeatTestCase):
                           self.eng.get_environment,
                           self.ctx,
                           'irrelevant')
+
+    def test_get_files(self):
+        # Setup
+        t = template_format.parse(tools.wp_template)
+        files = {'foo.yaml': 'i am a file'}
+        tmpl = templatem.Template(t, files=files)
+        stack = parser.Stack(self.ctx, 'get_env_stack', tmpl)
+        stack.store()
+
+        mock_get_stack = self.patchobject(self.eng, '_get_stack')
+        mock_get_stack.return_value = mock.MagicMock()
+        self.patchobject(parser.Stack, 'load', return_value=stack)
+
+        # Test
+        found = self.eng.get_files(self.ctx, stack.identifier())
+
+        # Verify
+        self.assertEqual(files, found)
 
     def test_stack_show_output(self):
         t = template_format.parse(tools.wp_template)
@@ -1345,7 +1390,9 @@ class StackServiceTest(common.HeatTestCase):
         ])
         mock_stack_load.assert_called_once_with(self.ctx,
                                                 stack=db_stack,
-                                                use_stored_context=True)
+                                                service_check_defer=True,
+                                                resource_validate=False,
+                                                resolve_data=False)
         self.assertTrue(lock2.release.called)
         mock_thread.start_with_acquired_lock.assert_called_once_with(
             fake_stack, lock1,

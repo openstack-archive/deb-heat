@@ -10,6 +10,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import time
+
 from heat_integrationtests.functional import functional_base
 
 test_template = {
@@ -71,6 +73,9 @@ class UpdateRestrictedStackTest(functional_base.FunctionalTestsBase):
             self._check_for_restriction_reason(resource_events,
                                                reason_update_restrict))
 
+        # Ensure the timestamp changes, since this will be very quick
+        time.sleep(1)
+
         # check update succeeds - with only 'replace' restricted
         self.update_stack(stack_identifier, update_template,
                           env_replace_restrict,
@@ -95,7 +100,7 @@ class UpdateRestrictedStackTest(functional_base.FunctionalTestsBase):
 
         # check replace fails - with 'both' restricted
         self.update_stack(stack_identifier, update_template,
-                          env_replace_restrict,
+                          env_both_restrict,
                           expected_status='UPDATE_FAILED')
 
         self.assertTrue(self.verify_resource_status(stack_identifier, 'bar',
@@ -104,6 +109,9 @@ class UpdateRestrictedStackTest(functional_base.FunctionalTestsBase):
         self.assertTrue(
             self._check_for_restriction_reason(resource_events,
                                                reason_replace_restrict))
+
+        # Ensure the timestamp changes, since this will be very quick
+        time.sleep(1)
 
         # check replace fails - with only 'replace' restricted
         self.update_stack(stack_identifier, update_template,
@@ -138,6 +146,9 @@ class UpdateRestrictedStackTest(functional_base.FunctionalTestsBase):
         self.assertTrue(
             self._check_for_restriction_reason(resource_events,
                                                reason_replace_restrict))
+
+        # Ensure the timestamp changes, since this will be very quick
+        time.sleep(1)
 
         # check replace fails - with only 'replace' restricted
         self.update_stack(stack_identifier, update_template,

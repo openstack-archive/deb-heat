@@ -11,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from aodhclient import exceptions as aodh_exc
 from ceilometerclient import exc as ceil_exc
 from ceilometerclient.openstack.common.apiclient import exceptions as c_a_exc
 from cinderclient import exceptions as cinder_exc
@@ -286,14 +287,14 @@ class ClientPluginTest(common.HeatTestCase):
         c = clients.Clients(con)
         con.clients = c
 
-        con.auth_plugin = mock.Mock(name="auth_plugin")
-        con.auth_plugin.get_endpoint = mock.Mock(name="get_endpoint")
-        con.auth_plugin.get_endpoint.return_value = 'http://192.0.2.1/foo'
+        con.keystone_session = mock.Mock(name="keystone_Session")
+        con.keystone_session.get_endpoint = mock.Mock(name="get_endpoint")
+        con.keystone_session.get_endpoint.return_value = 'http://192.0.2.1/foo'
         plugin = FooClientsPlugin(con)
 
         self.assertEqual('http://192.0.2.1/foo',
                          plugin.url_for(service_type='foo'))
-        self.assertTrue(con.auth_plugin.get_endpoint.called)
+        self.assertTrue(con.keystone_session.get_endpoint.called)
 
     @mock.patch.object(generic, "Token", name="v3_token")
     def test_get_missing_service_catalog(self, mock_v3):
@@ -308,10 +309,10 @@ class ClientPluginTest(common.HeatTestCase):
         c = clients.Clients(con)
         con.clients = c
 
-        con.auth_plugin = mock.Mock(name="auth_plugin")
+        con.keystone_session = mock.Mock(name="keystone_session")
         get_endpoint_side_effects = [
             keystone_exc.EmptyCatalog(), None, 'http://192.0.2.1/bar']
-        con.auth_plugin.get_endpoint = mock.Mock(
+        con.keystone_session.get_endpoint = mock.Mock(
             name="get_endpoint", side_effect=get_endpoint_side_effects)
 
         mock_token_obj = mock.Mock()
@@ -336,9 +337,9 @@ class ClientPluginTest(common.HeatTestCase):
         c = clients.Clients(con)
         con.clients = c
 
-        con.auth_plugin = mock.Mock(name="auth_plugin")
+        con.keystone_session = mock.Mock(name="keystone_session")
         get_endpoint_side_effects = [keystone_exc.EmptyCatalog(), None]
-        con.auth_plugin.get_endpoint = mock.Mock(
+        con.keystone_session.get_endpoint = mock.Mock(
             name="get_endpoint", side_effect=get_endpoint_side_effects)
 
         mock_token_obj = mock.Mock()
@@ -363,20 +364,29 @@ class ClientPluginTest(common.HeatTestCase):
     def test_create_client_on_token_expiration(self):
         cfg.CONF.set_override('reauthentication_auth_method', 'trusts',
                               enforce_type=True)
-        con = mock.Mock()
-        con.auth_plugin.auth_ref.will_expire_soon.return_value = False
+        con = utils.dummy_context()
+        auth_ref = mock.Mock()
+        self.patchobject(con.auth_plugin, 'get_auth_ref',
+                         return_value=auth_ref)
+        auth_ref.will_expire_soon.return_value = False
         plugin = FooClientsPlugin(con)
         plugin._create = mock.Mock()
         plugin.client()
         self.assertEqual(1, plugin._create.call_count)
         plugin.client()
         self.assertEqual(1, plugin._create.call_count)
-        con.auth_plugin.auth_ref.will_expire_soon.return_value = True
+        auth_ref.will_expire_soon.return_value = True
         plugin.client()
         self.assertEqual(2, plugin._create.call_count)
 
     def test_create_client_on_invalidate(self):
-        con = mock.Mock()
+        cfg.CONF.set_override('reauthentication_auth_method', 'trusts',
+                              enforce_type=True)
+        con = utils.dummy_context()
+        auth_ref = mock.Mock()
+        self.patchobject(con.auth_plugin, 'get_auth_ref',
+                         return_value=auth_ref)
+        auth_ref.will_expire_soon.return_value = False
         plugin = FooClientsPlugin(con)
         plugin._create = mock.Mock()
         plugin.client()
@@ -479,6 +489,30 @@ class TestIsNotFound(common.HeatTestCase):
             is_conflict=True,
             plugin='ceilometer',
             exception=lambda: ceil_exc.HTTPConflict(),
+        )),
+        ('aodh_not_found', dict(
+            is_not_found=True,
+            is_over_limit=False,
+            is_client_exception=True,
+            is_conflict=False,
+            plugin='aodh',
+            exception=lambda: aodh_exc.NotFound('not found'),
+        )),
+        ('aodh_overlimit', dict(
+            is_not_found=False,
+            is_over_limit=True,
+            is_client_exception=True,
+            is_conflict=False,
+            plugin='aodh',
+            exception=lambda: aodh_exc.OverLimit('over'),
+        )),
+        ('aodh_conflict', dict(
+            is_not_found=False,
+            is_over_limit=False,
+            is_client_exception=True,
+            is_conflict=True,
+            plugin='aodh',
+            exception=lambda: aodh_exc.Conflict('conflict'),
         )),
         ('cinder_not_found', dict(
             is_not_found=True,

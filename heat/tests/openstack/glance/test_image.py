@@ -14,6 +14,7 @@
 import mock
 import six
 
+from glanceclient import exc
 from heat.common import exception
 from heat.common import template_format
 from heat.engine import stack as parser
@@ -57,9 +58,7 @@ class GlanceImageTest(common.HeatTestCase):
     def setUp(self):
         super(GlanceImageTest, self).setUp()
 
-        utils.setup_dummy_db()
         self.ctx = utils.dummy_context()
-
         tpl = template_format.parse(image_template)
         self.stack = parser.Stack(
             self.ctx, 'glance_image_test_stack',
@@ -220,16 +219,24 @@ class GlanceImageTest(common.HeatTestCase):
         self.my_image.handle_create()
 
         self.assertEqual(image_id, self.my_image.resource_id)
+        # assert that no tags pass when image create
+        self.images.create.assert_called_once_with(
+            container_format=u'bare',
+            disk_format=u'qcow2',
+            id=u'41f0e60c-ebb4-4375-a2b4-845ae8b9c995',
+            is_public=True,
+            location=u'https://launchpad.net/cirros/'
+                     u'cirros-0.3.0-x86_64-disk.img',
+            min_disk=10,
+            min_ram=512,
+            name=u'cirros_image',
+            protected=False
+        )
         self.image_tags.update.assert_called_once_with(
             self.my_image.resource_id,
             'tag1')
 
-    def test_image_handle_update(self):
-        self.my_image.resource_id = '477e8273-60a7-4c41-b683-fdb0bc7cd151'
-
-        self.my_image.t['Properties']['tags'] = ['tag1']
-        prop_diff = {'tags': ['tag2']}
-
+    def _handle_update_tags(self, prop_diff):
         self.my_image.handle_update(json_snippet=None,
                                     tmpl_diff=None,
                                     prop_diff=prop_diff)
@@ -242,6 +249,39 @@ class GlanceImageTest(common.HeatTestCase):
             self.my_image.resource_id,
             'tag1'
         )
+
+    def test_image_handle_update(self):
+        self.my_image.resource_id = '477e8273-60a7-4c41-b683-fdb0bc7cd151'
+
+        self.my_image.t['Properties']['tags'] = ['tag1']
+        prop_diff = {'tags': ['tag2']}
+
+        self._handle_update_tags(prop_diff)
+
+    def test_image_handle_update_remove_tags(self):
+        self.my_image.resource_id = '477e8273-60a7-4c41-b683-fdb0bc7cd151'
+
+        self.my_image.t['Properties']['tags'] = ['tag1']
+        prop_diff = {'tags': None}
+
+        self.my_image.handle_update(json_snippet=None,
+                                    tmpl_diff=None,
+                                    prop_diff=prop_diff)
+
+        self.image_tags.delete.assert_called_once_with(
+            self.my_image.resource_id,
+            'tag1'
+        )
+
+    def test_image_handle_update_tags_delete_not_found(self):
+        self.my_image.resource_id = '477e8273-60a7-4c41-b683-fdb0bc7cd151'
+
+        self.my_image.t['Properties']['tags'] = ['tag1']
+        prop_diff = {'tags': ['tag2']}
+
+        self.image_tags.delete.side_effect = exc.HTTPNotFound()
+
+        self._handle_update_tags(prop_diff)
 
     def test_image_show_resource_v1(self):
         self.glanceclient.version = 1.0

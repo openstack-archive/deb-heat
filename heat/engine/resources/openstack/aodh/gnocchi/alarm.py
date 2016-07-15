@@ -15,7 +15,7 @@
 from heat.common.i18n import _
 from heat.engine import constraints
 from heat.engine import properties
-from heat.engine.resources.openstack.ceilometer import alarm
+from heat.engine.resources import alarm_base
 from heat.engine import support
 
 
@@ -66,7 +66,7 @@ common_gnocchi_properties_schema = {
 }
 
 
-class CeilometerGnocchiResourcesAlarm(alarm.BaseCeilometerAlarm):
+class AodhGnocchiResourcesAlarm(alarm_base.BaseAlarm):
     """A resource allowing for the watch of some specified resource.
 
     An alarm that evaluates threshold based on some metric for the
@@ -103,13 +103,36 @@ class CeilometerGnocchiResourcesAlarm(alarm.BaseCeilometerAlarm):
         ),
     }
     properties_schema.update(common_gnocchi_properties_schema)
-    properties_schema.update(alarm.common_properties_schema)
+    properties_schema.update(alarm_base.common_properties_schema)
 
-    ceilometer_alarm_type = 'gnocchi_resources_threshold'
+    alarm_type = 'gnocchi_resources_threshold'
+
+    def get_alarm_props(self, props):
+        kwargs = self.actions_to_urls(props)
+        kwargs = self._reformat_properties(kwargs)
+
+        return kwargs
+
+    def handle_create(self):
+        props = self.get_alarm_props(self.properties)
+        props['name'] = self.physical_resource_name()
+        props['type'] = self.alarm_type
+        alarm = self.client().alarm.create(props)
+        self.resource_id_set(alarm['alarm_id'])
+
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
+        if prop_diff:
+            kwargs = {}
+            kwargs.update(prop_diff)
+            props = self.get_alarm_props(kwargs)
+            self.client().alarm.update(self.resource_id, props)
+
+    def _show_resource(self):
+        return self.client().alarm.get(self.resource_id)
 
 
-class CeilometerGnocchiAggregationByMetricsAlarm(
-        CeilometerGnocchiResourcesAlarm):
+class AodhGnocchiAggregationByMetricsAlarm(
+        AodhGnocchiResourcesAlarm):
     """A resource that implements alarm with specified metrics.
 
     A resource that implements alarm which allows to use specified by user
@@ -130,13 +153,13 @@ class CeilometerGnocchiAggregationByMetricsAlarm(
         ),
     }
     properties_schema.update(common_gnocchi_properties_schema)
-    properties_schema.update(alarm.common_properties_schema)
+    properties_schema.update(alarm_base.common_properties_schema)
 
-    ceilometer_alarm_type = 'gnocchi_aggregation_by_metrics_threshold'
+    alarm_type = 'gnocchi_aggregation_by_metrics_threshold'
 
 
-class CeilometerGnocchiAggregationByResourcesAlarm(
-        CeilometerGnocchiResourcesAlarm):
+class AodhGnocchiAggregationByResourcesAlarm(
+        AodhGnocchiResourcesAlarm):
     """A resource that implements alarm as an aggregation of resources alarms.
 
     A resource that implements alarm which uses aggregation of resources alarms
@@ -175,17 +198,17 @@ class CeilometerGnocchiAggregationByResourcesAlarm(
     }
 
     properties_schema.update(common_gnocchi_properties_schema)
-    properties_schema.update(alarm.common_properties_schema)
+    properties_schema.update(alarm_base.common_properties_schema)
 
-    ceilometer_alarm_type = 'gnocchi_aggregation_by_resources_threshold'
+    alarm_type = 'gnocchi_aggregation_by_resources_threshold'
 
 
 def resource_mapping():
     return {
-        'OS::Ceilometer::GnocchiResourcesAlarm':
-            CeilometerGnocchiResourcesAlarm,
-        'OS::Ceilometer::GnocchiAggregationByMetricsAlarm':
-            CeilometerGnocchiAggregationByMetricsAlarm,
-        'OS::Ceilometer::GnocchiAggregationByResourcesAlarm':
-            CeilometerGnocchiAggregationByResourcesAlarm,
+        'OS::Aodh::GnocchiResourcesAlarm':
+            AodhGnocchiResourcesAlarm,
+        'OS::Aodh::GnocchiAggregationByMetricsAlarm':
+            AodhGnocchiAggregationByMetricsAlarm,
+        'OS::Aodh::GnocchiAggregationByResourcesAlarm':
+            AodhGnocchiAggregationByResourcesAlarm,
     }

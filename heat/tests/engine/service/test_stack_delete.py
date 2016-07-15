@@ -14,6 +14,7 @@ import mock
 from oslo_messaging.rpc import dispatcher
 
 from heat.common import exception
+from heat.common import service_utils
 from heat.engine import service
 from heat.engine import stack as parser
 from heat.engine import stack_lock
@@ -104,7 +105,8 @@ class StackDeleteTest(common.HeatTestCase):
         sid = stack.store()
 
         # Insert a fake lock into the db
-        stack_lock_object.StackLock.create(stack.id, self.man.engine_id)
+        stack_lock_object.StackLock.create(
+            self.ctx, stack.id, self.man.engine_id)
 
         # Create a fake ThreadGroup too
         self.man.thread_group_mgr.groups[stack.id] = tools.DummyThreadGroup()
@@ -124,7 +126,7 @@ class StackDeleteTest(common.HeatTestCase):
 
     @mock.patch.object(parser.Stack, 'load')
     @mock.patch.object(stack_lock.StackLock, 'try_acquire')
-    @mock.patch.object(stack_lock.StackLock, 'engine_alive')
+    @mock.patch.object(service_utils, 'engine_alive')
     def test_stack_delete_other_engine_active_lock_failed(self, mock_alive,
                                                           mock_try, mock_load):
         OTHER_ENGINE = "other-engine-fake-uuid"
@@ -134,7 +136,7 @@ class StackDeleteTest(common.HeatTestCase):
         sid = stack.store()
 
         # Insert a fake lock into the db
-        stack_lock_object.StackLock.create(stack.id, OTHER_ENGINE)
+        stack_lock_object.StackLock.create(self.ctx, stack.id, OTHER_ENGINE)
 
         st = stack_object.Stack.get_by_id(self.ctx, sid)
         mock_load.return_value = stack
@@ -157,7 +159,7 @@ class StackDeleteTest(common.HeatTestCase):
 
     @mock.patch.object(parser.Stack, 'load')
     @mock.patch.object(stack_lock.StackLock, 'try_acquire')
-    @mock.patch.object(stack_lock.StackLock, 'engine_alive')
+    @mock.patch.object(service_utils, 'engine_alive')
     @mock.patch.object(stack_lock.StackLock, 'acquire')
     def test_stack_delete_other_engine_active_lock_succeeded(
             self, mock_acquire, mock_alive, mock_try, mock_load):
@@ -169,7 +171,7 @@ class StackDeleteTest(common.HeatTestCase):
         sid = stack.store()
 
         # Insert a fake lock into the db
-        stack_lock_object.StackLock.create(stack.id, OTHER_ENGINE)
+        stack_lock_object.StackLock.create(self.ctx, stack.id, OTHER_ENGINE)
 
         st = stack_object.Stack.get_by_id(self.ctx, sid)
         mock_load.return_value = stack
@@ -191,7 +193,7 @@ class StackDeleteTest(common.HeatTestCase):
 
     @mock.patch.object(parser.Stack, 'load')
     @mock.patch.object(stack_lock.StackLock, 'try_acquire')
-    @mock.patch.object(stack_lock.StackLock, 'engine_alive')
+    @mock.patch.object(service_utils, 'engine_alive')
     @mock.patch.object(stack_lock.StackLock, 'acquire')
     def test_stack_delete_other_dead_engine_active_lock(
             self, mock_acquire, mock_alive, mock_try, mock_load):
@@ -201,7 +203,8 @@ class StackDeleteTest(common.HeatTestCase):
         sid = stack.store()
 
         # Insert a fake lock into the db
-        stack_lock_object.StackLock.create(stack.id, "other-engine-fake-uuid")
+        stack_lock_object.StackLock.create(
+            self.ctx, stack.id, "other-engine-fake-uuid")
 
         st = stack_object.Stack.get_by_id(self.ctx, sid)
         mock_load.return_value = stack

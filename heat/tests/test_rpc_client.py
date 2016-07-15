@@ -239,7 +239,8 @@ class EngineRpcAPITestCase(common.HeatTestCase):
                   'marker': None,
                   'sort_keys': None,
                   'sort_dir': None,
-                  'filters': None}
+                  'filters': None,
+                  'nested_depth': None}
         self._test_engine_api('list_events', 'call', **kwargs)
 
     def test_describe_stack_resource(self):
@@ -419,3 +420,8 @@ class EngineRpcAPITestCase(common.HeatTestCase):
         self._test_engine_api(
             'get_environment', 'call', stack_identity=self.identity,
             version='1.28')
+
+    def test_get_files(self):
+        self._test_engine_api(
+            'get_files', 'call', stack_identity=self.identity,
+            version='1.32')

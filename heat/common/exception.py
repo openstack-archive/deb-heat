@@ -129,10 +129,6 @@ class InvalidTemplateSection(HeatException):
     msg_fmt = _("The template section is invalid: %(section)s")
 
 
-class InvalidTemplateParameter(HeatException):
-    msg_fmt = _("The Parameter (%(key)s) has no attributes.")
-
-
 class ImmutableParameterModified(HeatException):
     msg_fmt = _("The following parameters are immutable and may not be "
                 "updated: %(keys)s")
@@ -259,7 +255,7 @@ class ClientNotAvailable(HeatException):
 
 
 class WatchRuleNotFound(EntityNotFound):
-    """Keep this for AWS compatiblility."""
+    """Keep this for AWS compatibility."""
     msg_fmt = _("The Watch Rule (%(watch_name)s) could not be found.")
 
 
@@ -504,3 +500,8 @@ class NoActionRequired(Exception):
 
 class InvalidServiceVersion(HeatException):
     msg_fmt = _("Invalid service %(service)s version %(version)s")
+
+
+class InvalidTemplateVersions(HeatException):
+    msg_fmt = _('A template version alias %(version)s was added for a '
+                'template class that has no official YYYY-MM-DD version.')

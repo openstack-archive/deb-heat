@@ -380,7 +380,7 @@ class Workflow(signal_responder.SignalResponder,
                 raise exception.StackValidationFailed(
                     error=_('Signal data error'),
                     message=message)
-            for key in six.iterkeys(inputs):
+            for key in inputs:
                 if (self.properties.get(self.INPUT) is None or
                         key not in self.properties.get(self.INPUT)):
                     message = _('Unknown input %s') % key
@@ -598,13 +598,6 @@ class Workflow(signal_responder.SignalResponder,
 
         elif name == self.ALARM_URL and self.resource_id is not None:
             return six.text_type(self._get_ec2_signed_url())
-
-    # TODO(tlashchova): remove this method when mistralclient>1.0.0 is used.
-    def _show_resource(self):
-        workflow = self.client().workflows.get(self.resource_id)
-        if hasattr(workflow, 'to_dict'):
-            super(Workflow, self)._show_resource()
-        return workflow._data
 
 
 def resource_mapping():

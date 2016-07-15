@@ -11,8 +11,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import six
-
 from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import attributes
@@ -23,6 +21,10 @@ from heat.engine import resource
 from heat.engine.resources.openstack.neutron import neutron
 from heat.engine import support
 from heat.engine import translation
+
+DEPR_MSG = _('Neutron LBaaS v1 is deprecated in the Liberty release '
+             'and is planned to be removed in a future release. '
+             'Going forward, the LBaaS V2 should be used.')
 
 
 class HealthMonitor(neutron.NeutronResource):
@@ -40,6 +42,10 @@ class HealthMonitor(neutron.NeutronResource):
     """
 
     required_service_extension = 'lbaas'
+
+    support_status = support.SupportStatus(
+        support.DEPRECATED, DEPR_MSG, version='7.0.0'
+    )
 
     PROPERTIES = (
         DELAY, TYPE, MAX_RETRIES, TIMEOUT, ADMIN_STATE_UP,
@@ -60,8 +66,8 @@ class HealthMonitor(neutron.NeutronResource):
     properties_schema = {
         DELAY: properties.Schema(
             properties.Schema.INTEGER,
-            _('The minimum time in seconds between regular connections of '
-              'the member.'),
+            _('The minimum time in milliseconds between regular connections '
+              'of the member.'),
             required=True,
             update_allowed=True
         ),
@@ -82,7 +88,7 @@ class HealthMonitor(neutron.NeutronResource):
         ),
         TIMEOUT: properties.Schema(
             properties.Schema.INTEGER,
-            _('Maximum number of seconds for a monitor to wait for a '
+            _('Maximum number of milliseconds for a monitor to wait for a '
               'connection to be established before it times out.'),
             required=True,
             update_allowed=True
@@ -119,7 +125,7 @@ class HealthMonitor(neutron.NeutronResource):
             type=attributes.Schema.STRING
         ),
         DELAY_ATTR: attributes.Schema(
-            _('The minimum time in seconds between regular connections '
+            _('The minimum time in milliseconds between regular connections '
               'of the member.'),
             type=attributes.Schema.STRING
         ),
@@ -139,7 +145,7 @@ class HealthMonitor(neutron.NeutronResource):
             type=attributes.Schema.STRING
         ),
         TIMEOUT_ATTR: attributes.Schema(
-            _('Maximum number of seconds for a monitor to wait for a '
+            _('Maximum number of milliseconds for a monitor to wait for a '
               'connection to be established before it times out.'),
             type=attributes.Schema.STRING
         ),
@@ -195,6 +201,10 @@ class Pool(neutron.NeutronResource):
     """
 
     required_service_extension = 'lbaas'
+
+    support_status = support.SupportStatus(
+        support.DEPRECATED, DEPR_MSG, version='7.0.0'
+    )
 
     PROPERTIES = (
         PROTOCOL, SUBNET_ID, SUBNET, LB_METHOD, NAME, DESCRIPTION,
@@ -594,7 +604,10 @@ class PoolMember(neutron.NeutronResource):
 
     required_service_extension = 'lbaas'
 
-    support_status = support.SupportStatus(version='2014.1')
+    support_status = support.SupportStatus(
+        support.DEPRECATED, DEPR_MSG, version='7.0.0',
+        previous_status=support.SupportStatus(version='2014.1')
+    )
 
     PROPERTIES = (
         POOL_ID, ADDRESS, PROTOCOL_PORT, WEIGHT, ADMIN_STATE_UP,
@@ -723,6 +736,11 @@ class LoadBalancer(resource.Resource):
 
     required_service_extension = 'lbaas'
 
+    support_status = support.SupportStatus(
+        support.DEPRECATED, DEPR_MSG, version='7.0.0',
+        previous_status=support.SupportStatus(version='2014.1')
+    )
+
     PROPERTIES = (
         POOL_ID, PROTOCOL_PORT, MEMBERS,
     ) = (
@@ -780,7 +798,7 @@ class LoadBalancer(resource.Resource):
                  new_props[self.MEMBERS] is not None)):
             members = set(new_props[self.MEMBERS] or [])
             rd_members = self.data()
-            old_members = set(six.iterkeys(rd_members))
+            old_members = set(rd_members)
             for member in old_members - members:
                 member_id = rd_members[member]
                 with self.client_plugin().ignore_not_found:

@@ -306,8 +306,8 @@ class ResourceRegistry(object):
         if info is None:
             if name.endswith('*'):
                 # delete all matching entries.
-                for res_name in list(six.iterkeys(registry)):
-                    if (isinstance(registry[res_name], ResourceInfo) and
+                for res_name, reg_info in list(registry.items()):
+                    if (isinstance(reg_info, ResourceInfo) and
                             res_name.startswith(name[:-1])):
                         LOG.warning(_LW('Removing %(item)s from %(path)s'), {
                             'item': res_name,
@@ -469,7 +469,7 @@ class ResourceRegistry(object):
         # handle: "OS::*" -> "Dreamhost::*"
         def is_a_glob(resource_type):
             return resource_type.endswith('*')
-        globs = six.moves.filter(is_a_glob, six.iterkeys(self._registry))
+        globs = six.moves.filter(is_a_glob, iter(self._registry))
         for pattern in globs:
             if self._registry[pattern].matches(resource_type):
                 yield self._registry[pattern]
@@ -599,7 +599,7 @@ class ResourceRegistry(object):
                 return True
 
             try:
-                return cls.get_class().is_service_available(cnxt)
+                return cls.get_class().is_service_available(cnxt)[0]
             except Exception:
                 return False
 
@@ -704,12 +704,21 @@ class Environment(object):
             env_snippet.get(env_fmt.PARAMETER_DEFAULTS, {}))
         self._update_event_sinks(env_snippet.get(env_fmt.EVENT_SINKS, []))
 
+    def env_as_dict(self):
+        """Get the entire environment as a dict."""
+        user_env = self.user_env_as_dict()
+        user_env.update(
+            # Any data here is to be stored in the DB but not reflected
+            # as part of the user environment (e.g to pass to nested stacks
+            # or made visible to the user via API calls etc
+            {env_fmt.ENCRYPTED_PARAM_NAMES: self.encrypted_param_names})
+        return user_env
+
     def user_env_as_dict(self):
-        """Get the environment as a dict, ready for storing in the db."""
+        """Get the environment as a dict, only user-allowed keys."""
         return {env_fmt.RESOURCE_REGISTRY: self.registry.as_dict(),
                 env_fmt.PARAMETERS: self.params,
                 env_fmt.PARAMETER_DEFAULTS: self.param_defaults,
-                env_fmt.ENCRYPTED_PARAM_NAMES: self.encrypted_param_names,
                 env_fmt.EVENT_SINKS: self._event_sinks}
 
     def register_class(self, resource_type, resource_class, path=None):
@@ -820,9 +829,8 @@ def read_global_environment(env, env_dir=None):
 
     try:
         env_files = glob.glob(os.path.join(env_dir, '*'))
-    except OSError as osex:
-        LOG.error(_LE('Failed to read %s'), env_dir)
-        LOG.exception(osex)
+    except OSError:
+        LOG.exception(_LE('Failed to read %s'), env_dir)
         return
 
     for file_path in env_files:
@@ -832,11 +840,7 @@ def read_global_environment(env, env_dir=None):
                 env_body = env_fmt.parse(env_fd.read())
                 env_fmt.default_for_missing(env_body)
                 env.load(env_body)
-        except ValueError as vex:
-            LOG.error(_LE('Failed to parse %(file_path)s'), {
-                      'file_path': file_path})
-            LOG.exception(vex)
-        except IOError as ioex:
-            LOG.error(_LE('Failed to read %(file_path)s'), {
-                      'file_path': file_path})
-            LOG.exception(ioex)
+        except ValueError:
+            LOG.exception(_LE('Failed to parse %s'), file_path)
+        except IOError:
+            LOG.exception(_LE('Failed to read %s'), file_path)

@@ -12,19 +12,21 @@
 #    under the License.
 
 import copy
-
+import mock
 import six
 
 from heat.common import exception
 from heat.common import identifier
 from heat.common import template_format
 from heat.engine.cfn import functions as cfn_functions
+from heat.engine import check_resource as cr
 from heat.engine import environment
 from heat.engine import function
 from heat.engine.hot import functions as hot_functions
 from heat.engine.hot import parameters as hot_param
 from heat.engine.hot import template as hot_template
 from heat.engine import parameters
+from heat.engine import resource
 from heat.engine import resources
 from heat.engine import rsrc_defn
 from heat.engine import stack as parser
@@ -185,7 +187,6 @@ class HOTemplateTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test_stack', tmpl)
 
         self.assertIsNone(stack.parameters._validate_user_parameters())
-        self.assertIsNone(stack.parameters._validate_tmpl_parameters())
         self.assertIsNone(stack.validate())
 
     def test_translate_resources_good(self):
@@ -401,8 +402,8 @@ class HOTemplateTest(common.HeatTestCase):
                          'inside a resource definition',
                          six.text_type(err))
 
-    def test_translate_outputs_good(self):
-        """Test translation of outputs into internal engine format."""
+    def test_get_outputs_good(self):
+        """Test get outputs."""
 
         hot_tpl = template_format.parse('''
         heat_template_version: 2013-05-23
@@ -412,13 +413,13 @@ class HOTemplateTest(common.HeatTestCase):
             value: value1
         ''')
 
-        expected = {'output1': {'Description': 'output1', 'Value': 'value1'}}
+        expected = {'output1': {'description': 'output1', 'value': 'value1'}}
 
         tmpl = template.Template(hot_tpl)
         self.assertEqual(expected, tmpl[tmpl.OUTPUTS])
 
-    def test_translate_outputs_bad_no_data(self):
-        """Test translation of outputs without any mapping."""
+    def test_get_outputs_bad_no_data(self):
+        """Test get outputs without any mapping."""
 
         hot_tpl = template_format.parse("""
         heat_template_version: 2013-05-23
@@ -432,8 +433,8 @@ class HOTemplateTest(common.HeatTestCase):
         self.assertEqual('Each output must contain a value key.',
                          six.text_type(error))
 
-    def test_translate_outputs_bad_without_name(self):
-        """Test translation of outputs without name."""
+    def test_get_outputs_bad_without_name(self):
+        """Test get outputs without name."""
 
         hot_tpl = template_format.parse("""
         heat_template_version: 2013-05-23
@@ -449,8 +450,8 @@ class HOTemplateTest(common.HeatTestCase):
                          'Found a [%s] instead' % six.text_type,
                          six.text_type(error))
 
-    def test_translate_outputs_bad_description(self):
-        """Test translation of outputs into internal engine format."""
+    def test_get_outputs_bad_description(self):
+        """Test get outputs with bad description name."""
 
         hot_tpl = template_format.parse('''
         heat_template_version: 2013-05-23
@@ -465,8 +466,8 @@ class HOTemplateTest(common.HeatTestCase):
                                 tmpl.__getitem__, tmpl.OUTPUTS)
         self.assertIn('Description', six.text_type(err))
 
-    def test_translate_outputs_bad_value(self):
-        """Test translation of outputs into internal engine format."""
+    def test_get_outputs_bad_value(self):
+        """Test get outputs with bad value name."""
 
         hot_tpl = template_format.parse('''
         heat_template_version: 2013-05-23
@@ -512,6 +513,54 @@ class HOTemplateTest(common.HeatTestCase):
                                  {'get_attr': ['rg', 'name']},
                                  {'get_attr': ['rg', 'name']}]}
         self.assertEqual('', self.resolve(snippet, tmpl, stack))
+
+    def test_deletion_policy_titlecase(self):
+        hot_tpl = template_format.parse('''
+        heat_template_version: 2016-10-14
+        resources:
+          del:
+            type: OS::Heat::None
+            deletion_policy: Delete
+          ret:
+            type: OS::Heat::None
+            deletion_policy: Retain
+          snap:
+            type: OS::Heat::None
+            deletion_policy: Snapshot
+        ''')
+
+        rsrc_defns = template.Template(hot_tpl).resource_definitions(None)
+
+        self.assertEqual(rsrc_defn.ResourceDefinition.DELETE,
+                         rsrc_defns['del'].deletion_policy())
+        self.assertEqual(rsrc_defn.ResourceDefinition.RETAIN,
+                         rsrc_defns['ret'].deletion_policy())
+        self.assertEqual(rsrc_defn.ResourceDefinition.SNAPSHOT,
+                         rsrc_defns['snap'].deletion_policy())
+
+    def test_deletion_policy(self):
+        hot_tpl = template_format.parse('''
+        heat_template_version: 2016-10-14
+        resources:
+          del:
+            type: OS::Heat::None
+            deletion_policy: delete
+          ret:
+            type: OS::Heat::None
+            deletion_policy: retain
+          snap:
+            type: OS::Heat::None
+            deletion_policy: snapshot
+        ''')
+
+        rsrc_defns = template.Template(hot_tpl).resource_definitions(None)
+
+        self.assertEqual(rsrc_defn.ResourceDefinition.DELETE,
+                         rsrc_defns['del'].deletion_policy())
+        self.assertEqual(rsrc_defn.ResourceDefinition.RETAIN,
+                         rsrc_defns['ret'].deletion_policy())
+        self.assertEqual(rsrc_defn.ResourceDefinition.SNAPSHOT,
+                         rsrc_defns['snap'].deletion_policy())
 
     def test_str_replace(self):
         """Test str_replace function."""
@@ -578,7 +627,8 @@ class HOTemplateTest(common.HeatTestCase):
 
         tmpl = template.Template(hot_tpl_empty)
 
-        self.assertRaises(TypeError, self.resolve, snippet, tmpl)
+        self.assertRaises(exception.StackValidationFailed,
+                          self.resolve, snippet, tmpl)
 
     def test_str_replace_invalid_param_keys(self):
         """Test str_replace function parameter keys.
@@ -592,12 +642,14 @@ class HOTemplateTest(common.HeatTestCase):
 
         tmpl = template.Template(hot_tpl_empty)
 
-        self.assertRaises(KeyError, self.resolve, snippet, tmpl)
+        self.assertRaises(exception.StackValidationFailed,
+                          self.resolve, snippet, tmpl)
 
         snippet = {'str_replace': {'tmpl': 'Template var1 string var2',
                                    'parms': {'var1': 'foo', 'var2': 'bar'}}}
 
-        self.assertRaises(KeyError, self.resolve, snippet, tmpl)
+        self.assertRaises(exception.StackValidationFailed,
+                          self.resolve, snippet, tmpl)
 
     def test_str_replace_invalid_param_types(self):
         """Test str_replace function parameter values.
@@ -616,8 +668,10 @@ class HOTemplateTest(common.HeatTestCase):
         snippet = {'str_replace': {'template': 'Template var1 string var2',
                                    'params': ['var1', 'foo', 'var2', 'bar']}}
 
-        ex = self.assertRaises(TypeError, self.resolve, snippet, tmpl)
-        self.assertIn('parameters must be a mapping', six.text_type(ex))
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               self.resolve, snippet, tmpl)
+        self.assertIn('.str_replace: "str_replace" parameters must be a'
+                      ' mapping', six.text_type(ex))
 
     def test_str_replace_invalid_param_type_init(self):
         """Test str_replace function parameter values.
@@ -775,32 +829,42 @@ class HOTemplateTest(common.HeatTestCase):
     def test_join_invalid(self):
         snippet = {'list_join': 'bad'}
         l_tmpl = template.Template(hot_liberty_tpl_empty)
-        exc = self.assertRaises(TypeError, self.resolve, snippet, l_tmpl)
-        self.assertIn('Incorrect arguments', six.text_type(exc))
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve, snippet, l_tmpl)
+        self.assertIn('.list_join: Incorrect arguments to "list_join"',
+                      six.text_type(exc))
 
         k_tmpl = template.Template(hot_kilo_tpl_empty)
-        exc1 = self.assertRaises(TypeError, self.resolve, snippet, k_tmpl)
-        self.assertIn('Incorrect arguments', six.text_type(exc1))
+        exc1 = self.assertRaises(exception.StackValidationFailed,
+                                 self.resolve, snippet, k_tmpl)
+        self.assertIn('.list_join: Incorrect arguments to "list_join"',
+                      six.text_type(exc1))
 
     def test_join_int_invalid(self):
         snippet = {'list_join': 5}
         l_tmpl = template.Template(hot_liberty_tpl_empty)
-        exc = self.assertRaises(TypeError, self.resolve, snippet, l_tmpl)
-        self.assertIn('Incorrect arguments', six.text_type(exc))
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve, snippet, l_tmpl)
+        self.assertIn('.list_join: Incorrect arguments', six.text_type(exc))
 
         k_tmpl = template.Template(hot_kilo_tpl_empty)
-        exc1 = self.assertRaises(TypeError, self.resolve, snippet, k_tmpl)
-        self.assertIn('Incorrect arguments', six.text_type(exc1))
+        exc1 = self.assertRaises(exception.StackValidationFailed,
+                                 self.resolve, snippet, k_tmpl)
+        self.assertIn('.list_join: Incorrect arguments', six.text_type(exc1))
 
     def test_join_invalid_value(self):
         snippet = {'list_join': [',']}
         l_tmpl = template.Template(hot_liberty_tpl_empty)
-        exc = self.assertRaises(ValueError, self.resolve, snippet, l_tmpl)
-        self.assertIn('Incorrect arguments', six.text_type(exc))
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve, snippet, l_tmpl)
+        self.assertIn('.list_join: Incorrect arguments to "list_join"',
+                      six.text_type(exc))
 
         k_tmpl = template.Template(hot_kilo_tpl_empty)
-        exc1 = self.assertRaises(ValueError, self.resolve, snippet, k_tmpl)
-        self.assertIn('Incorrect arguments', six.text_type(exc1))
+        exc1 = self.assertRaises(exception.StackValidationFailed,
+                                 self.resolve, snippet, k_tmpl)
+        self.assertIn('.list_join: Incorrect arguments to "list_join"',
+                      six.text_type(exc1))
 
     def test_join_invalid_multiple(self):
         snippet = {'list_join': [',', 'bad', ['foo']]}
@@ -850,34 +914,38 @@ class HOTemplateTest(common.HeatTestCase):
         snippet = {'yaql': {'expression': '$.data.var1.sum()',
                    'data': 'mustbeamap'}}
         tmpl = template.Template(hot_newton_tpl_empty)
-        msg = 'The "data" argument to "yaql" must contain a map.'
-        self.assertRaisesRegexp(TypeError, msg, self.resolve, snippet, tmpl)
+        msg = '.yaql: The "data" argument to "yaql" must contain a map.'
+        self.assertRaisesRegexp(exception.StackValidationFailed,
+                                msg, self.resolve, snippet, tmpl)
 
     def test_yaql_bogus_keys(self):
         snippet = {'yaql': {'expression': '1 + 3',
                             'data': 'mustbeamap',
                             'bogus': ""}}
         tmpl = template.Template(hot_newton_tpl_empty)
-        self.assertRaises(KeyError, self.resolve, snippet, tmpl)
+        self.assertRaises(exception.StackValidationFailed,
+                          self.resolve, snippet, tmpl)
 
     def test_yaql_invalid_syntax(self):
         snippet = {'yaql': {'wrong': 'wrong_expr',
                    'wrong_data': 'mustbeamap'}}
         tmpl = template.Template(hot_newton_tpl_empty)
-        self.assertRaises(KeyError, self.resolve, snippet, tmpl)
+        self.assertRaises(exception.StackValidationFailed,
+                          self.resolve, snippet, tmpl)
 
     def test_yaql_non_map_args(self):
         snippet = {'yaql': 'invalid'}
         tmpl = template.Template(hot_newton_tpl_empty)
-        msg = 'Arguments to "yaql" must be a map.'
-        self.assertRaisesRegexp(TypeError, msg, self.resolve, snippet, tmpl)
+        msg = '.yaql: Arguments to "yaql" must be a map.'
+        self.assertRaisesRegexp(exception.StackValidationFailed,
+                                msg, self.resolve, snippet, tmpl)
 
     def test_yaql_invalid_expression(self):
         snippet = {'yaql': {'expression': 'invalid(',
                    'data': {'var1': [1, 2, 3, 4]}}}
         tmpl = template.Template(hot_newton_tpl_empty)
-        yaql = tmpl.parse(None, snippet)
-        self.assertRaises(ValueError, function.validate, yaql)
+        self.assertRaises(exception.StackValidationFailed,
+                          tmpl.parse, None, snippet)
 
     def test_yaql_data_as_function(self):
         snippet = {'yaql': {'expression': '$.data.var1.len()',
@@ -919,13 +987,15 @@ class HOTemplateTest(common.HeatTestCase):
         tmpl = template.Template(hot_newton_tpl_empty)
 
         snippet = {'equals': ['test', 'prod', 'invalid']}
-        exc = self.assertRaises(ValueError, self.resolve, snippet, tmpl)
-        self.assertIn('Arguments to "equals" must be of the form: '
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve, snippet, tmpl)
+        self.assertIn('.equals: Arguments to "equals" must be of the form: '
                       '[value_1, value_2]', six.text_type(exc))
 
         snippet = {'equals': "invalid condition"}
-        exc = self.assertRaises(ValueError, self.resolve, snippet, tmpl)
-        self.assertIn('Arguments to "equals" must be of the form: '
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve, snippet, tmpl)
+        self.assertIn('.equals: Arguments to "equals" must be of the form: '
                       '[value_1, value_2]', six.text_type(exc))
 
     def test_repeat(self):
@@ -1005,22 +1075,26 @@ class HOTemplateTest(common.HeatTestCase):
 
         # missing for_each
         snippet = {'repeat': {'template': 'this is %var%'}}
-        self.assertRaises(KeyError, self.resolve, snippet, tmpl)
+        self.assertRaises(exception.StackValidationFailed,
+                          self.resolve, snippet, tmpl)
 
         # misspelled for_each
         snippet = {'repeat': {'template': 'this is %var%',
                               'foreach': {'%var%': ['a', 'b', 'c']}}}
-        self.assertRaises(KeyError, self.resolve, snippet, tmpl)
+        self.assertRaises(exception.StackValidationFailed,
+                          self.resolve, snippet, tmpl)
 
         # value given to for_each entry is not a list
         snippet = {'repeat': {'template': 'this is %var%',
                               'for_each': {'%var%': 'a'}}}
-        self.assertRaises(TypeError, self.resolve, snippet, tmpl)
+        self.assertRaises(exception.StackValidationFailed,
+                          self.resolve, snippet, tmpl)
 
         # misspelled template
         snippet = {'repeat': {'templte': 'this is %var%',
                               'for_each': {'%var%': ['a', 'b', 'c']}}}
-        self.assertRaises(KeyError, self.resolve, snippet, tmpl)
+        self.assertRaises(exception.StackValidationFailed,
+                          self.resolve, snippet, tmpl)
 
     def test_repeat_bad_arg_type(self):
         tmpl = template.Template(hot_kilo_tpl_empty)
@@ -1028,8 +1102,8 @@ class HOTemplateTest(common.HeatTestCase):
         # for_each is not a map
         snippet = {'repeat': {'template': 'this is %var%',
                               'for_each': '%var%'}}
-        repeat = tmpl.parse(None, snippet)
-        self.assertRaises(TypeError, function.validate, repeat)
+        self.assertRaises(exception.StackValidationFailed,
+                          tmpl.parse, None, snippet)
 
     def test_digest(self):
         snippet = {'digest': ['md5', 'foobar']}
@@ -1157,7 +1231,7 @@ class HOTemplateTest(common.HeatTestCase):
                                   {'foo': {'Type': 'String',
                                            'Required': True}}})
         self.assertEqual(expected_description, tmpl['description'])
-        self.assertNotIn('parameters', six.iterkeys(tmpl))
+        self.assertNotIn('parameters', tmpl.keys())
 
     def test_invalid_hot_version(self):
         """Test HOT version check.
@@ -1236,11 +1310,11 @@ class HOTemplateTest(common.HeatTestCase):
         snippet = {'resource_facade': 'wibble'}
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              template.Template(hot_tpl_empty))
-        error = self.assertRaises(ValueError,
+        error = self.assertRaises(exception.StackValidationFailed,
                                   self.resolve,
                                   snippet,
                                   stack.t, stack)
-        self.assertIn(list(six.iterkeys(snippet))[0], six.text_type(error))
+        self.assertIn(next(iter(snippet)), six.text_type(error))
 
     def test_resource_facade_missing_deletion_policy(self):
         snippet = {'resource_facade': 'deletion_policy'}
@@ -1262,10 +1336,9 @@ class HOTemplateTest(common.HeatTestCase):
         snippet = {'Fn::GetAZs': ''}
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              template.Template(hot_juno_tpl_empty))
-        error = self.assertRaises(exception.InvalidTemplateVersion,
-                                  function.validate,
-                                  stack.t.parse(stack, snippet))
-        self.assertIn(next(six.iterkeys(snippet)), six.text_type(error))
+        error = self.assertRaises(exception.StackValidationFailed,
+                                  stack.t.parse, stack, snippet)
+        self.assertIn(next(iter(snippet)), six.text_type(error))
 
     def test_add_resource(self):
         hot_tpl = template_format.parse('''
@@ -1697,6 +1770,172 @@ class StackAttributesTest(common.HeatTestCase):
             resolved = function.resolve(self.stack.t.parse(self.stack,
                                                            self.snippet))
             self.assertEqual(self.expected, resolved)
+
+
+class StackGetAttributesTestConvergence(common.HeatTestCase):
+
+    def setUp(self):
+        super(StackGetAttributesTestConvergence, self).setUp()
+
+        self.ctx = utils.dummy_context()
+
+        self.m.ReplayAll()
+
+    scenarios = [
+        # for hot template 2013-05-23, get_attr: hot_funcs.GetAttThenSelect
+        ('get_flat_attr',
+         dict(hot_tpl=hot_tpl_generic_resource,
+              snippet={'Value': {'get_attr': ['resource1', 'foo']}},
+              resource_name='resource1',
+              expected={'Value': 'resource1'})),
+        ('get_list_attr',
+         dict(hot_tpl=hot_tpl_complex_attrs,
+              snippet={'Value': {'get_attr': ['resource1', 'list', 0]}},
+              resource_name='resource1',
+              expected={
+                  'Value':
+                  generic_rsrc.ResourceWithComplexAttributes.list[0]})),
+        ('get_flat_dict_attr',
+         dict(hot_tpl=hot_tpl_complex_attrs,
+              snippet={'Value': {'get_attr': ['resource1',
+                                              'flat_dict',
+                                              'key2']}},
+              resource_name='resource1',
+              expected={
+                  'Value':
+                  generic_rsrc.ResourceWithComplexAttributes.
+                  flat_dict['key2']})),
+        ('get_nested_attr_list',
+         dict(hot_tpl=hot_tpl_complex_attrs,
+              snippet={'Value': {'get_attr': ['resource1',
+                                              'nested_dict',
+                                              'list',
+                                              0]}},
+              resource_name='resource1',
+              expected={
+                  'Value':
+                  generic_rsrc.ResourceWithComplexAttributes.
+                  nested_dict['list'][0]})),
+        ('get_nested_attr_dict',
+         dict(hot_tpl=hot_tpl_complex_attrs,
+              snippet={'Value': {'get_attr': ['resource1',
+                                              'nested_dict',
+                                              'dict',
+                                              'a']}},
+              resource_name='resource1',
+              expected={
+                  'Value':
+                  generic_rsrc.ResourceWithComplexAttributes.
+                  nested_dict['dict']['a']})),
+        ('get_attr_none',
+         dict(hot_tpl=hot_tpl_complex_attrs,
+              snippet={'Value': {'get_attr': ['resource1',
+                                              'none',
+                                              'who_cares']}},
+              resource_name='resource1',
+              expected={'Value': None})),
+        # for hot template version 2014-10-16 and 2015-04-30,
+        # get_attr: hot_funcs.GetAtt
+        ('get_flat_attr',
+         dict(hot_tpl=hot_tpl_generic_resource_20141016,
+              snippet={'Value': {'get_attr': ['resource1', 'foo']}},
+              resource_name='resource1',
+              expected={'Value': 'resource1'})),
+        ('get_list_attr',
+         dict(hot_tpl=hot_tpl_complex_attrs_20141016,
+              snippet={'Value': {'get_attr': ['resource1', 'list', 0]}},
+              resource_name='resource1',
+              expected={
+                  'Value':
+                  generic_rsrc.ResourceWithComplexAttributes.list[0]})),
+        ('get_flat_dict_attr',
+         dict(hot_tpl=hot_tpl_complex_attrs_20141016,
+              snippet={'Value': {'get_attr': ['resource1',
+                                              'flat_dict',
+                                              'key2']}},
+              resource_name='resource1',
+              expected={
+                  'Value':
+                  generic_rsrc.ResourceWithComplexAttributes.
+                  flat_dict['key2']})),
+        ('get_nested_attr_list',
+         dict(hot_tpl=hot_tpl_complex_attrs_20141016,
+              snippet={'Value': {'get_attr': ['resource1',
+                                              'nested_dict',
+                                              'list',
+                                              0]}},
+              resource_name='resource1',
+              expected={
+                  'Value':
+                  generic_rsrc.ResourceWithComplexAttributes.
+                  nested_dict['list'][0]})),
+        ('get_nested_attr_dict',
+         dict(hot_tpl=hot_tpl_complex_attrs_20141016,
+              snippet={'Value': {'get_attr': ['resource1',
+                                              'nested_dict',
+                                              'dict',
+                                              'a']}},
+              resource_name='resource1',
+              expected={
+                  'Value':
+                  generic_rsrc.ResourceWithComplexAttributes.
+                  nested_dict['dict']['a']})),
+        ('get_attr_none',
+         dict(hot_tpl=hot_tpl_complex_attrs_20141016,
+              snippet={'Value': {'get_attr': ['resource1',
+                                              'none',
+                                              'who_cares']}},
+              resource_name='resource1',
+              expected={'Value': None}))
+    ]
+
+    def _prepare_cache_data(self, rsrc):
+        attributes = function.dep_attrs(
+            self.stack.t.parse(self.stack, self.snippet),
+            self.resource_name)
+        # store as cache data
+        self.stack.cache_data = {
+            rsrc.name: {
+                'attrs': cr._resolve_attributes(attributes, rsrc)
+            }
+        }
+
+    def test_get_attr_convergence(self):
+        """Test resolution of get_attr occurrences with convergence."""
+
+        self.stack = parser.Stack(self.ctx, 'test_get_attr',
+                                  template.Template(self.hot_tpl))
+        self.stack.store()
+        self.stack.create()
+        self.assertEqual((parser.Stack.CREATE, parser.Stack.COMPLETE),
+                         self.stack.state)
+        rsrc = self.stack[self.resource_name]
+        self._prepare_cache_data(rsrc)
+
+        with mock.patch.object(resource.Resource, 'get_attribute') as mock_ga:
+            for action, status in (
+                    (rsrc.CREATE, rsrc.IN_PROGRESS),
+                    (rsrc.CREATE, rsrc.COMPLETE),
+                    (rsrc.RESUME, rsrc.IN_PROGRESS),
+                    (rsrc.RESUME, rsrc.COMPLETE),
+                    (rsrc.SUSPEND, rsrc.IN_PROGRESS),
+                    (rsrc.SUSPEND, rsrc.COMPLETE),
+                    (rsrc.UPDATE, rsrc.IN_PROGRESS),
+                    (rsrc.UPDATE, rsrc.COMPLETE),
+                    (rsrc.SNAPSHOT, rsrc.IN_PROGRESS),
+                    (rsrc.SNAPSHOT, rsrc.COMPLETE),
+                    (rsrc.CHECK, rsrc.IN_PROGRESS),
+                    (rsrc.CHECK, rsrc.COMPLETE),
+                    (rsrc.ADOPT, rsrc.IN_PROGRESS),
+                    (rsrc.ADOPT, rsrc.COMPLETE)):
+                rsrc.state_set(action, status)
+
+                resolved = function.resolve(self.stack.t.parse(self.stack,
+                                                               self.snippet))
+                self.assertEqual(self.expected, resolved)
+                # get_attribute should never be called, everything
+                # should be resolved from cache data
+                self.assertFalse(mock_ga.called)
 
 
 class StackGetAttrValidationTest(common.HeatTestCase):
@@ -2255,8 +2494,9 @@ class TestGetAttAllAttributes(common.HeatTestCase):
         ('test_get_attr_all_attributes_str', dict(
             hot_tpl=hot_tpl_generic_resource_all_attrs,
             snippet={'Value': {'get_attr': 'resource1'}},
-            expected='Argument to "get_attr" must be a list',
-            raises=TypeError
+            expected='.Value.get_attr: Argument to "get_attr" must be a '
+                     'list',
+            raises=exception.StackValidationFailed
         )),
         ('test_get_attr_all_attributes_invalid_resource_list', dict(
             hot_tpl=hot_tpl_generic_resource_all_attrs,
@@ -2268,23 +2508,24 @@ class TestGetAttAllAttributes(common.HeatTestCase):
         ('test_get_attr_all_attributes_invalid_type', dict(
             hot_tpl=hot_tpl_generic_resource_all_attrs,
             snippet={'Value': {'get_attr': {'resource1': 'attr1'}}},
-            raises=TypeError,
-            expected='Argument to "get_attr" must be a list'
+            raises=exception.StackValidationFailed,
+            expected='.Value.get_attr: Argument to "get_attr" must be a '
+                     'list'
         )),
         ('test_get_attr_all_attributes_invalid_arg_str', dict(
             hot_tpl=hot_tpl_generic_resource_all_attrs,
             snippet={'Value': {'get_attr': ''}},
-            raises=ValueError,
-            expected='Arguments to "get_attr" can be of the next '
-                     'forms: [resource_name] or '
+            raises=exception.StackValidationFailed,
+            expected='.Value.get_attr: Arguments to "get_attr" can be of '
+                     'the next forms: [resource_name] or '
                      '[resource_name, attribute, (path), ...]'
         )),
         ('test_get_attr_all_attributes_invalid_arg_list', dict(
             hot_tpl=hot_tpl_generic_resource_all_attrs,
             snippet={'Value': {'get_attr': []}},
-            raises=ValueError,
-            expected='Arguments to "get_attr" can be of the next '
-                     'forms: [resource_name] or '
+            raises=exception.StackValidationFailed,
+            expected='.Value.get_attr: Arguments to "get_attr" can be of '
+                     'the next forms: [resource_name] or '
                      '[resource_name, attribute, (path), ...]'
         )),
         ('test_get_attr_all_attributes_standard', dict(

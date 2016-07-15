@@ -14,6 +14,7 @@
 import datetime
 import uuid
 
+import mock
 import mox
 from oslo_serialization import jsonutils as json
 from oslo_utils import timeutils
@@ -177,7 +178,7 @@ class HeatWaitConditionTest(common.HeatTestCase):
                          rsrc.state)
 
         r = resource_objects.Resource.get_by_name_and_stack(
-            None, 'wait_handle', self.stack.id)
+            self.stack.context, 'wait_handle', self.stack.id)
         self.assertEqual('wait_handle', r.name)
         self.m.VerifyAll()
 
@@ -201,7 +202,7 @@ class HeatWaitConditionTest(common.HeatTestCase):
         self.assertTrue(reason.startswith('WaitConditionFailure:'))
 
         r = resource_objects.Resource.get_by_name_and_stack(
-            None, 'wait_handle', self.stack.id)
+            self.stack.context, 'wait_handle', self.stack.id)
         self.assertEqual('wait_handle', r.name)
         self.m.VerifyAll()
 
@@ -404,6 +405,9 @@ class HeatWaitConditionTest(common.HeatTestCase):
         self.m.StubOutWithMock(heat_plugin.HeatClientPlugin, 'get_heat_url')
         heat_plugin.HeatClientPlugin.get_heat_url().AndReturn(
             'foo/%s' % self.tenant_id)
+        self.m.StubOutWithMock(
+            heat_plugin.HeatClientPlugin, 'get_insecure_option')
+        heat_plugin.HeatClientPlugin.get_insecure_option().AndReturn(False)
         self.m.ReplayAll()
         handle = self._create_heat_handle()
         expected = ("curl -i -X POST -H 'X-Auth-Token: adomainusertoken' "
@@ -411,6 +415,24 @@ class HeatWaitConditionTest(common.HeatTestCase):
                     "-H 'Accept: application/json' "
                     "foo/aprojectid/stacks/test_stack/%s/resources/wait_handle"
                     "/signal" % self.stack_id)
+        self.assertEqual(expected, handle.FnGetAtt('curl_cli'))
+        self.m.VerifyAll()
+
+    def test_getatt_curl_cli_insecure_true(self):
+        self.m.StubOutWithMock(heat_plugin.HeatClientPlugin, 'get_heat_url')
+        heat_plugin.HeatClientPlugin.get_heat_url().AndReturn(
+            'foo/%s' % self.tenant_id)
+        self.m.StubOutWithMock(
+            heat_plugin.HeatClientPlugin, 'get_insecure_option')
+        heat_plugin.HeatClientPlugin.get_insecure_option().AndReturn(True)
+        self.m.ReplayAll()
+        handle = self._create_heat_handle()
+        expected = (
+            "curl --insecure -i -X POST -H 'X-Auth-Token: adomainusertoken' "
+            "-H 'Content-Type: application/json' "
+            "-H 'Accept: application/json' "
+            "foo/aprojectid/stacks/test_stack/%s/resources/wait_handle"
+            "/signal" % self.stack_id)
         self.assertEqual(expected, handle.FnGetAtt('curl_cli'))
         self.m.VerifyAll()
 
@@ -459,7 +481,8 @@ class HeatWaitConditionTest(common.HeatTestCase):
         signal = json.loads(handle.FnGetAtt('signal'))
         self.assertIn('alarm_url', signal)
 
-    def test_getatt_signal_zaqar(self):
+    @mock.patch('zaqarclient.queues.v2.queues.Queue.signed_url')
+    def test_getatt_signal_zaqar(self, mock_signed_url):
         handle = self._create_heat_handle(
             template=test_template_heat_waithandle_zaqar)
         self.assertIsNone(handle.FnGetAtt('token'))

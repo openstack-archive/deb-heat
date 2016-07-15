@@ -90,9 +90,10 @@ class TestTranslationRule(common.HeatTestCase):
                                 props,
                                 translation.TranslationRule.ADD,
                                 ['any'],
-                                mock.ANY,
+                                'value',
                                 'value_name')
-        self.assertEqual('Use value_name only for replacing list elements.',
+        self.assertEqual('Either value or value_name should be specified for '
+                         'rule Add.',
                          six.text_type(exc))
 
         exc = self.assertRaises(ValueError,
@@ -546,6 +547,26 @@ class TestTranslationRule(common.HeatTestCase):
         rule.execute_rule()
         self.assertEqual(data, props.data)
 
+    def test_resolve_rule_list_strings(self):
+        client_plugin, schema = self._test_resolve_rule()
+        data = {'far': ['one', 'rose']}
+        schema = {'far': properties.Schema(
+            properties.Schema.LIST,
+            schema=properties.Schema(
+                properties.Schema.STRING
+            )
+        )}
+        props = properties.Properties(schema, data)
+        rule = translation.TranslationRule(
+            props,
+            translation.TranslationRule.RESOLVE,
+            ['far'],
+            client_plugin=client_plugin,
+            finder='find_name_id')
+
+        rule.execute_rule()
+        self.assertEqual(['yellow', 'pink'], props.get('far'))
+
     def test_resolve_rule_list_empty(self):
         client_plugin, schema = self._test_resolve_rule(is_list=True)
         data = {
@@ -786,50 +807,6 @@ class TestTranslationRule(common.HeatTestCase):
         self.assertEqual(['white', 'roses', 'chrysanthemums'],
                          props.get('far'))
 
-    def test_property_no_translation_removed_function(self):
-        """Test case when list property with sub-schema takes json param."""
-        schema = {
-            'far': properties.Schema(properties.Schema.LIST,
-                                     schema=properties.Schema(
-                                         properties.Schema.MAP,
-                                         schema={
-                                             'bar': properties.Schema(
-                                                 properties.Schema.STRING,
-                                             ),
-                                             'dar': properties.Schema(
-                                                 properties.Schema.STRING
-                                             )
-                                         }
-                                     ))
-        }
-
-        class DummyStack(dict):
-            @property
-            def parameters(self):
-                return mock.Mock()
-
-        param = hot_funcs.Removed(DummyStack(json_far='json_far'),
-                                  'Ref',
-                                  'json_far')
-        param.parameters = {
-            'json_far': parameters.JsonParam(
-                'json_far',
-                {'Type': 'Json'},
-                '{"dar": "rad"}').value()}
-        data = {'far': [param]}
-
-        props = properties.Properties(schema, data)
-
-        rule = translation.TranslationRule(
-            props,
-            translation.TranslationRule.REPLACE,
-            ['far', 'bar'],
-            value_name='dar')
-
-        rule.execute_rule()
-
-        self.assertEqual([param], props.data.get('far'))
-
     def test_property_no_translation_if_user_parameter_missing(self):
         """Test translation in the case of missing parameter"""
         schema = {
@@ -866,3 +843,73 @@ class TestTranslationRule(common.HeatTestCase):
         # ensure that translation rule was not applied
         self.assertEqual({'source': param, 'destination': ''},
                          data)
+
+    def test_list_list_add_translation_rule(self):
+        schema = {
+            'far': properties.Schema(
+                properties.Schema.LIST,
+                schema=properties.Schema(
+                    properties.Schema.MAP,
+                    schema={
+                        'bar': properties.Schema(
+                            properties.Schema.LIST,
+                            schema=properties.Schema(properties.Schema.STRING)
+                        ),
+                        'car': properties.Schema(properties.Schema.STRING)
+                    }
+                )
+            )
+        }
+
+        data = {'far': [{'bar': ['shar'], 'car': 'man'}, {'car': 'first'}]}
+
+        props = properties.Properties(schema, data)
+
+        rule = translation.TranslationRule(
+            props,
+            translation.TranslationRule.ADD,
+            ['far', 'bar'],
+            value_name='car'
+        )
+        rule.execute_rule()
+
+        self.assertIn({'bar': ['shar', 'man'], 'car': 'man'}, props.get('far'))
+        self.assertIn({'bar': ['first'], 'car': 'first'}, props.get('far'))
+
+    def test_list_list_error_translation_rule(self):
+        schema = {
+            'far': properties.Schema(
+                properties.Schema.LIST,
+                schema=properties.Schema(
+                    properties.Schema.MAP,
+                    schema={
+                        'car': properties.Schema(properties.Schema.STRING),
+                        'dar': properties.Schema(properties.Schema.STRING),
+                    }
+                )
+            ),
+            'bar': properties.Schema(
+                properties.Schema.LIST,
+                schema=properties.Schema(
+                    properties.Schema.MAP,
+                    schema={
+                        'car': properties.Schema(properties.Schema.STRING),
+                        'dar': properties.Schema(properties.Schema.STRING),
+                    }
+                )
+            ),
+        }
+
+        data = {'far': [{'car': 'man'}], 'bar': [{'dar': 'check'}]}
+
+        props = properties.Properties(schema, data)
+
+        rule = translation.TranslationRule(
+            props,
+            translation.TranslationRule.REPLACE,
+            ['far'],
+            value_path=['bar', 'car']
+        )
+        ex = self.assertRaises(ValueError, rule.execute_rule)
+        self.assertEqual('Cannot use value_path for properties inside '
+                         'list-type properties', six.text_type(ex))

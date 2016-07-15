@@ -15,7 +15,6 @@ import mock
 
 from heat.common import exception
 from heat.common import template_format
-from heat.engine import resources
 from heat.engine.resources.openstack.mistral import cron_trigger
 from heat.engine import scheduler
 from heat.tests import common
@@ -44,14 +43,14 @@ class FakeCronTrigger(object):
         self.remaining_executions = 3
         self._data = {'trigger': 'info'}
 
+    def to_dict(self):
+        return self._data
+
 
 class MistralCronTriggerTest(common.HeatTestCase):
 
     def setUp(self):
         super(MistralCronTriggerTest, self).setUp()
-        resources.initialise()
-        utils.setup_dummy_db()
-        self.ctx = utils.dummy_context()
 
         t = template_format.parse(stack_template)
         self.stack = utils.parse_stack(t)

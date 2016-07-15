@@ -469,7 +469,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         USER_DATA_UPDATE_POLICY: properties.Schema(
             properties.Schema.STRING,
             _('Policy on how to apply a user_data update; either by '
-              'ignorning it or by replacing the entire server.'),
+              'ignoring it or by replacing the entire server.'),
             default='REPLACE',
             constraints=[
                 constraints.AllowedValues(['REPLACE', 'IGNORE']),
@@ -1246,15 +1246,16 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
                 self.context, sd['id'])
             self.rpc_client().delete_software_config(
                 self.context, sc['id'])
-        except Exception as e:
+        except Exception:
             # Updating the software config transport is on a best-effort
             # basis as any raised exception here would result in the resource
             # going into an ERROR state, which will be replaced on the next
             # stack update. This is not desirable for a server. The old
             # transport will continue to work, and the new transport may work
             # despite exceptions in the above block.
-            LOG.error(_LE('Error while updating software config transport'))
-            LOG.exception(e)
+            LOG.exception(
+                _LE('Error while updating software config transport')
+            )
 
     def check_update_complete(self, updaters):
         """Push all updaters to completion in list order."""
@@ -1423,7 +1424,7 @@ class Server(stack_user.StackUser, sh.SchedulerHintsMixin,
         if metadata is not None or personality:
             limits = self.client_plugin().absolute_limits()
 
-        # if 'security_groups' present for the server and explict 'port'
+        # if 'security_groups' present for the server and explicit 'port'
         # in one or more entries in 'networks', raise validation error
         if networks_with_port and self.properties[self.SECURITY_GROUPS]:
             raise exception.ResourcePropertyConflict(

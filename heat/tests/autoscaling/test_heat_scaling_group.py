@@ -400,6 +400,37 @@ class HeatScalingGroupAttrTest(common.HeatTestCase):
 
         self.assertEqual(output, self.group.FnGetAtt('outputs_list', 'Bar'))
 
+    def test_output_refs(self):
+        # Setup
+        mock_get = self.patchobject(grouputils, 'get_member_refids')
+        mock_get.return_value = ['resource-1', 'resource-2']
+
+        # Test
+        found = self.group.FnGetAtt('refs')
+
+        # Verify
+        expected = ['resource-1', 'resource-2']
+        self.assertEqual(expected, found)
+        mock_get.assert_called_once_with(self.group)
+
+    def test_output_refs_map(self):
+        # Setup
+        mock_members = self.patchobject(grouputils, 'get_members')
+        members = [mock.MagicMock(), mock.MagicMock()]
+        members[0].name = 'resource-1-name'
+        members[0].resource_id = 'resource-1-id'
+        members[1].name = 'resource-2-name'
+        members[1].resource_id = 'resource-2-id'
+        mock_members.return_value = members
+
+        # Test
+        found = self.group.FnGetAtt('refs_map')
+
+        # Verify
+        expected = {'resource-1-name': 'resource-1-id',
+                    'resource-2-name': 'resource-2-id'}
+        self.assertEqual(expected, found)
+
     def test_output_attribute_dict(self):
         mock_members = self.patchobject(grouputils, 'get_members')
         members = []

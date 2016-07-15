@@ -12,12 +12,12 @@
 #    under the License.
 
 import copy
-import six
 import uuid
 
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import timeutils
+from six import itertools
 
 from heat.common import exception
 from heat.common.i18n import _
@@ -193,30 +193,11 @@ class SoftwareDeployment(signal_responder.SignalResponder):
     # dedicated API for changing state on signals
     signal_needs_metadata_updates = False
 
-    def _signal_transport_cfn(self):
-        return self.properties[
-            self.SIGNAL_TRANSPORT] == self.CFN_SIGNAL
-
-    def _signal_transport_heat(self):
-        return self.properties[
-            self.SIGNAL_TRANSPORT] == self.HEAT_SIGNAL
-
-    def _signal_transport_none(self):
-        return self.properties[
-            self.SIGNAL_TRANSPORT] == self.NO_SIGNAL
-
-    def _signal_transport_temp_url(self):
-        return self.properties[
-            self.SIGNAL_TRANSPORT] == self.TEMP_URL_SIGNAL
-
-    def _signal_transport_zaqar(self):
-        return self.properties.get(
-            self.SIGNAL_TRANSPORT) == self.ZAQAR_SIGNAL
-
     def _build_properties(self, config_id, action):
         props = {
             'config_id': config_id,
             'action': action,
+            'input_values': self.properties.get(self.INPUT_VALUES)
         }
 
         if self._signal_transport_none():
@@ -594,6 +575,14 @@ class SoftwareDeploymentGroup(resource_group.ResourceGroup):
         'deploy_stdouts', 'deploy_stderrs', 'deploy_status_codes'
     )
 
+    _ROLLING_UPDATES_SCHEMA_KEYS = (
+        MAX_BATCH_SIZE,
+        PAUSE_TIME,
+    ) = (
+        resource_group.ResourceGroup.MAX_BATCH_SIZE,
+        resource_group.ResourceGroup.PAUSE_TIME,
+    )
+
     _sd_ps = SoftwareDeployment.properties_schema
     _rg_ps = resource_group.ResourceGroup.properties_schema
 
@@ -603,7 +592,8 @@ class SoftwareDeploymentGroup(resource_group.ResourceGroup):
             _('A map of names and server IDs to apply configuration to. The '
               'name is arbitrary and is used as the Heat resource name '
               'for the corresponding deployment.'),
-            update_allowed=True
+            update_allowed=True,
+            required=True
         ),
         CONFIG: _sd_ps[CONFIG],
         INPUT_VALUES: _sd_ps[INPUT_VALUES],
@@ -630,13 +620,34 @@ class SoftwareDeploymentGroup(resource_group.ResourceGroup):
         ),
     }
 
-    update_policy_schema = {}
+    rolling_update_schema = {
+        MAX_BATCH_SIZE: properties.Schema(
+            properties.Schema.INTEGER,
+            _('The maximum number of deployments to replace at once.'),
+            constraints=[constraints.Range(min=1)],
+            default=1),
+        PAUSE_TIME: properties.Schema(
+            properties.Schema.NUMBER,
+            _('The number of seconds to wait between batches of '
+              'updates.'),
+            constraints=[constraints.Range(min=0)],
+            default=0),
+    }
 
     def get_size(self):
-        return len(self.properties.get(self.SERVERS, {}))
+        return len(self.properties[self.SERVERS])
 
-    def _resource_names(self):
-        return six.iterkeys(self.properties.get(self.SERVERS, {}))
+    def _resource_names(self, size=None):
+        candidates = self.properties[self.SERVERS]
+        if size is None:
+            return iter(candidates)
+        return itertools.islice(candidates, size)
+
+    def res_def_changed(self, prop_diff):
+        return True
+
+    def _name_blacklist(self):
+        return set()
 
     def get_resource_def(self, include_all=False):
         return dict(self.properties)
@@ -664,6 +675,13 @@ class SoftwareDeploymentGroup(resource_group.ResourceGroup):
 
         rg_attr = rg.get_attribute(rg.ATTR_ATTRIBUTES, n_attr)
         return attributes.select_from_attribute(rg_attr, path)
+
+    def _try_rolling_update(self):
+        if self.update_policy[self.ROLLING_UPDATE]:
+            policy = self.update_policy[self.ROLLING_UPDATE]
+            return self._replace(0,
+                                 policy[self.MAX_BATCH_SIZE],
+                                 policy[self.PAUSE_TIME])
 
 
 class SoftwareDeployments(SoftwareDeploymentGroup):

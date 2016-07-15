@@ -363,6 +363,72 @@ class TestTemplateValidate(common.HeatTestCase):
         err = tmpl.validate()
         self.assertIsNone(err)
 
+    def test_get_resources_good(self):
+        """Test get resources successful."""
+
+        t = template_format.parse('''
+            AWSTemplateFormatVersion: 2010-09-09
+            Resources:
+              resource1:
+                Type: AWS::EC2::Instance
+                Properties:
+                  property1: value1
+                Metadata:
+                  foo: bar
+                DependsOn: dummy
+                DeletionPolicy: dummy
+                UpdatePolicy:
+                  foo: bar
+        ''')
+
+        expected = {'resource1': {'Type': 'AWS::EC2::Instance',
+                                  'Properties': {'property1': 'value1'},
+                                  'Metadata': {'foo': 'bar'},
+                                  'DependsOn': 'dummy',
+                                  'DeletionPolicy': 'dummy',
+                                  'UpdatePolicy': {'foo': 'bar'}}}
+
+        tmpl = template.Template(t)
+        self.assertEqual(expected, tmpl[tmpl.RESOURCES])
+
+    def test_get_resources_bad_no_data(self):
+        """Test get resources without any mapping."""
+
+        t = template_format.parse('''
+            AWSTemplateFormatVersion: 2010-09-09
+            Resources:
+              resource1:
+        ''')
+
+        tmpl = template.Template(t)
+        error = self.assertRaises(exception.StackValidationFailed,
+                                  tmpl.validate)
+        self.assertEqual('Each Resource must contain a Type key.',
+                         six.text_type(error))
+
+    def test_get_resources_no_type(self):
+        """Test get resources with invalid key."""
+
+        t = template_format.parse('''
+            AWSTemplateFormatVersion: 2010-09-09
+            Resources:
+              resource1:
+                Properties:
+                  property1: value1
+                Metadata:
+                  foo: bar
+                DependsOn: dummy
+                DeletionPolicy: dummy
+                UpdatePolicy:
+                  foo: bar
+        ''')
+
+        tmpl = template.Template(t)
+        error = self.assertRaises(exception.StackValidationFailed,
+                                  tmpl.validate)
+        self.assertEqual('Each Resource must contain a Type key.',
+                         six.text_type(error))
+
     def test_template_validate_hot_check_t_digest(self):
         t = {
             'heat_template_version': '2015-04-30',
@@ -456,7 +522,7 @@ class TemplateTest(common.HeatTestCase):
                                     template.Template, invalid_hot_version_tmp)
         valid_versions = ['2013-05-23', '2014-10-16',
                           '2015-04-30', '2015-10-15', '2016-04-08',
-                          '2016-10-14']
+                          '2016-10-14', 'newton']
         ex_error_msg = ('The template version is invalid: '
                         '"heat_template_version: 2012-12-12". '
                         '"heat_template_version" should be one of: %s'
@@ -602,7 +668,8 @@ class TemplateTest(common.HeatTestCase):
                  {'Fn::FindInMap': ["ReallyShortList"]})
 
         for find in finds:
-            self.assertRaises(KeyError, self.resolve, find, tmpl, stk)
+            self.assertRaises(exception.StackValidationFailed,
+                              self.resolve, find, tmpl, stk)
 
     def test_param_refs(self):
         env = environment.Environment({'foo': 'bar', 'blarg': 'wibble'})
@@ -730,14 +797,16 @@ class TemplateTest(common.HeatTestCase):
         tmpl = template.Template(empty_template20161014)
 
         snippet = {'Fn::Equals': ['test', 'prod', 'invalid']}
-        exc = self.assertRaises(ValueError, self.resolve, snippet, tmpl)
-        self.assertIn('Arguments to "Fn::Equals" must be of the form: '
-                      '[value_1, value_2]', six.text_type(exc))
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve, snippet, tmpl)
+        self.assertIn('.Fn::Equals: Arguments to "Fn::Equals" must be of '
+                      'the form: [value_1, value_2]', six.text_type(exc))
         # test invalid type
         snippet = {'Fn::Equals': {"equal": False}}
-        exc = self.assertRaises(ValueError, self.resolve, snippet, tmpl)
-        self.assertIn('Arguments to "Fn::Equals" must be of the form: '
-                      '[value_1, value_2]', six.text_type(exc))
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve, snippet, tmpl)
+        self.assertIn('.Fn::Equals: Arguments to "Fn::Equals" must be of '
+                      'the form: [value_1, value_2]', six.text_type(exc))
 
     def test_join(self):
         tmpl = template.Template(empty_template)
@@ -895,9 +964,9 @@ class TemplateTest(common.HeatTestCase):
         snippet = {'Fn::ResourceFacade': 'wibble'}
         stk = stack.Stack(self.ctx, 'test_stack',
                           template.Template(empty_template))
-        error = self.assertRaises(ValueError,
+        error = self.assertRaises(exception.StackValidationFailed,
                                   self.resolve, snippet, stk.t, stk)
-        self.assertIn(list(six.iterkeys(snippet))[0], six.text_type(error))
+        self.assertIn(next(iter(snippet)), six.text_type(error))
 
     def test_resource_facade_missing_deletion_policy(self):
         snippet = {'Fn::ResourceFacade': 'DeletionPolicy'}
@@ -937,7 +1006,7 @@ class TemplateTest(common.HeatTestCase):
             }
         })
         self.assertEqual(expected_description, tmpl['Description'])
-        self.assertNotIn('Parameters', six.iterkeys(tmpl))
+        self.assertNotIn('Parameters', tmpl.keys())
 
     def test_add_resource(self):
         cfn_tpl = template_format.parse('''
@@ -1048,22 +1117,22 @@ class TemplateFnErrorTest(common.HeatTestCase):
          dict(expect=ValueError,
               snippet={"Fn::Select": ["not", "no json"]})),
         ('select_wrong_num_args_1',
-         dict(expect=ValueError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Select": []})),
         ('select_wrong_num_args_2',
-         dict(expect=ValueError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Select": ["4"]})),
         ('select_wrong_num_args_3',
-         dict(expect=ValueError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Select": ["foo", {"foo": "bar"}, ""]})),
         ('select_wrong_num_args_4',
          dict(expect=TypeError,
               snippet={'Fn::Select': [['f'], {'f': 'food'}]})),
         ('split_no_delim',
-         dict(expect=ValueError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Split": ["foo, bar, achoo"]})),
         ('split_no_list',
-         dict(expect=TypeError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Split": "foo, bar, achoo"})),
         ('base64_list',
          dict(expect=TypeError,
@@ -1077,18 +1146,18 @@ class TemplateFnErrorTest(common.HeatTestCase):
                   {'$var1': 'foo', '%var2%': ['bar']},
                   '$var1 is %var2%']})),
         ('replace_list_mapping',
-         dict(expect=TypeError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Replace": [
                   ['var1', 'foo', 'var2', 'bar'],
                   '$var1 is ${var2}']})),
         ('replace_dict',
-         dict(expect=TypeError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Replace": {}})),
         ('replace_missing_template',
-         dict(expect=ValueError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Replace": [['var1', 'foo', 'var2', 'bar']]})),
         ('replace_none_template',
-         dict(expect=TypeError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Replace": [['var2', 'bar'], None]})),
         ('replace_list_string',
          dict(expect=TypeError,
@@ -1102,46 +1171,46 @@ class TemplateFnErrorTest(common.HeatTestCase):
          dict(expect=TypeError,
               snippet={"Fn::Join": [" ", {"foo": "bar"}]})),
         ('join_wrong_num_args_1',
-         dict(expect=ValueError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Join": []})),
         ('join_wrong_num_args_2',
-         dict(expect=ValueError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Join": [" "]})),
         ('join_wrong_num_args_3',
-         dict(expect=ValueError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Join": [" ", {"foo": "bar"}, ""]})),
         ('join_string_nodelim',
-         dict(expect=TypeError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Join": "o"})),
         ('join_string_nodelim_1',
-         dict(expect=TypeError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Join": "oh"})),
         ('join_string_nodelim_2',
-         dict(expect=TypeError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Join": "ohh"})),
         ('join_dict_nodelim1',
-         dict(expect=TypeError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Join": {"foo": "bar"}})),
         ('join_dict_nodelim2',
-         dict(expect=TypeError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Join": {"foo": "bar", "blarg": "wibble"}})),
         ('join_dict_nodelim3',
-         dict(expect=TypeError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::Join": {"foo": "bar", "blarg": "wibble",
                                     "baz": "quux"}})),
         ('member_list2map_no_key_or_val',
-         dict(expect=TypeError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::MemberListToMap": [
                   'Key', ['.member.2.Key=metric',
                           '.member.2.Value=cpu',
                           '.member.5.Key=size',
                           '.member.5.Value=56']]})),
         ('member_list2map_no_list',
-         dict(expect=TypeError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::MemberListToMap": [
                   'Key', '.member.2.Key=metric']})),
         ('member_list2map_not_string',
-         dict(expect=TypeError,
+         dict(expect=exception.StackValidationFailed,
               snippet={"Fn::MemberListToMap": [
                   'Name', ['Value'], ['.member.0.Name=metric',
                                       '.member.0.Value=cpu',
@@ -1158,8 +1227,7 @@ class TemplateFnErrorTest(common.HeatTestCase):
         error = self.assertRaises(self.expect,
                                   resolve,
                                   self.snippet)
-        self.assertIn(list(six.iterkeys(self.snippet))[0],
-                      six.text_type(error))
+        self.assertIn(next(iter(self.snippet)), six.text_type(error))
 
 
 class ResolveDataTest(common.HeatTestCase):

@@ -5,5 +5,10 @@ resource_registry:
     # Choose your implementation of AWS::CloudWatch::Alarm
     "AWS::CloudWatch::Alarm": "file:///etc/heat/templates/AWS_CloudWatch_Alarm.yaml"
     #"AWS::CloudWatch::Alarm": "OS::Heat::CWLiteAlarm"
-    "OS::Metering::Alarm": "OS::Ceilometer::Alarm"
+    "OS::Metering::Alarm": "OS::Aodh::Alarm"
     "AWS::RDS::DBInstance": "file:///etc/heat/templates/AWS_RDS_DBInstance.yaml"
+    "OS::Ceilometer::Alarm": "OS::Aodh::Alarm"
+    "OS::Ceilometer::GnocchiResourcesAlarm": "OS::Aodh::GnocchiResourcesAlarm"
+    "OS::Ceilometer::GnocchiAggregationByMetricsAlarm": "OS::Aodh::GnocchiAggregationByMetricsAlarm"
+    "OS::Ceilometer::GnocchiAggregationByResourcesAlarm": "OS::Aodh::GnocchiAggregationByResourcesAlarm"
+    "OS::Ceilometer::CombinationAlarm": "OS::Aodh::CombinationAlarm"

@@ -35,6 +35,9 @@ IntegrationTestGroup = [
                default=(os.environ.get('OS_PROJECT_NAME') or
                         os.environ.get('OS_TENANT_NAME')),
                help="Tenant name to use for API requests."),
+    cfg.StrOpt('admin_tenant_name',
+               default='admin',
+               help="Admin tenant name to use for admin API requests."),
     cfg.StrOpt('auth_url',
                default=os.environ.get('OS_AUTH_URL'),
                help="Full URI of the OpenStack Identity API (Keystone)"),
@@ -65,7 +68,6 @@ IntegrationTestGroup = [
                 default=False,
                 help="Set to True if using self-signed SSL certificates."),
     cfg.StrOpt('ca_file',
-               default=None,
                help="CA certificate to pass for servers that have "
                     "https endpoint."),
     cfg.IntOpt('build_interval',
@@ -119,7 +121,7 @@ IntegrationTestGroup = [
     cfg.ListOpt('skip_scenario_test_list',
                 help="List of scenario test class or class.method "
                      "names to skip ex. NeutronLoadBalancerTest, "
-                     "CeilometerAlarmTest.test_alarm"),
+                     "AodhAlarmTest.test_alarm"),
     cfg.ListOpt('skip_test_stack_action_list',
                 help="List of stack actions in tests to skip "
                      "ex. ABANDON, ADOPT, SUSPEND, RESUME"),

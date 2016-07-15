@@ -19,6 +19,9 @@
 # Tenant name to use for API requests. (string value)
 #tenant_name = <None>
 
+# Admin tenant name to use for admin API requests. (string value)
+#admin_tenant_name = admin
+
 # Full URI of the OpenStack Identity API (Keystone) (string value)
 #auth_url = <None>
 
@@ -101,7 +104,7 @@
 #skip_functional_test_list = <None>
 
 # List of scenario test class or class.method names to skip ex.
-# NeutronLoadBalancerTest, CeilometerAlarmTest.test_alarm (list value)
+# NeutronLoadBalancerTest, AodhAlarmTest.test_alarm (list value)
 #skip_scenario_test_list = <None>
 
 # List of stack actions in tests to skip ex. ABANDON, ADOPT, SUSPEND, RESUME

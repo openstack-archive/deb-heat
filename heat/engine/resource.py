@@ -166,20 +166,21 @@ class Resource(object):
     @classmethod
     def _validate_service_availability(cls, context, resource_type):
         try:
-            svc_available = cls.is_service_available(context)
+            (svc_available, reason) = cls.is_service_available(context)
         except Exception as exc:
+            LOG.exception(_LE("Resource type %s unavailable"),
+                          resource_type)
             ex = exception.ResourceTypeUnavailable(
                 resource_type=resource_type,
                 service_name=cls.default_client_name,
                 reason=six.text_type(exc))
-            LOG.exception(exc)
             raise ex
         else:
             if not svc_available:
                 ex = exception.ResourceTypeUnavailable(
                     resource_type=resource_type,
                     service_name=cls.default_client_name,
-                    reason='Service endpoint not in service catalog.')
+                    reason=reason)
                 LOG.info(six.text_type(ex))
                 raise ex
 
@@ -452,7 +453,14 @@ class Resource(object):
                         raise
 
     def has_nested(self):
-        # common resources have not nested, StackResource overrides it
+        """Return True if the resource has an existing nested stack.
+
+        For most resource types, this will always return False. StackResource
+        subclasses return True when appropriate. Resource subclasses that may
+        return True must also provide a nested_identifier() method to return
+        the identifier of the nested stack, and a nested() method to return a
+        Stack object for the nested stack.
+        """
         return False
 
     def has_hook(self, hook):
@@ -645,7 +653,7 @@ class Resource(object):
         # resource does not have endpoint, such as RandomString, OS::Heat
         # resources as they are implemented within the engine.
         if cls.default_client_name is None:
-            return True
+            return (True, None)
         client_plugin = clients.Clients(context).client_plugin(
             cls.default_client_name)
 
@@ -655,7 +663,7 @@ class Resource(object):
 
         service_types = client_plugin.service_types
         if not service_types:
-            return True
+            return (True, None)
 
         # NOTE(kanagaraj-manickam): if one of the service_type does
         # exist in the keystone, then considered it as available.
@@ -669,8 +677,16 @@ class Resource(object):
                     not req_extension or client_plugin.has_extension(
                         req_extension))
                 if is_ext_available:
-                    return True
-        return False
+                    return (True, None)
+                else:
+                    reason = _('Required extension {0} in {1} service '
+                               'is not available.')
+                    reason = reason.format(req_extension,
+                                           cls.default_client_name)
+            else:
+                reason = _('{0} {1} endpoint is not in service catalog.')
+                reason = reason.format(cls.default_client_name, service_type)
+        return (False, reason)
 
     def keystone(self):
         return self.client('keystone')
@@ -979,7 +995,8 @@ class Resource(object):
 
     def _needs_update(self, after, before, after_props, before_props,
                       prev_resource, check_init_complete=True):
-        if self.status == self.FAILED:
+        if self.status == self.FAILED or (self.stack.convergence and (
+                self.action, self.status) == (self.DELETE, self.COMPLETE)):
             raise exception.UpdateReplace(self)
 
         if check_init_complete and (self.action == self.INIT
@@ -1037,7 +1054,14 @@ class Resource(object):
             action_rollback = self.stack.action == self.stack.ROLLBACK
             status_in_progress = self.stack.status == self.stack.IN_PROGRESS
             if action_rollback and status_in_progress and self.replaced_by:
-                self.restore_prev_rsrc(convergence=True)
+                try:
+                    self.restore_prev_rsrc(convergence=True)
+                except Exception as e:
+                    failure = exception.ResourceFailure(e, self, self.action)
+                    self.state_set(self.UPDATE, self.FAILED,
+                                   six.text_type(failure))
+                    raise failure
+
             runner = scheduler.TaskRunner(self.update, new_res_def)
             try:
                 runner(timeout=timeout)
@@ -1372,7 +1396,8 @@ class Resource(object):
                              self.context).validate()
         try:
             validate = self.properties.validate(
-                with_value=self.stack.strict_validate)
+                with_value=self.stack.strict_validate,
+                template=self.t)
         except exception.StackValidationFailed as ex:
             path = [self.stack.t.RESOURCES, ex.path[0],
                     self.stack.t.get_section_name(ex.path[1])]
@@ -1431,22 +1456,23 @@ class Resource(object):
         replaced by more recent resource, then delete this and update
         the replacement resource's needed_by and replaces fields.
         """
-        self._acquire(engine_id)
-        try:
+        with self.lock(engine_id):
             self.needed_by = list(set(v for v in input_data.values()
                                       if v is not None))
 
             if self.current_template_id != template_id:
-                runner = scheduler.TaskRunner(self.destroy)
-                runner(timeout=timeout)
+                # just delete the resources in INIT state
+                if self.action == self.INIT:
+                    try:
+                        resource_objects.Resource.delete(self.context, self.id)
+                    except exception.NotFound:
+                        pass
+                else:
+                    runner = scheduler.TaskRunner(self.delete)
+                    runner(timeout=timeout)
 
-                # update needed_by and replaces of replacement resource
-                self._update_replacement_data(template_id)
-            else:
-                self._release(engine_id)
-        except:  # noqa
-            with excutils.save_and_reraise_exception():
-                self._release(engine_id)
+                    # update needed_by and replaces of replacement resource
+                    self._update_replacement_data(template_id)
 
     def handle_delete(self):
         """Default implementation; should be overridden by resources."""
@@ -1964,8 +1990,9 @@ class Resource(object):
             # Don't log an event as it just spams the user.
             pass
         except Exception as ex:
-            LOG.exception(_LE('signal %(name)s : %(msg)s')
-                          % {'name': six.text_type(self), 'msg': ex})
+            LOG.info(_LI('signal %(name)s : %(msg)s'),
+                     {'name': six.text_type(self), 'msg': ex},
+                     exc_info=True)
             failure = exception.ResourceFailure(ex, self)
             raise failure
 
@@ -2024,14 +2051,14 @@ class Resource(object):
                             params, props, outputs, description):
         if tmpl_type == 'hot':
             tmpl_dict = {
-                hot_tmpl.HOTemplate20150430.VERSION: '2015-04-30',
-                hot_tmpl.HOTemplate20150430.DESCRIPTION: description,
-                hot_tmpl.HOTemplate20150430.PARAMETERS: params,
-                hot_tmpl.HOTemplate20150430.OUTPUTS: outputs,
-                hot_tmpl.HOTemplate20150430.RESOURCES: {
+                hot_tmpl.HOTemplate20161014.VERSION: '2016-10-14',
+                hot_tmpl.HOTemplate20161014.DESCRIPTION: description,
+                hot_tmpl.HOTemplate20161014.PARAMETERS: params,
+                hot_tmpl.HOTemplate20161014.OUTPUTS: outputs,
+                hot_tmpl.HOTemplate20161014.RESOURCES: {
                     res_name: {
-                        hot_tmpl.RES_TYPE: res_type,
-                        hot_tmpl.RES_PROPERTIES: props}}}
+                        hot_tmpl.HOTemplate20161014.RES_TYPE: res_type,
+                        hot_tmpl.HOTemplate20161014.RES_PROPERTIES: props}}}
         else:
             tmpl_dict = {
                 cfn_tmpl.CfnTemplate.ALTERNATE_VERSION: '2012-12-12',
@@ -2039,8 +2066,8 @@ class Resource(object):
                 cfn_tmpl.CfnTemplate.PARAMETERS: params,
                 cfn_tmpl.CfnTemplate.RESOURCES: {
                     res_name: {
-                        cfn_tmpl.RES_TYPE: res_type,
-                        cfn_tmpl.RES_PROPERTIES: props}
+                        cfn_tmpl.CfnTemplate.RES_TYPE: res_type,
+                        cfn_tmpl.CfnTemplate.RES_PROPERTIES: props}
                 },
                 cfn_tmpl.CfnTemplate.OUTPUTS: outputs}
 

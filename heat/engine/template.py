@@ -66,7 +66,7 @@ class TemplatePluginNotRegistered(exception.HeatException):
 
 
 def get_template_class(template_data):
-    available_versions = list(six.iterkeys(_template_classes))
+    available_versions = _template_classes.keys()
     version = get_version(template_data, available_versions)
     version_type = version[0]
     try:
@@ -114,8 +114,7 @@ class Template(collections.Mapping):
         self.maps = self[self.MAPPINGS]
         self.env = env or environment.Environment({})
 
-        self.version = get_version(self.t,
-                                   list(six.iterkeys(_template_classes)))
+        self.version = get_version(self.t, _template_classes.keys())
         self.t_digest = None
 
     def __deepcopy__(self, memo):
@@ -134,12 +133,12 @@ class Template(collections.Mapping):
         return cls(t.template, template_id=template_id, env=env,
                    files=t_files)
 
-    def store(self, context=None):
+    def store(self, context):
         """Store the Template in the database and return its ID."""
         rt = {
             'template': self.t,
-            'files_id': self.files.store(),
-            'environment': self.env.user_env_as_dict()
+            'files_id': self.files.store(context),
+            'environment': self.env.env_as_dict()
         }
         if self.id is None:
             new_rt = template_object.RawTemplate.create(context, rt)
@@ -222,6 +221,33 @@ class Template(collections.Mapping):
         """
         pass
 
+    def validate_section(self, section, sub_section, data, allowed_keys):
+        obj_name = section[:-1]
+        err_msg = _('"%%s" is not a valid keyword inside a %s '
+                    'definition') % obj_name
+        args = {'object_name': obj_name, 'sub_section': sub_section}
+        message = _('Each %(object_name)s must contain a '
+                    '%(sub_section)s key.') % args
+        for name, attrs in sorted(data.items()):
+            if not attrs:
+                raise exception.StackValidationFailed(message=message)
+            try:
+                for attr, attr_value in six.iteritems(attrs):
+                    if attr not in allowed_keys:
+                        raise KeyError(err_msg % attr)
+                if sub_section not in attrs:
+                    raise exception.StackValidationFailed(message=message)
+            except AttributeError:
+                message = _('"%(section)s" must contain a map of '
+                            '%(obj_name)s maps. Found a [%(_type)s] '
+                            'instead') % {'section': section,
+                                          '_type': type(attrs),
+                                          'obj_name': obj_name}
+                raise exception.StackValidationFailed(message=message)
+            except KeyError as e:
+                # an invalid keyword was found
+                raise exception.StackValidationFailed(message=e.args[0])
+
     def remove_resource(self, name):
         """Remove a resource from the template."""
         self.t.get(self.RESOURCES, {}).pop(name)
@@ -231,8 +257,8 @@ class Template(collections.Mapping):
         if self.RESOURCES in self.t:
             self.t.update({self.RESOURCES: {}})
 
-    def parse(self, stack, snippet):
-        return parse(self.functions, stack, snippet)
+    def parse(self, stack, snippet, path=''):
+        return parse(self.functions, stack, snippet, path)
 
     def validate(self):
         """Validate the template.
@@ -257,7 +283,7 @@ class Template(collections.Mapping):
             return
 
         # check top-level sections
-        for k in six.iterkeys(self.t):
+        for k in self.t.keys():
             if k not in self.SECTIONS:
                 raise exception.InvalidTemplateSection(section=k)
 
@@ -300,18 +326,34 @@ class Template(collections.Mapping):
             return cls(tmpl)
 
 
-def parse(functions, stack, snippet):
+def parse(functions, stack, snippet, path=''):
     recurse = functools.partial(parse, functions, stack)
 
     if isinstance(snippet, collections.Mapping):
+        def mkpath(key):
+            return '.'.join([path, six.text_type(key)])
+
         if len(snippet) == 1:
             fn_name, args = next(six.iteritems(snippet))
             Func = functions.get(fn_name)
             if Func is not None:
-                return Func(stack, fn_name, recurse(args))
-        return dict((k, recurse(v)) for k, v in six.iteritems(snippet))
+                try:
+                    path = '.'.join([path, fn_name])
+                    return Func(stack, fn_name, recurse(args, path))
+                except (ValueError, TypeError, KeyError,
+                        exception.InvalidTemplateVersion) as e:
+                    raise exception.StackValidationFailed(
+                        path=path,
+                        message=six.text_type(e))
+
+        return dict((k, recurse(v, mkpath(k)))
+                    for k, v in six.iteritems(snippet))
     elif (not isinstance(snippet, six.string_types) and
           isinstance(snippet, collections.Iterable)):
-        return [recurse(v) for v in snippet]
+
+        def mkpath(idx):
+            return ''.join([path, '[%d]' % idx])
+
+        return [recurse(v, mkpath(i)) for i, v in enumerate(snippet)]
     else:
         return snippet

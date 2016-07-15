@@ -68,7 +68,7 @@ class StackTest(common.HeatTestCase):
         self.assertEqual('bar', self.stack.tenant_id)
 
     def test_stack_reads_tenant_from_context_if_empty(self):
-        self.ctx.tenant_id = 'foo'
+        self.ctx.tenant = 'foo'
         self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl,
                                  tenant_id=None)
         self.assertEqual('foo', self.stack.tenant_id)
@@ -196,7 +196,7 @@ class StackTest(common.HeatTestCase):
 
     def test_load_nonexistant_id(self):
         self.assertRaises(exception.NotFound, stack.Stack.load,
-                          None, -1)
+                          self.ctx, -1)
 
     def test_total_resources_empty(self):
         self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl,
@@ -233,7 +233,7 @@ class StackTest(common.HeatTestCase):
                                  template.Template(tpl),
                                  status_reason='blarg')
 
-        def get_more(nested_depth=0):
+        def get_more(nested_depth=0, filters=None):
             yield 'X'
             yield 'Y'
             yield 'Z'
@@ -272,13 +272,51 @@ class StackTest(common.HeatTestCase):
         # Verify, the db query is called with expected filter
         mock_db_call.assert_called_once_with(self.ctx,
                                              self.stack.id,
-                                             True,
                                              dict(name=['A']))
         # Make sure it returns only one resource.
         self.assertEqual(1, len(all_resources))
 
         # And returns the resource A
         self.assertEqual('A', all_resources[0].name)
+
+    @mock.patch.object(resource_objects.Resource, 'get_all_by_stack')
+    @mock.patch('heat.engine.resource.Resource')
+    def test_iter_resources_nested_with_filters(self, mock_resource,
+                                                mock_db_call):
+        mock_rsc = mock.Mock()
+        mock_rsc.name = 'A'
+        mock_db_call.return_value = {'A': mock_rsc}
+        mock_resource.return_value = mock_rsc
+        tpl = {'HeatTemplateFormatVersion': '2012-12-12',
+               'Resources':
+                   {'A': {'Type': 'StackResourceType'},
+                    'B': {'Type': 'GenericResourceType'}}}
+        self.stack = stack.Stack(self.ctx, 'test_stack',
+                                 template.Template(tpl),
+                                 status_reason='blarg')
+
+        def get_more(nested_depth=0, filters=None):
+            if filters:
+                yield 'X'
+
+        self.stack['A'].nested = mock.Mock()
+        self.stack['B'].nested = mock.Mock()
+        self.stack['A'].nested.return_value.iter_resources = mock.Mock(
+            side_effect=get_more)
+        self.stack['B'].nested.return_value.iter_resources = mock.Mock(
+            side_effect=get_more)
+
+        all_resources = list(self.stack.iter_resources(
+            nested_depth=1,
+            filters=dict(name=['A'])
+        ))
+
+        # Verify, the db query is called with expected filter
+        mock_db_call.assert_called_once_with(self.ctx,
+                                             self.stack.id,
+                                             dict(name=['A']))
+        # Returns three resources (1 first level + 2 second level)
+        self.assertEqual(3, len(all_resources))
 
     @mock.patch.object(stack.Stack, 'db_resource_get')
     def test_iter_resources_cached(self, mock_drg):
@@ -299,7 +337,7 @@ class StackTest(common.HeatTestCase):
                                  status_reason='blarg',
                                  cache_data=cache_data)
 
-        def get_more(nested_depth=0):
+        def get_more(nested_depth=0, filters=None):
             yield 'X'
             yield 'Y'
             yield 'Z'
@@ -348,7 +386,11 @@ class StackTest(common.HeatTestCase):
                              convergence=False,
                              current_traversal=self.stack.current_traversal,
                              prev_raw_template_id=None,
-                             current_deps=None, cache_data=None)
+                             current_deps=None, cache_data=None,
+                             nested_depth=0,
+                             deleted_time=None,
+                             service_check_defer=False,
+                             resource_validate=True)
 
         self.m.ReplayAll()
         stack.Stack.load(self.ctx, stack_id=self.stack.id)
@@ -454,11 +496,11 @@ class StackTest(common.HeatTestCase):
         self.assertEqual(identifier.arn(), newstack.parameters['AWS::StackId'])
 
     def test_load_reads_tenant_id(self):
-        self.ctx.tenant_id = 'foobar'
+        self.ctx.tenant = 'foobar'
         self.stack = stack.Stack(self.ctx, 'stack_name', self.tmpl)
         self.stack.store()
         stack_id = self.stack.id
-        self.ctx.tenant_id = None
+        self.ctx.tenant = None
         self.stack = stack.Stack.load(self.ctx, stack_id=stack_id)
         self.assertEqual('foobar', self.stack.tenant_id)
 
@@ -1333,7 +1375,7 @@ class StackTest(common.HeatTestCase):
         self.assertIsNotNone(user_creds_id)
 
         # should've stored the username/password in the context
-        user_creds = ucreds_object.UserCreds.get_by_id(user_creds_id)
+        user_creds = ucreds_object.UserCreds.get_by_id(self.ctx, user_creds_id)
         self.assertEqual(self.ctx.username, user_creds.get('username'))
         self.assertEqual(self.ctx.password, user_creds.get('password'))
         self.assertIsNone(user_creds.get('trust_id'))
@@ -1372,7 +1414,7 @@ class StackTest(common.HeatTestCase):
         # should've stored the trust_id and trustor_user_id returned from
         # FakeKeystoneClient.create_trust_context, username/password should
         # not have been stored
-        user_creds = ucreds_object.UserCreds.get_by_id(user_creds_id)
+        user_creds = ucreds_object.UserCreds.get_by_id(self.ctx, user_creds_id)
         self.assertIsNone(user_creds.get('username'))
         self.assertIsNone(user_creds.get('password'))
         self.assertEqual('atrust', user_creds.get('trust_id'))
@@ -2685,38 +2727,43 @@ class StackTest(common.HeatTestCase):
                                  disable_rollback=disable_rollback)
         self.stack.store()
         self.m.ReplayAll()
-        res = self.stack._update_exception_handler(
+
+        rb = self.stack._update_exception_handler(
             exc=exc, action=action, update_task=update_task)
-        if isinstance(exc, exception.ResourceFailure):
-            if disable_rollback:
-                self.assertFalse(res)
-            else:
-                self.assertTrue(res)
-        elif isinstance(exc, stack.ForcedCancel):
+        if isinstance(exc, stack.ForcedCancel):
             update_task.updater.cancel_all.assert_called_once_with()
-            if exc.with_rollback or not disable_rollback:
-                self.assertTrue(res)
-            else:
-                self.assertFalse(res)
+
         self.m.VerifyAll()
+
+        return rb
 
     def test_update_exception_handler_resource_failure_no_rollback(self):
         reason = 'something strange happened'
         exc = exception.ResourceFailure(reason, None, action='UPDATE')
-        self.update_exception_handler(exc, disable_rollback=True)
+        rb = self.update_exception_handler(exc, disable_rollback=True)
+        self.assertFalse(rb)
 
     def test_update_exception_handler_resource_failure_rollback(self):
         reason = 'something strange happened'
         exc = exception.ResourceFailure(reason, None, action='UPDATE')
-        self.update_exception_handler(exc, disable_rollback=False)
+        rb = self.update_exception_handler(exc, disable_rollback=False)
+        self.assertTrue(rb)
 
     def test_update_exception_handler_force_cancel_with_rollback(self):
         exc = stack.ForcedCancel(with_rollback=True)
-        self.update_exception_handler(exc, disable_rollback=False)
+        rb = self.update_exception_handler(exc, disable_rollback=False)
+        self.assertTrue(rb)
 
-    def test_update_exception_handler_force_cancel_no_rollback(self):
+    def test_update_exception_handler_force_cancel_with_rollback_off(self):
+        # stack-cancel-update from user *always* rolls back
+        exc = stack.ForcedCancel(with_rollback=True)
+        rb = self.update_exception_handler(exc, disable_rollback=True)
+        self.assertTrue(rb)
+
+    def test_update_exception_handler_force_cancel_nested(self):
         exc = stack.ForcedCancel(with_rollback=False)
-        self.update_exception_handler(exc, disable_rollback=True)
+        rb = self.update_exception_handler(exc, disable_rollback=True)
+        self.assertFalse(rb)
 
     def test_store_generates_new_traversal_id_for_new_stack(self):
         tmpl = template.Template({

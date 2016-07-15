@@ -506,7 +506,7 @@ class ServersTest(common.HeatTestCase):
         mock_image = self.patchobject(glance.GlanceClientPlugin,
                                       'find_image_by_name_or_id')
         mock_image.side_effect = [glance.exceptions.NoUniqueMatch(
-            'Image CentOS 5.2 is not Unique')]
+            'No image unique match found for CentOS 5.2.')]
         tmpl['Resources']['WebServer']['Properties']['image'] = 'CentOS 5.2'
         resource_defns = tmpl.resource_definitions(stack)
         server = servers.Server('WebServer',
@@ -514,7 +514,7 @@ class ServersTest(common.HeatTestCase):
 
         error = self.assertRaises(glance.exceptions.NoUniqueMatch,
                                   scheduler.TaskRunner(server.create))
-        self.assertEqual('Image CentOS 5.2 is not Unique',
+        self.assertEqual('No image unique match found for CentOS 5.2.',
                          six.text_type(error))
 
     def test_server_create_unexpected_status(self):
@@ -2863,7 +2863,7 @@ class ServersTest(common.HeatTestCase):
         supported_consoles = ('novnc', 'xvpvnc', 'spice-html5', 'rdp-html5',
                               'serial')
         self.assertEqual(set(supported_consoles),
-                         set(six.iterkeys(console_urls)))
+                         set(console_urls))
 
     def test_resolve_attribute_networks(self):
         return_server = self.fc.servers.list()[1]

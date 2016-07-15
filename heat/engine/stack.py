@@ -128,7 +128,7 @@ class Stack(collections.Mapping):
                  nested_depth=0, strict_validate=True, convergence=False,
                  current_traversal=None, tags=None, prev_raw_template_id=None,
                  current_deps=None, cache_data=None, resource_validate=True,
-                 service_check_defer=False):
+                 service_check_defer=False, deleted_time=None):
 
         """Initialise the Stack.
 
@@ -178,6 +178,7 @@ class Stack(collections.Mapping):
         self.stack_user_project_id = stack_user_project_id
         self.created_time = created_time
         self.updated_time = updated_time
+        self.deleted_time = deleted_time
         self.user_creds_id = user_creds_id
         self.nested_depth = nested_depth
         self.convergence = convergence
@@ -228,7 +229,8 @@ class Stack(collections.Mapping):
         self._set_param_stackid()
 
         if resolve_data:
-            self.outputs = self.resolve_static_data(self.t[self.t.OUTPUTS])
+            self.outputs = self.resolve_static_data(
+                self.t[self.t.OUTPUTS], path=self.t.OUTPUTS)
         else:
             self.outputs = {}
 
@@ -281,7 +283,8 @@ class Stack(collections.Mapping):
 
     def stored_context(self):
         if self.user_creds_id:
-            creds_obj = ucreds_object.UserCreds.get_by_id(self.user_creds_id)
+            creds_obj = ucreds_object.UserCreds.get_by_id(
+                self.context, self.user_creds_id)
             # Maintain request_id from self.context so we retain traceability
             # in situations where servicing a request requires switching from
             # the request context to the stored context
@@ -314,7 +317,7 @@ class Stack(collections.Mapping):
     def _find_filtered_resources(self, filters):
         for rsc in six.itervalues(
                 resource_objects.Resource.get_all_by_stack(
-                    self.context, self.id, True, filters)):
+                    self.context, self.id, filters)):
             yield self.resources[rsc.name]
 
     def iter_resources(self, nested_depth=0, filters=None):
@@ -329,19 +332,21 @@ class Stack(collections.Mapping):
         for res in resources:
             yield res
 
+        for res in six.itervalues(self.resources):
             if not res.has_nested() or nested_depth == 0:
                 continue
 
             nested_stack = res.nested()
             if not nested_stack:
                 continue
-            for nested_res in nested_stack.iter_resources(nested_depth - 1):
+            for nested_res in nested_stack.iter_resources(nested_depth - 1,
+                                                          filters):
                 yield nested_res
 
-    def _db_resources_get(self, key_id=False):
+    def db_active_resources_get(self):
         try:
-            return resource_objects.Resource.get_all_by_stack(
-                self.context, self.id, key_id)
+            return resource_objects.Resource.get_all_active_by_stack(
+                self.context, self.id)
         except exception.NotFound:
             return None
 
@@ -349,9 +354,13 @@ class Stack(collections.Mapping):
         if not self.id:
             return None
         if self._db_resources is None:
-            self._db_resources = self._db_resources_get()
-
-        return self._db_resources.get(name) if self._db_resources else None
+            try:
+                _db_resources = resource_objects.Resource.get_all_by_stack(
+                    self.context, self.id)
+                self._db_resources = _db_resources
+            except exception.NotFound:
+                return None
+        return self._db_resources.get(name)
 
     @property
     def dependencies(self):
@@ -416,7 +425,7 @@ class Stack(collections.Mapping):
             LOG.warning(_LW("Unable to set parameters StackId identifier"))
 
     @staticmethod
-    def get_dep_attrs(resources, outputs, resource_name):
+    def get_dep_attrs(resources, outputs, resource_name, value_sec):
         """Return the attributes of the specified resource that are referenced.
 
         Return an iterator over any attributes of the specified resource that
@@ -424,8 +433,8 @@ class Stack(collections.Mapping):
         """
         attr_lists = itertools.chain((res.dep_attrs(resource_name)
                                       for res in resources),
-                                     (function.dep_attrs(out.get('Value', ''),
-                                                         resource_name)
+                                     (function.dep_attrs(
+                                         out.get(value_sec, ''), resource_name)
                                       for out in six.itervalues(outputs)))
         return set(itertools.chain.from_iterable(attr_lists))
 
@@ -452,7 +461,8 @@ class Stack(collections.Mapping):
     @classmethod
     def load(cls, context, stack_id=None, stack=None, show_deleted=True,
              use_stored_context=False, force_reload=False, cache_data=None,
-             resolve_data=True):
+             resolve_data=True, service_check_defer=False,
+             resource_validate=True):
         """Retrieve a Stack from the database."""
         if stack is None:
             stack = stack_object.Stack.get_by_id(
@@ -469,7 +479,9 @@ class Stack(collections.Mapping):
 
         return cls._from_db(context, stack,
                             use_stored_context=use_stored_context,
-                            cache_data=cache_data, resolve_data=resolve_data)
+                            cache_data=cache_data, resolve_data=resolve_data,
+                            service_check_defer=service_check_defer,
+                            resource_validate=resource_validate)
 
     @classmethod
     def load_all(cls, context, limit=None, marker=None, sort_keys=None,
@@ -502,7 +514,8 @@ class Stack(collections.Mapping):
 
     @classmethod
     def _from_db(cls, context, stack, resolve_data=True,
-                 use_stored_context=False, cache_data=None):
+                 use_stored_context=False, cache_data=None,
+                 service_check_defer=False, resource_validate=True):
         template = tmpl.Template.load(
             context, stack.raw_template_id, stack.raw_template)
         return cls(context, stack.name, template,
@@ -522,7 +535,11 @@ class Stack(collections.Mapping):
                    username=stack.username, convergence=stack.convergence,
                    current_traversal=stack.current_traversal,
                    prev_raw_template_id=stack.prev_raw_template_id,
-                   current_deps=stack.current_deps, cache_data=cache_data)
+                   current_deps=stack.current_deps, cache_data=cache_data,
+                   nested_depth=stack.nested_depth,
+                   deleted_time=stack.deleted_at,
+                   service_check_defer=service_check_defer,
+                   resource_validate=resource_validate)
 
     def get_kwargs_for_cloning(self, keep_status=False, only_db=False):
         """Get common kwargs for calling Stack() for cloning.
@@ -744,8 +761,7 @@ class Stack(collections.Mapping):
         self.t.validate_resource_definitions(self)
 
         # Check duplicate names between parameters and resources
-        dup_names = (set(six.iterkeys(self.parameters)) &
-                     set(six.iterkeys(self)))
+        dup_names = set(self.parameters) & set(self.keys())
 
         if dup_names:
             LOG.debug("Duplicate names %s" % dup_names)
@@ -772,7 +788,7 @@ class Stack(collections.Mapping):
             except AssertionError:
                 raise
             except Exception as ex:
-                LOG.exception(_LE("Exception: %s"), ex)
+                LOG.info(_LI("Exception in stack validation"), exc_info=True)
                 raise exception.StackValidationFailed(
                     message=encodeutils.safe_decode(six.text_type(ex)))
             if result:
@@ -787,14 +803,14 @@ class Stack(collections.Mapping):
                     path=[self.t.OUTPUTS],
                     message=message)
             try:
-                if not val or 'Value' not in val:
+                if not val or self.t.OUTPUT_VALUE not in val:
                     message = _('Each Output must contain '
                                 'a Value key.')
                     raise exception.StackValidationFailed(
                         error='Output validation error',
                         path=[self.t.OUTPUTS, key],
                         message=message)
-                function.validate(val.get('Value'))
+                function.validate(val.get(self.t.OUTPUT_VALUE))
             except exception.StackValidationFailed as ex:
                 raise
             except AssertionError:
@@ -803,7 +819,7 @@ class Stack(collections.Mapping):
                 raise exception.StackValidationFailed(
                     error='Output validation error',
                     path=[self.t.OUTPUTS, key,
-                          self.t.get_section_name('Value')],
+                          self.t.OUTPUT_VALUE],
                     message=six.text_type(ex))
 
     def requires_deferred_auth(self):
@@ -1246,7 +1262,7 @@ class Stack(collections.Mapping):
             if stack_id is None:
                 # Failed concurrent update
                 LOG.warning(_LW("Failed to store stack %(name)s with traversal"
-                                " ID %(trvsl_id)s, not trigerring rollback."),
+                                " ID %(trvsl_id)s, not triggering rollback."),
                             {'name': self.name,
                              'trvsl_id': self.current_traversal})
                 return
@@ -1276,7 +1292,7 @@ class Stack(collections.Mapping):
         return candidate
 
     def _update_or_store_resources(self):
-        self.ext_rsrcs_db = self._db_resources_get(key_id=True)
+        self.ext_rsrcs_db = self.db_active_resources_get()
 
         curr_name_translated_dep = self.dependencies.translate(lambda res:
                                                                res.name)
@@ -1363,7 +1379,7 @@ class Stack(collections.Mapping):
         prev_tmpl_id = self.prev_raw_template_id
         # newstack.t may have been pre-stored, so save with that one
         bu_tmpl, newstack.t = newstack.t, copy.deepcopy(newstack.t)
-        self.prev_raw_template_id = bu_tmpl.store()
+        self.prev_raw_template_id = bu_tmpl.store(self.context)
         self.action = action
         self.status = self.IN_PROGRESS
         self.status_reason = 'Stack %s started' % action
@@ -1444,7 +1460,8 @@ class Stack(collections.Mapping):
             previous_template_id = self.t.id
             self.t = newstack.t
             template_outputs = self.t[self.t.OUTPUTS]
-            self.outputs = self.resolve_static_data(template_outputs)
+            self.outputs = self.resolve_static_data(
+                template_outputs, path=self.t.OUTPUTS)
         finally:
             if should_rollback:
                 # Already handled in rollback task
@@ -1555,13 +1572,12 @@ class Stack(collections.Mapping):
         # There are cases where the user_creds cannot be returned
         # due to credentials truncated when being saved to DB.
         # Ignore this error instead of blocking stack deletion.
-        user_creds = None
         try:
-            user_creds = ucreds_object.UserCreds.get_by_id(self.user_creds_id)
-        except exception.Error as err:
-            LOG.exception(err)
-            pass
-        return user_creds
+            return ucreds_object.UserCreds.get_by_id(self.context,
+                                                     self.user_creds_id)
+        except exception.Error:
+            LOG.exception(_LE("Failed to retrieve user_creds"))
+            return None
 
     def _delete_credentials(self, stack_status, reason, abandon):
         # Cleanup stored user_creds so they aren't accessible via
@@ -1591,7 +1607,7 @@ class Stack(collections.Mapping):
                             self.clients.client('keystone').delete_trust(
                                 trust_id)
                     except Exception as ex:
-                        LOG.exception(ex)
+                        LOG.exception(_LE("Error deleting trust"))
                         stack_status = self.FAILED
                         reason = ("Error deleting trust: %s" %
                                   six.text_type(ex))
@@ -1619,7 +1635,7 @@ class Stack(collections.Mapping):
                 keystone.delete_stack_domain_project(
                     project_id=self.stack_user_project_id)
             except Exception as ex:
-                LOG.exception(ex)
+                LOG.exception(_LE("Error deleting project"))
                 stack_status = self.FAILED
                 reason = "Error deleting project: %s" % six.text_type(ex)
 
@@ -1822,7 +1838,7 @@ class Stack(collections.Mapping):
     @profiler.trace('Stack.output', hide_args=False)
     def output(self, key):
         """Get the value of the specified stack output."""
-        value = self.outputs[key].get('Value', '')
+        value = self.outputs[key].get(self.t.OUTPUT_VALUE, '')
         try:
             return function.resolve(value)
         except Exception as ex:
@@ -1849,8 +1865,8 @@ class Stack(collections.Mapping):
                 scheduler.TaskRunner(res.destroy)()
             except exception.ResourceFailure as ex:
                 failed = True
-                LOG.error(_LE('Resource %(name)s delete failed: %(ex)s'),
-                          {'name': res.name, 'ex': ex})
+                LOG.info(_LI('Resource %(name)s delete failed: %(ex)s'),
+                         {'name': res.name, 'ex': ex})
 
         for res in deps:
             if not failed:
@@ -1858,9 +1874,9 @@ class Stack(collections.Mapping):
                     res.state_reset()
                     scheduler.TaskRunner(res.create)()
                 except exception.ResourceFailure as ex:
-                    LOG.exception(_LE('Resource %(name)s create failed: '
-                                      '%(ex)s'), {'name': res.name, 'ex': ex})
                     failed = True
+                    LOG.info(_LI('Resource %(name)s create failed: '
+                                 '%(ex)s'), {'name': res.name, 'ex': ex})
             else:
                 res.state_set(res.CREATE, res.FAILED,
                               'Resource restart aborted')
@@ -1902,14 +1918,8 @@ class Stack(collections.Mapping):
             'tags': self.tags,
         }
 
-    def resolve_static_data(self, snippet):
-        try:
-            return self.t.parse(self, snippet)
-        except AssertionError:
-            raise
-        except Exception as ex:
-            raise exception.StackValidationFailed(
-                message=encodeutils.safe_decode(six.text_type(ex)))
+    def resolve_static_data(self, snippet, path=''):
+        return self.t.parse(self, snippet, path=path)
 
     def reset_resource_attributes(self):
         # nothing is cached if no resources exist
@@ -1958,13 +1968,16 @@ class Stack(collections.Mapping):
     def purge_db(self):
         """Cleanup database after stack has completed/failed.
 
-        1. If the stack failed, update the current_traversal to empty string
+        1. Delete the resources from DB.
+        2. If the stack failed, update the current_traversal to empty string
         so that the resource workers bail out.
-        2. Delete previous raw template if stack completes successfully.
-        3. Deletes all sync points. They are no longer needed after stack
+        3. Delete previous raw template if stack completes successfully.
+        4. Deletes all sync points. They are no longer needed after stack
            has completed/failed.
-        4. Delete the stack if the action is DELETE.
+        5. Delete the stack if the action is DELETE.
        """
+        resource_objects.Resource.purge_deleted(self.context, self.id)
+
         exp_trvsl = self.current_traversal
         if self.status == self.FAILED:
             self.current_traversal = ''

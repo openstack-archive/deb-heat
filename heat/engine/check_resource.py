@@ -75,7 +75,8 @@ class CheckResource(object):
             # possibility for that update to be waiting for this rsrc to
             # complete, hence retrigger current rsrc for latest traversal.
             traversal = stack.current_traversal
-            latest_stack = parser.Stack.load(cnxt, stack_id=stack.id)
+            latest_stack = parser.Stack.load(cnxt, stack_id=stack.id,
+                                             force_reload=True)
             if traversal != latest_stack.current_traversal:
                 self._retrigger_check_resource(cnxt, is_update, rsrc_id,
                                                latest_stack)
@@ -94,7 +95,8 @@ class CheckResource(object):
                                           stack)
                 except exception.UpdateReplace:
                     new_res_id = rsrc.make_replacement(tmpl.id)
-                    LOG.info("Replacing resource with new id %s", new_res_id)
+                    LOG.info(_LI("Replacing resource with new id %s"),
+                             new_res_id)
                     rpc_data = sync_point.serialize_input_data(resource_data)
                     self._rpc_client.check_resource(cnxt,
                                                     new_res_id,
@@ -123,7 +125,8 @@ class CheckResource(object):
                                                 rpc_data, is_update,
                                                 adopt_stack_data)
         except exception.ResourceFailure as ex:
-            reason = 'Resource %s failed: %s' % (rsrc.action,
+            action = ex.action or rsrc.action
+            reason = 'Resource %s failed: %s' % (action,
                                                  six.text_type(ex))
             self._handle_resource_failure(cnxt, is_update, rsrc.id,
                                           stack, reason)
@@ -141,12 +144,20 @@ class CheckResource(object):
         graph = stack.convergence_dependencies.graph()
         key = (resource_id, is_update)
         if is_update:
-            # When re-triggering for a rsrc, we need to first check if update
-            # traversal is present for the rsrc in latest stack traversal,
+            # When re-trigger received for update in latest traversal, first
+            # check if update key is available in graph.
             # if No, then latest traversal is waiting for delete.
             if (resource_id, is_update) not in graph:
                 key = (resource_id, not is_update)
-        LOG.info('Re-trigger resource: (%s, %s)' % (key[0], key[1]))
+        else:
+            # When re-trigger received for delete in latest traversal, first
+            # check if update key is available in graph,
+            # if yes, then latest traversal is waiting for update.
+            if (resource_id, True) in graph:
+                # not is_update evaluates to True below, which means update
+                key = (resource_id, not is_update)
+        LOG.info(_LI('Re-trigger resource: (%(key1)s, %(key2)s)'),
+                 {'key1': key[0], 'key2': key[1]})
         predecessors = set(graph[key])
 
         try:
@@ -202,7 +213,8 @@ class CheckResource(object):
                 # check the SyncPoint for the current node to determine if
                 # it is ready. If it is, then retrigger the current node
                 # with the appropriate data for the latest traversal.
-                stack = parser.Stack.load(cnxt, stack_id=rsrc.stack.id)
+                stack = parser.Stack.load(cnxt, stack_id=rsrc.stack.id,
+                                          force_reload=True)
                 if current_traversal == stack.current_traversal:
                     LOG.debug('[%s] Traversal sync point missing.',
                               current_traversal)
@@ -264,13 +276,9 @@ def load_resource(cnxt, resource_id, resource_data, is_update):
         return None, None, None
 
 
-def construct_input_data(rsrc, curr_stack):
-    attributes = curr_stack.get_dep_attrs(
-        six.itervalues(curr_stack.resources),
-        curr_stack.outputs,
-        rsrc.name)
+def _resolve_attributes(dep_attrs, rsrc):
     resolved_attributes = {}
-    for attr in attributes:
+    for attr in dep_attrs:
         try:
             if isinstance(attr, six.string_types):
                 resolved_attributes[attr] = rsrc.get_attribute(attr)
@@ -278,11 +286,19 @@ def construct_input_data(rsrc, curr_stack):
                 resolved_attributes[attr] = rsrc.get_attribute(*attr)
         except exception.InvalidTemplateAttribute as ita:
             LOG.info(six.text_type(ita))
+    return resolved_attributes
 
+
+def construct_input_data(rsrc, curr_stack):
+    dep_attrs = curr_stack.get_dep_attrs(
+        six.itervalues(curr_stack.resources),
+        curr_stack.outputs,
+        rsrc.name,
+        curr_stack.t.OUTPUT_VALUE)
     input_data = {'id': rsrc.id,
                   'name': rsrc.name,
                   'reference_id': rsrc.get_reference_id(),
-                  'attrs': resolved_attributes,
+                  'attrs': _resolve_attributes(dep_attrs, rsrc),
                   'status': rsrc.status,
                   'action': rsrc.action,
                   'uuid': rsrc.uuid}

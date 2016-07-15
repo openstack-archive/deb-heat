@@ -47,7 +47,6 @@ from heat.engine import attributes
 from heat.engine.cfn import template as cfntemplate
 from heat.engine import clients
 from heat.engine import environment
-from heat.engine import event as evt
 from heat.engine.hot import functions as hot_functions
 from heat.engine import parameter_groups
 from heat.engine import properties
@@ -180,7 +179,7 @@ class ThreadGroupManager(object):
             """Callback function that will be passed to GreenThread.link().
 
             Persist the stack state to COMPLETE and FAILED close to
-            releasing the lock to avoid race condtitions.
+            releasing the lock to avoid race conditions.
             """
             if stack is not None and stack.action not in (
                     stack.DELETE, stack.ROLLBACK, stack.UPDATE):
@@ -298,7 +297,7 @@ class EngineService(service.Service):
     by the RPC caller.
     """
 
-    RPC_API_VERSION = '1.30'
+    RPC_API_VERSION = '1.32'
 
     def __init__(self, host, topic):
         super(EngineService, self).__init__()
@@ -360,7 +359,7 @@ class EngineService(service.Service):
         self.manage_thread_grp.add_thread(create_watch_tasks)
 
     def start(self):
-        self.engine_id = stack_lock.StackLock.generate_engine_id()
+        self.engine_id = service_utils.generate_engine_id()
         if self.thread_group_mgr is None:
             self.thread_group_mgr = ThreadGroupManager()
         self.listener = EngineListener(self.host, self.engine_id,
@@ -487,7 +486,8 @@ class EngineService(service.Service):
             raise exception.EntityNotFound(entity='Stack',
                                            name=identity.stack_name)
 
-        if cnxt.tenant_id not in (identity.tenant, s.stack_user_project_id):
+        if not cnxt.is_admin and cnxt.tenant_id not in (
+                identity.tenant, s.stack_user_project_id):
             # The DB API should not allow this, but sanity-check anyway..
             raise exception.InvalidTenant(target=identity.tenant,
                                           actual=cnxt.tenant_id)
@@ -855,7 +855,7 @@ class EngineService(service.Service):
         # any environment provided into the existing one and attempt
         # to use the existing stack template, if one is not provided.
         if args.get(rpc_api.PARAM_EXISTING):
-            existing_env = current_stack.env.user_env_as_dict()
+            existing_env = current_stack.env.env_as_dict()
             existing_params = existing_env[env_fmt.PARAMETERS]
             clear_params = set(args.get(rpc_api.PARAM_CLEAR_PARAMETERS, []))
             retained = dict((k, v) for k, v in existing_params.items()
@@ -1061,7 +1061,7 @@ class EngineService(service.Service):
                 def _n_deleted(stk, deleted):
                     for rsrc in deleted:
                         deleted_rsrc = stk.resources.get(rsrc)
-                        if deleted_rsrc.has_nested() and deleted_rsrc.nested():
+                        if deleted_rsrc.has_nested():
                             nested_stk = deleted_rsrc.nested()
                             nested_rsrc = nested_stk.resources.keys()
                             n_fmt = fmt_action_map(
@@ -1075,7 +1075,7 @@ class EngineService(service.Service):
                 def _n_added(stk, added):
                     for rsrc in added:
                         added_rsrc = stk.resources.get(rsrc)
-                        if added_rsrc.has_nested() and added_rsrc.nested():
+                        if added_rsrc.has_nested():
                             nested_stk = added_rsrc.nested()
                             nested_rsrc = nested_stk.resources.keys()
                             n_fmt = fmt_action_map(
@@ -1088,10 +1088,7 @@ class EngineService(service.Service):
                 for rsrc in act['updated']:
                     current_rsrc = current.resources.get(rsrc)
                     updated_rsrc = updated.resources.get(rsrc)
-                    if (current_rsrc.has_nested()
-                            and current_rsrc.nested()
-                            and updated_rsrc.has_nested()
-                            and updated_rsrc.nested()):
+                    if current_rsrc.has_nested() and updated_rsrc.has_nested():
                         current_nested = current_rsrc.nested()
                         updated_nested = updated_rsrc.nested()
                         update_task = update.StackUpdate(
@@ -1145,7 +1142,7 @@ class EngineService(service.Service):
             self.thread_group_mgr.send(current_stack.id, cancel_message)
 
         # Another active engine has the lock
-        elif stack_lock.StackLock.engine_alive(cnxt, engine_id):
+        elif service_utils.engine_alive(cnxt, engine_id):
             cancel_result = self._remote_call(
                 cnxt, engine_id, self.listener.SEND,
                 stack_identity=stack_identity, message=cancel_message)
@@ -1289,6 +1286,19 @@ class EngineService(service.Service):
         return None
 
     @context.request_context
+    def get_files(self, cnxt, stack_identity):
+        """Returns the files for an existing stack.
+
+        :param cnxt: RPC context
+        :param stack_identity: identifies the stack
+        :rtype: dict
+        """
+        s = self._get_stack(cnxt, stack_identity, show_deleted=True)
+        stack = parser.Stack.load(
+            cnxt, stack=s, resolve_data=False, show_deleted=True)
+        return dict(stack.t.files)
+
+    @context.request_context
     def list_outputs(self, cntx, stack_identity):
         """Get a list of stack outputs.
 
@@ -1375,7 +1385,7 @@ class EngineService(service.Service):
             self.thread_group_mgr.stop(stack.id)
 
         # Another active engine has the lock
-        elif stack_lock.StackLock.engine_alive(cnxt, acquire_result):
+        elif service_utils.engine_alive(cnxt, acquire_result):
             stop_result = self._remote_call(
                 cnxt, acquire_result, self.listener.STOP_STACK,
                 stack_identity=stack_identity)
@@ -1462,15 +1472,39 @@ class EngineService(service.Service):
         return result
 
     def list_template_versions(self, cnxt):
+        def find_version_class(versions, cls):
+            for version in versions:
+                if version['class'] is cls:
+                    return version
+
         mgr = templatem._get_template_extension_manager()
         _template_classes = [(name, mgr[name].plugin)
                              for name in mgr.names()]
         versions = []
-        for t in _template_classes:
+        for t in sorted(_template_classes):  # Sort to ensure dates come first
             if issubclass(t[1], cfntemplate.CfnTemplate):
-                versions.append({'version': t[0], 'type': 'cfn'})
+                type = 'cfn'
             else:
-                versions.append({'version': t[0], 'type': 'hot'})
+                type = 'hot'
+
+            # Official versions are in '%Y-%m-%d' format. Default
+            # version aliases are the Heat release code name
+            try:
+                datetime.datetime.strptime(t[0].split('.')[-1], '%Y-%m-%d')
+                versions.append({'version': t[0], 'type': type,
+                                 'class': t[1], 'aliases': []})
+            except ValueError:
+                version = find_version_class(versions, t[1])
+                if version is not None:
+                    version['aliases'].append(t[0])
+                else:
+                    raise exception.InvalidTemplateVersions(version=t[0])
+
+        # 'class' was just used to find the version that the alias
+        # maps to. Remove it so it will not show up in the output
+        for version in versions:
+            del version['class']
+
         return versions
 
     def list_template_functions(self, cnxt, template_version):
@@ -1511,10 +1545,10 @@ class EngineService(service.Service):
             raise exception.InvalidGlobalResource(type_name=type_name)
 
         if resource_class.support_status.status == support.HIDDEN:
-            raise exception.NotSupported(type_name)
+            raise exception.NotSupported(feature=type_name)
 
         try:
-            svc_available = resource_class.is_service_available(cnxt)
+            svc_available = resource_class.is_service_available(cnxt)[0]
         except Exception as exc:
             raise exception.ResourceTypeUnavailable(
                 service_name=resource_class.default_client_name,
@@ -1530,7 +1564,8 @@ class EngineService(service.Service):
         def properties_schema():
             for name, schema_dict in resource_class.properties_schema.items():
                 schema = properties.Schema.from_legacy(schema_dict)
-                if schema.implemented:
+                if (schema.implemented
+                        and schema.support_status.status != support.HIDDEN):
                     yield name, dict(schema)
 
         def attributes_schema():
@@ -1538,7 +1573,8 @@ class EngineService(service.Service):
                     resource_class.attributes_schema.items(),
                     resource_class.base_attributes_schema.items()):
                 schema = attributes.Schema.from_attribute(schema_data)
-                yield name, dict(schema)
+                if schema.support_status.status != support.HIDDEN:
+                    yield name, dict(schema)
 
         result = {
             rpc_api.RES_SCHEMA_RES_TYPE: type_name,
@@ -1570,13 +1606,14 @@ class EngineService(service.Service):
             raise exception.InvalidGlobalResource(type_name=type_name)
         else:
             if resource_class.support_status.status == support.HIDDEN:
-                raise exception.NotSupported(type_name)
+                raise exception.NotSupported(feature=type_name)
             return resource_class.resource_to_template(type_name,
                                                        template_type)
 
     @context.request_context
     def list_events(self, cnxt, stack_identity, filters=None, limit=None,
-                    marker=None, sort_keys=None, sort_dir=None):
+                    marker=None, sort_keys=None, sort_dir=None,
+                    nested_depth=None):
         """Lists all events associated with a given stack.
 
         It supports pagination (``limit`` and ``marker``),
@@ -1590,38 +1627,68 @@ class EngineService(service.Service):
         :param marker: the ID of the last event in the previous page
         :param sort_keys: an array of fields used to sort the list
         :param sort_dir: the direction of the sort ('asc' or 'desc').
+        :param nested_depth: Levels of nested stacks to list events for.
         """
 
-        if stack_identity is not None:
+        stack_identifiers = None
+        root_stack_identifier = None
+        if stack_identity:
             st = self._get_stack(cnxt, stack_identity, show_deleted=True)
 
-            events = event_object.Event.get_all_by_stack(
-                cnxt,
-                st.id,
-                limit=limit,
-                marker=marker,
-                sort_keys=sort_keys,
-                sort_dir=sort_dir,
-                filters=filters)
+            if nested_depth:
+                root_stack_identifier = st.identifier()
+                # find all resources associated with a root stack
+                all_r = resource_objects.Resource.get_all_by_root_stack(
+                    cnxt, st.id, None)
+
+                # find stacks to the requested nested_depth
+                stack_ids = {r.stack_id for r in six.itervalues(all_r)}
+                stack_filters = {
+                    'id': stack_ids,
+                    'nested_depth': list(range(nested_depth + 1))
+                }
+
+                stacks = stack_object.Stack.get_all(cnxt,
+                                                    filters=stack_filters,
+                                                    show_nested=True)
+                stack_identifiers = {s.id: s.identifier() for s in stacks}
+
+                if filters is None:
+                    filters = {}
+                filters['stack_id'] = list(stack_identifiers.keys())
+                events = list(event_object.Event.get_all_by_tenant(
+                    cnxt, limit=limit,
+                    marker=marker,
+                    sort_keys=sort_keys,
+                    sort_dir=sort_dir,
+                    filters=filters))
+
+            else:
+                events = list(event_object.Event.get_all_by_stack(
+                    cnxt,
+                    st.id,
+                    limit=limit,
+                    marker=marker,
+                    sort_keys=sort_keys,
+                    sort_dir=sort_dir,
+                    filters=filters))
+                stack_identifiers = {st.id: st.identifier()}
         else:
-            events = event_object.Event.get_all_by_tenant(
+            events = list(event_object.Event.get_all_by_tenant(
                 cnxt, limit=limit,
                 marker=marker,
                 sort_keys=sort_keys,
                 sort_dir=sort_dir,
-                filters=filters)
+                filters=filters))
 
-        stacks = {}
+            stack_ids = {e.stack_id for e in events}
+            stacks = stack_object.Stack.get_all(cnxt,
+                                                filters={'id': stack_ids},
+                                                show_nested=True)
+            stack_identifiers = {s.id: s.identifier() for s in stacks}
 
-        def get_stack(stack_id):
-            if stack_id not in stacks:
-                stacks[stack_id] = parser.Stack.load(cnxt, stack_id)
-            return stacks[stack_id]
-
-        return [api.format_event(evt.Event.load(cnxt,
-                                                e.id, e,
-                                                get_stack(e.stack_id)))
-                for e in events]
+        return [api.format_event(e, stack_identifiers.get(e.stack_id),
+                root_stack_identifier) for e in events]
 
     def _authorize_stack_user(self, cnxt, stack, resource_name):
         """Filter access to describe_stack_resource for in-instance users.
@@ -2011,11 +2078,14 @@ class EngineService(service.Service):
 
         try:
             wds = watch_data.WatchData.get_all(cnxt)
+            rule_names = {
+                r.id: r.name for r in watch_rule.WatchRule.get_all(cnxt)
+            }
         except Exception as ex:
             LOG.warning(_LW('show_metric (all) db error %s'), ex)
             return
 
-        result = [api.format_watch_data(w) for w in wds]
+        result = [api.format_watch_data(w, rule_names) for w in wds]
         return result
 
     @context.request_context
@@ -2222,7 +2292,9 @@ class EngineService(service.Service):
                         continue
 
                     stk = parser.Stack.load(cnxt, stack=s,
-                                            use_stored_context=True)
+                                            service_check_defer=True,
+                                            resource_validate=False,
+                                            resolve_data=False)
                     LOG.info(_LI('Engine %(engine)s went down when stack '
                                  '%(stack_id)s was in action %(action)s'),
                              {'engine': engine_id, 'action': stk.action,

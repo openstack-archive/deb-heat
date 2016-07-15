@@ -183,7 +183,7 @@ engine_opts = [
                 default=False,
                 help=_('Enable the preview Stack Adopt feature.')),
     cfg.BoolOpt('convergence_engine',
-                default=False,
+                default=True,
                 help=_('Enables engine with convergence architecture. All '
                        'stacks with this option will be created using '
                        'convergence engine.')),
@@ -380,10 +380,10 @@ def list_opts():
     yield profiler.list_opts()[0]
     yield 'clients', default_clients_opts
 
-    for client in ('barbican', 'ceilometer', 'cinder', 'designate', 'glance',
-                   'heat', 'keystone', 'magnum', 'manila', 'mistral',
-                   'neutron', 'nova', 'sahara', 'senlin', 'swift', 'trove',
-                   'zaqar'
+    for client in ('aodh', 'barbican', 'ceilometer', 'cinder', 'designate',
+                   'glance', 'heat', 'keystone', 'magnum', 'manila', 'mistral',
+                   'monasca', 'neutron', 'nova', 'sahara', 'senlin', 'swift',
+                   'trove', 'zaqar'
                    ):
         client_specific_group = 'clients_' + client
         yield client_specific_group, clients_opts

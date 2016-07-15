@@ -18,8 +18,11 @@ import uuid
 import mock
 import six
 
+from oslo_serialization import jsonutils
+
 from heat.common import exception as exc
 from heat.common.i18n import _
+from heat.common import template_format
 from heat.engine.clients.os import nova
 from heat.engine.clients.os import swift
 from heat.engine.clients.os import zaqar
@@ -361,6 +364,7 @@ class SoftwareDeploymentTest(common.HeatTestCase):
              'config_id': derived_sc['id'],
              'deployment_id': self.deployment.resource_id,
              'server_id': '9f1f0e00-05d2-4ca5-8602-95021f19c9d0',
+             'input_values': {'bink': 'bonk', 'foo': 'bar'},
              'stack_user_project_id': '65728b74-cfe7-4f17-9c15-11d4f686e591',
              'status': 'COMPLETE',
              'status_reason': 'Not waiting for outputs signal'},
@@ -423,6 +427,7 @@ class SoftwareDeploymentTest(common.HeatTestCase):
             {'action': 'CREATE',
              'config_id': derived_sc['id'],
              'deployment_id': self.deployment.resource_id,
+             'input_values': {'bink': 'bonk', 'foo': 'bar'},
              'server_id': '9f1f0e00-05d2-4ca5-8602-95021f19c9d0',
              'stack_user_project_id': '65728b74-cfe7-4f17-9c15-11d4f686e591',
              'status': 'COMPLETE',
@@ -520,6 +525,7 @@ class SoftwareDeploymentTest(common.HeatTestCase):
             {'action': 'CREATE',
              'config_id': derived_sc['id'],
              'deployment_id': self.deployment.resource_id,
+             'input_values': {'bink': 'bonk', 'foo': 'bar'},
              'server_id': '9f1f0e00-05d2-4ca5-8602-95021f19c9d0',
              'stack_user_project_id': '65728b74-cfe7-4f17-9c15-11d4f686e591',
              'status': 'COMPLETE',
@@ -538,6 +544,7 @@ class SoftwareDeploymentTest(common.HeatTestCase):
             {'action': 'CREATE',
              'config_id': derived_sc['id'],
              'deployment_id': self.deployment.resource_id,
+             'input_values': {'foo': 'bar'},
              'server_id': '9f1f0e00-05d2-4ca5-8602-95021f19c9d0',
              'stack_user_project_id': '65728b74-cfe7-4f17-9c15-11d4f686e591',
              'status': 'IN_PROGRESS',
@@ -650,6 +657,7 @@ class SoftwareDeploymentTest(common.HeatTestCase):
             'deployment_id': 'c8a19429-7fde-47ea-a42f-40045488226c',
             'action': 'DELETE',
             'config_id': derived_sc['id'],
+            'input_values': {'foo': 'bar'},
             'status': 'IN_PROGRESS',
             'status_reason': 'Deploy data available'},
             self.rpc_client.update_software_deployment.call_args[1])
@@ -762,6 +770,7 @@ class SoftwareDeploymentTest(common.HeatTestCase):
             'deployment_id': 'c8a19429-7fde-47ea-a42f-40045488226c',
             'action': 'UPDATE',
             'config_id': '9966c8e7-bc9c-42de-aa7d-f2447a952cb2',
+            'input_values': {'foo': 'bar'},
             'status': 'IN_PROGRESS',
             'status_reason': u'Deploy data available'},
             self.rpc_client.update_software_deployment.call_args[1])
@@ -783,6 +792,7 @@ class SoftwareDeploymentTest(common.HeatTestCase):
             'deployment_id': 'c8a19429-7fde-47ea-a42f-40045488226c',
             'action': 'SUSPEND',
             'config_id': derived_sc['id'],
+            'input_values': {'foo': 'bar'},
             'status': 'IN_PROGRESS',
             'status_reason': 'Deploy data available'},
             self.rpc_client.update_software_deployment.call_args[1])
@@ -800,6 +810,7 @@ class SoftwareDeploymentTest(common.HeatTestCase):
             'deployment_id': 'c8a19429-7fde-47ea-a42f-40045488226c',
             'action': 'RESUME',
             'config_id': derived_sc['id'],
+            'input_values': {'foo': 'bar'},
             'status': 'IN_PROGRESS',
             'status_reason': 'Deploy data available'},
             self.rpc_client.update_software_deployment.call_args[1])
@@ -876,7 +887,7 @@ class SoftwareDeploymentTest(common.HeatTestCase):
         self.assertEqual(details, ca[2])
         self.assertIsNotNone(ca[3])
 
-        # Test bug 1332355, where details contains a translateable message
+        # Test bug 1332355, where details contains a translatable message
         details = {'failed': _('need more memory.')}
         ret = self.deployment.handle_signal(details)
         self.assertEqual('deployment failed', ret)
@@ -1161,6 +1172,17 @@ class SoftwareDeploymentTest(common.HeatTestCase):
     def test_get_zaqar_queue(self):
         dep_data = {}
 
+        zc = mock.MagicMock()
+        zcc = self.patch(
+            'heat.engine.clients.os.zaqar.ZaqarClientPlugin.create_for_tenant')
+        zcc.return_value = zc
+
+        mock_queue = mock.MagicMock()
+        zc.queue.return_value = mock_queue
+
+        signed_data = {"signature": "hi", "expires": "later"}
+        mock_queue.signed_url.return_value = signed_data
+
         self._create_stack(self.template_zaqar_signal)
 
         def data_set(key, value, redact=False):
@@ -1175,6 +1197,8 @@ class SoftwareDeploymentTest(common.HeatTestCase):
 
         queue_id = self.deployment._get_zaqar_signal_queue_id()
         self.assertEqual(queue_id, dep_data['zaqar_signal_queue_id'])
+        self.assertEqual(jsonutils.dumps(signed_data),
+                         dep_data['zaqar_queue_signed_url_data'])
 
         self.assertEqual(queue_id,
                          self.deployment._get_zaqar_signal_queue_id())
@@ -1465,3 +1489,79 @@ class SoftwareDeploymentGroupTest(common.HeatTestCase):
         snip = stack.t.resource_definitions(stack)['deploy_mysql']
         resg = sd.SoftwareDeploymentGroup('deploy_mysql', snip, stack)
         self.assertIsNone(resg.validate())
+
+
+class SDGReplaceTest(common.HeatTestCase):
+    template = {
+        'heat_template_version': '2013-05-23',
+        'resources': {
+            'deploy_mysql': {
+                'type': 'OS::Heat::SoftwareDeploymentGroup',
+                'properties': {
+                    'config': 'config_uuid',
+                    'servers': {'server1': 'uuid1', 'server2': 'uuid2'},
+                    'input_values': {'foo': 'bar'},
+                    'name': '10_config'
+                }
+            }
+        }
+    }
+
+    # 1. existing > batch_size
+    # 2. existing < batch_size
+    # 3. count > existing
+    # 4. count < exiting
+    # 5. with pause_sec
+
+    scenarios = [
+        ('1', dict(count=2,
+                   existing=['0', '1'], batch_size=1,
+                   pause_sec=0, tasks=2)),
+        ('2', dict(count=4,
+                   existing=['0', '1'], batch_size=3,
+                   pause_sec=0, tasks=2)),
+        ('3', dict(count=3,
+                   existing=['0', '1'], batch_size=2,
+                   pause_sec=0, tasks=2)),
+        ('4', dict(count=2,
+                   existing=['0', '1', '2'], batch_size=2,
+                   pause_sec=0, tasks=1)),
+        ('5', dict(count=2,
+                   existing=['0', '1'], batch_size=1,
+                   pause_sec=1, tasks=3))]
+
+    def get_fake_nested_stack(self, names):
+        nested_t = '''
+        heat_template_version: 2015-04-30
+        description: Resource Group
+        resources:
+        '''
+        resource_snip = '''
+        '%s':
+            type: SoftwareDeployment
+            properties:
+              foo: bar
+        '''
+        resources = [nested_t]
+        for res_name in names:
+            resources.extend([resource_snip % res_name])
+
+        nested_t = ''.join(resources)
+        return utils.parse_stack(template_format.parse(nested_t))
+
+    def setUp(self):
+        super(SDGReplaceTest, self).setUp()
+        self.stack = utils.parse_stack(self.template)
+        snip = self.stack.t.resource_definitions(self.stack)['deploy_mysql']
+        self.group = sd.SoftwareDeploymentGroup('deploy_mysql',
+                                                snip, self.stack)
+        self.group.update_with_template = mock.Mock()
+        self.group.check_update_complete = mock.Mock()
+
+    def test_rolling_updates(self):
+        self.group._nested = self.get_fake_nested_stack(self.existing)
+        self.group.get_size = mock.Mock(return_value=self.count)
+        tasks = self.group._replace(0, self.batch_size,
+                                    self.pause_sec)
+        self.assertEqual(self.tasks,
+                         len(tasks))

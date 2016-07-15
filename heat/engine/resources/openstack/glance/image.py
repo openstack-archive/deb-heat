@@ -49,7 +49,9 @@ class GlanceImage(resource.Resource):
         IS_PUBLIC: properties.Schema(
             properties.Schema.BOOLEAN,
             _('Scope of image accessibility. Public or private. '
-              'Default value is False means private.'),
+              'Default value is False means private. Note: The policy '
+              'setting of glance allows only users with admin roles to create '
+              'public image by default.'),
             default=False,
         ),
         MIN_DISK: properties.Schema(
@@ -118,15 +120,16 @@ class GlanceImage(resource.Resource):
     def handle_create(self):
         args = dict((k, v) for k, v in self.properties.items()
                     if v is not None)
+
+        tags = args.pop(self.TAGS, [])
         image_id = self.client().images.create(**args).id
         self.resource_id_set(image_id)
 
-        if self.TAGS in args:
-            for tag in args[self.TAGS]:
-                self.client(
-                    version=self.client_plugin().V2).image_tags.update(
-                    image_id,
-                    tag)
+        for tag in tags:
+            self.client(
+                version=self.client_plugin().V2).image_tags.update(
+                image_id,
+                tag)
 
         return image_id
 
@@ -134,23 +137,25 @@ class GlanceImage(resource.Resource):
         image = self.client().images.get(image_id)
         return image.status == 'active'
 
-    def handle_update(self, json_snippet=None, tmpl_diff=None, prop_diff=None):
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff and self.TAGS in prop_diff:
-            existing_tags = self.properties.get(self.TAGS, [])
+            existing_tags = self.properties.get(self.TAGS) or []
+            diff_tags = prop_diff[self.TAGS] or []
 
-            new_tags = set(prop_diff[self.TAGS]) - set(existing_tags)
+            new_tags = set(diff_tags) - set(existing_tags)
             for tag in new_tags:
                 self.client(
                     version=self.client_plugin().V2).image_tags.update(
                     self.resource_id,
                     tag)
 
-            removed_tags = set(existing_tags) - set(prop_diff[self.TAGS])
+            removed_tags = set(existing_tags) - set(diff_tags)
             for tag in removed_tags:
-                self.client(
-                    version=self.client_plugin().V2).image_tags.delete(
-                    self.resource_id,
-                    tag)
+                with self.client_plugin().ignore_not_found:
+                    self.client(
+                        version=self.client_plugin().V2).image_tags.delete(
+                        self.resource_id,
+                        tag)
 
     def _show_resource(self):
         if self.glance().version == 1.0:

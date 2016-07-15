@@ -33,13 +33,11 @@ from heat.common import context
 from heat.common import exception
 from heat.common import template_format
 from heat.db.sqlalchemy import api as db_api
-from heat.db.sqlalchemy import models
 from heat.engine.clients.os import glance
 from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import resource as rsrc
 from heat.engine.resources.aws.ec2 import instance as instances
-from heat.engine import scheduler
 from heat.engine import stack as parser
 from heat.engine import template as tmpl
 from heat.engine import template_files
@@ -74,24 +72,6 @@ wp_template = '''
 
 UUIDs = (UUID1, UUID2, UUID3) = sorted([str(uuid.uuid4())
                                         for x in range(3)])
-
-
-class MyResource(rsrc.Resource):
-    properties_schema = {
-        'ServerName': {'Type': 'String', 'Required': True},
-        'Flavor': {'Type': 'String', 'Required': True},
-        'ImageName': {'Type': 'String', 'Required': True},
-        'UserData': {'Type': 'String'},
-        'PublicKey': {'Type': 'String'}
-    }
-
-    @property
-    def my_secret(self):
-        return db_api.resource_data_get(self, 'my_secret')
-
-    @my_secret.setter
-    def my_secret(self, my_secret):
-        self.data_set('my_secret', my_secret, True)
 
 
 class SqlAlchemyTest(common.HeatTestCase):
@@ -259,18 +239,17 @@ class SqlAlchemyTest(common.HeatTestCase):
         self.assertIn(['name', 'id'], args)
 
     @mock.patch.object(db_api.utils, 'paginate_query')
-    @mock.patch.object(db_api, 'model_query')
-    def test_paginate_query_gets_model_marker(self, mock_query,
-                                              mock_paginate_query):
+    def test_paginate_query_gets_model_marker(self, mock_paginate_query):
         query = mock.Mock()
         model = mock.Mock()
         marker = mock.Mock()
 
         mock_query_object = mock.Mock()
         mock_query_object.get.return_value = 'real_marker'
-        mock_query.return_value = mock_query_object
+        ctx = mock.MagicMock()
+        ctx.session.query.return_value = mock_query_object
 
-        db_api._paginate_query(self.ctx, query, model, marker=marker)
+        db_api._paginate_query(ctx, query, model, marker=marker)
         mock_query_object.get.assert_called_once_with(marker)
         args, _ = mock_paginate_query.call_args
         self.assertIn('real_marker', args)
@@ -316,41 +295,42 @@ class SqlAlchemyTest(common.HeatTestCase):
 
     def test_encryption(self):
         stack_name = 'test_encryption'
-        (template, stack) = self._setup_test_stack(stack_name)
-        resource_defns = template.resource_definitions(stack)
-        cs = MyResource('cs_encryption',
-                        resource_defns['WebServer'],
-                        stack)
+        stack = self._setup_test_stack(stack_name)[1]
+        self._mock_create(self.m)
+        self.m.ReplayAll()
+        stack.create()
+        stack = parser.Stack.load(self.ctx, stack.id)
+        cs = stack['WebServer']
 
-        # This gives the fake cloud server an id and created_time attribute
-        cs._store_or_update(cs.CREATE, cs.IN_PROGRESS, 'test_store')
-
-        cs.my_secret = 'fake secret'
+        cs.data_set('my_secret', 'fake secret', True)
         rs = db_api.resource_get_by_name_and_stack(self.ctx,
-                                                   'cs_encryption',
+                                                   'WebServer',
                                                    stack.id)
         encrypted_key = rs.data[0]['value']
         self.assertNotEqual(encrypted_key, "fake secret")
         # Test private_key property returns decrypted value
-        self.assertEqual("fake secret", cs.my_secret)
+        self.assertEqual("fake secret", db_api.resource_data_get(
+            self.ctx, cs.id, 'my_secret'))
 
         # do this twice to verify that the orm does not commit the unencrypted
         # value.
-        self.assertEqual("fake secret", cs.my_secret)
-        scheduler.TaskRunner(cs.destroy)()
+        self.assertEqual("fake secret", db_api.resource_data_get(
+            self.ctx, cs.id, 'my_secret'))
 
     def test_resource_data_delete(self):
         stack = self._setup_test_stack('stack', UUID1)[1]
         self._mock_create(self.m)
         self.m.ReplayAll()
         stack.create()
+        stack = parser.Stack.load(self.ctx, stack.id)
         resource = stack['WebServer']
         resource.data_set('test', 'test_data')
-        self.assertEqual('test_data', db_api.resource_data_get(resource,
-                                                               'test'))
-        db_api.resource_data_delete(resource, 'test')
+        self.assertEqual('test_data', db_api.resource_data_get(
+            self.ctx, resource.id, 'test'))
+        db_api.resource_data_delete(self.ctx, resource.id, 'test')
         self.assertRaises(exception.NotFound,
-                          db_api.resource_data_get, resource, 'test')
+                          db_api.resource_data_get, self.ctx,
+                          resource.id, 'test')
 
     def test_stack_get_by_name(self):
         stack = self._setup_test_stack('stack', UUID1,
@@ -359,11 +339,11 @@ class SqlAlchemyTest(common.HeatTestCase):
         st = db_api.stack_get_by_name(self.ctx, 'stack')
         self.assertEqual(UUID1, st.id)
 
-        self.ctx.tenant_id = UUID3
+        self.ctx.tenant = UUID3
         st = db_api.stack_get_by_name(self.ctx, 'stack')
         self.assertIsNone(st)
 
-        self.ctx.tenant_id = UUID2
+        self.ctx.tenant = UUID2
         st = db_api.stack_get_by_name(self.ctx, 'stack')
         self.assertEqual(UUID1, st.id)
 
@@ -401,12 +381,12 @@ class SqlAlchemyTest(common.HeatTestCase):
 
         self.assertEqual(UUID2, result.id)
 
-        self.ctx.tenant_id = str(uuid.uuid4())
+        self.ctx.tenant = str(uuid.uuid4())
         result = db_api.stack_get_by_name_and_owner_id(self.ctx, 'stack2',
                                                        None)
         self.assertIsNone(result)
 
-        self.ctx.tenant_id = UUID3
+        self.ctx.tenant = UUID3
         result = db_api.stack_get_by_name_and_owner_id(self.ctx, 'stack2',
                                                        stack1.id)
 
@@ -983,7 +963,7 @@ class SqlAlchemyTest(common.HeatTestCase):
         self.ctx.trust_id = None
         self.ctx.region_name = 'RegionOne'
         db_creds = db_api.user_creds_create(self.ctx)
-        load_creds = db_api.user_creds_get(db_creds['id'])
+        load_creds = db_api.user_creds_get(self.ctx, db_creds['id'])
 
         self.assertEqual('test_username', load_creds.get('username'))
         self.assertEqual('password', load_creds.get('password'))
@@ -1011,12 +991,12 @@ class SqlAlchemyTest(common.HeatTestCase):
         self.ctx.password = None
         self.ctx.trust_id = 'atrust123'
         self.ctx.trustor_user_id = 'atrustor123'
-        self.ctx.tenant_id = 'atenant123'
-        self.ctx.tenant = 'atenant'
+        self.ctx.tenant = 'atenant123'
+        self.ctx.project_name = 'atenant'
         self.ctx.auth_url = 'anauthurl'
         self.ctx.region_name = 'aregion'
         db_creds = db_api.user_creds_create(self.ctx)
-        load_creds = db_api.user_creds_get(db_creds['id'])
+        load_creds = db_api.user_creds_get(self.ctx, db_creds['id'])
 
         self.assertIsNone(load_creds.get('username'))
         self.assertIsNone(load_creds.get('password'))
@@ -1035,7 +1015,7 @@ class SqlAlchemyTest(common.HeatTestCase):
         self.ctx.trust_id = None
         self.ctx.region_name = None
         db_creds = db_api.user_creds_create(self.ctx)
-        load_creds = db_api.user_creds_get(db_creds['id'])
+        load_creds = db_api.user_creds_get(self.ctx, db_creds['id'])
 
         self.assertIsNone(load_creds.get('username'))
         self.assertIsNone(load_creds.get('password'))
@@ -1079,7 +1059,7 @@ class SqlAlchemyTest(common.HeatTestCase):
         self.assertEqual(tenant_id, config.tenant)
         self.assertEqual('Heat::Shell', config.group)
         self.assertEqual(conf, config.config['config'])
-        self.ctx.tenant_id = None
+        self.ctx.tenant = None
         self.assertRaises(
             exception.NotFound,
             db_api.software_config_get,
@@ -1095,7 +1075,7 @@ class SqlAlchemyTest(common.HeatTestCase):
         self.assertIsNotNone(software_config)
         software_configs = db_api.software_config_get_all(self.ctx)
         self.assertEqual(1, len(software_configs))
-        self.assertEqual(software_config, software_configs[0])
+        self.assertEqual(software_config.id, software_configs[0].id)
 
     def test_software_config_delete(self):
         tenant_id = self.ctx.tenant_id
@@ -1178,7 +1158,7 @@ class SqlAlchemyTest(common.HeatTestCase):
             values['stack_user_project_id'], deployment.stack_user_project_id)
 
         # assert not found with invalid context tenant
-        self.ctx.tenant_id = str(uuid.uuid4())
+        self.ctx.tenant = str(uuid.uuid4())
         self.assertRaises(
             exception.NotFound,
             db_api.software_deployment_get,
@@ -1186,7 +1166,7 @@ class SqlAlchemyTest(common.HeatTestCase):
             deployment_id)
 
         # assert found with stack_user_project_id context tenant
-        self.ctx.tenant_id = deployment.stack_user_project_id
+        self.ctx.tenant = deployment.stack_user_project_id
         deployment = db_api.software_deployment_get(self.ctx, deployment_id)
         self.assertIsNotNone(deployment)
         self.assertEqual(values['tenant'], deployment.tenant)
@@ -1198,11 +1178,11 @@ class SqlAlchemyTest(common.HeatTestCase):
         self.assertIsNotNone(deployment)
         deployments = db_api.software_deployment_get_all(self.ctx)
         self.assertEqual(1, len(deployments))
-        self.assertEqual(deployment, deployments[0])
+        self.assertEqual(deployment.id, deployments[0].id)
         deployments = db_api.software_deployment_get_all(
             self.ctx, server_id=values['server_id'])
         self.assertEqual(1, len(deployments))
-        self.assertEqual(deployment, deployments[0])
+        self.assertEqual(deployment.id, deployments[0].id)
         deployments = db_api.software_deployment_get_all(
             self.ctx, server_id=str(uuid.uuid4()))
         self.assertEqual([], deployments)
@@ -1307,7 +1287,7 @@ class SqlAlchemyTest(common.HeatTestCase):
         values = {'tenant': self.ctx.tenant_id, 'status': 'IN_PROGRESS',
                   'stack_id': stack.id}
         snapshot = db_api.snapshot_create(self.ctx, values)
-        self.ctx.tenant_id = str(uuid.uuid4())
+        self.ctx.tenant = str(uuid.uuid4())
         self.assertRaises(
             exception.NotFound,
             db_api.snapshot_get,
@@ -1384,7 +1364,7 @@ def create_raw_template(context, **kwargs):
     if 'files' not in kwargs and 'files_id' not in kwargs:
         # modern raw_templates have associated raw_template_files db obj
         tf = template_files.TemplateFiles({'foo': 'bar'})
-        tf.store()
+        tf.store(context)
         kwargs['files_id'] = tf.files_id
     template.update(kwargs)
     return db_api.raw_template_create(context, template)
@@ -1440,7 +1420,7 @@ def create_resource_data(ctx, resource, **kwargs):
         'redact': 0,
     }
     values.update(kwargs)
-    return db_api.resource_data_set(resource, **values)
+    return db_api.resource_data_set(ctx, resource.id, **values)
 
 
 def create_event(ctx, **kwargs):
@@ -1584,7 +1564,7 @@ class DBAPIUserCredsTest(common.HeatTestCase):
         self.assertEqual('trustor_id', user_creds['trustor_user_id'])
         self.assertIsNone(user_creds['username'])
         self.assertIsNone(user_creds['password'])
-        self.assertEqual(self.ctx.tenant, user_creds['tenant'])
+        self.assertEqual(self.ctx.project_name, user_creds['tenant'])
         self.assertEqual(self.ctx.tenant_id, user_creds['tenant_id'])
 
     def test_user_creds_create_password(self):
@@ -1594,18 +1574,18 @@ class DBAPIUserCredsTest(common.HeatTestCase):
 
     def test_user_creds_get(self):
         user_creds = create_user_creds(self.ctx)
-        ret_user_creds = db_api.user_creds_get(user_creds['id'])
+        ret_user_creds = db_api.user_creds_get(self.ctx, user_creds['id'])
         self.assertEqual(user_creds['password'],
                          ret_user_creds['password'])
 
     def test_user_creds_get_noexist(self):
-        self.assertIsNone(db_api.user_creds_get(123456))
+        self.assertIsNone(db_api.user_creds_get(self.ctx, 123456))
 
     def test_user_creds_delete(self):
         user_creds = create_user_creds(self.ctx)
         self.assertIsNotNone(user_creds['id'])
         db_api.user_creds_delete(self.ctx, user_creds['id'])
-        creds = db_api.user_creds_get(user_creds['id'])
+        creds = db_api.user_creds_get(self.ctx, user_creds['id'])
         self.assertIsNone(creds)
         mock_delete = self.patchobject(session.Session, 'delete')
         err = self.assertRaises(
@@ -1776,7 +1756,7 @@ class DBAPIStackTest(common.HeatTestCase):
             'timeout': '90',
             'current_traversal': 'another-dummy-uuid',
         }
-        db_api.stack_lock_create(stack.id, UUID1)
+        db_api.stack_lock_create(self.ctx, stack.id, UUID1)
         observed = db_api.persist_state_and_release_lock(self.ctx, stack.id,
                                                          UUID1, values)
         self.assertIsNone(observed)
@@ -1798,7 +1778,7 @@ class DBAPIStackTest(common.HeatTestCase):
             'timeout': '90',
             'current_traversal': 'another-dummy-uuid',
         }
-        db_api.stack_lock_create(stack.id, UUID2)
+        db_api.stack_lock_create(self.ctx, stack.id, UUID2)
         observed = db_api.persist_state_and_release_lock(self.ctx, stack.id,
                                                          UUID1, values)
         self.assertTrue(observed)
@@ -1813,7 +1793,7 @@ class DBAPIStackTest(common.HeatTestCase):
             'timeout': '90',
             'current_traversal': 'another-dummy-uuid',
         }
-        db_api.stack_lock_create(stack.id, UUID1)
+        db_api.stack_lock_create(self.ctx, stack.id, UUID1)
         observed = db_api.persist_state_and_release_lock(self.ctx, UUID2,
                                                          UUID1, values)
         self.assertTrue(observed)
@@ -1831,14 +1811,14 @@ class DBAPIStackTest(common.HeatTestCase):
 
     def test_stack_get_returns_none_if_tenant_id_does_not_match(self):
         stack = create_stack(self.ctx, self.template, self.user_creds)
-        self.ctx.tenant_id = 'abc'
+        self.ctx.tenant = 'abc'
         stack = db_api.stack_get(self.ctx, UUID1, show_deleted=False)
         self.assertIsNone(stack)
 
     def test_stack_get_tenant_is_stack_user_project_id(self):
         stack = create_stack(self.ctx, self.template, self.user_creds,
                              stack_user_project_id='astackuserproject')
-        self.ctx.tenant_id = 'astackuserproject'
+        self.ctx.tenant = 'astackuserproject'
         ret_stack = db_api.stack_get(self.ctx, stack.id, show_deleted=False)
         self.assertIsNotNone(ret_stack)
         self.assertEqual(stack.id, ret_stack.id)
@@ -1852,6 +1832,13 @@ class DBAPIStackTest(common.HeatTestCase):
         self.assertEqual(stack.id, ret_stack.id)
         self.assertEqual('db_test_stack_name', ret_stack.name)
 
+        # with ctx.is_admin = True
+        self.ctx.is_admin = True
+        ret_stack = db_api.stack_get(self.ctx, stack.id,
+                                     show_deleted=False)
+        self.assertEqual(stack.id, ret_stack.id)
+        self.assertEqual('db_test_stack_name', ret_stack.name)
+
     def test_stack_get_by_name(self):
         stack = create_stack(self.ctx, self.template, self.user_creds)
         ret_stack = db_api.stack_get_by_name(self.ctx, stack.name)
@@ -1861,7 +1848,7 @@ class DBAPIStackTest(common.HeatTestCase):
 
         self.assertIsNone(db_api.stack_get_by_name(self.ctx, 'abc'))
 
-        self.ctx.tenant_id = 'abc'
+        self.ctx.tenant = 'abc'
         self.assertIsNone(db_api.stack_get_by_name(self.ctx, 'abc'))
 
     def test_stack_get_all(self):
@@ -1909,15 +1896,15 @@ class DBAPIStackTest(common.HeatTestCase):
         [create_stack(self.ctx, self.template, self.user_creds,
                       **val) for val in values]
 
-        self.ctx.tenant_id = UUID1
+        self.ctx.tenant = UUID1
         stacks = db_api.stack_get_all(self.ctx)
         self.assertEqual(2, len(stacks))
 
-        self.ctx.tenant_id = UUID2
+        self.ctx.tenant = UUID2
         stacks = db_api.stack_get_all(self.ctx)
         self.assertEqual(3, len(stacks))
 
-        self.ctx.tenant_id = UUID3
+        self.ctx.tenant = UUID3
         self.assertEqual([], db_api.stack_get_all(self.ctx))
 
     def test_stack_get_all_with_tenant_safe_false(self):
@@ -1934,6 +1921,21 @@ class DBAPIStackTest(common.HeatTestCase):
         stacks = db_api.stack_get_all(self.ctx, tenant_safe=False)
         self.assertEqual(5, len(stacks))
 
+    def test_stack_get_all_with_admin_context(self):
+        values = [
+            {'tenant': UUID1},
+            {'tenant': UUID1},
+            {'tenant': UUID2},
+            {'tenant': UUID2},
+            {'tenant': UUID2},
+        ]
+        [create_stack(self.ctx, self.template, self.user_creds,
+                      **val) for val in values]
+
+        self.ctx.is_admin = True
+        stacks = db_api.stack_get_all(self.ctx)
+        self.assertEqual(5, len(stacks))
+
     def test_stack_count_all_with_regular_tenant(self):
         values = [
             {'tenant': UUID1},
@@ -1945,10 +1947,10 @@ class DBAPIStackTest(common.HeatTestCase):
         [create_stack(self.ctx, self.template, self.user_creds,
                       **val) for val in values]
 
-        self.ctx.tenant_id = UUID1
+        self.ctx.tenant = UUID1
         self.assertEqual(2, db_api.stack_count_all(self.ctx))
 
-        self.ctx.tenant_id = UUID2
+        self.ctx.tenant = UUID2
         self.assertEqual(3, db_api.stack_count_all(self.ctx))
 
     def test_stack_count_all_with_tenant_safe_false(self):
@@ -2059,14 +2061,11 @@ class DBAPIStackTest(common.HeatTestCase):
             self.assertRaises(exception.NotFound,
                               db_api.raw_template_files_get,
                               ctx, tmpl_files[tmpl_idx].files_id)
-            for r in stacks[s].resources:
-                self.assertRaises(exception.NotFound,
-                                  db_api.resource_data_get_all(r.context,
-                                                               r.id))
             self.assertEqual([],
                              db_api.event_get_all_by_stack(ctx,
                                                            stacks[s].id))
-            self.assertIsNone(db_api.user_creds_get(stacks[s].user_creds_id))
+            self.assertIsNone(db_api.user_creds_get(
+                self.ctx, stacks[s].user_creds_id))
             tmpl_idx = tmpl_idx + 1
 
     def test_stack_get_root_id(self):
@@ -2256,6 +2255,81 @@ class DBAPIResourceTest(common.HeatTestCase):
         self.assertRaises(exception.NotFound, db_api.resource_get_all_by_stack,
                           self.ctx, self.stack2.id)
 
+    def test_resource_get_all_active_by_stack(self):
+        values = [
+            {'name': 'res1', 'action': rsrc.Resource.DELETE,
+             'status': rsrc.Resource.COMPLETE},
+            {'name': 'res2', 'action': rsrc.Resource.DELETE,
+             'status': rsrc.Resource.IN_PROGRESS},
+            {'name': 'res3', 'action': rsrc.Resource.UPDATE,
+             'status': rsrc.Resource.IN_PROGRESS},
+            {'name': 'res4', 'action': rsrc.Resource.UPDATE,
+             'status': rsrc.Resource.COMPLETE},
+            {'name': 'res5', 'action': rsrc.Resource.INIT,
+             'status': rsrc.Resource.COMPLETE},
+            {'name': 'res6'},
+        ]
+        [create_resource(self.ctx, self.stack, **val) for val in values]
+
+        resources = db_api.resource_get_all_active_by_stack(self.ctx,
+                                                            self.stack.id)
+        self.assertEqual(5, len(resources))
+        for rsrc_id, res in resources.items():
+            self.assertIn(res.name, ['res2', 'res3', 'res4', 'res5', 'res6'])
+
+    def test_resource_get_all_by_root_stack(self):
+        self.stack1 = create_stack(self.ctx, self.template, self.user_creds)
+        self.stack2 = create_stack(self.ctx, self.template, self.user_creds)
+
+        create_resource(self.ctx, self.stack, name='res1',
+                        root_stack_id=self.stack.id)
+        create_resource(self.ctx, self.stack, name='res2',
+                        root_stack_id=self.stack.id)
+        create_resource(self.ctx, self.stack, name='res3',
+                        root_stack_id=self.stack.id)
+        create_resource(self.ctx, self.stack1, name='res4',
+                        root_stack_id=self.stack.id)
+
+        # Test for all resources in a stack
+        resources = db_api.resource_get_all_by_root_stack(
+            self.ctx, self.stack.id)
+        self.assertEqual(4, len(resources))
+        resource_names = [r.name for r in resources.values()]
+        self.assertEqual(['res1', 'res2', 'res3', 'res4'],
+                         sorted(resource_names))
+
+        # Test for resources matching single entry
+        resources = db_api.resource_get_all_by_root_stack(
+            self.ctx, self.stack.id, filters=dict(name='res1'))
+        self.assertEqual(1, len(resources))
+        resource_names = [r.name for r in resources.values()]
+        self.assertEqual(['res1'], resource_names)
+        self.assertEqual(1, len(resources))
+
+        # Test for resources matching multi entry
+        resources = db_api.resource_get_all_by_root_stack(
+            self.ctx, self.stack.id, filters=dict(name=[
+                'res1',
+                'res2'
+            ])
+        )
+        self.assertEqual(2, len(resources))
+        resource_names = [r.name for r in resources.values()]
+        self.assertEqual(['res1', 'res2'],
+                         sorted(resource_names))
+
+        self.assertEqual({}, db_api.resource_get_all_by_root_stack(
+            self.ctx, self.stack2.id))
+
+    def test_resource_purge_deleted_by_stack(self):
+        val = {'name': 'res1', 'action': rsrc.Resource.DELETE,
+               'status': rsrc.Resource.COMPLETE}
+        resource = create_resource(self.ctx, self.stack, **val)
+
+        db_api.resource_purge_deleted(self.ctx, self.stack.id)
+        self.assertRaises(exception.NotFound, db_api.resource_get,
+                          self.ctx, resource.id)
+
 
 class DBAPIStackLockTest(common.HeatTestCase):
     def setUp(self):
@@ -2266,63 +2340,66 @@ class DBAPIStackLockTest(common.HeatTestCase):
         self.stack = create_stack(self.ctx, self.template, self.user_creds)
 
     def test_stack_lock_create_success(self):
-        observed = db_api.stack_lock_create(self.stack.id, UUID1)
+        observed = db_api.stack_lock_create(self.ctx, self.stack.id, UUID1)
         self.assertIsNone(observed)
 
     def test_stack_lock_create_fail_double_same(self):
-        db_api.stack_lock_create(self.stack.id, UUID1)
-        observed = db_api.stack_lock_create(self.stack.id, UUID1)
+        db_api.stack_lock_create(self.ctx, self.stack.id, UUID1)
+        observed = db_api.stack_lock_create(self.ctx, self.stack.id, UUID1)
         self.assertEqual(UUID1, observed)
 
     def test_stack_lock_create_fail_double_different(self):
-        db_api.stack_lock_create(self.stack.id, UUID1)
-        observed = db_api.stack_lock_create(self.stack.id, UUID2)
+        db_api.stack_lock_create(self.ctx, self.stack.id, UUID1)
+        observed = db_api.stack_lock_create(self.ctx, self.stack.id, UUID2)
         self.assertEqual(UUID1, observed)
 
     def test_stack_lock_get_id_success(self):
-        db_api.stack_lock_create(self.stack.id, UUID1)
-        observed = db_api.stack_lock_get_engine_id(self.stack.id)
+        db_api.stack_lock_create(self.ctx, self.stack.id, UUID1)
+        observed = db_api.stack_lock_get_engine_id(self.ctx, self.stack.id)
         self.assertEqual(UUID1, observed)
 
     def test_stack_lock_get_id_return_none(self):
-        observed = db_api.stack_lock_get_engine_id(self.stack.id)
+        observed = db_api.stack_lock_get_engine_id(self.ctx, self.stack.id)
         self.assertIsNone(observed)
 
     def test_stack_lock_steal_success(self):
-        db_api.stack_lock_create(self.stack.id, UUID1)
-        observed = db_api.stack_lock_steal(self.stack.id, UUID1, UUID2)
+        db_api.stack_lock_create(self.ctx, self.stack.id, UUID1)
+        observed = db_api.stack_lock_steal(self.ctx, self.stack.id,
+                                           UUID1, UUID2)
         self.assertIsNone(observed)
 
     def test_stack_lock_steal_fail_gone(self):
-        db_api.stack_lock_create(self.stack.id, UUID1)
-        db_api.stack_lock_release(self.stack.id, UUID1)
-        observed = db_api.stack_lock_steal(self.stack.id, UUID1, UUID2)
+        db_api.stack_lock_create(self.ctx, self.stack.id, UUID1)
+        db_api.stack_lock_release(self.ctx, self.stack.id, UUID1)
+        observed = db_api.stack_lock_steal(self.ctx, self.stack.id,
+                                           UUID1, UUID2)
         self.assertTrue(observed)
 
     def test_stack_lock_steal_fail_stolen(self):
-        db_api.stack_lock_create(self.stack.id, UUID1)
+        db_api.stack_lock_create(self.ctx, self.stack.id, UUID1)
 
         # Simulate stolen lock
-        db_api.stack_lock_release(self.stack.id, UUID1)
-        db_api.stack_lock_create(self.stack.id, UUID2)
+        db_api.stack_lock_release(self.ctx, self.stack.id, UUID1)
+        db_api.stack_lock_create(self.ctx, self.stack.id, UUID2)
 
-        observed = db_api.stack_lock_steal(self.stack.id, UUID3, UUID2)
+        observed = db_api.stack_lock_steal(self.ctx, self.stack.id,
+                                           UUID3, UUID2)
         self.assertEqual(UUID2, observed)
 
     def test_stack_lock_release_success(self):
-        db_api.stack_lock_create(self.stack.id, UUID1)
-        observed = db_api.stack_lock_release(self.stack.id, UUID1)
+        db_api.stack_lock_create(self.ctx, self.stack.id, UUID1)
+        observed = db_api.stack_lock_release(self.ctx, self.stack.id, UUID1)
         self.assertIsNone(observed)
 
     def test_stack_lock_release_fail_double(self):
-        db_api.stack_lock_create(self.stack.id, UUID1)
-        db_api.stack_lock_release(self.stack.id, UUID1)
-        observed = db_api.stack_lock_release(self.stack.id, UUID1)
+        db_api.stack_lock_create(self.ctx, self.stack.id, UUID1)
+        db_api.stack_lock_release(self.ctx, self.stack.id, UUID1)
+        observed = db_api.stack_lock_release(self.ctx, self.stack.id, UUID1)
         self.assertTrue(observed)
 
     def test_stack_lock_release_fail_wrong_engine_id(self):
-        db_api.stack_lock_create(self.stack.id, UUID1)
-        observed = db_api.stack_lock_release(self.stack.id, UUID2)
+        db_api.stack_lock_create(self.ctx, self.stack.id, UUID1)
+        observed = db_api.stack_lock_release(self.ctx, self.stack.id, UUID2)
         self.assertTrue(observed)
 
     @mock.patch.object(time, 'sleep')
@@ -2330,7 +2407,8 @@ class DBAPIStackLockTest(common.HeatTestCase):
         with mock.patch('sqlalchemy.orm.Session.add',
                         side_effect=db_exception.DBDeadlock) as mock_add:
             self.assertRaises(db_exception.DBDeadlock,
-                              db_api.stack_lock_create, self.stack.id, UUID1)
+                              db_api.stack_lock_create, self.ctx,
+                              self.stack.id, UUID1)
             self.assertEqual(4, mock_add.call_count)
 
 
@@ -2346,18 +2424,21 @@ class DBAPIResourceDataTest(common.HeatTestCase):
 
     def test_resource_data_set_get(self):
         create_resource_data(self.ctx, self.resource)
-        val = db_api.resource_data_get(self.resource, 'test_resource_key')
+        val = db_api.resource_data_get(
+            self.ctx, self.resource.id, 'test_resource_key')
         self.assertEqual('test_value', val)
 
         # Updating existing resource data
         create_resource_data(self.ctx, self.resource, value='foo')
-        val = db_api.resource_data_get(self.resource, 'test_resource_key')
+        val = db_api.resource_data_get(
+            self.ctx, self.resource.id, 'test_resource_key')
         self.assertEqual('foo', val)
 
         # Testing with encrypted value
         create_resource_data(self.ctx, self.resource,
                              key='encryped_resource_key', redact=True)
-        val = db_api.resource_data_get(self.resource, 'encryped_resource_key')
+        val = db_api.resource_data_get(
+            self.ctx, self.resource.id, 'encryped_resource_key')
         self.assertEqual('test_value', val)
 
         # get all by querying for data
@@ -2368,7 +2449,8 @@ class DBAPIResourceDataTest(common.HeatTestCase):
         self.assertEqual('test_value', vals.get('encryped_resource_key'))
 
         # get all by using associated resource data
-        vals = db_api.resource_data_get_all(None, None, self.resource.data)
+        self.resource = db_api.resource_get(self.ctx, self.resource.id)
+        vals = db_api.resource_data_get_all(self.ctx, None, self.resource.data)
         self.assertEqual(2, len(vals))
         self.assertEqual('foo', vals.get('test_resource_key'))
         self.assertEqual('test_value', vals.get('encryped_resource_key'))
@@ -2380,7 +2462,8 @@ class DBAPIResourceDataTest(common.HeatTestCase):
         self.assertIsNotNone(res_data)
         self.assertEqual('test_value', res_data.value)
 
-        db_api.resource_data_delete(self.resource, 'test_resource_key')
+        db_api.resource_data_delete(self.ctx, self.resource.id,
+                                    'test_resource_key')
         self.assertRaises(exception.NotFound, db_api.resource_data_get_by_key,
                           self.ctx, self.resource.id, 'test_resource_key')
         self.assertIsNotNone(res_data)
@@ -2398,10 +2481,11 @@ class DBAPIEventTest(common.HeatTestCase):
         self.user_creds = create_user_creds(self.ctx)
 
     def test_event_create_get(self):
-        event = create_event(self.ctx)
+        stack = create_stack(self.ctx, self.template, self.user_creds)
+        event = create_event(self.ctx, stack_id=stack.id)
         ret_event = db_api.event_get(self.ctx, event.id)
         self.assertIsNotNone(ret_event)
-        self.assertEqual('test_stack_id', ret_event.stack_id)
+        self.assertEqual(stack.id, ret_event.stack_id)
         self.assertEqual('create', ret_event.resource_action)
         self.assertEqual('complete', ret_event.resource_status)
         self.assertEqual('res', ret_event.resource_name)
@@ -2441,7 +2525,7 @@ class DBAPIEventTest(common.HeatTestCase):
         ]
         [create_event(self.ctx, **val) for val in values]
 
-        self.ctx.tenant_id = 'tenant1'
+        self.ctx.tenant = 'tenant1'
         events = db_api.event_get_all_by_tenant(self.ctx)
         self.assertEqual(2, len(events))
         marker = events[0].uuid
@@ -2465,7 +2549,7 @@ class DBAPIEventTest(common.HeatTestCase):
                                                 sort_keys=sort_keys)
         self.assertEqual(2, len(events))
 
-        self.ctx.tenant_id = 'tenant2'
+        self.ctx.tenant = 'tenant2'
         events = db_api.event_get_all_by_tenant(self.ctx)
         self.assertEqual(1, len(events))
 
@@ -2479,11 +2563,11 @@ class DBAPIEventTest(common.HeatTestCase):
         ]
         [create_event(self.ctx, **val) for val in values]
 
-        self.ctx.tenant_id = 'tenant1'
+        self.ctx.tenant = 'tenant1'
         events = db_api.event_get_all_by_stack(self.ctx, self.stack1.id)
         self.assertEqual(2, len(events))
 
-        self.ctx.tenant_id = 'tenant2'
+        self.ctx.tenant = 'tenant2'
         events = db_api.event_get_all_by_stack(self.ctx, self.stack2.id)
         self.assertEqual(1, len(events))
 
@@ -2895,8 +2979,8 @@ class DBAPISyncPointTest(common.HeatTestCase):
 
         # second update
         rows_updated = db_api.sync_point_update_input_data(
-            self.ctx, sync_point.entity_id, sync_point.traversal_id,
-            sync_point.is_update, sync_point.atomic_key,
+            self.ctx, ret_sync_point.entity_id, ret_sync_point.traversal_id,
+            ret_sync_point.is_update, ret_sync_point.atomic_key,
             {'input_data': '{key1: value1}'}
         )
         self.assertEqual(1, rows_updated)
@@ -3049,8 +3133,7 @@ class DBAPICryptParamsPropsTest(common.HeatTestCase):
 
         return db_api.raw_template_create(self.ctx, template)
 
-    def _test_db_encrypt_decrypt(self, batch_size=50):
-        session = db_api.get_session()
+    def _test_db_encrypt_decrypt(self, template_ids, batch_size=50):
         hidden_params_dict = {
             'param2': 'bar',
             'param_number': '456',
@@ -3058,28 +3141,13 @@ class DBAPICryptParamsPropsTest(common.HeatTestCase):
             'param_map': '{\"test\":\"json\"}',
             'param_comma_list': '[\"Hola\", \"Senor\"]'}
 
-        raw_templates = session.query(models.RawTemplate).all()
-        self.assertNotEqual([], raw_templates)
-        for r_tmpl in raw_templates:
-            for param_name, param_value in hidden_params_dict.items():
-                self.assertEqual(param_value,
-                                 r_tmpl.environment['parameters'][param_name])
-                self.assertEqual('foo',
-                                 r_tmpl.environment['parameters']['param1'])
-        resources = session.query(models.Resource).all()
-        self.assertNotEqual([], resources)
-        for resource in resources:
-            self.assertEqual('bar1', resource.properties_data['foo1'])
-
         def encrypt(enc_key=None):
             if enc_key is None:
                 enc_key = cfg.CONF.auth_encryption_key
             self.assertEqual([], db_api.db_encrypt_parameters_and_properties(
                 self.ctx, enc_key, batch_size=batch_size))
-            session = db_api.get_session()
-            enc_raw_templates = session.query(models.RawTemplate).all()
-            self.assertNotEqual([], enc_raw_templates)
-            for enc_tmpl in enc_raw_templates:
+            for template_id in template_ids:
+                enc_tmpl = db_api.raw_template_get(self.ctx, template_id)
                 for param_name in hidden_params_dict.keys():
                     self.assertEqual(
                         'cryptography_decrypt_v1',
@@ -3090,30 +3158,20 @@ class DBAPICryptParamsPropsTest(common.HeatTestCase):
                     self.assertIsNone(
                         enc_tmpl.environment['parameters'].get('param3'))
 
-            encrypt_value = enc_tmpl.environment['parameters']['param2'][1]
-            enc_resources = session.query(models.Resource).all()
-            self.assertNotEqual([], enc_resources)
-            for enc_prop in enc_resources:
+            ev = enc_tmpl.environment['parameters']['param2'][1]
+            for resource in self.resources:
+                enc_prop = db_api.resource_get(self.ctx, resource.id)
                 self.assertEqual('cryptography_decrypt_v1',
                                  enc_prop.properties_data['foo1'][0])
-            return encrypt_value
+            return ev
 
-        # Test encryption
-        encrypt_value = encrypt()
-
-        # Test that encryption is idempotent
-        encrypt_value2 = encrypt()
-        self.assertEqual(encrypt_value, encrypt_value2)
-
-        def decrypt(enc_key=None):
+        def decrypt(encrypt_value, enc_key=None):
             if enc_key is None:
                 enc_key = cfg.CONF.auth_encryption_key
             self.assertEqual([], db_api.db_decrypt_parameters_and_properties(
                 self.ctx, enc_key, batch_size=batch_size))
-            session = db_api.get_session()
-            dec_templates = session.query(models.RawTemplate).all()
-            self.assertNotEqual([], dec_templates)
-            for dec_tmpl in dec_templates:
+            for template_id in template_ids:
+                dec_tmpl = db_api.raw_template_get(self.ctx, template_id)
                 self.assertNotEqual(
                     encrypt_value,
                     r_tmpl.environment['parameters']['param2'][1])
@@ -3135,21 +3193,39 @@ class DBAPICryptParamsPropsTest(common.HeatTestCase):
                         'param3'))
 
             decrypt_value = dec_tmpl.environment['parameters']['param2'][1]
-            dec_resources = session.query(models.Resource).all()
-            self.assertNotEqual([], dec_resources)
-            for dec_prop in dec_resources:
+            for resource in self.resources:
+                dec_prop = db_api.resource_get(self.ctx, resource.id)
                 self.assertEqual('bar1', dec_prop.properties_data['foo1'])
             return decrypt_value
 
+        for template_id in template_ids:
+            r_tmpl = db_api.raw_template_get(self.ctx, template_id)
+            for param_name, param_value in hidden_params_dict.items():
+                self.assertEqual(param_value,
+                                 r_tmpl.environment['parameters'][param_name])
+                self.assertEqual('foo',
+                                 r_tmpl.environment['parameters']['param1'])
+        for resource in self.resources:
+            resource = db_api.resource_get(self.ctx, resource.id)
+            self.assertEqual('bar1', resource.properties_data['foo1'])
+
+        # Test encryption
+        encrypt_value = encrypt()
+
+        # Test that encryption is idempotent
+        encrypt_value2 = encrypt()
+        self.assertEqual(encrypt_value, encrypt_value2)
+
         # Test decryption
-        decrypt_value = decrypt()
+        decrypt_value = decrypt(encrypt_value)
 
         # Test that decryption is idempotent
-        decrypt_value2 = decrypt()
+        decrypt_value2 = decrypt(encrypt_value)
 
         # Test using a different encryption key to encrypt & decrypt
         encrypt_value3 = encrypt(enc_key='774c15be099ea74123a9b9592ff12680')
-        decrypt_value3 = decrypt(enc_key='774c15be099ea74123a9b9592ff12680')
+        decrypt_value3 = decrypt(encrypt_value3,
+                                 enc_key='774c15be099ea74123a9b9592ff12680')
         self.assertEqual(decrypt_value, decrypt_value2, decrypt_value3)
         self.assertNotEqual(encrypt_value, decrypt_value)
         self.assertNotEqual(encrypt_value3, decrypt_value3)
@@ -3163,7 +3239,7 @@ class DBAPICryptParamsPropsTest(common.HeatTestCase):
         """Test encryption and decryption for single template"""
         tmpl = self._create_template()
         self.addCleanup(self._delete_templates, [tmpl])
-        self._test_db_encrypt_decrypt()
+        self._test_db_encrypt_decrypt([tmpl.id])
 
     def test_db_encrypt_decrypt_in_batches(self):
         """Test encryption and decryption in for several templates.
@@ -3174,7 +3250,8 @@ class DBAPICryptParamsPropsTest(common.HeatTestCase):
         tmpl1 = self._create_template()
         tmpl2 = self._create_template()
         self.addCleanup(self._delete_templates, [tmpl1, tmpl2])
-        self._test_db_encrypt_decrypt(batch_size=1)
+        template_ids = [tmpl1.id, tmpl2.id]
+        self._test_db_encrypt_decrypt(template_ids, batch_size=1)
 
     def test_db_encrypt_decrypt_exception_continue(self):
         """Test that encryption and decryption proceed after an exception"""
@@ -3210,31 +3287,30 @@ class DBAPICryptParamsPropsTest(common.HeatTestCase):
         tmpl2 = self._create_template()
         self.addCleanup(self._delete_templates, [tmpl1, tmpl2])
 
-        session = db_api.get_session()
-        r_tmpls = session.query(models.RawTemplate).all()
-        self.assertEqual('', r_tmpls[1].environment)
+        tmpl1 = db_api.raw_template_get(self.ctx, tmpl1.id)
+        self.assertEqual('', tmpl1.environment)
 
         # Test encryption
         enc_result = db_api.db_encrypt_parameters_and_properties(
             self.ctx, cfg.CONF.auth_encryption_key, batch_size=50)
         self.assertEqual(1, len(enc_result))
         self.assertIs(AttributeError, type(enc_result[0]))
-        session = db_api.get_session()
-        enc_tmpls = session.query(models.RawTemplate).all()
-        self.assertEqual('', enc_tmpls[1].environment)
+        tmpl1 = db_api.raw_template_get(self.ctx, tmpl1.id)
+        tmpl2 = db_api.raw_template_get(self.ctx, tmpl2.id)
+        self.assertEqual('', tmpl1.environment)
         self.assertEqual('cryptography_decrypt_v1',
-                         enc_tmpls[2].environment['parameters']['param2'][0])
+                         tmpl2.environment['parameters']['param2'][0])
 
         # Test decryption
         dec_result = db_api.db_decrypt_parameters_and_properties(
             self.ctx, cfg.CONF.auth_encryption_key, batch_size=50)
         self.assertEqual(len(dec_result), 1)
         self.assertIs(TypeError, type(dec_result[0]))
-        session = db_api.get_session()
-        dec_tmpls = session.query(models.RawTemplate).all()
-        self.assertEqual('', dec_tmpls[1].environment)
+        tmpl1 = db_api.raw_template_get(self.ctx, tmpl1.id)
+        tmpl2 = db_api.raw_template_get(self.ctx, tmpl2.id)
+        self.assertEqual('', tmpl1.environment)
         self.assertEqual('bar',
-                         dec_tmpls[2].environment['parameters']['param2'])
+                         tmpl2.environment['parameters']['param2'])
 
     def test_db_encrypt_no_env(self):
         template = {
@@ -3369,19 +3445,16 @@ class DBAPICryptParamsPropsTest(common.HeatTestCase):
                 'param1': 'foo',
                 'param2': 'bar',
                 'param3': 12345}}}
-        db_api.raw_template_create(self.ctx, template)
+        tmpl = db_api.raw_template_create(self.ctx, template)
         self.assertEqual([], db_api.db_encrypt_parameters_and_properties(
             self.ctx, cfg.CONF.auth_encryption_key))
-        session = db_api.get_session()
-        enc_raw_templates = session.query(models.RawTemplate).all()
-        self.assertNotEqual([], enc_raw_templates)
-        enc_params = enc_raw_templates[1].environment['parameters']
+        tmpl = db_api.raw_template_get(self.ctx, tmpl.id)
+        enc_params = tmpl.environment['parameters']
 
         self.assertEqual([], db_api.db_decrypt_parameters_and_properties(
             self.ctx, cfg.CONF.auth_encryption_key, batch_size=50))
-        session = db_api.get_session()
-        dec_tmpls = session.query(models.RawTemplate).all()
-        dec_params = dec_tmpls[1].environment['parameters']
+        tmpl = db_api.raw_template_get(self.ctx, tmpl.id)
+        dec_params = tmpl.environment['parameters']
 
         self.assertNotEqual(enc_params['param3'], dec_params['param3'])
         self.assertEqual('bar', dec_params['param2'])
@@ -3399,18 +3472,25 @@ class ResetStackStatusTests(common.HeatTestCase):
 
     def test_status_reset(self):
         db_api.stack_update(self.ctx, self.stack.id, {'status': 'IN_PROGRESS'})
-        db_api.stack_lock_create(self.stack.id, UUID1)
+        db_api.stack_lock_create(self.ctx, self.stack.id, UUID1)
         db_api.reset_stack_status(self.ctx, self.stack.id)
-        self.assertEqual('FAILED', self.stack.status)
+
+        stack = db_api.stack_get(self.ctx, self.stack.id)
+        self.assertEqual('FAILED', stack.status)
         self.assertEqual('Stack status manually reset',
-                         self.stack.status_reason)
-        self.assertEqual(True, db_api.stack_lock_release(self.stack.id, UUID1))
+                         stack.status_reason)
+        self.assertEqual(True, db_api.stack_lock_release(self.ctx,
+                                                         self.stack.id,
+                                                         UUID1))
 
     def test_resource_reset(self):
         resource_progress = create_resource(self.ctx, self.stack,
                                             status='IN_PROGRESS')
         resource_complete = create_resource(self.ctx, self.stack)
         db_api.reset_stack_status(self.ctx, self.stack.id)
+
+        resource_complete = db_api.resource_get(self.ctx, resource_complete.id)
+        resource_progress = db_api.resource_get(self.ctx, resource_progress.id)
         self.assertEqual('complete', resource_complete.status)
         self.assertEqual('FAILED', resource_progress.status)
 
@@ -3432,6 +3512,10 @@ class ResetStackStatusTests(common.HeatTestCase):
                                   owner_id=child.id, status='IN_PROGRESS')
         resource = create_resource(self.ctx, grandchild, status='IN_PROGRESS')
         db_api.reset_stack_status(self.ctx, self.stack.id)
+
+        grandchild = db_api.stack_get(self.ctx, grandchild.id)
+        self.stack = db_api.stack_get(self.ctx, self.stack.id)
+        resource = db_api.resource_get(self.ctx, resource.id)
         self.assertEqual('FAILED', grandchild.status)
         self.assertEqual('FAILED', resource.status)
         self.assertEqual('FAILED', self.stack.status)

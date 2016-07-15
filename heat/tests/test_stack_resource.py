@@ -33,9 +33,8 @@ from heat.tests import generic_resource as generic_rsrc
 from heat.tests import utils
 
 
-ws_res_snippet = {"HeatTemplateFormatVersion": "2012-12-12",
-                  "Type": "StackResourceType",
-                  "metadata": {
+ws_res_snippet = {"Type": "StackResourceType",
+                  "Metadata": {
                       "key": "value",
                       "some": "more stuff"}}
 
@@ -463,7 +462,10 @@ class StackResourceTest(StackResourceBaseTest):
         stack_resource.cfg.CONF.set_override('max_resources_per_stack', 2,
                                              enforce_type=True)
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
-                'Resources': [1]}
+                'Resources': {
+                    'r': {
+                        'Type': 'OS::Heat::None'
+                    }}}
         template = stack_resource.template.Template(tmpl)
         root_resources = mock.Mock(return_value=2)
         self.parent_resource.stack.total_resources = root_resources
@@ -745,6 +747,7 @@ class StackResourceCheckCompleteTest(StackResourceBaseTest):
         self.mock_status.assert_called_once_with(
             self.parent_resource.context, self.parent_resource.resource_id)
         self.mock_lock.assert_called_once_with(
+            self.parent_resource.context,
             self.parent_resource.resource_id)
 
     def test_state_err(self):
@@ -841,8 +844,7 @@ class WithTemplateTest(StackResourceBaseTest):
         child_env = {'parameter_defaults': {},
                      'event_sinks': [],
                      'parameters': self.params,
-                     'resource_registry': {'resources': {}},
-                     'encrypted_param_names': []}
+                     'resource_registry': {'resources': {}}}
         self.parent_resource.child_params = mock.Mock(
             return_value=self.params)
         res_name = self.parent_resource.physical_resource_name()
@@ -888,8 +890,7 @@ class WithTemplateTest(StackResourceBaseTest):
         child_env = {'parameter_defaults': {},
                      'event_sinks': [],
                      'parameters': self.params,
-                     'resource_registry': {'resources': {}},
-                     'encrypted_param_names': []}
+                     'resource_registry': {'resources': {}}}
         self.parent_resource.child_params = mock.Mock(
             return_value=self.params)
         res_name = self.parent_resource.physical_resource_name()

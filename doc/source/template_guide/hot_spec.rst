@@ -96,9 +96,10 @@ Heat template version
 ~~~~~~~~~~~~~~~~~~~~~
 
 The value of ``heat_template_version`` tells Heat not only the format of the
-template but also features that will be validated and supported.
-For example, Heat currently supports the following values for the
-``heat_template_version`` key:
+template but also features that will be validated and supported. Beginning with
+the Newton release, the version can be either the date of the Heat release or
+the code name of the Heat release. Heat currently supports the following values
+for the ``heat_template_version`` key:
 
 2013-05-23
 ----------
@@ -203,14 +204,14 @@ For example, Heat currently supports the following values for the
       str_replace
       str_split
 
-2016-10-14
-----------
-    The key with value ``2016-10-14`` indicates that the YAML document is a HOT
-    template and it may contain features added and/or removed up until the
-    Newton release.  This version adds the ``yaql`` function which
+2016-10-14 | newton
+-------------------
+    The key with value ``2016-10-14`` or ``newton`` indicates that the YAML
+    document is a HOT template and it may contain features added and/or removed
+    up until the Newton release.  This version adds the ``yaql`` function which
     can be used for evaluation of complex expressions, and also adds ``equals``
-    function which can be used to compare whether two values are equal.
-    The complete list of supported functions is::
+    function which can be used to compare whether two values are equal.  The
+    complete list of supported functions is::
 
       digest
       get_attr
@@ -645,8 +646,11 @@ update_policy
 
 deletion_policy
     Deletion policy for the resource. The allowed deletion policies are
-    ``Delete``, ``Retain``, and ``Snapshot``.
-    This attribute is optional; the default policy is ``Delete``.
+    ``Delete``, ``Retain``, and ``Snapshot``. Beginning with
+    ``heat_template_version`` ``2016-10-14``, the lowercase equivalents
+    ``delete``, ``retain``, and ``snapshot`` are also allowed.
+    This attribute is optional; the default policy is to delete the physical
+    resource when deleting a resource from the stack.
 
 Depending on the type of resource, the resource block might include more
 resource specific data.
@@ -1311,10 +1315,11 @@ For example
 
     outputs:
       max_elem:
-        yaql:
-          expression: $.data.list_param.select(int($)).max()
-          data:
-            list_param: {get_param: list_param}
+        value:
+          yaql:
+            expression: $.data.list_param.select(int($)).max()
+            data:
+              list_param: {get_param: list_param}
 
 max_elem output will be evaluated to 3
 
