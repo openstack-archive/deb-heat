@@ -1,0 +1,11 @@
+Code-Review+1: Drago <drago.rosson@rackspace.com>
+Code-Review+2: Randall Burt <randall.burt@rackspace.com>
+Code-Review+1: Amy Marrich (spotz) <amy.marrich@rackspace.com>
+Code-Review+2: Steven Hardy <shardy@redhat.com>
+Workflow+1: Steven Hardy <shardy@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 13 Jul 2016 00:34:28 +0000
+Reviewed-on: https://review.openstack.org/306058
+Project: openstack/deb-heat
+Branch: refs/heads/master

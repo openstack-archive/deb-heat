@@ -1,0 +1,11 @@
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Code-Review+1: Kanagaraj Manickam <mkr1481@gmail.com>
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Workflow+1: Steve Baker <sbaker@redhat.com>
+Code-Review+1: Rahul U Nair <rahulunair@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 02 Aug 2016 06:37:45 +0000
+Reviewed-on: https://review.openstack.org/337966
+Project: openstack/deb-heat
+Branch: refs/heads/master

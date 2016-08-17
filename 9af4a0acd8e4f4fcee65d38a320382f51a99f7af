@@ -1,0 +1,10 @@
+Code-Review+2: huangtianhua <huangtianhua@huawei.com>
+Code-Review+1: Dmitriy Uvarenkov <duvarenkov@mirantis.com>
+Code-Review+2: Rabi Mishra <ramishra@redhat.com>
+Workflow+1: Rabi Mishra <ramishra@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 04 Aug 2016 13:26:37 +0000
+Reviewed-on: https://review.openstack.org/350832
+Project: openstack/deb-heat
+Branch: refs/heads/master

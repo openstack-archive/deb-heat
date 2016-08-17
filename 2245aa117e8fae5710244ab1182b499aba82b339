@@ -1,0 +1,11 @@
+Code-Review+1: Dmitriy Uvarenkov <duvarenkov@mirantis.com>
+Code-Review+1: liuwei <liu.wei81@zte.com.cn>
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Code-Review+2: Ethan Lynn <xuanlangjian@gmail.com>
+Workflow+1: Ethan Lynn <xuanlangjian@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 02 Aug 2016 03:54:57 +0000
+Reviewed-on: https://review.openstack.org/348409
+Project: openstack/deb-heat
+Branch: refs/heads/master

@@ -1,0 +1,10 @@
+Code-Review+1: Ronald Bradford <ronald.bradford@gmail.com>
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Workflow+1: Rabi Mishra <ramishra@redhat.com>
+Code-Review+2: Rabi Mishra <ramishra@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 15 Jul 2016 05:57:58 +0000
+Reviewed-on: https://review.openstack.org/335303
+Project: openstack/deb-heat
+Branch: refs/heads/master

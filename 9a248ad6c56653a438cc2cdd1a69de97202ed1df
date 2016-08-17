@@ -1,0 +1,11 @@
+Code-Review+1: Anant Patil <anant.patil@hpe.com>
+Code-Review+1: Dmitriy Uvarenkov <duvarenkov@mirantis.com>
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Code-Review+2: Steven Hardy <shardy@redhat.com>
+Workflow+1: Steven Hardy <shardy@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 26 Jul 2016 07:58:11 +0000
+Reviewed-on: https://review.openstack.org/346647
+Project: openstack/deb-heat
+Branch: refs/heads/master

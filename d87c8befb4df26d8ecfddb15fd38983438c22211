@@ -1,0 +1,10 @@
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Code-Review+2: Oleksii Chuprykov <ochuprykov@mirantis.com>
+Workflow+1: Oleksii Chuprykov <ochuprykov@mirantis.com>
+Code-Review+1: liuwei <liu.wei81@zte.com.cn>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 02 Aug 2016 11:50:33 +0000
+Reviewed-on: https://review.openstack.org/349920
+Project: openstack/deb-heat
+Branch: refs/heads/master
