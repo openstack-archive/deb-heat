@@ -1,0 +1,10 @@
+Code-Review+2: Thierry Carrez <thierry@openstack.org>
+Code-Review+1: huangtianhua <huangtianhua@huawei.com>
+Code-Review+2: Steven Hardy <shardy@redhat.com>
+Workflow+1: Steven Hardy <shardy@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 22 May 2014 16:05:21 +0000
+Reviewed-on: https://review.openstack.org/94625
+Project: openstack/deb-heat
+Branch: refs/heads/stable/icehouse

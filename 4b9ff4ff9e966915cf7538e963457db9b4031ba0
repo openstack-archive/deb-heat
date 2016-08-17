@@ -1,0 +1,8 @@
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Workflow+1: Alan Pevec <alan.pevec@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Sat, 31 May 2014 20:45:21 +0000
+Reviewed-on: https://review.openstack.org/95922
+Project: openstack/deb-heat
+Branch: refs/heads/stable/icehouse

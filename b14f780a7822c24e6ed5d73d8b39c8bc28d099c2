@@ -1,0 +1,9 @@
+Code-Review+1: Liang Chen <liang.chen@canonical.com>
+Code-Review+2: Thierry Carrez <thierry@openstack.org>
+Workflow+1: Thierry Carrez <thierry@openstack.org>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 11 Oct 2013 22:05:34 +0000
+Reviewed-on: https://review.openstack.org/51145
+Project: openstack/deb-heat
+Branch: refs/heads/milestone-proposed

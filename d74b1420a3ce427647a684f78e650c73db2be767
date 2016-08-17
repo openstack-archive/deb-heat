@@ -1,0 +1,8 @@
+Code-Review+2: Adam Gandelman <adamg@ubuntu.com>
+Workflow+1: Adam Gandelman <adamg@ubuntu.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 30 May 2013 21:53:50 +0000
+Reviewed-on: https://review.openstack.org/31010
+Project: openstack/deb-heat
+Branch: refs/heads/stable/grizzly
