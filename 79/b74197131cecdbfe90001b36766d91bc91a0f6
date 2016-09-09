@@ -1,0 +1,9 @@
+Code-Review+2: Sergey Kraynev <skraynev@mirantis.com>
+Code-Review+1: Dmitriy Uvarenkov <duvarenkov@mirantis.com>
+Workflow+1: Sergey Kraynev <skraynev@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 23 May 2016 09:35:46 +0000
+Reviewed-on: https://review.openstack.org/319759
+Project: openstack/deb-heat
+Branch: refs/heads/stable/mitaka

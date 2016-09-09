@@ -1,0 +1,11 @@
+Code-Review+1: Dmitriy Uvarenkov <duvarenkov@mirantis.com>
+Code-Review+1: Peter Razumovsky <prazumovsky@mirantis.com>
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Workflow+1: Steve Baker <sbaker@redhat.com>
+Code-Review+1: Rico Lin <rico.l@inwinstack.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 15 Aug 2016 21:28:55 +0000
+Reviewed-on: https://review.openstack.org/352632
+Project: openstack/deb-heat
+Branch: refs/heads/stable/mitaka
