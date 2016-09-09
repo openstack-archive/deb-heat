@@ -1,0 +1,12 @@
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Code-Review+2: Sergey Kraynev <skraynev@mirantis.com>
+Code-Review+1: Evgeny Sikachev <esikachev@mirantis.com>
+Code-Review+1: Alexandr Nagovitsyn <anagovitsyn@mirantis.com>
+Code-Review+1: Tetiana Lashchova <tlashchova@mirantis.com>
+Workflow+1: Sergey Kraynev <skraynev@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 26 Aug 2016 21:22:49 +0000
+Reviewed-on: https://review.openstack.org/360804
+Project: openstack/deb-heat
+Branch: refs/heads/master

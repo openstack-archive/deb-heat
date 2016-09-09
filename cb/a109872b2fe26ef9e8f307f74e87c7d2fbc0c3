@@ -1,0 +1,9 @@
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Code-Review+2: Ethan Lynn <xuanlangjian@gmail.com>
+Workflow+1: Ethan Lynn <xuanlangjian@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 22 Aug 2016 06:02:37 +0000
+Reviewed-on: https://review.openstack.org/357013
+Project: openstack/deb-heat
+Branch: refs/heads/master

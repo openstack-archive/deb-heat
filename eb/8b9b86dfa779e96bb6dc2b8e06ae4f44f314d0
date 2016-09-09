@@ -1,0 +1,9 @@
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Code-Review+2: Jason Dunsmore <jason.dunsmore@rackspace.com>
+Workflow+1: Jason Dunsmore <jason.dunsmore@rackspace.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 18 Aug 2016 17:01:30 +0000
+Reviewed-on: https://review.openstack.org/77687
+Project: openstack/deb-heat
+Branch: refs/heads/master

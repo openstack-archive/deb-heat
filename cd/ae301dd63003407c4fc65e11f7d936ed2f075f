@@ -1,0 +1,10 @@
+Code-Review+2: Sergey Kraynev <skraynev@mirantis.com>
+Code-Review+2: Oleksii Chuprykov <ochuprykov@mirantis.com>
+Code-Review+1: shizhihui <zhihui.shi@easystack.cn>
+Workflow+1: Sergey Kraynev <skraynev@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 06 Sep 2016 14:01:07 +0000
+Reviewed-on: https://review.openstack.org/366018
+Project: openstack/deb-heat
+Branch: refs/heads/master

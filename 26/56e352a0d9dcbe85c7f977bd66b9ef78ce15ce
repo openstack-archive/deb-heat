@@ -1,0 +1,10 @@
+Code-Review+1: Dmitriy Uvarenkov <duvarenkov@mirantis.com>
+Code-Review+2: Qiming Teng <tengqim@cn.ibm.com>
+Code-Review+2: Oleksii Chuprykov <ochuprykov@mirantis.com>
+Workflow+1: Oleksii Chuprykov <ochuprykov@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 31 Aug 2016 16:14:11 +0000
+Reviewed-on: https://review.openstack.org/360986
+Project: openstack/deb-heat
+Branch: refs/heads/master

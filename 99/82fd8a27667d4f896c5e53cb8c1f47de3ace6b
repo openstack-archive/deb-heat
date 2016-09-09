@@ -1,0 +1,10 @@
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Workflow+1: Peter Razumovsky <prazumovsky@mirantis.com>
+Code-Review+1: shizhihui <zhihui.shi@easystack.cn>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 06 Sep 2016 11:50:48 +0000
+Reviewed-on: https://review.openstack.org/364099
+Project: openstack/deb-heat
+Branch: refs/heads/master

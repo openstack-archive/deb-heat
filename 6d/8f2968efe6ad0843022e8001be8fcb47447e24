@@ -1,0 +1,11 @@
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Code-Review+1: Dmitriy Uvarenkov <duvarenkov@mirantis.com>
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Workflow+1: Peter Razumovsky <prazumovsky@mirantis.com>
+Code-Review+2: Ethan Lynn <xuanlangjian@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 24 Aug 2016 05:06:11 +0000
+Reviewed-on: https://review.openstack.org/349739
+Project: openstack/deb-heat
+Branch: refs/heads/master

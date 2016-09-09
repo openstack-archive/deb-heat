@@ -1,0 +1,10 @@
+Code-Review+2: Rabi Mishra <ramishra@redhat.com>
+Code-Review+2: Steven Hardy <shardy@redhat.com>
+Workflow+1: Steven Hardy <shardy@redhat.com>
+Code-Review+1: Michele Baldessari <michele@acksyn.org>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 26 Aug 2016 11:36:53 +0000
+Reviewed-on: https://review.openstack.org/360831
+Project: openstack/deb-heat
+Branch: refs/heads/master
