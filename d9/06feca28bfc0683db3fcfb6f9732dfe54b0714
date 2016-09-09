@@ -1,0 +1,17 @@
+Code-Review+2: Sergey Kraynev <skraynev@mirantis.com>
+Code-Review+1: Peter Razumovsky <prazumovsky@mirantis.com>
+Code-Review+1: Pavlo Shchelokovskyy <pshchelokovskyy@mirantis.com>
+Code-Review+1: Oleksii Chuprykov <ochuprykov@mirantis.com>
+Code-Review+1: Rabi Mishra <ramishra@redhat.com>
+Code-Review+1: Ethan Lynn <xuanlangjian@gmail.com>
+Code-Review+1: Jay Dobies <jason.dobies@redhat.com>
+Code-Review+1: Tetiana Lashchova <tlashchova@mirantis.com>
+Code-Review+1: Dmitriy Uvarenkov <duvarenkov@mirantis.com>
+Code-Review+2: Steven Hardy <shardy@redhat.com>
+Workflow+1: Steven Hardy <shardy@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 31 Mar 2016 15:46:46 +0000
+Reviewed-on: https://review.openstack.org/285502
+Project: openstack/deb-heat
+Branch: refs/heads/stable/liberty

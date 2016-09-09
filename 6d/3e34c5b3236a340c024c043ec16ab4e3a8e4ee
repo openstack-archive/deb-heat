@@ -1,0 +1,10 @@
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Code-Review+1: Rico Lin <rico.l@inwinstack.com>
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Workflow+1: Steve Baker <sbaker@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 05 Apr 2016 23:55:43 +0000
+Reviewed-on: https://review.openstack.org/288623
+Project: openstack/deb-heat
+Branch: refs/heads/stable/liberty

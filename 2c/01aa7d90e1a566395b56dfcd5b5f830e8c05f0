@@ -1,0 +1,8 @@
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Workflow+1: Steve Baker <sbaker@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Sun, 15 May 2016 23:05:22 +0000
+Reviewed-on: https://review.openstack.org/316495
+Project: openstack/deb-heat
+Branch: refs/heads/stable/liberty

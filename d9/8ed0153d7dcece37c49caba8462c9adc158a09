@@ -1,0 +1,9 @@
+Code-Review+2: Sergey Kraynev <skraynev@mirantis.com>
+Code-Review+2: Steven Hardy <shardy@redhat.com>
+Workflow+1: Steven Hardy <shardy@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 07 Jul 2016 10:36:45 +0000
+Reviewed-on: https://review.openstack.org/338656
+Project: openstack/deb-heat
+Branch: refs/heads/stable/liberty

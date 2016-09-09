@@ -1,0 +1,14 @@
+Code-Review+2: Steven Hardy <shardy@redhat.com>
+Code-Review+1: Rabi Mishra <ramishra@redhat.com>
+Code-Review+1: Dmitriy Uvarenkov <duvarenkov@mirantis.com>
+Code-Review+1: huangtianhua <huangtianhua@huawei.com>
+Code-Review+1: Anant Patil <anant.patil@hpe.com>
+Code-Review+1: Sirushti Murugesan <sirushtim@gmail.com>
+Code-Review+2: Sergey Kraynev <skraynev@mirantis.com>
+Workflow+1: Sergey Kraynev <skraynev@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 03 Mar 2016 14:43:40 +0000
+Reviewed-on: https://review.openstack.org/287173
+Project: openstack/deb-heat
+Branch: refs/heads/stable/liberty

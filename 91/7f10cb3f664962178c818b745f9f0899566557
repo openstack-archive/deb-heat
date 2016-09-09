@@ -1,0 +1,12 @@
+Code-Review+2: Sergey Kraynev <skraynev@mirantis.com>
+Code-Review+1: Anant Patil <anant.patil@hpe.com>
+Code-Review+1: Jay Dobies <jason.dobies@redhat.com>
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Workflow+1: Steve Baker <sbaker@redhat.com>
+Code-Review+1: melissaml <ma.lei@99cloud.net>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 05 Apr 2016 07:05:53 +0000
+Reviewed-on: https://review.openstack.org/298582
+Project: openstack/deb-heat
+Branch: refs/heads/stable/liberty
