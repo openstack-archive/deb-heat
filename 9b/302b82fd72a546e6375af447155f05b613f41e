@@ -1,0 +1,14 @@
+Code-Review+2: huangtianhua <huangtianhua@huawei.com>
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Code-Review+1: Jay Dobies <jason.dobies@redhat.com>
+Code-Review+1: Rabi Mishra <ramishra@redhat.com>
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Code-Review+2: Ethan Lynn <xuanlangjian@gmail.com>
+Workflow+1: Steve Baker <sbaker@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 12 Sep 2016 22:01:33 +0000
+Reviewed-on: https://review.openstack.org/329460
+Project: openstack/deb-heat
+Branch: refs/heads/master
