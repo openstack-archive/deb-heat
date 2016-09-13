@@ -1,0 +1,9 @@
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Code-Review+2: huangtianhua <huangtianhua@huawei.com>
+Workflow+1: huangtianhua <huangtianhua@huawei.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 13 Sep 2016 07:58:47 +0000
+Reviewed-on: https://review.openstack.org/369111
+Project: openstack/deb-heat
+Branch: refs/heads/master
