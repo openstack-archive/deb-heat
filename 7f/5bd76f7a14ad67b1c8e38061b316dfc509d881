@@ -1,0 +1,10 @@
+Code-Review+1: Anant Patil <anant.patil@hpe.com>
+Code-Review+2: Rabi Mishra <ramishra@redhat.com>
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Workflow+1: Peter Razumovsky <prazumovsky@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 16 Sep 2016 17:32:20 +0000
+Reviewed-on: https://review.openstack.org/370873
+Project: openstack/deb-heat
+Branch: refs/heads/master
