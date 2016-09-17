@@ -21,6 +21,7 @@ from heat.engine.resources.openstack.keystone import role_assignments
 from heat.engine import stack
 from heat.engine import template
 from heat.tests import common
+from heat.tests import fakes
 from heat.tests import generic_resource
 from heat.tests import utils
 
@@ -365,9 +366,10 @@ class KeystoneUserRoleAssignmentTest(common.HeatTestCase):
         self.test_role_assignment = self.stack['test_role_assignment']
 
         # Mock client
-        self.keystoneclient = mock.MagicMock()
-        self.test_role_assignment.client = mock.MagicMock()
-        self.test_role_assignment.client.return_value = self.keystoneclient
+        self.keystoneclient = mock.Mock()
+        self.patchobject(resource.Resource, 'client',
+                         return_value=fakes.FakeKeystoneClient(
+                             client=self.keystoneclient))
         self.roles = self.keystoneclient.roles
 
         # Mock client plugin
@@ -458,6 +460,12 @@ class KeystoneUserRoleAssignmentTest(common.HeatTestCase):
             user='user_1',
             project='project_1')
 
+    def test_user_role_assignment_delete_user_not_found(self):
+        self.keystone_client_plugin.get_user_id.side_effect = [
+            exception.EntityNotFound]
+        self.assertIsNone(self.test_role_assignment.handle_delete())
+        self.roles.revoke.assert_not_called()
+
 
 class KeystoneGroupRoleAssignmentTest(common.HeatTestCase):
 
@@ -478,9 +486,10 @@ class KeystoneGroupRoleAssignmentTest(common.HeatTestCase):
         self.test_role_assignment = self.stack['test_role_assignment']
 
         # Mock client
-        self.keystoneclient = mock.MagicMock()
-        self.test_role_assignment.client = mock.MagicMock()
-        self.test_role_assignment.client.return_value = self.keystoneclient
+        self.keystoneclient = mock.Mock()
+        self.patchobject(resource.Resource, 'client',
+                         return_value=fakes.FakeKeystoneClient(
+                             client=self.keystoneclient))
         self.roles = self.keystoneclient.roles
 
         # Mock client plugin
@@ -570,3 +579,9 @@ class KeystoneGroupRoleAssignmentTest(common.HeatTestCase):
             role='role_1',
             group='group_1',
             project='project_1')
+
+    def test_group_role_assignment_delete_group_not_found(self):
+        self.keystone_client_plugin.get_group_id.side_effect = [
+            exception.EntityNotFound]
+        self.assertIsNone(self.test_role_assignment.handle_delete())
+        self.roles.revoke.assert_not_called()

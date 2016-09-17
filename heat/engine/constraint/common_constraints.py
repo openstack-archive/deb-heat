@@ -21,6 +21,7 @@ from oslo_utils import netutils
 from oslo_utils import timeutils
 
 from heat.common.i18n import _
+from heat.common import netutils as heat_netutils
 from heat.engine import constraints
 
 
@@ -32,16 +33,69 @@ class TestConstraintDelay(constraints.BaseCustomConstraint):
 
 class IPConstraint(constraints.BaseCustomConstraint):
 
-    def validate(self, value, context):
+    def validate(self, value, context, template=None):
         self._error_message = 'Invalid IP address'
         return netutils.is_valid_ip(value)
 
 
 class MACConstraint(constraints.BaseCustomConstraint):
 
-    def validate(self, value, context):
+    def validate(self, value, context, template=None):
         self._error_message = 'Invalid MAC address.'
         return netaddr.valid_mac(value)
+
+
+class DNSNameConstraint(constraints.BaseCustomConstraint):
+
+    def validate(self, value, context):
+        try:
+            heat_netutils.validate_dns_format(value)
+        except ValueError as ex:
+            self._error_message = ("'%(value)s' not in valid format."
+                                   " Reason: %(reason)s") % {
+                                       'value': value,
+                                       'reason': six.text_type(ex)}
+            return False
+        return True
+
+
+class RelativeDNSNameConstraint(DNSNameConstraint):
+
+    def validate(self, value, context):
+        if not value:
+            return True
+        if value.endswith('.'):
+            self._error_message = _("'%s' is a FQDN. It should be a "
+                                    "relative domain name.") % value
+            return False
+
+        length = len(value)
+        if length > heat_netutils.FQDN_MAX_LEN - 3:
+            self._error_message = _("'%(value)s' contains '%(length)s' "
+                                    "characters. Adding a domain name will "
+                                    "cause it to exceed the maximum length "
+                                    "of a FQDN of '%(max_len)s'.") % {
+                                        "value": value,
+                                        "length": length,
+                                        "max_len": heat_netutils.FQDN_MAX_LEN}
+            return False
+
+        return super(RelativeDNSNameConstraint, self).validate(value, context)
+
+
+class DNSDomainConstraint(DNSNameConstraint):
+
+    def validate(self, value, context):
+        if not value:
+            return True
+
+        if not super(DNSDomainConstraint, self).validate(value, context):
+            return False
+        if not value.endswith('.'):
+            self._error_message = ("'%s' must end with '.'.") % value
+            return False
+
+        return True
 
 
 class CIDRConstraint(constraints.BaseCustomConstraint):
@@ -53,7 +107,7 @@ class CIDRConstraint(constraints.BaseCustomConstraint):
             return False
         return True
 
-    def validate(self, value, context):
+    def validate(self, value, context, template=None):
         try:
             netaddr.IPNetwork(value)
             return self._validate_whitespace(value)
@@ -62,9 +116,9 @@ class CIDRConstraint(constraints.BaseCustomConstraint):
             return False
 
 
-class ISO8601Constraint(object):
+class ISO8601Constraint(constraints.BaseCustomConstraint):
 
-    def validate(self, value, context):
+    def validate(self, value, context, template=None):
         try:
             timeutils.parse_isotime(value)
         except Exception:
@@ -75,7 +129,7 @@ class ISO8601Constraint(object):
 
 class CRONExpressionConstraint(constraints.BaseCustomConstraint):
 
-    def validate(self, value, context):
+    def validate(self, value, context, template=None):
         if not value:
             return True
         try:
@@ -89,7 +143,7 @@ class CRONExpressionConstraint(constraints.BaseCustomConstraint):
 
 class TimezoneConstraint(constraints.BaseCustomConstraint):
 
-    def validate(self, value, context):
+    def validate(self, value, context, template=None):
         if not value:
             return True
         try:
@@ -98,4 +152,22 @@ class TimezoneConstraint(constraints.BaseCustomConstraint):
         except Exception as ex:
             self._error_message = _(
                 'Invalid timezone: %s') % six.text_type(ex)
+        return False
+
+
+class ExpirationConstraint(constraints.BaseCustomConstraint):
+
+    def validate(self, value, context):
+        if not value:
+            return True
+        try:
+            expiration_tz = timeutils.parse_isotime(value.strip())
+            expiration = timeutils.normalize_time(expiration_tz)
+            if expiration > timeutils.utcnow():
+                return True
+            raise ValueError(_('Expiration time is out of date.'))
+        except Exception as ex:
+            self._error_message = (_(
+                'Expiration {0} is invalid: {1}').format(value,
+                                                         six.text_type(ex)))
         return False

@@ -18,6 +18,8 @@ import weakref
 
 import six
 
+from heat.common import exception
+
 
 @six.add_metaclass(abc.ABCMeta)
 class Function(object):
@@ -82,17 +84,18 @@ class Function(object):
         """
         return dict, ([(self.fn_name, self.args)],)
 
+    def _repr_result(self):
+        try:
+            return repr(self.result())
+        except (TypeError, ValueError):
+            return '???'
+
     def __repr__(self):
         """Return a string representation of the function.
 
         The representation includes the function name, arguments and result
         (if available), as well as the name of the function class.
         """
-        try:
-            result = repr(self.result())
-        except (TypeError, ValueError):
-            result = '???'
-
         fntype = type(self)
         classname = '.'.join(filter(None,
                                     (getattr(fntype,
@@ -101,7 +104,7 @@ class Function(object):
                                                               '__name__'))))
         return '<%s {%s: %r} -> %s>' % (classname,
                                         self.fn_name, self.args,
-                                        result)
+                                        self._repr_result())
 
     def __eq__(self, other):
         """Compare the result of this function for equality."""
@@ -126,9 +129,55 @@ class Function(object):
     __hash__ = None
 
 
+@six.add_metaclass(abc.ABCMeta)
+class Macro(Function):
+    """Abstract base class for template macros.
+
+    A macro differs from a function in that it controls how the template is
+    parsed. As such, it operates on the syntax tree itself, not on the parsed
+    output.
+    """
+    def __init__(self, stack, fn_name, raw_args, parse_func, template):
+        """Initialise with the argument syntax tree and parser function."""
+        super(Macro, self).__init__(stack, fn_name, raw_args)
+        self.template = template
+        self.parsed = self.parse_args(parse_func)
+
+    @abc.abstractmethod
+    def parse_args(self, parse_func):
+        """Parse the macro using the supplied parsing function.
+
+        Macro subclasses should override this method to control parsing of
+        the arguments.
+        """
+        return parse_func(self.args)
+
+    def validate(self):
+        """Validate arguments without resolving the result."""
+        validate(self.parsed)
+
+    def result(self):
+        """Return the resolved result of the macro contents."""
+        return resolve(self.parsed)
+
+    def dependencies(self, path):
+        return dependencies(self.parsed, '.'.join([path, self.fn_name]))
+
+    def dep_attrs(self, resource_name):
+        """Return the attributes of the specified resource that are referenced.
+
+        Return an iterator over any attributes of the specified resource that
+        this function references.
+        """
+        return dep_attrs(self.parsed, resource_name)
+
+    def _repr_result(self):
+        return repr(self.parsed)
+
+
 def resolve(snippet):
-    while isinstance(snippet, Function):
-        snippet = snippet.result()
+    if isinstance(snippet, Function):
+        return snippet.result()
 
     if isinstance(snippet, collections.Mapping):
         return dict((k, resolve(v)) for k, v in snippet.items())
@@ -203,3 +252,17 @@ def dep_attrs(snippet, resource_name):
         attrs = (dep_attrs(value, resource_name) for value in snippet)
         return itertools.chain.from_iterable(attrs)
     return []
+
+
+class Invalid(Function):
+    """A function for checking condition functions and to force failures.
+
+    This function is used to force failures for functions that are not
+    supported in condition definition.
+    """
+
+    def __init__(self, stack, fn_name, args):
+        raise exception.InvalidConditionFunction(func=fn_name)
+
+    def result(self):
+        return super(Invalid, self).result()

@@ -62,6 +62,59 @@ class GenericResource(resource.Resource):
                     self.type())
 
 
+class CancellableResource(GenericResource):
+    def check_create_complete(self, cookie):
+        return True
+
+    def handle_create_cancel(self, cookie):
+        LOG.warning(_LW('Cancelling create generic resource (Type "%s")'),
+                    self.type())
+
+    def check_update_complete(self, cookie):
+        return True
+
+    def handle_update_cancel(self, cookie):
+        LOG.warning(_LW('Cancelling update generic resource (Type "%s")'),
+                    self.type())
+
+
+class MultiStepResource(GenericResource):
+    properties_schema = {
+        'create_steps': properties.Schema(properties.Schema.INTEGER,
+                                          default=2),
+        'update_steps': properties.Schema(properties.Schema.INTEGER,
+                                          default=2, update_allowed=True),
+        'delete_steps': properties.Schema(properties.Schema.INTEGER,
+                                          default=2, update_allowed=True),
+    }
+
+    def handle_create(self):
+        super(MultiStepResource, self).handle_create()
+        return [None] * self.properties['create_steps']
+
+    def check_create_complete(self, cookie):
+        cookie.pop()
+        return not cookie
+
+    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
+        super(MultiStepResource, self).handle_update(json_snippet,
+                                                     tmpl_diff,
+                                                     prop_diff)
+        return [None] * self.properties['update_steps']
+
+    def check_update_complete(self, cookie):
+        cookie.pop()
+        return not cookie
+
+    def handle_delete(self):
+        super(MultiStepResource, self).handle_delete()
+        return [None] * self.properties['delete_steps']
+
+    def check_delete_complete(self, cookie):
+        cookie.pop()
+        return not cookie
+
+
 class ResWithShowAttr(GenericResource):
     def _show_resource(self):
         return {'foo': self.name,

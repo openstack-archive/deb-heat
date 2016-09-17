@@ -344,10 +344,17 @@ class KeystoneUserRoleAssignment(resource.Resource,
     def __init__(self, *args, **kwargs):
         super(KeystoneUserRoleAssignment, self).__init__(*args, **kwargs)
 
+    def client(self):
+        return super(KeystoneUserRoleAssignment, self).client().client
+
     @property
     def user_id(self):
-        return (self.client_plugin().get_user_id(
-                self.properties.get(self.USER)))
+        try:
+            return self.client_plugin().get_user_id(
+                self.properties.get(self.USER))
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
+            return None
 
     def handle_create(self):
         self.create_assignment(user_id=self.user_id)
@@ -398,10 +405,17 @@ class KeystoneGroupRoleAssignment(resource.Resource,
     def __init__(self, *args, **kwargs):
         super(KeystoneGroupRoleAssignment, self).__init__(*args, **kwargs)
 
+    def client(self):
+        return super(KeystoneGroupRoleAssignment, self).client().client
+
     @property
     def group_id(self):
-        return (self.client_plugin().get_group_id(
-                self.properties.get(self.GROUP)))
+        try:
+            return self.client_plugin().get_group_id(
+                self.properties.get(self.GROUP))
+        except Exception as ex:
+            self.client_plugin().ignore_not_found(ex)
+            return None
 
     def handle_create(self):
         self.create_assignment(group_id=self.group_id)

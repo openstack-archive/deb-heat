@@ -20,7 +20,6 @@ Unit Tests for heat.rpc.client
 import copy
 
 import mock
-from mox import stubout
 from oslo_messaging._drivers import common as rpc_common
 from oslo_utils import reflection
 
@@ -35,7 +34,6 @@ class EngineRpcAPITestCase(common.HeatTestCase):
 
     def setUp(self):
         super(EngineRpcAPITestCase, self).setUp()
-        self.stubs = stubout.StubOutForTesting()
         self.identity = dict(identifier.HeatIdentifier('engine_test_tenant',
                                                        '6',
                                                        'wordpress'))
@@ -112,7 +110,6 @@ class EngineRpcAPITestCase(common.HeatTestCase):
             'marker': mock.ANY,
             'sort_dir': mock.ANY,
             'filters': mock.ANY,
-            'tenant_safe': mock.ANY,
             'show_deleted': mock.ANY,
             'show_nested': mock.ANY,
             'show_hidden': mock.ANY,
@@ -126,7 +123,6 @@ class EngineRpcAPITestCase(common.HeatTestCase):
     def test_count_stacks(self):
         default_args = {
             'filters': mock.ANY,
-            'tenant_safe': mock.ANY,
             'show_deleted': mock.ANY,
             'show_nested': mock.ANY,
             'show_hidden': mock.ANY,
@@ -306,8 +302,7 @@ class EngineRpcAPITestCase(common.HeatTestCase):
 
     def test_list_software_configs(self):
         self._test_engine_api('list_software_configs', 'call',
-                              limit=mock.ANY, marker=mock.ANY,
-                              tenant_safe=mock.ANY)
+                              limit=mock.ANY, marker=mock.ANY)
 
     def test_show_software_config(self):
         self._test_engine_api('show_software_config', 'call',

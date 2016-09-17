@@ -193,6 +193,8 @@ class ServersTest(common.HeatTestCase):
         self.limits.absolute = self._limits_absolute()
         self.mock_flavor = mock.Mock(ram=4, disk=4)
         self.mock_image = mock.Mock(min_ram=1, min_disk=1, status='active')
+        self.patchobject(resource.Resource, 'is_using_neutron',
+                         return_value=True)
 
         def flavor_side_effect(*args):
             return 2 if args[0] == 'm1.small' else 1
@@ -981,7 +983,8 @@ class ServersTest(common.HeatTestCase):
         stack_name = 'test_server_w_stack_sched_hints_s'
         server_name = 'server_w_stack_sched_hints'
         (t, stack) = self._get_test_template(stack_name, server_name)
-
+        self.patchobject(stack, 'path_in_stack',
+                         return_value=[('parent', stack.name)])
         resource_defns = t.resource_definitions(stack)
         server = servers.Server(server_name,
                                 resource_defns['WebServer'], stack)
@@ -997,7 +1000,8 @@ class ServersTest(common.HeatTestCase):
         scheduler_hints = {shm.HEAT_ROOT_STACK_ID: stack.root_stack_id(),
                            shm.HEAT_STACK_ID: stack.id,
                            shm.HEAT_STACK_NAME: stack.name,
-                           shm.HEAT_PATH_IN_STACK: [(None, stack.name)],
+                           shm.HEAT_PATH_IN_STACK: [','.join(['parent',
+                                                             stack.name])],
                            shm.HEAT_RESOURCE_NAME: server.name,
                            shm.HEAT_RESOURCE_UUID: server.uuid}
 
@@ -1061,6 +1065,10 @@ class ServersTest(common.HeatTestCase):
         self.assertEqual('Neither image nor bootable volume is specified for '
                          'instance server_with_bootable_volume',
                          six.text_type(ex))
+
+        web_server['Properties']['image'] = ''
+        server = create_server('vdb')
+        self.assertIsNone(server.validate())
 
     def test_server_validate_with_nova_keypair_resource(self):
         stack_name = 'srv_val_test'
@@ -1357,7 +1365,7 @@ class ServersTest(common.HeatTestCase):
         (tmpl, stack) = self._setup_test_stack(stack_name)
 
         tmpl['Resources']['WebServer']['Properties']['networks'] = [
-            {'port': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}]
+            {'port': ''}]
         tmpl['Resources']['WebServer']['Properties'][
             'security_groups'] = ['my_security_group']
         self.patchobject(nova.NovaClientPlugin, '_create',
@@ -1604,7 +1612,7 @@ class ServersTest(common.HeatTestCase):
             },
             'deployments': []}
         md['os-collect-config']['request']['metadata_url'] = 'the_url'
-        self.assertDictEqual(expected_md, server.metadata_get())
+        self.assertEqual(expected_md, server.metadata_get())
 
     def test_server_update_nova_metadata(self):
         return_server = self.fc.servers.list()[1]
@@ -1842,7 +1850,7 @@ class ServersTest(common.HeatTestCase):
         update_props['flavor'] = 'm1.small'
         update_template = server.t.freeze(properties=update_props)
         updater = scheduler.TaskRunner(server.update, update_template)
-        self.assertRaises(exception.UpdateReplace, updater)
+        self.assertRaises(resource.UpdateReplace, updater)
 
     @mock.patch.object(servers.Server, 'prepare_for_replace')
     def test_server_update_server_flavor_policy_update(self, mock_replace):
@@ -1860,7 +1868,7 @@ class ServersTest(common.HeatTestCase):
         update_props['flavor'] = 'm1.small'
         update_template = server.t.freeze(properties=update_props)
         updater = scheduler.TaskRunner(server.update, update_template)
-        self.assertRaises(exception.UpdateReplace, updater)
+        self.assertRaises(resource.UpdateReplace, updater)
 
     @mock.patch.object(servers.Server, 'prepare_for_replace')
     @mock.patch.object(nova.NovaClientPlugin, '_create')
@@ -1877,7 +1885,7 @@ class ServersTest(common.HeatTestCase):
         update_template = server.t.freeze(properties=update_props)
         server.action = server.CREATE
         updater = scheduler.TaskRunner(server.update, update_template)
-        self.assertRaises(exception.UpdateReplace, updater)
+        self.assertRaises(resource.UpdateReplace, updater)
 
     @mock.patch.object(servers.Server, 'prepare_for_replace')
     @mock.patch.object(nova.NovaClientPlugin, '_create')
@@ -1915,7 +1923,7 @@ class ServersTest(common.HeatTestCase):
         update_props['image'] = image_id
         update_template = server.t.freeze(properties=update_props)
         updater = scheduler.TaskRunner(server.update, update_template)
-        self.assertRaises(exception.UpdateReplace, updater)
+        self.assertRaises(resource.UpdateReplace, updater)
 
     def _test_server_update_image_rebuild(self, status, policy='REBUILD',
                                           password=None):
@@ -2034,7 +2042,7 @@ class ServersTest(common.HeatTestCase):
         update_props['image_update_policy'] = 'REPLACE'
         update_template = server.t.freeze(properties=update_props)
         updater = scheduler.TaskRunner(server.update, update_template)
-        self.assertRaises(exception.UpdateReplace, updater)
+        self.assertRaises(resource.UpdateReplace, updater)
 
     def test_server_status_build(self):
         return_server = self.fc.servers.list()[0]
@@ -2674,6 +2682,27 @@ class ServersTest(common.HeatTestCase):
         (tmpl, stack) = self._setup_test_stack(stack_name)
 
         bdm_v2 = [{'volume_id': '1'}]
+        wsp = tmpl.t['Resources']['WebServer']['Properties']
+        wsp['block_device_mapping_v2'] = bdm_v2
+
+        resource_defns = tmpl.resource_definitions(stack)
+        server = servers.Server('server_create_image_err',
+                                resource_defns['WebServer'], stack)
+        self.patchobject(nova.NovaClientPlugin, 'get_flavor',
+                         return_value=self.mock_flavor)
+        self.patchobject(glance.GlanceClientPlugin, 'get_image',
+                         return_value=self.mock_image)
+        self.stub_VolumeConstraint_validate()
+        self.assertIsNone(server.validate())
+
+    @mock.patch.object(nova.NovaClientPlugin, '_create')
+    def test_validate_bdm_v2_with_unresolved_volume(self, mock_create):
+        stack_name = 'v2_properties'
+        (tmpl, stack) = self._setup_test_stack(stack_name)
+        del tmpl['Resources']['WebServer']['Properties']['image']
+
+        # empty string indicates that volume is unresolved
+        bdm_v2 = [{'volume_id': ''}]
         wsp = tmpl.t['Resources']['WebServer']['Properties']
         wsp['block_device_mapping_v2'] = bdm_v2
 
@@ -3383,7 +3412,7 @@ class ServersTest(common.HeatTestCase):
         update_props['image_update_policy'] = 'REPLACE'
         update_template = server.t.freeze(properties=update_props)
         updater = scheduler.TaskRunner(server.update, update_template)
-        self.assertRaises(exception.UpdateReplace, updater)
+        self.assertRaises(resource.UpdateReplace, updater)
 
     def test_server_properties_validation_create_and_update_fail(self):
         return_server = self.fc.servers.list()[1]
@@ -3710,6 +3739,8 @@ class ServerInternalPortTest(common.HeatTestCase):
                                             'delete_port')
         self.port_show = self.patchobject(neutronclient.Client,
                                           'show_port')
+        self.patchobject(resource.Resource, 'is_using_neutron',
+                         return_value=True)
 
         def flavor_side_effect(*args):
             return 2 if args[0] == 'm1.small' else 1
@@ -3875,6 +3906,7 @@ class ServerInternalPortTest(common.HeatTestCase):
         network = {'network': '4321', 'subnet': '1234',
                    'fixed_ip': '127.0.0.1',
                    'port_extra_properties': {
+                       'value_specs': {},
                        'mac_address': '00:00:00:00:00:00',
                        'allowed_address_pairs': [
                            {'ip_address': '127.0.0.1',

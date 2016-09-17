@@ -396,7 +396,7 @@ class StackUpdateTest(common.HeatTestCase):
 
         def check_and_raise(*args):
             self.assertEqual('abc', self.stack['AResource'].properties['Foo'])
-            raise exception.UpdateReplace
+            raise resource.UpdateReplace
 
         mock_upd = self.patchobject(generic_rsrc.ResourceWithProps,
                                     'update_template_diff',
@@ -854,20 +854,18 @@ class StackUpdateTest(common.HeatTestCase):
         tmpl2 = {'HeatTemplateFormatVersion': '2012-12-12',
                  'Resources': {
                      'AResource': {'Type': 'GenericResourceType'},
-                     'BResource': {'Type': 'GenericResourceType'}}}
+                     'BResource': {'Type': 'MultiStepResourceType'}}}
         updated_stack = stack.Stack(self.ctx, 'updated_stack',
                                     template.Template(tmpl2),
                                     disable_rollback=disable_rollback)
 
-        evt_mock = mock.MagicMock()
-        evt_mock.ready.return_value = True
-        evt_mock.wait.return_value = cancel_message
+        msgq_mock = mock.MagicMock()
+        msgq_mock.get_nowait.return_value = cancel_message
 
-        self.stack.update(updated_stack, event=evt_mock)
+        self.stack.update(updated_stack, msg_queue=msgq_mock)
 
         self.assertEqual(state, self.stack.state)
-        evt_mock.ready.assert_called_once_with()
-        evt_mock.wait.assert_called_once_with()
+        msgq_mock.get_nowait.assert_called_once_with()
 
     def test_update_force_cancel_no_rollback(self):
         self._update_force_cancel(
@@ -1064,16 +1062,14 @@ class StackUpdateTest(common.HeatTestCase):
         updated_stack = stack.Stack(self.ctx, 'updated_stack',
                                     template.Template(tmpl2),
                                     disable_rollback=False)
-        evt_mock = mock.MagicMock()
-        evt_mock.ready.return_value = True
-        evt_mock.wait.return_value = 'cancel_with_rollback'
+        msgq_mock = mock.MagicMock()
+        msgq_mock.get_nowait.return_value = 'cancel_with_rollback'
 
-        self.stack.update(updated_stack, event=evt_mock)
+        self.stack.update(updated_stack, msg_queue=msgq_mock)
         self.assertEqual((stack.Stack.ROLLBACK, stack.Stack.COMPLETE),
                          self.stack.state)
         self.assertEqual('abc', self.stack['AResource'].properties['Foo'])
-        evt_mock.ready.assert_called_once_with()
-        evt_mock.wait.assert_called_once_with()
+        msgq_mock.get_nowait.assert_called_once_with()
 
     def test_update_rollback_fail(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
@@ -1983,3 +1979,59 @@ class StackUpdateTest(common.HeatTestCase):
         # Bres in backup stack should have empty data.
         self.assertEqual({}, backup['Bres'].data())
         self.assertEqual({'test': '42'}, self.stack['Bres'].data())
+
+    def test_update_failed_with_new_condition(self):
+        create_a_res = {'equals': [{'get_param': 'create_a_res'}, 'yes']}
+        create_b_res = {'equals': [{'get_param': 'create_b_res'}, 'yes']}
+        tmpl = {
+            'heat_template_version': '2016-10-14',
+            'parameters': {
+                'create_a_res': {
+                    'type': 'string',
+                    'default': 'yes'
+                }
+            },
+            'conditions': {
+                'create_a': create_a_res
+            },
+            'resources': {
+                'Ares': {'type': 'GenericResourceType',
+                         'condition': 'create_a'}
+            }
+        }
+
+        test_stack = stack.Stack(self.ctx,
+                                 'test_update_failed_with_new_condition',
+                                 template.Template(tmpl))
+        test_stack.store()
+        test_stack.create()
+        self.assertEqual((stack.Stack.CREATE, stack.Stack.COMPLETE),
+                         test_stack.state)
+        self.assertIn('Ares', test_stack)
+
+        update_tmpl = copy.deepcopy(tmpl)
+        update_tmpl['conditions']['create_b'] = create_b_res
+        update_tmpl['parameters']['create_b_res'] = {
+            'type': 'string',
+            'default': 'yes'
+        }
+        update_tmpl['resources']['Bres'] = {
+            'type': 'OS::Heat::TestResource',
+            'properties': {
+                'value': 'res_b',
+                'fail': True
+            }
+        }
+
+        stack_with_new_resource = stack.Stack(
+            self.ctx,
+            'test_update_with_new_res_cd',
+            template.Template(update_tmpl))
+        test_stack.update(stack_with_new_resource)
+        self.assertEqual((stack.Stack.UPDATE, stack.Stack.FAILED),
+                         test_stack.state)
+        self.assertIn('Bres', test_stack)
+        self.assertEqual((resource.Resource.CREATE, resource.Resource.FAILED),
+                         test_stack['Bres'].state)
+        self.assertIn('create_b', test_stack.t.t['conditions'])
+        self.assertIn('create_b_res', test_stack.t.t['parameters'])

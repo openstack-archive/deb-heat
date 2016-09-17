@@ -27,6 +27,7 @@ from heat.engine.clients.os import neutron
 from heat.engine.clients.os import nova
 from heat.engine.clients import progress
 from heat.engine import environment
+from heat.engine import resource
 from heat.engine.resources.aws.ec2 import instance as instances
 from heat.engine.resources import scheduler_hints as sh
 from heat.engine import scheduler
@@ -399,6 +400,19 @@ class InstancesTest(common.HeatTestCase):
         self.assertEqual(expected_az, actual_az)
         self.m.VerifyAll()
 
+    def test_instance_create_resolve_az_attribute_nova_az_ext_disabled(self):
+        return_server = self.fc.servers.list()[1]
+        delattr(return_server, 'OS-EXT-AZ:availability_zone')
+        instance = self._setup_test_instance(return_server,
+                                             'create_resolve_az_attribute')
+        self.patchobject(self.fc.servers, 'get',
+                         return_value=return_server)
+        self.m.ReplayAll()
+        scheduler.TaskRunner(instance.create)()
+
+        self.assertIsNone(instance._availability_zone())
+        self.m.VerifyAll()
+
     def test_instance_create_image_name_err(self):
         stack_name = 'test_instance_create_image_name_err_stack'
         (tmpl, stack) = self._setup_test_stack(stack_name)
@@ -615,7 +629,7 @@ class InstancesTest(common.HeatTestCase):
             scheduler_hints={shm.HEAT_ROOT_STACK_ID: stack.root_stack_id(),
                              shm.HEAT_STACK_ID: stack.id,
                              shm.HEAT_STACK_NAME: stack.name,
-                             shm.HEAT_PATH_IN_STACK: [(None, stack.name)],
+                             shm.HEAT_PATH_IN_STACK: [stack.name],
                              shm.HEAT_RESOURCE_NAME: instance.name,
                              shm.HEAT_RESOURCE_UUID: instance.uuid,
                              'foo': ['spam', 'ham', 'baz'], 'bar': 'eggs'},
@@ -859,9 +873,8 @@ class InstancesTest(common.HeatTestCase):
         before_props['NetworkInterfaces'] = old_interfaces
         update_props = self.instance_props.copy()
         update_props['NetworkInterfaces'] = new_interfaces
-        update_template = instance.t.freeze(properties=update_props)
-        instance.t = instance.t.freeze(properties=before_props)
-        instance.reparse()
+        after = instance.t.freeze(properties=update_props)
+        before = instance.t.freeze(properties=before_props)
 
         self.m.StubOutWithMock(self.fc.servers, 'get')
         self.fc.servers.get('1234').MultipleTimes().AndReturn(return_server)
@@ -873,7 +886,7 @@ class InstancesTest(common.HeatTestCase):
                                        None, None).AndReturn(None)
         self.m.ReplayAll()
 
-        scheduler.TaskRunner(instance.update, update_template)()
+        scheduler.TaskRunner(instance.update, after, before)()
         self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
         self.m.VerifyAll()
 
@@ -902,9 +915,8 @@ class InstancesTest(common.HeatTestCase):
         before_props['NetworkInterfaces'] = old_interfaces
         update_props = self.instance_props.copy()
         update_props['NetworkInterfaces'] = new_interfaces
-        update_template = instance.t.freeze(properties=update_props)
-        instance.t = instance.t.freeze(properties=before_props)
-        instance.reparse()
+        after = instance.t.freeze(properties=update_props)
+        before = instance.t.freeze(properties=before_props)
 
         self.m.StubOutWithMock(self.fc.servers, 'get')
         self.fc.servers.get('1234').MultipleTimes().AndReturn(return_server)
@@ -914,7 +926,7 @@ class InstancesTest(common.HeatTestCase):
 
         self.m.ReplayAll()
 
-        scheduler.TaskRunner(instance.update, update_template)()
+        scheduler.TaskRunner(instance.update, after, before)()
         self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
 
     def test_instance_update_network_interfaces_new_include_old(self):
@@ -942,9 +954,8 @@ class InstancesTest(common.HeatTestCase):
         before_props['NetworkInterfaces'] = old_interfaces
         update_props = self.instance_props.copy()
         update_props['NetworkInterfaces'] = new_interfaces
-        update_template = instance.t.freeze(properties=update_props)
-        instance.t = instance.t.freeze(properties=before_props)
-        instance.reparse()
+        after = instance.t.freeze(properties=update_props)
+        before = instance.t.freeze(properties=before_props)
 
         self.m.StubOutWithMock(self.fc.servers, 'get')
         self.fc.servers.get('1234').MultipleTimes().AndReturn(return_server)
@@ -954,7 +965,7 @@ class InstancesTest(common.HeatTestCase):
 
         self.m.ReplayAll()
 
-        scheduler.TaskRunner(instance.update, update_template)()
+        scheduler.TaskRunner(instance.update, after, before)()
         self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
 
     def test_instance_update_network_interfaces_new_old_all_different(self):
@@ -982,9 +993,8 @@ class InstancesTest(common.HeatTestCase):
         before_props['NetworkInterfaces'] = old_interfaces
         update_props = self.instance_props.copy()
         update_props['NetworkInterfaces'] = new_interfaces
-        update_template = instance.t.freeze(properties=update_props)
-        instance.t = instance.t.freeze(properties=before_props)
-        instance.reparse()
+        after = instance.t.freeze(properties=update_props)
+        before = instance.t.freeze(properties=before_props)
 
         self.m.StubOutWithMock(self.fc.servers, 'get')
         self.fc.servers.get('1234').MultipleTimes().AndReturn(return_server)
@@ -999,7 +1009,7 @@ class InstancesTest(common.HeatTestCase):
 
         self.m.ReplayAll()
 
-        scheduler.TaskRunner(instance.update, update_template)()
+        scheduler.TaskRunner(instance.update, after, before)()
         self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
 
     def test_instance_update_network_interfaces_no_old(self):
@@ -1096,13 +1106,15 @@ class InstancesTest(common.HeatTestCase):
         before_props = self.instance_props.copy()
         if old_interfaces is not None:
             before_props['NetworkInterfaces'] = old_interfaces
-        update_props = self.instance_props.copy()
+        update_props = copy.deepcopy(before_props)
+
         if new_interfaces is not None:
             update_props['NetworkInterfaces'] = new_interfaces
         update_props['SubnetId'] = subnet_id
 
-        update_template = instance.t.freeze(properties=update_props)
-        instance.t = instance.t.freeze(properties=before_props)
+        after = instance.t.freeze(properties=update_props)
+        before = instance.t.freeze(properties=before_props)
+
         instance.reparse()
 
         self.m.StubOutWithMock(self.fc.servers, 'get')
@@ -1128,7 +1140,7 @@ class InstancesTest(common.HeatTestCase):
 
         self.m.ReplayAll()
 
-        scheduler.TaskRunner(instance.update, update_template)()
+        scheduler.TaskRunner(instance.update, after, before)()
         self.assertEqual((instance.UPDATE, instance.COMPLETE), instance.state)
         self.m.VerifyAll()
 
@@ -1166,7 +1178,7 @@ class InstancesTest(common.HeatTestCase):
         update_props['ImageId'] = 'mustreplace'
         update_template = instance.t.freeze(properties=update_props)
         updater = scheduler.TaskRunner(instance.update, update_template)
-        self.assertRaises(exception.UpdateReplace, updater)
+        self.assertRaises(resource.UpdateReplace, updater)
 
         self.m.VerifyAll()
 

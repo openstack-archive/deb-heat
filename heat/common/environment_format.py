@@ -1,4 +1,3 @@
-#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -18,10 +17,12 @@ from heat.common import template_format
 
 SECTIONS = (
     PARAMETERS, RESOURCE_REGISTRY, PARAMETER_DEFAULTS,
-    ENCRYPTED_PARAM_NAMES, EVENT_SINKS
+    ENCRYPTED_PARAM_NAMES, EVENT_SINKS,
+    PARAMETER_MERGE_STRATEGIES,
 ) = (
     'parameters', 'resource_registry', 'parameter_defaults',
-    'encrypted_param_names', 'event_sinks'
+    'encrypted_param_names', 'event_sinks',
+    'parameter_merge_strategies',
 )
 
 
@@ -48,9 +49,15 @@ def parse(env_str):
     if not isinstance(env, dict):
         raise ValueError(_('The environment is not a valid '
                            'YAML mapping data type.'))
+    return validate(env)
+
+
+def validate(env):
     for param in env:
         if param not in SECTIONS:
             raise ValueError(_('environment has wrong section "%s"') % param)
+        if env[param] is None:
+            raise ValueError(_('environment has empty section "%s"') % param)
 
     return env
 
@@ -58,7 +65,7 @@ def parse(env_str):
 def default_for_missing(env):
     """Checks a parsed environment for missing sections."""
     for param in SECTIONS:
-        if param not in env:
+        if param not in env and param != PARAMETER_MERGE_STRATEGIES:
             if param in (ENCRYPTED_PARAM_NAMES, EVENT_SINKS):
                 env[param] = []
             else:

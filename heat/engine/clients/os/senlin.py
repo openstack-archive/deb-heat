@@ -32,9 +32,10 @@ class SenlinClientPlugin(client_plugin.ClientPlugin):
         args = {
             'auth_url': con.auth_url,
             'project_id': con.tenant_id,
-            'token': self.auth_token,
+            'token': con.keystone_session.get_token(),
             'user_id': con.user_id,
             'auth_plugin': 'token',
+
         }
         return client.Client(self.VERSION, **args)
 
@@ -42,6 +43,17 @@ class SenlinClientPlugin(client_plugin.ClientPlugin):
         spec = {'properties': spec_props}
         spec['type'], spec['version'] = spec_type.split('-')
         return spec
+
+    def check_action_status(self, action_id):
+        action = self.client().get_action(action_id)
+        if action.status == 'SUCCEEDED':
+            return True
+        elif action.status == 'FAILED':
+            raise exception.ResourceInError(
+                status_reason=action.status_reason,
+                resource_status=action.status,
+            )
+        return False
 
     def is_not_found(self, ex):
         return isinstance(ex, exc.sdkexc.ResourceNotFound)
@@ -74,7 +86,7 @@ class ProfileTypeConstraint(constraints.BaseCustomConstraint):
     def validate_with_client(self, client, value):
         senlin_client = client.client(CLIENT_NAME)
         type_list = senlin_client.profile_types()
-        names = [pt['name'] for pt in type_list]
+        names = [pt.name for pt in type_list]
         if value not in names:
             not_found_message = (
                 _("Unable to find senlin profile type '%(pt)s', "
@@ -91,7 +103,7 @@ class PolicyTypeConstraint(constraints.BaseCustomConstraint):
     def validate_with_client(self, client, value):
         senlin_client = client.client(CLIENT_NAME)
         type_list = senlin_client.policy_types()
-        names = [pt['name'] for pt in type_list]
+        names = [pt.name for pt in type_list]
         if value not in names:
             not_found_message = (
                 _("Unable to find senlin policy type '%(pt)s', "

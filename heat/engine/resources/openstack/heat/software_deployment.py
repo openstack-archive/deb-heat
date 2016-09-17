@@ -26,9 +26,9 @@ from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
 from heat.engine.resources.openstack.heat import resource_group
-from heat.engine.resources.openstack.heat import software_config as sc
 from heat.engine.resources import signal_responder
 from heat.engine import rsrc_defn
+from heat.engine import software_config_io as swc_io
 from heat.engine import support
 from heat.rpc import api as rpc_api
 
@@ -215,7 +215,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         except Exception as ex:
             self.rpc_client().ignore_error_named(ex, 'NotFound')
 
-    def _get_derived_config(self, action, source_config):
+    def _create_derived_config(self, action, source_config):
 
         derived_params = self._build_derived_config_params(
             action, source_config)
@@ -223,16 +223,38 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             self.context, **derived_params)
         return derived_config[rpc_api.SOFTWARE_CONFIG_ID]
 
-    def _handle_action(self, action):
-        if self.properties.get(self.CONFIG):
-            config = self.rpc_client().show_software_config(
-                self.context, self.properties.get(self.CONFIG))
+    def _get_derived_config_id(self):
+        sd = self.rpc_client().show_software_deployment(self.context,
+                                                        self.resource_id)
+        return sd[rpc_api.SOFTWARE_DEPLOYMENT_CONFIG_ID]
+
+    def _load_config(self, config_id=None):
+        if config_id is None:
+            config_id = self.properties.get(self.CONFIG)
+        if config_id:
+            config = self.rpc_client().show_software_config(self.context,
+                                                            config_id)
         else:
             config = {}
 
+        config[rpc_api.SOFTWARE_CONFIG_INPUTS] = [
+            swc_io.InputConfig(**i)
+            for i in config.get(rpc_api.SOFTWARE_CONFIG_INPUTS, [])
+        ]
+        config[rpc_api.SOFTWARE_CONFIG_OUTPUTS] = [
+            swc_io.OutputConfig(**o)
+            for o in config.get(rpc_api.SOFTWARE_CONFIG_OUTPUTS, [])
+        ]
+
+        return config
+
+    def _handle_action(self, action, config=None, prev_derived_config=None):
+        if config is None:
+            config = self._load_config()
+
         if config.get(rpc_api.SOFTWARE_CONFIG_GROUP) == 'component':
             valid_actions = set()
-            for conf in config['config']['configs']:
+            for conf in config[rpc_api.SOFTWARE_CONFIG_CONFIG]['configs']:
                 valid_actions.update(conf['actions'])
             if action not in valid_actions:
                 return
@@ -240,7 +262,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
             return
 
         props = self._build_properties(
-            self._get_derived_config(action, config),
+            self._create_derived_config(action, config),
             action)
 
         if self.resource_id is None:
@@ -253,9 +275,8 @@ class SoftwareDeployment(signal_responder.SignalResponder):
                 stack_user_project_id=self.stack.stack_user_project_id,
                 **props)
         else:
-            sd = self.rpc_client().show_software_deployment(
-                self.context, self.resource_id)
-            prev_derived_config = sd[rpc_api.SOFTWARE_DEPLOYMENT_CONFIG_ID]
+            if prev_derived_config is None:
+                prev_derived_config = self._get_derived_config_id()
             sd = self.rpc_client().update_software_deployment(
                 self.context,
                 deployment_id=self.resource_id,
@@ -293,143 +314,117 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         return ''
 
     def _build_derived_config_params(self, action, source):
-        scl = sc.SoftwareConfig
         derived_inputs = self._build_derived_inputs(action, source)
         derived_options = self._build_derived_options(action, source)
         derived_config = self._build_derived_config(
             action, source, derived_inputs, derived_options)
-        derived_name = self.properties.get(self.NAME) or source.get(scl.NAME)
+        derived_name = (self.properties.get(self.NAME) or
+                        source.get(rpc_api.SOFTWARE_CONFIG_NAME))
         return {
-            scl.GROUP: source.get(scl.GROUP) or 'Heat::Ungrouped',
-            scl.CONFIG: derived_config or self.empty_config(),
-            scl.OPTIONS: derived_options,
-            scl.INPUTS: derived_inputs,
-            scl.OUTPUTS: source.get(scl.OUTPUTS),
-            scl.NAME: derived_name or self.physical_resource_name()
+            rpc_api.SOFTWARE_CONFIG_GROUP:
+                source.get(rpc_api.SOFTWARE_CONFIG_GROUP) or 'Heat::Ungrouped',
+            rpc_api.SOFTWARE_CONFIG_CONFIG:
+                derived_config or self.empty_config(),
+            rpc_api.SOFTWARE_CONFIG_OPTIONS: derived_options,
+            rpc_api.SOFTWARE_CONFIG_INPUTS:
+                [i.as_dict() for i in derived_inputs],
+            rpc_api.SOFTWARE_CONFIG_OUTPUTS:
+                [o.as_dict() for o in source[rpc_api.SOFTWARE_CONFIG_OUTPUTS]],
+            rpc_api.SOFTWARE_CONFIG_NAME:
+                derived_name or self.physical_resource_name()
         }
 
     def _build_derived_config(self, action, source,
                               derived_inputs, derived_options):
-        return source.get(sc.SoftwareConfig.CONFIG)
+        return source.get(rpc_api.SOFTWARE_CONFIG_CONFIG)
 
     def _build_derived_options(self, action, source):
-        return source.get(sc.SoftwareConfig.OPTIONS)
+        return source.get(rpc_api.SOFTWARE_CONFIG_OPTIONS)
 
     def _build_derived_inputs(self, action, source):
-        scl = sc.SoftwareConfig
-        inputs = copy.deepcopy(source.get(scl.INPUTS)) or []
-        input_values = dict(self.properties.get(self.INPUT_VALUES) or {})
+        inputs = source[rpc_api.SOFTWARE_CONFIG_INPUTS]
+        input_values = dict(self.properties[self.INPUT_VALUES] or {})
 
-        for inp in inputs:
-            input_key = inp[scl.NAME]
-            inp['value'] = input_values.pop(input_key, inp[scl.DEFAULT])
+        def derive_inputs():
+            for input_config in inputs:
+                value = input_values.pop(input_config.name(),
+                                         input_config.default())
+                yield swc_io.InputConfig(value=value, **input_config.as_dict())
 
-        # for any input values that do not have a declared input, add
-        # a derived declared input so that they can be used as config
-        # inputs
-        for inpk, inpv in input_values.items():
-            inputs.append({
-                scl.NAME: inpk,
-                scl.TYPE: 'String',
-                'value': inpv
-            })
+            # for any input values that do not have a declared input, add
+            # a derived declared input so that they can be used as config
+            # inputs
+            for inpk, inpv in input_values.items():
+                yield swc_io.InputConfig(name=inpk, value=inpv)
 
-        inputs.extend([{
-            scl.NAME: self.DEPLOY_SERVER_ID,
-            scl.DESCRIPTION: _('ID of the server being deployed to'),
-            scl.TYPE: 'String',
-            'value': self.properties[self.SERVER]
-        }, {
-            scl.NAME: self.DEPLOY_ACTION,
-            scl.DESCRIPTION: _('Name of the current action being deployed'),
-            scl.TYPE: 'String',
-            'value': action
-        }, {
-            scl.NAME: self.DEPLOY_STACK_ID,
-            scl.DESCRIPTION: _('ID of the stack this deployment belongs to'),
-            scl.TYPE: 'String',
-            'value': self.stack.identifier().stack_path()
-        }, {
-            scl.NAME: self.DEPLOY_RESOURCE_NAME,
-            scl.DESCRIPTION: _('Name of this deployment resource in the '
-                               'stack'),
-            scl.TYPE: 'String',
-            'value': self.name
-        }, {
-            scl.NAME: self.DEPLOY_SIGNAL_TRANSPORT,
-            scl.DESCRIPTION: _('How the server should signal to heat with '
-                               'the deployment output values.'),
-            scl.TYPE: 'String',
-            'value': self.properties[self.SIGNAL_TRANSPORT]
-        }])
-        if self._signal_transport_cfn():
-            inputs.append({
-                scl.NAME: self.DEPLOY_SIGNAL_ID,
-                scl.DESCRIPTION: _('ID of signal to use for signaling '
-                                   'output values'),
-                scl.TYPE: 'String',
-                'value': self._get_ec2_signed_url()
-            })
-            inputs.append({
-                scl.NAME: self.DEPLOY_SIGNAL_VERB,
-                scl.DESCRIPTION: _('HTTP verb to use for signaling '
-                                   'output values'),
-                scl.TYPE: 'String',
-                'value': 'POST'
-            })
-        elif self._signal_transport_temp_url():
-            inputs.append({
-                scl.NAME: self.DEPLOY_SIGNAL_ID,
-                scl.DESCRIPTION: _('ID of signal to use for signaling '
-                                   'output values'),
-                scl.TYPE: 'String',
-                'value': self._get_swift_signal_url()
-            })
-            inputs.append({
-                scl.NAME: self.DEPLOY_SIGNAL_VERB,
-                scl.DESCRIPTION: _('HTTP verb to use for signaling '
-                                   'output values'),
-                scl.TYPE: 'String',
-                'value': 'PUT'
-            })
-        elif self._signal_transport_heat() or self._signal_transport_zaqar():
-            creds = self._get_heat_signal_credentials()
-            inputs.extend([{
-                scl.NAME: self.DEPLOY_AUTH_URL,
-                scl.DESCRIPTION: _('URL for API authentication'),
-                scl.TYPE: 'String',
-                'value': creds['auth_url']
-            }, {
-                scl.NAME: self.DEPLOY_USERNAME,
-                scl.DESCRIPTION: _('Username for API authentication'),
-                scl.TYPE: 'String',
-                'value': creds['username']
-            }, {
-                scl.NAME: self.DEPLOY_USER_ID,
-                scl.DESCRIPTION: _('User ID for API authentication'),
-                scl.TYPE: 'String',
-                'value': creds['user_id']
-            }, {
-                scl.NAME: self.DEPLOY_PASSWORD,
-                scl.DESCRIPTION: _('Password for API authentication'),
-                scl.TYPE: 'String',
-                'value': creds['password']
-            }, {
-                scl.NAME: self.DEPLOY_PROJECT_ID,
-                scl.DESCRIPTION: _('ID of project for API authentication'),
-                scl.TYPE: 'String',
-                'value': creds['project_id']
-            }])
-        if self._signal_transport_zaqar():
-            inputs.append({
-                scl.NAME: self.DEPLOY_QUEUE_ID,
-                scl.DESCRIPTION: _('ID of queue to use for signaling '
-                                   'output values'),
-                scl.TYPE: 'String',
-                'value': self._get_zaqar_signal_queue_id()
-            })
+            yield swc_io.InputConfig(
+                name=self.DEPLOY_SERVER_ID, value=self.properties[self.SERVER],
+                description=_('ID of the server being deployed to'))
+            yield swc_io.InputConfig(
+                name=self.DEPLOY_ACTION, value=action,
+                description=_('Name of the current action being deployed'))
+            yield swc_io.InputConfig(
+                name=self.DEPLOY_STACK_ID,
+                value=self.stack.identifier().stack_path(),
+                description=_('ID of the stack this deployment belongs to'))
+            yield swc_io.InputConfig(
+                name=self.DEPLOY_RESOURCE_NAME, value=self.name,
+                description=_('Name of this deployment resource in the stack'))
+            yield swc_io.InputConfig(
+                name=self.DEPLOY_SIGNAL_TRANSPORT,
+                value=self.properties[self.SIGNAL_TRANSPORT],
+                description=_('How the server should signal to heat with '
+                              'the deployment output values.'))
 
-        return inputs
+            if self._signal_transport_cfn():
+                yield swc_io.InputConfig(
+                    name=self.DEPLOY_SIGNAL_ID,
+                    value=self._get_ec2_signed_url(),
+                    description=_('ID of signal to use for signaling output '
+                                  'values'))
+                yield swc_io.InputConfig(
+                    name=self.DEPLOY_SIGNAL_VERB, value='POST',
+                    description=_('HTTP verb to use for signaling output'
+                                  'values'))
+
+            elif self._signal_transport_temp_url():
+                yield swc_io.InputConfig(
+                    name=self.DEPLOY_SIGNAL_ID,
+                    value=self._get_swift_signal_url(),
+                    description=_('ID of signal to use for signaling output '
+                                  'values'))
+                yield swc_io.InputConfig(
+                    name=self.DEPLOY_SIGNAL_VERB, value='PUT',
+                    description=_('HTTP verb to use for signaling output'
+                                  'values'))
+
+            elif (self._signal_transport_heat() or
+                  self._signal_transport_zaqar()):
+                creds = self._get_heat_signal_credentials()
+                yield swc_io.InputConfig(
+                    name=self.DEPLOY_AUTH_URL, value=creds['auth_url'],
+                    description=_('URL for API authentication'))
+                yield swc_io.InputConfig(
+                    name=self.DEPLOY_USERNAME, value=creds['username'],
+                    description=_('Username for API authentication'))
+                yield swc_io.InputConfig(
+                    name=self.DEPLOY_USER_ID, value=creds['user_id'],
+                    description=_('User ID for API authentication'))
+                yield swc_io.InputConfig(
+                    name=self.DEPLOY_PASSWORD, value=creds['password'],
+                    description=_('Password for API authentication'))
+                yield swc_io.InputConfig(
+                    name=self.DEPLOY_PROJECT_ID, value=creds['project_id'],
+                    description=_('ID of project for API authentication'))
+
+            if self._signal_transport_zaqar():
+                yield swc_io.InputConfig(
+                    name=self.DEPLOY_QUEUE_ID,
+                    value=self._get_zaqar_signal_queue_id(),
+                    description=_('ID of queue to use for signaling output '
+                                  'values'))
+
+        return list(derive_inputs())
 
     def handle_create(self):
         return self._handle_action(self.CREATE)
@@ -440,11 +435,26 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         return self._check_complete()
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
-        if prop_diff:
-            self.properties = json_snippet.properties(self.properties_schema,
-                                                      self.context)
+        prev_derived_config = self._get_derived_config_id()
+        old_config = self._load_config(prev_derived_config)
+        old_inputs = {i.name(): i
+                      for i in old_config[rpc_api.SOFTWARE_CONFIG_INPUTS]}
 
-        return self._handle_action(self.UPDATE)
+        self.properties = json_snippet.properties(self.properties_schema,
+                                                  self.context)
+
+        config = self._load_config()
+
+        for inp in self._build_derived_inputs(self.UPDATE, config):
+            name = inp.name()
+            if inp.replace_on_change() and name in old_inputs:
+                if inp.input_data() != old_inputs[name].input_data():
+                    LOG.debug('Replacing SW Deployment due to change in '
+                              'input "%s"', name)
+                    raise resource.UpdateReplace
+
+        return self._handle_action(self.UPDATE, config=config,
+                                   prev_derived_config=prev_derived_config)
 
     def check_update_complete(self, sd):
         if not sd:
@@ -469,9 +479,7 @@ class SoftwareDeployment(signal_responder.SignalResponder):
         derived_config_id = None
         if self.resource_id is not None:
             try:
-                sd = self.rpc_client().show_software_deployment(
-                    self.context, self.resource_id)
-                derived_config_id = sd[rpc_api.SOFTWARE_DEPLOYMENT_CONFIG_ID]
+                derived_config_id = self._get_derived_config_id()
                 self.rpc_client().delete_software_deployment(
                     self.context, self.resource_id)
             except Exception as ex:
@@ -686,11 +694,14 @@ class SoftwareDeploymentGroup(resource_group.ResourceGroup):
 
 class SoftwareDeployments(SoftwareDeploymentGroup):
 
-    deprecation_msg = _('Use of this resource is discouraged. Please use '
-                        'OS::Heat::SoftwareDeploymentGroup instead.')
-    support_status = support.SupportStatus(status=support.DEPRECATED,
-                                           message=deprecation_msg,
-                                           version='2014.2')
+    hidden_msg = _('Please use OS::Heat::SoftwareDeploymentGroup instead.')
+    support_status = support.SupportStatus(
+        status=support.HIDDEN,
+        message=hidden_msg,
+        version='7.0.0',
+        previous_status=support.SupportStatus(
+            status=support.DEPRECATED,
+            version='2014.2'))
 
 
 def resource_mapping():

@@ -18,6 +18,7 @@ import six
 
 from heat.common import exception
 from heat.engine.clients.os import nova
+from heat.engine import resource
 from heat.engine.resources.openstack.nova import keypair
 from heat.engine import scheduler
 from heat.tests import common
@@ -144,6 +145,18 @@ class NovaKeyPairTest(common.HeatTestCase):
                                 scheduler.TaskRunner(res.check))
         self.assertIn("boom", six.text_type(exc))
         self.assertEqual((res.CHECK, res.FAILED), res.state)
+
+    def test_update_replace(self):
+        res = self._get_test_resource(self.kp_template)
+        res.state_set(res.CHECK, res.FAILED, 'for test')
+        res.resource_id = 'my_key'
+        # to delete the keypair preparing for replace
+        self.fake_keypairs.delete('my_key')
+        self.m.ReplayAll()
+        updater = scheduler.TaskRunner(res.update, res.t)
+        self.assertRaises(resource.UpdateReplace, updater)
+
+        self.m.ReplayAll()
 
     def test_delete_key_not_found(self):
         """Test delete non-existent key."""

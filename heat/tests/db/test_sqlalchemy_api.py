@@ -1827,10 +1827,6 @@ class DBAPIStackTest(common.HeatTestCase):
     def test_stack_get_can_return_a_stack_from_different_tenant(self):
         stack = create_stack(self.ctx, self.template, self.user_creds)
         self.ctx.tenant_id = 'abc'
-        ret_stack = db_api.stack_get(self.ctx, stack.id,
-                                     show_deleted=False, tenant_safe=False)
-        self.assertEqual(stack.id, ret_stack.id)
-        self.assertEqual('db_test_stack_name', ret_stack.name)
 
         # with ctx.is_admin = True
         self.ctx.is_admin = True
@@ -1885,6 +1881,36 @@ class DBAPIStackTest(common.HeatTestCase):
                                                            parent_stack2.id)
         self.assertEqual(2, len(stack2_children))
 
+    def test_stack_get_all_by_root_owner_id(self):
+        parent_stack1 = create_stack(self.ctx, self.template, self.user_creds)
+        parent_stack2 = create_stack(self.ctx, self.template, self.user_creds)
+        for i in range(3):
+            lvl1_st = create_stack(self.ctx, self.template, self.user_creds,
+                                   owner_id=parent_stack1.id)
+            for j in range(2):
+                create_stack(self.ctx, self.template, self.user_creds,
+                             owner_id=lvl1_st.id)
+        for i in range(2):
+            lvl1_st = create_stack(self.ctx, self.template, self.user_creds,
+                                   owner_id=parent_stack2.id)
+            for j in range(4):
+                lvl2_st = create_stack(self.ctx, self.template,
+                                       self.user_creds, owner_id=lvl1_st.id)
+                for k in range(3):
+                    create_stack(self.ctx, self.template,
+                                 self.user_creds, owner_id=lvl2_st.id)
+
+        stack1_children = db_api.stack_get_all_by_root_owner_id(
+            self.ctx,
+            parent_stack1.id)
+        # 3 stacks on the first level + 6 stack on the second
+        self.assertEqual(9, len(list(stack1_children)))
+        stack2_children = db_api.stack_get_all_by_root_owner_id(
+            self.ctx,
+            parent_stack2.id)
+        # 2 + 8 + 24
+        self.assertEqual(34, len(list(stack2_children)))
+
     def test_stack_get_all_with_regular_tenant(self):
         values = [
             {'tenant': UUID1},
@@ -1906,20 +1932,6 @@ class DBAPIStackTest(common.HeatTestCase):
 
         self.ctx.tenant = UUID3
         self.assertEqual([], db_api.stack_get_all(self.ctx))
-
-    def test_stack_get_all_with_tenant_safe_false(self):
-        values = [
-            {'tenant': UUID1},
-            {'tenant': UUID1},
-            {'tenant': UUID2},
-            {'tenant': UUID2},
-            {'tenant': UUID2},
-        ]
-        [create_stack(self.ctx, self.template, self.user_creds,
-                      **val) for val in values]
-
-        stacks = db_api.stack_get_all(self.ctx, tenant_safe=False)
-        self.assertEqual(5, len(stacks))
 
     def test_stack_get_all_with_admin_context(self):
         values = [
@@ -1953,7 +1965,7 @@ class DBAPIStackTest(common.HeatTestCase):
         self.ctx.tenant = UUID2
         self.assertEqual(3, db_api.stack_count_all(self.ctx))
 
-    def test_stack_count_all_with_tenant_safe_false(self):
+    def test_stack_count_all_with_admin_context(self):
         values = [
             {'tenant': UUID1},
             {'tenant': UUID1},
@@ -1963,9 +1975,9 @@ class DBAPIStackTest(common.HeatTestCase):
         ]
         [create_stack(self.ctx, self.template, self.user_creds,
                       **val) for val in values]
-
+        self.ctx.is_admin = True
         self.assertEqual(5,
-                         db_api.stack_count_all(self.ctx, tenant_safe=False))
+                         db_api.stack_count_all(self.ctx))
 
     def test_purge_deleted(self):
         now = timeutils.utcnow()
@@ -1997,6 +2009,52 @@ class DBAPIStackTest(common.HeatTestCase):
         self._deleted_stack_existance(utils.dummy_context(), stacks,
                                       tmpl_files, (), (0, 1, 2, 3, 4))
 
+    def test_purge_project_deleted(self):
+        now = timeutils.utcnow()
+        delta = datetime.timedelta(seconds=3600 * 7)
+        deleted = [now - delta * i for i in range(1, 6)]
+        tmpl_files = [template_files.TemplateFiles(
+            {'foo': 'file contents %d' % i}) for i in range(5)]
+        [tmpl_file.store(self.ctx) for tmpl_file in tmpl_files]
+        templates = [create_raw_template(self.ctx,
+                                         files_id=tmpl_files[i].files_id
+                                         ) for i in range(5)]
+        values = [
+            {'tenant': UUID1},
+            {'tenant': UUID1},
+            {'tenant': UUID1},
+            {'tenant': UUID2},
+            {'tenant': UUID2},
+        ]
+        creds = [create_user_creds(self.ctx) for i in range(5)]
+        stacks = [create_stack(self.ctx, templates[i], creds[i],
+                               deleted_at=deleted[i], **values[i]
+                               ) for i in range(5)]
+
+        db_api.purge_deleted(age=1, granularity='days', project_id=UUID1)
+        self._deleted_stack_existance(utils.dummy_context(), stacks,
+                                      tmpl_files, (0, 1, 2, 3, 4), ())
+
+        db_api.purge_deleted(age=22, granularity='hours', project_id=UUID1)
+        self._deleted_stack_existance(utils.dummy_context(), stacks,
+                                      tmpl_files, (0, 1, 2, 3, 4), ())
+
+        db_api.purge_deleted(age=1100, granularity='minutes', project_id=UUID1)
+        self._deleted_stack_existance(utils.dummy_context(), stacks,
+                                      tmpl_files, (0, 1, 3, 4), (2,))
+
+        db_api.purge_deleted(age=30, granularity='hours', project_id=UUID2)
+        self._deleted_stack_existance(utils.dummy_context(), stacks,
+                                      tmpl_files, (0, 1, 3), (2, 4))
+
+        db_api.purge_deleted(age=3600, granularity='seconds', project_id=UUID1)
+        self._deleted_stack_existance(utils.dummy_context(), stacks,
+                                      tmpl_files, (3,), (0, 1, 2, 4))
+
+        db_api.purge_deleted(age=3600, granularity='seconds', project_id=UUID2)
+        self._deleted_stack_existance(utils.dummy_context(), stacks,
+                                      tmpl_files, (), (0, 1, 2, 3, 4))
+
     def test_purge_deleted_prev_raw_template(self):
         now = timeutils.utcnow()
         templates = [create_raw_template(self.ctx) for i in range(2)]
@@ -2007,6 +2065,23 @@ class DBAPIStackTest(common.HeatTestCase):
 
         db_api.purge_deleted(age=3600, granularity='seconds')
         ctx = utils.dummy_context()
+        ctx.is_admin = True
+        self.assertIsNotNone(db_api.stack_get(ctx, stacks[0].id,
+                                              show_deleted=True))
+        self.assertIsNotNone(db_api.raw_template_get(ctx, templates[1].id))
+
+        stacks = [create_stack(self.ctx, templates[0],
+                               create_user_creds(self.ctx),
+                               deleted_at=now - datetime.timedelta(seconds=10),
+                               prev_raw_template=templates[1],
+                               tenant=UUID1)]
+
+        db_api.purge_deleted(age=3600, granularity='seconds', project_id=UUID1)
+        self.assertIsNotNone(db_api.stack_get(ctx, stacks[0].id,
+                                              show_deleted=True))
+        self.assertIsNotNone(db_api.raw_template_get(ctx, templates[1].id))
+
+        db_api.purge_deleted(age=0, granularity='seconds', project_id=UUID2)
         self.assertIsNotNone(db_api.stack_get(ctx, stacks[0].id,
                                               show_deleted=True))
         self.assertIsNotNone(db_api.raw_template_get(ctx, templates[1].id))
@@ -2040,33 +2115,64 @@ class DBAPIStackTest(common.HeatTestCase):
                           db_api.raw_template_files_get,
                           self.ctx, tmpl_files[2].files_id)
 
+    def test_dont_purge_project_shared_raw_template_files(self):
+        now = timeutils.utcnow()
+        delta = datetime.timedelta(seconds=3600 * 7)
+        deleted = [now - delta * i for i in range(1, 6)]
+        # the last two template_files are identical to first two
+        # (so should not be purged)
+        tmpl_files = [template_files.TemplateFiles(
+            {'foo': 'more file contents'}) for i in range(3)]
+        [tmpl_file.store(self.ctx) for tmpl_file in tmpl_files]
+        templates = [create_raw_template(self.ctx,
+                                         files_id=tmpl_files[i % 3].files_id
+                                         ) for i in range(5)]
+        creds = [create_user_creds(self.ctx) for i in range(5)]
+        [create_stack(self.ctx, templates[i], creds[i],
+                      deleted_at=deleted[i], tenant=UUID1
+                      ) for i in range(5)]
+
+        db_api.purge_deleted(age=0, granularity='seconds', project_id=UUID3)
+        self.assertIsNotNone(db_api.raw_template_files_get(
+            self.ctx, tmpl_files[0].files_id))
+        self.assertIsNotNone(db_api.raw_template_files_get(
+            self.ctx, tmpl_files[1].files_id))
+        self.assertIsNotNone(db_api.raw_template_files_get(
+            self.ctx, tmpl_files[2].files_id))
+
+        db_api.purge_deleted(age=15, granularity='hours', project_id=UUID1)
+        self.assertIsNotNone(db_api.raw_template_files_get(
+            self.ctx, tmpl_files[0].files_id))
+        self.assertIsNotNone(db_api.raw_template_files_get(
+            self.ctx, tmpl_files[1].files_id))
+        self.assertRaises(exception.NotFound,
+                          db_api.raw_template_files_get,
+                          self.ctx, tmpl_files[2].files_id)
+
     def _deleted_stack_existance(self, ctx, stacks,
                                  tmpl_files, existing, deleted):
-        tmpl_idx = 0
+        ctx.is_admin = True
         for s in existing:
             self.assertIsNotNone(db_api.stack_get(ctx, stacks[s].id,
                                                   show_deleted=True))
             self.assertIsNotNone(db_api.raw_template_files_get(
-                ctx, tmpl_files[tmpl_idx].files_id))
-            tmpl_idx = tmpl_idx + 1
+                ctx, tmpl_files[s].files_id))
         for s in deleted:
             self.assertIsNone(db_api.stack_get(ctx, stacks[s].id,
                                                show_deleted=True))
             rt_id = stacks[s].raw_template_id
             self.assertRaises(exception.NotFound,
                               db_api.raw_template_get, ctx, rt_id)
-            self.assertRaises(exception.NotFound,
-                              db_api.resource_get_all_by_stack,
-                              ctx, stacks[s].id)
+            self.assertEqual({}, db_api.resource_get_all_by_stack(
+                ctx, stacks[s].id))
             self.assertRaises(exception.NotFound,
                               db_api.raw_template_files_get,
-                              ctx, tmpl_files[tmpl_idx].files_id)
+                              ctx, tmpl_files[s].files_id)
             self.assertEqual([],
                              db_api.event_get_all_by_stack(ctx,
                                                            stacks[s].id))
             self.assertIsNone(db_api.user_creds_get(
                 self.ctx, stacks[s].user_creds_id))
-            tmpl_idx = tmpl_idx + 1
 
     def test_stack_get_root_id(self):
         root = create_stack(self.ctx, self.template, self.user_creds,
@@ -2252,8 +2358,8 @@ class DBAPIResourceTest(common.HeatTestCase):
         self.assertEqual('res1', resources.get('res1').name)
         self.assertEqual('res2', resources.get('res2').name)
 
-        self.assertRaises(exception.NotFound, db_api.resource_get_all_by_stack,
-                          self.ctx, self.stack2.id)
+        self.assertEqual({}, db_api.resource_get_all_by_stack(
+            self.ctx, self.stack2.id))
 
     def test_resource_get_all_active_by_stack(self):
         values = [

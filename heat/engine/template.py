@@ -23,6 +23,7 @@ from stevedore import extension
 from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import environment
+from heat.engine import function
 from heat.engine import template_files
 from heat.objects import raw_template as template_object
 
@@ -90,6 +91,10 @@ def get_template_class(template_data):
 class Template(collections.Mapping):
     """A stack template."""
 
+    condition_functions = {}
+    _parser_condition_functions = {}
+    functions = {}
+
     def __new__(cls, template, *args, **kwargs):
         """Create a new Template of the appropriate class."""
         global _template_classes
@@ -113,6 +118,8 @@ class Template(collections.Mapping):
         self.files = files or {}
         self.maps = self[self.MAPPINGS]
         self.env = env or environment.Environment({})
+        self._conditions = None
+        self.merge_sections = [self.PARAMETERS]
 
         self.version = get_version(self.t, _template_classes.keys())
         self.t_digest = None
@@ -120,6 +127,18 @@ class Template(collections.Mapping):
     def __deepcopy__(self, memo):
         return Template(copy.deepcopy(self.t, memo), files=self.files,
                         env=self.env)
+
+    def merge_snippets(self, other):
+        for s in self.merge_sections:
+            if s not in other.t:
+                continue
+            if s not in self.t:
+                self.t[s] = {}
+            self.t[s].update(other.t[s])
+
+    def parse_outputs_conditions(self, outputs, stack):
+        """Return a dictionary of outputs data which resolved conditions."""
+        return outputs
 
     @classmethod
     def load(cls, context, template_id, t=None):
@@ -208,6 +227,15 @@ class Template(collections.Mapping):
         pass
 
     @abc.abstractmethod
+    def validate_condition_definitions(self, stack):
+        """Check conditions section."""
+        pass
+
+    def conditions(self, stack):
+        """Return a dictionary of resolved conditions."""
+        return {}
+
+    @abc.abstractmethod
     def resource_definitions(self, stack):
         """Return a dictionary of ResourceDefinition objects."""
         pass
@@ -221,33 +249,6 @@ class Template(collections.Mapping):
         """
         pass
 
-    def validate_section(self, section, sub_section, data, allowed_keys):
-        obj_name = section[:-1]
-        err_msg = _('"%%s" is not a valid keyword inside a %s '
-                    'definition') % obj_name
-        args = {'object_name': obj_name, 'sub_section': sub_section}
-        message = _('Each %(object_name)s must contain a '
-                    '%(sub_section)s key.') % args
-        for name, attrs in sorted(data.items()):
-            if not attrs:
-                raise exception.StackValidationFailed(message=message)
-            try:
-                for attr, attr_value in six.iteritems(attrs):
-                    if attr not in allowed_keys:
-                        raise KeyError(err_msg % attr)
-                if sub_section not in attrs:
-                    raise exception.StackValidationFailed(message=message)
-            except AttributeError:
-                message = _('"%(section)s" must contain a map of '
-                            '%(obj_name)s maps. Found a [%(_type)s] '
-                            'instead') % {'section': section,
-                                          '_type': type(attrs),
-                                          'obj_name': obj_name}
-                raise exception.StackValidationFailed(message=message)
-            except KeyError as e:
-                # an invalid keyword was found
-                raise exception.StackValidationFailed(message=e.args[0])
-
     def remove_resource(self, name):
         """Remove a resource from the template."""
         self.t.get(self.RESOURCES, {}).pop(name)
@@ -258,7 +259,11 @@ class Template(collections.Mapping):
             self.t.update({self.RESOURCES: {}})
 
     def parse(self, stack, snippet, path=''):
-        return parse(self.functions, stack, snippet, path)
+        return parse(self.functions, stack, snippet, path, self)
+
+    def parse_condition(self, stack, snippet):
+        return parse(self._parser_condition_functions, stack, snippet,
+                     template=self)
 
     def validate(self):
         """Validate the template.
@@ -326,8 +331,8 @@ class Template(collections.Mapping):
             return cls(tmpl)
 
 
-def parse(functions, stack, snippet, path=''):
-    recurse = functools.partial(parse, functions, stack)
+def parse(functions, stack, snippet, path='', template=None):
+    recurse = functools.partial(parse, functions, stack, template=template)
 
     if isinstance(snippet, collections.Mapping):
         def mkpath(key):
@@ -339,7 +344,12 @@ def parse(functions, stack, snippet, path=''):
             if Func is not None:
                 try:
                     path = '.'.join([path, fn_name])
-                    return Func(stack, fn_name, recurse(args, path))
+                    if issubclass(Func, function.Macro):
+                        return Func(stack, fn_name, args,
+                                    functools.partial(recurse, path=path),
+                                    template)
+                    else:
+                        return Func(stack, fn_name, recurse(args, path))
                 except (ValueError, TypeError, KeyError,
                         exception.InvalidTemplateVersion) as e:
                     raise exception.StackValidationFailed(

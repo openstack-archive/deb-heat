@@ -21,6 +21,7 @@ from oslo_serialization import jsonutils as json
 import six
 
 from heat.common import context
+from heat.common import environment_util as env_util
 from heat.common import exception
 from heat.common import identifier
 from heat.common import template_format
@@ -234,8 +235,7 @@ class StackConvergenceServiceCreateUpdateTest(common.HeatTestCase):
         self.m.StubOutWithMock(environment, 'Environment')
         self.m.StubOutWithMock(parser, 'Stack')
 
-        templatem.Template(template, files=None,
-                           env=stack.env).AndReturn(stack.t)
+        templatem.Template(template, files=None).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
                      stack.t, owner_id=None,
@@ -279,8 +279,7 @@ class StackConvergenceServiceCreateUpdateTest(common.HeatTestCase):
 
         self._stub_update_mocks(s, old_stack)
 
-        templatem.Template(template, files=None,
-                           env=stack.env).AndReturn(stack.t)
+        templatem.Template(template, files=None).AndReturn(stack.t)
         environment.Environment(params).AndReturn(stack.env)
         parser.Stack(self.ctx, stack.name,
                      stack.t,
@@ -494,7 +493,6 @@ class StackServiceTest(common.HeatTestCase):
                                                    marker=marker,
                                                    sort_dir=sort_dir,
                                                    filters=mock.ANY,
-                                                   tenant_safe=mock.ANY,
                                                    show_deleted=mock.ANY,
                                                    show_nested=mock.ANY,
                                                    show_hidden=mock.ANY,
@@ -513,7 +511,6 @@ class StackServiceTest(common.HeatTestCase):
                                                    marker=mock.ANY,
                                                    sort_dir=mock.ANY,
                                                    filters=filters,
-                                                   tenant_safe=mock.ANY,
                                                    show_deleted=mock.ANY,
                                                    show_nested=mock.ANY,
                                                    show_hidden=mock.ANY,
@@ -533,43 +530,6 @@ class StackServiceTest(common.HeatTestCase):
                                                    marker=mock.ANY,
                                                    sort_dir=mock.ANY,
                                                    filters=translated,
-                                                   tenant_safe=mock.ANY,
-                                                   show_deleted=mock.ANY,
-                                                   show_nested=mock.ANY,
-                                                   show_hidden=mock.ANY,
-                                                   tags=mock.ANY,
-                                                   tags_any=mock.ANY,
-                                                   not_tags=mock.ANY,
-                                                   not_tags_any=mock.ANY)
-
-    @mock.patch.object(stack_object.Stack, 'get_all')
-    def test_stack_list_tenant_safe_defaults_to_true(self, mock_stack_get_all):
-        self.eng.list_stacks(self.ctx)
-        mock_stack_get_all.assert_called_once_with(self.ctx,
-                                                   limit=mock.ANY,
-                                                   sort_keys=mock.ANY,
-                                                   marker=mock.ANY,
-                                                   sort_dir=mock.ANY,
-                                                   filters=mock.ANY,
-                                                   tenant_safe=True,
-                                                   show_deleted=mock.ANY,
-                                                   show_nested=mock.ANY,
-                                                   show_hidden=mock.ANY,
-                                                   tags=mock.ANY,
-                                                   tags_any=mock.ANY,
-                                                   not_tags=mock.ANY,
-                                                   not_tags_any=mock.ANY)
-
-    @mock.patch.object(stack_object.Stack, 'get_all')
-    def test_stack_list_passes_tenant_safe_info(self, mock_stack_get_all):
-        self.eng.list_stacks(self.ctx, tenant_safe=False)
-        mock_stack_get_all.assert_called_once_with(self.ctx,
-                                                   limit=mock.ANY,
-                                                   sort_keys=mock.ANY,
-                                                   marker=mock.ANY,
-                                                   sort_dir=mock.ANY,
-                                                   filters=mock.ANY,
-                                                   tenant_safe=False,
                                                    show_deleted=mock.ANY,
                                                    show_nested=mock.ANY,
                                                    show_hidden=mock.ANY,
@@ -587,7 +547,6 @@ class StackServiceTest(common.HeatTestCase):
                                                    marker=mock.ANY,
                                                    sort_dir=mock.ANY,
                                                    filters=mock.ANY,
-                                                   tenant_safe=mock.ANY,
                                                    show_deleted=mock.ANY,
                                                    show_nested=True,
                                                    show_hidden=mock.ANY,
@@ -605,7 +564,6 @@ class StackServiceTest(common.HeatTestCase):
                                                    marker=mock.ANY,
                                                    sort_dir=mock.ANY,
                                                    filters=mock.ANY,
-                                                   tenant_safe=mock.ANY,
                                                    show_deleted=True,
                                                    show_nested=mock.ANY,
                                                    show_hidden=mock.ANY,
@@ -623,7 +581,6 @@ class StackServiceTest(common.HeatTestCase):
                                                    marker=mock.ANY,
                                                    sort_dir=mock.ANY,
                                                    filters=mock.ANY,
-                                                   tenant_safe=mock.ANY,
                                                    show_deleted=mock.ANY,
                                                    show_nested=mock.ANY,
                                                    show_hidden=True,
@@ -641,7 +598,6 @@ class StackServiceTest(common.HeatTestCase):
                                                    marker=mock.ANY,
                                                    sort_dir=mock.ANY,
                                                    filters=mock.ANY,
-                                                   tenant_safe=mock.ANY,
                                                    show_deleted=mock.ANY,
                                                    show_nested=mock.ANY,
                                                    show_hidden=mock.ANY,
@@ -659,7 +615,6 @@ class StackServiceTest(common.HeatTestCase):
                                                    marker=mock.ANY,
                                                    sort_dir=mock.ANY,
                                                    filters=mock.ANY,
-                                                   tenant_safe=mock.ANY,
                                                    show_deleted=mock.ANY,
                                                    show_nested=mock.ANY,
                                                    show_hidden=mock.ANY,
@@ -677,7 +632,6 @@ class StackServiceTest(common.HeatTestCase):
                                                    marker=mock.ANY,
                                                    sort_dir=mock.ANY,
                                                    filters=mock.ANY,
-                                                   tenant_safe=mock.ANY,
                                                    show_deleted=mock.ANY,
                                                    show_nested=mock.ANY,
                                                    show_hidden=mock.ANY,
@@ -695,7 +649,6 @@ class StackServiceTest(common.HeatTestCase):
                                                    marker=mock.ANY,
                                                    sort_dir=mock.ANY,
                                                    filters=mock.ANY,
-                                                   tenant_safe=mock.ANY,
                                                    show_deleted=mock.ANY,
                                                    show_nested=mock.ANY,
                                                    show_hidden=mock.ANY,
@@ -709,35 +662,6 @@ class StackServiceTest(common.HeatTestCase):
         self.eng.count_stacks(self.ctx, filters={'foo': 'bar'})
         mock_stack_count_all.assert_called_once_with(mock.ANY,
                                                      filters={'foo': 'bar'},
-                                                     tenant_safe=mock.ANY,
-                                                     show_deleted=False,
-                                                     show_nested=False,
-                                                     show_hidden=False,
-                                                     tags=None,
-                                                     tags_any=None,
-                                                     not_tags=None,
-                                                     not_tags_any=None)
-
-    @mock.patch.object(stack_object.Stack, 'count_all')
-    def test_count_stacks_tenant_safe_default_true(self, mock_stack_count_all):
-        self.eng.count_stacks(self.ctx)
-        mock_stack_count_all.assert_called_once_with(mock.ANY,
-                                                     filters=mock.ANY,
-                                                     tenant_safe=True,
-                                                     show_deleted=False,
-                                                     show_nested=False,
-                                                     show_hidden=False,
-                                                     tags=None,
-                                                     tags_any=None,
-                                                     not_tags=None,
-                                                     not_tags_any=None)
-
-    @mock.patch.object(stack_object.Stack, 'count_all')
-    def test_count_stacks_passes_tenant_safe_info(self, mock_stack_count_all):
-        self.eng.count_stacks(self.ctx, tenant_safe=False)
-        mock_stack_count_all.assert_called_once_with(mock.ANY,
-                                                     filters=mock.ANY,
-                                                     tenant_safe=False,
                                                      show_deleted=False,
                                                      show_nested=False,
                                                      show_hidden=False,
@@ -751,7 +675,6 @@ class StackServiceTest(common.HeatTestCase):
         self.eng.count_stacks(self.ctx, show_nested=True)
         mock_stack_count_all.assert_called_once_with(mock.ANY,
                                                      filters=mock.ANY,
-                                                     tenant_safe=True,
                                                      show_deleted=False,
                                                      show_nested=True,
                                                      show_hidden=False,
@@ -765,7 +688,6 @@ class StackServiceTest(common.HeatTestCase):
         self.eng.count_stacks(self.ctx, show_deleted=True)
         mock_stack_count_all.assert_called_once_with(mock.ANY,
                                                      filters=mock.ANY,
-                                                     tenant_safe=True,
                                                      show_deleted=True,
                                                      show_nested=False,
                                                      show_hidden=False,
@@ -779,7 +701,6 @@ class StackServiceTest(common.HeatTestCase):
         self.eng.count_stacks(self.ctx, show_hidden=True)
         mock_stack_count_all.assert_called_once_with(mock.ANY,
                                                      filters=mock.ANY,
-                                                     tenant_safe=True,
                                                      show_deleted=False,
                                                      show_nested=False,
                                                      show_hidden=True,
@@ -1093,7 +1014,7 @@ class StackServiceTest(common.HeatTestCase):
 
         mock_get_stack = self.patchobject(self.eng, '_get_stack')
         mock_get_stack.return_value = mock.MagicMock()
-        self.patchobject(parser.Stack, 'load', return_value=stack)
+        self.patchobject(templatem.Template, 'load', return_value=tmpl)
 
         # Test
         found = self.eng.get_files(self.ctx, stack.identifier())
@@ -1243,7 +1164,7 @@ class StackServiceTest(common.HeatTestCase):
                                self._preview_stack)
         self.assertEqual(exception.StackValidationFailed, ex.exc_info[0])
 
-    @mock.patch.object(service.EngineService, '_merge_environments')
+    @mock.patch.object(env_util, 'merge_environments')
     def test_preview_environment_files(self, mock_merge):
         # Setup
         environment_files = ['env_1']
@@ -1252,7 +1173,7 @@ class StackServiceTest(common.HeatTestCase):
         self._preview_stack(environment_files=environment_files)
 
         # Verify
-        mock_merge.assert_called_once_with(environment_files, None, {})
+        mock_merge.assert_called_once_with(environment_files, None, {}, {})
 
     @mock.patch.object(stack_object.Stack, 'get_by_name')
     def test_validate_new_stack_checks_existing_stack(self, mock_stack_get):
@@ -1382,11 +1303,10 @@ class StackServiceTest(common.HeatTestCase):
         }
         mock_get_all.assert_called_once_with(self.ctx,
                                              filters=filters,
-                                             tenant_safe=False,
                                              show_nested=True)
         mock_get_by_id.assert_has_calls([
-            mock.call(self.ctx, 'foo', tenant_safe=False, eager_load=True),
-            mock.call(self.ctx, 'bar', tenant_safe=False, eager_load=True),
+            mock.call(self.ctx, 'foo'),
+            mock.call(self.ctx, 'bar'),
         ])
         mock_stack_load.assert_called_once_with(self.ctx,
                                                 stack=db_stack,
@@ -1497,3 +1417,57 @@ class StackServiceTest(common.HeatTestCase):
         stack = self.eng._parse_template_and_validate_stack(
             self.ctx, 'stack_name', template, {}, {}, None, args)
         self.assertEqual(1, stack.parameters['volsize'])
+
+    @mock.patch('heat.engine.service.ThreadGroupManager',
+                return_value=mock.Mock())
+    @mock.patch.object(stack_object.Stack, 'get_by_id')
+    @mock.patch.object(parser.Stack, 'load')
+    def test_stack_cancel_update_convergence_with_no_rollback(
+            self, mock_load, mock_get_by_id, mock_tg):
+        stk = mock.MagicMock()
+        stk.id = 1
+        stk.UPDATE = 'UPDATE'
+        stk.IN_PROGRESS = 'IN_PROGRESS'
+        stk.state = ('UPDATE', 'IN_PROGRESS')
+        stk.status = stk.IN_PROGRESS
+        stk.action = stk.UPDATE
+        stk.convergence = True
+        mock_load.return_value = stk
+        self.patchobject(self.eng, '_get_stack')
+        self.eng.thread_group_mgr.start = mock.MagicMock()
+        with mock.patch.object(self.eng, 'worker_service') as mock_ws:
+            mock_ws.stop_traversal = mock.Mock()
+            # with rollback as false
+            self.eng.stack_cancel_update(self.ctx, 1,
+                                         cancel_with_rollback=False)
+            self.assertTrue(self.eng.thread_group_mgr.start.called)
+            call_args, _ = self.eng.thread_group_mgr.start.call_args
+            # test ID of stack
+            self.assertEqual(call_args[0], 1)
+            # ensure stop_traversal should be called with stack
+            self.assertEqual(call_args[1].func, mock_ws.stop_traversal)
+            self.assertEqual(call_args[1].args[0], stk)
+
+    @mock.patch('heat.engine.service.ThreadGroupManager',
+                return_value=mock.Mock())
+    @mock.patch.object(stack_object.Stack, 'get_by_id')
+    @mock.patch.object(parser.Stack, 'load')
+    def test_stack_cancel_update_convergence_with_rollback(
+            self, mock_load, mock_get_by_id, mock_tg):
+        stk = mock.MagicMock()
+        stk.id = 1
+        stk.UPDATE = 'UPDATE'
+        stk.IN_PROGRESS = 'IN_PROGRESS'
+        stk.state = ('UPDATE', 'IN_PROGRESS')
+        stk.status = stk.IN_PROGRESS
+        stk.action = stk.UPDATE
+        stk.convergence = True
+        stk.rollback = mock.MagicMock(return_value=None)
+        mock_load.return_value = stk
+        self.patchobject(self.eng, '_get_stack')
+        self.eng.thread_group_mgr.start = mock.MagicMock()
+        # with rollback as true
+        self.eng.stack_cancel_update(self.ctx, 1,
+                                     cancel_with_rollback=True)
+        self.eng.thread_group_mgr.start.assert_called_once_with(
+            1, stk.rollback)

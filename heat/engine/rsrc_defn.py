@@ -70,7 +70,7 @@ class ResourceDefinitionCore(object):
 
     def __init__(self, name, resource_type, properties=None, metadata=None,
                  depends=None, deletion_policy=None, update_policy=None,
-                 description=None):
+                 description=None, external_id=None, condition=None):
         """Initialise with the parsed definition of a resource.
 
         Any intrinsic functions present in any of the sections should have been
@@ -84,6 +84,8 @@ class ResourceDefinitionCore(object):
         :param deletion_policy: The deletion policy for the resource
         :param update_policy: A dictionary of supplied update policies
         :param description: A string describing the resource
+        :param external_id: A uuid of an external resource
+        :param condition: A condition name associated with the resource
         """
         self.name = name
         self.resource_type = resource_type
@@ -93,6 +95,8 @@ class ResourceDefinitionCore(object):
         self._depends = depends
         self._deletion_policy = deletion_policy
         self._update_policy = update_policy
+        self._external_id = external_id
+        self._condition = condition
 
         self._hash = hash(self.resource_type)
         self._rendering = None
@@ -124,6 +128,16 @@ class ResourceDefinitionCore(object):
                                               function.Function))
             self._hash ^= _hash_data(update_policy)
 
+        if external_id is not None:
+            assert isinstance(external_id, (six.string_types,
+                                            function.Function))
+            self._hash ^= _hash_data(external_id)
+            self._deletion_policy = self.RETAIN
+
+        if condition is not None:
+            assert isinstance(condition, six.string_types)
+            self._hash ^= hash(condition)
+
     def freeze(self, **overrides):
         """Return a frozen resource definition, with all functions resolved.
 
@@ -147,7 +161,7 @@ class ResourceDefinitionCore(object):
 
         args = ('name', 'resource_type', '_properties', '_metadata',
                 '_depends', '_deletion_policy', '_update_policy',
-                'description')
+                'description', '_external_id', '_condition')
 
         defn = type(self)(**dict(arg_item(a) for a in args))
         defn._frozen = True
@@ -171,7 +185,9 @@ class ResourceDefinitionCore(object):
             metadata=reparse_snippet(self._metadata),
             depends=reparse_snippet(self._depends),
             deletion_policy=reparse_snippet(self._deletion_policy),
-            update_policy=reparse_snippet(self._update_policy))
+            update_policy=reparse_snippet(self._update_policy),
+            external_id=reparse_snippet(self._external_id),
+            condition=self._condition)
 
     def dep_attrs(self, resource_name):
         """Iterate over attributes of a given resource that this references.
@@ -196,16 +212,26 @@ class ResourceDefinitionCore(object):
             return stack[res_name]
 
         def strict_func_deps(data, datapath):
-            return six.moves.filter(lambda r: getattr(r, 'strict_dependency',
-                                                      True),
-                                    function.dependencies(data, datapath))
+            return six.moves.filter(
+                lambda r: getattr(r, 'strict_dependency', True),
+                function.dependencies(data, datapath))
 
         explicit_depends = [] if self._depends is None else self._depends
+        prop_deps = strict_func_deps(self._properties, path(PROPERTIES))
+        metadata_deps = strict_func_deps(self._metadata, path(METADATA))
+
+        # (ricolin) External resource should not depend on any other resources.
+        # This operation is not allowed for now.
+        if self.external_id():
+            if explicit_depends:
+                raise exception.InvalidExternalResourceDependency(
+                    external_id=self.external_id(),
+                    resource_type=self.resource_type
+                )
+            return itertools.chain()
+
         return itertools.chain((get_resource(dep) for dep in explicit_depends),
-                               strict_func_deps(self._properties,
-                                                path(PROPERTIES)),
-                               strict_func_deps(self._metadata,
-                                                path(METADATA)))
+                               prop_deps, metadata_deps)
 
     def properties(self, schema, context=None):
         """Return a Properties object representing the resource properties.
@@ -238,6 +264,10 @@ class ResourceDefinitionCore(object):
         """Return the resource metadata."""
         return function.resolve(self._metadata) or {}
 
+    def external_id(self):
+        """Return the external resource id."""
+        return function.resolve(self._external_id)
+
     def render_hot(self):
         """Return a HOT snippet for the resource definition."""
         if self._rendering is None:
@@ -248,6 +278,8 @@ class ResourceDefinitionCore(object):
                 'deletion_policy': '_deletion_policy',
                 'update_policy': '_update_policy',
                 'depends_on': '_depends',
+                'external_id': '_external_id',
+                'condition': '_condition'
             }
 
             def rawattrs():
@@ -312,7 +344,7 @@ class ResourceDefinitionCore(object):
             return '='.join([arg_name, repr(getattr(self, '_%s' % arg_name))])
 
         args = ('properties', 'metadata', 'depends',
-                'deletion_policy', 'update_policy')
+                'deletion_policy', 'update_policy', 'condition')
         data = {
             'classname': type(self).__name__,
             'name': repr(self.name),

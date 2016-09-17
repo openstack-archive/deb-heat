@@ -14,9 +14,9 @@
 
 from heat.common.i18n import _
 from heat.engine import attributes
-from heat.engine import constraints
 from heat.engine import properties
 from heat.engine import resource
+from heat.engine import software_config_io as swc_io
 from heat.engine import support
 from heat.rpc import api as rpc_api
 
@@ -45,15 +45,13 @@ class SoftwareConfig(resource.Resource):
     support_status = support.SupportStatus(version='2014.1')
 
     PROPERTIES = (
-        GROUP, CONFIG, OPTIONS, INPUTS, OUTPUTS
+        GROUP, CONFIG,
+        OPTIONS,
+        INPUTS, OUTPUTS
     ) = (
-        'group', 'config', 'options', 'inputs', 'outputs'
-    )
-
-    IO_PROPERTIES = (
-        NAME, DESCRIPTION, TYPE, DEFAULT, ERROR_OUTPUT
-    ) = (
-        'name', 'description', 'type', 'default', 'error_output'
+        rpc_api.SOFTWARE_CONFIG_GROUP, rpc_api.SOFTWARE_CONFIG_CONFIG,
+        rpc_api.SOFTWARE_CONFIG_OPTIONS,
+        rpc_api.SOFTWARE_CONFIG_INPUTS, rpc_api.SOFTWARE_CONFIG_OUTPUTS,
     )
 
     ATTRIBUTES = (
@@ -61,54 +59,6 @@ class SoftwareConfig(resource.Resource):
     ) = (
         'config',
     )
-
-    input_schema = {
-        NAME: properties.Schema(
-            properties.Schema.STRING,
-            _('Name of the input.'),
-            required=True
-        ),
-        DESCRIPTION: properties.Schema(
-            properties.Schema.STRING,
-            _('Description of the input.')
-        ),
-        TYPE: properties.Schema(
-            properties.Schema.STRING,
-            _('Type of the value of the input.'),
-            default='String',
-            constraints=[constraints.AllowedValues((
-                'String', 'Number', 'CommaDelimitedList', 'Json', 'Boolean'))]
-        ),
-        DEFAULT: properties.Schema(
-            properties.Schema.STRING,
-            _('Default value for the input if none is specified.'),
-        ),
-    }
-
-    output_schema = {
-        NAME: properties.Schema(
-            properties.Schema.STRING,
-            _('Name of the output.'),
-            required=True
-        ),
-        DESCRIPTION: properties.Schema(
-            properties.Schema.STRING,
-            _('Description of the output.')
-        ),
-        TYPE: properties.Schema(
-            properties.Schema.STRING,
-            _('Type of the value of the output.'),
-            default='String',
-            constraints=[constraints.AllowedValues((
-                'String', 'Number', 'CommaDelimitedList', 'Json', 'Boolean'))]
-        ),
-        ERROR_OUTPUT: properties.Schema(
-            properties.Schema.BOOLEAN,
-            _('Denotes that the deployment is in an error state if this '
-              'output has a value.'),
-            default=False
-        )
-    }
 
     properties_schema = {
         GROUP: properties.Schema(
@@ -133,14 +83,14 @@ class SoftwareConfig(resource.Resource):
             _('Schema representing the inputs that this software config is '
               'expecting.'),
             schema=properties.Schema(properties.Schema.MAP,
-                                     schema=input_schema)
+                                     schema=swc_io.input_config_schema)
         ),
         OUTPUTS: properties.Schema(
             properties.Schema.LIST,
             _('Schema representing the outputs that this software config '
               'will produce.'),
             schema=properties.Schema(properties.Schema.MAP,
-                                     schema=output_schema)
+                                     schema=swc_io.output_config_schema)
         ),
     }
 
@@ -153,7 +103,7 @@ class SoftwareConfig(resource.Resource):
 
     def handle_create(self):
         props = dict(self.properties)
-        props[self.NAME] = self.physical_resource_name()
+        props[rpc_api.SOFTWARE_CONFIG_NAME] = self.physical_resource_name()
 
         sc = self.rpc_client().create_software_config(self.context, **props)
         self.resource_id_set(sc[rpc_api.SOFTWARE_CONFIG_ID])

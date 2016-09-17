@@ -10,8 +10,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import collections
-
 import six
 
 from heat.common import exception
@@ -22,18 +20,18 @@ from heat.engine import function
 from heat.engine.hot import functions as hot_funcs
 from heat.engine.hot import parameters
 from heat.engine import rsrc_defn
-from heat.engine import template
+from heat.engine import template_common
 
 
-class HOTemplate20130523(template.Template):
+class HOTemplate20130523(template_common.CommonTemplate):
     """A Heat Orchestration Template format stack template."""
 
     SECTIONS = (
         VERSION, DESCRIPTION, PARAMETER_GROUPS,
-        PARAMETERS, RESOURCES, OUTPUTS, MAPPINGS
+        PARAMETERS, RESOURCES, OUTPUTS, MAPPINGS,
     ) = (
         'heat_template_version', 'description', 'parameter_groups',
-        'parameters', 'resources', 'outputs', '__undefined__'
+        'parameters', 'resources', 'outputs', '__undefined__',
     )
 
     OUTPUT_KEYS = (
@@ -72,6 +70,7 @@ class HOTemplate20130523(template.Template):
     _HOT_TO_CFN_ATTRS.update(
         {OUTPUT_VALUE: cfn_template.CfnTemplate.OUTPUT_VALUE})
 
+    extra_rsrc_defn = ()
     functions = {
         'Fn::GetAZs': cfn_funcs.GetAZs,
         'get_param': hot_funcs.GetParam,
@@ -146,6 +145,33 @@ class HOTemplate20130523(template.Template):
             else:
                 raise ke
 
+    def validate_section(self, section, sub_section, data, allowed_keys):
+        obj_name = section[:-1]
+        err_msg = _('"%%s" is not a valid keyword inside a %s '
+                    'definition') % obj_name
+        args = {'object_name': obj_name, 'sub_section': sub_section}
+        message = _('Each %(object_name)s must contain a '
+                    '%(sub_section)s key.') % args
+        for name, attrs in sorted(data.items()):
+            if not attrs:
+                raise exception.StackValidationFailed(message=message)
+            try:
+                for attr, attr_value in six.iteritems(attrs):
+                    if attr not in allowed_keys:
+                        raise KeyError(err_msg % attr)
+                if sub_section not in attrs:
+                    raise exception.StackValidationFailed(message=message)
+            except AttributeError:
+                message = _('"%(section)s" must contain a map of '
+                            '%(obj_name)s maps. Found a [%(_type)s] '
+                            'instead') % {'section': section,
+                                          '_type': type(attrs),
+                                          'obj_name': obj_name}
+                raise exception.StackValidationFailed(message=message)
+            except KeyError as e:
+                # an invalid keyword was found
+                raise exception.StackValidationFailed(message=e.args[0])
+
     def _translate_section(self, section, sub_section, data, mapping):
 
         self.validate_section(section, sub_section, data, mapping)
@@ -156,7 +182,8 @@ class HOTemplate20130523(template.Template):
 
             for attr, attr_value in six.iteritems(attrs):
                 cfn_attr = mapping[attr]
-                cfn_object[cfn_attr] = attr_value
+                if cfn_attr is not None:
+                    cfn_object[cfn_attr] = attr_value
 
             cfn_objects[name] = cfn_object
 
@@ -191,53 +218,17 @@ class HOTemplate20130523(template.Template):
                                         user_params=user_params,
                                         param_defaults=param_defaults)
 
-    def validate_resource_definitions(self, stack):
-        resources = self.t.get(self.RESOURCES) or {}
-        allowed_keys = set(self._RESOURCE_KEYS)
-
-        try:
-            for name, snippet in resources.items():
-                path = '.'.join([self.RESOURCES, name])
-                data = self.parse(stack, snippet, path)
-
-                if not self.validate_resource_key_type(self.RES_TYPE,
-                                                       six.string_types,
-                                                       'string',
-                                                       allowed_keys,
-                                                       name, data):
-                    args = {'name': name, 'type_key': self.RES_TYPE}
-                    msg = _('Resource %(name)s is missing '
-                            '"%(type_key)s"') % args
-                    raise KeyError(msg)
-
-                self.validate_resource_key_type(
-                    self.RES_PROPERTIES,
-                    (collections.Mapping, function.Function),
-                    'object', allowed_keys, name, data)
-                self.validate_resource_key_type(
-                    self.RES_METADATA,
-                    (collections.Mapping, function.Function),
-                    'object', allowed_keys, name, data)
-                self.validate_resource_key_type(
-                    self.RES_DEPENDS_ON,
-                    collections.Sequence,
-                    'list or string', allowed_keys, name, data)
-                self.validate_resource_key_type(
-                    self.RES_DELETION_POLICY,
-                    (six.string_types, function.Function),
-                    'string', allowed_keys, name, data)
-                self.validate_resource_key_type(
-                    self.RES_UPDATE_POLICY,
-                    (collections.Mapping, function.Function),
-                    'object', allowed_keys, name, data)
-        except (TypeError, ValueError) as ex:
-            raise exception.StackValidationFailed(message=six.text_type(ex))
-
     def resource_definitions(self, stack):
         resources = self.t.get(self.RESOURCES) or {}
-        parsed_resources = self.parse(stack, resources)
-        return dict((name, self.rsrc_defn_from_snippet(name, data))
-                    for name, data in parsed_resources.items())
+
+        def rsrc_defn_from_snippet(name, snippet):
+            data = self.parse(stack, snippet)
+            return self.rsrc_defn_from_snippet(name, data)
+
+        return dict(
+            (name, rsrc_defn_from_snippet(name, data))
+            for name, data in resources.items() if self.get_res_condition(
+                stack, data, name))
 
     @classmethod
     def rsrc_defn_from_snippet(cls, name, data):
@@ -262,7 +253,8 @@ class HOTemplate20130523(template.Template):
             'update_policy': data.get(cls.RES_UPDATE_POLICY),
             'description': None
         }
-
+        for key in cls.extra_rsrc_defn:
+            kwargs[key] = data.get(key)
         return rsrc_defn.ResourceDefinition(name, **kwargs)
 
     def add_resource(self, definition, name=None):
@@ -394,6 +386,33 @@ class HOTemplate20160408(HOTemplate20151015):
 
 
 class HOTemplate20161014(HOTemplate20160408):
+
+    CONDITION = 'condition'
+    RES_CONDITION = CONDITION
+    CONDITIONS = 'conditions'
+
+    SECTIONS = HOTemplate20160408.SECTIONS + (CONDITIONS,)
+
+    _CFN_TO_HOT_SECTIONS = HOTemplate20160408._CFN_TO_HOT_SECTIONS
+    _CFN_TO_HOT_SECTIONS.update({
+        cfn_template.CfnTemplate.CONDITIONS: CONDITIONS})
+
+    _RESOURCE_KEYS = HOTemplate20160408._RESOURCE_KEYS
+    _EXT_KEY = (RES_EXTERNAL_ID,) = ('external_id',)
+    _RESOURCE_KEYS += _EXT_KEY
+    _RESOURCE_KEYS += (RES_CONDITION,)
+
+    _RESOURCE_HOT_TO_CFN_ATTRS = HOTemplate20160408._RESOURCE_HOT_TO_CFN_ATTRS
+    _RESOURCE_HOT_TO_CFN_ATTRS.update({RES_EXTERNAL_ID: None})
+    _RESOURCE_HOT_TO_CFN_ATTRS.update(
+        {CONDITION: cfn_template.CfnTemplate.CONDITION})
+
+    extra_rsrc_defn = HOTemplate20160408.extra_rsrc_defn + (
+        RES_EXTERNAL_ID, RES_CONDITION,)
+
+    OUTPUT_CONDITION = CONDITION
+    OUTPUT_KEYS = HOTemplate20160408.OUTPUT_KEYS + (OUTPUT_CONDITION,)
+
     deletion_policies = {
         'Delete': rsrc_defn.ResourceDefinition.DELETE,
         'Retain': rsrc_defn.ResourceDefinition.RETAIN,
@@ -411,7 +430,7 @@ class HOTemplate20161014(HOTemplate20160408):
         'get_param': hot_funcs.GetParam,
         'get_resource': cfn_funcs.ResourceRef,
         'list_join': hot_funcs.JoinMultiple,
-        'repeat': hot_funcs.Repeat,
+        'repeat': hot_funcs.RepeatWithMap,
         'resource_facade': hot_funcs.ResourceFacade,
         'str_replace': hot_funcs.ReplaceJson,
 
@@ -426,7 +445,8 @@ class HOTemplate20161014(HOTemplate20160408):
 
         # functions added in 2016-10-14
         'yaql': hot_funcs.Yaql,
-        'equals': cfn_funcs.Equals,
+        'map_replace': hot_funcs.MapReplace,
+        'if': hot_funcs.If,
 
         # functions removed from 2015-10-15
         'Fn::Select': hot_funcs.Removed,
@@ -441,3 +461,46 @@ class HOTemplate20161014(HOTemplate20160408):
         'Fn::ResourceFacade': hot_funcs.Removed,
         'Ref': hot_funcs.Removed,
     }
+
+    condition_functions = {
+        'get_param': hot_funcs.GetParam,
+        'equals': hot_funcs.Equals,
+        'not': hot_funcs.Not,
+        'and': hot_funcs.And,
+        'or': hot_funcs.Or
+    }
+
+    def __init__(self, tmpl, template_id=None, files=None, env=None):
+        super(HOTemplate20161014, self).__init__(
+            tmpl, template_id, files, env)
+
+        self._parser_condition_functions = {}
+        for n, f in six.iteritems(self.functions):
+            if not isinstance(f, hot_funcs.Removed):
+                self._parser_condition_functions[n] = function.Invalid
+            else:
+                self._parser_condition_functions[n] = f
+        self._parser_condition_functions.update(self.condition_functions)
+        self.merge_sections = [self.PARAMETERS, self.CONDITIONS]
+
+    def get_condition_definitions(self):
+        return self[self.CONDITIONS]
+
+    def validate_resource_definition(self, name, data):
+        super(HOTemplate20161014, self).validate_resource_definition(
+            name, data)
+
+        self.validate_resource_key_type(
+            self.RES_EXTERNAL_ID,
+            (six.string_types, function.Function),
+            'string', self._RESOURCE_KEYS, name, data)
+        self.validate_resource_key_type(
+            self.RES_CONDITION,
+            (six.string_types, bool),
+            'string or boolean', self._RESOURCE_KEYS, name, data)
+
+    def has_condition_section(self, snippet):
+        if snippet and self.CONDITION in snippet:
+            return True
+
+        return False

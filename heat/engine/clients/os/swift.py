@@ -14,6 +14,7 @@
 import datetime
 import email.utils
 import hashlib
+import logging
 import random
 import time
 
@@ -32,6 +33,11 @@ MAX_EPOCH = 2147483647
 CLIENT_NAME = 'swift'
 
 
+# silence the swiftclient logging
+sc_logger = logging.getLogger("swiftclient")
+sc_logger.setLevel(logging.CRITICAL)
+
+
 class SwiftClientPlugin(client_plugin.ClientPlugin):
 
     exceptions_module = exceptions
@@ -48,7 +54,7 @@ class SwiftClientPlugin(client_plugin.ClientPlugin):
             'user': con.username,
             'key': None,
             'authurl': None,
-            'preauthtoken': self.auth_token,
+            'preauthtoken': con.keystone_session.get_token(),
             'preauthurl': self.url_for(service_type=self.OBJECT_STORE,
                                        endpoint_type=endpoint_type),
             'os_options': {'endpoint_type': endpoint_type},

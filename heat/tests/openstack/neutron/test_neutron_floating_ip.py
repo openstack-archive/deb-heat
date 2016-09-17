@@ -21,6 +21,7 @@ from neutronclient.v2_0 import client as neutronclient
 
 from heat.common import exception
 from heat.common import template_format
+from heat.common import timeutils
 from heat.engine.cfn import functions as cfn_funcs
 from heat.engine.clients.os import neutron
 from heat.engine import rsrc_defn
@@ -131,6 +132,7 @@ class NeutronFloatingIPTest(common.HeatTestCase):
         self.m.StubOutWithMock(neutronclient.Client, 'show_port')
         self.m.StubOutWithMock(neutronV20,
                                'find_resourceid_by_name_or_id')
+        self.m.StubOutWithMock(timeutils, 'retry_backoff_delay')
         self.patchobject(neutron.NeutronClientPlugin, 'has_extension',
                          return_value=True)
 
@@ -205,6 +207,7 @@ class NeutronFloatingIPTest(common.HeatTestCase):
             'floating_network_id': u'abcd1234'
         }})
 
+        timeutils.retry_backoff_delay(1, jitter_max=2.0).AndReturn(0.01)
         neutronclient.Client.delete_floatingip(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766').AndReturn(None)
         neutronclient.Client.show_floatingip(
@@ -213,6 +216,8 @@ class NeutronFloatingIPTest(common.HeatTestCase):
             'id': 'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
             'floating_network_id': u'abcd1234'
         }})
+        neutronclient.Client.delete_floatingip(
+            'fc68ea2c-b60b-4b4f-bd82-94ec81110766').AndReturn(None)
         neutronclient.Client.show_floatingip(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766').AndRaise(
                 qe.NeutronClientException(status_code=404))
@@ -563,6 +568,36 @@ class NeutronFloatingIPTest(common.HeatTestCase):
 
         self.m.VerifyAll()
 
+    def test_floatingip_create_specify_dns(self):
+        neutronV20.find_resourceid_by_name_or_id(
+            mox.IsA(neutronclient.Client),
+            'network',
+            'abcd1234',
+            cmd_resource=None,
+        ).MultipleTimes().AndReturn('abcd1234')
+        self.stub_NetworkConstraint_validate()
+        neutronclient.Client.create_floatingip({
+            'floatingip': {'floating_network_id': u'abcd1234',
+                           'dns_name': 'myvm',
+                           'dns_domain': 'openstack.org.'}
+        }).AndReturn({'floatingip': {
+            'status': 'ACTIVE',
+            'id': 'fc68ea2c-b60b-4b4f-bd82-94ec81110766',
+            'floating_ip_address': '172.24.4.98'
+        }})
+
+        self.m.ReplayAll()
+        t = template_format.parse(neutron_floating_template)
+        props = t['resources']['floating_ip']['properties']
+        props['dns_name'] = 'myvm'
+        props['dns_domain'] = 'openstack.org.'
+        stack = utils.parse_stack(t)
+        fip = stack['floating_ip']
+        scheduler.TaskRunner(fip.create)()
+        self.assertEqual((fip.CREATE, fip.COMPLETE), fip.state)
+
+        self.m.VerifyAll()
+
     def test_floatip_port(self):
         t = template_format.parse(neutron_floating_no_assoc_template)
         t['resources']['port_floating']['properties']['network'] = "xyz1234"
@@ -695,3 +730,35 @@ class NeutronFloatingIPTest(common.HeatTestCase):
         scheduler.TaskRunner(p.delete)()
 
         self.m.VerifyAll()
+
+    def test_add_dependencies(self):
+        t = template_format.parse(neutron_floating_template)
+        stack = utils.parse_stack(t)
+        fipa = stack['floating_ip_assoc']
+        port = stack['port_floating']
+        r_int = stack['router_interface']
+        deps = mock.MagicMock()
+        dep_list = []
+
+        def iadd(obj):
+            dep_list.append(obj[1])
+        deps.__iadd__.side_effect = iadd
+        deps.graph.return_value = {fipa: [port]}
+        fipa.add_dependencies(deps)
+        self.assertEqual([r_int], dep_list)
+
+    def test_add_dependencies_without_fixed_ips_in_port(self):
+        t = template_format.parse(neutron_floating_template)
+        del t['resources']['port_floating']['properties']['fixed_ips']
+        stack = utils.parse_stack(t)
+        fipa = stack['floating_ip_assoc']
+        port = stack['port_floating']
+        deps = mock.MagicMock()
+        dep_list = []
+
+        def iadd(obj):
+            dep_list.append(obj[1])
+        deps.__iadd__.side_effect = iadd
+        deps.graph.return_value = {fipa: [port]}
+        fipa.add_dependencies(deps)
+        self.assertEqual([], dep_list)

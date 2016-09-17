@@ -43,7 +43,7 @@ HOT templates are defined in YAML and follow the structure outlined below.
 
 .. code-block:: yaml
 
-  heat_template_version: 2015-04-30
+  heat_template_version: 2016-10-14
 
   description:
     # a description of the template
@@ -59,6 +59,9 @@ HOT templates are defined in YAML and follow the structure outlined below.
 
   outputs:
     # declaration of output parameters
+
+  conditions:
+    # declaration of conditions
 
 heat_template_version
     This key with value ``2013-05-23`` (or a later date) indicates that the
@@ -88,6 +91,15 @@ outputs
     This section allows for specifying output parameters available to users
     once the template has been instantiated. This section is optional and can
     be omitted when no output values are required.
+
+conditions
+    This optional section includes statements which can be used to restrict
+    when a resource is created or when a property is defined. They can be
+    associated with resources and resource properties in the
+    ``resources`` section, also can be associated with outputs in the
+    ``outputs`` sections of a template.
+
+    Note: Support for this section is added in the Newton version.
 
 
 .. _hot_spec_template_version:
@@ -209,9 +221,10 @@ for the ``heat_template_version`` key:
     The key with value ``2016-10-14`` or ``newton`` indicates that the YAML
     document is a HOT template and it may contain features added and/or removed
     up until the Newton release.  This version adds the ``yaql`` function which
-    can be used for evaluation of complex expressions, and also adds ``equals``
-    function which can be used to compare whether two values are equal.  The
-    complete list of supported functions is::
+    can be used for evaluation of complex expressions, the ``map_replace``
+    function that can do key/value replacements on a mapping, and the ``if``
+    function which can be used to return corresponding value based on condition
+    evaluation. The complete list of supported functions is::
 
       digest
       get_attr
@@ -220,12 +233,27 @@ for the ``heat_template_version`` key:
       get_resource
       list_join
       map_merge
+      map_replace
       repeat
       resource_facade
       str_replace
       str_split
       yaql
+      if
+
+    This version adds ``equals`` condition function which can be used
+    to compare whether two values are equal, the ``not`` condition function
+    which acts as a NOT operator, the ``and`` condition function which acts
+    as an AND operator to evaluate all the specified conditions, the ``or``
+    condition function which acts as an OR operator to evaluate all the
+    specified conditions. The complete list of supported condition
+    functions is::
+
       equals
+      get_param
+      not
+      and
+      or
 
 .. _hot_spec_parameter_groups:
 
@@ -615,6 +643,8 @@ the following syntax
        depends_on: <resource ID or list of ID>
        update_policy: <update policy>
        deletion_policy: <deletion policy>
+       external_id: <external resource ID>
+       condition: <condition name>
 
 resource ID
     A resource ID which must be unique within the ``resources`` section of the
@@ -651,6 +681,23 @@ deletion_policy
     ``delete``, ``retain``, and ``snapshot`` are also allowed.
     This attribute is optional; the default policy is to delete the physical
     resource when deleting a resource from the stack.
+
+external_id
+   Allows for specifying the resource_id for an existing external
+   (to the stack) resource. External resources can not depend on other
+   resources, but we allow other resources depend on external resource.
+   This attribute is optional.
+   Note: when this is specified, properties will not be used for building the
+   resource and the resource is not managed by Heat. This is not possible to
+   update that attribute. Also resource won't be deleted by heat when stack
+   is deleted.
+
+condition
+    Condition for the resource. Which decides whether to create the
+    resource or not.
+    This attribute is optional.
+
+    Note: Support ``condition`` for resource is added in the Newton version.
 
 Depending on the type of resource, the resource block might include more
 resource specific data.
@@ -728,6 +775,7 @@ according to the following syntax
      <parameter name>:
        description: <description>
        value: <parameter value>
+       condition: <condition name>
 
 parameter name
     The output parameter name, which must be unique within the ``outputs``
@@ -743,6 +791,13 @@ parameter value
     the functions.
     This attribute is required.
 
+condition
+    To conditionally define an output value. None value will be shown if the
+    condition is False.
+    This attribute is optional.
+
+    Note: Support ``condition`` for output is added in the Newton version.
+
 The example below shows how the IP address of a compute resource can
 be defined as an output parameter
 
@@ -752,6 +807,113 @@ be defined as an output parameter
      instance_ip:
        description: IP address of the deployed compute instance
        value: { get_attr: [my_instance, first_address] }
+
+
+Conditions section
+~~~~~~~~~~~~~~~~~~
+The ``conditions`` section defines one or more conditions which are evaluated
+based on input parameter values provided when a user creates or updates a
+stack. The condition can be associated with resources, resource properties and
+outputs. For example, based on the result of a condition, user can
+conditionally create resources, user can conditionally set different values
+of properties, and user can conditionally give outputs of a stack.
+
+The ``conditions`` section is defined with the following syntax
+
+.. code-block:: yaml
+
+   conditions:
+     <condition name1>: {expression1}
+     <condition name2>: {expression2}
+     ...
+
+condition name
+    The condition name, which must be unique within the ``conditions``
+    section of a template.
+
+expression
+    The expression which is expected to return True or False. Usually,
+    the condition functions can be used as expression to define conditions::
+
+      equals
+      get_param
+      not
+      and
+      or
+
+    Note: In condition functions, you can reference a value from an input
+    parameter, but you cannot reference resource or its attribute.
+
+An example of conditions section definition
+
+.. code-block:: yaml
+
+   conditions:
+     cd1: True
+     cd2:
+       get_param: param1
+     cd3:
+       equals:
+       - get_param: param2
+       - yes
+     cd4:
+       not:
+         equals:
+         - get_param: param3
+         - yes
+     cd5:
+       and:
+       - equals:
+         - get_param: env_type
+         - prod
+       - not:
+           equals:
+           - get_param: zone
+           - beijing
+     cd6:
+       or:
+       - equals:
+         - get_param: zone
+         - shanghai
+       - equals:
+         - get_param: zone
+         - beijing
+
+The example below shows how to associate condition with resources
+
+.. code-block:: yaml
+
+   parameters:
+     env_type:
+       default: test
+       type: string
+   conditions:
+     create_prod_res: {equals : [{get_param: env_type}, "prod"]
+   resources:
+     volume:
+       type: OS::Cinder::Volume
+       condition: create_prod_res
+       properties:
+         size: 1
+
+The 'create_prod_res' condition evaluates to true if the 'env_type'
+parameter is equal to 'prod'. In the above sample template, the 'volume'
+resource is associated with the 'create_prod_res' condition. Therefore,
+the 'volume' resource is created only if the 'env_type' is equal to 'prod'.
+
+The example below shows how to conditionally define an output
+
+.. code-block:: yaml
+
+   outputs:
+     vol_size:
+       value: {get_attr: [my_volume, size]}
+       condition: create_prod_res
+
+In the above sample template, the 'vol_size' output is associated with
+the 'create_prod_res' condition. Therefore, the 'vol_size' output is
+given corresponding value only if the 'env_type' is equal to 'prod',
+otherwise the value of the output is None.
 
 
 .. _hot_spec_intrinsic_functions:
@@ -1127,6 +1289,8 @@ security group to also include parameterized protocols
 Note how multiple entries in the ``for_each`` argument are equivalent to
 nested for-loops in most programming languages.
 
+From HOT version ``2016-10-14`` you may also pass a map as value for the
+``for_each`` key, in which case the list of map keys will be used as value.
 
 resource_facade
 ---------------
@@ -1292,6 +1456,45 @@ This resolves to a map containing ``{'k1': 'v2', 'k2': 'v2'}``.
 
 Maps containing no items resolve to {}.
 
+map_replace
+-----------
+The ``map_replace`` function does key/value replacements on an existing mapping.
+An input mapping is processed by iterating over all keys/values and performing
+a replacement if an exact match is found in either of the optional keys/values
+mappings.
+
+The syntax of the ``map_replace`` function is
+
+.. code-block:: yaml
+
+    map_replace:
+    - <input map>
+    - keys: <map of key replacements>
+      values: <map of value replacements>
+
+For example
+
+.. code-block:: yaml
+
+    map_replace:
+    - k1: v1
+      k2: v2
+    - keys:
+        k1: K1
+      values:
+        v2: V2
+
+This resolves to a map containing ``{'K1': 'v1', 'k2': 'V2'}``.
+
+The keys/values mappings are optional, either or both may be specified.
+
+Note that an error is raised if a replacement defined in "keys" results
+in a collision with an existing keys in the input or output map.
+
+Also note that while unhashable values (e.g lists) in the input map are valid,
+they will be ignored by the values replacement, because no key can be defined
+in the values mapping to define their replacement.
+
 yaql
 ----
 The ``yaql`` evaluates yaql expression on a given data.
@@ -1344,3 +1547,142 @@ For example
 
 If param 'env_type' equals to 'prod', this function returns true,
 otherwise returns false.
+
+if
+--
+The ``if`` function returns the corresponding value based on the
+evaluation of a condition.
+
+The syntax of the ``if`` function is
+
+.. code-block:: yaml
+
+    if: [condition_name, value_if_true, value_if_false]
+
+For example
+
+.. code-block:: yaml
+
+    conditions:
+      create_prod_res: {equals : [{get_param: env_type}, "prod"]}
+
+    resources:
+      test_server:
+        type: OS::Nova::Server
+        properties:
+          name: {if: ["create_prod_res", "s_prod", "s_test"]}
+
+The 'name' property is set to 's_prod' if the condition
+"create_prod_res" evaluates to true (if parameter 'env_type' is 'prod'),
+and is set to 's_test' if the condition "create_prod_res" evaluates
+to false (if parameter 'env_type' isn't 'prod').
+
+Note: You define all conditions in the ``conditions`` section of a
+template except for ``if`` conditions. You can use the ``if`` condition
+in the property values in the ``resources`` section and ``outputs`` sections
+of a template.
+
+not
+---
+The ``not`` function acts as a NOT operator.
+
+The syntax of the ``not`` function is
+
+.. code-block:: yaml
+
+    not: condition
+
+Note: A condition such as ``equals`` that evaluates to true or false
+can be defined in ``not`` function, also we can set a boolean
+value as condition.
+
+Returns true for a condition that evaluates to false or
+returns false for a condition that evaluates to true.
+
+For example
+
+.. code-block:: yaml
+
+    not:
+      equals:
+      - get_param: env_type
+      - prod
+
+If param 'env_type' equals to 'prod', this function returns false,
+otherwise returns true.
+
+Another example
+
+.. code-block:: yaml
+
+    not: True
+
+This function returns false.
+
+and
+---
+The ``and`` function acts as an AND operator to evaluate all the
+specified conditions.
+
+The syntax of the ``and`` function is
+
+.. code-block:: yaml
+
+    and: [{condition_1}, {condition_2}, ... {condition_n}}]
+
+Note: A condition such as ``equals`` or ``not`` that evaluates to true or
+false can be defined in ``and`` function, also we can set a boolean
+value as condition.
+
+Returns true if all the specified conditions evaluate to true, or returns
+false if any one of the conditions evaluates to false.
+
+For example
+
+.. code-block:: yaml
+
+    and:
+    - equals:
+      - get_param: env_type
+      - prod
+    - not:
+        equals:
+        - get_param: zone
+        - beijing
+
+If param 'env_type' equals to 'prod', and param 'zone' is not equal to
+'beijing', this function returns true, otherwise returns false.
+
+or
+--
+The ``or`` function acts as an OR operator to evaluate all the
+specified conditions.
+
+The syntax of the ``or`` function is
+
+.. code-block:: yaml
+
+    or: [{condition_1}, {condition_2}, ... {condition_n}}]
+
+Note: A condition such as ``equals`` or ``not`` that evaluates to true or
+false can be defined in ``or`` function, also we can set a boolean
+value as condition.
+
+Returns true if any one of the specified conditions evaluate to true,
+or returns false if all of the conditions evaluates to false.
+
+For example
+
+.. code-block:: yaml
+
+    or:
+    - equals:
+      - get_param: env_type
+      - prod
+    - not:
+        equals:
+        - get_param: zone
+        - beijing
+
+If param 'env_type' equals to 'prod', or the param 'zone' is not equal to
+'beijing', this function returns true, otherwise returns false.

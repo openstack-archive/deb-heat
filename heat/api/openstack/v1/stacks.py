@@ -21,6 +21,7 @@ from webob import exc
 
 from heat.api.openstack.v1 import util
 from heat.api.openstack.v1.views import stacks_view
+from heat.common import context
 from heat.common import environment_format
 from heat.common.i18n import _
 from heat.common.i18n import _LW
@@ -138,10 +139,10 @@ class InstantiationData(object):
         env = {}
         if self.PARAM_ENVIRONMENT in self.data:
             env_data = self.data[self.PARAM_ENVIRONMENT]
-            if isinstance(env_data, dict):
-                env = env_data
-            else:
-                with self.parse_error_check('Environment'):
+            with self.parse_error_check('Environment'):
+                if isinstance(env_data, dict):
+                    env = environment_format.validate(env_data)
+                else:
                     env = environment_format.parse(env_data)
 
         environment_format.default_for_missing(env)
@@ -196,7 +197,7 @@ class StackController(object):
         except ValueError as e:
             raise exc.HTTPBadRequest(six.text_type(e))
 
-    def _index(self, req, tenant_safe=True):
+    def _index(self, req, use_admin_cnxt=False):
         filter_whitelist = {
             # usage of keys in this list are not encouraged, please use
             # rpc_api.STACK_KEYS instead
@@ -298,19 +299,23 @@ class StackController(object):
         if not filter_params:
             filter_params = None
 
-        stacks = self.rpc_client.list_stacks(req.context,
-                                             filters=filter_params,
-                                             tenant_safe=tenant_safe,
-                                             **params)
+        if use_admin_cnxt:
+            cnxt = context.get_admin_context()
+            include_project = True
+        else:
+            cnxt = req.context
+            include_project = False
 
+        stacks = self.rpc_client.list_stacks(cnxt,
+                                             filters=filter_params,
+                                             **params)
         count = None
         if with_count:
             try:
                 # Check if engine has been updated to a version with
                 # support to count_stacks before trying to use it.
-                count = self.rpc_client.count_stacks(req.context,
+                count = self.rpc_client.count_stacks(cnxt,
                                                      filters=filter_params,
-                                                     tenant_safe=tenant_safe,
                                                      show_deleted=show_deleted,
                                                      show_nested=show_nested,
                                                      show_hidden=show_hidden,
@@ -321,12 +326,13 @@ class StackController(object):
             except AttributeError as ex:
                 LOG.warning(_LW("Old Engine Version: %s"), ex)
 
-        return stacks_view.collection(req, stacks=stacks, count=count,
-                                      tenant_safe=tenant_safe)
+        return stacks_view.collection(req, stacks=stacks,
+                                      count=count,
+                                      include_project=include_project)
 
     @util.policy_enforce
     def global_index(self, req):
-        return self._index(req, tenant_safe=False)
+        return self._index(req, use_admin_cnxt=True)
 
     @util.policy_enforce
     def index(self, req):
@@ -447,9 +453,6 @@ class StackController(object):
         templ = self.rpc_client.get_template(req.context,
                                              identity)
 
-        if templ is None:
-            raise exc.HTTPNotFound()
-
         # TODO(zaneb): always set Content-type to application/json
         return templ
 
@@ -457,9 +460,6 @@ class StackController(object):
     def environment(self, req, identity):
         """Get the environment for an existing stack."""
         env = self.rpc_client.get_environment(req.context, identity)
-
-        if env is None:
-            raise exc.HTTPNotFound()
 
         return env
 
@@ -558,13 +558,9 @@ class StackController(object):
     def delete(self, req, identity):
         """Delete the specified stack."""
 
-        res = self.rpc_client.delete_stack(req.context,
-                                           identity,
-                                           cast=False)
-
-        if res is not None:
-            raise exc.HTTPBadRequest(res['Error'])
-
+        self.rpc_client.delete_stack(req.context,
+                                     identity,
+                                     cast=False)
         raise exc.HTTPNoContent()
 
     @util.identified_stack

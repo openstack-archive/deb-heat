@@ -16,6 +16,7 @@ import copy
 import json
 
 from cinderclient import exceptions as cinder_exp
+from oslo_config import cfg
 import six
 
 from heat.common import exception
@@ -273,7 +274,6 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
         self.assertEqual(u'False', rsrc.FnGetAtt('bootable'))
         self.assertEqual(u'False', rsrc.FnGetAtt('encrypted'))
         self.assertEqual(u'[]', rsrc.FnGetAtt('attachments'))
-        self.assertEqual({'volume': 'info'}, rsrc.FnGetAtt('show'))
         self.assertEqual('False', rsrc.FnGetAtt('multiattach'))
         error = self.assertRaises(exception.InvalidTemplateAttribute,
                                   rsrc.FnGetAtt, 'unknown')
@@ -542,21 +542,6 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
         scheduler.TaskRunner(rsrc.update, after)()
 
         self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
-        self.assertEqual(1, self.cinder_fc.volumes.retype.call_count)
-
-        self.cinder_fc.volume_api_version = 1
-        new_vol_type_1 = 'new_type_1'
-        props = copy.deepcopy(rsrc.properties.data)
-        props['volume_type'] = new_vol_type_1
-        after = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(), props)
-        # if the volume api is v1, not support to retype
-        update_task = scheduler.TaskRunner(rsrc.update, after)
-        ex = self.assertRaises(exception.ResourceFailure, update_task)
-        self.assertEqual('NotSupported: resources.volume2: '
-                         'Using Cinder API V1, '
-                         'volume_type update is not supported.',
-                         six.text_type(ex))
-        self.assertEqual((rsrc.UPDATE, rsrc.FAILED), rsrc.state)
         self.assertEqual(1, self.cinder_fc.volumes.retype.call_count)
 
     def test_cinder_volume_update_name_and_metadata(self):
@@ -981,20 +966,6 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
 
         self.m.VerifyAll()
 
-    def test_cinder_create_with_scheduler_hints_and_cinder_api_v1(self):
-        cinder.CinderClientPlugin._create().AndReturn(self.cinder_fc)
-        self.cinder_fc.volume_api_version = 1
-
-        self.m.ReplayAll()
-
-        stack_name = 'test_cvolume_scheduler_hints_api_v1_stack'
-        stack = utils.parse_stack(self.t, stack_name=stack_name)
-        ex = self.assertRaises(exception.StackValidationFailed,
-                               self.create_volume, self.t, stack, 'volume3')
-        self.assertIn('Scheduler hints are not supported by the current '
-                      'volume API.', six.text_type(ex))
-        self.m.VerifyAll()
-
     def test_cinder_create_with_stack_scheduler_hints(self):
         fv = vt_base.FakeVolume('creating')
         sh.cfg.CONF.set_override('stack_scheduler_hints', True,
@@ -1018,7 +989,7 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
             scheduler_hints={shm.HEAT_ROOT_STACK_ID: stack.root_stack_id(),
                              shm.HEAT_STACK_ID: stack.id,
                              shm.HEAT_STACK_NAME: stack.name,
-                             shm.HEAT_PATH_IN_STACK: [(None, stack.name)],
+                             shm.HEAT_PATH_IN_STACK: [stack.name],
                              shm.HEAT_RESOURCE_NAME: rsrc.name,
                              shm.HEAT_RESOURCE_UUID: rsrc.uuid}).AndReturn(fv)
         self.cinder_fc.volumes.get(fv.id).AndReturn(fv)
@@ -1029,22 +1000,6 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
         scheduler.TaskRunner(rsrc.create)()
         # this makes sure the auto increment worked on volume creation
         self.assertTrue(rsrc.id > 0)
-
-        self.m.VerifyAll()
-
-    def test_cinder_create_with_multiattach_and_cinder_api_v1(self):
-        cinder.CinderClientPlugin._create().AndReturn(self.cinder_fc)
-        self.cinder_fc.volume_api_version = 1
-
-        self.m.ReplayAll()
-
-        stack_name = 'test_cvolume_multiattach_api_v1_stack'
-        stack = utils.parse_stack(self.t, stack_name=stack_name)
-        ex = self.assertRaises(exception.StackValidationFailed,
-                               self.create_volume, self.t, stack, 'volume4')
-        self.assertIn('Multiple attach is not supported by the current '
-                      'volume API. Use this property since '
-                      'Cinder API v2.', six.text_type(ex))
 
         self.m.VerifyAll()
 
@@ -1247,3 +1202,14 @@ class CinderVolumeTest(vt_base.BaseVolumeTest):
             stack.t.resource_definitions(stack)['volume'],
             stack)
         self.assertIsNone(rsrc.handle_delete_snapshot(mock_vs))
+
+    def test_vaildate_deletion_policy(self):
+        cfg.CONF.set_override('backups_enabled', False, group='volumes')
+        stack_name = 'test_volume_validate_deletion_policy'
+        self.t['resources']['volume']['deletion_policy'] = 'Snapshot'
+        stack = utils.parse_stack(self.t, stack_name=stack_name)
+        rsrc = self.get_volume(self.t, stack, 'volume')
+        self.assertRaisesRegex(
+            exception.StackValidationFailed,
+            'volume backup service is not enabled',
+            rsrc.validate)

@@ -15,10 +15,9 @@
 
 """Stack object."""
 
-import six
-
 from oslo_versionedobjects import base
 from oslo_versionedobjects import fields
+import six
 
 from heat.common import exception
 from heat.common.i18n import _
@@ -68,8 +67,10 @@ class Stack(
         for field in stack.fields:
             if field == 'raw_template':
                 stack['raw_template'] = (
-                    raw_template.RawTemplate.get_by_id(
-                        context, db_stack['raw_template_id']))
+                    raw_template.RawTemplate.from_db_object(
+                        context,
+                        raw_template.RawTemplate(),
+                        db_stack['raw_template']))
             else:
                 stack[field] = db_stack.__dict__.get(field)
         stack._context = context
@@ -110,7 +111,7 @@ class Stack(
 
     @classmethod
     def get_all(cls, context, limit=None, sort_keys=None, marker=None,
-                sort_dir=None, filters=None, tenant_safe=True,
+                sort_dir=None, filters=None,
                 show_deleted=False, show_nested=False, show_hidden=False,
                 tags=None, tags_any=None, not_tags=None,
                 not_tags_any=None):
@@ -121,7 +122,6 @@ class Stack(
             marker=marker,
             sort_dir=sort_dir,
             filters=filters,
-            tenant_safe=tenant_safe,
             show_deleted=show_deleted,
             show_nested=show_nested,
             show_hidden=show_hidden,
@@ -138,6 +138,16 @@ class Stack(
     @classmethod
     def get_all_by_owner_id(cls, context, owner_id):
         db_stacks = db_api.stack_get_all_by_owner_id(context, owner_id)
+        for db_stack in db_stacks:
+            try:
+                yield cls._from_db_object(context, cls(context), db_stack)
+            except exception.NotFound:
+                pass
+
+    @classmethod
+    def get_all_by_root_owner_id(cls, context, root_owner_id):
+        db_stacks = db_api.stack_get_all_by_root_owner_id(context,
+                                                          root_owner_id)
         for db_stack in db_stacks:
             try:
                 yield cls._from_db_object(context, cls(context), db_stack)
@@ -204,6 +214,9 @@ class Stack(
     def __eq__(self, another):
         self.refresh()  # to make test object comparison work well
         return super(Stack, self).__eq__(another)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
 
     def refresh(self):
         db_stack = db_api.stack_get(

@@ -55,8 +55,8 @@ empty_template = template_format.parse('''{
   "HeatTemplateFormatVersion" : "2012-12-12",
 }''')
 
-empty_template20161014 = template_format.parse('''{
-  "HeatTemplateFormatVersion" : "2016-10-14",
+aws_empty_template = template_format.parse('''{
+  "AWSTemplateFormatVersion" : "2010-09-09",
 }''')
 
 parameter_template = template_format.parse('''{
@@ -119,20 +119,27 @@ class TemplatePluginFixture(fixtures.Fixture):
 class TestTemplatePluginManager(common.HeatTestCase):
     def test_template_NEW_good(self):
         class NewTemplate(template.Template):
-            SECTIONS = (VERSION, MAPPINGS) = ('NEWTemplateFormatVersion',
-                                              '__undefined__')
+            SECTIONS = (VERSION, MAPPINGS, CONDITIONS, PARAMETERS) = (
+                'NEWTemplateFormatVersion',
+                '__undefined__',
+                'conditions',
+                'parameters')
             RESOURCES = 'thingies'
 
-            def param_schemata(self):
+            def param_schemata(self, param_defaults=None):
                 pass
 
             def get_section_name(self, section):
                 pass
 
-            def parameters(self, stack_identifier, user_params):
+            def parameters(self, stack_identifier, user_params,
+                           param_defaults=None):
                 pass
 
             def validate_resource_definitions(self, stack):
+                pass
+
+            def validate_condition_definitions(self, stack):
                 pass
 
             def resource_definitions(self, stack):
@@ -142,9 +149,6 @@ class TestTemplatePluginManager(common.HeatTestCase):
                 pass
 
             def __getitem__(self, section):
-                return {}
-
-            def functions(self):
                 return {}
 
         class NewTemplatePrint(function.Function):
@@ -272,6 +276,140 @@ class ParserTest(common.HeatTestCase):
         self.assertEqual('foo bar baz', parsed['quux'])
         self.assertEqual(raw['blarg'], parsed['blarg'])
         self.assertIsNot(raw, parsed)
+
+
+class TestTemplateConditionParser(common.HeatTestCase):
+
+    def setUp(self):
+        super(TestTemplateConditionParser, self).setUp()
+        self.ctx = utils.dummy_context()
+        t = {
+            'heat_template_version': '2016-10-14',
+            'parameters': {
+                'env_type': {
+                    'type': 'string',
+                    'default': 'test'
+                }
+            },
+            'conditions': {
+                'prod_env': {
+                    'equals': [{'get_param': 'env_type'}, 'prod']}},
+            'resources': {
+                'r1': {
+                    'type': 'GenericResourceType',
+                    'condition': 'prod_env'
+                }
+            },
+            'outputs': {
+                'foo': {
+                    'condition': 'prod_env',
+                    'value': {'get_attr': ['r1', 'foo']}
+                }
+            }
+        }
+
+        self.tmpl = template.Template(t)
+
+    def test_conditions_with_non_supported_functions(self):
+        t = {
+            'heat_template_version': '2016-10-14',
+            'parameters': {
+                'env_type': {
+                    'type': 'string',
+                    'default': 'test'
+                }
+            },
+            'conditions': {
+                'prod_env': {
+                    'equals': [{'get_param': 'env_type'},
+                               {'get_attr': [None, 'att']}]}}}
+        # test with get_attr in equals
+        tmpl = template.Template(t)
+        stk = stack.Stack(self.ctx, 'test_condition_with_get_attr_func', tmpl,
+                          resolve_data=False)
+        ex = self.assertRaises(exception.InvalidConditionFunction,
+                               tmpl.resolve_conditions, stk)
+        self.assertIn('The function is not supported in condition: get_attr',
+                      six.text_type(ex))
+
+        # test with get_resource in top level of a condition
+        tmpl.t['conditions']['prod_env'] = {'get_resource': 'R1'}
+        stk = stack.Stack(self.ctx, 'test_condition_with_get_attr_func', tmpl,
+                          resolve_data=False)
+        ex = self.assertRaises(exception.InvalidConditionFunction,
+                               tmpl.resolve_conditions, stk)
+        self.assertIn('The function is not supported in condition: '
+                      'get_resource', six.text_type(ex))
+
+        # test with get_attr in top level of a condition
+        tmpl.t['conditions']['prod_env'] = {'get_attr': [None, 'att']}
+        stk = stack.Stack(self.ctx, 'test_condition_with_get_attr_func', tmpl,
+                          resolve_data=False)
+        ex = self.assertRaises(exception.InvalidConditionFunction,
+                               tmpl.resolve_conditions, stk)
+        self.assertIn('The function is not supported in condition: get_attr',
+                      six.text_type(ex))
+
+    def test_condition_resolved_not_boolean(self):
+        t = {
+            'heat_template_version': '2016-10-14',
+            'parameters': {
+                'env_type': {
+                    'type': 'string',
+                    'default': 'test'
+                }
+            },
+            'conditions': {
+                'prod_env': {'get_param': 'env_type'}}}
+
+        # test with get_attr in equals
+        tmpl = template.Template(t)
+        stk = stack.Stack(self.ctx, 'test_condition_not_boolean', tmpl)
+
+        ex = self.assertRaises(exception.InvalidConditionDefinition,
+                               tmpl.validate_condition_definitions, stk)
+        self.assertIn('The definition of condition (prod_env) is invalid',
+                      six.text_type(ex))
+
+    def test_get_res_condition_invalid(self):
+        tmpl = copy.deepcopy(self.tmpl)
+        # test condition name is invalid
+        tmpl.t['resources']['r1']['condition'] = 'invalid_cd'
+        stk = stack.Stack(self.ctx, 'test_res_invalid_condition', tmpl)
+        res_snippet = tmpl.t.get('resources')['r1']
+        ex = self.assertRaises(exception.InvalidConditionReference,
+                               tmpl.get_res_condition,
+                               stk, res_snippet, 'r1')
+        self.assertIn('Invalid condition "invalid_cd" '
+                      '(in resources.r1.condition)', six.text_type(ex))
+        # test condition name is not string
+        tmpl.t['resources']['r1']['condition'] = 111
+        ex = self.assertRaises(exception.InvalidConditionReference,
+                               tmpl.get_res_condition,
+                               stk, res_snippet, 'r1')
+        self.assertIn('Invalid condition "111" (in resources.r1.condition)',
+                      six.text_type(ex))
+
+    def test_parse_output_condition_invalid(self):
+        stk = stack.Stack(self.ctx,
+                          'test_output_invalid_condition',
+                          self.tmpl)
+
+        # test condition name is invalid
+        stk.outputs['foo']['condition'] = 'invalid_cd'
+        ex = self.assertRaises(exception.InvalidConditionReference,
+                               self.tmpl.parse_outputs_conditions,
+                               stk.outputs, stk)
+        self.assertIn('Invalid condition "invalid_cd" '
+                      '(in outputs.foo.condition)',
+                      six.text_type(ex))
+        # test condition name is not string
+        stk.outputs['foo']['condition'] = 222
+        ex = self.assertRaises(exception.InvalidConditionReference,
+                               self.tmpl.parse_outputs_conditions,
+                               stk.outputs, stk)
+        self.assertIn('Invalid condition "222" (in outputs.foo.condition)',
+                      six.text_type(ex))
 
 
 class TestTemplateValidate(common.HeatTestCase):
@@ -495,6 +633,10 @@ class TemplateTest(common.HeatTestCase):
     def resolve(snippet, template, stack=None):
         return function.resolve(template.parse(stack, snippet))
 
+    @staticmethod
+    def resolve_condition(snippet, template, stack=None):
+        return function.resolve(template.parse_condition(stack, snippet))
+
     def test_defaults(self):
         empty = template.Template(empty_template)
         self.assertNotIn('AWSTemplateFormatVersion', empty)
@@ -593,8 +735,7 @@ class TemplateTest(common.HeatTestCase):
                                     invalid_heat_version_tmp)
         ex_error_msg = ('The template version is invalid: '
                         '"HeatTemplateFormatVersion: 2010-09-09". '
-                        '"HeatTemplateFormatVersion" should be one of: '
-                        '2012-12-12, 2016-10-14')
+                        '"HeatTemplateFormatVersion" should be: 2012-12-12')
         self.assertEqual(ex_error_msg, six.text_type(init_ex))
 
     def test_invalid_version_not_in_heat_versions(self):
@@ -771,7 +912,7 @@ class TemplateTest(common.HeatTestCase):
 
     def test_equals(self):
         tpl = template_format.parse('''
-        HeatTemplateFormatVersion: 2016-10-14
+        AWSTemplateFormatVersion: 2010-09-09
         Parameters:
           env_type:
             Type: String
@@ -782,7 +923,7 @@ class TemplateTest(common.HeatTestCase):
         tmpl = template.Template(tpl)
         stk = stack.Stack(utils.dummy_context(),
                           'test_equals_false', tmpl)
-        resolved = self.resolve(snippet, tmpl, stk)
+        resolved = self.resolve_condition(snippet, tmpl, stk)
         self.assertFalse(resolved)
         # when param 'env_type' is 'prod', equals function resolve to true
         tmpl = template.Template(tpl,
@@ -790,23 +931,203 @@ class TemplateTest(common.HeatTestCase):
                                      {'env_type': 'prod'}))
         stk = stack.Stack(utils.dummy_context(),
                           'test_equals_true', tmpl)
-        resolved = self.resolve(snippet, tmpl, stk)
+        resolved = self.resolve_condition(snippet, tmpl, stk)
         self.assertTrue(resolved)
 
     def test_equals_invalid_args(self):
-        tmpl = template.Template(empty_template20161014)
+        tmpl = template.Template(aws_empty_template)
 
         snippet = {'Fn::Equals': ['test', 'prod', 'invalid']}
         exc = self.assertRaises(exception.StackValidationFailed,
-                                self.resolve, snippet, tmpl)
-        self.assertIn('.Fn::Equals: Arguments to "Fn::Equals" must be of '
-                      'the form: [value_1, value_2]', six.text_type(exc))
+                                self.resolve_condition, snippet, tmpl)
+
+        error_msg = ('.Fn::Equals: Arguments to "Fn::Equals" must be '
+                     'of the form: [value_1, value_2]')
+        self.assertIn(error_msg, six.text_type(exc))
         # test invalid type
         snippet = {'Fn::Equals': {"equal": False}}
         exc = self.assertRaises(exception.StackValidationFailed,
-                                self.resolve, snippet, tmpl)
-        self.assertIn('.Fn::Equals: Arguments to "Fn::Equals" must be of '
-                      'the form: [value_1, value_2]', six.text_type(exc))
+                                self.resolve_condition, snippet, tmpl)
+        self.assertIn(error_msg, six.text_type(exc))
+
+    def test_not(self):
+        tpl = template_format.parse('''
+        AWSTemplateFormatVersion: 2010-09-09
+        Parameters:
+          env_type:
+            Type: String
+            Default: 'test'
+        ''')
+        snippet = {'Fn::Not': [{'Fn::Equals': [{'Ref': 'env_type'}, 'prod']}]}
+        # when param 'env_type' is 'test', not function resolve to true
+        tmpl = template.Template(tpl)
+        stk = stack.Stack(utils.dummy_context(),
+                          'test_not_true', tmpl)
+        resolved = self.resolve_condition(snippet, tmpl, stk)
+        self.assertTrue(resolved)
+        # when param 'env_type' is 'prod', not function resolve to false
+        tmpl = template.Template(tpl,
+                                 env=environment.Environment(
+                                     {'env_type': 'prod'}))
+        stk = stack.Stack(utils.dummy_context(),
+                          'test_not_false', tmpl)
+        resolved = self.resolve_condition(snippet, tmpl, stk)
+        self.assertFalse(resolved)
+
+    def test_not_invalid_args(self):
+        tmpl = template.Template(aws_empty_template)
+
+        snippet = {'Fn::Not': ['invalid_arg']}
+        exc = self.assertRaises(ValueError,
+                                self.resolve_condition, snippet, tmpl)
+
+        error_msg = ('The condition value should be boolean, '
+                     'after resolved the value is: invalid_arg')
+        self.assertIn(error_msg, six.text_type(exc))
+        # test invalid type
+        snippet = {'Fn::Not': 'invalid'}
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve_condition, snippet, tmpl)
+        error_msg = ('.Fn::Not: Arguments to "Fn::Not" must be '
+                     'of the form: [condition]')
+        self.assertIn(error_msg, six.text_type(exc))
+
+        snippet = {'Fn::Not': ['cd1', 'cd2']}
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve_condition, snippet, tmpl)
+        error_msg = ('.Fn::Not: Arguments to "Fn::Not" must be '
+                     'of the form: [condition]')
+        self.assertIn(error_msg, six.text_type(exc))
+
+    def test_and(self):
+        tpl = template_format.parse('''
+        AWSTemplateFormatVersion: 2010-09-09
+        Parameters:
+          env_type:
+            Type: String
+            Default: 'test'
+          zone:
+            Type: String
+            Default: 'shanghai'
+        ''')
+        snippet = {
+            'Fn::And': [
+                {'Fn::Equals': [{'Ref': 'env_type'}, 'prod']},
+                {'Fn::Not': [{'Fn::Equals': [{'Ref': 'zone'}, "beijing"]}]}]}
+        # when param 'env_type' is 'test', and function resolve to false
+        tmpl = template.Template(tpl)
+        stk = stack.Stack(utils.dummy_context(),
+                          'test_and_false', tmpl)
+        resolved = self.resolve_condition(snippet, tmpl, stk)
+        self.assertFalse(resolved)
+        # when param 'env_type' is 'prod', and param 'zone' is 'shanghai',
+        # the 'and' function resolve to true
+        tmpl = template.Template(tpl,
+                                 env=environment.Environment(
+                                     {'env_type': 'prod'}))
+        stk = stack.Stack(utils.dummy_context(),
+                          'test_and_true', tmpl)
+        resolved = self.resolve_condition(snippet, tmpl, stk)
+        self.assertTrue(resolved)
+        # when param 'env_type' is 'prod', and param 'zone' is 'shanghai',
+        # the 'and' function resolve to true
+        tmpl = template.Template(tpl,
+                                 env=environment.Environment(
+                                     {'env_type': 'prod',
+                                      'zone': 'beijing'}))
+        stk = stack.Stack(utils.dummy_context(),
+                          'test_and_false', tmpl)
+        resolved = self.resolve_condition(snippet, tmpl, stk)
+        self.assertFalse(resolved)
+
+    def test_and_invalid_args(self):
+        tmpl = template.Template(aws_empty_template)
+
+        snippet = {'Fn::And': ['invalid_arg']}
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve_condition, snippet, tmpl)
+
+        error_msg = ('.Fn::And: Arguments to "Fn::And" must be '
+                     'of the form: [{condition_1}, {condition_2}, {...}, '
+                     '{condition_n}]')
+
+        self.assertIn(error_msg, six.text_type(exc))
+        # test invalid type
+        snippet = {'Fn::And': 'invalid'}
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve_condition, snippet, tmpl)
+
+        self.assertIn(error_msg, six.text_type(exc))
+
+        snippet = {'Fn::And': ['cd1', True]}
+        exc = self.assertRaises(ValueError,
+                                self.resolve_condition, snippet, tmpl)
+        error_msg = ('The condition value should be boolean, '
+                     'after resolved the value is: cd1')
+        self.assertIn(error_msg, six.text_type(exc))
+
+    def test_or(self):
+        tpl = template_format.parse('''
+        AWSTemplateFormatVersion: 2010-09-09
+        Parameters:
+          zone:
+            Type: String
+            Default: 'guangzhou'
+        ''')
+        snippet = {
+            'Fn::Or': [
+                {'Fn::Equals': [{'Ref': 'zone'}, 'shanghai']},
+                {'Fn::Equals': [{'Ref': 'zone'}, 'beijing']}]}
+        # when param 'zone' is neither equal to 'shanghai' nor 'beijing',
+        # the 'or' function resolve to false
+        tmpl = template.Template(tpl)
+        stk = stack.Stack(utils.dummy_context(),
+                          'test_or_false', tmpl)
+        resolved = self.resolve_condition(snippet, tmpl, stk)
+        self.assertFalse(resolved)
+        # when param 'zone' equals to 'shanghai' or 'beijing',
+        # the 'or' function resolve to true
+        tmpl = template.Template(tpl,
+                                 env=environment.Environment(
+                                     {'zone': 'beijing'}))
+        stk = stack.Stack(utils.dummy_context(),
+                          'test_or_true', tmpl)
+        resolved = self.resolve_condition(snippet, tmpl, stk)
+        self.assertTrue(resolved)
+
+        tmpl = template.Template(tpl,
+                                 env=environment.Environment(
+                                     {'zone': 'shanghai'}))
+        stk = stack.Stack(utils.dummy_context(),
+                          'test_or_true', tmpl)
+        resolved = self.resolve_condition(snippet, tmpl, stk)
+        self.assertTrue(resolved)
+
+    def test_or_invalid_args(self):
+        tmpl = template.Template(aws_empty_template)
+
+        snippet = {'Fn::Or': ['invalid_arg']}
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve_condition, snippet, tmpl)
+
+        error_msg = ('.Fn::Or: Arguments to "Fn::Or" must be '
+                     'of the form: [{condition_1}, {condition_2}, {...}, '
+                     '{condition_n}]')
+
+        self.assertIn(error_msg, six.text_type(exc))
+        # test invalid type
+        snippet = {'Fn::Or': 'invalid'}
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve_condition, snippet, tmpl)
+
+        self.assertIn(error_msg, six.text_type(exc))
+
+        snippet = {'Fn::Or': ['cd1', True]}
+        exc = self.assertRaises(ValueError,
+                                self.resolve_condition, snippet, tmpl)
+        error_msg = ('The condition value should be boolean, '
+                     'after resolved the value is: cd1')
+        self.assertIn(error_msg, six.text_type(exc))
 
     def test_join(self):
         tmpl = template.Template(empty_template)

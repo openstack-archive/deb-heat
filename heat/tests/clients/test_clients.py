@@ -205,7 +205,8 @@ class ClientPluginTest(common.HeatTestCase):
     def test_get_client_args(self):
         ctxt = mock.Mock()
         plugin = FooClientsPlugin(ctxt)
-
+        self.patchobject(ctxt.keystone_session, 'get_token',
+                         return_value='5678')
         plugin.url_for = mock.Mock(return_value='sample_endpoint_url')
         plugin.context.auth_url = 'sample_auth_url'
         plugin.context.tenant_id = 'sample_project_id'
@@ -239,7 +240,7 @@ class ClientPluginTest(common.HeatTestCase):
                          'invalid project_id')
 
         self.assertEqual('5678',
-                         args['token'](),
+                         args['token'],
                          'invalid auth_token')
 
         self.assertEqual('sample_endpoint_url',
@@ -634,6 +635,14 @@ class TestIsNotFound(common.HeatTestCase):
             is_conflict=False,
             plugin='keystone',
             exception=lambda: keystone_exc.NotFound(details='gone'),
+        )),
+        ('keystone_entity_not_found', dict(
+            is_not_found=True,
+            is_over_limit=False,
+            is_client_exception=True,
+            is_conflict=False,
+            plugin='keystone',
+            exception=lambda: exception.EntityNotFound(),
         )),
         ('keystone_exception', dict(
             is_not_found=False,
@@ -1030,24 +1039,3 @@ class TestIsNotFound(common.HeatTestCase):
                 iue = self.is_unprocessable_entity
                 if iue != client_plugin.is_unprocessable_entity(e):
                     raise
-
-
-class ClientAPIVersionTest(common.HeatTestCase):
-
-    def test_cinder_api_v1_and_v2(self):
-        self.stub_auth()
-        ctx = utils.dummy_context()
-        client = clients.Clients(ctx).client('cinder')
-        self.assertEqual(2, client.volume_api_version)
-
-    def test_cinder_api_v1_only(self):
-        self.stub_auth(only_services=['volume'])
-        ctx = utils.dummy_context()
-        client = clients.Clients(ctx).client('cinder')
-        self.assertEqual(1, client.volume_api_version)
-
-    def test_cinder_api_v2_only(self):
-        self.stub_auth(only_services=['volumev2'])
-        ctx = utils.dummy_context()
-        client = clients.Clients(ctx).client('cinder')
-        self.assertEqual(2, client.volume_api_version)

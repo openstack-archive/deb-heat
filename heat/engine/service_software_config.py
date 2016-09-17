@@ -28,6 +28,7 @@ from heat.common.i18n import _LI
 from heat.db import api as db_api
 from heat.engine import api
 from heat.engine import scheduler
+from heat.engine import software_config_io as swc_io
 from heat.objects import resource as resource_objects
 from heat.objects import software_config as software_config_object
 from heat.objects import software_deployment as software_deployment_object
@@ -42,27 +43,30 @@ class SoftwareConfigService(service.Service):
         sc = software_config_object.SoftwareConfig.get_by_id(cnxt, config_id)
         return api.format_software_config(sc)
 
-    def list_software_configs(self, cnxt, limit=None, marker=None,
-                              tenant_safe=True):
+    def list_software_configs(self, cnxt, limit=None, marker=None):
         scs = software_config_object.SoftwareConfig.get_all(
             cnxt,
             limit=limit,
-            marker=marker,
-            tenant_safe=tenant_safe)
+            marker=marker)
         result = [api.format_software_config(sc, detail=False) for sc in scs]
         return result
 
     def create_software_config(self, cnxt, group, name, config,
                                inputs, outputs, options):
 
+        swc_io.check_io_schema_list(inputs)
+        in_conf = [swc_io.InputConfig(**i).as_dict() for i in inputs]
+        swc_io.check_io_schema_list(outputs)
+        out_conf = [swc_io.OutputConfig(**o).as_dict() for o in outputs]
+
         sc = software_config_object.SoftwareConfig.create(cnxt, {
             'group': group,
             'name': name,
             'config': {
-                'inputs': inputs,
-                'outputs': outputs,
-                'options': options,
-                'config': config
+                rpc_api.SOFTWARE_CONFIG_INPUTS: in_conf,
+                rpc_api.SOFTWARE_CONFIG_OUTPUTS: out_conf,
+                rpc_api.SOFTWARE_CONFIG_OPTIONS: options,
+                rpc_api.SOFTWARE_CONFIG_CONFIG: config
             },
             'tenant': cnxt.tenant_id})
         return api.format_software_config(sc)
@@ -220,7 +224,8 @@ class SoftwareConfigService(service.Service):
             cnxt, deployment_id)
         if sd.status == rpc_api.SOFTWARE_DEPLOYMENT_IN_PROGRESS:
             c = sd.config.config
-            input_values = dict((i['name'], i['value']) for i in c['inputs'])
+            input_values = dict(swc_io.InputConfig(**i).input_data()
+                                for i in c[rpc_api.SOFTWARE_CONFIG_INPUTS])
             transport = input_values.get('deploy_signal_transport')
             if transport == 'TEMP_URL_SIGNAL':
                 sd = self._refresh_swift_software_deployment(

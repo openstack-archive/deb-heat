@@ -17,8 +17,7 @@
 set -ex
 
 export DEST=${DEST:-/opt/stack/new}
-source $DEST/devstack/openrc admin admin
 sudo -E $DEST/heat/heat_integrationtests/prepare_test_env.sh
 sudo -E $DEST/heat/heat_integrationtests/prepare_test_network.sh
-source $DEST/devstack/openrc demo demo
-sudo -E tox -eintegration
+cd $DEST/tempest
+sudo tempest run --regex heat_integrationtests

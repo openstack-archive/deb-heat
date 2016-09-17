@@ -22,6 +22,7 @@ import six
 
 from heat.common import exception
 from heat.common import template_format
+from heat.engine import resource
 from heat.engine import rsrc_defn
 from heat.engine import scheduler
 from heat.tests import common
@@ -339,7 +340,7 @@ class NeutronPortTest(common.HeatTestCase):
         scheduler.TaskRunner(port.create)()
         self.m.VerifyAll()
 
-    def _mock_create_with_security_groups(self, port_prop):
+    def _mock_create_with_props(self, port_prop):
         neutronV20.find_resourceid_by_name_or_id(
             mox.IsA(neutronclient.Client),
             'network',
@@ -358,9 +359,14 @@ class NeutronPortTest(common.HeatTestCase):
                 "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"}})
         neutronclient.Client.show_port(
             'fc68ea2c-b60b-4b4f-bd82-94ec81110766'
-        ).AndReturn({'port': {
+        ).MultipleTimes().AndReturn({'port': {
             "status": "ACTIVE",
-            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766"
+            "id": "fc68ea2c-b60b-4b4f-bd82-94ec81110766",
+            "dns_assignment": {
+                "hostname": "my-vm",
+                "ip_address": "10.0.0.15",
+                "fqdn": "my-vm.openstack.org."}
+
         }})
 
         self.m.ReplayAll()
@@ -383,11 +389,33 @@ class NeutronPortTest(common.HeatTestCase):
             'admin_state_up': True,
             'device_owner': u'network:dhcp'}
 
-        self._mock_create_with_security_groups(port_prop)
+        self._mock_create_with_props(port_prop)
 
         port = stack['port']
         scheduler.TaskRunner(port.create)()
 
+        self.m.VerifyAll()
+
+    def test_port_with_dns_name(self):
+        t = template_format.parse(neutron_port_template)
+        t['resources']['port']['properties']['dns_name'] = 'myvm'
+        stack = utils.parse_stack(t)
+
+        port_prop = {
+            'network_id': u'net1234',
+            'dns_name': 'myvm',
+            'fixed_ips': [
+                {'subnet_id': u'sub1234', 'ip_address': u'10.0.3.21'}
+            ],
+            'name': utils.PhysName(stack.name, 'port'),
+            'admin_state_up': True,
+            'device_owner': u'network:dhcp'}
+
+        self._mock_create_with_props(port_prop)
+        port = stack['port']
+        scheduler.TaskRunner(port.create)()
+        self.assertEqual('my-vm.openstack.org.',
+                         port.FnGetAtt('dns_assignment')['fqdn'])
         self.m.VerifyAll()
 
     def test_security_groups_empty_list(self):
@@ -406,7 +434,7 @@ class NeutronPortTest(common.HeatTestCase):
             'device_owner': u'network:dhcp'
         }
 
-        self._mock_create_with_security_groups(port_prop)
+        self._mock_create_with_props(port_prop)
 
         port = stack['port']
         scheduler.TaskRunner(port.create)()
@@ -459,7 +487,7 @@ class NeutronPortTest(common.HeatTestCase):
         new_props['network'] = new_props.pop('network_id')
         update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
                                                       new_props)
-        self.assertRaises(exception.UpdateReplace, port._needs_update,
+        self.assertRaises(resource.UpdateReplace, port._needs_update,
                           update_snippet, port.frozen_definition(),
                           new_props, port.properties, None)
 
@@ -578,7 +606,7 @@ class NeutronPortTest(common.HeatTestCase):
         update_snippet = rsrc_defn.ResourceDefinition(port.name, port.type(),
                                                       new_props)
         updater = scheduler.TaskRunner(port.update, update_snippet)
-        self.assertRaises(exception.UpdateReplace, updater)
+        self.assertRaises(resource.UpdateReplace, updater)
 
         self.m.VerifyAll()
 

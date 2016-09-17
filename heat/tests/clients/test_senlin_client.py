@@ -20,21 +20,29 @@ from senlinclient.common import exc
 
 
 class SenlinClientPluginTest(common.HeatTestCase):
+    def setUp(self):
+        super(SenlinClientPluginTest, self).setUp()
+        context = utils.dummy_context()
+        self.plugin = context.clients.client_plugin('senlin')
+        self.client = self.plugin.client()
 
     def test_cluster_get(self):
-        context = utils.dummy_context()
-        plugin = context.clients.client_plugin('senlin')
-        client = plugin.client()
-        self.assertIsNotNone(client.clusters)
+        self.assertIsNotNone(self.client.clusters)
 
     def test_is_bad_request(self):
-        context = utils.dummy_context()
-        plugin = context.clients.client_plugin('senlin')
-        self.assertTrue(plugin.is_bad_request(
+        self.assertTrue(self.plugin.is_bad_request(
             exc.sdkexc.HttpException(http_status=400)))
-        self.assertFalse(plugin.is_bad_request(Exception))
-        self.assertFalse(plugin.is_bad_request(
+        self.assertFalse(self.plugin.is_bad_request(Exception))
+        self.assertFalse(self.plugin.is_bad_request(
             exc.sdkexc.HttpException(http_status=404)))
+
+    def test_check_action_success(self):
+        mock_action = mock.MagicMock()
+        mock_action.status = 'SUCCEEDED'
+        mock_get = self.patchobject(self.client, 'get_action')
+        mock_get.return_value = mock_action
+        self.assertTrue(self.plugin.check_action_status('fake_id'))
+        mock_get.assert_called_once_with('fake_id')
 
 
 class ProfileConstraintTest(common.HeatTestCase):
@@ -91,9 +99,12 @@ class ProfileTypeConstraintTest(common.HeatTestCase):
         super(ProfileTypeConstraintTest, self).setUp()
         self.senlin_client = mock.MagicMock()
         self.ctx = utils.dummy_context()
+        heat_profile_type = mock.MagicMock()
+        heat_profile_type.name = 'os.heat.stack-1.0'
+        nova_profile_type = mock.MagicMock()
+        nova_profile_type.name = 'os.nova.server-1.0'
         self.mock_profile_types = mock.Mock(
-            return_value=[{'name': 'os.heat.stack-1.0'},
-                          {'name': 'os.nova.server-1.0'}])
+            return_value=[heat_profile_type, nova_profile_type])
         self.ctx.clients.client(
             'senlin').profile_types = self.mock_profile_types
         self.constraint = senlin_plugin.ProfileTypeConstraint()
@@ -113,9 +124,12 @@ class PolicyTypeConstraintTest(common.HeatTestCase):
         super(PolicyTypeConstraintTest, self).setUp()
         self.senlin_client = mock.MagicMock()
         self.ctx = utils.dummy_context()
+        deletion_policy_type = mock.MagicMock()
+        deletion_policy_type.name = 'senlin.policy.deletion-1.0'
+        lb_policy_type = mock.MagicMock()
+        lb_policy_type.name = 'senlin.policy.loadbalance-1.0'
         self.mock_policy_types = mock.Mock(
-            return_value=[{'name': 'senlin.policy.deletion-1.0'},
-                          {'name': 'senlin.policy.loadbalance-1.0'}])
+            return_value=[deletion_policy_type, lb_policy_type])
         self.ctx.clients.client(
             'senlin').policy_types = self.mock_policy_types
         self.constraint = senlin_plugin.PolicyTypeConstraint()

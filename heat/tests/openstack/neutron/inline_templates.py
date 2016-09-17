@@ -142,3 +142,48 @@ resources:
       type: HTTP
       url_path: /health
 '''
+
+SECURITY_GROUP_RULE_TEMPLATE = '''
+heat_template_version: 2016-10-14
+resources:
+  security_group_rule:
+    type: OS::Neutron::SecurityGroupRule
+    properties:
+      security_group: 123
+      description: test description
+      remote_group: 123
+      protocol: tcp
+      port_range_min: 100
+'''
+
+L7POLICY_TEMPLATE = '''
+heat_template_version: 2016-04-08
+description: Template to test L7Policy Neutron resource
+resources:
+  l7policy:
+    type: OS::Neutron::LBaaS::L7Policy
+    properties:
+      admin_state_up: True
+      name: test_l7policy
+      description: test l7policy resource
+      action: REDIRECT_TO_URL
+      redirect_url: http://www.mirantis.com
+      listener: 123
+      position: 1
+'''
+
+L7RULE_TEMPLATE = '''
+heat_template_version: 2016-04-08
+description: Template to test L7Rule Neutron resource
+resources:
+  l7rule:
+    type: OS::Neutron::LBaaS::L7Rule
+    properties:
+      admin_state_up: True
+      l7policy: 123
+      type: HEADER
+      compare_type: ENDS_WITH
+      key: test_key
+      value: test_value
+      invert: False
+'''

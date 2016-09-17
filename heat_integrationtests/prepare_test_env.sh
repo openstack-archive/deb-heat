@@ -13,41 +13,56 @@
 # under the License.
 
 # This script creates required cloud resources and sets test options
-# in heat_integrationtests.conf.
-# Credentials are required for creating nova flavors and glance images.
+# in tempest.conf.
 
-set -ex
+set -e
 
 DEST=${DEST:-/opt/stack/new}
 
 source $DEST/devstack/inc/ini-config
 
-cd $DEST/heat/heat_integrationtests
+set -x
+
+conf_file=$DEST/tempest/etc/tempest.conf
+
+iniset_multiline $conf_file service_available heat_plugin True
+
+source $DEST/devstack/openrc demo demo
+# user creds
+iniset $conf_file heat_plugin username $OS_USERNAME
+iniset $conf_file heat_plugin password $OS_PASSWORD
+iniset $conf_file heat_plugin tenant_name $OS_PROJECT_NAME
+iniset $conf_file heat_plugin auth_url $OS_AUTH_URL
+iniset $conf_file heat_plugin user_domain_name $OS_USER_DOMAIN_NAME
+iniset $conf_file heat_plugin project_domain_name $OS_PROJECT_DOMAIN_NAME
+iniset $conf_file heat_plugin region $OS_REGION_NAME
+
+source $DEST/devstack/openrc admin admin
+iniset $conf_file heat_plugin admin_username $OS_USERNAME
+iniset $conf_file heat_plugin admin_password $OS_PASSWORD
+
 
 # Register the flavors for booting test servers
-iniset heat_integrationtests.conf DEFAULT instance_type m1.heat_int
-iniset heat_integrationtests.conf DEFAULT minimal_instance_type m1.heat_micro
+iniset $conf_file heat_plugin instance_type m1.heat_int
+iniset $conf_file heat_plugin minimal_instance_type m1.heat_micro
 openstack flavor create m1.heat_int --ram 512
 openstack flavor create m1.heat_micro --ram 128
 
 # Register the glance image for testing
-curl http://tarballs.openstack.org/heat-test-image/fedora-heat-test-image.qcow2 | openstack image create fedora-heat-test-image --disk-format qcow2 --container-format bare --public
+curl -L https://download.fedoraproject.org/pub/fedora/linux/releases/24/CloudImages/x86_64/images/Fedora-Cloud-Base-24-1.2.x86_64.qcow2 | openstack image create fedora-heat-test-image --disk-format qcow2 --container-format bare --public
 if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
    # The curl command failed, so the upload is mostly likely incorrect. Let's
    # bail out early.
    exit 1
 fi
 
-iniset heat_integrationtests.conf DEFAULT image_ref fedora-heat-test-image
-iniset heat_integrationtests.conf DEFAULT boot_config_env $DEST/heat-templates/hot/software-config/boot-config/test_image_env.yaml
-iniset heat_integrationtests.conf DEFAULT heat_config_notify_script $DEST/heat-templates/hot/software-config/elements/heat-config/bin/heat-config-notify
-iniset heat_integrationtests.conf DEFAULT minimal_image_ref cirros-0.3.4-x86_64-uec
-# admin creds already sourced, store in conf
-iniset heat_integrationtests.conf DEFAULT admin_username $OS_USERNAME
-iniset heat_integrationtests.conf DEFAULT admin_password $OS_PASSWORD
+iniset $conf_file heat_plugin image_ref fedora-heat-test-image
+iniset $conf_file heat_plugin boot_config_env $DEST/heat-templates/hot/software-config/boot-config/test_image_env.yaml
+iniset $conf_file heat_plugin heat_config_notify_script $DEST/heat-templates/hot/software-config/elements/heat-config/bin/heat-config-notify
+iniset $conf_file heat_plugin minimal_image_ref cirros-0.3.4-x86_64-uec
 
 # Add scenario tests to skip
 # VolumeBackupRestoreIntegrationTest skipped until failure rate can be reduced ref bug #1382300
-iniset heat_integrationtests.conf DEFAULT skip_scenario_test_list 'SoftwareConfigIntegrationTest, VolumeBackupRestoreIntegrationTest'
+iniset $conf_file heat_plugin skip_scenario_test_list 'SoftwareConfigIntegrationTest, VolumeBackupRestoreIntegrationTest'
 
-cat heat_integrationtests.conf
+cat $conf_file

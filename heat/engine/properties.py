@@ -18,6 +18,7 @@ import six
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.common import param_utils
 from heat.engine import constraints as constr
 from heat.engine import function
 from heat.engine.hot import parameters as hot_param
@@ -162,7 +163,8 @@ class Schema(constr.Schema):
         # a json parameter value is passed via a Map property, which requires
         # some coercion to pass strings or lists (which are both valid for
         # Json parameters but not for Map properties).
-        allow_conversion = param.type == param.MAP
+        allow_conversion = (param.type == param.MAP
+                            or param.type == param.LIST)
 
         # make update_allowed true by default on TemplateResources
         # as the template should deal with this.
@@ -299,6 +301,9 @@ class Property(object):
     def _get_list(self, value, validate=False):
         if value is None:
             value = self.has_default() and self.default() or []
+        if self.schema.allow_conversion and isinstance(value,
+                                                       six.string_types):
+                value = param_utils.delim_string_to_list(value)
         if (not isinstance(value, collections.Sequence) or
                 isinstance(value, six.string_types)):
             raise TypeError(_('"%s" is not a list') % repr(value))
@@ -334,6 +339,8 @@ class Property(object):
             _value = self._get_list(value, validate)
         elif t == Schema.BOOLEAN:
             _value = self._get_bool(value)
+        elif t == Schema.ANY:
+            _value = value
 
         if validate:
             self.schema.validate_constraints(_value, self.context,
