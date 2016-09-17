@@ -21,6 +21,7 @@ from heat.engine import stack as parser
 from heat.engine import template as templatem
 from heat.objects import raw_template as raw_template_object
 from heat.objects import resource as resource_objects
+from heat.objects import snapshot as snapshot_objects
 from heat.objects import stack as stack_object
 from heat.objects import sync_point as sync_point_object
 from heat.rpc import worker_client
@@ -369,14 +370,13 @@ class StackConvergenceCreateUpdateDeleteTest(common.HeatTestCase):
         stack.mark_complete()
         self.assertTrue(stack.purge_db.called)
 
-    def test_purge_db_sets_curr_trvsl_to_none_for_failed_stack(
+    def test_state_set_sets_empty_curr_trvsl_for_failed_stack(
             self, mock_cr):
         stack = tools.get_stack('test_stack', utils.dummy_context(),
                                 template=tools.string_template_five,
                                 convergence=True)
-        stack.status = stack.FAILED
         stack.store()
-        stack.purge_db()
+        stack.state_set(stack.action, stack.FAILED, 'test-reason')
         self.assertEqual('', stack.current_traversal)
 
     @mock.patch.object(raw_template_object.RawTemplate, 'delete')
@@ -544,6 +544,36 @@ class StackConvergenceCreateUpdateDeleteTest(common.HeatTestCase):
         stack.converge_stack(template=stack.t, action=stack.UPDATE)
         self.assertTrue(mock_syncpoint_del.called)
         self.assertTrue(mock_ccu.called)
+
+    def test_snapshot_delete(self, mock_cr):
+        tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
+                'Resources': {'R1': {'Type': 'GenericResourceType'}}}
+        stack = parser.Stack(utils.dummy_context(), 'updated_time_test',
+                             templatem.Template(tmpl))
+        stack.current_traversal = 'prev_traversal'
+        stack.action, stack.status = stack.CREATE, stack.COMPLETE
+        stack.store()
+        snapshot_values = {
+            'stack_id': stack.id,
+            'name': 'fake_snapshot',
+            'tenant': stack.context.tenant_id,
+            'status': 'COMPLETE',
+            'data': None
+        }
+        snapshot_objects.Snapshot.create(stack.context, snapshot_values)
+
+        # Ensure that snapshot is not deleted on stack update
+        stack.converge_stack(template=stack.t, action=stack.UPDATE)
+        db_snapshot_obj = snapshot_objects.Snapshot.get_all(
+            stack.context, stack.id)
+        self.assertEqual('fake_snapshot', db_snapshot_obj[0].name)
+        self.assertEqual(stack.id, db_snapshot_obj[0].stack_id)
+
+        # Ensure that snapshot is deleted on stack delete
+        stack.converge_stack(template=stack.t, action=stack.DELETE)
+        self.assertEqual([], snapshot_objects.Snapshot.get_all(
+            stack.context, stack.id))
+        self.assertTrue(mock_cr.called)
 
 
 @mock.patch.object(parser.Stack, '_persist_state')
@@ -842,3 +872,36 @@ class TestConvgComputeDependencies(common.HeatTestCase):
                          '((4, False), (3, False)), '
                          '((5, False), (3, False))])',
                          repr(self.stack._convg_deps))
+
+
+class TestConvergenceMigration(common.HeatTestCase):
+    def test_migration_to_convergence_engine(self):
+        self.ctx = utils.dummy_context()
+        self.stack = tools.get_stack('test_stack_convg', self.ctx,
+                                     template=tools.string_template_five)
+        self.stack.store()
+        for r in self.stack.resources.values():
+            r._store()
+        self.stack.migrate_to_convergence()
+        self.stack = self.stack.load(self.ctx, self.stack.id)
+
+        self.assertTrue(self.stack.convergence)
+        self.assertIsNone(self.stack.prev_raw_template_id)
+        exp_required_by = {'A': ['C'], 'B': ['C'], 'C': ['D', 'E'],
+                           'D': [], 'E': []}
+        exp_requires = {'A': [], 'B': [], 'C': ['A', 'B'], 'D': ['C'],
+                        'E': ['C']}
+        exp_tmpl_id = self.stack.t.id
+
+        def id_to_name(ids):
+            names = []
+            for r in self.stack.resources.values():
+                if r.id in ids:
+                    names.append(r.name)
+            return names
+        for r in self.stack.resources.values():
+            self.assertEqual(sorted(exp_required_by[r.name]),
+                             sorted(r.required_by()))
+            self.assertEqual(sorted(exp_requires[r.name]),
+                             sorted(id_to_name(r.requires)))
+            self.assertEqual(exp_tmpl_id, r.current_template_id)

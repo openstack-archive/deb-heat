@@ -12,12 +12,13 @@
 
 import uuid
 
-from eventlet import event as grevent
+import eventlet.queue
 import mock
 from oslo_config import cfg
 from oslo_messaging.rpc import dispatcher
 import six
 
+from heat.common import environment_util as env_util
 from heat.common import exception
 from heat.common import messaging
 from heat.common import service_utils
@@ -66,8 +67,8 @@ class ServiceStackUpdateTest(common.HeatTestCase):
                                     return_value=stk.env)
 
         mock_validate = self.patchobject(stk, 'validate', return_value=None)
-        event_mock = mock.Mock()
-        self.patchobject(grevent, 'Event', return_value=event_mock)
+        msgq_mock = mock.Mock()
+        self.patchobject(eventlet.queue, 'LightQueue', return_value=msgq_mock)
 
         # do update
         api_args = {'timeout_mins': 60}
@@ -78,8 +79,8 @@ class ServiceStackUpdateTest(common.HeatTestCase):
         self.assertEqual(old_stack.identifier(), result)
         self.assertIsInstance(result, dict)
         self.assertTrue(result['stack_id'])
-        self.assertEqual([event_mock], self.man.thread_group_mgr.events)
-        mock_tmpl.assert_called_once_with(template, files=None, env=stk.env)
+        self.assertEqual([msgq_mock], self.man.thread_group_mgr.msg_queues)
+        mock_tmpl.assert_called_once_with(template, files=None)
         mock_env.assert_called_once_with(params)
         mock_stack.assert_called_once_with(
             self.ctx, stk.name, stk.t,
@@ -118,9 +119,10 @@ class ServiceStackUpdateTest(common.HeatTestCase):
         self.patchobject(templatem, 'Template', return_value=stk.t)
         self.patchobject(environment, 'Environment', return_value=stk.env)
         self.patchobject(stk, 'validate', return_value=None)
-        self.patchobject(grevent, 'Event', return_value=mock.Mock())
+        self.patchobject(eventlet.queue, 'LightQueue',
+                         return_value=mock.Mock())
 
-        mock_merge = self.patchobject(self.man, '_merge_environments')
+        mock_merge = self.patchobject(env_util, 'merge_environments')
 
         # Test
         environment_files = ['env_1']
@@ -129,7 +131,8 @@ class ServiceStackUpdateTest(common.HeatTestCase):
                               environment_files=environment_files)
 
         # Verify
-        mock_merge.assert_called_once_with(environment_files, None, params)
+        mock_merge.assert_called_once_with(environment_files, None,
+                                           params, mock.ANY)
 
     def test_stack_update_nested(self):
         stack_name = 'service_update_nested_test_stack'
@@ -149,8 +152,8 @@ class ServiceStackUpdateTest(common.HeatTestCase):
                                      return_value=stk.t)
 
         mock_validate = self.patchobject(stk, 'validate', return_value=None)
-        event_mock = mock.Mock()
-        self.patchobject(grevent, 'Event', return_value=event_mock)
+        msgq_mock = mock.Mock()
+        self.patchobject(eventlet.queue, 'LightQueue', return_value=msgq_mock)
 
         # do update
         api_args = {'timeout_mins': 60}
@@ -162,7 +165,7 @@ class ServiceStackUpdateTest(common.HeatTestCase):
         self.assertEqual(old_stack.identifier(), result)
         self.assertIsInstance(result, dict)
         self.assertTrue(result['stack_id'])
-        self.assertEqual([event_mock], self.man.thread_group_mgr.events)
+        self.assertEqual([msgq_mock], self.man.thread_group_mgr.msg_queues)
         mock_tmpl.assert_called_once_with(self.ctx, tmpl_id)
         mock_stack.assert_called_once_with(
             self.ctx, stk.name, stk.t,
@@ -456,7 +459,7 @@ resources:
         self.assertTrue(result['stack_id'])
 
         mock_validate.assert_called_once_with()
-        mock_tmpl.assert_called_once_with(template, files=None, env=stk.env)
+        mock_tmpl.assert_called_once_with(template, files=None)
         mock_env.assert_called_once_with(params)
         mock_load.assert_called_once_with(self.ctx, stack=s)
         mock_stack.assert_called_once_with(
@@ -570,7 +573,7 @@ resources:
         root_stack_id = old_stack.root_stack_id()
         self.assertEqual(3, old_stack.total_resources(root_stack_id))
 
-        mock_tmpl.assert_called_once_with(template, files=None, env=stk.env)
+        mock_tmpl.assert_called_once_with(template, files=None)
         mock_env.assert_called_once_with(params)
         mock_stack.assert_called_once_with(
             self.ctx, stk.name, stk.t,
@@ -686,7 +689,7 @@ resources:
 
         # assertions
         self.assertEqual(exception.StackValidationFailed, ex.exc_info[0])
-        mock_tmpl.assert_called_once_with(template, files=None, env=stk.env)
+        mock_tmpl.assert_called_once_with(template, files=None)
         mock_env.assert_called_once_with(params)
         mock_stack.assert_called_once_with(
             self.ctx, stk.name, stk.t,
@@ -749,7 +752,7 @@ resources:
 
         mock_get.assert_called_once_with(self.ctx, stk.identifier())
 
-        mock_tmpl.assert_called_once_with(template, files=None, env=stk.env)
+        mock_tmpl.assert_called_once_with(template, files=None)
         mock_env.assert_called_once_with(params)
         mock_stack.assert_called_once_with(
             self.ctx, stk.name, stk.t,
@@ -990,7 +993,7 @@ resources:
         mock_env = self.patchobject(environment, 'Environment',
                                     return_value=stk.env)
         mock_validate = self.patchobject(stk, 'validate', return_value=None)
-        mock_merge = self.patchobject(self.man, '_merge_environments')
+        mock_merge = self.patchobject(env_util, 'merge_environments')
 
         # Patch _resolve_all_attributes or it tries to call novaclient
         self.patchobject(resource.Resource, '_resolve_all_attributes',
@@ -1015,13 +1018,13 @@ resources:
             strict_validate=True, tenant_id='test_tenant_id', timeout_mins=60,
             user_creds_id=u'1', username='test_username')
         mock_load.assert_called_once_with(self.ctx, stack=s)
-        mock_tmpl.assert_called_once_with(new_template, files=None,
-                                          env=stk.env)
+        mock_tmpl.assert_called_once_with(new_template, files=None)
         mock_env.assert_called_once_with(params)
         mock_validate.assert_called_once_with()
 
         if environment_files:
-            mock_merge.assert_called_once_with(environment_files, None, params)
+            mock_merge.assert_called_once_with(environment_files, None,
+                                               params, mock.ANY)
 
         return result
 

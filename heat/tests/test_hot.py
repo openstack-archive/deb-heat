@@ -156,6 +156,10 @@ class HOTemplateTest(common.HeatTestCase):
     def resolve(snippet, template, stack=None):
         return function.resolve(template.parse(stack, snippet))
 
+    @staticmethod
+    def resolve_condition(snippet, template, stack=None):
+        return function.resolve(template.parse_condition(stack, snippet))
+
     def test_defaults(self):
         """Test default content behavior of HOT template."""
 
@@ -615,6 +619,26 @@ class HOTemplateTest(common.HeatTestCase):
 
         self.assertEqual(snippet_resolved, self.resolve(snippet, tmpl))
 
+    def test_str_replace_order(self, tpl=hot_tpl_empty):
+        """Test str_replace function substitution order."""
+
+        snippet = {'str_replace': {'template': '1234567890',
+                                   'params': {'1': 'a',
+                                              '12': 'b',
+                                              '123': 'c',
+                                              '1234': 'd',
+                                              '12345': 'e',
+                                              '123456': 'f',
+                                              '1234567': 'g'}}}
+
+        tmpl = template.Template(tpl)
+
+        self.assertEqual('g890', self.resolve(snippet, tmpl))
+
+    def test_str_replace_liberty_order(self):
+        """Test str_replace function substitution order."""
+        self.test_str_replace_order(hot_liberty_tpl_empty)
+
     def test_str_replace_syntax(self):
         """Test str_replace function syntax.
 
@@ -901,6 +925,107 @@ class HOTemplateTest(common.HeatTestCase):
         self.assertEqual('role1', resolved['role1'])
         self.assertEqual('role2', resolved['role2'])
 
+    def test_map_replace(self):
+        snippet = {'map_replace': [{'f1': 'b1', 'f2': 'b2'},
+                                   {'keys': {'f1': 'F1'},
+                                    'values': {'b2': 'B2'}}]}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        resolved = self.resolve(snippet, tmpl)
+        self.assertEqual({'F1': 'b1', 'f2': 'B2'},
+                         resolved)
+
+    def test_map_replace_nokeys(self):
+        snippet = {'map_replace': [{'f1': 'b1', 'f2': 'b2'},
+                                   {'values': {'b2': 'B2'}}]}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        resolved = self.resolve(snippet, tmpl)
+        self.assertEqual({'f1': 'b1', 'f2': 'B2'},
+                         resolved)
+
+    def test_map_replace_novalues(self):
+        snippet = {'map_replace': [{'f1': 'b1', 'f2': 'b2'},
+                                   {'keys': {'f2': 'F2'}}]}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        resolved = self.resolve(snippet, tmpl)
+        self.assertEqual({'f1': 'b1', 'F2': 'b2'},
+                         resolved)
+
+    def test_map_replace_none_values(self):
+        snippet = {'map_replace': [{'f1': 'b1', 'f2': 'b2'},
+                                   {'values': None}]}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        resolved = self.resolve(snippet, tmpl)
+        self.assertEqual({'f1': 'b1', 'f2': 'b2'},
+                         resolved)
+
+    def test_map_replace_none_keys(self):
+        snippet = {'map_replace': [{'f1': 'b1', 'f2': 'b2'},
+                                   {'keys': None}]}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        resolved = self.resolve(snippet, tmpl)
+        self.assertEqual({'f1': 'b1', 'f2': 'b2'},
+                         resolved)
+
+    def test_map_replace_unhashable_value(self):
+        snippet = {'map_replace': [{'f1': 'b1', 'f2': []},
+                                   {'values': {}}]}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        resolved = self.resolve(snippet, tmpl)
+        self.assertEqual({'f1': 'b1', 'f2': []},
+                         resolved)
+
+    def test_map_replace_keys_collide(self):
+        snippet = {'map_replace': [{'f1': 'b1', 'f2': 'b2'},
+                                   {'keys': {'f2': 'f1'}}]}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        msg = "key replacement f1 collides with a key in the input map"
+        self.assertRaisesRegexp(ValueError, msg, self.resolve, snippet, tmpl)
+
+    def test_map_replace_replaced_keys_collide(self):
+        snippet = {'map_replace': [{'f1': 'b1', 'f2': 'b2'},
+                                   {'keys': {'f1': 'f3', 'f2': 'f3'}}]}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        msg = "key replacement f3 collides with a key in the output map"
+        self.assertRaisesRegexp(ValueError, msg, self.resolve, snippet, tmpl)
+
+    def test_map_replace_invalid_str_arg1(self):
+        snippet = {'map_replace': 'ab'}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        msg = "Incorrect arguments to \"map_replace\" should be:"
+        self.assertRaisesRegexp(TypeError, msg, self.resolve, snippet, tmpl)
+
+    def test_map_replace_invalid_str_arg2(self):
+        snippet = {'map_replace': [{'f1': 'b1', 'f2': 'b2'}, "ab"]}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        msg = ("Incorrect arguments: to \"map_replace\", "
+               "arguments must be a list of maps")
+        self.assertRaisesRegexp(TypeError, msg, self.resolve, snippet, tmpl)
+
+    def test_map_replace_invalid_empty(self):
+        snippet = {'map_replace': []}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        msg = "Incorrect arguments to \"map_replace\" should be:"
+        self.assertRaisesRegexp(TypeError, msg, self.resolve, snippet, tmpl)
+
+    def test_map_replace_invalid_missing1(self):
+        snippet = {'map_replace': [{'f1': 'b1', 'f2': 'b2'}]}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        msg = "Incorrect arguments to \"map_replace\" should be:"
+        self.assertRaisesRegexp(TypeError, msg, self.resolve, snippet, tmpl)
+
+    def test_map_replace_invalid_missing2(self):
+        snippet = {'map_replace': [{'keys': {'f1': 'f3', 'f2': 'f3'}}]}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        msg = "Incorrect arguments to \"map_replace\" should be:"
+        self.assertRaisesRegexp(TypeError, msg, self.resolve, snippet, tmpl)
+
+    def test_map_replace_invalid_wrongkey(self):
+        snippet = {'map_replace': [{'f1': 'b1', 'f2': 'b2'},
+                                   {'notkeys': {'f2': 'F2'}}]}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        msg = "Incorrect arguments to \"map_replace\" should be:"
+        self.assertRaisesRegexp(ValueError, msg, self.resolve, snippet, tmpl)
+
     def test_yaql(self):
         snippet = {'yaql': {'expression': '$.data.var1.sum()',
                    'data': {'var1': [1, 2, 3, 4]}}}
@@ -972,7 +1097,7 @@ class HOTemplateTest(common.HeatTestCase):
         tmpl = template.Template(hot_tpl)
         stack = parser.Stack(utils.dummy_context(),
                              'test_equals_false', tmpl)
-        resolved = self.resolve(snippet, tmpl, stack)
+        resolved = self.resolve_condition(snippet, tmpl, stack)
         self.assertFalse(resolved)
         # when param 'env_type' is 'prod', equals function resolve to true
         tmpl = template.Template(hot_tpl,
@@ -980,7 +1105,7 @@ class HOTemplateTest(common.HeatTestCase):
                                      {'env_type': 'prod'}))
         stack = parser.Stack(utils.dummy_context(),
                              'test_equals_true', tmpl)
-        resolved = self.resolve(snippet, tmpl, stack)
+        resolved = self.resolve_condition(snippet, tmpl, stack)
         self.assertTrue(resolved)
 
     def test_equals_invalid_args(self):
@@ -988,15 +1113,63 @@ class HOTemplateTest(common.HeatTestCase):
 
         snippet = {'equals': ['test', 'prod', 'invalid']}
         exc = self.assertRaises(exception.StackValidationFailed,
-                                self.resolve, snippet, tmpl)
-        self.assertIn('.equals: Arguments to "equals" must be of the form: '
-                      '[value_1, value_2]', six.text_type(exc))
+                                self.resolve_condition, snippet, tmpl)
+
+        error_msg = ('.equals: Arguments to "equals" must be '
+                     'of the form: [value_1, value_2]')
+        self.assertIn(error_msg, six.text_type(exc))
 
         snippet = {'equals': "invalid condition"}
         exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve_condition, snippet, tmpl)
+        self.assertIn(error_msg, six.text_type(exc))
+
+    def test_equals_with_non_supported_function(self):
+
+        tmpl = template.Template(hot_newton_tpl_empty)
+
+        snippet = {'equals': [{'get_attr': [None, 'att1']},
+                              {'get_attr': [None, 'att2']}]}
+        exc = self.assertRaises(exception.InvalidConditionFunction,
+                                self.resolve_condition, snippet, tmpl)
+        error_msg = 'The function is not supported in condition: get_attr'
+        self.assertIn(error_msg, six.text_type(exc))
+
+    def test_if(self):
+        snippet = {'if': ['create_prod', 'value_if_true', 'value_if_false']}
+        # when condition evaluates to true, if function
+        # resolve to value_if_true
+        tmpl = template.Template(hot_newton_tpl_empty)
+        stack = parser.Stack(utils.dummy_context(),
+                             'test_if_function', tmpl)
+        tmpl._conditions = {'create_prod': True}
+        resolved = self.resolve(snippet, tmpl, stack)
+        self.assertEqual('value_if_true', resolved)
+        # when condition evaluates to false, if function
+        # resolve to value_if_false
+        tmpl._conditions = {'create_prod': False}
+        resolved = self.resolve(snippet, tmpl, stack)
+        self.assertEqual('value_if_false', resolved)
+
+    def test_if_invalid_args(self):
+        snippet = {'if': ['create_prod', 'one_value']}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        exc = self.assertRaises(exception.StackValidationFailed,
                                 self.resolve, snippet, tmpl)
-        self.assertIn('.equals: Arguments to "equals" must be of the form: '
-                      '[value_1, value_2]', six.text_type(exc))
+        self.assertIn('Arguments to "if" must be of the form: '
+                      '[condition_name, value_if_true, value_if_false]',
+                      six.text_type(exc))
+
+    def test_if_condition_name_non_existing(self):
+        snippet = {'if': ['cd_not_existing', 'value_true', 'value_false']}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        stack = parser.Stack(utils.dummy_context(),
+                             'test_if_function', tmpl)
+        tmpl._conditions = {'create_prod': True}
+        exc = self.assertRaises(exception.StackValidationFailed,
+                                self.resolve, snippet, tmpl, stack)
+        self.assertIn('Invalid condition name "cd_not_existing"',
+                      six.text_type(exc))
 
     def test_repeat(self):
         """Test repeat function."""
@@ -1025,6 +1198,15 @@ class HOTemplateTest(common.HeatTestCase):
         stack = parser.Stack(utils.dummy_context(), 'test_stack', tmpl)
 
         self.assertEqual(snippet_resolved, self.resolve(snippet, tmpl, stack))
+
+    def test_repeat_dict_with_no_replacement(self):
+        snippet = {'repeat': {'template': {'SERVICE_enabled': True},
+                              'for_each': {'SERVICE': ['x', 'y', 'z']}}}
+        snippet_resolved = [{'x_enabled': True},
+                            {'y_enabled': True},
+                            {'z_enabled': True}]
+        tmpl = template.Template(hot_newton_tpl_empty)
+        self.assertEqual(snippet_resolved, self.resolve(snippet, tmpl))
 
     def test_repeat_dict_template(self):
         """Test repeat function with a dictionary as a template."""
@@ -1065,6 +1247,21 @@ class HOTemplateTest(common.HeatTestCase):
         for item in result:
             self.assertIn(item, snippet_resolved)
 
+    def test_repeat_list_and_map(self):
+        """Test repeat function with a list and a map."""
+        snippet = {'repeat': {'template': 'this is %var1%-%var2%',
+                              'for_each': {'%var1%': ['a', 'b', 'c'],
+                                           '%var2%': {'x': 'v', 'y': 'v'}}}}
+        snippet_resolved = ['this is a-x', 'this is b-x', 'this is c-x',
+                            'this is a-y', 'this is b-y', 'this is c-y']
+
+        tmpl = template.Template(hot_newton_tpl_empty)
+
+        result = self.resolve(snippet, tmpl)
+        self.assertEqual(len(result), len(snippet_resolved))
+        for item in result:
+            self.assertIn(item, snippet_resolved)
+
     def test_repeat_bad_args(self):
         """Tests reporting error by repeat function.
 
@@ -1081,12 +1278,6 @@ class HOTemplateTest(common.HeatTestCase):
         # misspelled for_each
         snippet = {'repeat': {'template': 'this is %var%',
                               'foreach': {'%var%': ['a', 'b', 'c']}}}
-        self.assertRaises(exception.StackValidationFailed,
-                          self.resolve, snippet, tmpl)
-
-        # value given to for_each entry is not a list
-        snippet = {'repeat': {'template': 'this is %var%',
-                              'for_each': {'%var%': 'a'}}}
         self.assertRaises(exception.StackValidationFailed,
                           self.resolve, snippet, tmpl)
 
@@ -1189,6 +1380,16 @@ class HOTemplateTest(common.HeatTestCase):
         exc = self.assertRaises(ValueError, self.resolve, snippet, tmpl)
         self.assertIn('Incorrect arguments to \"str_split\"',
                       six.text_type(exc))
+
+    def test_str_split_none_string_to_split(self):
+        tmpl = template.Template(hot_liberty_tpl_empty)
+        snippet = {'str_split': ['.', None]}
+        self.assertIsNone(self.resolve(snippet, tmpl))
+
+    def test_str_split_none_delim(self):
+        tmpl = template.Template(hot_liberty_tpl_empty)
+        snippet = {'str_split': [None, 'check']}
+        self.assertEqual(['check'], self.resolve(snippet, tmpl))
 
     def test_prevent_parameters_access(self):
         """Check parameters section inaccessible using the template as a dict.
@@ -1565,7 +1766,7 @@ class HotStackTest(common.HeatTestCase):
             rsrc_defn.ResourceDefinition('AResource',
                                          'ResourceWithPropsType',
                                          properties={'Foo': 'abc'})
-            ).WithSideEffects(check_props).AndRaise(exception.UpdateReplace)
+            ).WithSideEffects(check_props).AndRaise(resource.UpdateReplace)
         self.m.ReplayAll()
 
         self.stack.update(updated_stack)
@@ -1611,7 +1812,7 @@ class HotStackTest(common.HeatTestCase):
             rsrc_defn.ResourceDefinition('AResource',
                                          'ResourceWithPropsType',
                                          properties={'Foo': 'abc'})
-            ).WithSideEffects(check_props).AndRaise(exception.UpdateReplace)
+            ).WithSideEffects(check_props).AndRaise(resource.UpdateReplace)
         self.m.ReplayAll()
 
         self.stack.update(updated_stack)

@@ -18,7 +18,6 @@ import six
 from heat.common import context
 from heat.common import exception
 from heat.common.i18n import _
-from heat.common.i18n import _LE
 from heat.common import template_format
 from heat.engine import attributes
 from heat.engine import environment
@@ -154,7 +153,6 @@ class RemoteStack(resource.Resource):
             self.heat().stacks.validate(**args)
         except Exception as ex:
             exc_info = dict(region=self._region_name, exc=six.text_type(ex))
-            LOG.error(_LE('exception: %s'), type(ex))
             msg = _('Failed validating stack template using Heat endpoint at '
                     'region "%(region)s" due to "%(exc)s"') % exc_info
             raise exception.StackValidationFailed(message=msg)
@@ -218,7 +216,7 @@ class RemoteStack(resource.Resource):
         # If resource is in CHECK_FAILED state, raise UpdateReplace
         # to replace the failed stack.
         if self.state == (self.CHECK, self.FAILED):
-            raise exception.UpdateReplace(self)
+            raise resource.UpdateReplace(self)
 
         # Always issue an update to the remote stack and let the individual
         # resources in it decide if they need updating.

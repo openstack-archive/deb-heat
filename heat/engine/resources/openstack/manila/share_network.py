@@ -128,6 +128,31 @@ class ManilaShareNetwork(resource.Resource):
             raise exception.ResourcePropertyConflict(self.NEUTRON_SUBNET,
                                                      self.NOVA_NETWORK)
 
+        if self.is_using_neutron() and self.properties[self.NOVA_NETWORK]:
+            msg = _('With Neutron enabled you need to pass Neutron network '
+                    'and Neutron subnet instead of Nova network')
+            raise exception.StackValidationFailed(message=msg)
+
+        if (self.properties[self.NEUTRON_NETWORK] and not
+                self.properties[self.NEUTRON_SUBNET]):
+            raise exception.ResourcePropertyDependency(
+                prop1=self.NEUTRON_NETWORK, prop2=self.NEUTRON_SUBNET)
+
+        if (self.properties[self.NEUTRON_NETWORK] and
+                self.properties[self.NEUTRON_SUBNET]):
+            plg = self.client_plugin('neutron')
+            subnet_id = plg.find_resourceid_by_name_or_id(
+                'subnet', self.properties[self.NEUTRON_SUBNET])
+            net_id = plg.network_id_from_subnet_id(subnet_id)
+            provided_net_id = plg.find_resourceid_by_name_or_id(
+                'network', self.properties[self.NEUTRON_NETWORK])
+            if net_id != provided_net_id:
+                msg = (_('Provided %(subnet)s does not belong '
+                         'to provided %(network)s.')
+                       % {'subnet': self.NEUTRON_SUBNET,
+                          'network': self.NEUTRON_NETWORK})
+                raise exception.StackValidationFailed(message=msg)
+
     def translation_rules(self, props):
         if self.is_using_neutron():
             translation_rules = [
@@ -162,10 +187,15 @@ class ManilaShareNetwork(resource.Resource):
         return translation_rules
 
     def handle_create(self):
+        neutron_subnet_id = self.properties[self.NEUTRON_SUBNET]
+        neutron_net_id = self.properties[self.NEUTRON_NETWORK]
+        if neutron_subnet_id and not neutron_net_id:
+            neutron_net_id = self.client_plugin(
+                'neutron').network_id_from_subnet_id(neutron_subnet_id)
         network = self.client().share_networks.create(
             name=self.properties[self.NAME],
-            neutron_net_id=self.properties[self.NEUTRON_NETWORK],
-            neutron_subnet_id=self.properties[self.NEUTRON_SUBNET],
+            neutron_net_id=neutron_net_id,
+            neutron_subnet_id=neutron_subnet_id,
             nova_net_id=self.properties[self.NOVA_NETWORK],
             description=self.properties[self.DESCRIPTION])
         self.resource_id_set(network.id)
@@ -191,11 +221,17 @@ class ManilaShareNetwork(resource.Resource):
                     self.resource_id, service)
 
         if prop_diff:
+            neutron_subnet_id = prop_diff.get(self.NEUTRON_SUBNET)
+            neutron_net_id = prop_diff.get(self.NEUTRON_NETWORK)
+            if neutron_subnet_id and not neutron_net_id:
+                neutron_net_id = self.client_plugin(
+                    'neutron').network_id_from_subnet_id(neutron_subnet_id)
+
             self.client().share_networks.update(
                 self.resource_id,
                 name=prop_diff.get(self.NAME),
-                neutron_net_id=prop_diff.get(self.NEUTRON_NETWORK),
-                neutron_subnet_id=prop_diff.get(self.NEUTRON_SUBNET),
+                neutron_net_id=neutron_net_id,
+                neutron_subnet_id=neutron_subnet_id,
                 nova_net_id=prop_diff.get(self.NOVA_NETWORK),
                 description=prop_diff.get(self.DESCRIPTION))
 

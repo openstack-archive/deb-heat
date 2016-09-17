@@ -14,6 +14,7 @@
 import collections
 import copy
 import datetime
+import eventlet
 import functools
 import itertools
 import re
@@ -59,12 +60,10 @@ from heat.objects import user_creds as ucreds_object
 from heat.rpc import api as rpc_api
 from heat.rpc import worker_client as rpc_worker_client
 
-cfg.CONF.import_opt('error_wait_time', 'heat.common.config')
-
 LOG = logging.getLogger(__name__)
 
 
-class ForcedCancel(BaseException):
+class ForcedCancel(Exception):
     """Exception raised to cancel task execution."""
 
     def __init__(self, with_rollback=True):
@@ -229,7 +228,7 @@ class Stack(collections.Mapping):
         self._set_param_stackid()
 
         if resolve_data:
-            self.outputs = self.resolve_static_data(
+            self.outputs = self.resolve_outputs_data(
                 self.t[self.t.OUTPUTS], path=self.t.OUTPUTS)
         else:
             self.outputs = {}
@@ -315,21 +314,21 @@ class Stack(collections.Mapping):
         return self._resources
 
     def _find_filtered_resources(self, filters):
-        for rsc in six.itervalues(
-                resource_objects.Resource.get_all_by_stack(
-                    self.context, self.id, filters)):
-            yield self.resources[rsc.name]
+        template_cache = {self.t.id: self.t}
+        if filters:
+            resources = resource_objects.Resource.get_all_by_stack(
+                self.context, self.id, filters)
+        else:
+            resources = self._db_resources_get()
+        for rsc in six.itervalues(resources):
+            yield self._resource_from_db_resource(rsc, template_cache)
 
     def iter_resources(self, nested_depth=0, filters=None):
         """Iterates over all the resources in a stack.
 
         Iterating includes nested stacks up to `nested_depth` levels below.
         """
-        if not filters:
-            resources = six.itervalues(self.resources)
-        else:
-            resources = self._find_filtered_resources(filters)
-        for res in resources:
+        for res in self._find_filtered_resources(filters):
             yield res
 
         for res in six.itervalues(self.resources):
@@ -344,23 +343,50 @@ class Stack(collections.Mapping):
                 yield nested_res
 
     def db_active_resources_get(self):
-        try:
-            return resource_objects.Resource.get_all_active_by_stack(
-                self.context, self.id)
-        except exception.NotFound:
-            return None
+        resources = resource_objects.Resource.get_all_active_by_stack(
+            self.context, self.id)
+        return resources or None
 
     def db_resource_get(self, name):
         if not self.id:
             return None
+        return self._db_resources_get().get(name)
+
+    def _db_resources_get(self):
         if self._db_resources is None:
-            try:
-                _db_resources = resource_objects.Resource.get_all_by_stack(
-                    self.context, self.id)
-                self._db_resources = _db_resources
-            except exception.NotFound:
-                return None
-        return self._db_resources.get(name)
+            _db_resources = resource_objects.Resource.get_all_by_stack(
+                self.context, self.id)
+            if not _db_resources:
+                return {}
+            self._db_resources = _db_resources
+        return self._db_resources
+
+    def _resource_from_db_resource(self, db_res, template_cache=None):
+        tid = db_res.current_template_id
+        if tid is None or tid == self.t.id:
+            t = self.t
+        elif template_cache and tid in template_cache:
+            t = template_cache[tid]
+        else:
+            t = tmpl.Template.load(self.context, tid)
+            if template_cache:
+                template_cache[tid] = t
+
+        res_defn = t.resource_definitions(self)[db_res.name]
+        return resource.Resource(db_res.name, res_defn, self)
+
+    def resource_get(self, name):
+        """Return a stack resource, even if not in the current template."""
+        res = self.resources.get(name)
+        if res:
+            return res
+
+        # fall back to getting the resource from the database
+        db_res = self.db_resource_get(name)
+        if db_res:
+            return self._resource_from_db_resource(db_res)
+
+        return None
 
     @property
     def dependencies(self):
@@ -468,8 +494,7 @@ class Stack(collections.Mapping):
             stack = stack_object.Stack.get_by_id(
                 context,
                 stack_id,
-                show_deleted=show_deleted,
-                eager_load=True)
+                show_deleted=show_deleted)
         if stack is None:
             message = _('No stack exists with id "%s"') % str(stack_id)
             raise exception.NotFound(message)
@@ -485,7 +510,7 @@ class Stack(collections.Mapping):
 
     @classmethod
     def load_all(cls, context, limit=None, marker=None, sort_keys=None,
-                 sort_dir=None, filters=None, tenant_safe=True,
+                 sort_dir=None, filters=None,
                  show_deleted=False, resolve_data=True,
                  show_nested=False, show_hidden=False, tags=None,
                  tags_any=None, not_tags=None, not_tags_any=None):
@@ -496,7 +521,6 @@ class Stack(collections.Mapping):
             marker=marker,
             sort_dir=sort_dir,
             filters=filters,
-            tenant_safe=tenant_safe,
             show_deleted=show_deleted,
             show_nested=show_nested,
             show_hidden=show_hidden,
@@ -586,7 +610,8 @@ class Stack(collections.Mapping):
         return stack
 
     @profiler.trace('Stack.store', hide_args=False)
-    def store(self, backup=False, exp_trvsl=None):
+    def store(self, backup=False, exp_trvsl=None,
+              ignore_traversal_check=False):
         """Store the stack in the database and return its ID.
 
         If self.id is set, we update the existing stack.
@@ -602,7 +627,7 @@ class Stack(collections.Mapping):
             s['raw_template_id'] = self.t.id
 
         if self.id:
-            if exp_trvsl is None:
+            if exp_trvsl is None and not ignore_traversal_check:
                 exp_trvsl = self.current_traversal
 
             if self.convergence:
@@ -698,6 +723,9 @@ class Stack(collections.Mapping):
         """
         return self is other
 
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
     def __str__(self):
         """Return a human-readable string representation of the stack."""
         text = 'Stack "%s" [%s]' % (self.name, self.id)
@@ -756,6 +784,9 @@ class Stack(collections.Mapping):
         # Validate Parameter Groups
         parameter_groups = param_groups.ParameterGroups(self.t)
         parameter_groups.validate()
+
+        # Validate condition definition of conditions section
+        self.t.validate_condition_definitions(self)
 
         # Validate types of sections in ResourceDefinitions
         self.t.validate_resource_definitions(self)
@@ -901,10 +932,17 @@ class Stack(collections.Mapping):
             self._send_notification_and_add_event()
             if self.convergence:
                 # do things differently for convergence
+                exp_trvsl = self.current_traversal
+                if self.status == self.FAILED:
+                    self.current_traversal = ''
+                    values['current_traversal'] = self.current_traversal
+
                 updated = stack_object.Stack.select_and_update(
                     self.context, self.id, values,
-                    exp_trvsl=self.current_traversal)
+                    exp_trvsl=exp_trvsl)
+
                 return updated
+
             else:
                 stack.update_and_save(values)
 
@@ -955,7 +993,7 @@ class Stack(collections.Mapping):
 
     @profiler.trace('Stack.create', hide_args=False)
     @reset_state_on_error
-    def create(self):
+    def create(self, msg_queue=None):
         """Create the stack and all of the resources."""
         def rollback():
             if not self.disable_rollback and self.state == (self.CREATE,
@@ -964,11 +1002,12 @@ class Stack(collections.Mapping):
 
         self._store_resources()
 
+        check_message = functools.partial(self._check_for_message, msg_queue)
+
         creator = scheduler.TaskRunner(
             self.stack_task, action=self.CREATE,
-            reverse=False, post_func=rollback,
-            error_wait_time=cfg.CONF.error_wait_time)
-        creator(timeout=self.timeout_secs())
+            reverse=False, post_func=rollback)
+        creator(timeout=self.timeout_secs(), progress_callback=check_message)
 
     def _adopt_kwargs(self, resource):
         data = self.adopt_stack_data
@@ -979,7 +1018,6 @@ class Stack(collections.Mapping):
 
     @scheduler.wrappertask
     def stack_task(self, action, reverse=False, post_func=None,
-                   error_wait_time=None,
                    aggregate_exceptions=False, pre_completion_func=None):
         """A task to perform an action on the stack.
 
@@ -991,8 +1029,6 @@ class Stack(collections.Mapping):
          in reverse order (resources - first and then res dependencies )
         :param post_func: function that need to be executed after
         action complete on the stack
-        :param error_wait_time: time to wait before cancelling all execution
-        threads when an error occurred
         :param aggregate_exceptions: define if exceptions should be aggregated
         :param pre_completion_func: function that need to be executed right
         before action completion. Uses stack ,action, status and reason as
@@ -1027,11 +1063,14 @@ class Stack(collections.Mapping):
 
             return handle(**handle_kwargs(r))
 
+        def get_error_wait_time(resource):
+            return resource.cancel_grace_period()
+
         action_task = scheduler.DependencyTaskGroup(
             self.dependencies,
             resource_action,
             reverse,
-            error_wait_time=error_wait_time,
+            error_wait_time=get_error_wait_time,
             aggregate_exceptions=aggregate_exceptions)
 
         try:
@@ -1065,7 +1104,6 @@ class Stack(collections.Mapping):
         checker = scheduler.TaskRunner(
             self.stack_task, self.CHECK,
             post_func=self.supports_check_action,
-            error_wait_time=cfg.CONF.error_wait_time,
             aggregate_exceptions=True)
         checker()
 
@@ -1129,13 +1167,12 @@ class Stack(collections.Mapping):
             self.stack_task,
             action=self.ADOPT,
             reverse=False,
-            error_wait_time=cfg.CONF.error_wait_time,
             post_func=rollback)
         creator(timeout=self.timeout_secs())
 
     @profiler.trace('Stack.update', hide_args=False)
     @reset_state_on_error
-    def update(self, newstack, event=None):
+    def update(self, newstack, msg_queue=None):
         """Update the stack.
 
         Compare the current stack with newstack,
@@ -1150,7 +1187,7 @@ class Stack(collections.Mapping):
         """
         self.updated_time = oslo_timeutils.utcnow()
         updater = scheduler.TaskRunner(self.update_task, newstack,
-                                       event=event)
+                                       msg_queue=msg_queue)
         updater()
 
     @profiler.trace('Stack.converge_stack', hide_args=False)
@@ -1224,6 +1261,14 @@ class Stack(collections.Mapping):
 
         LOG.info(_LI('convergence_dependencies: %s'),
                  self.convergence_dependencies)
+
+        # Delete all the snapshots before starting delete operation
+        if self.action == self.DELETE:
+            snapshots = snapshot_object.Snapshot.get_all(self.context,
+                                                         self.id)
+            for snapshot in snapshots:
+                self.delete_snapshot(snapshot)
+                snapshot_object.Snapshot.delete(self.context, snapshot.id)
 
         # create sync_points for resources in DB
         for rsrc_id, is_update in self.convergence_dependencies:
@@ -1322,6 +1367,16 @@ class Stack(collections.Mapping):
                 rsrcs[existing_rsrc_db.name] = existing_rsrc_db
         return rsrcs
 
+    def set_resource_deps(self):
+        curr_name_translated_dep = self.dependencies.translate(lambda res:
+                                                               res.id)
+        ext_rsrcs_db = self.db_active_resources_get()
+        for r in self.dependencies:
+            r.needed_by = list(curr_name_translated_dep.required_by(r.id))
+            r.requires = list(curr_name_translated_dep.requires(r.id))
+            resource.Resource.set_needed_by(ext_rsrcs_db[r.id], r.needed_by)
+            resource.Resource.set_requires(ext_rsrcs_db[r.id], r.requires)
+
     def _compute_convg_dependencies(self, existing_resources,
                                     current_template_deps, current_resources):
         def make_graph_key(rsrc):
@@ -1352,7 +1407,7 @@ class Stack(collections.Mapping):
         return self._convg_deps
 
     @scheduler.wrappertask
-    def update_task(self, newstack, action=UPDATE, event=None):
+    def update_task(self, newstack, action=UPDATE, msg_queue=None):
         if action not in (self.UPDATE, self.ROLLBACK, self.RESTORE):
             LOG.error(_LE("Unexpected action %s passed to update!"), action)
             self.state_set(self.UPDATE, self.FAILED,
@@ -1403,12 +1458,12 @@ class Stack(collections.Mapping):
         should_rollback = False
         update_task = update.StackUpdate(
             self, newstack, backup_stack,
-            rollback=action == self.ROLLBACK,
-            error_wait_time=cfg.CONF.error_wait_time)
+            rollback=action == self.ROLLBACK)
         try:
             updater = scheduler.TaskRunner(update_task)
 
             self.parameters = newstack.parameters
+            self.t._conditions = newstack.t.conditions(newstack)
             self.t.files = newstack.t.files
             self.t.env = newstack.t.env
             self.disable_rollback = newstack.disable_rollback
@@ -1422,15 +1477,11 @@ class Stack(collections.Mapping):
             else:
                 stack_tag_object.StackTagList.delete(self.context, self.id)
 
+            check_message = functools.partial(self._check_for_message,
+                                              msg_queue)
             try:
-                updater.start(timeout=self.timeout_secs())
-                yield
-                while not updater.step():
-                    if event is None or not event.ready():
-                        yield
-                    else:
-                        message = event.wait()
-                        self._message_parser(message)
+                yield updater.as_task(timeout=self.timeout_secs(),
+                                      progress_callback=check_message)
             finally:
                 self.reset_dependencies()
 
@@ -1441,17 +1492,16 @@ class Stack(collections.Mapping):
         except scheduler.Timeout:
             self.status = self.FAILED
             self.status_reason = 'Timed out'
-        except (ForcedCancel, Exception) as e:
+        except Exception as e:
             # If rollback is enabled when resource failure occurred,
             # we do another update, with the existing template,
             # so we roll back to the original state
-            should_rollback = self._update_exception_handler(e, action,
-                                                             update_task)
+            should_rollback = self._update_exception_handler(e, action)
             if should_rollback:
                 yield self.update_task(oldstack, action=self.ROLLBACK)
         except BaseException as e:
             with excutils.save_and_reraise_exception():
-                self._update_exception_handler(e, action, update_task)
+                self._update_exception_handler(e, action)
         else:
             LOG.debug('Deleting backup stack')
             backup_stack.delete(backup=True)
@@ -1460,7 +1510,7 @@ class Stack(collections.Mapping):
             previous_template_id = self.t.id
             self.t = newstack.t
             template_outputs = self.t[self.t.OUTPUTS]
-            self.outputs = self.resolve_static_data(
+            self.outputs = self.resolve_outputs_data(
                 template_outputs, path=self.t.OUTPUTS)
         finally:
             if should_rollback:
@@ -1477,8 +1527,10 @@ class Stack(collections.Mapping):
                 # and new stack resources, we should have user params of both.
                 existing_params.load(newstack.t.env.user_env_as_dict())
                 self.t.env = existing_params
+                self.t.merge_snippets(newstack.t)
                 self.t.store(self.context)
                 backup_stack.t.env = existing_params
+                backup_stack.t.merge_snippets(newstack.t)
                 backup_stack.t.store(self.context)
             self.store()
 
@@ -1490,7 +1542,7 @@ class Stack(collections.Mapping):
                                                newstack, action,
                                                (self.status == self.FAILED))
 
-    def _update_exception_handler(self, exc, action, update_task):
+    def _update_exception_handler(self, exc, action):
         """Handle exceptions in update_task.
 
         Decide if we should cancel tasks or not. Also decide if we should
@@ -1504,7 +1556,6 @@ class Stack(collections.Mapping):
         if action != self.UPDATE:
             return False
         if isinstance(exc, ForcedCancel):
-            update_task.updater.cancel_all()
             return exc.with_rollback or not self.disable_rollback
         elif isinstance(exc, exception.ResourceFailure):
             return not self.disable_rollback
@@ -1519,11 +1570,21 @@ class Stack(collections.Mapping):
         if not cfg.CONF.encrypt_parameters_and_properties:
             self.t.env.encrypted_param_names = []
 
-    def _message_parser(self, message):
+    @staticmethod
+    def _check_for_message(msg_queue):
+        if msg_queue is None:
+            return
+        try:
+            message = msg_queue.get_nowait()
+        except eventlet.queue.Empty:
+            return
+
         if message == rpc_api.THREAD_CANCEL:
             raise ForcedCancel(with_rollback=False)
         elif message == rpc_api.THREAD_CANCEL_WITH_ROLLBACK:
             raise ForcedCancel(with_rollback=True)
+
+        LOG.error(_LE('Unknown message "%s" received'), message)
 
     def _delete_backup_stack(self, stack):
         # Delete resources in the backup stack referred to by 'stack'
@@ -1752,8 +1813,7 @@ class Stack(collections.Mapping):
         sus_task = scheduler.TaskRunner(
             self.stack_task,
             action=self.SUSPEND,
-            reverse=True,
-            error_wait_time=cfg.CONF.error_wait_time)
+            reverse=True)
         sus_task(timeout=self.timeout_secs())
 
     @profiler.trace('Stack.resume', hide_args=False)
@@ -1778,8 +1838,7 @@ class Stack(collections.Mapping):
         sus_task = scheduler.TaskRunner(
             self.stack_task,
             action=self.RESUME,
-            reverse=False,
-            error_wait_time=cfg.CONF.error_wait_time)
+            reverse=False)
         sus_task(timeout=self.timeout_secs())
 
     @profiler.trace('Stack.snapshot', hide_args=False)
@@ -1791,7 +1850,6 @@ class Stack(collections.Mapping):
             self.stack_task,
             action=self.SNAPSHOT,
             reverse=False,
-            error_wait_time=cfg.CONF.error_wait_time,
             pre_completion_func=save_snapshot_func)
         sus_task(timeout=self.timeout_secs())
 
@@ -1919,7 +1977,16 @@ class Stack(collections.Mapping):
         }
 
     def resolve_static_data(self, snippet, path=''):
+        warnings.warn('Stack.resolve_static_data() is deprecated and '
+                      'will be removed in the Ocata release. Use the '
+                      'Stack.resolve_outputs_data() instead.',
+                      DeprecationWarning)
+
         return self.t.parse(self, snippet, path=path)
+
+    def resolve_outputs_data(self, outputs, path=''):
+        resolve_outputs = self.t.parse_outputs_conditions(outputs, self)
+        return self.t.parse(self, resolve_outputs, path=path)
 
     def reset_resource_attributes(self):
         # nothing is cached if no resources exist
@@ -1978,17 +2045,13 @@ class Stack(collections.Mapping):
        """
         resource_objects.Resource.purge_deleted(self.context, self.id)
 
-        exp_trvsl = self.current_traversal
-        if self.status == self.FAILED:
-            self.current_traversal = ''
-
         prev_tmpl_id = None
         if (self.prev_raw_template_id is not None and
                 self.status != self.FAILED):
             prev_tmpl_id = self.prev_raw_template_id
             self.prev_raw_template_id = None
 
-        stack_id = self.store(exp_trvsl=exp_trvsl)
+        stack_id = self.store()
         if stack_id is None:
             # Failed concurrent update
             LOG.warning(_LW("Failed to store stack %(name)s with traversal ID "
@@ -2034,3 +2097,19 @@ class Stack(collections.Mapping):
             return self.time_elapsed() > self.timeout_secs()
 
         return False
+
+    def migrate_to_convergence(self):
+        values = {'current_template_id': self.t.id}
+        db_rsrcs = self.db_active_resources_get()
+        if db_rsrcs is not None:
+            for res in db_rsrcs.values():
+                res.update_and_save(values=values)
+        self.set_resource_deps()
+        self.current_traversal = uuidutils.generate_uuid()
+        self.convergence = True
+        prev_raw_template_id = self.prev_raw_template_id
+        self.prev_raw_template_id = None
+        self.store(ignore_traversal_check=True)
+        if prev_raw_template_id:
+            raw_template_object.RawTemplate.delete(self.context,
+                                                   prev_raw_template_id)

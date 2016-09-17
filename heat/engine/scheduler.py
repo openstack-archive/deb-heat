@@ -11,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import functools
 import sys
 import types
 
@@ -48,6 +49,7 @@ def task_description(task):
     return encodeutils.safe_decode(repr(task))
 
 
+@functools.total_ordering
 class Timeout(BaseException):
     """Raised when task has exceeded its allotted (wallclock) running time.
 
@@ -79,27 +81,14 @@ class Timeout(BaseException):
             return False
 
     def __eq__(self, other):
-        return not self < other and not other < self
-
-    def __ne__(self, other):
-        return not self.__eq__(other)
-
-    def __gt__(self, other):
-        return other < self
-
-    def __ge__(self, other):
-        return not self < other
-
-    def __le__(self, other):
-        return not other < self
+        if not isinstance(other, Timeout):
+            return NotImplemented
+        return not (self < other or other < self)
 
     def __lt__(self, other):
         if not isinstance(other, Timeout):
             return NotImplemented
         return self._duration.endtime() < other._duration.endtime()
-
-    def __cmp__(self, other):
-        return self < other
 
 
 class TimedCancel(Timeout):
@@ -168,18 +157,19 @@ class TaskRunner(object):
             LOG.debug('%s sleeping' % six.text_type(self))
             eventlet.sleep(wait_time)
 
-    def __call__(self, wait_time=1, timeout=None):
+    def __call__(self, wait_time=1, timeout=None, progress_callback=None):
         """Start and run the task to completion.
 
         The task will first sleep for zero seconds, then sleep for `wait_time`
         seconds between steps. To avoid sleeping, pass `None` for `wait_time`.
         """
-        self.start(timeout=timeout)
-        # ensure that zero second sleep is applied only if task
-        # has not completed.
-        if not self.done() and wait_time:
-            self._sleep(0)
-        self.run_to_completion(wait_time=wait_time)
+        assert self._runner is None, "Task already started"
+
+        started = False
+        for step in self.as_task(timeout=timeout,
+                                 progress_callback=progress_callback):
+            self._sleep(wait_time if (started or wait_time is None) else 0)
+            started = True
 
     def start(self, timeout=None):
         """Initialise the task and run its first step.
@@ -238,14 +228,48 @@ class TaskRunner(object):
 
         return self._done
 
-    def run_to_completion(self, wait_time=1):
+    def run_to_completion(self, wait_time=1, progress_callback=None):
         """Run the task to completion.
 
         The task will sleep for `wait_time` seconds between steps. To avoid
         sleeping, pass `None` for `wait_time`.
         """
-        while not self.step():
+        assert self._runner is not None, "Task not started"
+
+        for step in self.as_task(progress_callback=progress_callback):
             self._sleep(wait_time)
+
+    def as_task(self, timeout=None, progress_callback=None):
+        """Return a task that drives the TaskRunner."""
+        resuming = self.started()
+        if not resuming:
+            self.start(timeout=timeout)
+        else:
+            if timeout is not None:
+                new_timeout = Timeout(self, timeout)
+                if self._timeout is None or new_timeout < self._timeout:
+                    self._timeout = new_timeout
+
+        done = self.step() if resuming else self.done()
+        while not done:
+            try:
+                yield
+
+                if progress_callback is not None:
+                    progress_callback()
+            except GeneratorExit:
+                self.cancel()
+                raise
+            except:  # noqa
+                self._done = True
+                try:
+                    self._runner.throw(*sys.exc_info())
+                except StopIteration:
+                    return
+                else:
+                    self._done = False
+            else:
+                done = self.step()
 
     def cancel(self, grace_period=None):
         """Cancel the task and mark it as done."""
@@ -363,9 +387,12 @@ class DependencyTaskGroup(object):
         dependency tree is passed as an argument.
 
         If an error_wait_time is specified, tasks that are already running at
-        the time of an error will continue to run for up to the specified
-        time before being cancelled. Once all remaining tasks are complete or
-        have been cancelled, the original exception is raised.
+        the time of an error will continue to run for up to the specified time
+        before being cancelled. Once all remaining tasks are complete or have
+        been cancelled, the original exception is raised. If error_wait_time is
+        a callable function it will be called for each task, passing the
+        dependency key as an argument, to determine the error_wait_time for
+        that particular task.
 
         If aggregate_exceptions is True, then execution of parallel operations
         will not be cancelled in the event of an error (operations downstream
@@ -392,6 +419,8 @@ class DependencyTaskGroup(object):
     def __call__(self):
         """Return a co-routine which runs the task group."""
         raised_exceptions = []
+        thrown_exceptions = []
+
         while any(six.itervalues(self._runners)):
             try:
                 for k, r in self._ready():
@@ -399,7 +428,12 @@ class DependencyTaskGroup(object):
                     if not r:
                         del self._graph[k]
 
-                yield
+                if self._graph:
+                    try:
+                        yield
+                    except Exception:
+                        thrown_exceptions.append(sys.exc_info())
+                        raise
 
                 for k, r in self._running():
                     if r.step():
@@ -411,6 +445,7 @@ class DependencyTaskGroup(object):
                 else:
                     self.cancel_all(grace_period=self.error_wait_time)
                 raised_exceptions.append(exc_info)
+                del exc_info
             except:  # noqa
                 with excutils.save_and_reraise_exception():
                     self.cancel_all()
@@ -420,14 +455,27 @@ class DependencyTaskGroup(object):
                 if self.aggregate_exceptions:
                     raise ExceptionGroup(v for t, v, tb in raised_exceptions)
                 else:
-                    exc_type, exc_val, traceback = raised_exceptions[0]
-                    raise_(exc_type, exc_val, traceback)
+                    if thrown_exceptions:
+                        raise_(*thrown_exceptions[-1])
+                    else:
+                        raise_(*raised_exceptions[0])
             finally:
                 del raised_exceptions
+                del thrown_exceptions
 
     def cancel_all(self, grace_period=None):
-        for r in six.itervalues(self._runners):
-            r.cancel(grace_period=grace_period)
+        if callable(grace_period):
+            get_grace_period = grace_period
+        else:
+            def get_grace_period(key):
+                return grace_period
+
+        for k, r in six.iteritems(self._runners):
+            gp = get_grace_period(k)
+            try:
+                r.cancel(grace_period=gp)
+            except Exception as ex:
+                LOG.debug('Exception cancelling task: %s' % six.text_type(ex))
 
     def _cancel_recursively(self, key, runner):
         runner.cancel()

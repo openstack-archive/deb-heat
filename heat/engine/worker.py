@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import eventlet.queue
+
 from oslo_log import log as logging
 import oslo_messaging
 from oslo_service import service
@@ -21,6 +23,7 @@ from osprofiler import profiler
 from heat.common import context
 from heat.common.i18n import _LE
 from heat.common.i18n import _LI
+from heat.common.i18n import _LW
 from heat.common import messaging as rpc_messaging
 from heat.engine import check_resource
 from heat.engine import sync_point
@@ -88,6 +91,22 @@ class WorkerService(service.Service):
 
         super(WorkerService, self).stop()
 
+    def stop_traversal(self, stack):
+        """Update current traversal to stop workers from propagating.
+
+        Marks the stack as FAILED due to cancellation, but, allows all
+        in_progress resources to complete normally; no worker is stopped
+        abruptly.
+        """
+        reason = 'User cancelled stack %s ' % stack.action
+        # state_set will update the current traversal to '' for FAILED state
+        old_trvsl = stack.current_traversal
+        updated = stack.state_set(stack.action, stack.FAILED, reason)
+        if not updated:
+            LOG.warning(_LW("Failed to stop traversal %(trvsl)s of stack "
+                            "%(name)s while cancelling the operation."),
+                        {'name': stack.name, 'trvsl': old_trvsl})
+
     @context.request_context
     def check_resource(self, cnxt, resource_id, current_traversal, data,
                        is_update, adopt_stack_data):
@@ -107,11 +126,17 @@ class WorkerService(service.Service):
             LOG.debug('[%s] Traversal cancelled; stopping.', current_traversal)
             return
 
-        cr = check_resource.CheckResource(self.engine_id, self._rpc_client,
-                                          self.thread_group_mgr)
+        msg_queue = eventlet.queue.LightQueue()
+        try:
+            self.thread_group_mgr.add_msg_queue(stack.id, msg_queue)
+            cr = check_resource.CheckResource(self.engine_id, self._rpc_client,
+                                              self.thread_group_mgr, msg_queue)
 
-        cr.check(cnxt, resource_id, current_traversal, resource_data,
-                 is_update, adopt_stack_data, rsrc, stack)
+            cr.check(cnxt, resource_id, current_traversal, resource_data,
+                     is_update, adopt_stack_data, rsrc, stack)
+        finally:
+            self.thread_group_mgr.remove_msg_queue(None,
+                                                   stack.id, msg_queue)
 
     @context.request_context
     def cancel_check_resource(self, cnxt, stack_id):

@@ -50,6 +50,7 @@ from heat.rpc import client as rpc_client
 
 cfg.CONF.import_opt('action_retry_limit', 'heat.common.config')
 cfg.CONF.import_opt('observe_on_update', 'heat.common.config')
+cfg.CONF.import_opt('error_wait_time', 'heat.common.config')
 
 LOG = logging.getLogger(__name__)
 
@@ -58,6 +59,10 @@ datetime = dt.datetime
 
 def _register_class(resource_type, resource_class):
     resources.global_env().register_class(resource_type, resource_class)
+
+
+# Attention developers about to move/delete this: STOP IT!!!
+UpdateReplace = exception.UpdateReplace
 
 
 class PollDelay(Exception):
@@ -386,8 +391,8 @@ class Resource(object):
             return self.t.metadata()
         if self._rsrc_metadata is not None:
             return self._rsrc_metadata
-        rs = resource_objects.Resource.get_obj(self.stack.context, self.id)
-        rs.refresh(attrs=['rsrc_metadata'])
+        rs = resource_objects.Resource.get_obj(self.stack.context, self.id,
+                                               refresh=True)
         self._rsrc_metadata = rs.rsrc_metadata
         return rs.rsrc_metadata
 
@@ -408,9 +413,10 @@ class Resource(object):
         if self.id is None or self.action == self.INIT:
             raise exception.ResourceNotAvailable(resource_name=self.name)
         LOG.debug('Setting metadata for %s', six.text_type(self))
-        db_res = resource_objects.Resource.get_obj(self.stack.context, self.id)
-        if merge_metadata is not None:
-            db_res = db_res.refresh(attrs=['rsrc_metadata'])
+        refresh = merge_metadata is not None
+        db_res = resource_objects.Resource.get_obj(self.stack.context, self.id,
+                                                   refresh=refresh)
+        if refresh:
             metadata = merge_metadata(metadata, db_res.rsrc_metadata)
         db_res.update_metadata(metadata)
         self._rsrc_metadata = metadata
@@ -541,7 +547,7 @@ class Resource(object):
         """
         update_allowed_set = set(self.update_allowed_properties)
         immutable_set = set()
-        for (psk, psv) in six.iteritems(self.properties.props):
+        for (psk, psv) in six.iteritems(after_props.props):
             if psv.update_allowed():
                 update_allowed_set.add(psk)
             if psv.immutable():
@@ -571,19 +577,19 @@ class Resource(object):
                                     if k in immutable_set]
 
         if update_replace_forbidden:
-            mesg = _("Update to properties %(props)s of %(name)s (%(res)s)"
-                     ) % {'props': ", ".join(sorted(update_replace_forbidden)),
-                          'res': self.type(), 'name': self.name}
-            raise exception.NotSupported(feature=mesg)
+            msg = _("Update to properties %(props)s of %(name)s (%(res)s)"
+                    ) % {'props': ", ".join(sorted(update_replace_forbidden)),
+                         'res': self.type(), 'name': self.name}
+            raise exception.NotSupported(feature=msg)
 
         if changed_properties_set and self.needs_replace_with_prop_diff(
                 changed_properties_set,
                 after_props,
                 before_props):
-            raise exception.UpdateReplace(self)
+            raise UpdateReplace(self)
 
         if not changed_properties_set.issubset(update_allowed_set):
-            raise exception.UpdateReplace(self.name)
+            raise UpdateReplace(self.name)
 
         return dict((k, after_props.get(k)) for k in changed_properties_set)
 
@@ -635,7 +641,12 @@ class Resource(object):
         Returns a list of names of resources that depend on this resource
         directly.
         """
-        return [r.name for r in self.stack.dependencies.required_by(self)]
+        try:
+            return [r.name for r in self.stack.dependencies.required_by(self)]
+        except KeyError:
+            # for convergence, fall back to building from needed_by
+            return [r.name for r in self.stack.resources.values()
+                    if r.id in self.needed_by]
 
     def client(self, name=None, version=None):
         client_name = name or self.default_client_name
@@ -742,10 +753,14 @@ class Resource(object):
             failure = exception.ResourceFailure(ex, self, action)
             self.state_set(action, self.FAILED, six.text_type(failure))
             raise failure
-        except:  # noqa
+        except BaseException as exc:
             with excutils.save_and_reraise_exception():
                 try:
-                    self.state_set(action, self.FAILED, '%s aborted' % action)
+                    reason = six.text_type(exc)
+                    msg = '%s aborted' % action
+                    if reason:
+                        msg += ' (%s)' % reason
+                    self.state_set(action, self.FAILED, msg)
                 except Exception:
                     LOG.exception(_LE('Error marking resource as failed'))
         else:
@@ -775,16 +790,34 @@ class Resource(object):
             handler_data = handler(*args)
             yield
             if callable(check):
-                while True:
-                    try:
-                        done = check(handler_data)
-                    except PollDelay as delay:
-                        yield delay.period
-                    else:
-                        if done:
-                            break
+                try:
+                    while True:
+                        try:
+                            done = check(handler_data)
+                        except PollDelay as delay:
+                            yield delay.period
                         else:
-                            yield
+                            if done:
+                                break
+                            else:
+                                yield
+                except Exception:
+                    raise
+                except:  # noqa
+                    with excutils.save_and_reraise_exception():
+                        canceller = getattr(
+                            self,
+                            'handle_%s_cancel' % handler_action,
+                            None
+                        )
+                        if callable(canceller):
+                            try:
+                                canceller(handler_data)
+                            except Exception:
+                                LOG.exception(
+                                    _LE('Error cancelling resource %s'),
+                                    action
+                                )
 
     @scheduler.wrappertask
     def _do_action(self, action, pre_func=None, resource_data=None):
@@ -823,7 +856,7 @@ class Resource(object):
         return self
 
     def create_convergence(self, template_id, resource_data, engine_id,
-                           timeout):
+                           timeout, progress_callback=None):
         """Creates the resource by invoking the scheduler TaskRunner."""
         with self.lock(engine_id):
             self.requires = list(
@@ -836,7 +869,25 @@ class Resource(object):
             else:
                 adopt_data = self.stack._adopt_kwargs(self)
                 runner = scheduler.TaskRunner(self.adopt, **adopt_data)
-            runner(timeout=timeout)
+
+            runner(timeout=timeout, progress_callback=progress_callback)
+
+    def _validate_external_resource(self, external_id):
+        if self.entity:
+            try:
+                self.resource_id = external_id
+                self._show_resource()
+            except Exception as ex:
+                LOG.debug("%s", ex)
+                if self.client_plugin().is_not_found(ex):
+                    error_message = _("Invalid external resource: Resource "
+                                      "%(external_id)s not found in "
+                                      "%(entity)s.") % {
+                                          'external_id': external_id,
+                                          'entity': self.entity}
+                    raise exception.StackValidationFailed(
+                        message="%s" % error_message)
+                raise
 
     @scheduler.wrappertask
     def create(self):
@@ -845,6 +896,15 @@ class Resource(object):
         Subclasses should provide a handle_create() method to customise
         creation.
         """
+        external = self.t.external_id()
+        if external is not None:
+            self._validate_external_resource(external_id=external)
+
+            yield self._do_action(self.ADOPT,
+                                  resource_data={'resource_id': external})
+            self.check()
+            return
+
         action = self.CREATE
         if (self.action, self.status) != (self.INIT, self.COMPLETE):
             exc = exception.Error(_('State %s invalid for create')
@@ -869,13 +929,6 @@ class Resource(object):
         self.reparse()
         self._update_stored_properties()
 
-        def pause():
-            try:
-                while True:
-                    yield
-            except scheduler.Timeout:
-                return
-
         count = {self.CREATE: 0, self.DELETE: 0}
 
         retry_limit = max(cfg.CONF.action_retry_limit, 0)
@@ -886,10 +939,8 @@ class Resource(object):
             if count[action]:
                 delay = timeutils.retry_backoff_delay(count[action],
                                                       jitter_max=2.0)
-                waiter = scheduler.TaskRunner(pause)
-                waiter.start(timeout=delay)
-                while not waiter.step():
-                    yield
+                waiter = scheduler.TaskRunner(self.pause)
+                yield waiter.as_task(timeout=delay)
             try:
                 yield self._do_action(action, self.properties.validate)
                 if action == self.CREATE:
@@ -917,6 +968,14 @@ class Resource(object):
             yield self._break_if_required(
                 self.CREATE, environment.HOOK_POST_CREATE)
 
+    @staticmethod
+    def pause():
+        try:
+            while True:
+                yield
+        except scheduler.Timeout:
+            return
+
     def prepare_abandon(self):
         self.abandon_in_progress = True
         return {
@@ -925,7 +984,7 @@ class Resource(object):
             'type': self.type(),
             'action': self.action,
             'status': self.status,
-            'metadata': self.metadata_get(refresh=True),
+            'metadata': self.metadata_get(),
             'resource_data': self.data()
         }
 
@@ -972,6 +1031,18 @@ class Resource(object):
         for rule in rules:
             rule.execute_rule(client_resolve)
 
+    def cancel_grace_period(self):
+        if self.status != self.IN_PROGRESS:
+            return None
+
+        canceller = getattr(self,
+                            'handle_%s_cancel' % self.action.lower(),
+                            None)
+        if callable(canceller):
+            return None
+
+        return cfg.CONF.error_wait_time
+
     def _get_resource_info(self, resource_data):
         if not resource_data:
             return None, None, None
@@ -997,14 +1068,14 @@ class Resource(object):
                       prev_resource, check_init_complete=True):
         if self.status == self.FAILED or (self.stack.convergence and (
                 self.action, self.status) == (self.DELETE, self.COMPLETE)):
-            raise exception.UpdateReplace(self)
+            raise UpdateReplace(self)
 
         if check_init_complete and (self.action == self.INIT
                                     and self.status == self.COMPLETE):
-            raise exception.UpdateReplace(self)
+            raise UpdateReplace(self)
 
         if self.needs_replace(after_props):
-            raise exception.UpdateReplace(self)
+            raise UpdateReplace(self)
 
         if before != after.freeze():
             return True
@@ -1021,10 +1092,10 @@ class Resource(object):
             self._add_event(self.UPDATE, self.FAILED, six.text_type(ex))
             raise failure
         else:
-            raise exception.UpdateReplace(self.name)
+            raise UpdateReplace(self.name)
 
     def update_convergence(self, template_id, resource_data, engine_id,
-                           timeout, new_stack):
+                           timeout, new_stack, progress_callback=None):
         """Update the resource synchronously.
 
         Persist the resource's current_template_id to template_id and
@@ -1064,11 +1135,15 @@ class Resource(object):
 
             runner = scheduler.TaskRunner(self.update, new_res_def)
             try:
-                runner(timeout=timeout)
+                runner(timeout=timeout, progress_callback=progress_callback)
                 update_tmpl_id_and_requires()
-            except exception.ResourceFailure:
-                update_tmpl_id_and_requires()
+            except exception.UpdateReplace:
                 raise
+            except BaseException:
+                with excutils.save_and_reraise_exception():
+                    update_tmpl_id_and_requires()
+            else:
+                update_tmpl_id_and_requires()
 
     def preview_update(self, after, before, after_props, before_props,
                        prev_resource, check_init_complete=False):
@@ -1081,7 +1156,7 @@ class Resource(object):
                               prev_resource, check_init_complete):
             tmpl_diff = self.update_template_diff(after.freeze(), before)
             if tmpl_diff and self.needs_replace_with_tmpl_diff(tmpl_diff):
-                raise exception.UpdateReplace(self)
+                raise UpdateReplace(self)
 
             self.update_template_diff_properties(after_props, before_props)
             return True
@@ -1103,7 +1178,7 @@ class Resource(object):
                 if 'update' in actions:
                     raise exception.ResourceActionRestricted(action='update')
                 return True
-        except exception.UpdateReplace:
+        except UpdateReplace:
             if 'replace' in actions:
                 raise exception.ResourceActionRestricted(action='replace')
             raise
@@ -1122,7 +1197,7 @@ class Resource(object):
 
         if cfg.CONF.observe_on_update and before_props:
             if not self.resource_id:
-                raise exception.UpdateReplace(self)
+                raise UpdateReplace(self)
 
             try:
                 resource_reality = self.get_live_state(before_props)
@@ -1130,7 +1205,7 @@ class Resource(object):
                     self._update_properties_with_live_state(before_props,
                                                             resource_reality)
             except exception.EntityNotFound:
-                raise exception.UpdateReplace(self)
+                raise UpdateReplace(self)
             except Exception as ex:
                 LOG.warning(_LW("Resource cannot be updated with it's "
                                 "live state in case of next "
@@ -1167,8 +1242,18 @@ class Resource(object):
         if before is None:
             before = self.frozen_definition()
 
-        after_props, before_props = self._prepare_update_props(
-            after, before)
+        external = after.external_id()
+        if before.external_id() != external:
+            msg = _("Update to property %(prop)s of %(name)s (%(res)s)"
+                    ) % {'prop': hot_tmpl.HOTemplate20161014.RES_EXTERNAL_ID,
+                         'res': self.type(), 'name': self.name}
+            exc = exception.NotSupported(feature=msg)
+            raise exception.ResourceFailure(exc, self, action)
+        elif external is not None:
+            LOG.debug("Skip update on external resource.")
+            return
+
+        after_props, before_props = self._prepare_update_props(after, before)
 
         yield self._break_if_required(
             self.UPDATE, environment.HOOK_PRE_UPDATE)
@@ -1201,15 +1286,16 @@ class Resource(object):
 
             self.updated_time = datetime.utcnow()
 
-            with self._action_recorder(action, exception.UpdateReplace):
+            with self._action_recorder(action, UpdateReplace):
                 after_props.validate()
 
                 tmpl_diff = self.update_template_diff(after.freeze(), before)
                 if tmpl_diff and self.needs_replace_with_tmpl_diff(tmpl_diff):
-                    raise exception.UpdateReplace(self)
+                    raise UpdateReplace(self)
 
                 prop_diff = self.update_template_diff_properties(after_props,
                                                                  before_props)
+                self.properties = before_props
 
                 yield self.action_handler_task(action,
                                                args=[after, tmpl_diff,
@@ -1223,7 +1309,7 @@ class Resource(object):
             failure = exception.ResourceFailure(ae, self, action)
             self._add_event(action, self.FAILED, six.text_type(ae))
             raise failure
-        except exception.UpdateReplace:
+        except UpdateReplace:
             # catch all UpdateReplace exceptions
             self._prepare_update_replace(action)
             raise
@@ -1445,7 +1531,8 @@ class Resource(object):
                     expected_engine_id=None
                 )
 
-    def delete_convergence(self, template_id, input_data, engine_id, timeout):
+    def delete_convergence(self, template_id, input_data, engine_id, timeout,
+                           progress_callback=None):
         """Destroys the resource if it doesn't belong to given template.
 
         The given template is suppose to be the current template being
@@ -1469,9 +1556,8 @@ class Resource(object):
                         pass
                 else:
                     runner = scheduler.TaskRunner(self.delete)
-                    runner(timeout=timeout)
-
-                    # update needed_by and replaces of replacement resource
+                    runner(timeout=timeout,
+                           progress_callback=progress_callback)
                     self._update_replacement_data(template_id)
 
     def handle_delete(self):
@@ -1481,8 +1567,10 @@ class Resource(object):
                 obj = getattr(self.client(), self.entity)
                 obj.delete(self.resource_id)
             except Exception as ex:
-                self.client_plugin().ignore_not_found(ex)
-                return None
+                if self.default_client_name is not None:
+                    self.client_plugin().ignore_not_found(ex)
+                    return None
+                raise
             return self.resource_id
 
     @scheduler.wrappertask
@@ -1492,6 +1580,15 @@ class Resource(object):
         Subclasses should provide a handle_delete() method to customise
         deletion.
         """
+        @excutils.exception_filter
+        def should_retry(exc):
+            if count >= retry_limit:
+                return False
+            if self.default_client_name:
+                return (self.client_plugin().is_conflict(exc) or
+                        isinstance(exc, exception.PhysicalResourceExists))
+            return isinstance(exc, exception.PhysicalResourceExists)
+
         action = self.DELETE
 
         if (self.action, self.status) == (self.DELETE, self.COMPLETE):
@@ -1528,7 +1625,23 @@ class Resource(object):
                     action_args = [[initial_state], 'snapshot']
                 else:
                     action_args = []
-                yield self.action_handler_task(action, *action_args)
+
+                count = -1
+                retry_limit = max(cfg.CONF.action_retry_limit, 0)
+
+                while True:
+                    count += 1
+                    LOG.info(_LI('delete %(name)s attempt %(attempt)d') %
+                             {'name': six.text_type(self), 'attempt': count+1})
+                    if count:
+                        delay = timeutils.retry_backoff_delay(count,
+                                                              jitter_max=2.0)
+                        waiter = scheduler.TaskRunner(self.pause)
+                        yield waiter.as_task(timeout=delay)
+                    with excutils.exception_filter(should_retry):
+                        yield self.action_handler_task(action,
+                                                       *action_args)
+                        break
 
         if self.stack.action == self.stack.DELETE:
             yield self._break_if_required(
@@ -1725,14 +1838,18 @@ class Resource(object):
             try:
                 return getattr(self, '_{0}_resource'.format(attr))()
             except Exception as ex:
-                self.client_plugin().ignore_not_found(ex)
-                return None
+                if self.default_client_name is not None:
+                    self.client_plugin().ignore_not_found(ex)
+                    return None
+                raise
         else:
             try:
                 return self._resolve_attribute(attr)
             except Exception as ex:
-                self.client_plugin().ignore_not_found(ex)
-                return None
+                if self.default_client_name is not None:
+                    self.client_plugin().ignore_not_found(ex)
+                    return None
+                raise
 
     def _show_resource(self):
         """Default implementation; should be overridden by resources.
@@ -1757,7 +1874,8 @@ class Resource(object):
         try:
             resource_data = self._show_resource()
         except Exception as ex:
-            if self.client_plugin().is_not_found(ex):
+            if (self.default_client_name is not None and
+                    self.client_plugin().is_not_found(ex)):
                 raise exception.EntityNotFound(
                     entity='Resource', name=self.name)
             raise
@@ -2016,7 +2134,7 @@ class Resource(object):
 
     def handle_update(self, json_snippet, tmpl_diff, prop_diff):
         if prop_diff:
-            raise exception.UpdateReplace(self.name)
+            raise UpdateReplace(self.name)
 
     def metadata_update(self, new_metadata=None):
         """No-op for resources which don't explicitly override this method."""
@@ -2034,9 +2152,15 @@ class Resource(object):
             as parameters, and the resource's attributes_schema is mapped as
             outputs
         """
-        schema = cls.properties_schema
+
+        props_schema = {}
+        for name, schema_dict in cls.properties_schema.items():
+            schema = properties.Schema.from_legacy(schema_dict)
+            if schema.support_status.status != support.HIDDEN:
+                props_schema[name] = schema
+
         params, props = (properties.Properties.
-                         schema_to_parameters_and_properties(schema,
+                         schema_to_parameters_and_properties(props_schema,
                                                              template_type))
         resource_name = cls.__name__
         outputs = attributes.Attributes.as_outputs(resource_name, cls,
@@ -2111,8 +2235,9 @@ class Resource(object):
 
     def is_using_neutron(self):
         try:
-            self.client('neutron')
+            sess_client = self.client('neutron').httpclient
+            if not sess_client.get_endpoint():
+                return False
         except Exception:
             return False
-        else:
-            return True
+        return True

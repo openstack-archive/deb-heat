@@ -4,122 +4,64 @@
 Stacks
 ======
 
+Create stack
+============
 
+.. rest_method::  POST /v1/{tenant_id}/stacks
 
+Creates a stack.
 
-Abandon stack
-=============
+Response Codes
+--------------
 
-.. rest_method::  DELETE /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/abandon
+.. rest_status_code:: success status.yaml
 
-Deletes a stack but leaves its resources intact, and returns data that describes the stack and its resources.
+   - 201
 
-This method can be disabled from the server side. If it is
-disabled, this call throws an exception.
+.. rest_status_code:: error status.yaml
 
+   - 400
+   - 401
+   - 409
 
-Normal response codes: 200
-Error response codes:404,500,401,400,
-
-
-Request
--------
+Request Parameters
+------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - stack_name: stack_name
    - tenant_id: tenant_id
-   - stack_id: stack_id
+   - disable_rollback: disable_rollback
+   - environment: environment
+   - files: files
+   - parameters: parameters
+   - stack_name: stack_name_request
+   - tags: tags
+   - template: template
+   - template_url: template_url
+   - timeout_mins: timeout_mins
 
+Request Example
+---------------
 
-
-
-Response Example
-----------------
-
-.. literalinclude:: samples/stack-abandon-response.json
+.. literalinclude:: samples/stack-create-request.json
    :language: javascript
-
-
-
-
-
-
-
-
-Show snapshot
-=============
-
-.. rest_method::  GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/snapshots/{snapshot_id}
-
-Shows details for a snapshot.
-
-
-Normal response codes: 200
-Error response codes:
-
-
-Request
--------
-
-.. rest_parameters:: parameters.yaml
-
-   - stack_name: stack_name
-   - tenant_id: tenant_id
-   - stack_id: stack_id
-   - snapshot_id: snapshot_id
-
 
 Response Parameters
 -------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - status: status
-   - name: name
-   - status_reason: status_reason
-   - creation_time: creation_time
-   - snapshot: snapshot
-   - template: template
-   - project_id: project_id
-   - data: data
-   - id: id
-   - resources: resources
-
-
+   - location: location
+   - X-Openstack-Reqeuest-Id: request_id
+   - stack: stack
+   - id: stack_id
+   - links: links
 
 Response Example
 ----------------
 
-.. literalinclude:: samples/stack-show-snapshot-response.json
+.. literalinclude:: samples/stack-create-response.json
    :language: javascript
-
-
-
-
-Delete snapshot
-===============
-
-.. rest_method::  DELETE /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/snapshots/{snapshot_id}
-
-Deletes a stack snapshot.
-
-Error response codes:204,
-
-
-Request
--------
-
-.. rest_parameters:: parameters.yaml
-
-   - stack_name: stack_name
-   - tenant_id: tenant_id
-   - stack_id: stack_id
-   - snapshot_id: snapshot_id
-
-
-
-
 
 
 Preview stack
@@ -129,22 +71,35 @@ Preview stack
 
 Previews a stack.
 
+Response Codes
+--------------
 
-Normal response codes: 200
-Error response codes:500,409,401,400,
+.. rest_status_code:: success status.yaml
 
+   - 200
 
-Request
--------
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 409
+   - 500
+
+Request Parameters
+------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - files: files
-   - stack_name: stack_name
-   - template_url: template_url
-   - template: template
-   - parameters: parameters
    - tenant_id: tenant_id
+   - disable_rollback: disable_rollback
+   - environment: environment
+   - files: files
+   - parameters: parameters
+   - stack_name: stack_name_request
+   - tags: tags
+   - template: template
+   - template_url: template_url
+   - timeout_mins: timeout_mins
 
 Request Example
 ---------------
@@ -152,31 +107,32 @@ Request Example
 .. literalinclude:: samples/stack-create-request.json
    :language: javascript
 
-
-
 Response Parameters
 -------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - parent: parent
-   - disable_rollback: disable_rollback
-   - description: description
-   - links: links
-   - stack_name: stack_name
-   - timeout_mins: timeout_mins
-   - creation_time: creation_time
+   - X-Openstack-Reqeuest-Id: request_id
    - capabilities: capabilities
+   - creation_time: creation_time
+   - deletion_time: deletion_time
+   - description: description
+   - disable_rollback: disable_rollback
+   - id: stack_id
+   - links: links
    - notification_topics: notification_topics
-   - updated_time: updated_time
-   - stack_owner: stack_owner
+   - outputs: stack_outputs
+   - parameters: stack_parameters
+   - parent: parent
+   - resources: stack_resources
    - stack: stack
-   - parameters: parameters
-   - id: id
-   - resources: resources
+   - stack_name: stack_name
+   - stack_owner: stack_owner
+   - stack_user_project_id: stack_stack_user_project_id
+   - tags: stack_tags
    - template_description: template_description
-
-
+   - timeout_mins: stack_timeout_mins
+   - updated_time: updated_time
 
 Response Example
 ----------------
@@ -185,158 +141,131 @@ Response Example
    :language: javascript
 
 
+List stacks
+===========
 
+.. rest_method::  GET /v1/{tenant_id}/stacks
 
+Lists active stacks.
 
+Response Codes
+--------------
 
+.. rest_status_code:: success status.yaml
 
+   - 200
 
-Restore snapshot
-================
+.. rest_status_code:: error status.yaml
 
-.. rest_method::  POST /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/snapshots/{snapshot_id}/restore
+   - 400
+   - 401
+   - 500
 
-Restores a stack snapshot.
-
-You can restore only active stacks from a snapshot. You must
-recreate deleted stacks.
-
-Error response codes:202,
-
-
-Request
--------
-
-.. rest_parameters:: parameters.yaml
-
-   - stack_name: stack_name
-   - tenant_id: tenant_id
-   - stack_id: stack_id
-   - snapshot_id: snapshot_id
-
-
-
-
-
-
-List outputs
-============
-
-.. rest_method::  GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/outputs
-
-Lists outputs for a stack.
-
-
-Normal response codes: 200
-Error response codes:
-
-
-Request
--------
+Request Parameters
+------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - stack_name: stack_name
    - tenant_id: tenant_id
-   - stack_id: stack_id
-
+   - id: stack_id_query
+   - status: stack_status_query
+   - name: stack_name_query
+   - action: stack_action_query
+   - tenant: stack_tenant_query
+   - username: stack_user_query
+   - owner_id: owner_id_query
+   - limit: limit
+   - marker: marker
+   - sort_keys: stack_sort_keys
+   - sort_dir: sort_dir
+   - show_deleted: show_deleted
+   - show_nested: show_nested
+   - tags: tags_query
+   - tags_any: tags_any
+   - not_tags: not_tags
+   - not_tags_any: not_tags_any
+   - global_tenant: global_tenant
+   - with_count: with_count
 
 Response Parameters
 -------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - output_value: output_value
-   - output_error: output_error
+   - X-Openstack-Request-Id: request_id
+   - stacks: stacks
+   - creation_time: creation_time
+   - deletion_time: deletion_time
    - description: description
-   - output_key: output_key
-
-
+   - links: links
+   - parent: parent
+   - stack_name: stack_name
+   - stack_owner: stack_owner
+   - stack_status: stack_status
+   - stack_status_reason: stack_status_reason
+   - tags: stack_tags
+   - updated_time: updated_time
+   - stack_user_project_id: stack_stack_user_project_id
 
 Response Example
 ----------------
 
-.. literalinclude:: samples/stack-outputs-list-response.json
+.. literalinclude:: samples/stacks-list-response.json
    :language: javascript
 
 
+Find stack
+==========
 
+.. rest_method::  GET /v1/{tenant_id}/stacks/{stack_identity}
 
-Preview stack update
-====================
+Finds the canonical URL for a stack.
 
-.. rest_method::  PUT /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/preview
+Also works with verbs other than GET, so that you can perform PUT and DELETE
+operations on a current stack. Set your client to follow redirects. When
+redirecting, the request method should not change as defined in RFC2626.
+However, in many clients the default behavior is to change the method to GET
+when you receive a ``302`` response code because this behavior is ubiquitous
+in web browsers.
 
-Previews an update for a stack.
+Response Codes
+--------------
 
+.. rest_status_code:: success status.yaml
 
-Normal response codes: 200
-Error response codes:
+   - 302
 
+.. rest_status_code:: error status.yaml
 
-Request
--------
+   - 400
+   - 401
+   - 404
+   - 500
+
+Request Parameters
+------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - files: files
-   - parameters: parameters
-   - tags: tags
-   - environment: environment
-   - template_url: template_url
-   - template: template
-   - timeout_mins: timeout_mins
-   - stack_name: stack_name
    - tenant_id: tenant_id
-   - stack_id: stack_id
+   - stack_identity: stack_identity
 
-Request Example
----------------
+Response Parameters
+-------------------
 
-.. literalinclude:: samples/stack-update-request.json
-   :language: javascript
+.. rest_parameters:: parameters.yaml
 
-
-
-
+   - location: location
+   - X-Openstack-Request-Id: request_id
+   - code: code
+   - message: message
+   - title: title
 
 Response Example
 ----------------
 
-.. literalinclude:: samples/stack-update-preview-response.json
+.. literalinclude:: samples/stack-find-response.json
    :language: javascript
-
-
-
-
-Find stack resources
-====================
-
-.. rest_method::  GET /v1/{tenant_id}/stacks/{stack_name}/resources
-
-Finds the canonical URL for a resource list of a stack.
-
-The canonical URL is returned for only non-deleted stacks. To fetch
-the resource list for deleted stacks, use the following endpoint:
-
-::
-
-   /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/resources
-
-Error response codes:302,
-
-
-Request
--------
-
-.. rest_parameters:: parameters.yaml
-
-   - stack_name: stack_name
-   - tenant_id: tenant_id
-
-
-
-
 
 
 Show stack details
@@ -346,59 +275,63 @@ Show stack details
 
 Shows details for a stack.
 
+Response Codes
+--------------
 
-Normal response codes: 200
-Error response codes:404,500,401,400,
+.. rest_status_code:: success status.yaml
 
+   - 200
 
-Request
--------
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 404
+   - 500
+
+Request Parameters
+------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - stack_name: stack_name
    - tenant_id: tenant_id
-   - stack_id: stack_id
-
+   - stack_name: stack_name_url
+   - stack_id: stack_id_url
+   - resolve_outputs: resolve_outputs
 
 Response Parameters
 -------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - parent: parent
-   - updated_time: updated_time
-   - description: description
-   - links: links
-   - stack_status_reason: stack_status_reason
-   - stack_name: stack_name
-   - outputs: outputs
-   - tags: tags
-   - creation_time: creation_time
+   - X-Openstack-Request-Id: request_id
+   - stack: stack
    - capabilities: capabilities
+   - creation_time: creation_time
+   - deletion_time: deletion_time
+   - description: description
+   - disable_rollback: stack_disable_rollback
+   - id: stack_id
+   - links: links
    - notification_topics: notification_topics
-   - timeout_mins: timeout_mins
+   - outputs: stack_outputs
+   - parameters: stack_parameters
+   - parent: parent
+   - stack_name: stack_name
    - stack_owner: stack_owner
    - stack_status: stack_status
-   - stack: stack
-   - parameters: parameters
-   - id: id
-   - stack_user_project_id: stack_user_project_id
+   - stack_status_reason: stack_status_reason
+   - stack_user_project_id: stack_stack_user_project_id
+   - tags: stack_tags
    - template_description: template_description
-
-
+   - timeout_mins: stack_timeout_mins
+   - updated_time: updated_time
 
 Response Example
 ----------------
 
 .. literalinclude:: samples/stack-show-response.json
    :language: javascript
-
-
-
-
-
-
 
 
 Update stack
@@ -408,25 +341,39 @@ Update stack
 
 Updates a stack.
 
-Error response codes:404,202,500,401,400,
+Response Codes
+--------------
 
+.. rest_status_code:: success status.yaml
 
-Request
--------
+   - 202
+
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 404
+   - 500
+
+Request Parameters
+------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - files: files
+   - tenant_id: tenant_id
+   - stack_name: stack_name_url
+   - stack_id: stack_id_url
+   - clear_parameters: clear_parameters
    - disable_rollback: disable_rollback
+   - environment: environment
+   - environment_files: environment_files
+   - existing: existing
+   - files: files
    - parameters: parameters
    - tags: tags
-   - environment: environment
-   - template_url: template_url
    - template: template
+   - template_url: template_url
    - timeout_mins: timeout_mins
-   - stack_name: stack_name
-   - tenant_id: tenant_id
-   - stack_id: stack_id
 
 Request Example
 ---------------
@@ -434,14 +381,274 @@ Request Example
 .. literalinclude:: samples/stack-update-request.json
    :language: javascript
 
+Response Parameters
+-------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - X-Openstack-Request-Id: request_id
+   - code: code
+   - message: message
+   - title: title
+
+Response Example
+----------------
+
+.. literalinclude:: samples/stack-update-response.json
+   :language: javascript
 
 
+Update stack (PATCH)
+====================
+
+.. rest_method::  PATCH /v1/{tenant_id}/stacks/{stack_name}/{stack_id}
+
+Updates a stack using the ``PATCH`` verb. The logic is identical to stack
+update with a ``PUT`` verb except that the ``existing`` parameter is always
+set to True.
+
+Response Codes
+--------------
+
+.. rest_status_code:: success status.yaml
+
+   - 202
+
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 404
+   - 500
+
+Request Parameters
+------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - tenant_id: tenant_id
+   - stack_name: stack_name_url
+   - stack_id: stack_id_url
+   - clear_parameters: clear_parameters
+   - disable_rollback: disable_rollback
+   - environment: environment
+   - environment_files: environment_files
+   - existing: existing_patch
+   - files: files
+   - parameters: parameters
+   - tags: tags
+   - template: template
+   - template_url: template_url
+   - timeout_mins: timeout_mins
+
+Request Example
+---------------
+
+.. literalinclude:: samples/stack-update-request.json
+   :language: javascript
+
+Response Parameters
+-------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - X-Openstack-Request-Id: request_id
+   - code: code
+   - message: message
+   - title: title
+
+Response Example
+----------------
+
+.. literalinclude:: samples/stack-update-response.json
+   :language: javascript
 
 
+Preview stack update
+====================
+
+.. rest_method::  PUT /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/preview
+
+Previews an update for a stack.
+
+Response Codes
+--------------
+
+.. rest_status_code:: success status.yaml
+
+   - 200
+
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 404
+   - 500
+
+Request Parameters
+------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - tenant_id: tenant_id
+   - stack_name: stack_name_url
+   - stack_id: stack_id_url
+   - clear_parameters: clear_parameters
+   - disable_rollback: disable_rollback
+   - environment: environment
+   - environment_files: environment_files
+   - existing: existing
+   - files: files
+   - parameters: parameters
+   - show_nested: update_show_nested
+   - tags: tags
+   - template: template
+   - template_url: template_url
+   - timeout_mins: timeout_mins
+
+Request Example
+---------------
+
+.. literalinclude:: samples/stack-update-request.json
+   :language: javascript
+
+Response Parameters
+-------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - X-Openstack-Request-Id: request_id
+   - resource_changes: resource_changes
+   - added: preview_added
+   - deleted: preview_deleted
+   - replaced: preview_replaced
+   - unchanged: preview_unchanged
+   - updated: preview_updated
+
+Response Example
+----------------
+
+.. literalinclude:: samples/stack-update-preview-response.json
+   :language: javascript
 
 
+Preview stack update (PATCH)
+============================
+
+.. rest_method::  PATCH /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/preview
+
+Previews an update for a stack using the ``PATCH`` verb. The logic is the same
+as that of stack update preview with a ``PUT`` verb except that the
+``existing`` parameter is always set to True.
+
+Response Codes
+--------------
+
+.. rest_status_code:: success status.yaml
+
+   - 200
+
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 404
+   - 500
+
+Request Parameters
+------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - tenant_id: tenant_id
+   - stack_name: stack_name_url
+   - stack_id: stack_id_url
+   - clear_parameters: clear_parameters
+   - disable_rollback: disable_rollback
+   - environment: environment
+   - environment_files: environment_files
+   - existing: existing_patch
+   - files: files
+   - parameters: parameters
+   - show_nested: update_show_nested
+   - tags: tags
+   - template: template
+   - template_url: template_url
+   - timeout_mins: timeout_mins
+
+Request Example
+---------------
+
+.. literalinclude:: samples/stack-update-request.json
+   :language: javascript
+
+Response Parameters
+-------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - X-Openstack-Request-Id: request_id
+   - resource_changes: resource_changes
+   - added: preview_added
+   - deleted: preview_deleted
+   - replaced: preview_replaced
+   - unchanged: preview_unchanged
+   - updated: preview_updated
+
+Response Example
+----------------
+
+.. literalinclude:: samples/stack-update-preview-response.json
+   :language: javascript
 
 
+Find stack for deletion
+=======================
+
+.. rest_method::  DELETE /v1/{tenant_id}/stacks/{stack_identity}
+
+Find the canonical URL for a stack for deletion. This request returns a status
+code of ``302`` pointing to the location where a DELETE request can be sent to
+request a stack deletion.
+
+Response Codes
+--------------
+
+.. rest_status_code:: success status.yaml
+
+   - 302
+
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 404
+   - 500
+
+Request Parameters
+------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - tenant_id: tenant_id
+   - stack_identity: stack_identity
+
+Reponse Parameters
+------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - X-Openstack-Request-Id: request_id
+   - location: location
+   - code: code
+   - message: message
+   - title: title
+
+Response Example
+----------------
+
+.. literalinclude:: samples/stack-find-delete-response.json
+   :language: javascript
 
 
 Delete stack
@@ -449,194 +656,96 @@ Delete stack
 
 .. rest_method::  DELETE /v1/{tenant_id}/stacks/{stack_name}/{stack_id}
 
-Deletes a stack and its snapshots.
+Deletes a stack. If a stack has snapshots, those snapshots are deleted as well.
 
-Error response codes:500,404,204,401,400,
+Response Codes
+--------------
 
+.. rest_status_code:: success status.yaml
 
-Request
--------
+   - 204
 
-.. rest_parameters:: parameters.yaml
+.. rest_status_code:: error status.yaml
 
-   - stack_name: stack_name
-   - tenant_id: tenant_id
-   - stack_id: stack_id
+   - 400
+   - 401
+   - 404
+   - 500
 
-
-
-
-
-
-
-
-
-
-Show output
-===========
-
-.. rest_method::  GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/outputs/{output_key}
-
-Shows details for a stack output.
-
-
-Normal response codes: 200
-Error response codes:
-
-
-Request
--------
+Request Parameters
+------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - stack_name: stack_name
    - tenant_id: tenant_id
-   - stack_id: stack_id
-   - output_key: output_key
+   - stack_name: stack_name_url
+   - stack_id: stack_id_url
 
+Reponse Parameters
+------------------
+
+This request does not return anything in the response body.
+
+
+Abandon stack
+=============
+
+.. rest_method::  DELETE /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/abandon
+
+Deletes a stack but leaves its resources intact, and returns data that
+describes the stack and its resources.
+
+This is a preview feature which has to be explicitly enabled by setting the
+following option in the ``heat.conf`` file::
+
+  [DEFAULT]
+  enable_stack_abandon = True
+
+Response Codes
+--------------
+
+.. rest_status_code:: success status.yaml
+
+   - 200
+
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 404
+   - 500
+
+Request Parameters
+------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - tenant_id: tenant_id
+   - stack_name: stack_name_url
+   - stack_id: stack_id_url
 
 Response Parameters
 -------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - output_value: output_value
-   - output_error: output_error
-   - description: description
-   - output_key: output_key
-
-
+   - action: stack_action
+   - environment: stack_environment
+   - files: stack_files
+   - id: stack_id
+   - stack_name: stack_name
+   - project_id: project_id
+   - resources: resources_abandon
+   - stack_user_project_id: stack_stack_user_project_id
+   - status: stack_status
+   - tags: stack_tags
+   - template: stack_template
 
 Response Example
 ----------------
 
-.. literalinclude:: samples/stack-show-output-response.json
+.. literalinclude:: samples/stack-abandon-response.json
    :language: javascript
-
-
-
-
-List stack data
-===============
-
-.. rest_method::  GET /v1/{tenant_id}/stacks
-
-Lists active stacks.
-
-
-Normal response codes: 200
-Error response codes:500,401,400,
-
-
-Request
--------
-
-.. rest_parameters:: parameters.yaml
-
-   - tenant_id: tenant_id
-   - id: id
-   - status: status
-   - name: name
-   - action: action
-   - tenant: tenant
-   - username: username
-   - owner_id: owner_id
-   - limit: limit
-   - marker: marker
-   - show_deleted: show_deleted
-   - show_nested: show_nested
-   - sort_keys: sort_keys
-   - tags: tags
-   - tags_any: tags_any
-   - not_tags: not_tags
-   - not_tags_any: not_tags_any
-   - sort_dir: sort_dir
-   - global_tenant: global_tenant
-   - with_count: with_count
-
-
-Response Parameters
--------------------
-
-.. rest_parameters:: parameters.yaml
-
-   - description: description
-   - links: links
-   - stack_status_reason: stack_status_reason
-   - stack_name: stack_name
-   - tags: tags
-   - creation_time: creation_time
-   - updated_time: updated_time
-   - deletion_time: deleted_at
-   - stack_status: stack_status
-   - stack_owner: owner_id
-   - stack_user_project_id: stack_user_project_id
-   - parent: parent
-   - id: id
-
-
-
-Response Example
-----------------
-
-.. literalinclude:: samples/stacks-list-response.json
-   :language: javascript
-
-
-
-
-
-
-
-Create stack
-============
-
-.. rest_method::  POST /v1/{tenant_id}/stacks
-
-Creates a stack.
-
-Error response codes:201,500,409,401,400,
-
-
-Request
--------
-
-.. rest_parameters:: parameters.yaml
-
-   - files: files
-   - disable_rollback: disable_rollback
-   - parameters: parameters
-   - tags: tags
-   - stack_name: stack_name
-   - environment: environment
-   - template_url: template_url
-   - template: template
-   - timeout_mins: timeout_mins
-   - tenant_id: tenant_id
-
-Request Example
----------------
-
-.. literalinclude:: samples/stack-create-request.json
-   :language: javascript
-
-
-
-Response Parameters
--------------------
-
-.. rest_parameters:: parameters.yaml
-
-   - id: id
-   - links: links
-   - stack: stack
-
-
-
-
-
-
-
 
 
 Adopt stack
@@ -646,22 +755,39 @@ Adopt stack
 
 Creates a stack from existing resources.
 
-Error response codes:201,500,409,401,400,
+This is a preview feature which has to be explicitly enabled by setting the
+following option in the ``heat.conf`` file::
 
+  [DEFAULT]
+  enable_stack_adopt = True
 
-Request
--------
+Response Codes
+--------------
+
+.. rest_status_code:: success status.yaml
+
+   - 201
+
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 409
+   - 500
+
+Request Parameters
+------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - files: files
+   - tenant_id: tenant_id
+   - adopt_stack_data: adopt_stack_data
    - disable_rollback: disable_rollback
+   - environment: environment
+   - files: files
    - parameters: parameters
    - stack_name: stack_name
-   - adopt_stack_data: adopt_stack_data
-   - environment: environment
    - timeout_mins: timeout_mins
-   - tenant_id: tenant_id
 
 Request Example
 ---------------
@@ -669,154 +795,221 @@ Request Example
 .. literalinclude:: samples/stack-adopt-request.json
    :language: javascript
 
-
-
 Response Parameters
 -------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - id: id
-   - links: links
+   - location: location
+   - X-Openstack-Reqeuest-Id: request_id
    - stack: stack
+   - id: stack_id
+   - links: links
 
+Response Example
+----------------
 
-
-
-
-
-
-
-
-Find stack
-==========
-
-.. rest_method::  GET /v1/{tenant_id}/stacks/{stack_name}
-
-Finds the canonical URL for a stack.
-
-Also works with verbs other than GET , so that you can perform PUT
-and DELETE operations on a current stack. Set your client to follow
-redirects. When redirecting, the request method should not change
-as defined in RFC2626. However, in many clients the default
-behavior is to change the method to GET when you receive a ``302``
-response code because this behavior is ubiquitous in web browsers.
-
-Error response codes:302,404,500,401,400,
-
-
-Request
--------
-
-.. rest_parameters:: parameters.yaml
-
-   - stack_name: stack_name
-   - tenant_id: tenant_id
-
-
-
-
-
-
-
-
-
-
-Snapshot stack
-==============
-
-.. rest_method::  POST /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/snapshots
-
-Takes a snapshot of all resources in a stack. All snapshots are deleted when the stack is deleted.
-
-
-Normal response codes: 200
-Error response codes:
-
-
-Request
--------
-
-.. rest_parameters:: parameters.yaml
-
-   - name: name
-   - stack_name: stack_name
-   - tenant_id: tenant_id
-   - stack_id: stack_id
-
-Request Example
----------------
-
-.. literalinclude:: samples/stack-snapshot-request.json
+.. literalinclude:: samples/stack-create-response.json
    :language: javascript
 
 
+Export stack
+============
+
+.. rest_method::  GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/export
+
+Gets the stack data in JSON format.
+
+Response Codes
+--------------
+
+.. rest_status_code:: success status.yaml
+
+   - 200
+
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 404
+   - 409
+   - 500
+
+Request Parameters
+------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - tenant_id: tenant_id
+   - stack_name: stack_name_url
+   - stack_id: stack_id_url
+
+Response Parameters
+-------------------
+
+The body of the response contains a map of file names and file contents.
+
+.. rest_parameters:: parameters.yaml
+
+   - X-Openstack-Reqeuest-Id: request_id
+   - action: action
+   - environment: stack_environment
+   - files: stack_files
+   - id: stack_id
+   - name: stack_name
+   - project_id: project_id
+   - resources: resources
+   - stack_user_project_id: stack_stack_user_project_id
+   - status: stack_status
+   - tags: stack_tags
+   - template: stack_template
+
+Response Example
+----------------
+
+.. literalinclude:: samples/stack-export-response.json
+   :language: javascript
+
+
+Get stack template
+==================
+
+.. rest_method::  GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/template
+
+Gets a template for a stack.
+
+Response Codes
+--------------
+
+.. rest_status_code:: success status.yaml
+
+   - 200
+
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 404
+   - 500
+
+Request Parameters
+------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - tenant_id: tenant_id
+   - stack_name: stack_name_url
+   - stack_id: stack_id_url
 
 Response Parameters
 -------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - status: status
-   - name: name
-   - status_reason: status_reason
-   - creation_time: creation_time
-   - data: data
-   - id: id
-
-
+   - X-Openstack-Reqeuest-Id: request_id
+   - heat_template_version: heat_template_version
+   - outputs: template_outputs
+   - parameters: template_parameters
+   - description: template_description
+   - resources: template_resources
 
 Response Example
 ----------------
 
-.. literalinclude:: samples/stack-snapshot-response.json
+.. literalinclude:: samples/template-show-response.json
    :language: javascript
 
 
+Get stack environment
+=====================
 
+.. rest_method::  GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/environment
 
-List snapshots
-==============
+Gets the environment for a stack.
 
-.. rest_method::  GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/snapshots
+Response Codes
+--------------
 
-Lists snapshots for a stack.
+.. rest_status_code:: success status.yaml
 
+   - 200
 
-Normal response codes: 200
-Error response codes:
+.. rest_status_code:: error status.yaml
 
+   - 400
+   - 401
+   - 404
+   - 500
 
-Request
--------
+Request Parameters
+------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - stack_name: stack_name
    - tenant_id: tenant_id
-   - stack_id: stack_id
-
+   - stack_name: stack_name_url
+   - stack_id: stack_id_url
 
 Response Parameters
 -------------------
 
 .. rest_parameters:: parameters.yaml
 
-   - status: status
-   - name: name
-   - status_reason: status_reason
-   - creation_time: creation_time
-   - snapshots: snapshots
-   - data: data
-   - id: id
-
-
+   - X-Openstack-Reqeuest-Id: request_id
+   - encrypted_param_names: encrypted_param_names
+   - event_sinks: event_sinks
+   - parameter_defaults: parameter_defaults
+   - parameters: parameters
+   - resource_registry: resource_registry
 
 Response Example
 ----------------
 
-.. literalinclude:: samples/stack-snapshots-list-response.json
+.. literalinclude:: samples/stack-environment-show-response.json
    :language: javascript
 
 
+Get stack files
+===============
 
+.. rest_method::  GET /v1/{tenant_id}/stacks/{stack_name}/{stack_id}/files
+
+Gets the files associated with a stack.
+
+Response Codes
+--------------
+
+.. rest_status_code:: success status.yaml
+
+   - 200
+
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 404
+   - 500
+
+Request Parameters
+------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - tenant_id: tenant_id
+   - stack_name: stack_name_url
+   - stack_id: stack_id_url
+
+Response Parameters
+-------------------
+
+The body of the response contains a map of file names and file contents.
+
+.. rest_parameters:: parameters.yaml
+
+   - X-Openstack-Reqeuest-Id: request_id
+
+Response Example
+----------------
+
+.. literalinclude:: samples/stack-files-show-response.json
+   :language: javascript

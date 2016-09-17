@@ -363,3 +363,111 @@ Usage
 
 Returns true if the param 'env_type' equals to 'prod',
 otherwise returns false.
+
+------
+Fn::If
+------
+Returns one value if the specified condition evaluates to true and
+another value if the specified condition evaluates to false.
+
+Parameters
+~~~~~~~~~~
+condition_name:
+    A reference to a condition in the ``Conditions`` section.
+
+value_if_true:
+    A value to be returned if the specified condition evaluates
+    to true.
+
+value_if_false:
+    A value to be returned if the specified condition evaluates
+    to false.
+
+Usage
+~~~~~
+
+.. code-block:: yaml
+
+  {'Fn::If': ['create_prod', 'value_true', 'value_false']}
+
+
+Returns 'value_true' if the condition 'create_prod' evaluates to true,
+otherwise returns 'value_false'.
+
+-------
+Fn::Not
+-------
+Acts as a NOT operator.
+
+The syntax of the ``Fn::Not`` function is
+
+.. code-block:: yaml
+
+  {'Fn::Not': [condition]}
+
+Returns true for a condition that evaluates to false or returns false
+for a condition that evaluates to true.
+
+Parameters
+~~~~~~~~~~
+condition:
+    A condition such as ``Fn::Equals`` that evaluates to true or false
+    can be defined in this function, also we can set a boolean value
+    as a condition.
+
+Usage
+~~~~~
+
+.. code-block:: yaml
+
+  {'Fn::Not': [{'Fn::Equals': [{'Ref': env_type'}, 'prod']}]}
+
+
+Returns false if the param 'env_type' equals to 'prod',
+otherwise returns true.
+
+-------
+Fn::And
+-------
+Acts as an AND operator to evaluate all the specified conditions.
+Returns true if all the specified conditions evaluate to true, or returns
+false if any one of the conditions evaluates to false.
+
+Parameters
+~~~~~~~~~~
+condition:
+    A condition such as Fn::Equals that evaluates to true or false.
+
+Usage
+~~~~~
+
+.. code-block:: yaml
+
+  {'Fn::And': [{'Fn::Equals': [{'Ref': env_type}, 'prod']},
+               {'Fn::Not': [{'Fn::Equals': [{'Ref': zone}, 'beijing']}]}]
+
+Returns true if the param 'env_type' equals to 'prod' and the param 'zone' is
+not equal to 'beijing', otherwise returns false.
+
+------
+Fn::Or
+------
+Acts as an OR operator to evaluate all the specified conditions.
+Returns true if any one of the specified conditions evaluate to true,
+or returns false if all of the conditions evaluates to false.
+
+Parameters
+~~~~~~~~~~
+condition:
+    A condition such as Fn::Equals that evaluates to true or false.
+
+Usage
+~~~~~
+
+.. code-block:: yaml
+
+  {'Fn::Or': [{'Fn::Equals': [{'Ref': zone}, 'shanghai']},
+              {'Fn::Equals': [{'Ref': zone}, 'beijing']}]}
+
+Returns true if the param 'zone' equals to 'shanghai' or 'beijing',
+otherwise returns false.

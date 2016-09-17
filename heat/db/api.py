@@ -100,8 +100,8 @@ def stack_tags_get(context, stack_id):
     return IMPL.stack_tags_get(context, stack_id)
 
 
-def resource_get(context, resource_id):
-    return IMPL.resource_get(context, resource_id)
+def resource_get(context, resource_id, refresh=False):
+    return IMPL.resource_get(context, resource_id, refresh=refresh)
 
 
 def resource_get_all(context):
@@ -114,8 +114,16 @@ def resource_update(context, resource_id, values, atomic_key,
                                 expected_engine_id)
 
 
+def resource_update_and_save(context, resource_id, values):
+    return IMPL.resource_update_and_save(context, resource_id, values)
+
+
 def resource_create(context, values):
     return IMPL.resource_create(context, values)
+
+
+def resource_delete(context, resource_id):
+    return IMPL.resource_delete(context, resource_id)
 
 
 def resource_exchange_stacks(context, resource_id1, resource_id2):
@@ -148,11 +156,8 @@ def resource_get_by_physical_resource_id(context, physical_resource_id):
                                                      physical_resource_id)
 
 
-def stack_get(context, stack_id, show_deleted=False, tenant_safe=True,
-              eager_load=False):
-    return IMPL.stack_get(context, stack_id, show_deleted=show_deleted,
-                          tenant_safe=tenant_safe,
-                          eager_load=eager_load)
+def stack_get(context, stack_id, show_deleted=False):
+    return IMPL.stack_get(context, stack_id, show_deleted=show_deleted)
 
 
 def stack_get_status(context, stack_id):
@@ -169,12 +174,12 @@ def stack_get_by_name(context, stack_name):
 
 
 def stack_get_all(context, limit=None, sort_keys=None, marker=None,
-                  sort_dir=None, filters=None, tenant_safe=True,
+                  sort_dir=None, filters=None,
                   show_deleted=False, show_nested=False, show_hidden=False,
                   tags=None, tags_any=None, not_tags=None,
                   not_tags_any=None):
     return IMPL.stack_get_all(context, limit, sort_keys,
-                              marker, sort_dir, filters, tenant_safe,
+                              marker, sort_dir, filters,
                               show_deleted, show_nested, show_hidden,
                               tags, tags_any, not_tags, not_tags_any)
 
@@ -183,12 +188,15 @@ def stack_get_all_by_owner_id(context, owner_id):
     return IMPL.stack_get_all_by_owner_id(context, owner_id)
 
 
-def stack_count_all(context, filters=None, tenant_safe=True,
+def stack_get_all_by_root_owner_id(context, owner_id):
+    return IMPL.stack_get_all_by_root_owner_id(context, owner_id)
+
+
+def stack_count_all(context, filters=None,
                     show_deleted=False, show_nested=False, show_hidden=False,
                     tags=None, tags_any=None, not_tags=None,
                     not_tags_any=None):
     return IMPL.stack_count_all(context, filters=filters,
-                                tenant_safe=tenant_safe,
                                 show_deleted=show_deleted,
                                 show_nested=show_nested,
                                 show_hidden=show_hidden,
@@ -336,12 +344,10 @@ def software_config_get(context, config_id):
     return IMPL.software_config_get(context, config_id)
 
 
-def software_config_get_all(context, limit=None, marker=None,
-                            tenant_safe=True):
+def software_config_get_all(context, limit=None, marker=None):
     return IMPL.software_config_get_all(context,
                                         limit=limit,
-                                        marker=marker,
-                                        tenant_safe=tenant_safe)
+                                        marker=marker)
 
 
 def software_config_delete(context, config_id):

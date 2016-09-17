@@ -48,36 +48,6 @@ class FindInMap(function.Function):
         return mapping[key][value]
 
 
-class Equals(function.Function):
-    """A function for comparing whether two values are equal.
-
-    Takes the form::
-
-        { "Fn::Equals" : ["value_1", "value_2"] }
-
-    The value to be any type that you want to compare. Returns true
-    if the two values are equal or false if they aren't.
-    """
-
-    def __init__(self, stack, fn_name, args):
-        super(Equals, self).__init__(stack, fn_name, args)
-        try:
-            if (not self.args or
-                    not isinstance(self.args, list)):
-                raise ValueError()
-            self.value1, self.value2 = self.args
-        except ValueError:
-            msg = _('Arguments to "%s" must be of the form: '
-                    '[value_1, value_2]')
-            raise ValueError(msg % self.fn_name)
-
-    def result(self):
-        resolved_v1 = function.resolve(self.value1)
-        resolved_v2 = function.resolve(self.value2)
-
-        return resolved_v1 == resolved_v2
-
-
 class GetAZs(function.Function):
     """A function for retrieving the availability zones.
 
@@ -423,8 +393,9 @@ class Replace(function.Function):
 
         "<value_1> <value_2>"
 
-    This is implemented using python str.replace on each key. The order in
-    which replacements are performed is undefined.
+    This is implemented using python str.replace on each key. Longer keys are
+    substituted before shorter ones, but the order in which replacements are
+    performed is otherwise undefined.
     """
 
     def __init__(self, stack, fn_name, args):
@@ -484,6 +455,9 @@ class Replace(function.Function):
 
             return string.replace(placeholder, six.text_type(value))
 
+        mapping = collections.OrderedDict(sorted(mapping.items(),
+                                                 key=lambda t: len(t[0]),
+                                                 reverse=True))
         return six.moves.reduce(replace, six.iteritems(mapping), template)
 
 
@@ -600,3 +574,38 @@ class ResourceFacade(function.Function):
             return function.resolve(up)
         elif attr == self.DELETION_POLICY:
             return self.stack.parent_resource.t.deletion_policy()
+
+
+class Not(function.Function):
+    """A function acts as a NOT operator.
+
+    Takes the form::
+
+        { "Fn::Not" : [condition] }
+
+    Returns true for a condition that evaluates to false or
+    returns false for a condition that evaluates to true.
+    """
+
+    def __init__(self, stack, fn_name, args):
+        super(Not, self).__init__(stack, fn_name, args)
+        try:
+            if (not self.args or
+                    not isinstance(self.args, collections.Sequence) or
+                    isinstance(self.args, six.string_types)):
+                raise ValueError()
+            if len(self.args) != 1:
+                raise ValueError()
+            self.condition = self.args[0]
+        except ValueError:
+            msg = _('Arguments to "%s" must be of the form: '
+                    '[condition]')
+            raise ValueError(msg % self.fn_name)
+
+    def result(self):
+        resolved_value = function.resolve(self.condition)
+        if not isinstance(resolved_value, bool):
+            msg = _('The condition value should be boolean, '
+                    'after resolved the value is: %s')
+            raise ValueError(msg % resolved_value)
+        return not resolved_value

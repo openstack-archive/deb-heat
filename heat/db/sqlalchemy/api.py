@@ -26,6 +26,7 @@ from oslo_utils import timeutils
 import osprofiler.sqlalchemy
 import six
 import sqlalchemy
+from sqlalchemy import and_
 from sqlalchemy import func
 from sqlalchemy import orm
 from sqlalchemy.orm import aliased as orm_aliased
@@ -80,6 +81,17 @@ def get_backend():
     return sys.modules[__name__]
 
 
+def update_and_save(context, obj, values):
+    with context.session.begin(subtransactions=True):
+        for k, v in six.iteritems(values):
+            setattr(obj, k, v)
+
+
+def delete_softly(context, obj):
+    """Mark this object as deleted."""
+    update_and_save(context, obj, {'deleted_at': timeutils.utcnow()})
+
+
 def soft_delete_aware_query(context, *args, **kwargs):
     """Stack query helper that accounts for context's `show_deleted` field.
 
@@ -117,7 +129,7 @@ def raw_template_update(context, template_id, values):
                   if getattr(raw_template_ref, k) != v)
 
     if values:
-        raw_template_ref.update_and_save(values)
+        update_and_save(context, raw_template_ref, values)
 
     return raw_template_ref
 
@@ -125,14 +137,17 @@ def raw_template_update(context, template_id, values):
 def raw_template_delete(context, template_id):
     raw_template = raw_template_get(context, template_id)
     raw_tmpl_files_id = raw_template.files_id
-    raw_template.delete()
-    if raw_tmpl_files_id is None:
-        return
-    # If no other raw_template is referencing the same raw_template_files,
-    # delete that too
-    if context.session.query(models.RawTemplate).filter_by(
-            files_id=raw_tmpl_files_id).first() is None:
-        raw_template_files_get(context, raw_tmpl_files_id).delete()
+    session = context.session
+    with session.begin(subtransactions=True):
+        session.delete(raw_template)
+        if raw_tmpl_files_id is None:
+            return
+        # If no other raw_template is referencing the same raw_template_files,
+        # delete that too
+        if session.query(models.RawTemplate).filter_by(
+                files_id=raw_tmpl_files_id).first() is None:
+            raw_tmpl_files = raw_template_files_get(context, raw_tmpl_files_id)
+            session.delete(raw_tmpl_files)
 
 
 def raw_template_files_create(context, values):
@@ -154,12 +169,17 @@ def raw_template_files_get(context, files_id):
     return result
 
 
-def resource_get(context, resource_id):
+def resource_get(context, resource_id, refresh=False):
     result = context.session.query(models.Resource).get(resource_id)
 
     if not result:
         raise exception.NotFound(_("resource with id %s not found") %
                                  resource_id)
+    if refresh:
+        context.session.refresh(result)
+        # ensure data is loaded (lazy or otherwise)
+        result.data
+
     return result
 
 
@@ -204,7 +224,7 @@ def resource_purge_deleted(context, stack_id):
 def resource_update(context, resource_id, values, atomic_key,
                     expected_engine_id=None):
     session = context.session
-    with session.begin():
+    with session.begin(subtransactions=True):
         if atomic_key is None:
             values['atomic_key'] = 1
         else:
@@ -214,6 +234,19 @@ def resource_update(context, resource_id, values, atomic_key,
             atomic_key=atomic_key).update(values)
 
         return bool(rows_updated)
+
+
+def resource_update_and_save(context, resource_id, values):
+    resource = context.session.query(models.Resource).get(resource_id)
+    update_and_save(context, resource, values)
+
+
+def resource_delete(context, resource_id):
+    session = context.session
+    with session.begin(subtransactions=True):
+        resource = session.query(models.Resource).get(resource_id)
+        if resource:
+            session.delete(resource)
 
 
 def resource_data_get_all(context, resource_id, data=None):
@@ -271,7 +304,7 @@ def stack_tags_delete(context, stack_id):
         result = stack_tags_get(context, stack_id)
         if result:
             for tag in result:
-                tag.delete()
+                session.delete(tag)
 
 
 def stack_tags_get(context, stack_id):
@@ -329,7 +362,9 @@ def resource_exchange_stacks(context, resource_id1, resource_id2):
 
 def resource_data_delete(context, resource_id, key):
     result = resource_data_get_by_key(context, resource_id, key)
-    result.delete()
+    session = context.session
+    with session.begin(subtransactions=True):
+        session.delete(result)
 
 
 def resource_create(context, values):
@@ -349,10 +384,6 @@ def resource_get_all_by_stack(context, stack_id, filters=None):
     query = db_filters.exact_filter(query, models.Resource, filters)
     results = query.all()
 
-    if not results:
-        raise exception.NotFound(_("no resources for stack_id %s were found")
-                                 % stack_id)
-
     return dict((res.name, res) for res in results)
 
 
@@ -365,9 +396,6 @@ def resource_get_all_active_by_stack(context, stack_id):
         models.Resource.id.notin_(subquery.as_scalar())
     ).options(orm.joinedload("data")).all()
 
-    if not results:
-        raise exception.NotFound(_("no active resources for stack_id %s were"
-                                   " found") % stack_id)
     return dict((res.id, res) for res in results)
 
 
@@ -387,28 +415,26 @@ def resource_get_all_by_root_stack(context, stack_id, filters=None):
 def stack_get_by_name_and_owner_id(context, stack_name, owner_id):
     query = soft_delete_aware_query(
         context, models.Stack
-    ).filter(sqlalchemy.or_(
-             models.Stack.tenant == context.tenant_id,
-             models.Stack.stack_user_project_id == context.tenant_id)
-             ).filter_by(name=stack_name).filter_by(owner_id=owner_id)
+    ).options(orm.joinedload("raw_template")).filter(sqlalchemy.or_(
+        models.Stack.tenant == context.tenant_id,
+        models.Stack.stack_user_project_id == context.tenant_id)
+    ).filter_by(name=stack_name).filter_by(owner_id=owner_id)
     return query.first()
 
 
 def stack_get_by_name(context, stack_name):
     query = soft_delete_aware_query(
         context, models.Stack
-    ).filter(sqlalchemy.or_(
-             models.Stack.tenant == context.tenant_id,
-             models.Stack.stack_user_project_id == context.tenant_id)
-             ).filter_by(name=stack_name)
+    ).options(orm.joinedload("raw_template")).filter(sqlalchemy.or_(
+        models.Stack.tenant == context.tenant_id,
+        models.Stack.stack_user_project_id == context.tenant_id)
+    ).filter_by(name=stack_name)
     return query.first()
 
 
-def stack_get(context, stack_id, show_deleted=False, tenant_safe=True,
-              eager_load=False):
-    query = context.session.query(models.Stack)
-    if eager_load:
-        query = query.options(orm.joinedload("raw_template"))
+def stack_get(context, stack_id, show_deleted=False):
+    query = context.session.query(models.Stack).options(
+        orm.joinedload("raw_template"))
     result = query.get(stack_id)
 
     deleted_ok = show_deleted or context.show_deleted
@@ -417,7 +443,7 @@ def stack_get(context, stack_id, show_deleted=False, tenant_safe=True,
 
     # One exception to normal project scoping is users created by the
     # stacks in the stack_user_project_id (in the heat stack user domain)
-    if (tenant_safe and result is not None
+    if (result is not None
         and context is not None and not context.is_admin
         and context.tenant_id not in (result.tenant,
                                       result.stack_user_project_id)):
@@ -441,6 +467,13 @@ def stack_get_all_by_owner_id(context, owner_id):
     results = soft_delete_aware_query(
         context, models.Stack).filter_by(owner_id=owner_id).all()
     return results
+
+
+def stack_get_all_by_root_owner_id(context, owner_id):
+    for stack in stack_get_all_by_owner_id(context, owner_id):
+        yield stack
+        for ch_st in stack_get_all_by_root_owner_id(context, stack.id):
+            yield ch_st
 
 
 def _get_sort_keys(sort_keys, mapping):
@@ -479,7 +512,7 @@ def _paginate_query(context, query, model, limit=None, sort_keys=None,
     return query
 
 
-def _query_stack_get_all(context, tenant_safe=True, show_deleted=False,
+def _query_stack_get_all(context,  show_deleted=False,
                          show_nested=False, show_hidden=False, tags=None,
                          tags_any=None, not_tags=None, not_tags_any=None):
     if show_nested:
@@ -491,7 +524,7 @@ def _query_stack_get_all(context, tenant_safe=True, show_deleted=False,
             context, models.Stack, show_deleted=show_deleted
         ).filter_by(owner_id=None)
 
-    if tenant_safe and not context.is_admin:
+    if not context.is_admin:
         query = query.filter_by(tenant=context.tenant_id)
 
     query = query.options(orm.subqueryload("tags"))
@@ -531,16 +564,17 @@ def _query_stack_get_all(context, tenant_safe=True, show_deleted=False,
 
 
 def stack_get_all(context, limit=None, sort_keys=None, marker=None,
-                  sort_dir=None, filters=None, tenant_safe=True,
+                  sort_dir=None, filters=None,
                   show_deleted=False, show_nested=False, show_hidden=False,
                   tags=None, tags_any=None, not_tags=None,
                   not_tags_any=None):
-    query = _query_stack_get_all(context, tenant_safe,
+    query = _query_stack_get_all(context,
                                  show_deleted=show_deleted,
                                  show_nested=show_nested,
                                  show_hidden=show_hidden, tags=tags,
                                  tags_any=tags_any, not_tags=not_tags,
                                  not_tags_any=not_tags_any)
+    query = query.options(orm.joinedload("raw_template"))
     return _filter_and_page_query(context, query, limit, sort_keys,
                                   marker, sort_dir, filters).all()
 
@@ -561,11 +595,11 @@ def _filter_and_page_query(context, query, limit=None, sort_keys=None,
                            whitelisted_sort_keys, marker, sort_dir)
 
 
-def stack_count_all(context, filters=None, tenant_safe=True,
+def stack_count_all(context, filters=None,
                     show_deleted=False, show_nested=False, show_hidden=False,
                     tags=None, tags_any=None, not_tags=None,
                     not_tags_any=None):
-    query = _query_stack_get_all(context, tenant_safe=tenant_safe,
+    query = _query_stack_get_all(context,
                                  show_deleted=show_deleted,
                                  show_nested=show_nested,
                                  show_hidden=show_hidden, tags=tags,
@@ -600,7 +634,7 @@ def stack_update(context, stack_id, values, exp_trvsl=None):
 
     session = context.session
 
-    with session.begin():
+    with session.begin(subtransactions=True):
         rows_updated = (session.query(models.Stack)
                         .filter(models.Stack.id == stack.id)
                         .filter(models.Stack.current_traversal
@@ -617,11 +651,11 @@ def stack_delete(context, stack_id):
                                  '%(id)s %(msg)s') % {
                                      'id': stack_id,
                                      'msg': 'that does not exist'})
-    session = orm_session.Session.object_session(s)
+    session = context.session
     with session.begin():
         for r in s.resources:
             session.delete(r)
-        s.soft_delete(session=session)
+        delete_softly(context, s)
 
 
 @oslo_db_api.wrap_db_retry(max_retries=3, retry_on_deadlock=True,
@@ -966,10 +1000,9 @@ def software_config_get(context, config_id):
     return result
 
 
-def software_config_get_all(context, limit=None, marker=None,
-                            tenant_safe=True):
+def software_config_get_all(context, limit=None, marker=None):
     query = context.session.query(models.SoftwareConfig)
-    if tenant_safe and not context.is_admin:
+    if not context.is_admin:
         query = query.filter_by(tenant=context.tenant_id)
     return _paginate_query(context, query, models.SoftwareConfig,
                            limit=limit, marker=marker).all()
@@ -1028,13 +1061,15 @@ def software_deployment_get_all(context, server_id=None):
 
 def software_deployment_update(context, deployment_id, values):
     deployment = software_deployment_get(context, deployment_id)
-    deployment.update_and_save(values)
+    update_and_save(context, deployment, values)
     return deployment
 
 
 def software_deployment_delete(context, deployment_id):
     deployment = software_deployment_get(context, deployment_id)
-    deployment.delete()
+    session = context.session
+    with session.begin(subtransactions=True):
+        session.delete(deployment)
 
 
 def snapshot_create(context, values):
@@ -1101,10 +1136,10 @@ def service_update(context, service_id, values):
 
 def service_delete(context, service_id, soft_delete=True):
     service = service_get(context, service_id)
-    session = orm_session.Session.object_session(service)
+    session = context.session
     with session.begin():
         if soft_delete:
-            service.soft_delete(session=session)
+            delete_softly(context, service)
         else:
             session.delete(service)
 
@@ -1128,7 +1163,7 @@ def service_get_all_by_args(context, host, binary, hostname):
             filter_by(hostname=hostname).all())
 
 
-def purge_deleted(age, granularity='days'):
+def purge_deleted(age, granularity='days', project_id=None):
     try:
         age = int(age)
     except ValueError:
@@ -1166,10 +1201,20 @@ def purge_deleted(age, granularity='days'):
     syncpoint = sqlalchemy.Table('sync_point', meta, autoload=True)
 
     # find the soft-deleted stacks that are past their expiry
-    stack_where = sqlalchemy.select([stack.c.id, stack.c.raw_template_id,
-                                     stack.c.prev_raw_template_id,
-                                     stack.c.user_creds_id]).where(
-                                         stack.c.deleted_at < time_line)
+    if project_id:
+        stack_where = sqlalchemy.select([
+            stack.c.id, stack.c.raw_template_id,
+            stack.c.prev_raw_template_id,
+            stack.c.user_creds_id]).where(and_(
+                stack.c.tenant == project_id,
+                stack.c.deleted_at < time_line))
+    else:
+        stack_where = sqlalchemy.select([
+            stack.c.id, stack.c.raw_template_id,
+            stack.c.prev_raw_template_id,
+            stack.c.user_creds_id]).where(
+                stack.c.deleted_at < time_line)
+
     stacks = list(engine.execute(stack_where))
     if stacks:
         stack_ids = [i[0] for i in stacks]

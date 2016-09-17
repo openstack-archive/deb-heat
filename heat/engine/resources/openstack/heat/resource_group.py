@@ -109,9 +109,9 @@ class ResourceGroup(stack_resource.StackResource):
     )
 
     ATTRIBUTES = (
-        REFS, REFS_MAP, ATTR_ATTRIBUTES,
+        REFS, REFS_MAP, ATTR_ATTRIBUTES, REMOVED_RSRC_LIST
     ) = (
-        'refs', 'refs_map', 'attributes',
+        'refs', 'refs_map', 'attributes', 'removed_rsrc_list'
     )
 
     properties_schema = {
@@ -213,6 +213,11 @@ class ResourceGroup(stack_resource.StackResource):
             support_status=support.SupportStatus(version='2014.2'),
             type=attributes.Schema.MAP
         ),
+        REMOVED_RSRC_LIST: attributes.Schema(
+            _("A list of removed resource names."),
+            support_status=support.SupportStatus(version='7.0.0'),
+            type=attributes.Schema.LIST
+        ),
     }
 
     rolling_update_schema = {
@@ -291,6 +296,13 @@ class ResourceGroup(stack_resource.StackResource):
             msg = _("Failed to validate: %s") % six.text_type(ex)
             raise exception.StackValidationFailed(message=msg)
 
+    def _current_blacklist(self):
+        db_rsrc_names = self.data().get('name_blacklist')
+        if db_rsrc_names:
+            return db_rsrc_names.split(',')
+        else:
+            return []
+
     def _name_blacklist(self):
         """Resolve the remove_policies to names for removal."""
 
@@ -298,28 +310,23 @@ class ResourceGroup(stack_resource.StackResource):
 
         # To avoid reusing names after removal, we store a comma-separated
         # blacklist in the resource data
-        db_rsrc_names = self.data().get('name_blacklist')
-        if db_rsrc_names:
-            current_blacklist = db_rsrc_names.split(',')
-        else:
-            current_blacklist = []
+        current_blacklist = self._current_blacklist()
 
         # Now we iterate over the removal policies, and update the blacklist
         # with any additional names
         rsrc_names = set(current_blacklist)
 
-        if nested:
-            for r in self.properties[self.REMOVAL_POLICIES]:
-                if self.REMOVAL_RSRC_LIST in r:
-                    # Tolerate string or int list values
-                    for n in r[self.REMOVAL_RSRC_LIST]:
-                        str_n = six.text_type(n)
-                        if str_n in nested:
-                            rsrc_names.add(str_n)
-                            continue
-                        rsrc = nested.resource_by_refid(str_n)
-                        if rsrc:
-                            rsrc_names.add(rsrc.name)
+        for r in self.properties[self.REMOVAL_POLICIES]:
+            if self.REMOVAL_RSRC_LIST in r:
+                # Tolerate string or int list values
+                for n in r[self.REMOVAL_RSRC_LIST]:
+                    str_n = six.text_type(n)
+                    if not nested or str_n in nested:
+                        rsrc_names.add(str_n)
+                        continue
+                    rsrc = nested.resource_by_refid(str_n)
+                    if rsrc:
+                        rsrc_names.add(rsrc.name)
 
         # If the blacklist has changed, update the resource data
         if rsrc_names != set(current_blacklist):
@@ -431,6 +438,8 @@ class ResourceGroup(stack_resource.StackResource):
             refs_map = {n: grouputils.get_rsrc_id(self, key, False, n)
                         for n in names}
             return refs_map
+        if key == self.REMOVED_RSRC_LIST:
+            return self._current_blacklist()
         if key == self.ATTR_ATTRIBUTES:
             if not path:
                 raise exception.InvalidTemplateAttribute(
@@ -465,9 +474,9 @@ class ResourceGroup(stack_resource.StackResource):
         # assigned. Pass in a custom resolver to the properties to not
         # error when a parameter does not have a user entered value.
         def ignore_param_resolve(snippet):
-            while isinstance(snippet, function.Function):
+            if isinstance(snippet, function.Function):
                 try:
-                    snippet = snippet.result()
+                    return snippet.result()
                 except exception.UserParameterMissing:
                     return None
 
@@ -568,6 +577,10 @@ class ResourceGroup(stack_resource.StackResource):
             return self._replace(policy[self.MIN_IN_SERVICE],
                                  policy[self.MAX_BATCH_SIZE],
                                  policy[self.PAUSE_TIME])
+
+    def _resolve_attribute(self, name):
+        if name == self.REMOVED_RSRC_LIST:
+            return self._current_blacklist()
 
     def _update_timeout(self, batch_cnt, pause_sec):
         total_pause_time = pause_sec * max(batch_cnt - 1, 0)

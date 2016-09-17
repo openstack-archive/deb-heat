@@ -10,20 +10,29 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import os
-
 from oslo_config import cfg
 
-import heat_integrationtests
+CONF = None
 
+service_available_group = cfg.OptGroup(name="service_available",
+                                       title="Available OpenStack Services")
 
-IntegrationTestGroup = [
+ServiceAvailableGroup = [
+    cfg.BoolOpt("heat_plugin",
+                default=True,
+                help="Whether or not heat is expected to be available"),
+]
 
+heat_group = cfg.OptGroup(name="heat_plugin",
+                          title="Heat Service Options")
+
+HeatGroup = [
+    cfg.StrOpt("catalog_type",
+               default="orchestration",
+               help="Catalog type of the orchestration service."),
     cfg.StrOpt('username',
-               default=os.environ.get('OS_USERNAME'),
                help="Username to use for non admin API requests."),
     cfg.StrOpt('password',
-               default=os.environ.get('OS_PASSWORD'),
                help="Non admin API key to use when authenticating.",
                secret=True),
     cfg.StrOpt('admin_username',
@@ -32,25 +41,19 @@ IntegrationTestGroup = [
                help="Admin API key to use when authentication.",
                secret=True),
     cfg.StrOpt('tenant_name',
-               default=(os.environ.get('OS_PROJECT_NAME') or
-                        os.environ.get('OS_TENANT_NAME')),
                help="Tenant name to use for API requests."),
     cfg.StrOpt('admin_tenant_name',
                default='admin',
                help="Admin tenant name to use for admin API requests."),
     cfg.StrOpt('auth_url',
-               default=os.environ.get('OS_AUTH_URL'),
                help="Full URI of the OpenStack Identity API (Keystone)"),
     cfg.StrOpt('user_domain_name',
-               default=os.environ.get('OS_USER_DOMAIN_NAME'),
                help="User domain name, if keystone v3 auth_url"
                     "is used"),
     cfg.StrOpt('project_domain_name',
-               default=os.environ.get('OS_PROJECT_DOMAIN_NAME'),
                help="Project domain name, if keystone v3 auth_url"
                     "is used"),
     cfg.StrOpt('region',
-               default=os.environ.get('OS_REGION_NAME'),
                help="The region name to use"),
     cfg.StrOpt('instance_type',
                help="Instance type for tests. Needs to be big enough for a "
@@ -133,7 +136,7 @@ IntegrationTestGroup = [
                help="Timeout in seconds to wait for connectivity to "
                     "server."),
     cfg.IntOpt('sighup_timeout',
-               default=30,
+               default=120,
                help="Timeout in seconds to wait for adding or removing child"
                     "process after receiving of sighup signal"),
     cfg.IntOpt('sighup_config_edit_retries',
@@ -148,24 +151,6 @@ IntegrationTestGroup = [
 ]
 
 
-def init_conf(read_conf=True):
-
-    default_config_files = None
-    if read_conf:
-        confpath = os.path.join(
-            os.path.dirname(os.path.realpath(heat_integrationtests.__file__)),
-            'heat_integrationtests.conf')
-        if os.path.isfile(confpath):
-            default_config_files = [confpath]
-
-    conf = cfg.ConfigOpts()
-    conf(args=[], project='heat_integrationtests',
-         default_config_files=default_config_files)
-
-    for opt in IntegrationTestGroup:
-        conf.register_opt(opt)
-    return conf
-
-
 def list_opts():
-    yield None, IntegrationTestGroup
+    yield heat_group.name, HeatGroup
+    yield service_available_group.name, ServiceAvailableGroup

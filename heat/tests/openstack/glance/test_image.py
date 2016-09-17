@@ -38,6 +38,12 @@ resources:
       min_ram: 512
       protected: False
       location: https://launchpad.net/cirros/cirros-0.3.0-x86_64-disk.img
+      location: https://launchpad.net/cirros/cirros-0.3.0-x86_64-disk.img
+      architecture: test_architecture
+      kernel_id: 12345678-1234-1234-1234-123456789012
+      os_distro: test_distro
+      owner: test_owner
+      ramdisk_id: 12345678-1234-1234-1234-123456789012
 '''
 
 image_template_validate = '''
@@ -230,11 +236,23 @@ class GlanceImageTest(common.HeatTestCase):
             min_disk=10,
             min_ram=512,
             name=u'cirros_image',
-            protected=False
+            protected=False,
+            owner=u'test_owner',
+            properties={}
         )
         self.image_tags.update.assert_called_once_with(
             self.my_image.resource_id,
             'tag1')
+        calls = [mock.call(self.my_image.resource_id,
+                           architecture='test_architecture'),
+                 mock.call(self.my_image.resource_id,
+                           kernel_id='12345678-1234-1234-1234-123456789012'),
+                 mock.call(self.my_image.resource_id,
+                           os_distro='test_distro'),
+                 mock.call(self.my_image.resource_id,
+                           ramdisk_id='12345678-1234-1234-1234-123456789012'),
+                 ]
+        self.images.update.assert_has_calls(calls)
 
     def _handle_update_tags(self, prop_diff):
         self.my_image.handle_update(json_snippet=None,
@@ -251,6 +269,30 @@ class GlanceImageTest(common.HeatTestCase):
         )
 
     def test_image_handle_update(self):
+        self.my_image.resource_id = '477e8273-60a7-4c41-b683-fdb0bc7cd151'
+        prop_diff = {
+            'architecture': 'test_architecture',
+            'kernel_id': '12345678-1234-1234-1234-123456789012',
+            'os_distro': 'test_distro',
+            'owner': 'test_owner',
+            'ramdisk_id': '12345678-1234-1234-1234-123456789012',
+            'extra_properties': {'key1': 'value1', 'key2': 'value2'}}
+
+        self.my_image.handle_update(json_snippet=None,
+                                    tmpl_diff=None,
+                                    prop_diff=prop_diff)
+        self.images.update.assert_called_once_with(
+            self.my_image.resource_id,
+            [],
+            architecture='test_architecture',
+            kernel_id='12345678-1234-1234-1234-123456789012',
+            os_distro='test_distro',
+            owner='test_owner',
+            ramdisk_id='12345678-1234-1234-1234-123456789012',
+            key1='value1', key2='value2'
+        )
+
+    def test_image_handle_update_tags(self):
         self.my_image.resource_id = '477e8273-60a7-4c41-b683-fdb0bc7cd151'
 
         self.my_image.t['Properties']['tags'] = ['tag1']
@@ -324,7 +366,13 @@ class GlanceImageTest(common.HeatTestCase):
             'min_disk': 0,
             'min_ram': 0,
             'id': '41f0e60c-ebb4-4375-a2b4-845ae8b9c995',
-            'tags': []
+            'tags': [],
+            'extra_properties': {},
+            'architecture': 'test_architecture',
+            'kernel_id': '12345678-1234-1234-1234-123456789012',
+            'os_distro': 'test_distro',
+            'owner': 'test_owner',
+            'ramdisk_id': '12345678-1234-1234-1234-123456789012'
         }
         if version == 1.0:
             image = mock.MagicMock()
@@ -347,7 +395,13 @@ class GlanceImageTest(common.HeatTestCase):
             'min_disk': 0,
             'min_ram': 0,
             'id': '41f0e60c-ebb4-4375-a2b4-845ae8b9c995',
-            'tags': []
+            'tags': [],
+            'extra_properties': {},
+            'architecture': 'test_architecture',
+            'kernel_id': '12345678-1234-1234-1234-123456789012',
+            'os_distro': 'test_distro',
+            'owner': 'test_owner',
+            'ramdisk_id': '12345678-1234-1234-1234-123456789012'
         }
         if version == 1.0:
             expected.update({'location': 'stub'})

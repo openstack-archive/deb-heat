@@ -22,11 +22,14 @@ from oslo_log import log
 from six import moves
 
 from heat.common import context
+from heat.common import exception
 from heat.common.i18n import _
+from heat.common import messaging
 from heat.common import service_utils
 from heat.db import api as db_api
 from heat.db import utils
 from heat.objects import service as service_objects
+from heat.rpc import client as rpc_client
 from heat import version
 
 
@@ -111,9 +114,26 @@ def do_reset_stack_status():
     db_api.reset_stack_status(ctxt, CONF.command.stack_id)
 
 
+def do_migrate():
+    messaging.setup()
+    client = rpc_client.EngineClient()
+    ctxt = context.get_admin_context()
+    try:
+        client.migrate_convergence_1(ctxt, CONF.command.stack_id)
+    except exception.NotFound:
+        raise Exception(_("Stack with id %s can not be found.")
+                        % CONF.command.stack_id)
+    except exception.ActionInProgress:
+        raise Exception(_("The stack or some of its nested stacks are "
+                          "in progress. Note, that all the stacks should be "
+                          "in COMPLETE state in order to be migrated."))
+
+
 def purge_deleted():
     """Remove database records that have been previously soft deleted."""
-    utils.purge_deleted(CONF.command.age, CONF.command.granularity)
+    utils.purge_deleted(CONF.command.age,
+                        CONF.command.granularity,
+                        CONF.command.project_id)
 
 
 def do_crypt_parameters_and_properties():
@@ -139,6 +159,11 @@ def add_command_parsers(subparsers):
     # positional parameter, can be skipped. default=None
     parser.add_argument('version', nargs='?')
 
+    # migrate-stacks parser
+    parser = subparsers.add_parser('migrate-convergence-1')
+    parser.set_defaults(func=do_migrate)
+    parser.add_argument('stack_id')
+
     # purge_deleted parser
     parser = subparsers.add_parser('purge_deleted')
     parser.set_defaults(func=purge_deleted)
@@ -150,7 +175,10 @@ def add_command_parsers(subparsers):
         '-g', '--granularity', default='days',
         choices=['days', 'hours', 'minutes', 'seconds'],
         help=_('Granularity to use for age argument, defaults to days.'))
-
+    # optional parameter, can be skipped.
+    parser.add_argument(
+        '-p', '--project-id',
+        help=_('Project ID to purge deleted stacks.'))
     # update_params parser
     parser = subparsers.add_parser('update_params')
     parser.set_defaults(func=do_crypt_parameters_and_properties)

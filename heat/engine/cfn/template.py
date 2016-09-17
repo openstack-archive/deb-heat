@@ -11,28 +11,27 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import collections
-
 import six
 
 from heat.common import exception
 from heat.common.i18n import _
 from heat.engine.cfn import functions as cfn_funcs
 from heat.engine import function
+from heat.engine.hot import functions as hot_funcs
 from heat.engine import parameters
 from heat.engine import rsrc_defn
-from heat.engine import template
+from heat.engine import template_common
 
 
-class CfnTemplate(template.Template):
-    """A stack template."""
+class CfnTemplateBase(template_common.CommonTemplate):
+    """The base implementation of cfn template."""
 
     SECTIONS = (
         VERSION, ALTERNATE_VERSION,
-        DESCRIPTION, MAPPINGS, PARAMETERS, RESOURCES, OUTPUTS
+        DESCRIPTION, MAPPINGS, PARAMETERS, RESOURCES, OUTPUTS,
     ) = (
         'AWSTemplateFormatVersion', 'HeatTemplateFormatVersion',
-        'Description', 'Mappings', 'Parameters', 'Resources', 'Outputs'
+        'Description', 'Mappings', 'Parameters', 'Resources', 'Outputs',
     )
 
     OUTPUT_KEYS = (
@@ -51,6 +50,7 @@ class CfnTemplate(template.Template):
         'DeletionPolicy', 'UpdatePolicy', 'Description',
     )
 
+    extra_rsrc_defn = ()
     functions = {
         'Fn::FindInMap': cfn_funcs.FindInMap,
         'Fn::GetAZs': cfn_funcs.GetAZs,
@@ -66,6 +66,13 @@ class CfnTemplate(template.Template):
         'Retain': rsrc_defn.ResourceDefinition.RETAIN,
         'Snapshot': rsrc_defn.ResourceDefinition.SNAPSHOT
     }
+
+    HOT_TO_CFN_RES_ATTRS = {'type': RES_TYPE,
+                            'properties': RES_PROPERTIES,
+                            'metadata': RES_METADATA,
+                            'depends_on': RES_DEPENDS_ON,
+                            'deletion_policy': RES_DELETION_POLICY,
+                            'update_policy': RES_UPDATE_POLICY}
 
     def __getitem__(self, section):
         """Get the relevant section in the template."""
@@ -102,53 +109,6 @@ class CfnTemplate(template.Template):
                                      user_params=user_params,
                                      param_defaults=param_defaults)
 
-    def validate_resource_definitions(self, stack):
-        resources = self.t.get(self.RESOURCES) or {}
-        allowed_keys = set(self._RESOURCE_KEYS)
-
-        try:
-
-            for name, snippet in resources.items():
-                path = '.'.join([self.RESOURCES, name])
-                data = self.parse(stack, snippet, path)
-
-                if not self.validate_resource_key_type(self.RES_TYPE,
-                                                       six.string_types,
-                                                       'string',
-                                                       allowed_keys,
-                                                       name, data):
-                    args = {'name': name, 'type_key': self.RES_TYPE}
-                    msg = _('Resource %(name)s is missing '
-                            '"%(type_key)s"') % args
-                    raise KeyError(msg)
-
-                self.validate_resource_key_type(
-                    self.RES_PROPERTIES,
-                    (collections.Mapping, function.Function),
-                    'object', allowed_keys, name, data)
-                self.validate_resource_key_type(
-                    self.RES_METADATA,
-                    (collections.Mapping, function.Function),
-                    'object', allowed_keys, name, data)
-                self.validate_resource_key_type(
-                    self.RES_DEPENDS_ON,
-                    collections.Sequence,
-                    'list or string', allowed_keys, name, data)
-                self.validate_resource_key_type(
-                    self.RES_DELETION_POLICY,
-                    (six.string_types, function.Function),
-                    'string', allowed_keys, name, data)
-                self.validate_resource_key_type(
-                    self.RES_UPDATE_POLICY,
-                    (collections.Mapping, function.Function),
-                    'object', allowed_keys, name, data)
-                self.validate_resource_key_type(
-                    self.RES_DESCRIPTION,
-                    six.string_types,
-                    'string', allowed_keys, name, data)
-        except TypeError as ex:
-            raise exception.StackValidationFailed(message=six.text_type(ex))
-
     def resource_definitions(self, stack):
         resources = self.t.get(self.RESOURCES) or {}
 
@@ -178,25 +138,24 @@ class CfnTemplate(template.Template):
                 'description': data.get(self.RES_DESCRIPTION) or ''
             }
 
+            for key in self.extra_rsrc_defn:
+                kwargs[key.lower()] = data.get(key)
+
             defn = rsrc_defn.ResourceDefinition(name, **kwargs)
             return name, defn
 
-        return dict(rsrc_defn_item(name, data)
-                    for name, data in resources.items())
+        return dict(
+            rsrc_defn_item(name, data)
+            for name, data in resources.items() if self.get_res_condition(
+                stack, data, name))
 
     def add_resource(self, definition, name=None):
         if name is None:
             name = definition.name
         hot_tmpl = definition.render_hot()
 
-        HOT_TO_CFN_ATTRS = {'type': self.RES_TYPE,
-                            'properties': self.RES_PROPERTIES,
-                            'metadata': self.RES_METADATA,
-                            'depends_on': self.RES_DEPENDS_ON,
-                            'deletion_policy': self.RES_DELETION_POLICY,
-                            'update_policy': self.RES_UPDATE_POLICY}
-
-        cfn_tmpl = dict((HOT_TO_CFN_ATTRS[k], v) for k, v in hot_tmpl.items())
+        cfn_tmpl = dict((self.HOT_TO_CFN_RES_ATTRS[k], v)
+                        for k, v in hot_tmpl.items())
 
         if len(cfn_tmpl.get(self.RES_DEPENDS_ON, [])) == 1:
             cfn_tmpl[self.RES_DEPENDS_ON] = cfn_tmpl[self.RES_DEPENDS_ON][0]
@@ -206,7 +165,22 @@ class CfnTemplate(template.Template):
         self.t[self.RESOURCES][name] = cfn_tmpl
 
 
-class HeatTemplate(CfnTemplate):
+class CfnTemplate(CfnTemplateBase):
+
+    CONDITION = 'Condition'
+    CONDITIONS = 'Conditions'
+    SECTIONS = CfnTemplateBase.SECTIONS + (CONDITIONS,)
+
+    RES_CONDITION = CONDITION
+    _RESOURCE_KEYS = CfnTemplateBase._RESOURCE_KEYS + (RES_CONDITION,)
+    HOT_TO_CFN_RES_ATTRS = CfnTemplateBase.HOT_TO_CFN_RES_ATTRS
+    HOT_TO_CFN_RES_ATTRS.update({'condition': RES_CONDITION})
+
+    extra_rsrc_defn = CfnTemplateBase.extra_rsrc_defn + (RES_CONDITION,)
+
+    OUTPUT_CONDITION = CONDITION
+    OUTPUT_KEYS = CfnTemplateBase.OUTPUT_KEYS + (OUTPUT_CONDITION,)
+
     functions = {
         'Fn::FindInMap': cfn_funcs.FindInMap,
         'Fn::GetAZs': cfn_funcs.GetAZs,
@@ -219,10 +193,45 @@ class HeatTemplate(CfnTemplate):
         'Fn::Base64': cfn_funcs.Base64,
         'Fn::MemberListToMap': cfn_funcs.MemberListToMap,
         'Fn::ResourceFacade': cfn_funcs.ResourceFacade,
+        'Fn::If': hot_funcs.If,
     }
 
+    condition_functions = {
+        'Fn::Equals': hot_funcs.Equals,
+        'Ref': cfn_funcs.ParamRef,
+        'Fn::FindInMap': cfn_funcs.FindInMap,
+        'Fn::Not': cfn_funcs.Not,
+        'Fn::And': hot_funcs.And,
+        'Fn::Or': hot_funcs.Or
+    }
 
-class HeatTemplate20161014(HeatTemplate):
+    def __init__(self, tmpl, template_id=None, files=None, env=None):
+        super(CfnTemplate, self).__init__(tmpl, template_id, files, env)
+
+        self._parser_condition_functions = dict(
+            (n, function.Invalid) for n in self.functions)
+        self._parser_condition_functions.update(self.condition_functions)
+        self.merge_sections = [self.PARAMETERS, self.CONDITIONS]
+
+    def get_condition_definitions(self):
+        return self[self.CONDITIONS]
+
+    def has_condition_section(self, snippet):
+        if snippet and self.CONDITION in snippet:
+            return True
+
+        return False
+
+    def validate_resource_definition(self, name, data):
+        super(CfnTemplate, self).validate_resource_definition(name, data)
+
+        self.validate_resource_key_type(
+            self.RES_CONDITION,
+            (six.string_types, bool),
+            'string or boolean', self._RESOURCE_KEYS, name, data)
+
+
+class HeatTemplate(CfnTemplateBase):
     functions = {
         'Fn::FindInMap': cfn_funcs.FindInMap,
         'Fn::GetAZs': cfn_funcs.GetAZs,
@@ -235,6 +244,4 @@ class HeatTemplate20161014(HeatTemplate):
         'Fn::Base64': cfn_funcs.Base64,
         'Fn::MemberListToMap': cfn_funcs.MemberListToMap,
         'Fn::ResourceFacade': cfn_funcs.ResourceFacade,
-        # supports Fn::Equals in Newton
-        'Fn::Equals': cfn_funcs.Equals,
     }

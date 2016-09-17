@@ -13,6 +13,7 @@
 
 import mock
 
+from heat.common import exception
 from heat.engine.clients.os import cinder as c_plugin
 from heat.engine import stack
 from heat.engine import template
@@ -96,11 +97,34 @@ class CinderEncryptedVolumeTypeTest(common.HeatTestCase):
         self.volume_encryption_types.update.assert_called_once_with(
             volume_type=volume_type_id, specs=update_args)
 
-    def test_volume_type_show_resource(self):
-        volume_type_id = '01bd581d-33fe-4d6d-bd7b-70ae076d39fb'
-        self.my_encrypted_vol_type.resource_id = volume_type_id
-        volume_type = mock.Mock()
-        volume_type.to_dict = lambda: {'vtype': 'info'}
-        self.volume_encryption_types.get.return_value = volume_type
-        self.assertEqual({'vtype': 'info'},
-                         self.my_encrypted_vol_type.FnGetAtt('show'))
+    def test_get_live_state(self):
+        self.my_encrypted_vol_type.resource_id = '1234'
+        value = mock.MagicMock()
+        value.to_dict.return_value = {
+            'volume_type_id': '1122',
+            'provider': 'nova.Test',
+            'cipher': 'aes-xts-plain64',
+            'control_location': 'front-end',
+            'key_size': 256
+        }
+        self.volume_encryption_types.get.return_value = value
+
+        reality = self.my_encrypted_vol_type.get_live_state(
+            self.my_encrypted_vol_type.properties)
+        expected = {
+            'provider': 'nova.Test',
+            'cipher': 'aes-xts-plain64',
+            'control_location': 'front-end',
+            'key_size': 256
+        }
+
+        self.assertEqual(expected, reality)
+
+    def test_get_live_state_found_but_deleted(self):
+        self.my_encrypted_vol_type.resource_id = '1234'
+        value = mock.MagicMock(spec=[])
+        self.volume_encryption_types.get.return_value = value
+
+        self.assertRaises(exception.EntityNotFound,
+                          self.my_encrypted_vol_type.get_live_state,
+                          self.my_encrypted_vol_type.properties)

@@ -280,6 +280,37 @@ class DependencyTaskGroupTest(common.HeatTestCase):
                                 run_tasks_with_exceptions, e1)
         self.assertEqual([e1], exc.exceptions)
 
+    def test_exceptions_on_cancel(self):
+        class TestException(Exception):
+            pass
+
+        class ExceptionOnExit(Exception):
+            pass
+
+        cancelled = []
+
+        def task_func(arg):
+            for i in range(4):
+                if i > 1:
+                    raise TestException
+
+                try:
+                    yield
+                except GeneratorExit:
+                    cancelled.append(arg)
+                    raise ExceptionOnExit
+
+        tasks = (('A', None), ('B', None), ('C', None))
+        deps = dependencies.Dependencies(tasks)
+
+        tg = scheduler.DependencyTaskGroup(deps, task_func)
+        task = tg()
+
+        next(task)
+        next(task)
+        self.assertRaises(TestException, next, task)
+        self.assertEqual(len(tasks) - 1, len(cancelled))
+
     def test_exception_grace_period(self):
         e1 = Exception('e1')
 
@@ -318,6 +349,48 @@ class DependencyTaskGroupTest(common.HeatTestCase):
         exc = self.assertRaises(type(e1), run_tasks_with_exceptions)
         self.assertEqual(e1, exc)
 
+    def test_exception_grace_period_per_task(self):
+        e1 = Exception('e1')
+
+        def get_wait_time(key):
+            if key == 'B':
+                return 5
+            else:
+                return None
+
+        def run_tasks_with_exceptions():
+            self.error_wait_time = get_wait_time
+            tasks = (('A', None), ('B', None), ('C', 'A'))
+            with self._dep_test(*tasks) as dummy:
+                dummy.do_step(1, 'A').InAnyOrder('1')
+                dummy.do_step(1, 'B').InAnyOrder('1')
+                dummy.do_step(2, 'A').InAnyOrder('2').AndRaise(e1)
+                dummy.do_step(2, 'B').InAnyOrder('2')
+                dummy.do_step(3, 'B')
+
+        exc = self.assertRaises(type(e1), run_tasks_with_exceptions)
+        self.assertEqual(e1, exc)
+
+    def test_thrown_exception_order(self):
+        e1 = Exception('e1')
+        e2 = Exception('e2')
+
+        tasks = (('A', None), ('B', None), ('C', 'A'))
+        deps = dependencies.Dependencies(tasks)
+
+        tg = scheduler.DependencyTaskGroup(
+            deps, DummyTask(), reverse=self.reverse_order,
+            error_wait_time=1,
+            aggregate_exceptions=self.aggregate_exceptions)
+        task = tg()
+
+        next(task)
+        task.throw(e1)
+        next(task)
+        tg.error_wait_time = None
+        exc = self.assertRaises(type(e2), task.throw, e2)
+        self.assertIs(e2, exc)
+
 
 class TaskTest(common.HeatTestCase):
 
@@ -341,6 +414,94 @@ class TaskTest(common.HeatTestCase):
         self.m.ReplayAll()
 
         scheduler.TaskRunner(task)()
+
+    def test_run_as_task(self):
+        task = DummyTask()
+        self.m.StubOutWithMock(task, 'do_step')
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+
+        task.do_step(1).AndReturn(None)
+        task.do_step(2).AndReturn(None)
+        task.do_step(3).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        tr = scheduler.TaskRunner(task)
+        rt = tr.as_task()
+        for step in rt:
+            pass
+        self.assertTrue(tr.done())
+
+    def test_run_as_task_started(self):
+        task = DummyTask()
+        self.m.StubOutWithMock(task, 'do_step')
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+
+        task.do_step(1).AndReturn(None)
+        task.do_step(2).AndReturn(None)
+        task.do_step(3).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        tr = scheduler.TaskRunner(task)
+        tr.start()
+        for step in tr.as_task():
+            pass
+        self.assertTrue(tr.done())
+
+    def test_run_as_task_cancel(self):
+        task = DummyTask()
+        self.m.StubOutWithMock(task, 'do_step')
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+
+        task.do_step(1).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        tr = scheduler.TaskRunner(task)
+        rt = tr.as_task()
+        next(rt)
+        rt.close()
+
+        self.assertTrue(tr.done())
+
+    def test_run_as_task_exception(self):
+        class TestException(Exception):
+            pass
+
+        task = DummyTask()
+        self.m.StubOutWithMock(task, 'do_step')
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+
+        task.do_step(1).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        tr = scheduler.TaskRunner(task)
+        rt = tr.as_task()
+        next(rt)
+        self.assertRaises(TestException, rt.throw, TestException)
+
+        self.assertTrue(tr.done())
+
+    def test_run_as_task_swallow_exception(self):
+        class TestException(Exception):
+            pass
+
+        def task():
+            try:
+                yield
+            except TestException:
+                yield
+
+        tr = scheduler.TaskRunner(task)
+        rt = tr.as_task()
+        next(rt)
+        rt.throw(TestException)
+
+        self.assertFalse(tr.done())
+        self.assertRaises(StopIteration, next, rt)
+        self.assertTrue(tr.done())
 
     def test_run_delays(self):
         task = DummyTask(delays=itertools.repeat(2))
@@ -430,6 +591,242 @@ class TaskTest(common.HeatTestCase):
         runner = scheduler.TaskRunner(task)
         runner.start()
         runner.run_to_completion(wait_time=24)
+
+    def test_run_progress(self):
+        progress_count = []
+
+        def progress():
+            progress_count.append(None)
+
+        task = DummyTask()
+        self.m.StubOutWithMock(task, 'do_step')
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+
+        task.do_step(1).AndReturn(None)
+        scheduler.TaskRunner._sleep(0).AndReturn(None)
+        task.do_step(2).AndReturn(None)
+        scheduler.TaskRunner._sleep(1).AndReturn(None)
+        task.do_step(3).AndReturn(None)
+        scheduler.TaskRunner._sleep(1).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(task)(progress_callback=progress)
+        self.assertEqual(task.num_steps, len(progress_count))
+
+    def test_start_run_progress(self):
+        progress_count = []
+
+        def progress():
+            progress_count.append(None)
+
+        task = DummyTask()
+        self.m.StubOutWithMock(task, 'do_step')
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+
+        task.do_step(1).AndReturn(None)
+        task.do_step(2).AndReturn(None)
+        scheduler.TaskRunner._sleep(1).AndReturn(None)
+        task.do_step(3).AndReturn(None)
+        scheduler.TaskRunner._sleep(1).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        runner = scheduler.TaskRunner(task)
+        runner.start()
+        runner.run_to_completion(progress_callback=progress)
+        self.assertEqual(task.num_steps - 1, len(progress_count))
+
+    def test_run_as_task_progress(self):
+        progress_count = []
+
+        def progress():
+            progress_count.append(None)
+
+        task = DummyTask()
+        self.m.StubOutWithMock(task, 'do_step')
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+
+        task.do_step(1).AndReturn(None)
+        task.do_step(2).AndReturn(None)
+        task.do_step(3).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        tr = scheduler.TaskRunner(task)
+        rt = tr.as_task(progress_callback=progress)
+        for step in rt:
+            pass
+        self.assertEqual(task.num_steps, len(progress_count))
+
+    def test_run_progress_exception(self):
+        class TestException(Exception):
+            pass
+
+        progress_count = []
+
+        def progress():
+            if progress_count:
+                raise TestException
+            progress_count.append(None)
+
+        task = DummyTask()
+        self.m.StubOutWithMock(task, 'do_step')
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+
+        task.do_step(1).AndReturn(None)
+        scheduler.TaskRunner._sleep(0).AndReturn(None)
+        task.do_step(2).AndReturn(None)
+        scheduler.TaskRunner._sleep(1).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        self.assertRaises(TestException, scheduler.TaskRunner(task),
+                          progress_callback=progress)
+        self.assertEqual(1, len(progress_count))
+
+    def test_start_run_progress_exception(self):
+        class TestException(Exception):
+            pass
+
+        progress_count = []
+
+        def progress():
+            if progress_count:
+                raise TestException
+            progress_count.append(None)
+
+        task = DummyTask()
+        self.m.StubOutWithMock(task, 'do_step')
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+
+        task.do_step(1).AndReturn(None)
+        task.do_step(2).AndReturn(None)
+        scheduler.TaskRunner._sleep(1).AndReturn(None)
+        task.do_step(3).AndReturn(None)
+        scheduler.TaskRunner._sleep(1).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        runner = scheduler.TaskRunner(task)
+        runner.start()
+        self.assertRaises(TestException, runner.run_to_completion,
+                          progress_callback=progress)
+        self.assertEqual(1, len(progress_count))
+
+    def test_run_as_task_progress_exception(self):
+        class TestException(Exception):
+            pass
+
+        progress_count = []
+
+        def progress():
+            if progress_count:
+                raise TestException
+            progress_count.append(None)
+
+        task = DummyTask()
+        self.m.StubOutWithMock(task, 'do_step')
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+
+        task.do_step(1).AndReturn(None)
+        task.do_step(2).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        tr = scheduler.TaskRunner(task)
+        rt = tr.as_task(progress_callback=progress)
+        next(rt)
+        next(rt)
+        self.assertRaises(TestException, next, rt)
+        self.assertEqual(1, len(progress_count))
+
+    def test_run_progress_exception_swallow(self):
+        class TestException(Exception):
+            pass
+
+        progress_count = []
+
+        def progress():
+            try:
+                if not progress_count:
+                    raise TestException
+            finally:
+                progress_count.append(None)
+
+        def task():
+            try:
+                yield
+            except TestException:
+                yield
+
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+
+        scheduler.TaskRunner._sleep(0).AndReturn(None)
+        scheduler.TaskRunner._sleep(1).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        scheduler.TaskRunner(task)(progress_callback=progress)
+        self.assertEqual(2, len(progress_count))
+
+    def test_start_run_progress_exception_swallow(self):
+        class TestException(Exception):
+            pass
+
+        progress_count = []
+
+        def progress():
+            try:
+                if not progress_count:
+                    raise TestException
+            finally:
+                progress_count.append(None)
+
+        def task():
+            yield
+            try:
+                yield
+            except TestException:
+                yield
+
+        self.m.StubOutWithMock(scheduler.TaskRunner, '_sleep')
+
+        scheduler.TaskRunner._sleep(1).AndReturn(None)
+        scheduler.TaskRunner._sleep(1).AndReturn(None)
+
+        self.m.ReplayAll()
+
+        runner = scheduler.TaskRunner(task)
+        runner.start()
+        runner.run_to_completion(progress_callback=progress)
+        self.assertEqual(2, len(progress_count))
+
+    def test_run_as_task_progress_exception_swallow(self):
+        class TestException(Exception):
+            pass
+
+        progress_count = []
+
+        def progress():
+            try:
+                if not progress_count:
+                    raise TestException
+            finally:
+                progress_count.append(None)
+
+        def task():
+            try:
+                yield
+            except TestException:
+                yield
+
+        tr = scheduler.TaskRunner(task)
+        rt = tr.as_task(progress_callback=progress)
+        next(rt)
+        next(rt)
+        self.assertRaises(StopIteration, next, rt)
+        self.assertEqual(2, len(progress_count))
 
     def test_sleep(self):
         sleep_time = 42
@@ -634,6 +1031,73 @@ class TaskTest(common.HeatTestCase):
         self.assertTrue(runner.step())
         self.assertFalse(runner)
         self.assertTrue(runner.step())
+
+    def test_as_task_timeout(self):
+        st = timeutils.wallclock()
+
+        def task():
+            while True:
+                yield
+
+        self.m.StubOutWithMock(timeutils, 'wallclock')
+        timeutils.wallclock().AndReturn(st)
+        timeutils.wallclock().AndReturn(st + 0.5)
+        timeutils.wallclock().AndReturn(st + 1.5)
+
+        self.m.ReplayAll()
+
+        runner = scheduler.TaskRunner(task)
+
+        rt = runner.as_task(timeout=1)
+        next(rt)
+        self.assertTrue(runner)
+        self.assertRaises(scheduler.Timeout, next, rt)
+
+    def test_as_task_timeout_shorter(self):
+        st = timeutils.wallclock()
+
+        def task():
+            while True:
+                yield
+
+        self.m.StubOutWithMock(timeutils, 'wallclock')
+        timeutils.wallclock().AndReturn(st)
+        timeutils.wallclock().AndReturn(st + 0.5)
+        timeutils.wallclock().AndReturn(st + 0.7)
+        timeutils.wallclock().AndReturn(st + 1.6)
+        timeutils.wallclock().AndReturn(st + 2.6)
+
+        self.m.ReplayAll()
+
+        runner = scheduler.TaskRunner(task)
+        runner.start(timeout=10)
+        self.assertTrue(runner)
+
+        rt = runner.as_task(timeout=1)
+        next(rt)
+        self.assertRaises(scheduler.Timeout, next, rt)
+
+    def test_as_task_timeout_longer(self):
+        st = timeutils.wallclock()
+
+        def task():
+            while True:
+                yield
+
+        self.m.StubOutWithMock(timeutils, 'wallclock')
+        timeutils.wallclock().AndReturn(st)
+        timeutils.wallclock().AndReturn(st + 0.5)
+        timeutils.wallclock().AndReturn(st + 0.6)
+        timeutils.wallclock().AndReturn(st + 1.5)
+
+        self.m.ReplayAll()
+
+        runner = scheduler.TaskRunner(task)
+        runner.start(timeout=1)
+        self.assertTrue(runner)
+
+        rt = runner.as_task(timeout=10)
+        self.assertRaises(scheduler.Timeout, next, rt)
 
     def test_cancel_not_started(self):
         task = DummyTask(1)
