@@ -129,10 +129,8 @@ class StackUpdate(object):
         # can have if it was copied to backup stack
         if (res_name not in
                 self.previous_stack.t[self.previous_stack.t.RESOURCES]):
-            LOG.debug("Backing up new Resource %s" % res_name)
-            definition = new_res.t.reparse(self.previous_stack,
-                                           new_res.stack.t)
-            self.previous_stack.t.add_resource(definition)
+            LOG.debug("Storing definition of new Resource %s", res_name)
+            self.previous_stack.t.add_resource(new_res.t)
             self.previous_stack.t.store(self.previous_stack.context)
 
         yield new_res.create()
@@ -154,21 +152,22 @@ class StackUpdate(object):
         res_name = new_res.name
 
         if res_name in self.existing_stack:
-            if type(self.existing_stack[res_name]) is type(new_res):
-                existing_res = self.existing_stack[res_name]
+            existing_res = self.existing_stack[res_name]
+            is_substituted = existing_res.check_is_substituted(type(new_res))
+            if type(existing_res) is type(new_res) or is_substituted:
                 try:
                     yield self._update_in_place(existing_res,
-                                                new_res)
+                                                new_res,
+                                                is_substituted)
                 except resource.UpdateReplace:
                     pass
                 else:
                     # Save updated resource definition to backup stack
                     # cause it allows the backup stack resources to be
                     # synchronized
-                    LOG.debug("Backing up updated Resource %s" % res_name)
-                    definition = existing_res.t.reparse(self.previous_stack,
-                                                        existing_res.stack.t)
-                    self.previous_stack.t.add_resource(definition)
+                    LOG.debug("Storing definition of updated Resource %s",
+                              res_name)
+                    self.previous_stack.t.add_resource(new_res.t)
                     self.previous_stack.t.store(self.previous_stack.context)
 
                     LOG.info(_LI("Resource %(res_name)s for stack "
@@ -181,7 +180,7 @@ class StackUpdate(object):
 
         yield self._create_resource(new_res)
 
-    def _update_in_place(self, existing_res, new_res):
+    def _update_in_place(self, existing_res, new_res, is_substituted=False):
         existing_snippet = self.existing_snippets[existing_res.name]
         prev_res = self.previous_stack.get(new_res.name)
 
@@ -191,7 +190,12 @@ class StackUpdate(object):
         # is switching template implementations)
         new_snippet = new_res.t.reparse(self.existing_stack,
                                         self.new_stack.t)
-
+        if is_substituted:
+            substitute = type(new_res)(existing_res.name,
+                                       existing_res.t,
+                                       existing_res.stack)
+            existing_res.stack.resources[existing_res.name] = substitute
+            existing_res = substitute
         return existing_res.update(new_snippet, existing_snippet,
                                    prev_resource=prev_res)
 

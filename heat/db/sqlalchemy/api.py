@@ -30,7 +30,6 @@ from sqlalchemy import and_
 from sqlalchemy import func
 from sqlalchemy import orm
 from sqlalchemy.orm import aliased as orm_aliased
-from sqlalchemy.orm import session as orm_session
 
 from heat.common import crypt
 from heat.common import exception
@@ -160,8 +159,7 @@ def raw_template_files_create(context, values):
 
 
 def raw_template_files_get(context, files_id):
-    session = context.session if context else get_session()
-    result = session.query(models.RawTemplateFiles).get(files_id)
+    result = context.session.query(models.RawTemplateFiles).get(files_id)
     if not result:
         raise exception.NotFound(
             _("raw_template_files with files_id %d not found") %
@@ -350,14 +348,12 @@ def resource_data_set(context, resource_id, key, value, redact=False):
 def resource_exchange_stacks(context, resource_id1, resource_id2):
     query = context.session.query(models.Resource)
     session = query.session
-    session.begin()
 
-    res1 = query.get(resource_id1)
-    res2 = query.get(resource_id2)
+    with session.begin():
+        res1 = query.get(resource_id1)
+        res2 = query.get(resource_id2)
 
-    res1.stack, res2.stack = res2.stack, res1.stack
-
-    session.commit()
+        res1.stack, res2.stack = res2.stack, res1.stack
 
 
 def resource_data_delete(context, resource_id, key):
@@ -410,6 +406,15 @@ def resource_get_all_by_root_stack(context, stack_id, filters=None):
     results = query.all()
 
     return dict((res.id, res) for res in results)
+
+
+def engine_get_all_locked_by_stack(context, stack_id):
+    query = context.session.query(
+        func.distinct(models.Resource.engine_id)
+    ).filter(
+        models.Resource.stack_id == stack_id,
+        models.Resource.engine_id.isnot(None))
+    return set(i[0] for i in query.all())
 
 
 def stack_get_by_name_and_owner_id(context, stack_name, owner_id):
@@ -787,9 +792,8 @@ def user_creds_delete(context, user_creds_id):
         raise exception.NotFound(
             _('Attempt to delete user creds with id '
               '%(id)s that does not exist') % {'id': user_creds_id})
-    session = orm_session.Session.object_session(creds)
-    with session.begin():
-        session.delete(creds)
+    with context.session.begin():
+        context.session.delete(creds)
 
 
 def event_get(context, event_id):
@@ -956,11 +960,10 @@ def watch_rule_delete(context, watch_id):
                                  '%(id)s %(msg)s') % {
                                      'id': watch_id,
                                      'msg': 'that does not exist'})
-    session = orm_session.Session.object_session(wr)
-    with session.begin():
+    with context.session.begin():
         for d in wr.watch_data:
-            session.delete(d)
-        session.delete(wr)
+            context.session.delete(d)
+        context.session.delete(wr)
 
 
 def watch_data_create(context, values):
@@ -1017,18 +1020,18 @@ def software_config_delete(context, config_id):
         msg = (_("Software config with id %s can not be deleted as "
                  "it is referenced.") % config_id)
         raise exception.InvalidRestrictedAction(message=msg)
-    session = orm_session.Session.object_session(config)
-    with session.begin():
-        session.delete(config)
+    with context.session.begin():
+        context.session.delete(config)
 
 
 def software_deployment_create(context, values):
     obj_ref = models.SoftwareDeployment()
     obj_ref.update(values)
     session = context.session
-    session.begin()
-    obj_ref.save(session)
-    session.commit()
+
+    with session.begin():
+        obj_ref.save(session)
+
     return obj_ref
 
 
@@ -1109,9 +1112,8 @@ def snapshot_update(context, snapshot_id, values):
 
 def snapshot_delete(context, snapshot_id):
     snapshot = snapshot_get(context, snapshot_id)
-    session = orm_session.Session.object_session(snapshot)
-    with session.begin():
-        session.delete(snapshot)
+    with context.session.begin():
+        context.session.delete(snapshot)
 
 
 def snapshot_get_all(context, stack_id):

@@ -12,145 +12,194 @@
 #    under the License.
 
 import collections
-import copy
+import functools
+import weakref
 
 import six
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.engine import conditions
 from heat.engine import function
+from heat.engine import output
 from heat.engine import template
 
 
 class CommonTemplate(template.Template):
-    """A class of the common implementation for HOT and CFN templates."""
+    """A class of the common implementation for HOT and CFN templates.
 
-    def validate_resource_definition(self, name, data):
-        allowed_keys = set(self._RESOURCE_KEYS)
+    This is *not* a stable interface, and any third-parties who create derived
+    classes from it do so at their own risk.
+    """
 
-        if not self.validate_resource_key_type(self.RES_TYPE,
-                                               six.string_types,
-                                               'string',
-                                               allowed_keys,
-                                               name,
-                                               data):
+    def __init__(self, template, template_id=None, files=None, env=None):
+        super(CommonTemplate, self).__init__(template, template_id=template_id,
+                                             files=files, env=env)
+        self._conditions_cache = None, None
+
+    @classmethod
+    def _parse_resource_field(cls, key, valid_types, typename,
+                              rsrc_name, rsrc_data, parse_func):
+        """Parse a field in a resource definition.
+
+        :param key: The name of the key
+        :param valid_types: Valid types for the parsed output
+        :param typename: Description of valid type to include in error output
+        :param rsrc_name: The resource name
+        :param rsrc_data: The unparsed resource definition data
+        :param parse_func: A function to parse the data, which takes the
+            contents of the field and its path in the template as arguments.
+        """
+        if key in rsrc_data:
+            data = parse_func(rsrc_data[key], '.'.join([cls.RESOURCES,
+                                                        rsrc_name,
+                                                        key]))
+            if not isinstance(data, valid_types):
+                args = {'name': rsrc_name, 'key': key,
+                        'typename': typename}
+                message = _('Resource %(name)s %(key)s type '
+                            'must be %(typename)s') % args
+                raise TypeError(message)
+            return data
+        else:
+            return None
+
+    def _rsrc_defn_args(self, stack, name, data):
+        if self.RES_TYPE not in data:
             args = {'name': name, 'type_key': self.RES_TYPE}
             msg = _('Resource %(name)s is missing "%(type_key)s"') % args
             raise KeyError(msg)
 
-        self.validate_resource_key_type(
-            self.RES_PROPERTIES,
-            (collections.Mapping, function.Function),
-            'object', allowed_keys, name, data)
-        self.validate_resource_key_type(
-            self.RES_METADATA,
-            (collections.Mapping, function.Function),
-            'object', allowed_keys, name, data)
-        self.validate_resource_key_type(
-            self.RES_DEPENDS_ON,
-            collections.Sequence,
-            'list or string', allowed_keys, name, data)
-        self.validate_resource_key_type(
-            self.RES_DELETION_POLICY,
-            (six.string_types, function.Function),
-            'string', allowed_keys, name, data)
-        self.validate_resource_key_type(
-            self.RES_UPDATE_POLICY,
-            (collections.Mapping, function.Function),
-            'object', allowed_keys, name, data)
-        self.validate_resource_key_type(
-            self.RES_DESCRIPTION,
-            six.string_types,
-            'string', allowed_keys, name, data)
+        parse = functools.partial(self.parse, stack)
 
-    def validate_resource_definitions(self, stack):
-        """Check section's type of ResourceDefinitions."""
+        def no_parse(field, path):
+            return field
 
-        resources = self.t.get(self.RESOURCES) or {}
+        yield ('resource_type',
+               self._parse_resource_field(self.RES_TYPE,
+                                          six.string_types, 'string',
+                                          name, data, parse))
 
-        try:
-            for name, snippet in resources.items():
-                path = '.'.join([self.RESOURCES, name])
-                data = self.parse(stack, snippet, path)
-                self.validate_resource_definition(name, data)
-        except (TypeError, ValueError, KeyError) as ex:
-            raise exception.StackValidationFailed(message=six.text_type(ex))
+        yield ('properties',
+               self._parse_resource_field(self.RES_PROPERTIES,
+                                          (collections.Mapping,
+                                           function.Function), 'object',
+                                          name, data, parse))
 
-    def validate_condition_definitions(self, stack):
-        """Check conditions section."""
+        yield ('metadata',
+               self._parse_resource_field(self.RES_METADATA,
+                                          (collections.Mapping,
+                                           function.Function), 'object',
+                                          name, data, parse))
 
-        resolved_cds = self.resolve_conditions(stack)
-        if resolved_cds:
-            for cd_key, cd_value in six.iteritems(resolved_cds):
-                if not isinstance(cd_value, bool):
-                    raise exception.InvalidConditionDefinition(
-                        cd=cd_key,
-                        definition=cd_value)
+        depends = self._parse_resource_field(self.RES_DEPENDS_ON,
+                                             collections.Sequence,
+                                             'list or string',
+                                             name, data, no_parse)
+        if isinstance(depends, six.string_types):
+            depends = [depends]
+        yield 'depends', depends
 
-    def resolve_conditions(self, stack):
-        cd_snippet = self.get_condition_definitions()
-        result = {}
-        if cd_snippet:
-            for cd_key, cd_value in six.iteritems(cd_snippet):
-                # hasn't been resolved yet
-                if not isinstance(cd_value, bool):
-                    condition_func = self.parse_condition(
-                        stack, cd_value)
-                    resolved_cd_value = function.resolve(condition_func)
-                    result[cd_key] = resolved_cd_value
-                else:
-                    result[cd_key] = cd_value
+        del_policy = self._parse_resource_field(self.RES_DELETION_POLICY,
+                                                (six.string_types,
+                                                 function.Function),
+                                                'string',
+                                                name, data, parse)
+        deletion_policy = function.resolve(del_policy)
+        if deletion_policy is not None:
+            if deletion_policy not in self.deletion_policies:
+                msg = _('Invalid deletion policy "%s"') % deletion_policy
+                raise exception.StackValidationFailed(message=msg)
+            else:
+                deletion_policy = self.deletion_policies[deletion_policy]
+        yield 'deletion_policy', deletion_policy
 
-        return result
+        yield ('update_policy',
+               self._parse_resource_field(self.RES_UPDATE_POLICY,
+                                          (collections.Mapping,
+                                           function.Function), 'object',
+                                          name, data, parse))
 
-    def get_condition_definitions(self):
+        yield ('description',
+               self._parse_resource_field(self.RES_DESCRIPTION,
+                                          six.string_types, 'string',
+                                          name, data, no_parse))
+
+    def _get_condition_definitions(self):
         """Return the condition definitions of template."""
         return {}
 
-    def has_condition_section(self, snippet):
-        return False
-
-    def get_res_condition(self, stack, res_data, res_name):
-        """Return the value of condition referenced by resource."""
-
-        path = ''
-        if self.has_condition_section(res_data):
-            path = '.'.join([self.RESOURCES, res_name, self.RES_CONDITION])
-
-        return self.get_condition(res_data, stack, path)
-
-    def get_output_condition(self, stack, o_data, o_key):
-        path = '.'.join([self.OUTPUTS, o_key, self.OUTPUT_CONDITION])
-
-        return self.get_condition(o_data, stack, path)
-
-    def get_condition(self, snippet, stack, path=''):
-        # if specify condition return the resolved condition value,
-        # true or false if don't specify condition, return true
-        if self.has_condition_section(snippet):
-            cd_key = snippet[self.CONDITION]
-            cds = self.conditions(stack)
-            if cd_key not in cds:
-                raise exception.InvalidConditionReference(
-                    cd=cd_key, path=path)
-            cd = cds[cd_key]
-            return cd
-
-        return True
-
     def conditions(self, stack):
-        if self._conditions is None:
-            self._conditions = self.resolve_conditions(stack)
+        get_cache_stack, cached_conds = self._conditions_cache
+        if (cached_conds is not None and
+                get_cache_stack is not None and
+                get_cache_stack() is stack):
+            return cached_conds
 
-        return self._conditions
+        raw_defs = self._get_condition_definitions()
+        if not isinstance(raw_defs, collections.Mapping):
+            message = _('Condition definitions must be a map. Found a '
+                        '%s instead') % type(raw_defs).__name__
+            raise exception.StackValidationFailed(
+                error='Conditions validation error',
+                message=message)
 
-    def parse_outputs_conditions(self, outputs, stack):
-        copy_outputs = copy.deepcopy(outputs)
-        for key, snippet in six.iteritems(copy_outputs):
-            if self.has_condition_section(snippet):
-                cd = self.get_output_condition(stack, snippet, key)
-                snippet[self.OUTPUT_CONDITION] = cd
-                if not cd:
-                    snippet[self.OUTPUT_VALUE] = None
+        parsed = {n: self.parse_condition(stack, c,
+                                          '.'.join([self.CONDITIONS, n]))
+                  for n, c in raw_defs.items()}
+        conds = conditions.Conditions(parsed)
 
-        return copy_outputs
+        get_cache_stack = weakref.ref(stack) if stack is not None else None
+        self._conditions_cache = get_cache_stack, conds
+        return conds
+
+    def outputs(self, stack):
+        conds = self.conditions(stack)
+
+        outputs = self.t.get(self.OUTPUTS) or {}
+
+        def get_outputs():
+            for key, val in outputs.items():
+                if not isinstance(val, collections.Mapping):
+                    message = _('Output definitions must be a map. Found a '
+                                '%s instead') % type(val).__name__
+                    raise exception.StackValidationFailed(
+                        error='Output validation error',
+                        path=[self.OUTPUTS, key],
+                        message=message)
+
+                if self.OUTPUT_VALUE not in val:
+                    message = _('Each output definition must contain '
+                                'a %s key.') % self.OUTPUT_VALUE
+                    raise exception.StackValidationFailed(
+                        error='Output validation error',
+                        path=[self.OUTPUTS, key],
+                        message=message)
+
+                description = val.get(self.OUTPUT_DESCRIPTION)
+
+                if hasattr(self, 'OUTPUT_CONDITION'):
+                    path = [self.OUTPUTS, key, self.OUTPUT_CONDITION]
+                    cond = self.parse_condition(stack,
+                                                val.get(self.OUTPUT_CONDITION),
+                                                '.'.join(path))
+                    try:
+                        enabled = conds.is_enabled(function.resolve(cond))
+                    except ValueError as exc:
+                        path = [self.OUTPUTS, key, self.OUTPUT_CONDITION]
+                        message = six.text_type(exc)
+                        raise exception.StackValidationFailed(path=path,
+                                                              message=message)
+
+                    if not enabled:
+                        yield key, output.OutputDefinition(key, None,
+                                                           description)
+                        continue
+
+                value_def = self.parse(stack, val[self.OUTPUT_VALUE],
+                                       path='.'.join([self.OUTPUTS, key,
+                                                      self.OUTPUT_VALUE]))
+
+                yield key, output.OutputDefinition(key, value_def, description)
+
+        return dict(get_outputs())

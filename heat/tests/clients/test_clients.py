@@ -19,8 +19,8 @@ from glanceclient import exc as glance_exc
 from glanceclient.openstack.common.apiclient import exceptions as g_a_exc
 from heatclient import client as heatclient
 from heatclient import exc as heat_exc
+from keystoneauth1 import exceptions as keystone_exc
 from keystoneauth1.identity import generic
-from keystoneclient import exceptions as keystone_exc
 from manilaclient import exceptions as manila_exc
 import mock
 from neutronclient.common import exceptions as neutron_exc
@@ -201,70 +201,6 @@ class ClientPluginTest(common.HeatTestCase):
         # check fallback clients group for unknown client foo
         self.assertEqual('/tmp/foo',
                          plugin._get_client_option('foo', 'ca_file'))
-
-    def test_get_client_args(self):
-        ctxt = mock.Mock()
-        plugin = FooClientsPlugin(ctxt)
-        self.patchobject(ctxt.keystone_session, 'get_token',
-                         return_value='5678')
-        plugin.url_for = mock.Mock(return_value='sample_endpoint_url')
-        plugin.context.auth_url = 'sample_auth_url'
-        plugin.context.tenant_id = 'sample_project_id'
-
-        mock_args = {
-            'endpoint_type': 'internalURL',
-            'ca_file': '/tmp/ca_file',
-            'cert_file': '/tmp/cert_file',
-            'key_file': '/tmp/key_file',
-            'insecure': True
-        }
-
-        def _side_effect(service_name, arg_name):
-            return mock_args[arg_name]
-
-        plugin._get_client_option = mock.Mock(side_effect=_side_effect)
-
-        args = plugin._get_client_args('sample_service',
-                                       'foo_type')
-
-        self.assertEqual('foo_type',
-                         args['service_type'],
-                         'invalid service_type')
-
-        self.assertEqual('sample_auth_url',
-                         args['auth_url'],
-                         'invalid auth_url')
-
-        self.assertEqual('sample_project_id',
-                         args['project_id'],
-                         'invalid project_id')
-
-        self.assertEqual('5678',
-                         args['token'],
-                         'invalid auth_token')
-
-        self.assertEqual('sample_endpoint_url',
-                         args['os_endpoint'],
-                         'invalid os_endpoint')
-
-        self.assertEqual('internalURL',
-                         args['endpoint_type'],
-                         'invalid endpoint_type')
-
-        self.assertEqual('/tmp/ca_file',
-                         args['cacert'],
-                         'invalid cacert')
-
-        self.assertEqual('/tmp/cert_file',
-                         args['cert_file'],
-                         'invalid cert_file')
-
-        self.assertEqual('/tmp/key_file',
-                         args['key_file'],
-                         'invalid key_file')
-
-        self.assertTrue(args['insecure'],
-                        'invalid insecure')
 
     def test_auth_token(self):
         con = mock.Mock()

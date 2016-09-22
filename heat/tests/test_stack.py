@@ -34,6 +34,7 @@ from heat.engine.clients.os import keystone
 from heat.engine.clients.os import nova
 from heat.engine import environment
 from heat.engine import function
+from heat.engine import output
 from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import service
@@ -204,6 +205,13 @@ class StackTest(common.HeatTestCase):
         self.stack.store()
         self.assertEqual(0, self.stack.total_resources(self.stack.id))
         self.assertEqual(0, self.stack.total_resources())
+
+    @mock.patch.object(db_api, 'stack_count_total_resources')
+    def test_total_resources_not_stored(self, sctr):
+        self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl,
+                                 status_reason='flimflam')
+        self.assertEqual(0, self.stack.total_resources())
+        sctr.assert_not_called()
 
     def test_total_resources_not_found(self):
         self.stack = stack.Stack(self.ctx, 'test_stack', self.tmpl,
@@ -425,7 +433,7 @@ class StackTest(common.HeatTestCase):
         stack.Stack.__init__(self.ctx, stk.name, t, stack_id=stk.id,
                              action=stk.action, status=stk.status,
                              status_reason=stk.status_reason,
-                             timeout_mins=stk.timeout, resolve_data=True,
+                             timeout_mins=stk.timeout,
                              disable_rollback=stk.disable_rollback,
                              parent_resource='parent', owner_id=None,
                              stack_user_project_id=None,
@@ -989,7 +997,8 @@ class StackTest(common.HeatTestCase):
         self.assertEqual('ADOPT', res.action)
         self.assertEqual((self.stack.ADOPT, self.stack.COMPLETE),
                          self.stack.state)
-        self.assertEqual('AResource', self.stack.output('TestOutput'))
+        self.assertEqual('AResource',
+                         self.stack.outputs['TestOutput'].get_value())
 
         loaded_stack = stack.Stack.load(self.ctx, self.stack.id)
         self.assertEqual({}, loaded_stack['AResource']._stored_properties_data)
@@ -1292,13 +1301,16 @@ class StackTest(common.HeatTestCase):
                 (rsrc.UPDATE, rsrc.FAILED),
                 (rsrc.UPDATE, rsrc.COMPLETE)):
             rsrc.state_set(action, status)
-            self.assertEqual('AResource', self.stack.output('TestOutput'))
+            self.stack._outputs = None
+            self.assertEqual('AResource',
+                             self.stack.outputs['TestOutput'].get_value())
         for action, status in (
                 (rsrc.DELETE, rsrc.IN_PROGRESS),
                 (rsrc.DELETE, rsrc.FAILED),
                 (rsrc.DELETE, rsrc.COMPLETE)):
             rsrc.state_set(action, status)
-            self.assertIsNone(self.stack.output('TestOutput'))
+            self.stack._outputs = None
+            self.assertIsNone(self.stack.outputs['TestOutput'].get_value())
 
     def test_resource_required_by(self):
         tmpl = {'HeatTemplateFormatVersion': '2012-12-12',
@@ -1704,7 +1716,8 @@ class StackTest(common.HeatTestCase):
         self.assertEqual('abc', self.stack['AResource'].properties['Foo'])
         # According _resolve_attribute method in GenericResource output
         # value will be equal with name AResource.
-        self.assertEqual('AResource', self.stack.output('Resource_attr'))
+        self.assertEqual('AResource',
+                         self.stack.outputs['Resource_attr'].get_value())
 
         self.stack.delete()
 
@@ -1730,10 +1743,11 @@ class StackTest(common.HeatTestCase):
         self.assertEqual((stack.Stack.CREATE, stack.Stack.COMPLETE),
                          self.stack.state)
 
-        self.assertIsNone(self.stack.output('Resource_attr'))
-        self.assertEqual('The Referenced Attribute (AResource Bar) is '
-                         'incorrect.',
-                         self.stack.outputs['Resource_attr']['error_msg'])
+        ex = self.assertRaises(exception.InvalidTemplateAttribute,
+                               self.stack.outputs['Resource_attr'].get_value)
+        self.assertIn('The Referenced Attribute (AResource Bar) is '
+                      'incorrect.',
+                      six.text_type(ex))
 
         self.stack.delete()
 
@@ -1835,8 +1849,7 @@ class StackTest(common.HeatTestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                self.stack.validate)
 
-        self.assertEqual('Output validation error: '
-                         'Outputs.Resource_attr.Value: '
+        self.assertEqual('Validation error in output "Resource_attr": '
                          'The Referenced Attribute '
                          '(AResource Bar) is incorrect.',
                          six.text_type(ex))
@@ -1894,8 +1907,9 @@ class StackTest(common.HeatTestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                self.stack.validate)
 
-        self.assertIn('Each Output must contain a Value key.',
+        self.assertIn('Each output definition must contain a Value key.',
                       six.text_type(ex))
+        self.assertIn('Outputs.Resource_attr', six.text_type(ex))
 
     def test_incorrect_outputs_cfn_empty_value(self):
         tmpl = template_format.parse("""
@@ -1949,9 +1963,9 @@ class StackTest(common.HeatTestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                self.stack.validate)
 
-        self.assertIn('Outputs must contain Output. '
-                      'Found a [%s] instead' % six.text_type,
+        self.assertIn('Found a %s instead' % six.text_type.__name__,
                       six.text_type(ex))
+        self.assertIn('Outputs.Resource_attr', six.text_type(ex))
 
     def test_prop_validate_value(self):
         tmpl = template_format.parse("""
@@ -2088,8 +2102,8 @@ class StackTest(common.HeatTestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                self.stack.validate)
 
-        self.assertIn('Outputs must contain Output. '
-                      'Found a [%s] instead' % type([]), six.text_type(ex))
+        self.assertIn('Found a list', six.text_type(ex))
+        self.assertIn('Outputs.Resource_attr', six.text_type(ex))
 
     def test_incorrect_deletion_policy(self):
         tmpl = template_format.parse("""
@@ -2201,8 +2215,7 @@ class StackTest(common.HeatTestCase):
         ex = self.assertRaises(exception.StackValidationFailed,
                                self.stack.validate)
 
-        self.assertEqual('Output validation error: '
-                         'outputs.resource_attr.value: '
+        self.assertEqual('Validation error in output "resource_attr": '
                          'The Referenced Attribute '
                          '(AResource Bar) is incorrect.',
                          six.text_type(ex))
@@ -2717,22 +2730,10 @@ class StackTest(common.HeatTestCase):
             mock_dependency.validate.assert_called_once_with()
 
         stc = stack.Stack(self.ctx, utils.random_name(), self.tmpl)
-        stc.outputs = {'foo': {'Value': 'bar'}}
+        stc._outputs = {'foo': output.OutputDefinition('foo', 'bar')}
         func_val.side_effect = AssertionError(expected_msg)
         expected_exception = self.assertRaises(AssertionError, stc.validate)
         self.assertEqual(expected_msg, six.text_type(expected_exception))
-
-    def test_resolve_static_data_assertion_exception_rethrow(self):
-        tmpl = mock.MagicMock()
-        expected_message = 'Expected Assertion Error'
-        tmpl.parse.side_effect = AssertionError(expected_message)
-
-        stc = stack.Stack(self.ctx, utils.random_name(),
-                          tmpl, resolve_data=False)
-        expected_exception = self.assertRaises(AssertionError,
-                                               stc.resolve_outputs_data,
-                                               None)
-        self.assertEqual(expected_message, six.text_type(expected_exception))
 
     @mock.patch.object(update, 'StackUpdate')
     def test_update_task_exception(self, mock_stack_update):

@@ -136,12 +136,6 @@ class TestTemplatePluginManager(common.HeatTestCase):
                            param_defaults=None):
                 pass
 
-            def validate_resource_definitions(self, stack):
-                pass
-
-            def validate_condition_definitions(self, stack):
-                pass
-
             def resource_definitions(self, stack):
                 pass
 
@@ -303,7 +297,7 @@ class TestTemplateConditionParser(common.HeatTestCase):
             'outputs': {
                 'foo': {
                     'condition': 'prod_env',
-                    'value': {'get_attr': ['r1', 'foo']}
+                    'value': 'show me'
                 }
             }
         }
@@ -325,30 +319,26 @@ class TestTemplateConditionParser(common.HeatTestCase):
                                {'get_attr': [None, 'att']}]}}}
         # test with get_attr in equals
         tmpl = template.Template(t)
-        stk = stack.Stack(self.ctx, 'test_condition_with_get_attr_func', tmpl,
-                          resolve_data=False)
-        ex = self.assertRaises(exception.InvalidConditionFunction,
-                               tmpl.resolve_conditions, stk)
-        self.assertIn('The function is not supported in condition: get_attr',
+        stk = stack.Stack(self.ctx, 'test_condition_with_get_attr_func', tmpl)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               tmpl.conditions, stk)
+        self.assertIn('"get_attr" is invalid', six.text_type(ex))
+        self.assertIn('conditions.prod_env.equals[1].get_attr',
                       six.text_type(ex))
 
         # test with get_resource in top level of a condition
         tmpl.t['conditions']['prod_env'] = {'get_resource': 'R1'}
-        stk = stack.Stack(self.ctx, 'test_condition_with_get_attr_func', tmpl,
-                          resolve_data=False)
-        ex = self.assertRaises(exception.InvalidConditionFunction,
-                               tmpl.resolve_conditions, stk)
-        self.assertIn('The function is not supported in condition: '
-                      'get_resource', six.text_type(ex))
+        stk = stack.Stack(self.ctx, 'test_condition_with_get_attr_func', tmpl)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               tmpl.conditions, stk)
+        self.assertIn('"get_resource" is invalid', six.text_type(ex))
 
         # test with get_attr in top level of a condition
         tmpl.t['conditions']['prod_env'] = {'get_attr': [None, 'att']}
-        stk = stack.Stack(self.ctx, 'test_condition_with_get_attr_func', tmpl,
-                          resolve_data=False)
-        ex = self.assertRaises(exception.InvalidConditionFunction,
-                               tmpl.resolve_conditions, stk)
-        self.assertIn('The function is not supported in condition: get_attr',
-                      six.text_type(ex))
+        stk = stack.Stack(self.ctx, 'test_condition_with_get_attr_func', tmpl)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               tmpl.conditions, stk)
+        self.assertIn('"get_attr" is invalid', six.text_type(ex))
 
     def test_condition_resolved_not_boolean(self):
         t = {
@@ -366,29 +356,58 @@ class TestTemplateConditionParser(common.HeatTestCase):
         tmpl = template.Template(t)
         stk = stack.Stack(self.ctx, 'test_condition_not_boolean', tmpl)
 
-        ex = self.assertRaises(exception.InvalidConditionDefinition,
-                               tmpl.validate_condition_definitions, stk)
-        self.assertIn('The definition of condition (prod_env) is invalid',
+        conditions = tmpl.conditions(stk)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               conditions.is_enabled, 'prod_env')
+        self.assertIn('The definition of condition "prod_env" is invalid',
                       six.text_type(ex))
+
+    def test_condition_reference_condition(self):
+        t = {
+            'heat_template_version': '2016-10-14',
+            'parameters': {
+                'env_type': {
+                    'type': 'string',
+                    'default': 'test'
+                }
+            },
+            'conditions': {
+                'prod_env': {'equals': [{'get_param': 'env_type'}, 'prod']},
+                'test_env': {'not': 'prod_env'},
+                'prod_or_test_env': {'or': ['prod_env', 'test_env']},
+                'prod_and_test_env': {'and': ['prod_env', 'test_env']},
+            }}
+
+        # test with get_attr in equals
+        tmpl = template.Template(t)
+        stk = stack.Stack(self.ctx, 'test_condition_reference', tmpl)
+        conditions = tmpl.conditions(stk)
+
+        self.assertFalse(conditions.is_enabled('prod_env'))
+        self.assertTrue(conditions.is_enabled('test_env'))
+        self.assertTrue(conditions.is_enabled('prod_or_test_env'))
+        self.assertFalse(conditions.is_enabled('prod_and_test_env'))
 
     def test_get_res_condition_invalid(self):
         tmpl = copy.deepcopy(self.tmpl)
         # test condition name is invalid
-        tmpl.t['resources']['r1']['condition'] = 'invalid_cd'
         stk = stack.Stack(self.ctx, 'test_res_invalid_condition', tmpl)
-        res_snippet = tmpl.t.get('resources')['r1']
-        ex = self.assertRaises(exception.InvalidConditionReference,
-                               tmpl.get_res_condition,
-                               stk, res_snippet, 'r1')
-        self.assertIn('Invalid condition "invalid_cd" '
-                      '(in resources.r1.condition)', six.text_type(ex))
+
+        conds = tmpl.conditions(stk)
+        ex = self.assertRaises(ValueError, conds.is_enabled, 'invalid_cd')
+        self.assertIn('Invalid condition "invalid_cd"', six.text_type(ex))
         # test condition name is not string
-        tmpl.t['resources']['r1']['condition'] = 111
-        ex = self.assertRaises(exception.InvalidConditionReference,
-                               tmpl.get_res_condition,
-                               stk, res_snippet, 'r1')
-        self.assertIn('Invalid condition "111" (in resources.r1.condition)',
-                      six.text_type(ex))
+        ex = self.assertRaises(ValueError, conds.is_enabled, 111)
+        self.assertIn('Invalid condition "111"', six.text_type(ex))
+
+    def test_res_condition_using_boolean(self):
+        tmpl = copy.deepcopy(self.tmpl)
+        # test condition name is boolean
+        stk = stack.Stack(self.ctx, 'test_res_cd_boolean', tmpl)
+
+        conds = tmpl.conditions(stk)
+        self.assertTrue(conds.is_enabled(True))
+        self.assertFalse(conds.is_enabled(False))
 
     def test_parse_output_condition_invalid(self):
         stk = stack.Stack(self.ctx,
@@ -396,20 +415,65 @@ class TestTemplateConditionParser(common.HeatTestCase):
                           self.tmpl)
 
         # test condition name is invalid
-        stk.outputs['foo']['condition'] = 'invalid_cd'
-        ex = self.assertRaises(exception.InvalidConditionReference,
-                               self.tmpl.parse_outputs_conditions,
-                               stk.outputs, stk)
-        self.assertIn('Invalid condition "invalid_cd" '
-                      '(in outputs.foo.condition)',
-                      six.text_type(ex))
+        self.tmpl.t['outputs']['foo']['condition'] = 'invalid_cd'
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               lambda: stk.outputs)
+        self.assertIn('Invalid condition "invalid_cd"', six.text_type(ex))
+        self.assertIn('outputs.foo.condition', six.text_type(ex))
         # test condition name is not string
-        stk.outputs['foo']['condition'] = 222
-        ex = self.assertRaises(exception.InvalidConditionReference,
-                               self.tmpl.parse_outputs_conditions,
-                               stk.outputs, stk)
-        self.assertIn('Invalid condition "222" (in outputs.foo.condition)',
+        self.tmpl.t['outputs']['foo']['condition'] = 222
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               lambda: stk.outputs)
+        self.assertIn('Invalid condition "222"', six.text_type(ex))
+        self.assertIn('outputs.foo.condition', six.text_type(ex))
+
+    def test_conditions_circular_ref(self):
+        t = {
+            'heat_template_version': '2016-10-14',
+            'parameters': {
+                'env_type': {
+                    'type': 'string',
+                    'default': 'test'
+                }
+            },
+            'conditions': {
+                'first_cond': {'not': 'second_cond'},
+                'second_cond': {'not': 'third_cond'},
+                'third_cond': {'not': 'first_cond'},
+            }
+        }
+        tmpl = template.Template(t)
+        stk = stack.Stack(self.ctx, 'test_condition_circular_ref', tmpl)
+        conds = tmpl.conditions(stk)
+        ex = self.assertRaises(exception.StackValidationFailed,
+                               conds.is_enabled, 'first_cond')
+        self.assertIn('Circular definition for condition "first_cond"',
                       six.text_type(ex))
+
+    def test_parse_output_condition_boolean(self):
+        t = copy.deepcopy(self.tmpl.t)
+        t['outputs']['foo']['condition'] = True
+        stk = stack.Stack(self.ctx,
+                          'test_output_cd_boolean',
+                          template.Template(t))
+
+        self.assertEqual('show me', stk.outputs['foo'].get_value())
+
+        t = copy.deepcopy(self.tmpl.t)
+        t['outputs']['foo']['condition'] = False
+        stk = stack.Stack(self.ctx,
+                          'test_output_cd_boolean',
+                          template.Template(t))
+        self.assertIsNone(stk.outputs['foo'].get_value())
+
+    def test_parse_output_condition_function(self):
+        t = copy.deepcopy(self.tmpl.t)
+        t['outputs']['foo']['condition'] = {'not': 'prod_env'}
+        stk = stack.Stack(self.ctx,
+                          'test_output_cd_function',
+                          template.Template(t))
+
+        self.assertEqual('show me', stk.outputs['foo'].get_value())
 
 
 class TestTemplateValidate(common.HeatTestCase):
@@ -977,26 +1041,25 @@ class TemplateTest(common.HeatTestCase):
     def test_not_invalid_args(self):
         tmpl = template.Template(aws_empty_template)
 
+        stk = stack.Stack(utils.dummy_context(),
+                          'test_not_invalid', tmpl)
         snippet = {'Fn::Not': ['invalid_arg']}
         exc = self.assertRaises(ValueError,
-                                self.resolve_condition, snippet, tmpl)
+                                self.resolve_condition, snippet, tmpl, stk)
 
-        error_msg = ('The condition value should be boolean, '
-                     'after resolved the value is: invalid_arg')
+        error_msg = 'Invalid condition "invalid_arg"'
         self.assertIn(error_msg, six.text_type(exc))
         # test invalid type
         snippet = {'Fn::Not': 'invalid'}
         exc = self.assertRaises(exception.StackValidationFailed,
                                 self.resolve_condition, snippet, tmpl)
-        error_msg = ('.Fn::Not: Arguments to "Fn::Not" must be '
-                     'of the form: [condition]')
+        error_msg = 'Arguments to "Fn::Not" must be '
         self.assertIn(error_msg, six.text_type(exc))
 
         snippet = {'Fn::Not': ['cd1', 'cd2']}
         exc = self.assertRaises(exception.StackValidationFailed,
                                 self.resolve_condition, snippet, tmpl)
-        error_msg = ('.Fn::Not: Arguments to "Fn::Not" must be '
-                     'of the form: [condition]')
+        error_msg = 'Arguments to "Fn::Not" must be '
         self.assertIn(error_msg, six.text_type(exc))
 
     def test_and(self):
@@ -1043,27 +1106,25 @@ class TemplateTest(common.HeatTestCase):
     def test_and_invalid_args(self):
         tmpl = template.Template(aws_empty_template)
 
+        error_msg = ('The minimum number of condition arguments to "Fn::And" '
+                     'is 2.')
         snippet = {'Fn::And': ['invalid_arg']}
         exc = self.assertRaises(exception.StackValidationFailed,
                                 self.resolve_condition, snippet, tmpl)
-
-        error_msg = ('.Fn::And: Arguments to "Fn::And" must be '
-                     'of the form: [{condition_1}, {condition_2}, {...}, '
-                     '{condition_n}]')
-
         self.assertIn(error_msg, six.text_type(exc))
+
+        error_msg = 'Arguments to "Fn::And" must be'
         # test invalid type
         snippet = {'Fn::And': 'invalid'}
         exc = self.assertRaises(exception.StackValidationFailed,
                                 self.resolve_condition, snippet, tmpl)
-
         self.assertIn(error_msg, six.text_type(exc))
 
+        stk = stack.Stack(utils.dummy_context(), 'test_and_invalid', tmpl)
         snippet = {'Fn::And': ['cd1', True]}
         exc = self.assertRaises(ValueError,
-                                self.resolve_condition, snippet, tmpl)
-        error_msg = ('The condition value should be boolean, '
-                     'after resolved the value is: cd1')
+                                self.resolve_condition, snippet, tmpl, stk)
+        error_msg = 'Invalid condition "cd1"'
         self.assertIn(error_msg, six.text_type(exc))
 
     def test_or(self):
@@ -1106,27 +1167,25 @@ class TemplateTest(common.HeatTestCase):
     def test_or_invalid_args(self):
         tmpl = template.Template(aws_empty_template)
 
+        error_msg = ('The minimum number of condition arguments to "Fn::Or" '
+                     'is 2.')
         snippet = {'Fn::Or': ['invalid_arg']}
         exc = self.assertRaises(exception.StackValidationFailed,
                                 self.resolve_condition, snippet, tmpl)
-
-        error_msg = ('.Fn::Or: Arguments to "Fn::Or" must be '
-                     'of the form: [{condition_1}, {condition_2}, {...}, '
-                     '{condition_n}]')
-
         self.assertIn(error_msg, six.text_type(exc))
+
+        error_msg = 'Arguments to "Fn::Or" must be'
         # test invalid type
         snippet = {'Fn::Or': 'invalid'}
         exc = self.assertRaises(exception.StackValidationFailed,
                                 self.resolve_condition, snippet, tmpl)
-
         self.assertIn(error_msg, six.text_type(exc))
 
-        snippet = {'Fn::Or': ['cd1', True]}
+        stk = stack.Stack(utils.dummy_context(), 'test_or_invalid', tmpl)
+        snippet = {'Fn::Or': ['invalid_cd', True]}
         exc = self.assertRaises(ValueError,
-                                self.resolve_condition, snippet, tmpl)
-        error_msg = ('The condition value should be boolean, '
-                     'after resolved the value is: cd1')
+                                self.resolve_condition, snippet, tmpl, stk)
+        error_msg = 'Invalid condition "invalid_cd"'
         self.assertIn(error_msg, six.text_type(exc))
 
     def test_join(self):

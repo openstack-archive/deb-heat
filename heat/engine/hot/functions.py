@@ -24,7 +24,6 @@ from yaql.language import exceptions
 from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import attributes
-from heat.engine.cfn import functions as cfn_funcs
 from heat.engine import function
 
 opts = [
@@ -113,7 +112,32 @@ class GetParam(function.Function):
             return ''
 
 
-class GetAttThenSelect(cfn_funcs.GetAtt):
+class GetResource(function.Function):
+    """A function for resolving resource references.
+
+    Takes the form::
+
+        get_resource: <resource_name>
+    """
+
+    def _resource(self, path='unknown'):
+        resource_name = function.resolve(self.args)
+
+        try:
+            return self.stack[resource_name]
+        except KeyError:
+            raise exception.InvalidTemplateReference(resource=resource_name,
+                                                     key=path)
+
+    def dependencies(self, path):
+        return itertools.chain(super(GetResource, self).dependencies(path),
+                               [self._resource(path)])
+
+    def result(self):
+        return self._resource().FnGetRefId()
+
+
+class GetAttThenSelect(function.Function):
     """A function for resolving resource attributes.
 
     Takes the form::
@@ -124,6 +148,13 @@ class GetAttThenSelect(cfn_funcs.GetAtt):
           - <path1>
           - ...
     """
+
+    def __init__(self, stack, fn_name, args):
+        super(GetAttThenSelect, self).__init__(stack, fn_name, args)
+
+        (self._resource_name,
+         self._attribute,
+         self._path_components) = self._parse_args()
 
     def _parse_args(self):
         if (not isinstance(self.args, collections.Sequence) or
@@ -136,12 +167,72 @@ class GetAttThenSelect(cfn_funcs.GetAtt):
                                '[resource_name, attribute, (path), ...]') %
                              self.fn_name)
 
-        self._path_components = self.args[2:]
+        return self.args[0], self.args[1], self.args[2:]
 
-        return tuple(self.args[:2])
+    def _resource(self, path='unknown'):
+        resource_name = function.resolve(self._resource_name)
+
+        try:
+            return self.stack[resource_name]
+        except KeyError:
+            raise exception.InvalidTemplateReference(resource=resource_name,
+                                                     key=path)
+
+    def dep_attrs(self, resource_name):
+        if self._resource().name == resource_name:
+            attrs = [function.resolve(self._attribute)]
+        else:
+            attrs = []
+        return itertools.chain(super(GetAttThenSelect,
+                                     self).dep_attrs(resource_name),
+                               attrs)
+
+    def dependencies(self, path):
+        return itertools.chain(super(GetAttThenSelect,
+                                     self).dependencies(path),
+                               [self._resource(path)])
+
+    def _allow_without_attribute_name(self):
+        return False
+
+    def validate(self):
+        super(GetAttThenSelect, self).validate()
+        res = self._resource()
+
+        if self._allow_without_attribute_name():
+            # if allow without attribute_name, then don't check
+            # when attribute_name is None
+            if self._attribute is None:
+                return
+
+        attr = function.resolve(self._attribute)
+        from heat.engine import resource
+        if (type(res).get_attribute == resource.Resource.get_attribute and
+                attr not in res.attributes_schema):
+            raise exception.InvalidTemplateAttribute(
+                resource=self._resource_name, key=attr)
+
+    def _result_ready(self, r):
+        if r.action in (r.CREATE, r.ADOPT, r.SUSPEND, r.RESUME,
+                        r.UPDATE, r.ROLLBACK, r.SNAPSHOT, r.CHECK):
+            return True
+
+        # NOTE(sirushtim): Add r.INIT to states above once convergence
+        # is the default.
+        if r.stack.has_cache_data(r.name) and r.action == r.INIT:
+            return True
+
+        return False
 
     def result(self):
-        attribute = super(GetAttThenSelect, self).result()
+        attr_name = function.resolve(self._attribute)
+
+        resource = self._resource()
+        if self._result_ready(resource):
+            attribute = resource.FnGetAtt(attr_name)
+        else:
+            attribute = None
+
         if attribute is None:
             return None
 
@@ -165,11 +256,9 @@ class GetAtt(GetAttThenSelect):
         path_components = function.resolve(self._path_components)
         attribute = function.resolve(self._attribute)
 
-        r = self._resource()
-        if (r.status in (r.IN_PROGRESS, r.COMPLETE) and
-                r.action in (r.CREATE, r.ADOPT, r.SUSPEND, r.RESUME,
-                             r.UPDATE, r.CHECK, r.SNAPSHOT)):
-            return r.FnGetAtt(attribute, *path_components)
+        resource = self._resource()
+        if self._result_ready(resource):
+            return resource.FnGetAtt(attribute, *path_components)
         else:
             return None
 
@@ -213,7 +302,7 @@ class GetAttAllAttributes(GetAtt):
             if len(self.args) > 1:
                 return super(GetAttAllAttributes, self)._parse_args()
             else:
-                return self.args[0], None
+                return self.args[0], None, []
         else:
             raise TypeError(_('Argument to "%s" must be a list') %
                             self.fn_name)
@@ -246,7 +335,7 @@ class GetAttAllAttributes(GetAtt):
         return True
 
 
-class Replace(cfn_funcs.Replace):
+class Replace(function.Function):
     """A function for performing string substitutions.
 
     Takes the form::
@@ -262,10 +351,18 @@ class Replace(cfn_funcs.Replace):
 
         "<value_1> <value_2>"
 
-    This is implemented using python str.replace on each key. Longer keys are
-    substituted before shorter ones, but the order in which replacements are
-    performed is otherwise undefined.
+    When keys overlap in the template, longer matches are preferred. For keys
+    of equal length, lexicographically smaller keys are preferred.
     """
+
+    def __init__(self, stack, fn_name, args):
+        super(Replace, self).__init__(stack, fn_name, args)
+
+        self._mapping, self._string = self._parse_args()
+        if not isinstance(self._mapping,
+                          (collections.Mapping, function.Function)):
+            raise TypeError(_('"%s" parameters must be a mapping') %
+                            self.fn_name)
 
     def _parse_args(self):
         if not isinstance(self.args, collections.Mapping):
@@ -286,6 +383,45 @@ class Replace(cfn_funcs.Replace):
         else:
             return mapping, string
 
+    def _validate_replacement(self, value):
+        if value is None:
+            return ''
+
+        if not isinstance(value,
+                          (six.string_types, six.integer_types,
+                           float, bool)):
+            raise TypeError(_('"%s" params must be strings or numbers') %
+                            self.fn_name)
+
+        return six.text_type(value)
+
+    def result(self):
+        template = function.resolve(self._string)
+        mapping = function.resolve(self._mapping)
+
+        if not isinstance(template, six.string_types):
+            raise TypeError(_('"%s" template must be a string') % self.fn_name)
+
+        if not isinstance(mapping, collections.Mapping):
+            raise TypeError(_('"%s" params must be a map') % self.fn_name)
+
+        def replace(strings, keys):
+            if not keys:
+                return strings
+
+            placeholder = keys[0]
+            if not isinstance(placeholder, six.string_types):
+                raise TypeError(_('"%s" param placeholders must be strings') %
+                                self.fn_name)
+
+            remaining_keys = keys[1:]
+            value = self._validate_replacement(mapping[placeholder])
+            return [value.join(replace(s.split(placeholder),
+                                       remaining_keys)) for s in strings]
+
+        return replace([template], sorted(sorted(mapping),
+                                          key=len, reverse=True))[0]
+
 
 class ReplaceJson(Replace):
     """A function for performing string substitutions.
@@ -303,57 +439,33 @@ class ReplaceJson(Replace):
 
         "<value_1> <value_2>"
 
-    This is implemented using python str.replace on each key. Longer keys are
-    substituted before shorter ones, but the order in which replacements are
-    performed is otherwise undefined.
+    When keys overlap in the template, longer matches are preferred. For keys
+    of equal length, lexicographically smaller keys are preferred.
 
     Non-string param values (e.g maps or lists) are serialized as JSON before
     being substituted in.
     """
 
-    def result(self):
-        template = function.resolve(self._string)
-        mapping = function.resolve(self._mapping)
+    def _validate_replacement(self, value):
+        if value is None:
+            return ''
 
-        if not isinstance(template, six.string_types):
-            raise TypeError(_('"%s" template must be a string') % self.fn_name)
+        if not isinstance(value, (six.string_types, six.integer_types,
+                                  float, bool)):
+            if isinstance(value, (collections.Mapping, collections.Sequence)):
+                try:
+                    return jsonutils.dumps(value, default=None)
+                except TypeError:
+                    raise TypeError(_('"%(name)s" params must be strings, '
+                                      'numbers, list or map. '
+                                      'Failed to json serialize %(value)s'
+                                      ) % {'name': self.fn_name,
+                                           'value': value})
+            else:
+                raise TypeError(_('"%s" params must be strings, numbers, '
+                                  'list or map.') % self.fn_name)
 
-        if not isinstance(mapping, collections.Mapping):
-            raise TypeError(_('"%s" params must be a map') % self.fn_name)
-
-        def replace(string, change):
-            placeholder, value = change
-
-            if not isinstance(placeholder, six.string_types):
-                raise TypeError(_('"%s" param placeholders must be strings') %
-                                self.fn_name)
-
-            if value is None:
-                value = ''
-
-            if not isinstance(value,
-                              (six.string_types, six.integer_types,
-                               float, bool)):
-                if isinstance(value,
-                              (collections.Mapping, collections.Sequence)):
-                    try:
-                        value = jsonutils.dumps(value, default=None)
-                    except TypeError:
-                        raise TypeError(_('"%(name)s" params must be strings, '
-                                          'numbers, list or map. '
-                                          'Failed to json serialize %(value)s'
-                                          ) % {'name': self.fn_name,
-                                               'value': value})
-                else:
-                    raise TypeError(_('"%s" params must be strings, numbers, '
-                                      'list or map.') % self.fn_name)
-
-            return string.replace(placeholder, six.text_type(value))
-
-        mapping = collections.OrderedDict(sorted(mapping.items(),
-                                                 key=lambda t: len(t[0]),
-                                                 reverse=True))
-        return six.moves.reduce(replace, six.iteritems(mapping), template)
+        return six.text_type(value)
 
 
 class GetFile(function.Function):
@@ -387,17 +499,62 @@ class GetFile(function.Function):
         return f
 
 
-class Join(cfn_funcs.Join):
+class Join(function.Function):
     """A function for joining strings.
 
     Takes the form::
 
-        { "list_join" : [ "<delim>", [ "<string_1>", "<string_2>", ... ] ] }
+        list_join:
+          - <delim>
+          - - <string_1>
+            - <string_2>
+            - ...
 
     And resolves to::
 
         "<string_1><delim><string_2><delim>..."
     """
+
+    def __init__(self, stack, fn_name, args):
+        super(Join, self).__init__(stack, fn_name, args)
+
+        example = '"%s" : [ " ", [ "str1", "str2"]]' % self.fn_name
+        fmt_data = {'fn_name': self.fn_name,
+                    'example': example}
+
+        if not isinstance(self.args, list):
+            raise TypeError(_('Incorrect arguments to "%(fn_name)s" '
+                              'should be: %(example)s') % fmt_data)
+
+        try:
+            self._delim, self._strings = self.args
+        except ValueError:
+            raise ValueError(_('Incorrect arguments to "%(fn_name)s" '
+                               'should be: %(example)s') % fmt_data)
+
+    def result(self):
+        strings = function.resolve(self._strings)
+        if strings is None:
+            strings = []
+        if (isinstance(strings, six.string_types) or
+                not isinstance(strings, collections.Sequence)):
+            raise TypeError(_('"%s" must operate on a list') % self.fn_name)
+
+        delim = function.resolve(self._delim)
+        if not isinstance(delim, six.string_types):
+            raise TypeError(_('"%s" delimiter must be a string') %
+                            self.fn_name)
+
+        def ensure_string(s):
+            if s is None:
+                return ''
+            if not isinstance(s, six.string_types):
+                raise TypeError(
+                    _('Items to join must be strings not %s'
+                      ) % (repr(s)[:200]))
+            return s
+
+        return delim.join(ensure_string(s) for s in strings)
 
 
 class JoinMultiple(function.Function):
@@ -405,7 +562,12 @@ class JoinMultiple(function.Function):
 
     Takes the form::
 
-        { "list_join" : [ "<delim>", [ "<string_1>", "<string_2>", ... ] ] }
+        list_join:
+          - <delim>
+          - - <string_1>
+            - <string_2>
+            - ...
+          - - ...
 
     And resolves to::
 
@@ -476,11 +638,14 @@ class MapMerge(function.Function):
 
     Takes the form::
 
-        { "map_merge" : [{'k1': 'v1', 'k2': 'v2'}, {'k1': 'v2'}] }
+        map_merge:
+          - <k1>: <v1>
+            <k2>: <v2>
+          - <k1>: <v3>
 
     And resolves to::
 
-        {'k1': 'v2', 'k2': 'v2'}
+        {"<k1>": "<v2>", "<k2>": "<v3>"}
 
     """
 
@@ -517,13 +682,17 @@ class MapReplace(function.Function):
 
     Takes the form::
 
-        {"map_replace" : [{'k1': 'v1', 'k2': 'v2'},
-                           {'keys': {'k1': 'K1'},
-                            'values': {'v2': 'V2'}}]}
+        map_replace:
+          - <k1>: <v1>
+            <k2>: <v2>
+          - keys:
+              <k1>: <K1>
+            values:
+              <v2>: <V2>
 
     And resolves to::
 
-        {'K1': 'v1', 'k2': 'V2'}
+        {"<K1>": "<v1>", "<k2>": "<V2>"}
 
     """
 
@@ -588,7 +757,7 @@ class MapReplace(function.Function):
         return ret_map
 
 
-class ResourceFacade(cfn_funcs.ResourceFacade):
+class ResourceFacade(function.Function):
     """A function for retrieving data in a parent provider template.
 
     A function for obtaining data from the facade resource from within the
@@ -608,15 +777,36 @@ class ResourceFacade(cfn_funcs.ResourceFacade):
         'metadata', 'deletion_policy', 'update_policy'
     )
 
+    def __init__(self, stack, fn_name, args):
+        super(ResourceFacade, self).__init__(stack, fn_name, args)
+
+        if self.args not in self._RESOURCE_ATTRIBUTES:
+            fmt_data = {'fn_name': self.fn_name,
+                        'allowed': ', '.join(self._RESOURCE_ATTRIBUTES)}
+            raise ValueError(_('Incorrect arguments to "%(fn_name)s" '
+                               'should be one of: %(allowed)s') % fmt_data)
+
+    def result(self):
+        attr = function.resolve(self.args)
+
+        if attr == self.METADATA:
+            return self.stack.parent_resource.metadata_get()
+        elif attr == self.UPDATE_POLICY:
+            up = self.stack.parent_resource.t._update_policy or {}
+            return function.resolve(up)
+        elif attr == self.DELETION_POLICY:
+            return self.stack.parent_resource.t.deletion_policy()
+
 
 class Removed(function.Function):
     """This function existed in previous versions of HOT, but has been removed.
 
     Check the HOT guide for an equivalent native function.
     """
-    def __init__(self, stack, fn_name, args):
+
+    def validate(self):
         exp = (_("The function %s is not supported in this version of HOT.") %
-               fn_name)
+               self.fn_name)
         raise exception.InvalidTemplateVersion(explanation=exp)
 
     def result(self):
@@ -656,9 +846,10 @@ class Repeat(function.Function):
               for_each:
                 %var%: ['a', 'b', 'c']''')
             raise KeyError(_('"repeat" syntax should be %s') % example)
-        self.validate_args()
 
-    def validate_args(self):
+    def validate(self):
+        super(Repeat, self).validate()
+
         if not isinstance(self._for_each, function.Function):
             if not isinstance(self._for_each, collections.Mapping):
                 raise TypeError(_('The "for_each" argument to "%s" must '
@@ -765,14 +956,11 @@ class StrSplit(function.Function):
 
     Takes the form::
 
-        str_split: [delimiter, string, <index> ]
-
-    or::
-
         str_split:
-          - delimiter
-          - string
+          - <delimiter>
+          - <string>
           - <index>
+
     If <index> is specified, the specified list item will be returned
     otherwise, the whole list is returned, similar to get_attr with
     path based attributes accessing lists.
@@ -853,8 +1041,7 @@ class Yaql(function.Function):
 
     def __init__(self, stack, fn_name, args):
         super(Yaql, self).__init__(stack, fn_name, args)
-        self.parser = self.get_yaql_parser()
-        self.context = yaql.create_context()
+        self._yaql_context = yaql.create_context()
 
         if not isinstance(self.args, collections.Mapping):
             raise TypeError(_('Arguments to "%s" must be a map.') %
@@ -863,9 +1050,8 @@ class Yaql(function.Function):
         try:
             self._expression = self.args['expression']
             self._data = self.args.get('data', {})
-            for arg in six.iterkeys(self.args):
-                if arg not in ['expression', 'data']:
-                    raise KeyError
+            if set(self.args) - set(['expression', 'data']):
+                raise KeyError
         except (KeyError, TypeError):
             example = ('''%s:
               expression: $.data.var1.sum()
@@ -873,38 +1059,27 @@ class Yaql(function.Function):
                 var1: [3, 2, 1]''') % self.fn_name
             raise KeyError(_('"%(name)s" syntax should be %(example)s') % {
                 'name': self.fn_name, 'example': example})
-        self.validate_args()
 
-    def validate_expression(self, expression):
+    def validate(self):
+        super(Yaql, self).validate()
+        if not isinstance(self._expression, function.Function):
+            self._parse(self._expression)
+
+    def _parse(self, expression):
+        if not isinstance(expression, six.string_types):
+            raise TypeError(_('The "expression" argument to %s must '
+                              'contain a string.') % self.fn_name)
+
+        parse = self.get_yaql_parser()
         try:
-            self.parser(expression)
+            return parse(expression)
         except exceptions.YaqlException as yex:
             raise ValueError(_('Bad expression %s.') % yex)
 
-    def validate_args(self):
-        if not isinstance(self._data,
-                          (collections.Mapping, function.Function)):
-            raise TypeError(_('The "data" argument to "%s" must contain '
-                              'a map.') % self.fn_name)
-        if not isinstance(self._expression,
-                          (six.string_types, function.Function)):
-            raise TypeError(_('The "expression" argument to %s must '
-                              'contain a string or a '
-                              'function.') % self.fn_name)
-        if isinstance(self._expression, six.string_types):
-            self.validate_expression(self._expression)
-
     def result(self):
+        statement = self._parse(function.resolve(self._expression))
         data = function.resolve(self._data)
-        if not isinstance(data, collections.Mapping):
-            raise TypeError(_('The "data" argument to "%s" must contain '
-                              'a map.') % self.fn_name)
-        ctxt = {'data': data}
-        self.context['$'] = ctxt
-        if not isinstance(self._expression, six.string_types):
-            self._expression = function.resolve(self._expression)
-            self.validate_expression(self._expression)
-        return self.parser(self._expression).evaluate(context=self.context)
+        return statement.evaluate({'data': data}, self._yaql_context)
 
 
 class Equals(function.Function):
@@ -912,7 +1087,9 @@ class Equals(function.Function):
 
     Takes the form::
 
-        { "equals" : ["value_1", "value_2"] }
+        equals:
+          - <value_1>
+          - <value_2>
 
     The value can be any type that you want to compare. Returns true
     if the two values are equal or false if they aren't.
@@ -942,7 +1119,10 @@ class If(function.Macro):
 
     Takes the form::
 
-        { "if" : [condition_name, value_if_true, value_if_false] }
+        if:
+          - <condition_name>
+          - <value_if_true>
+          - <value_if_false>
 
     The value_if_true to be returned if the specified condition evaluates
     to true, the value_if_false to be returned if the specified condition
@@ -955,121 +1135,105 @@ class If(function.Macro):
                     not isinstance(self.args, collections.Sequence) or
                     isinstance(self.args, six.string_types)):
                 raise ValueError()
-            cd_name, value_if_true, value_if_false = self.args
+            condition, value_if_true, value_if_false = self.args
         except ValueError:
             msg = _('Arguments to "%s" must be of the form: '
                     '[condition_name, value_if_true, value_if_false]')
             raise ValueError(msg % self.fn_name)
 
-        cd = self.get_condition(cd_name)
+        cond = self.template.parse_condition(self.stack, condition,
+                                             self.fn_name)
+        cd = self._get_condition(function.resolve(cond))
         return parse_func(value_if_true if cd else value_if_false)
 
-    def get_condition(self, cd_name):
-        conditions = self.template.conditions(self.stack)
-        if cd_name not in conditions:
-            raise KeyError(_('Invalid condition name "%s"') % cd_name)
+    def _get_condition(self, cond):
+        if isinstance(cond, bool):
+            return cond
 
-        return conditions[cd_name]
+        return self.template.conditions(self.stack).is_enabled(cond)
 
 
-class Not(function.Function):
-    """A function acts as a NOT operator.
+class ConditionBoolean(function.Function):
+    """Abstract parent class of boolean condition functions."""
+
+    def __init__(self, stack, fn_name, args):
+        super(ConditionBoolean, self).__init__(stack, fn_name, args)
+        self._check_args()
+
+    def _check_args(self):
+        if not (isinstance(self.args, collections.Sequence) and
+                not isinstance(self.args, six.string_types)):
+            msg = _('Arguments to "%s" must be a list of conditions')
+            raise ValueError(msg % self.fn_name)
+        if not self.args or len(self.args) < 2:
+            msg = _('The minimum number of condition arguments to "%s" is 2.')
+            raise ValueError(msg % self.fn_name)
+
+    def _get_condition(self, arg):
+        if isinstance(arg, bool):
+            return arg
+
+        conditions = self.stack.t.conditions(self.stack)
+        return conditions.is_enabled(arg)
+
+
+class Not(ConditionBoolean):
+    """A function that acts as a NOT operator on a condition.
 
     Takes the form::
 
-        { "not" : condition }
+        not: <condition>
 
     Returns true for a condition that evaluates to false or
     returns false for a condition that evaluates to true.
     """
 
-    def __init__(self, stack, fn_name, args):
-        super(Not, self).__init__(stack, fn_name, args)
-        try:
-            if not self.args:
-                raise ValueError()
-            self.condition = self.args
-        except ValueError:
-            msg = _('Arguments to "%s" must be of the form: '
-                    'condition')
+    def _check_args(self):
+        self.condition = self.args
+        if self.args is None:
+            msg = _('Argument to "%s" must be a condition')
             raise ValueError(msg % self.fn_name)
 
     def result(self):
-        resolved_value = function.resolve(self.condition)
-        if not isinstance(resolved_value, bool):
-            msg = _('The condition value should be boolean, '
-                    'after resolved the value is: %s')
-            raise ValueError(msg % resolved_value)
-        return not resolved_value
+        cd = function.resolve(self.condition)
+        return not self._get_condition(cd)
 
 
-class And(function.Function):
-    """A function acts as an AND operator.
+class And(ConditionBoolean):
+    """A function that acts as an AND operator on conditions.
 
     Takes the form::
 
-        { "and" : [{condition_1}, {condition_2}, {...}, {condition_n}] }
+        and:
+          - <condition_1>
+          - <condition_2>
+          - ...
 
     Returns true if all the specified conditions evaluate to true, or returns
     false if any one of the conditions evaluates to false. The minimum number
     of conditions that you can include is 2.
     """
 
-    def __init__(self, stack, fn_name, args):
-        super(And, self).__init__(stack, fn_name, args)
-        if (not self.args or
-                not (isinstance(self.args, collections.Sequence) and
-                     not isinstance(self.args, six.string_types)) or
-                len(self.args) < 2):
-            msg = _('Arguments to "%s" must be of the form: '
-                    '[{condition_1}, {condition_2}, {...}, {condition_n}], '
-                    'the minimum number of conditions is 2.')
-            raise ValueError(msg % self.fn_name)
-
     def result(self):
-        for cd in self.args:
-            resolved_value = function.resolve(cd)
-            if not isinstance(resolved_value, bool):
-                msg = _('The condition value should be boolean, '
-                        'after resolved the value is: %s')
-                raise ValueError(msg % resolved_value)
-            if not resolved_value:
-                return False
-
-        return True
+        return all(self._get_condition(cd)
+                   for cd in function.resolve(self.args))
 
 
-class Or(function.Function):
-    """A function acts as an OR operator to evaluate all the conditions.
+class Or(ConditionBoolean):
+    """A function that acts as an OR operator on conditions.
 
     Takes the form::
 
-        { "or" : [{condition_1}, {condition_2}, {...}, {condition_n}] }
+        or:
+          - <condition_1>
+          - <condition_2>
+          - ...
 
     Returns true if any one of the specified conditions evaluate to true,
     or returns false if all of the conditions evaluates to false. The minimum
     number of conditions that you can include is 2.
     """
 
-    def __init__(self, stack, fn_name, args):
-        super(Or, self).__init__(stack, fn_name, args)
-        if (not self.args or
-                not (isinstance(self.args, collections.Sequence) and
-                     not isinstance(self.args, six.string_types)) or
-                len(self.args) < 2):
-            msg = _('Arguments to "%s" must be of the form: '
-                    '[{condition_1}, {condition_2}, {...}, {condition_n}], '
-                    'the minimum number of conditions is 2.')
-            raise ValueError(msg % self.fn_name)
-
     def result(self):
-        for cd in self.args:
-            resolved_value = function.resolve(cd)
-            if not isinstance(resolved_value, bool):
-                msg = _('The condition value should be boolean, '
-                        'after resolved the value is: %s')
-                raise ValueError(msg % resolved_value)
-            if resolved_value:
-                return True
-
-        return False
+        return any(self._get_condition(cd)
+                   for cd in function.resolve(self.args))

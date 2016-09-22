@@ -18,7 +18,7 @@ import weakref
 
 import six
 
-from heat.common import exception
+from heat.common.i18n import _
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -140,8 +140,18 @@ class Macro(Function):
     def __init__(self, stack, fn_name, raw_args, parse_func, template):
         """Initialise with the argument syntax tree and parser function."""
         super(Macro, self).__init__(stack, fn_name, raw_args)
-        self.template = template
+        self._tmplref = weakref.ref(template) if template is not None else None
         self.parsed = self.parse_args(parse_func)
+
+    @property
+    def template(self):
+        ref = self._tmplref
+        if ref is None:
+            return None
+
+        tmpl = ref()
+        assert tmpl is not None, "Need a reference to the Template object"
+        return tmpl
 
     @abc.abstractmethod
     def parse_args(self, parse_func):
@@ -262,7 +272,8 @@ class Invalid(Function):
     """
 
     def __init__(self, stack, fn_name, args):
-        raise exception.InvalidConditionFunction(func=fn_name)
+        raise ValueError(_('The function "%s" '
+                           'is invalid in this context') % fn_name)
 
     def result(self):
         return super(Invalid, self).result()

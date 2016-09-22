@@ -129,19 +129,6 @@ class InvalidTemplateSection(HeatException):
     msg_fmt = _("The template section is invalid: %(section)s")
 
 
-class InvalidConditionFunction(HeatException):
-    msg_fmt = _("The function is not supported in condition: %(func)s")
-
-
-class InvalidConditionDefinition(HeatException):
-    msg_fmt = _("The definition of condition (%(cd)s) is "
-                "invalid: %(definition)s")
-
-
-class InvalidConditionReference(HeatException):
-    msg_fmt = _('Invalid condition "%(cd)s" (in %(path)s)')
-
-
 class ImmutableParameterModified(HeatException):
     msg_fmt = _("The following parameters are immutable and may not be "
                 "updated: %(keys)s")
@@ -522,10 +509,6 @@ class KeystoneServiceNameConflict(HeatException):
 
 class SIGHUPInterrupt(HeatException):
     msg_fmt = _("System SIGHUP signal received.")
-
-
-class NoActionRequired(Exception):
-    pass
 
 
 class InvalidServiceVersion(HeatException):

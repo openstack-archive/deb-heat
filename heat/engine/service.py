@@ -510,10 +510,9 @@ class EngineService(service.Service):
         """
         if stack_identity is not None:
             db_stack = self._get_stack(cnxt, stack_identity, show_deleted=True)
-            stacks = [parser.Stack.load(cnxt, stack=db_stack,
-                                        resolve_data=resolve_outputs)]
+            stacks = [parser.Stack.load(cnxt, stack=db_stack)]
         else:
-            stacks = parser.Stack.load_all(cnxt, resolve_data=resolve_outputs)
+            stacks = parser.Stack.load_all(cnxt)
 
         return [api.format_stack(
             stack, resolve_outputs=resolve_outputs) for stack in stacks]
@@ -1307,9 +1306,9 @@ class EngineService(service.Service):
         :return: list of stack outputs in defined format.
         """
         s = self._get_stack(cntx, stack_identity)
-        stack = parser.Stack.load(cntx, stack=s, resolve_data=False)
+        stack = parser.Stack.load(cntx, stack=s)
 
-        return api.format_stack_outputs(stack, stack.t[stack.t.OUTPUTS])
+        return api.format_stack_outputs(stack.outputs)
 
     @context.request_context
     def show_output(self, cntx, stack_identity, output_key):
@@ -1321,19 +1320,15 @@ class EngineService(service.Service):
         :return: dict with output key, value and description in defined format.
         """
         s = self._get_stack(cntx, stack_identity)
-        stack = parser.Stack.load(cntx, stack=s, resolve_data=False)
+        stack = parser.Stack.load(cntx, stack=s)
 
-        outputs = stack.t[stack.t.OUTPUTS]
+        outputs = stack.outputs
 
         if output_key not in outputs:
             raise exception.NotFound(_('Specified output key %s not '
                                        'found.') % output_key)
-        output = stack.resolve_outputs_data({output_key: outputs[output_key]})
 
-        if not stack.outputs:
-            stack.outputs.update(output)
-
-        return api.format_stack_output(stack, output, output_key)
+        return api.format_stack_output(outputs[output_key])
 
     def _remote_call(self, cnxt, lock_engine_id, call, **kwargs):
         timeout = cfg.CONF.engine_life_check_timeout
@@ -1361,10 +1356,14 @@ class EngineService(service.Service):
         self.resource_enforcer.enforce_stack(stack)
 
         if stack.convergence and cfg.CONF.convergence_engine:
-            template = templatem.Template.create_empty_template(
-                from_template=stack.t)
-            stack.thread_group_mgr = self.thread_group_mgr
-            stack.converge_stack(template=template, action=stack.DELETE)
+            def convergence_delete():
+                stack.thread_group_mgr = self.thread_group_mgr
+                self.worker_service.stop_all_workers(stack)
+                template = templatem.Template.create_empty_template(
+                    from_template=stack.t)
+                stack.converge_stack(template=template, action=stack.DELETE)
+
+            self.thread_group_mgr.start(stack.id, convergence_delete)
             return
 
         lock = stack_lock.StackLock(cnxt, stack.id, self.engine_id)
@@ -1401,6 +1400,7 @@ class EngineService(service.Service):
         # reload the stack from the database.
         st = self._get_stack(cnxt, stack_identity)
         stack = parser.Stack.load(cnxt, stack=st)
+        self.resource_enforcer.enforce_stack(stack)
 
         self.thread_group_mgr.start_with_lock(cnxt, stack, self.engine_id,
                                               stack.delete)
@@ -2332,8 +2332,7 @@ class EngineService(service.Service):
 
                     stk = parser.Stack.load(cnxt, stack=s,
                                             service_check_defer=True,
-                                            resource_validate=False,
-                                            resolve_data=False)
+                                            resource_validate=False)
                     LOG.info(_LI('Engine %(engine)s went down when stack '
                                  '%(stack_id)s was in action %(action)s'),
                              {'engine': engine_id, 'action': stk.action,

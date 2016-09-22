@@ -42,7 +42,6 @@ from heat.common import timeutils
 from heat.engine import dependencies
 from heat.engine import environment
 from heat.engine import event
-from heat.engine import function
 from heat.engine.notification import stack as notification
 from heat.engine import parameter_groups as param_groups
 from heat.engine import resource
@@ -118,7 +117,7 @@ class Stack(collections.Mapping):
 
     def __init__(self, context, stack_name, tmpl,
                  stack_id=None, action=None, status=None,
-                 status_reason='', timeout_mins=None, resolve_data=True,
+                 status_reason='', timeout_mins=None,
                  disable_rollback=True, parent_resource=None, owner_id=None,
                  adopt_stack_data=None, stack_user_project_id=None,
                  created_time=None, updated_time=None,
@@ -168,6 +167,7 @@ class Stack(collections.Mapping):
         self.disable_rollback = disable_rollback
         self.parent_resource_name = parent_resource
         self._parent_stack = None
+        self._outputs = None
         self._resources = None
         self._dependencies = None
         self._access_allowed_handlers = {}
@@ -226,12 +226,6 @@ class Stack(collections.Mapping):
             user_params=self.env.params,
             param_defaults=self.env.param_defaults)
         self._set_param_stackid()
-
-        if resolve_data:
-            self.outputs = self.resolve_outputs_data(
-                self.t[self.t.OUTPUTS], path=self.t.OUTPUTS)
-        else:
-            self.outputs = {}
 
     @property
     def tags(self):
@@ -300,10 +294,13 @@ class Stack(collections.Mapping):
             raise exception.Error(msg)
 
     @property
-    def resources(self):
-        return self._find_resources()
+    def outputs(self):
+        if self._outputs is None:
+            self._outputs = self.t.outputs(self)
+        return self._outputs
 
-    def _find_resources(self):
+    @property
+    def resources(self):
         if self._resources is None:
             res_defns = self.t.resource_definitions(self)
 
@@ -438,6 +435,9 @@ class Stack(collections.Mapping):
         Includes nested stacks below.
         """
         if not stack_id:
+            if not self.id:
+                # We're not stored yet, so we don't have anything to count
+                return 0
             stack_id = self.id
         return stack_object.Stack.count_total_resources(self.context, stack_id)
 
@@ -459,8 +459,7 @@ class Stack(collections.Mapping):
         """
         attr_lists = itertools.chain((res.dep_attrs(resource_name)
                                       for res in resources),
-                                     (function.dep_attrs(
-                                         out.get(value_sec, ''), resource_name)
+                                     (out.dep_attrs(resource_name)
                                       for out in six.itervalues(outputs)))
         return set(itertools.chain.from_iterable(attr_lists))
 
@@ -487,7 +486,7 @@ class Stack(collections.Mapping):
     @classmethod
     def load(cls, context, stack_id=None, stack=None, show_deleted=True,
              use_stored_context=False, force_reload=False, cache_data=None,
-             resolve_data=True, service_check_defer=False,
+             service_check_defer=False,
              resource_validate=True):
         """Retrieve a Stack from the database."""
         if stack is None:
@@ -504,14 +503,14 @@ class Stack(collections.Mapping):
 
         return cls._from_db(context, stack,
                             use_stored_context=use_stored_context,
-                            cache_data=cache_data, resolve_data=resolve_data,
+                            cache_data=cache_data,
                             service_check_defer=service_check_defer,
                             resource_validate=resource_validate)
 
     @classmethod
     def load_all(cls, context, limit=None, marker=None, sort_keys=None,
                  sort_dir=None, filters=None,
-                 show_deleted=False, resolve_data=True,
+                 show_deleted=False,
                  show_nested=False, show_hidden=False, tags=None,
                  tags_any=None, not_tags=None, not_tags_any=None):
         stacks = stack_object.Stack.get_all(
@@ -530,14 +529,14 @@ class Stack(collections.Mapping):
             not_tags_any=not_tags_any)
         for stack in stacks:
             try:
-                yield cls._from_db(context, stack, resolve_data=resolve_data)
+                yield cls._from_db(context, stack)
             except exception.NotFound:
                 # We're in a different transaction than the get_all, so a stack
                 # returned above can be deleted by the time we try to load it.
                 pass
 
     @classmethod
-    def _from_db(cls, context, stack, resolve_data=True,
+    def _from_db(cls, context, stack,
                  use_stored_context=False, cache_data=None,
                  service_check_defer=False, resource_validate=True):
         template = tmpl.Template.load(
@@ -547,7 +546,6 @@ class Stack(collections.Mapping):
                    action=stack.action, status=stack.status,
                    status_reason=stack.status_reason,
                    timeout_mins=stack.timeout,
-                   resolve_data=resolve_data,
                    disable_rollback=stack.disable_rollback,
                    parent_resource=stack.parent_resource_name,
                    owner_id=stack.owner_id,
@@ -785,14 +783,27 @@ class Stack(collections.Mapping):
         parameter_groups = param_groups.ParameterGroups(self.t)
         parameter_groups.validate()
 
-        # Validate condition definition of conditions section
-        self.t.validate_condition_definitions(self)
-
-        # Validate types of sections in ResourceDefinitions
+        # Continue to call this function, since old third-party Template
+        # plugins may depend on it being called to validate the resource
+        # definitions before actually generating them.
+        if (type(self.t).validate_resource_definitions !=
+                tmpl.Template.validate_resource_definitions):
+            warnings.warn("The Template.validate_resource_definitions() "
+                          "method is deprecated and will no longer be called "
+                          "in future versions of Heat. Template subclasses "
+                          "should validate resource definitions in the "
+                          "resource_definitions() method.",
+                          DeprecationWarning)
         self.t.validate_resource_definitions(self)
 
+        self.t.conditions(self).validate()
+
+        # Load the resources definitions (success of which implies the
+        # definitions are valid)
+        resources = self.resources
+
         # Check duplicate names between parameters and resources
-        dup_names = set(self.parameters) & set(self.keys())
+        dup_names = set(self.parameters) & set(resources)
 
         if dup_names:
             LOG.debug("Duplicate names %s" % dup_names)
@@ -802,7 +813,7 @@ class Stack(collections.Mapping):
         if validate_by_deps:
             iter_rsc = self.dependencies
         else:
-            iter_rsc = six.itervalues(self.resources)
+            iter_rsc = six.itervalues(resources)
 
         for res in iter_rsc:
             try:
@@ -825,32 +836,16 @@ class Stack(collections.Mapping):
             if result:
                 raise exception.StackValidationFailed(message=result)
 
-        for key, val in self.outputs.items():
-            if not isinstance(val, collections.Mapping):
-                message = _('Outputs must contain Output. '
-                            'Found a [%s] instead') % type(val)
-                raise exception.StackValidationFailed(
-                    error='Output validation error',
-                    path=[self.t.OUTPUTS],
-                    message=message)
+        for op_name, output in six.iteritems(self.outputs):
             try:
-                if not val or self.t.OUTPUT_VALUE not in val:
-                    message = _('Each Output must contain '
-                                'a Value key.')
-                    raise exception.StackValidationFailed(
-                        error='Output validation error',
-                        path=[self.t.OUTPUTS, key],
-                        message=message)
-                function.validate(val.get(self.t.OUTPUT_VALUE))
+                output.validate()
             except exception.StackValidationFailed as ex:
                 raise
             except AssertionError:
                 raise
             except Exception as ex:
                 raise exception.StackValidationFailed(
-                    error='Output validation error',
-                    path=[self.t.OUTPUTS, key,
-                          self.t.OUTPUT_VALUE],
+                    error='Validation error in output "%s"' % op_name,
                     message=six.text_type(ex))
 
     def requires_deferred_auth(self):
@@ -1208,6 +1203,8 @@ class Stack(collections.Mapping):
         if new_stack is not None:
             self.disable_rollback = new_stack.disable_rollback
             self.timeout_mins = new_stack.timeout_mins
+
+            self.parameters = new_stack.parameters
             self._set_param_stackid()
 
             self.tags = new_stack.tags
@@ -1463,7 +1460,6 @@ class Stack(collections.Mapping):
             updater = scheduler.TaskRunner(update_task)
 
             self.parameters = newstack.parameters
-            self.t._conditions = newstack.t.conditions(newstack)
             self.t.files = newstack.t.files
             self.t.env = newstack.t.env
             self.disable_rollback = newstack.disable_rollback
@@ -1509,9 +1505,7 @@ class Stack(collections.Mapping):
             # flip the template to the newstack values
             previous_template_id = self.t.id
             self.t = newstack.t
-            template_outputs = self.t[self.t.OUTPUTS]
-            self.outputs = self.resolve_outputs_data(
-                template_outputs, path=self.t.OUTPUTS)
+            self._outputs = None
         finally:
             if should_rollback:
                 # Already handled in rollback task
@@ -1893,16 +1887,6 @@ class Stack(collections.Mapping):
                                        action=self.RESTORE)
         updater()
 
-    @profiler.trace('Stack.output', hide_args=False)
-    def output(self, key):
-        """Get the value of the specified stack output."""
-        value = self.outputs[key].get(self.t.OUTPUT_VALUE, '')
-        try:
-            return function.resolve(value)
-        except Exception as ex:
-            self.outputs[key]['error_msg'] = six.text_type(ex)
-            return None
-
     def restart_resource(self, resource_name):
         """Restart the resource specified by resource_name.
 
@@ -1978,15 +1962,10 @@ class Stack(collections.Mapping):
 
     def resolve_static_data(self, snippet, path=''):
         warnings.warn('Stack.resolve_static_data() is deprecated and '
-                      'will be removed in the Ocata release. Use the '
-                      'Stack.resolve_outputs_data() instead.',
+                      'will be removed in the Ocata release.',
                       DeprecationWarning)
 
         return self.t.parse(self, snippet, path=path)
-
-    def resolve_outputs_data(self, outputs, path=''):
-        resolve_outputs = self.t.parse_outputs_conditions(outputs, self)
-        return self.t.parse(self, resolve_outputs, path=path)
 
     def reset_resource_attributes(self):
         # nothing is cached if no resources exist

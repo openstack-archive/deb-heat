@@ -16,14 +16,17 @@ import collections
 import copy
 import functools
 import hashlib
+import warnings
 
 import six
 from stevedore import extension
 
 from heat.common import exception
 from heat.common.i18n import _
+from heat.engine import conditions
 from heat.engine import environment
 from heat.engine import function
+from heat.engine import output
 from heat.engine import template_files
 from heat.objects import raw_template as template_object
 
@@ -89,10 +92,17 @@ def get_template_class(template_data):
 
 
 class Template(collections.Mapping):
-    """A stack template."""
+    """Abstract base class for template format plugins.
+
+    All template formats (both internal and third-party) should derive from
+    Template and implement the abstract functions to provide resource
+    definitions and other data.
+
+    This is a stable third-party API. Do not add implementations that are
+    specific to internal template formats. Do not add new abstract methods.
+    """
 
     condition_functions = {}
-    _parser_condition_functions = {}
     functions = {}
 
     def __new__(cls, template, *args, **kwargs):
@@ -118,11 +128,14 @@ class Template(collections.Mapping):
         self.files = files or {}
         self.maps = self[self.MAPPINGS]
         self.env = env or environment.Environment({})
-        self._conditions = None
         self.merge_sections = [self.PARAMETERS]
 
         self.version = get_version(self.t, _template_classes.keys())
         self.t_digest = None
+
+        condition_functions = {n: function.Invalid for n in self.functions}
+        condition_functions.update(self.condition_functions)
+        self._parser_condition_functions = condition_functions
 
     def __deepcopy__(self, memo):
         return Template(copy.deepcopy(self.t, memo), files=self.files,
@@ -135,10 +148,6 @@ class Template(collections.Mapping):
             if s not in self.t:
                 self.t[s] = {}
             self.t[s].update(other.t[s])
-
-    def parse_outputs_conditions(self, outputs, stack):
-        """Return a dictionary of outputs data which resolved conditions."""
-        return outputs
 
     @classmethod
     def load(cls, context, template_id, t=None):
@@ -201,11 +210,22 @@ class Template(collections.Mapping):
     @classmethod
     def validate_resource_key_type(cls, key, valid_types, typename,
                                    allowed_keys, rsrc_name, rsrc_data):
-        """Validation type of the specific resource key.
+        """Validate the type of the value provided for a specific resource key.
 
-        Used in validate_resource_definition and check correctness of
-        key's type.
+        This method is deprecated. This is a utility function previously used
+        by the HOT and CFN template implementations. Its API makes no sense
+        since it attempts to check both properties of user-provided keys
+        (i.e. whether they're valid keys) and properties that must necessarily
+        be associated with a pre-defined whitelist of keys (i.e. knowing what
+        types the values should be associated with). This method will be
+        removed in a future version of Heat.
         """
+        warnings.warn("The validate_resource_key_type() method doesn't make "
+                      "any sense and will be removed in a future version of "
+                      "Heat. Template subclasses should define any "
+                      "validation utility functions they need themselves.",
+                      DeprecationWarning)
+
         if key not in allowed_keys:
             raise ValueError(_('"%s" is not a valid '
                                'keyword inside a resource '
@@ -221,19 +241,56 @@ class Template(collections.Mapping):
         else:
             return False
 
-    @abc.abstractmethod
     def validate_resource_definitions(self, stack):
-        """Check section's type of ResourceDefinitions."""
-        pass
+        """Check validity of resource definitions.
 
-    @abc.abstractmethod
-    def validate_condition_definitions(self, stack):
-        """Check conditions section."""
+        This method is deprecated. Subclasses should validate the resource
+        definitions in the process of generating them when calling
+        resource_definitions(). However, for now this method is still called
+        in case any third-party plugins are relying on this for validation and
+        need time to migrate.
+        """
         pass
 
     def conditions(self, stack):
         """Return a dictionary of resolved conditions."""
-        return {}
+        return conditions.Conditions({})
+
+    def outputs(self, stack):
+        warnings.warn("The default implementation of the outputs() method "
+                      "is deprecated, and this method could become an "
+                      "abstractmethod as early as the Pike release. "
+                      "Template subclasses should override this method with "
+                      "a custom implementation for their particular template "
+                      "format.",
+                      DeprecationWarning)
+
+        outputs = self.parse(stack, self[self.OUTPUTS], path=self.OUTPUTS)
+
+        def get_outputs():
+            for key, val in outputs.items():
+                if not isinstance(val, collections.Mapping):
+                    message = _('Outputs must contain Output. '
+                                'Found a [%s] instead') % type(val)
+                    raise exception.StackValidationFailed(
+                        error='Output validation error',
+                        path=[self.OUTPUTS, key],
+                        message=message)
+
+                if self.OUTPUT_VALUE not in val:
+                    message = _('Each output must contain '
+                                'a %s key.') % self.OUTPUT_VALUE
+                    raise exception.StackValidationFailed(
+                        error='Output validation error',
+                        path=[self.OUTPUTS, key],
+                        message=message)
+
+                value_def = val[self.OUTPUT_VALUE]
+                description = val.get(self.OUTPUT_DESCRIPTION)
+
+                yield key, output.OutputDefinition(key, value_def, description)
+
+        return dict(get_outputs())
 
     @abc.abstractmethod
     def resource_definitions(self, stack):
@@ -261,9 +318,9 @@ class Template(collections.Mapping):
     def parse(self, stack, snippet, path=''):
         return parse(self.functions, stack, snippet, path, self)
 
-    def parse_condition(self, stack, snippet):
+    def parse_condition(self, stack, snippet, path=''):
         return parse(self._parser_condition_functions, stack, snippet,
-                     template=self)
+                     path, self)
 
     def validate(self):
         """Validate the template.
@@ -350,8 +407,7 @@ def parse(functions, stack, snippet, path='', template=None):
                                     template)
                     else:
                         return Func(stack, fn_name, recurse(args, path))
-                except (ValueError, TypeError, KeyError,
-                        exception.InvalidTemplateVersion) as e:
+                except (ValueError, TypeError, KeyError) as e:
                     raise exception.StackValidationFailed(
                         path=path,
                         message=six.text_type(e))

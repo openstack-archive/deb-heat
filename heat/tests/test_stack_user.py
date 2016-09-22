@@ -11,7 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from keystoneclient import exceptions as kc_exceptions
+from keystoneauth1 import exceptions as kc_exceptions
 import six
 
 from heat.common import exception
@@ -60,7 +60,7 @@ class StackUserTest(common.HeatTestCase):
 
         rsrc._store()
         self.m.StubOutWithMock(short_id, 'get_id')
-        short_id.get_id(rsrc.uuid).AndReturn('aabbcc')
+        short_id.get_id(rsrc.uuid).MultipleTimes().AndReturn('aabbcc')
 
         self.m.StubOutWithMock(fakes.FakeKeystoneClient,
                                'create_stack_domain_user')

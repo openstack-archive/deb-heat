@@ -21,6 +21,7 @@ from heat.common.i18n import _
 from heat.common.i18n import _LE
 from heat.common import param_utils
 from heat.common import template_format
+from heat.common import timeutils as heat_timeutils
 from heat.engine import constraints as constr
 from heat.rpc import api as rpc_api
 
@@ -170,37 +171,33 @@ def translate_filters(params):
     return params
 
 
-def format_stack_outputs(stack, outputs, resolve_value=False):
+def format_stack_outputs(outputs, resolve_value=False):
     """Return a representation of the given output template.
 
     Return a representation of the given output template for the given stack
     that matches the API output expectations.
     """
-    return [format_stack_output(stack, outputs,
-                                key, resolve_value=resolve_value)
+    return [format_stack_output(outputs[key], resolve_value=resolve_value)
             for key in outputs]
 
 
-def format_stack_output(stack, outputs, k, resolve_value=True):
+def format_stack_output(output_defn, resolve_value=True):
     result = {
-        rpc_api.OUTPUT_KEY: k,
-        rpc_api.OUTPUT_DESCRIPTION: outputs[k].get(stack.t.OUTPUT_DESCRIPTION,
-                                                   'No description given'),
+        rpc_api.OUTPUT_KEY: output_defn.name,
+        rpc_api.OUTPUT_DESCRIPTION: output_defn.description(),
     }
 
     if resolve_value:
+        value = None
         try:
-            value = stack.output(k)
+            value = output_defn.get_value()
         except Exception as ex:
             # We don't need error raising, just adding output_error to
             # resulting dict.
-            value = None
             result.update({rpc_api.OUTPUT_ERROR: six.text_type(ex)})
         finally:
             result.update({rpc_api.OUTPUT_VALUE: value})
 
-    if outputs[k].get('error_msg'):
-        result.update({rpc_api.OUTPUT_ERROR: outputs[k].get('error_msg')})
     return result
 
 
@@ -210,13 +207,14 @@ def format_stack(stack, preview=False, resolve_outputs=True):
     Return a representation of the given stack that matches the API output
     expectations.
     """
-    updated_time = stack.updated_time and stack.updated_time.isoformat()
-    created_time = stack.created_time or timeutils.utcnow()
-    deleted_time = stack.deleted_time and stack.deleted_time.isoformat()
+    updated_time = heat_timeutils.isotime(stack.updated_time)
+    created_time = heat_timeutils.isotime(stack.created_time or
+                                          timeutils.utcnow())
+    deleted_time = heat_timeutils.isotime(stack.deleted_time)
     info = {
         rpc_api.STACK_NAME: stack.name,
         rpc_api.STACK_ID: dict(stack.identifier()),
-        rpc_api.STACK_CREATION_TIME: created_time.isoformat(),
+        rpc_api.STACK_CREATION_TIME: created_time,
         rpc_api.STACK_UPDATED_TIME: updated_time,
         rpc_api.STACK_DELETION_TIME: deleted_time,
         rpc_api.STACK_NOTIFICATION_TOPICS: [],  # TODO(therve) Not implemented
@@ -242,8 +240,7 @@ def format_stack(stack, preview=False, resolve_outputs=True):
 
     # allow users to view the outputs of stacks
     if stack.action != stack.DELETE and resolve_outputs:
-        info[rpc_api.STACK_OUTPUTS] = format_stack_outputs(stack,
-                                                           stack.outputs,
+        info[rpc_api.STACK_OUTPUTS] = format_stack_outputs(stack.outputs,
                                                            resolve_value=True)
 
     return info
@@ -255,9 +252,9 @@ def format_stack_db_object(stack):
     Given a stack versioned db object, return a representation of the given
     stack for a stack listing.
     """
-    updated_time = stack.updated_at and stack.updated_at.isoformat()
-    created_time = stack.created_at
-    deleted_time = stack.deleted_at and stack.deleted_at.isoformat()
+    updated_time = heat_timeutils.isotime(stack.updated_at)
+    created_time = heat_timeutils.isotime(stack.created_at)
+    deleted_time = heat_timeutils.isotime(stack.deleted_at)
 
     tags = None
     if stack.tags:
@@ -269,7 +266,7 @@ def format_stack_db_object(stack):
         rpc_api.STACK_ACTION: stack.action,
         rpc_api.STACK_STATUS: stack.status,
         rpc_api.STACK_STATUS_DATA: stack.status_reason,
-        rpc_api.STACK_CREATION_TIME: created_time.isoformat(),
+        rpc_api.STACK_CREATION_TIME: created_time,
         rpc_api.STACK_UPDATED_TIME: updated_time,
         rpc_api.STACK_DELETION_TIME: deleted_time,
         rpc_api.STACK_OWNER: stack.username,
@@ -330,9 +327,9 @@ def format_stack_resource(resource, detail=True, with_props=False,
     Return a representation of the given resource that matches the API output
     expectations.
     """
-    created_time = resource.created_time and resource.created_time.isoformat()
-    last_updated_time = (resource.updated_time and
-                         resource.updated_time.isoformat()) or created_time
+    created_time = heat_timeutils.isotime(resource.created_time)
+    last_updated_time = heat_timeutils.isotime(
+        resource.updated_time or resource.created_time)
     res = {
         rpc_api.RES_UPDATED_TIME: last_updated_time,
         rpc_api.RES_CREATION_TIME: created_time,
@@ -386,7 +383,7 @@ def format_event(event, stack_identifier, root_stack_identifier=None):
         rpc_api.EVENT_ID: dict(event.identifier(stack_identifier)),
         rpc_api.EVENT_STACK_ID: dict(stack_identifier),
         rpc_api.EVENT_STACK_NAME: stack_identifier.stack_name,
-        rpc_api.EVENT_TIMESTAMP: event.created_at.isoformat(),
+        rpc_api.EVENT_TIMESTAMP: heat_timeutils.isotime(event.created_at),
         rpc_api.EVENT_RES_NAME: event.resource_name,
         rpc_api.EVENT_RES_PHYSICAL_ID: event.physical_resource_id,
         rpc_api.EVENT_RES_ACTION: event.resource_action,
@@ -411,7 +408,7 @@ def format_notification_body(stack):
     else:
         state = 'Unknown'
 
-    updated_at = stack.updated_time and stack.updated_time.isoformat()
+    updated_at = heat_timeutils.isotime(stack.updated_time)
     result = {
         rpc_api.NOTIFY_TENANT_ID: stack.context.tenant_id,
         rpc_api.NOTIFY_USER_ID: stack.context.username,
@@ -423,7 +420,7 @@ def format_notification_body(stack):
         rpc_api.NOTIFY_STACK_NAME: stack.name,
         rpc_api.NOTIFY_STATE: state,
         rpc_api.NOTIFY_STATE_REASON: stack.status_reason,
-        rpc_api.NOTIFY_CREATE_AT: stack.created_time.isoformat(),
+        rpc_api.NOTIFY_CREATE_AT: heat_timeutils.isotime(stack.created_time),
         rpc_api.NOTIFY_DESCRIPTION: stack.t[stack.t.DESCRIPTION],
         rpc_api.NOTIFY_TAGS: stack.tags,
         rpc_api.NOTIFY_UPDATE_AT: updated_at
@@ -433,14 +430,15 @@ def format_notification_body(stack):
 
 def format_watch(watch):
 
-    updated_at = watch.updated_at or timeutils.utcnow()
+    updated_time = heat_timeutils.isotime(watch.updated_at or
+                                          timeutils.utcnow())
     result = {
         rpc_api.WATCH_ACTIONS_ENABLED: watch.rule.get(
             rpc_api.RULE_ACTIONS_ENABLED),
         rpc_api.WATCH_ALARM_ACTIONS: watch.rule.get(
             rpc_api.RULE_ALARM_ACTIONS),
         rpc_api.WATCH_TOPIC: watch.rule.get(rpc_api.RULE_TOPIC),
-        rpc_api.WATCH_UPDATED_TIME: updated_at.isoformat(),
+        rpc_api.WATCH_UPDATED_TIME: updated_time,
         rpc_api.WATCH_DESCRIPTION: watch.rule.get(rpc_api.RULE_DESCRIPTION),
         rpc_api.WATCH_NAME: watch.name,
         rpc_api.WATCH_COMPARISON: watch.rule.get(rpc_api.RULE_COMPARISON),
@@ -456,8 +454,9 @@ def format_watch(watch):
         rpc_api.WATCH_STATE_REASON: watch.rule.get(rpc_api.RULE_STATE_REASON),
         rpc_api.WATCH_STATE_REASON_DATA:
         watch.rule.get(rpc_api.RULE_STATE_REASON_DATA),
-        rpc_api.WATCH_STATE_UPDATED_TIME: watch.rule.get(
-            rpc_api.RULE_STATE_UPDATED_TIME, timeutils.utcnow()).isoformat(),
+        rpc_api.WATCH_STATE_UPDATED_TIME: heat_timeutils.isotime(
+            watch.rule.get(rpc_api.RULE_STATE_UPDATED_TIME,
+                           timeutils.utcnow())),
         rpc_api.WATCH_STATE_VALUE: watch.state,
         rpc_api.WATCH_STATISTIC: watch.rule.get(rpc_api.RULE_STATISTIC),
         rpc_api.WATCH_THRESHOLD: watch.rule.get(rpc_api.RULE_THRESHOLD),
@@ -484,7 +483,7 @@ def format_watch_data(wd, rule_names):
     result = {
         rpc_api.WATCH_DATA_ALARM: rule_names.get(wd.watch_rule_id),
         rpc_api.WATCH_DATA_METRIC: metric_name,
-        rpc_api.WATCH_DATA_TIME: wd.created_at.isoformat(),
+        rpc_api.WATCH_DATA_TIME: heat_timeutils.isotime(wd.created_at),
         rpc_api.WATCH_DATA_NAMESPACE: namespace,
         rpc_api.WATCH_DATA: metric_data
     }
@@ -568,7 +567,8 @@ def format_software_config(sc, detail=True):
         rpc_api.SOFTWARE_CONFIG_ID: sc.id,
         rpc_api.SOFTWARE_CONFIG_NAME: sc.name,
         rpc_api.SOFTWARE_CONFIG_GROUP: sc.group,
-        rpc_api.SOFTWARE_CONFIG_CREATION_TIME: sc.created_at.isoformat()
+        rpc_api.SOFTWARE_CONFIG_CREATION_TIME:
+            heat_timeutils.isotime(sc.created_at)
     }
     if detail:
         result[rpc_api.SOFTWARE_CONFIG_CONFIG] = sc.config['config']
@@ -590,11 +590,12 @@ def format_software_deployment(sd):
         rpc_api.SOFTWARE_DEPLOYMENT_STATUS: sd.status,
         rpc_api.SOFTWARE_DEPLOYMENT_STATUS_REASON: sd.status_reason,
         rpc_api.SOFTWARE_DEPLOYMENT_CONFIG_ID: sd.config.id,
-        rpc_api.SOFTWARE_DEPLOYMENT_CREATION_TIME: sd.created_at.isoformat(),
+        rpc_api.SOFTWARE_DEPLOYMENT_CREATION_TIME:
+            heat_timeutils.isotime(sd.created_at),
     }
     if sd.updated_at:
         result[rpc_api.SOFTWARE_DEPLOYMENT_UPDATED_TIME] = (
-            sd.updated_at.isoformat())
+            heat_timeutils.isotime(sd.updated_at))
     return result
 
 
@@ -607,7 +608,8 @@ def format_snapshot(snapshot):
         rpc_api.SNAPSHOT_STATUS: snapshot.status,
         rpc_api.SNAPSHOT_STATUS_REASON: snapshot.status_reason,
         rpc_api.SNAPSHOT_DATA: snapshot.data,
-        rpc_api.SNAPSHOT_CREATION_TIME: snapshot.created_at.isoformat(),
+        rpc_api.SNAPSHOT_CREATION_TIME:
+            heat_timeutils.isotime(snapshot.created_at),
     }
     return result
 

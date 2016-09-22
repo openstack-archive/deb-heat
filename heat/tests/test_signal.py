@@ -13,7 +13,7 @@
 
 import datetime
 
-from keystoneclient import exceptions as kc_exceptions
+from keystoneauth1 import exceptions as kc_exceptions
 import mock
 import six
 from six.moves.urllib import parse as urlparse
@@ -22,6 +22,7 @@ from heat.common import exception
 from heat.common import template_format
 from heat.engine.clients.os import heat_plugin
 from heat.engine.clients.os import swift
+from heat.engine import resource
 from heat.engine import scheduler
 from heat.engine import stack as stk
 from heat.engine import template
@@ -206,7 +207,7 @@ class SignalTest(common.HeatTestCase):
 
         # Test
         first_url = rsrc.FnGetAtt('signal')
-        self.assertTrue('alarm_url' in first_url)
+        self.assertIn('alarm_url', first_url)
         mock_has.assert_called_once_with('signal_handler')
         mock_has.reset_mock()  # reset the count for the next check
 
@@ -355,7 +356,7 @@ class SignalTest(common.HeatTestCase):
 
         # Test
         first_url = rsrc.FnGetAtt('signal')
-        self.assertTrue('alarm_url' in first_url)
+        self.assertIn('alarm_url', first_url)
         mock_has.assert_called_once_with('signal_handler')
         mock_has.reset_mock()  # reset the count for the next check
 
@@ -536,7 +537,7 @@ class SignalTest(common.HeatTestCase):
 
         stack = self._create_stack(TEMPLATE_CFN_SIGNAL)
 
-        mock_handle.side_effect = exception.NoActionRequired()
+        mock_handle.side_effect = resource.NoActionRequired()
         rsrc = stack['signal_handler']
 
         self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)

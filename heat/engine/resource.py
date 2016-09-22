@@ -65,6 +65,16 @@ def _register_class(resource_type, resource_class):
 UpdateReplace = exception.UpdateReplace
 
 
+# Attention developers about to move this: STOP IT!!!
+class NoActionRequired(Exception):
+    """Exception raised when a signal is ignored.
+
+    Resource subclasses should raise this exception from handle_signal() to
+    suppress recording of an event corresponding to the signal.
+    """
+    pass
+
+
 class PollDelay(Exception):
     """Exception to delay polling of the resource.
 
@@ -332,7 +342,7 @@ class Resource(object):
 
     def make_replacement(self, new_tmpl_id):
         # 1. create the replacement with "replaces" = self.id
-        #  Don't set physical_resource_id so that a create is triggered.
+        # Don't set physical_resource_id so that a create is triggered.
         rs = {'stack_id': self.stack.id,
               'name': self.name,
               'properties_data': self._stored_properties_data,
@@ -1118,8 +1128,8 @@ class Resource(object):
                 new_res_def.resource_type, resource_name=self.name)
             restricted_actions = registry.get_rsrc_restricted_actions(
                 self.name)
-
-            if type(self) is not new_res_type:
+            is_substituted = self.check_is_substituted(new_res_type)
+            if type(self) is not new_res_type and not is_substituted:
                 self._check_for_convergence_replace(restricted_actions)
 
             action_rollback = self.stack.action == self.stack.ROLLBACK
@@ -1133,7 +1143,15 @@ class Resource(object):
                                    six.text_type(failure))
                     raise failure
 
-            runner = scheduler.TaskRunner(self.update, new_res_def)
+            # Use new resource as update method if existing resource
+            # need to be substituted.
+            if is_substituted:
+                substitute = new_res_type(self.name, self.t, self.stack)
+                self.stack.resources[self.name] = substitute
+                updater = substitute.update
+            else:
+                updater = self.update
+            runner = scheduler.TaskRunner(updater, new_res_def)
             try:
                 runner(timeout=timeout, progress_callback=progress_callback)
                 update_tmpl_id_and_requires()
@@ -1228,6 +1246,14 @@ class Resource(object):
             failure = exception.ResourceFailure(e, self, action)
             self.state_set(action, self.FAILED, six.text_type(failure))
             raise failure
+
+    @classmethod
+    def check_is_substituted(cls, new_res_type):
+            support_status = getattr(cls, 'support_status', None)
+            if support_status:
+                is_substituted = support_status.is_substituted(new_res_type)
+                return is_substituted
+            return False
 
     @scheduler.wrappertask
     def update(self, after, before=None, prev_resource=None):
@@ -1339,7 +1365,7 @@ class Resource(object):
         """Checks that the physical resource is in its expected state.
 
         Gets the current status of the physical resource and updates the
-        database accordingly.  If check is not supported by the resource,
+        database accordingly. If check is not supported by the resource,
         default action is to fail and revert the resource's status to its
         original state with the added message that check was not performed.
         """
@@ -1711,8 +1737,9 @@ class Resource(object):
 
     def _add_event(self, action, status, reason):
         """Add a state change event to the database."""
+        physical_res_id = self.resource_id or self.physical_resource_name()
         ev = event.Event(self.context, self.stack, action, status, reason,
-                         self.resource_id, self.properties,
+                         physical_res_id, self.properties,
                          self.name, self.type())
 
         ev.store()
@@ -2104,7 +2131,7 @@ class Resource(object):
             else:
                 reason_string = get_string_details()
             self._add_event('SIGNAL', self.status, reason_string)
-        except exception.NoActionRequired:
+        except NoActionRequired:
             # Don't log an event as it just spams the user.
             pass
         except Exception as ex:

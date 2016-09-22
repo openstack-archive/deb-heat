@@ -10,6 +10,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import functools
+
 import six
 
 from heat.common import exception
@@ -70,11 +72,10 @@ class HOTemplate20130523(template_common.CommonTemplate):
     _HOT_TO_CFN_ATTRS.update(
         {OUTPUT_VALUE: cfn_template.CfnTemplate.OUTPUT_VALUE})
 
-    extra_rsrc_defn = ()
     functions = {
         'Fn::GetAZs': cfn_funcs.GetAZs,
         'get_param': hot_funcs.GetParam,
-        'get_resource': cfn_funcs.ResourceRef,
+        'get_resource': hot_funcs.GetResource,
         'Ref': cfn_funcs.Ref,
         'get_attr': hot_funcs.GetAttThenSelect,
         'Fn::Select': cfn_funcs.Select,
@@ -220,42 +221,42 @@ class HOTemplate20130523(template_common.CommonTemplate):
 
     def resource_definitions(self, stack):
         resources = self.t.get(self.RESOURCES) or {}
+        conditions = self.conditions(stack)
 
-        def rsrc_defn_from_snippet(name, snippet):
-            data = self.parse(stack, snippet)
-            return self.rsrc_defn_from_snippet(name, data)
+        valid_keys = frozenset(self._RESOURCE_KEYS)
 
-        return dict(
-            (name, rsrc_defn_from_snippet(name, data))
-            for name, data in resources.items() if self.get_res_condition(
-                stack, data, name))
+        def defns():
+            for name, snippet in six.iteritems(resources):
+                try:
+                    invalid_keys = set(snippet) - valid_keys
+                    if invalid_keys:
+                        raise ValueError(_('Invalid keyword(s) inside a '
+                                           'resource definition: '
+                                           '%s') % ', '.join(invalid_keys))
 
-    @classmethod
-    def rsrc_defn_from_snippet(cls, name, data):
-        depends = data.get(cls.RES_DEPENDS_ON)
-        if isinstance(depends, six.string_types):
-            depends = [depends]
+                    defn_data = dict(self._rsrc_defn_args(stack, name,
+                                                          snippet))
+                except (TypeError, ValueError, KeyError) as ex:
+                    msg = six.text_type(ex)
+                    raise exception.StackValidationFailed(message=msg)
 
-        deletion_policy = function.resolve(
-            data.get(cls.RES_DELETION_POLICY))
-        if deletion_policy is not None:
-            if deletion_policy not in cls.deletion_policies:
-                msg = _('Invalid deletion policy "%s"') % deletion_policy
-                raise exception.StackValidationFailed(message=msg)
-            else:
-                deletion_policy = cls.deletion_policies[deletion_policy]
-        kwargs = {
-            'resource_type': data.get(cls.RES_TYPE),
-            'properties': data.get(cls.RES_PROPERTIES),
-            'metadata': data.get(cls.RES_METADATA),
-            'depends': depends,
-            'deletion_policy': deletion_policy,
-            'update_policy': data.get(cls.RES_UPDATE_POLICY),
-            'description': None
-        }
-        for key in cls.extra_rsrc_defn:
-            kwargs[key] = data.get(key)
-        return rsrc_defn.ResourceDefinition(name, **kwargs)
+                defn = rsrc_defn.ResourceDefinition(name, **defn_data)
+                cond_name = defn.condition()
+
+                if cond_name is not None:
+                    try:
+                        enabled = conditions.is_enabled(cond_name)
+                    except ValueError as exc:
+                        path = [self.RESOURCES, name, self.RES_CONDITION]
+                        message = six.text_type(exc)
+                        raise exception.StackValidationFailed(path=path,
+                                                              message=message)
+                    if not enabled:
+                        continue
+
+                yield name, defn
+
+        return dict(defns())
 
     def add_resource(self, definition, name=None):
         if name is None:
@@ -271,7 +272,7 @@ class HOTemplate20141016(HOTemplate20130523):
         'get_attr': hot_funcs.GetAtt,
         'get_file': hot_funcs.GetFile,
         'get_param': hot_funcs.GetParam,
-        'get_resource': cfn_funcs.ResourceRef,
+        'get_resource': hot_funcs.GetResource,
         'list_join': hot_funcs.Join,
         'resource_facade': hot_funcs.ResourceFacade,
         'str_replace': hot_funcs.Replace,
@@ -295,7 +296,7 @@ class HOTemplate20150430(HOTemplate20141016):
         'get_attr': hot_funcs.GetAtt,
         'get_file': hot_funcs.GetFile,
         'get_param': hot_funcs.GetParam,
-        'get_resource': cfn_funcs.ResourceRef,
+        'get_resource': hot_funcs.GetResource,
         'list_join': hot_funcs.Join,
         'repeat': hot_funcs.Repeat,
         'resource_facade': hot_funcs.ResourceFacade,
@@ -323,7 +324,7 @@ class HOTemplate20151015(HOTemplate20150430):
         'get_attr': hot_funcs.GetAttAllAttributes,
         'get_file': hot_funcs.GetFile,
         'get_param': hot_funcs.GetParam,
-        'get_resource': cfn_funcs.ResourceRef,
+        'get_resource': hot_funcs.GetResource,
         'list_join': hot_funcs.JoinMultiple,
         'repeat': hot_funcs.Repeat,
         'resource_facade': hot_funcs.ResourceFacade,
@@ -355,7 +356,7 @@ class HOTemplate20160408(HOTemplate20151015):
         'get_attr': hot_funcs.GetAttAllAttributes,
         'get_file': hot_funcs.GetFile,
         'get_param': hot_funcs.GetParam,
-        'get_resource': cfn_funcs.ResourceRef,
+        'get_resource': hot_funcs.GetResource,
         'list_join': hot_funcs.JoinMultiple,
         'repeat': hot_funcs.Repeat,
         'resource_facade': hot_funcs.ResourceFacade,
@@ -387,30 +388,30 @@ class HOTemplate20160408(HOTemplate20151015):
 
 class HOTemplate20161014(HOTemplate20160408):
 
-    CONDITION = 'condition'
-    RES_CONDITION = CONDITION
     CONDITIONS = 'conditions'
-
     SECTIONS = HOTemplate20160408.SECTIONS + (CONDITIONS,)
+
+    SECTIONS_NO_DIRECT_ACCESS = (HOTemplate20160408.SECTIONS_NO_DIRECT_ACCESS |
+                                 set([CONDITIONS]))
 
     _CFN_TO_HOT_SECTIONS = HOTemplate20160408._CFN_TO_HOT_SECTIONS
     _CFN_TO_HOT_SECTIONS.update({
         cfn_template.CfnTemplate.CONDITIONS: CONDITIONS})
 
-    _RESOURCE_KEYS = HOTemplate20160408._RESOURCE_KEYS
-    _EXT_KEY = (RES_EXTERNAL_ID,) = ('external_id',)
-    _RESOURCE_KEYS += _EXT_KEY
-    _RESOURCE_KEYS += (RES_CONDITION,)
+    _EXTRA_RES_KEYS = (
+        RES_EXTERNAL_ID, RES_CONDITION
+    ) = (
+        'external_id', 'condition'
+    )
+    _RESOURCE_KEYS = HOTemplate20160408._RESOURCE_KEYS + _EXTRA_RES_KEYS
 
     _RESOURCE_HOT_TO_CFN_ATTRS = HOTemplate20160408._RESOURCE_HOT_TO_CFN_ATTRS
-    _RESOURCE_HOT_TO_CFN_ATTRS.update({RES_EXTERNAL_ID: None})
-    _RESOURCE_HOT_TO_CFN_ATTRS.update(
-        {CONDITION: cfn_template.CfnTemplate.CONDITION})
+    _RESOURCE_HOT_TO_CFN_ATTRS.update({
+        RES_EXTERNAL_ID: None,
+        RES_CONDITION: cfn_template.CfnTemplate.RES_CONDITION,
+    })
 
-    extra_rsrc_defn = HOTemplate20160408.extra_rsrc_defn + (
-        RES_EXTERNAL_ID, RES_CONDITION,)
-
-    OUTPUT_CONDITION = CONDITION
+    OUTPUT_CONDITION = 'condition'
     OUTPUT_KEYS = HOTemplate20160408.OUTPUT_KEYS + (OUTPUT_CONDITION,)
 
     deletion_policies = {
@@ -428,7 +429,7 @@ class HOTemplate20161014(HOTemplate20160408):
         'get_attr': hot_funcs.GetAttAllAttributes,
         'get_file': hot_funcs.GetFile,
         'get_param': hot_funcs.GetParam,
-        'get_resource': cfn_funcs.ResourceRef,
+        'get_resource': hot_funcs.GetResource,
         'list_join': hot_funcs.JoinMultiple,
         'repeat': hot_funcs.RepeatWithMap,
         'resource_facade': hot_funcs.ResourceFacade,
@@ -483,24 +484,28 @@ class HOTemplate20161014(HOTemplate20160408):
         self._parser_condition_functions.update(self.condition_functions)
         self.merge_sections = [self.PARAMETERS, self.CONDITIONS]
 
-    def get_condition_definitions(self):
-        return self[self.CONDITIONS]
+    def _get_condition_definitions(self):
+        return self.t.get(self.CONDITIONS, {})
 
-    def validate_resource_definition(self, name, data):
-        super(HOTemplate20161014, self).validate_resource_definition(
-            name, data)
+    def _rsrc_defn_args(self, stack, name, data):
+        for arg in super(HOTemplate20161014, self)._rsrc_defn_args(stack,
+                                                                   name,
+                                                                   data):
+            yield arg
 
-        self.validate_resource_key_type(
-            self.RES_EXTERNAL_ID,
-            (six.string_types, function.Function),
-            'string', self._RESOURCE_KEYS, name, data)
-        self.validate_resource_key_type(
-            self.RES_CONDITION,
-            (six.string_types, bool),
-            'string or boolean', self._RESOURCE_KEYS, name, data)
+        parse = functools.partial(self.parse, stack)
+        parse_cond = functools.partial(self.parse_condition, stack)
 
-    def has_condition_section(self, snippet):
-        if snippet and self.CONDITION in snippet:
-            return True
+        yield ('external_id',
+               self._parse_resource_field(self.RES_EXTERNAL_ID,
+                                          (six.string_types,
+                                           function.Function),
+                                          'string',
+                                          name, data, parse))
 
-        return False
+        yield ('condition',
+               self._parse_resource_field(self.RES_CONDITION,
+                                          (six.string_types, bool,
+                                           function.Function),
+                                          'string_or_boolean',
+                                          name, data, parse_cond))

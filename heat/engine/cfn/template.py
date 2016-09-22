@@ -11,13 +11,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import functools
+
 import six
 
 from heat.common import exception
 from heat.common.i18n import _
 from heat.engine.cfn import functions as cfn_funcs
 from heat.engine import function
-from heat.engine.hot import functions as hot_funcs
 from heat.engine import parameters
 from heat.engine import rsrc_defn
 from heat.engine import template_common
@@ -50,7 +51,6 @@ class CfnTemplateBase(template_common.CommonTemplate):
         'DeletionPolicy', 'UpdatePolicy', 'Description',
     )
 
-    extra_rsrc_defn = ()
     functions = {
         'Fn::FindInMap': cfn_funcs.FindInMap,
         'Fn::GetAZs': cfn_funcs.GetAZs,
@@ -112,42 +112,34 @@ class CfnTemplateBase(template_common.CommonTemplate):
     def resource_definitions(self, stack):
         resources = self.t.get(self.RESOURCES) or {}
 
-        def rsrc_defn_item(name, snippet):
-            data = self.parse(stack, snippet)
+        conditions = self.conditions(stack)
 
-            depends = data.get(self.RES_DEPENDS_ON)
-            if isinstance(depends, six.string_types):
-                depends = [depends]
-
-            deletion_policy = function.resolve(
-                data.get(self.RES_DELETION_POLICY))
-            if deletion_policy is not None:
-                if deletion_policy not in self.deletion_policies:
-                    msg = _('Invalid deletion policy "%s"') % deletion_policy
+        def defns():
+            for name, snippet in resources.items():
+                try:
+                    defn_data = dict(self._rsrc_defn_args(stack, name,
+                                                          snippet))
+                except (TypeError, ValueError, KeyError) as ex:
+                    msg = six.text_type(ex)
                     raise exception.StackValidationFailed(message=msg)
-                else:
-                    deletion_policy = self.deletion_policies[deletion_policy]
 
-            kwargs = {
-                'resource_type': data.get(self.RES_TYPE),
-                'properties': data.get(self.RES_PROPERTIES),
-                'metadata': data.get(self.RES_METADATA),
-                'depends': depends,
-                'deletion_policy': deletion_policy,
-                'update_policy': data.get(self.RES_UPDATE_POLICY),
-                'description': data.get(self.RES_DESCRIPTION) or ''
-            }
+                defn = rsrc_defn.ResourceDefinition(name, **defn_data)
+                cond_name = defn.condition()
 
-            for key in self.extra_rsrc_defn:
-                kwargs[key.lower()] = data.get(key)
+                if cond_name is not None:
+                    try:
+                        enabled = conditions.is_enabled(cond_name)
+                    except ValueError as exc:
+                        path = [self.RESOURCES, name, self.RES_CONDITION]
+                        message = six.text_type(exc)
+                        raise exception.StackValidationFailed(path=path,
+                                                              message=message)
+                    if not enabled:
+                        continue
 
-            defn = rsrc_defn.ResourceDefinition(name, **kwargs)
-            return name, defn
+                yield name, defn
 
-        return dict(
-            rsrc_defn_item(name, data)
-            for name, data in resources.items() if self.get_res_condition(
-                stack, data, name))
+        return dict(defns())
 
     def add_resource(self, definition, name=None):
         if name is None:
@@ -167,18 +159,17 @@ class CfnTemplateBase(template_common.CommonTemplate):
 
 class CfnTemplate(CfnTemplateBase):
 
-    CONDITION = 'Condition'
     CONDITIONS = 'Conditions'
     SECTIONS = CfnTemplateBase.SECTIONS + (CONDITIONS,)
+    SECTIONS_NO_DIRECT_ACCESS = (CfnTemplateBase.SECTIONS_NO_DIRECT_ACCESS |
+                                 set([CONDITIONS]))
 
-    RES_CONDITION = CONDITION
+    RES_CONDITION = 'Condition'
     _RESOURCE_KEYS = CfnTemplateBase._RESOURCE_KEYS + (RES_CONDITION,)
     HOT_TO_CFN_RES_ATTRS = CfnTemplateBase.HOT_TO_CFN_RES_ATTRS
     HOT_TO_CFN_RES_ATTRS.update({'condition': RES_CONDITION})
 
-    extra_rsrc_defn = CfnTemplateBase.extra_rsrc_defn + (RES_CONDITION,)
-
-    OUTPUT_CONDITION = CONDITION
+    OUTPUT_CONDITION = 'Condition'
     OUTPUT_KEYS = CfnTemplateBase.OUTPUT_KEYS + (OUTPUT_CONDITION,)
 
     functions = {
@@ -193,42 +184,38 @@ class CfnTemplate(CfnTemplateBase):
         'Fn::Base64': cfn_funcs.Base64,
         'Fn::MemberListToMap': cfn_funcs.MemberListToMap,
         'Fn::ResourceFacade': cfn_funcs.ResourceFacade,
-        'Fn::If': hot_funcs.If,
+        'Fn::If': cfn_funcs.If,
     }
 
     condition_functions = {
-        'Fn::Equals': hot_funcs.Equals,
+        'Fn::Equals': cfn_funcs.Equals,
         'Ref': cfn_funcs.ParamRef,
         'Fn::FindInMap': cfn_funcs.FindInMap,
         'Fn::Not': cfn_funcs.Not,
-        'Fn::And': hot_funcs.And,
-        'Fn::Or': hot_funcs.Or
+        'Fn::And': cfn_funcs.And,
+        'Fn::Or': cfn_funcs.Or
     }
 
     def __init__(self, tmpl, template_id=None, files=None, env=None):
         super(CfnTemplate, self).__init__(tmpl, template_id, files, env)
 
-        self._parser_condition_functions = dict(
-            (n, function.Invalid) for n in self.functions)
-        self._parser_condition_functions.update(self.condition_functions)
         self.merge_sections = [self.PARAMETERS, self.CONDITIONS]
 
-    def get_condition_definitions(self):
-        return self[self.CONDITIONS]
+    def _get_condition_definitions(self):
+        return self.t.get(self.CONDITIONS, {})
 
-    def has_condition_section(self, snippet):
-        if snippet and self.CONDITION in snippet:
-            return True
+    def _rsrc_defn_args(self, stack, name, data):
+        for arg in super(CfnTemplate, self)._rsrc_defn_args(stack, name, data):
+            yield arg
 
-        return False
+        parse_cond = functools.partial(self.parse_condition, stack)
 
-    def validate_resource_definition(self, name, data):
-        super(CfnTemplate, self).validate_resource_definition(name, data)
-
-        self.validate_resource_key_type(
-            self.RES_CONDITION,
-            (six.string_types, bool),
-            'string or boolean', self._RESOURCE_KEYS, name, data)
+        yield ('condition',
+               self._parse_resource_field(self.RES_CONDITION,
+                                          (six.string_types, bool,
+                                           function.Function),
+                                          'string or boolean',
+                                          name, data, parse_cond))
 
 
 class HeatTemplate(CfnTemplateBase):

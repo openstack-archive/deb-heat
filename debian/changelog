@@ -1,8 +1,9 @@
-heat (1:7.0.0~b3-1) experimental; urgency=medium
+heat (1:7.0.0~rc1-1) experimental; urgency=medium
 
   * New upstream release.
   * Fixed (build-)depends for this release.
   * Rebased fix-requirements.txt.patch.
+  * Using OpenStack's Gerrit as VCS URLs.
 
  -- Thomas Goirand <zigo@debian.org>  Sat, 17 Sep 2016 19:42:11 +0200
 

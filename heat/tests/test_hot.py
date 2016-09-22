@@ -20,6 +20,7 @@ from heat.common import identifier
 from heat.common import template_format
 from heat.engine.cfn import functions as cfn_functions
 from heat.engine import check_resource as cr
+from heat.engine import conditions
 from heat.engine import environment
 from heat.engine import function
 from heat.engine.hot import functions as hot_functions
@@ -619,7 +620,7 @@ class HOTemplateTest(common.HeatTestCase):
 
         self.assertEqual(snippet_resolved, self.resolve(snippet, tmpl))
 
-    def test_str_replace_order(self, tpl=hot_tpl_empty):
+    def test_str_replace_order(self):
         """Test str_replace function substitution order."""
 
         snippet = {'str_replace': {'template': '1234567890',
@@ -631,13 +632,40 @@ class HOTemplateTest(common.HeatTestCase):
                                               '123456': 'f',
                                               '1234567': 'g'}}}
 
-        tmpl = template.Template(tpl)
+        tmpl = template.Template(hot_tpl_empty)
 
         self.assertEqual('g890', self.resolve(snippet, tmpl))
 
-    def test_str_replace_liberty_order(self):
-        """Test str_replace function substitution order."""
-        self.test_str_replace_order(hot_liberty_tpl_empty)
+    def test_str_replace_single_pass(self):
+        """Test that str_replace function does not do double substitution."""
+
+        snippet = {'str_replace': {'template': '1234567890',
+                                   'params': {'1': 'a',
+                                              '4': 'd',
+                                              '8': 'h',
+                                              '9': 'i',
+                                              '123': '1',
+                                              '456': '4',
+                                              '890': '8',
+                                              '90': '9'}}}
+
+        tmpl = template.Template(hot_tpl_empty)
+
+        self.assertEqual('1478', self.resolve(snippet, tmpl))
+
+    def test_str_replace_sort_order(self):
+        """Test str_replace function replacement order."""
+
+        snippet = {'str_replace': {'template': '9876543210',
+                                   'params': {'987654': 'a',
+                                              '876543': 'b',
+                                              '765432': 'c',
+                                              '654321': 'd',
+                                              '543210': 'e'}}}
+
+        tmpl = template.Template(hot_tpl_empty)
+
+        self.assertEqual('9876e', self.resolve(snippet, tmpl))
 
     def test_str_replace_syntax(self):
         """Test str_replace function syntax.
@@ -741,7 +769,8 @@ class HOTemplateTest(common.HeatTestCase):
         self.stack.create()
         self.assertEqual((parser.Stack.CREATE, parser.Stack.COMPLETE),
                          self.stack.state)
-        self.assertEqual('foo-success', self.stack.output('replaced'))
+        self.assertEqual('foo-success',
+                         self.stack.outputs['replaced'].get_value())
 
     def test_get_file(self):
         """Test get_file function."""
@@ -1028,24 +1057,43 @@ class HOTemplateTest(common.HeatTestCase):
 
     def test_yaql(self):
         snippet = {'yaql': {'expression': '$.data.var1.sum()',
-                   'data': {'var1': [1, 2, 3, 4]}}}
+                            'data': {'var1': [1, 2, 3, 4]}}}
         tmpl = template.Template(hot_newton_tpl_empty)
         stack = parser.Stack(utils.dummy_context(), 'test_stack', tmpl)
         resolved = self.resolve(snippet, tmpl, stack=stack)
 
         self.assertEqual(10, resolved)
 
-    def test_yaql_invalid_data(self):
-        snippet = {'yaql': {'expression': '$.data.var1.sum()',
-                   'data': 'mustbeamap'}}
+    def test_yaql_list_input(self):
+        snippet = {'yaql': {'expression': '$.data.sum()',
+                            'data': [1, 2, 3, 4]}}
         tmpl = template.Template(hot_newton_tpl_empty)
-        msg = '.yaql: The "data" argument to "yaql" must contain a map.'
-        self.assertRaisesRegexp(exception.StackValidationFailed,
-                                msg, self.resolve, snippet, tmpl)
+        stack = parser.Stack(utils.dummy_context(), 'test_stack', tmpl)
+        resolved = self.resolve(snippet, tmpl, stack=stack)
+
+        self.assertEqual(10, resolved)
+
+    def test_yaql_string_input(self):
+        snippet = {'yaql': {'expression': '$.data',
+                            'data': 'whynotastring'}}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        stack = parser.Stack(utils.dummy_context(), 'test_stack', tmpl)
+        resolved = self.resolve(snippet, tmpl, stack=stack)
+
+        self.assertEqual('whynotastring', resolved)
+
+    def test_yaql_int_input(self):
+        snippet = {'yaql': {'expression': '$.data + 2',
+                            'data': 2}}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        stack = parser.Stack(utils.dummy_context(), 'test_stack', tmpl)
+        resolved = self.resolve(snippet, tmpl, stack=stack)
+
+        self.assertEqual(4, resolved)
 
     def test_yaql_bogus_keys(self):
         snippet = {'yaql': {'expression': '1 + 3',
-                            'data': 'mustbeamap',
+                            'data': {'var1': [1, 2, 3, 4]},
                             'bogus': ""}}
         tmpl = template.Template(hot_newton_tpl_empty)
         self.assertRaises(exception.StackValidationFailed,
@@ -1053,7 +1101,7 @@ class HOTemplateTest(common.HeatTestCase):
 
     def test_yaql_invalid_syntax(self):
         snippet = {'yaql': {'wrong': 'wrong_expr',
-                   'wrong_data': 'mustbeamap'}}
+                            'wrong_data': 'mustbeamap'}}
         tmpl = template.Template(hot_newton_tpl_empty)
         self.assertRaises(exception.StackValidationFailed,
                           self.resolve, snippet, tmpl)
@@ -1069,20 +1117,27 @@ class HOTemplateTest(common.HeatTestCase):
         snippet = {'yaql': {'expression': 'invalid(',
                    'data': {'var1': [1, 2, 3, 4]}}}
         tmpl = template.Template(hot_newton_tpl_empty)
-        self.assertRaises(exception.StackValidationFailed,
-                          tmpl.parse, None, snippet)
+        yaql = tmpl.parse(None, snippet)
+        self.assertRaises(ValueError, function.validate, yaql)
 
     def test_yaql_data_as_function(self):
         snippet = {'yaql': {'expression': '$.data.var1.len()',
-                   'data': {
-                       'var1': {'list_join': ['', ['1', '2']]}
-                   }
-        }}
+                            'data': {'var1': {'list_join': ['', ['1', '2']]}}}}
         tmpl = template.Template(hot_newton_tpl_empty)
         stack = parser.Stack(utils.dummy_context(), 'test_stack', tmpl)
         resolved = self.resolve(snippet, tmpl, stack=stack)
 
         self.assertEqual(2, resolved)
+
+    def test_yaql_merge(self):
+        snippet = {'yaql': {'expression': '$.data.d.reduce($1.mergeWith($2))',
+                            'data': {'d': [{'a': [1]}, {'a': [2]},
+                                           {'a': [3]}]}}}
+        tmpl = template.Template(hot_newton_tpl_empty)
+        stack = parser.Stack(utils.dummy_context(), 'test_stack', tmpl)
+        resolved = self.resolve(snippet, tmpl, stack=stack)
+
+        self.assertEqual({'a': [1, 2, 3]}, resolved)
 
     def test_equals(self):
         hot_tpl = template_format.parse('''
@@ -1130,10 +1185,9 @@ class HOTemplateTest(common.HeatTestCase):
 
         snippet = {'equals': [{'get_attr': [None, 'att1']},
                               {'get_attr': [None, 'att2']}]}
-        exc = self.assertRaises(exception.InvalidConditionFunction,
+        exc = self.assertRaises(exception.StackValidationFailed,
                                 self.resolve_condition, snippet, tmpl)
-        error_msg = 'The function is not supported in condition: get_attr'
-        self.assertIn(error_msg, six.text_type(exc))
+        self.assertIn('"get_attr" is invalid', six.text_type(exc))
 
     def test_if(self):
         snippet = {'if': ['create_prod', 'value_if_true', 'value_if_false']}
@@ -1142,14 +1196,45 @@ class HOTemplateTest(common.HeatTestCase):
         tmpl = template.Template(hot_newton_tpl_empty)
         stack = parser.Stack(utils.dummy_context(),
                              'test_if_function', tmpl)
-        tmpl._conditions = {'create_prod': True}
-        resolved = self.resolve(snippet, tmpl, stack)
-        self.assertEqual('value_if_true', resolved)
+        with mock.patch.object(tmpl, 'conditions') as conds:
+            conds.return_value = conditions.Conditions({'create_prod': True})
+            resolved = self.resolve(snippet, tmpl, stack)
+            self.assertEqual('value_if_true', resolved)
         # when condition evaluates to false, if function
         # resolve to value_if_false
-        tmpl._conditions = {'create_prod': False}
+        with mock.patch.object(tmpl, 'conditions') as conds:
+            conds.return_value = conditions.Conditions({'create_prod': False})
+            resolved = self.resolve(snippet, tmpl, stack)
+            self.assertEqual('value_if_false', resolved)
+
+    def test_if_using_boolean_condition(self):
+        snippet = {'if': [True, 'value_if_true', 'value_if_false']}
+        # when condition is true, if function resolve to value_if_true
+        tmpl = template.Template(hot_newton_tpl_empty)
+        stack = parser.Stack(utils.dummy_context(),
+                             'test_if_using_boolean_condition', tmpl)
+        resolved = self.resolve(snippet, tmpl, stack)
+        self.assertEqual('value_if_true', resolved)
+        # when condition is false, if function resolve to value_if_false
+        snippet = {'if': [False, 'value_if_true', 'value_if_false']}
         resolved = self.resolve(snippet, tmpl, stack)
         self.assertEqual('value_if_false', resolved)
+
+    def test_if_using_condition_function(self):
+        tmpl_with_conditions = template_format.parse('''
+heat_template_version: 2016-10-14
+conditions:
+  create_prod: False
+''')
+        snippet = {'if': [{'not': 'create_prod'},
+                          'value_if_true', 'value_if_false']}
+
+        tmpl = template.Template(tmpl_with_conditions)
+        stack = parser.Stack(utils.dummy_context(),
+                             'test_if_using_condition_function', tmpl)
+
+        resolved = self.resolve(snippet, tmpl, stack)
+        self.assertEqual('value_if_true', resolved)
 
     def test_if_invalid_args(self):
         snippet = {'if': ['create_prod', 'one_value']}
@@ -1165,11 +1250,13 @@ class HOTemplateTest(common.HeatTestCase):
         tmpl = template.Template(hot_newton_tpl_empty)
         stack = parser.Stack(utils.dummy_context(),
                              'test_if_function', tmpl)
-        tmpl._conditions = {'create_prod': True}
-        exc = self.assertRaises(exception.StackValidationFailed,
-                                self.resolve, snippet, tmpl, stack)
-        self.assertIn('Invalid condition name "cd_not_existing"',
+        with mock.patch.object(tmpl, 'conditions') as conds:
+            conds.return_value = conditions.Conditions({'create_prod': True})
+            exc = self.assertRaises(exception.StackValidationFailed,
+                                    self.resolve, snippet, tmpl, stack)
+        self.assertIn('Invalid condition "cd_not_existing"',
                       six.text_type(exc))
+        self.assertIn('if:', six.text_type(exc))
 
     def test_repeat(self):
         """Test repeat function."""
@@ -1293,8 +1380,8 @@ class HOTemplateTest(common.HeatTestCase):
         # for_each is not a map
         snippet = {'repeat': {'template': 'this is %var%',
                               'for_each': '%var%'}}
-        self.assertRaises(exception.StackValidationFailed,
-                          tmpl.parse, None, snippet)
+        repeat = tmpl.parse(None, snippet)
+        self.assertRaises(TypeError, function.validate, repeat)
 
     def test_digest(self):
         snippet = {'digest': ['md5', 'foobar']}
@@ -1537,8 +1624,9 @@ class HOTemplateTest(common.HeatTestCase):
         snippet = {'Fn::GetAZs': ''}
         stack = parser.Stack(utils.dummy_context(), 'test_stack',
                              template.Template(hot_juno_tpl_empty))
-        error = self.assertRaises(exception.StackValidationFailed,
-                                  stack.t.parse, stack, snippet)
+        error = self.assertRaises(exception.InvalidTemplateVersion,
+                                  function.validate,
+                                  stack.t.parse(stack, snippet))
         self.assertIn(next(iter(snippet)), six.text_type(error))
 
     def test_add_resource(self):

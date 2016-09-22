@@ -94,8 +94,8 @@ Build-Depends-Indep: bandit (>= 0.13.2),
                      tempest (>= 1:12.1.0),
                      testrepository,
 Standards-Version: 3.9.8
-Vcs-Browser: https://anonscm.debian.org/cgit/openstack/heat.git/
-Vcs-Git: https://anonscm.debian.org/git/openstack/heat.git
+Vcs-Browser: https://git.openstack.org/cgit/openstack/deb-heat
+Vcs-Git: https://git.openstack.org/openstack/deb-heat
 Homepage: http://wiki.openstack.org/Heat
 
 Package: python-heat
