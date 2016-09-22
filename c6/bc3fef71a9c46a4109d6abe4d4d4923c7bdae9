@@ -1,0 +1,10 @@
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Code-Review+2: Thomas Herve <therve@redhat.com>
+Workflow+1: Thomas Herve <therve@redhat.com>
+Code-Review+1: shizhihui <zhihui.shi@easystack.cn>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 21 Sep 2016 12:07:42 +0000
+Reviewed-on: https://review.openstack.org/373614
+Project: openstack/deb-heat
+Branch: refs/heads/stable/newton
