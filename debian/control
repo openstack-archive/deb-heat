@@ -95,8 +95,8 @@ Build-Depends-Indep: bandit (>= 0.13.2),
                      tempest (>= 1:12.1.0),
                      testrepository,
 Standards-Version: 3.9.8
-Vcs-Browser: https://git.openstack.org/cgit/openstack/deb-heat
-Vcs-Git: https://git.openstack.org/openstack/deb-heat
+Vcs-Browser: https://git.openstack.org/cgit/openstack/deb-heat?h=debian%2Fnewton
+Vcs-Git: https://git.openstack.org/openstack/deb-heat -b debian/newton
 Homepage: http://wiki.openstack.org/Heat
 
 Package: python-heat
