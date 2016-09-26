@@ -1,0 +1,10 @@
+Code-Review+1: Christopher Martin <cm876n@att.com>
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Code-Review+2: Thomas Herve <therve@redhat.com>
+Workflow+1: Thomas Herve <therve@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 26 Sep 2016 19:35:45 +0000
+Reviewed-on: https://review.openstack.org/375469
+Project: openstack/deb-heat
+Branch: refs/heads/stable/newton
