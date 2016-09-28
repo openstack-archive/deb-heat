@@ -1,0 +1,11 @@
+Code-Review+2: huangtianhua <huangtianhua@huawei.com>
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Code-Review+1: Louis Fourie <louis.fourie@huawei.com>
+Code-Review+1: cathy <cathy.h.zhang@huawei.com>
+Workflow+1: huangtianhua <huangtianhua@huawei.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 28 Sep 2016 07:57:47 +0000
+Reviewed-on: https://review.openstack.org/277849
+Project: openstack/deb-heat
+Branch: refs/heads/master
