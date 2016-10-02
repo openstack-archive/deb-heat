@@ -38,7 +38,7 @@ override_dh_install:
 		--namespace heat.common.config \
                 --namespace heat.common.context \
 		--namespace heat.common.crypt \
-		--namespace heat.common.heat_keystoneclient \
+		--namespace heat.engine.clients.keystone.heat_keystoneclient \
 		--namespace heat.common.wsgi \
 		--namespace heat.engine.clients \
 		--namespace heat.engine.notification \
@@ -56,6 +56,7 @@ override_dh_install:
                 --namespace oslo.service.sslutil \
 		--wrap-width 140 \
 		--output-file $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
+
 	sed -i 's|^[# \t]*connection[\t #]*=.*|connection=sqlite:////var/lib/heat/heatdb|' $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
 	sed -i 's|^[# \t]*auth_protocol[\t #]*=.*|auth_protocol = http|' $(CURDIR)/debian/heat-common/usr/share/heat-common/heat.conf
 
