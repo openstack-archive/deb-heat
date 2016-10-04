@@ -1,13 +1,13 @@
 # Italian translation of heat debconf messages.
-# Copyright (C) 2013, heat package copyright holder
+# Copyright (C) 2016, heat package copyright holder
 # This file is distributed under the same license as the heat package.
-# Beatrice Torracca <beatricet@libero.it>, 2013, 2014.
+# Beatrice Torracca <beatricet@libero.it>, 2013, 2014, 2016.
 msgid ""
 msgstr ""
 "Project-Id-Version: heat\n"
 "Report-Msgid-Bugs-To: heat@packages.debian.org\n"
 "POT-Creation-Date: 2016-03-29 13:17+0000\n"
-"PO-Revision-Date: 2014-04-06 15:03+0200\n"
+"PO-Revision-Date: 2016-08-01 15:53+0200\n"
 "Last-Translator: Beatrice Torracca <beatricet@libero.it>\n"
 "Language-Team: Italian <debian-l10n-italian@lists.debian.org>\n"
 "Language: it\n"
@@ -105,7 +105,6 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../heat-common.templates:6001
-#, fuzzy
 #| msgid ""
 #| "Note that you will need to have an up and running keystone server on "
 #| "which to connect using the Keystone auth token."
@@ -114,8 +113,10 @@ msgid ""
 "to connect using a known admin project name, admin username and password. "
 "The admin auth token is not used anymore."
 msgstr ""
-"Notare che sarà necessario avere un server keystone in funzione a cui "
-"connettersi usando il token di autenticazione Keystone."
+"Notare che sarà necessario avere un server Keystone in funzione a cui "
+"connettersi usando un nome di progetto di amministrazione conosciuto, un "
+"nome utente e password di amministratore. Il token di autenticazione di "
+"amministratore non è più usato."
 
 #. Type: string
 #. Description
@@ -137,10 +138,9 @@ msgstr ""
 #. Type: string
 #. Description
 #: ../heat-common.templates:8001
-#, fuzzy
 #| msgid "Keystone IP address:"
 msgid "Keystone admin name:"
-msgstr "Indirizzo IP di Keystone:"
+msgstr "Nome amministratore Keystone:"
 
 #. Type: string
 #. Description
@@ -154,20 +154,22 @@ msgid ""
 "To register the service endpoint, this package needs to know the Admin "
 "login, name, project name, and password to the Keystone server."
 msgstr ""
+"Per registrare il punto terminale del servizio questo pacchetto deve "
+"conoscere il login, il nome, il nome del progetto e la password "
+"dell'amministratore per il server Keystone."
 
 #. Type: string
 #. Description
 #: ../heat-common.templates:9001
 msgid "Keystone admin project name:"
-msgstr ""
+msgstr "Nome del progetto di amministrazione Keystone:"
 
 #. Type: password
 #. Description
 #: ../heat-common.templates:10001
-#, fuzzy
 #| msgid "Keystone IP address:"
 msgid "Keystone admin password:"
-msgstr "Indirizzo IP di Keystone:"
+msgstr "Password amministratore Keystone:"
 
 #. Type: string
 #. Description
@@ -313,126 +315,3 @@ msgstr "Password per la connessione al server RabbitMQ:"
 #: ../heat-common.templates:16001
 msgid "Please specify the password used to connect to the RabbitMQ server."
 msgstr "Specificare la password da usare per connettersi al server RabbitMQ."
-
-#~ msgid ""
-#~ "Note that you will need to have an up and running Keystone server on "
-#~ "which to connect using the Keystone authentication token."
-#~ msgstr ""
-#~ "Notare che sarà necessario avere un server Keystone in funzione a cui "
-#~ "connettersi usando il token di autenticazione Keystone."
-
-#~ msgid "Keystone authentication token:"
-#~ msgstr "Token di autenticazione Keystone:"
-
-#~ msgid ""
-#~ "To configure its endpoint in Keystone, heat-api needs the Keystone "
-#~ "authentication token."
-#~ msgstr ""
-#~ "Per configurare il proprio punto terminale in Keystone, heat-api ha "
-#~ "bisogno del token di autenticazione Keystone."
-
-#~ msgid "Auth server hostname:"
-#~ msgstr "Nome host del server di autenticazione:"
-
-#~ msgid ""
-#~ "Please specify the hostname of your authentication server. Typically this "
-#~ "is also the hostname of your OpenStack Identity Service (Keystone)."
-#~ msgstr ""
-#~ "Specificare il nome host del server di autenticazione. Tipicamente, è "
-#~ "anche il nome host dell'OpenStack Identity Service (Keystone)."
-
-#~ msgid ""
-#~ "No database has been set up for heat-engine to use. Before continuing, "
-#~ "you should make sure you have:"
-#~ msgstr ""
-#~ "Non è stato impostato alcun database per essere usato da heat-engine. "
-#~ "Prima di continuare ci si dovrebbe assicurare di avere:"
-
-#~ msgid ""
-#~ " - the server host name (that server must allow TCP connections from "
-#~ "this\n"
-#~ "   machine);\n"
-#~ " - a username and password to access the database.\n"
-#~ " - A database type that you want to use."
-#~ msgstr ""
-#~ " - il nome host del server (tale server deve permettere le connessioni\n"
-#~ "   TCP da questa macchina);\n"
-#~ " - un nome utente e una password per accedere al database;\n"
-#~ " - un tipo di database che si desidera usare."
-
-#~ msgid ""
-#~ "If some of these requirements are missing, reject this option and run "
-#~ "with   regular sqlite support."
-#~ msgstr ""
-#~ "Se uno o più di questi requisiti non sono soddisfatti, rifiutare questa "
-#~ "opzione ed eseguire con il regolare supporto per sqlite."
-
-#~ msgid ""
-#~ "You can change this setting later on by running 'dpkg-reconfigure -plow   "
-#~ "heat-engine'."
-#~ msgstr ""
-#~ "È possibile cambiare questa impostazione successivamente eseguendo «dpkg-"
-#~ "reconfigure -plow heat-engine»"
-
-#~ msgid ""
-#~ "Please specify the URL of your authentication server. Typically this is "
-#~ "also the URL of your OpenStack Identity Service (Keystone)."
-#~ msgstr ""
-#~ "Specificare l'URL del server di autenticazione. Tipicamente, è anche "
-#~ "l'URL dell'OpenStack Identity Service (Keystone)."
-
-#~ msgid "Auth server tenant name:"
-#~ msgstr "Nome del tenant per il server di autenticazione:"
-
-#~ msgid "Auth server username:"
-#~ msgstr "Nome utente per il server di autenticazione:"
-
-#~ msgid "Auth server password:"
-#~ msgstr "Password per il server di autenticazione:"
-
-#~ msgid "Register Heat in the keystone endpoint catalog?"
-#~ msgstr "Registrare Heat nel catalogo di punti terminali keystone?"
-
-#~ msgid ""
-#~ "Each Openstack services (each API) should be registered in order to be "
-#~ "accessible. This is done using \"keystone service-create\" and \"keystone "
-#~ "endpoint-create\". Select if you want to run these commands now."
-#~ msgstr ""
-#~ "Ogni servizio OpenStack (ogni API) dovrebbe essere registrato per poter "
-#~ "essere accessibile. Ciò viene fatto usando «keystone service-create» e "
-#~ "«keystone endpoint-create». Scegliere se si desidera eseguire ora questi "
-#~ "comandi."
-
-#~ msgid ""
-#~ "Enter the IP address of your keystone server, so that heat-api can "
-#~ "contact Keystone to do the Heat service and endpoint creation."
-#~ msgstr ""
-#~ "Inserire l'indirizzo IP del proprio server keystone, in modo che heat-api "
-#~ "possa contattare Keystone per effettuare la creazione del servizio e del "
-#~ "punto terminale Heat."
-
-#~ msgid "Keystone Auth Token:"
-#~ msgstr "Token di autenticazione Keystone:"
-
-#~ msgid ""
-#~ "To configure its endpoint in Keystone, heat-api needs the Keystone auth "
-#~ "token."
-#~ msgstr ""
-#~ "Per configurare il proprio punto terminale in Keystone, heat-api ha "
-#~ "bisogno del token di autenticazione Keystone."
-
-#~ msgid ""
-#~ "Enter the IP address that will be used to contact Heat (eg: the Heat "
-#~ "endpoint IP address)."
-#~ msgstr ""
-#~ "Inserire l'indirizzo IP che verrà usato per contattare Heat (es.: "
-#~ "l'indirizzo IP del punto terminale Heat)."
-
-#~ msgid ""
-#~ "Openstack can be used using availability zones, with each region "
-#~ "representing a location. Please enter the zone that you wish to use when "
-#~ "registering the endpoint."
-#~ msgstr ""
-#~ "OpenStack può essere usato utilizzando le zone di disponibilità, con ogni "
-#~ "regione che rappresenta una posizione. Inserire la zona che si desidera "
-#~ "usare durante la registrazione del punto terminale."
