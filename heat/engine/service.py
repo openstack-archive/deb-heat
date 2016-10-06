@@ -79,6 +79,10 @@ cfg.CONF.import_opt('enable_stack_abandon', 'heat.common.config')
 cfg.CONF.import_opt('enable_stack_adopt', 'heat.common.config')
 cfg.CONF.import_opt('convergence_engine', 'heat.common.config')
 
+# Time to wait for a stack to stop when cancelling running threads, before
+# giving up on being able to start a delete.
+STOP_STACK_TIMEOUT = 30
+
 LOG = logging.getLogger(__name__)
 
 
@@ -1127,12 +1131,13 @@ class EngineService(service.Service):
             self.thread_group_mgr.start(current_stack.id, func)
             return
 
-        # stop the running update and take the lock
-        # as we cancel only running update, the acquire_result is
-        # always some engine_id, not None
         lock = stack_lock.StackLock(cnxt, current_stack.id,
                                     self.engine_id)
-        engine_id = lock.try_acquire()
+        engine_id = lock.get_engine_id()
+
+        if engine_id is None:
+            LOG.debug('No lock found on stack %s', db_stack.name)
+            return
 
         if cancel_with_rollback:
             cancel_message = rpc_api.THREAD_CANCEL_WITH_ROLLBACK
@@ -1146,7 +1151,8 @@ class EngineService(service.Service):
         # Another active engine has the lock
         elif service_utils.engine_alive(cnxt, engine_id):
             cancel_result = self._remote_call(
-                cnxt, engine_id, self.listener.SEND,
+                cnxt, engine_id, cfg.CONF.engine_life_check_timeout,
+                self.listener.SEND,
                 stack_identity=stack_identity, message=cancel_message)
             if cancel_result is None:
                 LOG.debug("Successfully sent %(msg)s message "
@@ -1155,6 +1161,12 @@ class EngineService(service.Service):
             else:
                 raise exception.EventSendFailed(stack_name=current_stack.name,
                                                 engine_id=engine_id)
+
+        else:
+            LOG.warning(_('Cannot cancel stack %(stack_name)s: lock held by '
+                          'unknown engine %(engine_id)s') % {
+                              'stack_name': db_stack.name,
+                              'engine_id': engine_id})
 
     @context.request_context
     def validate_template(self, cnxt, template, params=None, files=None,
@@ -1330,8 +1342,7 @@ class EngineService(service.Service):
 
         return api.format_stack_output(outputs[output_key])
 
-    def _remote_call(self, cnxt, lock_engine_id, call, **kwargs):
-        timeout = cfg.CONF.engine_life_check_timeout
+    def _remote_call(self, cnxt, lock_engine_id, timeout, call, **kwargs):
         self.cctxt = self._client.prepare(
             version='1.0',
             timeout=timeout,
@@ -1351,6 +1362,10 @@ class EngineService(service.Service):
         """
 
         st = self._get_stack(cnxt, stack_identity)
+        if (st.status == parser.Stack.COMPLETE and
+                st.action == parser.Stack.DELETE):
+            raise exception.EntityNotFound(entity='Stack', name=st.name)
+
         LOG.info(_LI('Deleting stack %s'), st.name)
         stack = parser.Stack.load(cnxt, stack=st)
         self.resource_enforcer.enforce_stack(stack)
@@ -1380,31 +1395,70 @@ class EngineService(service.Service):
         if acquire_result == self.engine_id:
             # give threads which are almost complete an opportunity to
             # finish naturally before force stopping them
-            eventlet.sleep(0.2)
-            self.thread_group_mgr.stop(stack.id)
+            self.thread_group_mgr.send(stack.id, rpc_api.THREAD_CANCEL)
 
         # Another active engine has the lock
         elif service_utils.engine_alive(cnxt, acquire_result):
-            stop_result = self._remote_call(
-                cnxt, acquire_result, self.listener.STOP_STACK,
-                stack_identity=stack_identity)
-            if stop_result is None:
-                LOG.debug("Successfully stopped remote task on engine %s"
-                          % acquire_result)
+            cancel_result = self._remote_call(
+                cnxt, acquire_result, cfg.CONF.engine_life_check_timeout,
+                self.listener.SEND,
+                stack_identity=stack_identity, message=rpc_api.THREAD_CANCEL)
+            if cancel_result is None:
+                LOG.debug("Successfully sent %(msg)s message "
+                          "to remote task on engine %(eng)s" % {
+                              'eng': acquire_result,
+                              'msg': rpc_api.THREAD_CANCEL})
             else:
-                raise exception.StopActionFailed(stack_name=stack.name,
-                                                 engine_id=acquire_result)
+                raise exception.EventSendFailed(stack_name=stack.name,
+                                                engine_id=acquire_result)
 
-        # There may be additional resources that we don't know about
-        # if an update was in-progress when the stack was stopped, so
-        # reload the stack from the database.
-        st = self._get_stack(cnxt, stack_identity)
-        stack = parser.Stack.load(cnxt, stack=st)
-        self.resource_enforcer.enforce_stack(stack)
+        def reload():
+            st = self._get_stack(cnxt, stack_identity)
+            stack = parser.Stack.load(cnxt, stack=st)
+            self.resource_enforcer.enforce_stack(stack)
+            return stack
 
-        self.thread_group_mgr.start_with_lock(cnxt, stack, self.engine_id,
-                                              stack.delete)
-        return
+        def wait_then_delete(stack):
+            watch = timeutils.StopWatch(cfg.CONF.error_wait_time + 10)
+            watch.start()
+
+            while not watch.expired():
+                LOG.debug('Waiting for stack cancel to complete: %s' %
+                          stack.name)
+                with lock.try_thread_lock() as acquire_result:
+
+                    if acquire_result is None:
+                        stack = reload()
+                        # do the actual delete with the aquired lock
+                        self.thread_group_mgr.start_with_acquired_lock(
+                            stack, lock, stack.delete)
+                        return
+                eventlet.sleep(1.0)
+
+            if acquire_result == self.engine_id:
+                # cancel didn't finish in time, attempt a stop instead
+                self.thread_group_mgr.stop(stack.id)
+            elif service_utils.engine_alive(cnxt, acquire_result):
+                # Another active engine has the lock
+                stop_result = self._remote_call(
+                    cnxt, acquire_result, STOP_STACK_TIMEOUT,
+                    self.listener.STOP_STACK,
+                    stack_identity=stack_identity)
+                if stop_result is None:
+                    LOG.debug("Successfully stopped remote task "
+                              "on engine %s" % acquire_result)
+                else:
+                    raise exception.StopActionFailed(
+                        stack_name=stack.name, engine_id=acquire_result)
+
+            stack = reload()
+            # do the actual delete in a locked task
+            self.thread_group_mgr.start_with_lock(cnxt, stack, self.engine_id,
+                                                  stack.delete)
+
+        # Cancelling the stack could take some time, so do it in a task
+        self.thread_group_mgr.start(stack.id, wait_then_delete,
+                                    stack)
 
     @context.request_context
     def export_stack(self, cnxt, stack_identity):
@@ -1482,7 +1536,7 @@ class EngineService(service.Service):
                              for name in mgr.names()]
         versions = []
         for t in sorted(_template_classes):  # Sort to ensure dates come first
-            if issubclass(t[1], cfntemplate.CfnTemplate):
+            if issubclass(t[1], cfntemplate.CfnTemplateBase):
                 type = 'cfn'
             else:
                 type = 'hot'

@@ -1,3 +1,9 @@
+heat (1:7.0.0-1) unstabe; urgency=medium
+
+  * New upstream release.
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 06 Oct 2016 17:50:16 +0200
+
 heat (1:7.0.0~rc1-2) unstable; urgency=medium
 
   [ Ondřej Nový ]
