@@ -18,6 +18,7 @@ import eventlet.queue
 from oslo_log import log as logging
 import oslo_messaging
 from oslo_service import service
+from oslo_utils import uuidutils
 from osprofiler import profiler
 
 from heat.common import context
@@ -27,7 +28,9 @@ from heat.common.i18n import _LW
 from heat.common import messaging as rpc_messaging
 from heat.db import api as db_api
 from heat.engine import check_resource
+from heat.engine import stack as parser
 from heat.engine import sync_point
+from heat.objects import stack as stack_objects
 from heat.rpc import api as rpc_api
 from heat.rpc import worker_client as rpc_client
 
@@ -102,14 +105,17 @@ class WorkerService(service.Service):
         in_progress resources to complete normally; no worker is stopped
         abruptly.
         """
-        reason = 'User cancelled stack %s ' % stack.action
-        # state_set will update the current traversal to '' for FAILED state
-        old_trvsl = stack.current_traversal
-        updated = stack.state_set(stack.action, stack.FAILED, reason)
-        if not updated:
-            LOG.warning(_LW("Failed to stop traversal %(trvsl)s of stack "
-                            "%(name)s while cancelling the operation."),
-                        {'name': stack.name, 'trvsl': old_trvsl})
+        _stop_traversal(stack)
+
+        db_child_stacks = stack_objects.Stack.get_all_by_root_owner_id(
+            stack.context, stack.id)
+
+        for db_child in db_child_stacks:
+            if db_child.status == parser.Stack.IN_PROGRESS:
+                child = parser.Stack.load(stack.context,
+                                          stack_id=db_child.id,
+                                          stack=db_child)
+                _stop_traversal(child)
 
     def stop_all_workers(self, stack):
         # stop the traversal
@@ -131,6 +137,23 @@ class WorkerService(service.Service):
 
         return True
 
+    def _retrigger_replaced(self, is_update, rsrc, stack, msg_queue):
+        graph = stack.convergence_dependencies.graph()
+        key = (rsrc.id, is_update)
+        if key not in graph and rsrc.replaces is not None:
+            # This resource replaces old one and is not needed in
+            # current traversal. You need to mark the resource as
+            # DELETED so that it gets cleaned up in purge_db.
+            values = {'action': rsrc.DELETE}
+            db_api.resource_update_and_save(stack.context, rsrc.id, values)
+            # The old resource might be in the graph (a rollback case);
+            # just re-trigger it.
+            key = (rsrc.replaces, is_update)
+            cr = check_resource.CheckResource(self.engine_id, self._rpc_client,
+                                              self.thread_group_mgr, msg_queue)
+            cr.retrigger_check_resource(stack.context, is_update, key[0],
+                                        stack)
+
     @context.request_context
     def check_resource(self, cnxt, resource_id, current_traversal, data,
                        is_update, adopt_stack_data):
@@ -146,18 +169,20 @@ class WorkerService(service.Service):
         if rsrc is None:
             return
 
-        if current_traversal != stack.current_traversal:
-            LOG.debug('[%s] Traversal cancelled; stopping.', current_traversal)
-            return
-
         msg_queue = eventlet.queue.LightQueue()
         try:
             self.thread_group_mgr.add_msg_queue(stack.id, msg_queue)
-            cr = check_resource.CheckResource(self.engine_id, self._rpc_client,
-                                              self.thread_group_mgr, msg_queue)
-
-            cr.check(cnxt, resource_id, current_traversal, resource_data,
-                     is_update, adopt_stack_data, rsrc, stack)
+            if current_traversal != stack.current_traversal:
+                LOG.debug('[%s] Traversal cancelled; re-trigerring.',
+                          current_traversal)
+                self._retrigger_replaced(is_update, rsrc, stack, msg_queue)
+            else:
+                cr = check_resource.CheckResource(self.engine_id,
+                                                  self._rpc_client,
+                                                  self.thread_group_mgr,
+                                                  msg_queue)
+                cr.check(cnxt, resource_id, current_traversal, resource_data,
+                         is_update, adopt_stack_data, rsrc, stack)
         finally:
             self.thread_group_mgr.remove_msg_queue(None,
                                                    stack.id, msg_queue)
@@ -170,6 +195,36 @@ class WorkerService(service.Service):
         cancelled.
         """
         _cancel_check_resource(stack_id, self.engine_id, self.thread_group_mgr)
+
+
+def _stop_traversal(stack):
+    old_trvsl = stack.current_traversal
+    updated = _update_current_traversal(stack)
+    if not updated:
+        LOG.warning(_LW("Failed to update stack %(name)s with new "
+                        "traversal, aborting stack cancel"),
+                    {'name': stack.name})
+        return
+
+    reason = 'Stack %(action)s cancelled' % {'action': stack.action}
+    updated = stack.state_set(stack.action, stack.FAILED, reason)
+    if not updated:
+        LOG.warning(_LW("Failed to update stack %(name)s status"
+                        " to %(action)_%(state)"),
+                    {'name': stack.name, 'action': stack.action,
+                    'state': stack.FAILED})
+        return
+
+    sync_point.delete_all(stack.context, stack.id, old_trvsl)
+
+
+def _update_current_traversal(stack):
+    previous_traversal = stack.current_traversal
+    stack.current_traversal = uuidutils.generate_uuid()
+    values = {'current_traversal': stack.current_traversal}
+    return stack_objects.Stack.select_and_update(
+        stack.context, stack.id, values,
+        exp_trvsl=previous_traversal)
 
 
 def _cancel_check_resource(stack_id, engine_id, tgm):
