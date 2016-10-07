@@ -1,0 +1,9 @@
+Code-Review+2: Qiming Teng <tengqim@cn.ibm.com>
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Workflow+1: Peter Razumovsky <prazumovsky@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 07 Oct 2016 09:34:02 +0000
+Reviewed-on: https://review.openstack.org/383216
+Project: openstack/deb-heat
+Branch: refs/heads/master
