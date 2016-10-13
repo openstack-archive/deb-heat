@@ -1,0 +1,10 @@
+Code-Review+1: Perry <panxia6679@sina.com>
+Code-Review+2: Peter Razumovsky <prazumovsky3000@gmail.com>
+Code-Review+2: Oleksii Chuprykov <a.chuprikoff@gmail.com>
+Workflow+1: Oleksii Chuprykov <a.chuprikoff@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 13 Oct 2016 10:34:29 +0000
+Reviewed-on: https://review.openstack.org/360387
+Project: openstack/deb-heat
+Branch: refs/heads/master
