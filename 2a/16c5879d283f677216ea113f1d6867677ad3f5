@@ -1,0 +1,13 @@
+Code-Review+1: gecong <ge.cong@zte.com.cn>
+Code-Review+1: Dmitriy Uvarenkov <duvarenkov@mirantis.com>
+Code-Review+1: zhangyanxian <zhang.yanxian@zte.com.cn>
+Code-Review+2: huangtianhua <huangtianhua@huawei.com>
+Code-Review+1: shizhihui <zhihui.shi@easystack.cn>
+Code-Review+2: Kanagaraj Manickam <mkr1481@gmail.com>
+Workflow+1: Kanagaraj Manickam <mkr1481@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 10 Oct 2016 04:45:17 +0000
+Reviewed-on: https://review.openstack.org/359064
+Project: openstack/deb-heat
+Branch: refs/heads/master
