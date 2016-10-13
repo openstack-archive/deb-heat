@@ -1,0 +1,9 @@
+Code-Review+2: Jason Dunsmore <jason.dunsmore@rackspace.com>
+Code-Review+2: Kanagaraj Manickam <mkr1481@gmail.com>
+Workflow+1: Kanagaraj Manickam <mkr1481@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 13 Oct 2016 09:15:35 +0000
+Reviewed-on: https://review.openstack.org/277940
+Project: openstack/deb-heat
+Branch: refs/heads/master
