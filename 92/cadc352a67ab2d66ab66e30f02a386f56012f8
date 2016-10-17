@@ -1,0 +1,10 @@
+Code-Review+1: Rabi Mishra <ramishra@redhat.com>
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Workflow+1: Steve Baker <sbaker@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Sun, 16 Oct 2016 21:25:44 +0000
+Reviewed-on: https://review.openstack.org/386444
+Project: openstack/deb-heat
+Branch: refs/heads/stable/newton
