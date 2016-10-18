@@ -1,0 +1,9 @@
+Code-Review+2: Oleksii Chuprykov <a.chuprikoff@gmail.com>
+Code-Review+2: huangtianhua <huangtianhua@huawei.com>
+Workflow+1: huangtianhua <huangtianhua@huawei.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 17 Oct 2016 10:18:53 +0000
+Reviewed-on: https://review.openstack.org/300973
+Project: openstack/deb-heat
+Branch: refs/heads/master
