@@ -1,0 +1,10 @@
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Code-Review+2: Sergey Kraynev <sergejyit@gmail.com>
+Workflow+1: Sergey Kraynev <sergejyit@gmail.com>
+Code-Review+1: yatin <yatin.karel@nectechnologies.in>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 19 Oct 2016 10:28:07 +0000
+Reviewed-on: https://review.openstack.org/388289
+Project: openstack/deb-heat
+Branch: refs/heads/stable/newton
