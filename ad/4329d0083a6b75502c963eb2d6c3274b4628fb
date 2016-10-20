@@ -1,0 +1,9 @@
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Code-Review+2: Sergey Kraynev <sergejyit@gmail.com>
+Workflow+1: Rabi Mishra <ramishra@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 19 Oct 2016 11:43:47 +0000
+Reviewed-on: https://review.openstack.org/388274
+Project: openstack/deb-heat
+Branch: refs/heads/master
