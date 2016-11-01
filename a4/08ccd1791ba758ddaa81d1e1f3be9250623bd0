@@ -1,0 +1,10 @@
+Code-Review+1: Imran Hayder Malik <imran.malik@emc.com>
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Code-Review+2: Rico Lin <rico.l@inwinstack.com>
+Workflow+1: Rico Lin <rico.l@inwinstack.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 01 Nov 2016 01:41:45 +0000
+Reviewed-on: https://review.openstack.org/388925
+Project: openstack/deb-heat
+Branch: refs/heads/master
