@@ -1,0 +1,10 @@
+Code-Review+2: Thomas Herve <therve@redhat.com>
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Code-Review+2: Oleksii Chuprykov <a.chuprikoff@gmail.com>
+Workflow+1: Oleksii Chuprykov <a.chuprikoff@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 01 Nov 2016 17:20:35 +0000
+Reviewed-on: https://review.openstack.org/381057
+Project: openstack/deb-heat
+Branch: refs/heads/master
