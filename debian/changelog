@@ -1,3 +1,11 @@
+heat (1:7.0.0-2) unstable; urgency=high
+
+  * CVE-2016-9185: template source URL allows network port scan. Applied
+    upstream fix (Closes: #843232):
+    - CVE-2016-9185_Prevent_template_validate_from_scanning_ports.patch
+
+ -- Thomas Goirand <zigo@debian.org>  Sun, 06 Nov 2016 11:28:41 +0100
+
 heat (1:7.0.0-1) unstable; urgency=medium
 
   * New upstream release.
