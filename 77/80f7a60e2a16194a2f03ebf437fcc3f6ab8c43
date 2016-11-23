@@ -1,0 +1,9 @@
+Code-Review+2: Steve Baker <sbaker@redhat.com>
+Code-Review+2: Qiming Teng <tengqim@cn.ibm.com>
+Workflow+1: Qiming Teng <tengqim@cn.ibm.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 23 Nov 2016 02:11:20 +0000
+Reviewed-on: https://review.openstack.org/400946
+Project: openstack/deb-heat
+Branch: refs/heads/master
