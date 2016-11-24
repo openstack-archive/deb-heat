@@ -1,0 +1,9 @@
+Code-Review+2: Thomas Herve <therve@redhat.com>
+Code-Review+2: huangtianhua <huangtianhua@huawei.com>
+Workflow+1: huangtianhua <huangtianhua@huawei.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 24 Nov 2016 11:41:16 +0000
+Reviewed-on: https://review.openstack.org/400899
+Project: openstack/deb-heat
+Branch: refs/heads/master
