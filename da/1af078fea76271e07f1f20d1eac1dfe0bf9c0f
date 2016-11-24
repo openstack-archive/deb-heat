@@ -1,0 +1,10 @@
+Code-Review+2: Oleksii Chuprykov <a.chuprikoff@gmail.com>
+Code-Review+2: Rico Lin <rico.l@inwinstack.com>
+Code-Review+2: Sergey Kraynev <skraynev@mirantis.com>
+Workflow+1: Sergey Kraynev <skraynev@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 24 Nov 2016 16:55:17 +0000
+Reviewed-on: https://review.openstack.org/303479
+Project: openstack/deb-heat
+Branch: refs/heads/master

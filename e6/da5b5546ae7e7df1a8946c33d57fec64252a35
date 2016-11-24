@@ -1,0 +1,9 @@
+Code-Review+2: Randall Burt <randall.burt@rackspace.com>
+Code-Review+2: Rabi Mishra <ramishra@redhat.com>
+Workflow+1: Rabi Mishra <ramishra@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 24 Nov 2016 15:23:52 +0000
+Reviewed-on: https://review.openstack.org/330800
+Project: openstack/deb-heat
+Branch: refs/heads/master
