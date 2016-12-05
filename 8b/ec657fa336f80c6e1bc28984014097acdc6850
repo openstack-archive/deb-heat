@@ -1,0 +1,9 @@
+Code-Review+1: Jeremy Liu <liujiong@gohighsec.com>
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Workflow+1: Zane Bitter <zbitter@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 02 Dec 2016 18:44:58 +0000
+Reviewed-on: https://review.openstack.org/398066
+Project: openstack/deb-heat
+Branch: refs/heads/master
