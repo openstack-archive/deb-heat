@@ -1,0 +1,9 @@
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Code-Review+2: Rabi Mishra <ramishra@redhat.com>
+Workflow+1: Rabi Mishra <ramishra@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 07 Dec 2016 04:28:44 +0000
+Reviewed-on: https://review.openstack.org/393607
+Project: openstack/deb-heat
+Branch: refs/heads/master
