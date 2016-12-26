@@ -1,8 +1,13 @@
-heat (1:7.0.0-2) UNRELEASED; urgency=medium
+heat (1:7.0.0-2) unstable; urgency=medium
 
+  [ Ondřej Nový ]
   * Bumped debhelper compat version to 10
 
- -- Ondřej Nový <onovy@debian.org>  Wed, 23 Nov 2016 23:58:51 +0100
+  [ Thomas Goirand ]
+  * CVE-2016-9185: template source URL allows network port scan: applied
+    upstream patch (Closes: #843232).
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 26 Dec 2016 17:36:59 +0100
 
 heat (1:7.0.0-1) unstable; urgency=medium
 
