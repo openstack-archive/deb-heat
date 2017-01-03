@@ -1,0 +1,9 @@
+Code-Review+2: huangtianhua <huangtianhua@huawei.com>
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Workflow+1: Zane Bitter <zbitter@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 23 Dec 2016 13:04:29 +0000
+Reviewed-on: https://review.openstack.org/413921
+Project: openstack/deb-heat
+Branch: refs/heads/master
