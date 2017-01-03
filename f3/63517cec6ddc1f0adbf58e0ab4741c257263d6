@@ -1,0 +1,9 @@
+Code-Review+2: Sergey Kraynev <skraynev@mirantis.com>
+Code-Review+1: huangtianhua <huangtianhua@huawei.com>
+Workflow+1: Sergey Kraynev <skraynev@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 29 Dec 2016 13:36:55 +0000
+Reviewed-on: https://review.openstack.org/415388
+Project: openstack/deb-heat
+Branch: refs/heads/stable/newton
