@@ -1,0 +1,28 @@
+Description: Remove broken RST
+ In hot_spec.rst, there's some lines that are FTBFS with the newer docutils.
+ Since it doesn't seem that important, and it's best to keep the rest of the
+ documentation, we're just removing the block.
+Author: Thomas Goirand <zigo@debian.org>
+Bug-Debian: https://bugs.debian.org/850231
+Forwarded: no
+Last-Update: 2017-01-08
+
+--- heat-7.0.0.orig/doc/source/template_guide/hot_spec.rst
++++ heat-7.0.0/doc/source/template_guide/hot_spec.rst
+@@ -592,16 +592,6 @@ For example
+        constraints:
+          - custom_constraint: nova.keypair
+ 
+-The following section lists the custom constraints and the plug-ins
+-that support them.
+-
+-.. table_from_text:: ../../setup.cfg
+-   :header: Name,Plug-in
+-   :regex: (.*)=(.*)
+-   :start-after: heat.constraints =
+-   :end-before: heat.stack_lifecycle_plugins =
+-   :sort:
+-
+ .. _hot_spec_pseudo_parameters:
+ 
+ Pseudo parameters

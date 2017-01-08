@@ -6,6 +6,7 @@ heat (1:7.0.0-2) unstable; urgency=medium
   [ Thomas Goirand ]
   * CVE-2016-9185: template source URL allows network port scan: applied
     upstream patch (Closes: #843232).
+  * Remove broken rst with latest docutils (Closes: #850231).
 
  -- Thomas Goirand <zigo@debian.org>  Mon, 26 Dec 2016 17:36:59 +0100
 

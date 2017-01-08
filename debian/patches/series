@@ -1,3 +1,4 @@
 only-run-tests-in-heat.tests.patch
 fix-requirements.txt.patch
 CVE-2016-9185_Prevent_template_validate_from_scanning_ports.patch
+remove-broken-rst.patch
