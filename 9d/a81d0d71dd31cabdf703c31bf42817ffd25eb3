@@ -1,0 +1,8 @@
+Code-Review+2: Thomas Goirand <thomas@goirand.fr>
+Workflow+1: Thomas Goirand <thomas@goirand.fr>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Sun, 08 Jan 2017 15:40:55 +0000
+Reviewed-on: https://review.openstack.org/417676
+Project: openstack/deb-heat
+Branch: refs/heads/debian/newton
