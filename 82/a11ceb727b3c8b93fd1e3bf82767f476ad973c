@@ -1,0 +1,11 @@
+Code-Review+2: Kanagaraj Manickam <mkr1481@gmail.com>
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Code-Review+1: liujunpeng <liujunpeng@inspur.com>
+Workflow+1: huangtianhua <huangtianhua@huawei.com>
+Code-Review+1: Ethan <caotianran@awcloud.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 06 Jan 2017 08:45:13 +0000
+Reviewed-on: https://review.openstack.org/409649
+Project: openstack/deb-heat
+Branch: refs/heads/master
