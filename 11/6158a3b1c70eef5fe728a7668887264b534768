@@ -1,0 +1,9 @@
+Code-Review+2: Rabi Mishra <ramishra@redhat.com>
+Code-Review+2: Ethan Lynn <xuanlangjian@gmail.com>
+Workflow+1: Ethan Lynn <xuanlangjian@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 11 Jan 2017 06:25:25 +0000
+Reviewed-on: https://review.openstack.org/417651
+Project: openstack/deb-heat
+Branch: refs/heads/master
