@@ -1,0 +1,16 @@
+Description: Allow SQLA 1.1
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: not-needed
+Last-Update: 2017-01-11
+
+--- heat-7.0.0.orig/requirements.txt
++++ heat-7.0.0/requirements.txt
+@@ -57,7 +57,7 @@ requests>=2.10.0 # Apache-2.0
+ retrying
+ Routes
+ six>=1.9.0 # MIT
+-SQLAlchemy<1.1.0,>=1.0.10 # MIT
++SQLAlchemy>=1.0.10 # MIT
+ sqlalchemy-migrate>=0.9.6 # Apache-2.0
+ stevedore>=1.16.0 # Apache-2.0
+ WebOb>=1.2.3 # MIT
