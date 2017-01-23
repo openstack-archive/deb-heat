@@ -1,0 +1,9 @@
+Code-Review+2: Ethan Lynn <xuanlangjian@gmail.com>
+Code-Review+2: Qiming Teng <tengqim@cn.ibm.com>
+Workflow+1: Qiming Teng <tengqim@cn.ibm.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 23 Jan 2017 04:18:30 +0000
+Reviewed-on: https://review.openstack.org/420500
+Project: openstack/deb-heat
+Branch: refs/heads/master
