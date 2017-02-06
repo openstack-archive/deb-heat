@@ -1,0 +1,9 @@
+Code-Review+2: Ethan Lynn <xuanlangjian@gmail.com>
+Code-Review+2: Rico Lin <rico.lin.guanyu@gmail.com>
+Workflow+1: Rico Lin <rico.lin.guanyu@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 06 Feb 2017 02:43:13 +0000
+Reviewed-on: https://review.openstack.org/420262
+Project: openstack/deb-heat
+Branch: refs/heads/master
