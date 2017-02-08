@@ -1,0 +1,9 @@
+Code-Review+2: Rico Lin <rico.lin.guanyu@gmail.com>
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Workflow+1: Peter Razumovsky <prazumovsky@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 08 Feb 2017 14:54:04 +0000
+Reviewed-on: https://review.openstack.org/418702
+Project: openstack/deb-heat
+Branch: refs/heads/master
