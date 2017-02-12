@@ -1,0 +1,9 @@
+Code-Review+2: Sergey Kraynev <skraynev@mirantis.com>
+Code-Review+1: Kanagaraj Manickam <mkr1481@gmail.com>
+Workflow+1: Sergey Kraynev <skraynev@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 10 Feb 2017 13:39:03 +0000
+Reviewed-on: https://review.openstack.org/429209
+Project: openstack/deb-heat
+Branch: refs/heads/stable/ocata
