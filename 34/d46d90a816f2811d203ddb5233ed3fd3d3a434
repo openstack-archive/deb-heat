@@ -1,0 +1,10 @@
+Code-Review+2: Steven Hardy <shardy@redhat.com>
+Code-Review+2: Sergey Kraynev <sergejyit@gmail.com>
+Code-Review+1: Rico Lin <rico.lin.guanyu@gmail.com>
+Workflow+1: Zane Bitter <zbitter@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 21 Mar 2017 23:12:27 +0000
+Reviewed-on: https://review.openstack.org/441445
+Project: openstack/deb-heat
+Branch: refs/heads/stable/ocata

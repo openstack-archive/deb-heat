@@ -1,0 +1,11 @@
+Code-Review+1: Thomas Herve <therve@redhat.com>
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Code-Review+1: Kanagaraj Manickam <mkr1481@gmail.com>
+Code-Review+1: Rabi Mishra <ramishra@redhat.com>
+Workflow+1: Zane Bitter <zbitter@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 21 Mar 2017 01:44:35 +0000
+Reviewed-on: https://review.openstack.org/446283
+Project: openstack/deb-heat
+Branch: refs/heads/stable/ocata
