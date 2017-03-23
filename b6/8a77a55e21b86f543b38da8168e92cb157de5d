@@ -1,0 +1,12 @@
+Code-Review+2: Sergey Kraynev <sergejyit@gmail.com>
+Code-Review+1: huangtianhua <huangtianhua@huawei.com>
+Code-Review+1: Kanagaraj Manickam <mkr1481@gmail.com>
+Code-Review+1: Rico Lin <rico.lin.guanyu@gmail.com>
+Code-Review+2: Matt Riedemann <mriedem.os@gmail.com>
+Workflow+1: Matt Riedemann <mriedem.os@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 20 Feb 2017 16:51:47 +0000
+Reviewed-on: https://review.openstack.org/428495
+Project: openstack/deb-heat
+Branch: refs/heads/stable/newton

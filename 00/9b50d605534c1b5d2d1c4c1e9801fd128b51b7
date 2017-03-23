@@ -1,0 +1,9 @@
+Code-Review+2: Matt Riedemann <mriedem.os@gmail.com>
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Workflow+1: Zane Bitter <zbitter@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 21 Feb 2017 17:07:13 +0000
+Reviewed-on: https://review.openstack.org/427504
+Project: openstack/deb-heat
+Branch: refs/heads/stable/newton
