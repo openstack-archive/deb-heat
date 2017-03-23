@@ -1,0 +1,9 @@
+Code-Review+2: Qiming Teng <tengqim@cn.ibm.com>
+Workflow+1: Qiming Teng <tengqim@cn.ibm.com>
+Code-Review+1: Shunli Zhou <slzhou@fiberhome.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 03 Mar 2017 12:26:23 +0000
+Reviewed-on: https://review.openstack.org/440045
+Project: openstack/deb-heat
+Branch: refs/heads/master

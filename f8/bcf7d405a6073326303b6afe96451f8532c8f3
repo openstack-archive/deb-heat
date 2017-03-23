@@ -1,0 +1,9 @@
+Code-Review+2: Rico Lin <rico.lin.guanyu@gmail.com>
+Workflow+1: Rico Lin <rico.lin.guanyu@gmail.com>
+Code-Review+1: liyi <liyi8611@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 15 Mar 2017 15:09:51 +0000
+Reviewed-on: https://review.openstack.org/445748
+Project: openstack/deb-heat
+Branch: refs/heads/master

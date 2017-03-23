@@ -1,0 +1,9 @@
+Code-Review+2: Steven Hardy <shardy@redhat.com>
+Code-Review+2: Oleksii Chuprykov <a.chuprikoff@gmail.com>
+Workflow+1: Thomas Herve <therve@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 24 Feb 2017 17:43:37 +0000
+Reviewed-on: https://review.openstack.org/436179
+Project: openstack/deb-heat
+Branch: refs/heads/master

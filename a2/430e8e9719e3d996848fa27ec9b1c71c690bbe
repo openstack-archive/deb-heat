@@ -1,0 +1,10 @@
+Code-Review+2: Thomas Herve <therve@redhat.com>
+Code-Review+1: Aaron Ding <dinghh@awcloud.com>
+Code-Review+2: Kanagaraj Manickam <mkr1481@gmail.com>
+Workflow+1: Kanagaraj Manickam <mkr1481@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 17 Feb 2017 11:47:40 +0000
+Reviewed-on: https://review.openstack.org/415639
+Project: openstack/deb-heat
+Branch: refs/heads/master
