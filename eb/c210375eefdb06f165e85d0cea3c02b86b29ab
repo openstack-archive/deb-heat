@@ -1,0 +1,11 @@
+Code-Review+2: Rabi Mishra <ramishra@redhat.com>
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Workflow+1: Peter Razumovsky <prazumovsky@mirantis.com>
+Code-Review+2: Rico Lin <rico.lin.guanyu@gmail.com>
+Code-Review+1: yangjidong <yangjd@inspur.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 24 Mar 2017 04:12:25 +0000
+Reviewed-on: https://review.openstack.org/445284
+Project: openstack/deb-heat
+Branch: refs/heads/master
