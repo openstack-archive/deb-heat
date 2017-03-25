@@ -179,6 +179,7 @@ Package: heat-common
 Architecture: all
 Depends: adduser,
          dbconfig-common,
+         net-tools,
          python-heat (=${binary:Version}),
          q-text-as-data,
          ${misc:Depends},

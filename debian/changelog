@@ -1,3 +1,10 @@
+heat (1:7.0.0-4) unstable; urgency=medium
+
+  * Team upload.
+  * Add missing dependency net-tools (Closes: #858698).
+
+ -- David Rabel <david.rabel@noresoft.com>  Sat, 25 Mar 2017 12:15:57 +0100
+
 heat (1:7.0.0-3) unstable; urgency=medium
 
   * Add allow-sqlalchemy-1.1.patch.
