@@ -1,0 +1,9 @@
+Code-Review+2: Qiming Teng <tengqim@cn.ibm.com>
+Code-Review+2: Rico Lin <rico.lin.guanyu@gmail.com>
+Workflow+1: Rico Lin <rico.lin.guanyu@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 29 Mar 2017 03:54:50 +0000
+Reviewed-on: https://review.openstack.org/451006
+Project: openstack/deb-heat
+Branch: refs/heads/master
