@@ -1,3 +1,11 @@
+heat (1:7.0.0-5) unstable; urgency=medium
+
+  * Team upload.
+  * Revert net-tools dependency.
+  * Bump build dependency on openstack-pkg-tools (Closes: #858698).
+
+ -- David Rabel <david.rabel@noresoft.com>  Sat, 01 Apr 2017 11:36:53 +0200
+
 heat (1:7.0.0-4) unstable; urgency=medium
 
   * Team upload.
