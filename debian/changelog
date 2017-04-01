@@ -1,9 +1,9 @@
 heat (1:7.0.0-4) unstable; urgency=medium
 
   * Team upload.
-  * Add missing dependency net-tools (Closes: #858698).
+  * Bump build dependency on openstack-pkg-tools (Closes: #858698).
 
- -- David Rabel <david.rabel@noresoft.com>  Sat, 25 Mar 2017 12:15:57 +0100
+ -- David Rabel <david.rabel@noresoft.com>  Sat, 01 Apr 2017 11:36:53 +0200
 
 heat (1:7.0.0-3) unstable; urgency=medium
 
