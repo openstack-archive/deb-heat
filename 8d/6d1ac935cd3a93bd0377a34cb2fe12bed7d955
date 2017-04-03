@@ -1,0 +1,9 @@
+Code-Review+2: huangtianhua <huangtianhua@huawei.com>
+Code-Review+2: Kanagaraj Manickam <mkr1481@gmail.com>
+Workflow+1: Kanagaraj Manickam <mkr1481@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 03 Apr 2017 10:01:07 +0000
+Reviewed-on: https://review.openstack.org/448492
+Project: openstack/deb-heat
+Branch: refs/heads/master
