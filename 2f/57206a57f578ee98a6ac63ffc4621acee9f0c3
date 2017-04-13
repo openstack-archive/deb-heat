@@ -1,0 +1,9 @@
+Code-Review+2: Steven Hardy <shardy@redhat.com>
+Code-Review+2: Thomas Herve <therve@redhat.com>
+Workflow+1: Thomas Herve <therve@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 13 Apr 2017 22:37:24 +0000
+Reviewed-on: https://review.openstack.org/434601
+Project: openstack/deb-heat
+Branch: refs/heads/master
