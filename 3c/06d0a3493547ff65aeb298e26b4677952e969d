@@ -1,0 +1,9 @@
+Code-Review+2: huangtianhua <huangtianhua@huawei.com>
+Code-Review+2: Jason Dunsmore <jason.dunsmore@rackspace.com>
+Workflow+1: Jason Dunsmore <jason.dunsmore@rackspace.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 14 Apr 2017 13:43:58 +0000
+Reviewed-on: https://review.openstack.org/455671
+Project: openstack/deb-heat
+Branch: refs/heads/master
