@@ -1,0 +1,14 @@
+Code-Review+1: huangtianhua <huangtianhua@huawei.com>
+Code-Review+1: Rabi Mishra <ramishra@redhat.com>
+Code-Review+1: Xinhui Li <lxinhui@vmware.com>
+Code-Review+1: Thomas Herve <therve@redhat.com>
+Code-Review+2: Steven Hardy <shardy@redhat.com>
+Code-Review+1: Rico Lin <rico.lin.guanyu@gmail.com>
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Workflow+1: Zane Bitter <zbitter@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 19 Apr 2017 20:36:39 +0000
+Reviewed-on: https://review.openstack.org/455148
+Project: openstack/deb-heat
+Branch: refs/heads/stable/ocata
