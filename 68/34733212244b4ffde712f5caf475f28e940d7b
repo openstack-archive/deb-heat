@@ -1,0 +1,9 @@
+Code-Review+2: Thomas Herve <therve@redhat.com>
+Code-Review+2: Rico Lin <rico.lin.guanyu@gmail.com>
+Workflow+1: Rico Lin <rico.lin.guanyu@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 17 May 2017 08:27:26 +0000
+Reviewed-on: https://review.openstack.org/461503
+Project: openstack/deb-heat
+Branch: refs/heads/master
