@@ -1,0 +1,9 @@
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Code-Review+2: Sergey Kraynev <sergejyit@gmail.com>
+Workflow+1: Sergey Kraynev <sergejyit@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Sun, 21 May 2017 18:00:11 +0000
+Reviewed-on: https://review.openstack.org/466275
+Project: openstack/deb-heat
+Branch: refs/heads/master
