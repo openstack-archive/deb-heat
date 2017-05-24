@@ -1,0 +1,9 @@
+Code-Review+2: Thomas Herve <therve@redhat.com>
+Code-Review+2: Ethan Lynn <xuanlangjian@gmail.com>
+Workflow+1: Ethan Lynn <xuanlangjian@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 24 May 2017 03:05:28 +0000
+Reviewed-on: https://review.openstack.org/465471
+Project: openstack/deb-heat
+Branch: refs/heads/master
