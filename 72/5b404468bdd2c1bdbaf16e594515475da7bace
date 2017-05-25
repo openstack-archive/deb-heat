@@ -1,0 +1,9 @@
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Code-Review+2: Thomas Herve <therve@redhat.com>
+Workflow+1: Thomas Herve <therve@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 25 May 2017 21:04:21 +0000
+Reviewed-on: https://review.openstack.org/420664
+Project: openstack/deb-heat
+Branch: refs/heads/master
