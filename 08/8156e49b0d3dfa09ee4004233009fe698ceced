@@ -1,0 +1,9 @@
+Code-Review+2: Thomas Herve <therve@redhat.com>
+Code-Review+2: Peter Razumovsky <prazumovsky@mirantis.com>
+Workflow+1: Peter Razumovsky <prazumovsky@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 31 May 2017 15:03:51 +0000
+Reviewed-on: https://review.openstack.org/431374
+Project: openstack/deb-heat
+Branch: refs/heads/master
