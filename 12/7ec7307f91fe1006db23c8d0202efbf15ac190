@@ -1,0 +1,11 @@
+Code-Review+1: Shunli Zhou <slzhou@fiberhome.com>
+Code-Review+2: Thomas Herve <therve@redhat.com>
+Code-Review+2: Kanagaraj Manickam <mkr1481@gmail.com>
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Workflow+1: Zane Bitter <zbitter@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 02 Jun 2017 18:11:54 +0000
+Reviewed-on: https://review.openstack.org/430157
+Project: openstack/deb-heat
+Branch: refs/heads/master
