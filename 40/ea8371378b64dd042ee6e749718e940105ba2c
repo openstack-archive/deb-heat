@@ -1,0 +1,13 @@
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Code-Review+1: Rabi Mishra <ramishra@redhat.com>
+Code-Review+1: Rico Lin <rico.lin@easystack.cn>
+Code-Review+1: Kanagaraj Manickam <mkr1481@gmail.com>
+Code-Review+1: Thomas Herve <therve@redhat.com>
+Code-Review+1: Zhaokun Fu <fuzk@inspur.com>
+Workflow+1: Zane Bitter <zbitter@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 15 Jun 2017 06:39:40 +0000
+Reviewed-on: https://review.openstack.org/452642
+Project: openstack/deb-heat
+Branch: refs/heads/stable/newton
