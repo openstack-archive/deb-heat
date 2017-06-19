@@ -1,0 +1,10 @@
+Code-Review+2: Thomas Herve <therve@redhat.com>
+Code-Review+2: Qiming Teng <tengqim@cn.ibm.com>
+Code-Review+1: Kien Nguyen <KienNT@vn.fujitsu.com>
+Workflow+1: Qiming Teng <tengqim@cn.ibm.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 19 Jun 2017 10:52:12 +0000
+Reviewed-on: https://review.openstack.org/473765
+Project: openstack/deb-heat
+Branch: refs/heads/master
