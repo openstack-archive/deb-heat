@@ -1,0 +1,9 @@
+Code-Review+2: Rico Lin <rico.lin@easystack.cn>
+Code-Review+2: Rabi Mishra <ramishra@redhat.com>
+Workflow+1: Rabi Mishra <ramishra@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 22 Jun 2017 14:18:32 +0000
+Reviewed-on: https://review.openstack.org/475098
+Project: openstack/deb-heat
+Branch: refs/heads/master
