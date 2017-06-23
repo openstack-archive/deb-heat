@@ -1,0 +1,9 @@
+Code-Review+2: Kanagaraj Manickam <mkr1481@gmail.com>
+Code-Review+2: Qiming Teng <tengqim@cn.ibm.com>
+Workflow+1: Qiming Teng <tengqim@cn.ibm.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 23 Jun 2017 02:25:43 +0000
+Reviewed-on: https://review.openstack.org/474928
+Project: openstack/deb-heat
+Branch: refs/heads/master
