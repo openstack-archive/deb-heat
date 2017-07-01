@@ -1,0 +1,9 @@
+Code-Review+2: Thomas Herve <therve@redhat.com>
+Code-Review+2: Rabi Mishra <ramishra@redhat.com>
+Workflow+1: Rabi Mishra <ramishra@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Sat, 01 Jul 2017 02:59:00 +0000
+Reviewed-on: https://review.openstack.org/476294
+Project: openstack/deb-heat
+Branch: refs/heads/master
