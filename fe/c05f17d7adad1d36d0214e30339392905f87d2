@@ -1,0 +1,8 @@
+Code-Review+2: huangtianhua <huangtianhua@huawei.com>
+Workflow+1: huangtianhua <huangtianhua@huawei.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 04 Jul 2017 07:59:27 +0000
+Reviewed-on: https://review.openstack.org/428080
+Project: openstack/deb-heat
+Branch: refs/heads/master
