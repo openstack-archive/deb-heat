@@ -1,0 +1,10 @@
+Code-Review+1: Alexandra Settle <a.settle@outlook.com>
+Code-Review+2: Thomas Herve <therve@redhat.com>
+Code-Review+2: Rabi Mishra <ramishra@redhat.com>
+Workflow+1: Rabi Mishra <ramishra@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 04 Jul 2017 03:44:57 +0000
+Reviewed-on: https://review.openstack.org/479699
+Project: openstack/deb-heat
+Branch: refs/heads/master
