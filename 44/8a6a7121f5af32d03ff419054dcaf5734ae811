@@ -1,0 +1,9 @@
+Code-Review+2: Zane Bitter <zbitter@redhat.com>
+Code-Review+2: Rabi Mishra <ramishra@redhat.com>
+Workflow+1: Rabi Mishra <ramishra@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 06 Jul 2017 03:36:30 +0000
+Reviewed-on: https://review.openstack.org/480486
+Project: openstack/deb-heat
+Branch: refs/heads/master
