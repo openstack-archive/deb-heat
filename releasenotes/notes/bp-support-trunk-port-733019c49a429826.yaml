@@ -1,3 +1,0 @@
----
-features:
-    - New resource ``OS::Neutron::Trunk`` is added to manage Neutron Trunks.

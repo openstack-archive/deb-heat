@@ -1,5 +1,0 @@
----
-features:
-  - Supports to get the webmks console url for OS::Nova::Server
-    resource. And this requires nova api version equal or greater
-    than 2.8.

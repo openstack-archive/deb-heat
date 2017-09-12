@@ -1,7 +1,0 @@
-{
-    "resource_types": [
-        "AWS::EC2::Instance",
-        "OS::Heat::ScalingPolicy",
-        "AWS::CloudFormation::Stack"
-    ]
-}

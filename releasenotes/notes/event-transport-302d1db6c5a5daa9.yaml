@@ -1,5 +1,0 @@
----
-features:
-  - Added a new ``event-sinks`` element to the environment which allows
-    specifying a target where events from the stack are sent. It supports the
-    ``zaqar-queue`` element for now.
